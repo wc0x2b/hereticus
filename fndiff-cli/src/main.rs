@@ -7,9 +7,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use fndiff::matching::{Changed, Confidence, Diff, Match, Options, UseNames, diff_with};
+use console::Term;
+use fndiff::matching::{
+    Changed, Confidence, Diff, Match, Options, Phase, Progress, UseNames, diff_reporting,
+};
 use fndiff::obj::{Binary, Isa};
 use fndiff::raw::check_base;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 /// Compare two binaries and report the functions that changed.
 #[derive(Parser, Debug)]
@@ -72,6 +76,21 @@ struct Args {
     /// How to print the result.
     #[arg(long, value_enum, default_value_t = Format::Text)]
     format: Format,
+
+    /// When to show a progress bar.
+    ///
+    /// The bar goes to standard error, so it never mixes with the report.
+    #[arg(long, value_enum, default_value_t = When::Auto)]
+    progress: When,
+}
+
+/// Whether to show a display that only a terminal can use.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum When {
+    /// Show it when standard error is a terminal.
+    Auto,
+    Always,
+    Never,
 }
 
 /// The architectures a raw image can be read as.
@@ -114,6 +133,57 @@ fn parse_threshold(text: &str) -> Result<f64, String> {
         Ok(value)
     } else {
         Err(format!("threshold must be between 0.0 and 1.0, but is {value}"))
+    }
+}
+
+/// A progress bar on standard error, one phase at a time.
+///
+/// The library reports steps; this draws them. Keeping the bar on standard
+/// error leaves standard output holding only the report, so a pipe still works
+/// while a person still sees the tool is alive.
+struct Bar {
+    bar: ProgressBar,
+}
+
+impl Bar {
+    fn new(when: When) -> Self {
+        // A hidden bar still accepts every call, so the reporting code needs no
+        // test for whether anything is drawn. `stderr` hides itself when
+        // standard error is not a terminal, which is the behavior `Auto` wants.
+        let target = match when {
+            When::Auto => ProgressDrawTarget::stderr(),
+            // `stderr` draws nothing when standard error is redirected, which
+            // is what `Auto` wants and what `Always` must override. A
+            // `TermLike` target skips that test, so the bar is written whatever
+            // standard error happens to be.
+            When::Always => ProgressDrawTarget::term_like(Box::new(Term::stderr())),
+            When::Never => ProgressDrawTarget::hidden(),
+        };
+
+        Self { bar: ProgressBar::with_draw_target(None, target) }
+    }
+}
+
+impl Progress for Bar {
+    fn start(&self, phase: Phase, total: usize) {
+        self.bar.reset();
+        self.bar.set_length(total as u64);
+        self.bar.set_message(phase.label());
+        self.bar.set_style(
+            ProgressStyle::with_template("{msg:26} [{bar:32}] {pos}/{len} {elapsed_precise}")
+                .expect("the template is a constant")
+                .progress_chars("=> "),
+        );
+    }
+
+    fn advance(&self, steps: usize) {
+        self.bar.inc(steps as u64);
+    }
+
+    fn finish(&self) {
+        // Clear rather than leave the bar behind: six finished bars above a
+        // report is noise, and the report is what a reader came for.
+        self.bar.finish_and_clear();
     }
 }
 
@@ -174,7 +244,7 @@ fn run(args: &Args) -> Result<bool, String> {
         threshold: args.threshold,
         use_names: if args.ignore_names { UseNames::No } else { UseNames::Yes },
     };
-    let diff = diff_with(&before, &after, options);
+    let diff = diff_reporting(&before, &after, options, &Bar::new(args.progress));
 
     match args.format {
         Format::Text => print_text(&diff, &before, &after, args.all, args.near_miss),

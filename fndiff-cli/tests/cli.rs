@@ -182,3 +182,34 @@ fn rejects_a_threshold_outside_its_range() {
         "fixtures/build/O2/basic.o",
     ]));
 }
+
+/// The bar must never reach standard output.
+///
+/// A report that a script reads goes to standard output. Drawing a bar there
+/// would corrupt it, so the bar goes to standard error. `--progress always`
+/// draws the bar even when nothing is a terminal, which is what makes this
+/// testable at all.
+#[test]
+fn a_forced_progress_bar_stays_off_standard_output() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    let quiet = fndiff()
+        .args(["--progress", "never", "fixtures/build/O2/basic.o", "fixtures/build/O2/basic_v2.o"])
+        .output()
+        .expect("the tool runs");
+
+    let loud = fndiff()
+        .args(["--progress", "always", "fixtures/build/O2/basic.o", "fixtures/build/O2/basic_v2.o"])
+        .output()
+        .expect("the tool runs");
+
+    assert_eq!(
+        String::from_utf8_lossy(&quiet.stdout),
+        String::from_utf8_lossy(&loud.stdout),
+        "the report must not change when a bar is drawn"
+    );
+    assert!(!loud.stderr.is_empty(), "a forced bar writes something to standard error");
+}

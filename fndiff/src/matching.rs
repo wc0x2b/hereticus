@@ -237,12 +237,17 @@ impl Prepared<'_> {
 ///
 /// The interner is shared between the two binaries, so a symbol means the same
 /// instruction on either side.
-fn prepare<'a>(binary: &'a Binary, interner: &mut Interner) -> Vec<Prepared<'a>> {
+fn prepare<'a>(
+    binary: &'a Binary,
+    interner: &mut Interner,
+    progress: &dyn Progress,
+) -> Vec<Prepared<'a>> {
     let arch = binary.isa.arch();
     binary
         .functions
         .iter()
         .map(|function| {
+            progress.advance(1);
             let (insns, _) = decode_all(&arch, &function.code, function.address);
             let printed =
                 insns.iter().map(|insn| (insn.mnemonic.clone(), insn.operands.clone())).collect();
@@ -257,6 +262,70 @@ fn prepare<'a>(binary: &'a Binary, interner: &mut Interner) -> Vec<Prepared<'a>>
         .collect()
 }
 
+/// The steps of a comparison, in the order they run.
+///
+/// Reported so that a caller can say what the tool is doing. The names are for
+/// a person to read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// Decoding and normalizing the functions of both binaries.
+    Preparing,
+    /// Pairing on identical machine code.
+    IdenticalCode,
+    /// Pairing on identical normalized instructions.
+    IdenticalShape,
+    /// Pairing on the symbol name.
+    Names,
+    /// Scoring every remaining pair.
+    ///
+    /// The long one. Its step count is the number of functions left to place.
+    Similarity,
+    /// Finding the closest candidate for each unmatched function.
+    NearMisses,
+}
+
+impl Phase {
+    /// A short description, for a progress display.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Preparing => "reading functions",
+            Self::IdenticalCode => "matching identical code",
+            Self::IdenticalShape => "matching identical shape",
+            Self::Names => "matching names",
+            Self::Similarity => "scoring pairs",
+            Self::NearMisses => "finding near misses",
+        }
+    }
+}
+
+/// Somewhere to report how far a comparison has got.
+///
+/// A comparison of two large images runs for many seconds with nothing to show
+/// for it. Implement this to display progress. The library reports; it does not
+/// draw, so nothing here dictates a display or pulls in a dependency.
+///
+/// Every method takes `&self`, so an implementation holds its own state behind
+/// whatever it needs.
+pub trait Progress {
+    /// A phase is starting, and will report `total` steps.
+    fn start(&self, phase: Phase, total: usize);
+
+    /// Some steps of the current phase are done.
+    fn advance(&self, steps: usize);
+
+    /// The current phase is done.
+    fn finish(&self);
+}
+
+/// A [`Progress`] that discards everything, for callers that want no display.
+pub struct NoProgress;
+
+impl Progress for NoProgress {
+    fn start(&self, _phase: Phase, _total: usize) {}
+    fn advance(&self, _steps: usize) {}
+    fn finish(&self) {}
+}
+
 /// Compare two binaries with the default settings.
 pub fn diff(before: &Binary, after: &Binary) -> Diff {
     diff_with(before, after, Options::default())
@@ -264,24 +333,39 @@ pub fn diff(before: &Binary, after: &Binary) -> Diff {
 
 /// Compare two binaries.
 pub fn diff_with(before: &Binary, after: &Binary, options: Options) -> Diff {
+    diff_reporting(before, after, options, &NoProgress)
+}
+
+/// Compare two binaries, reporting progress as each phase runs.
+pub fn diff_reporting(
+    before: &Binary,
+    after: &Binary,
+    options: Options,
+    progress: &dyn Progress,
+) -> Diff {
+    progress.start(Phase::Preparing, before.functions.len() + after.functions.len());
     let mut interner = Interner::default();
+    let left = prepare(before, &mut interner, progress);
+    let right = prepare(after, &mut interner, progress);
+    progress.finish();
+
     let mut cascade = Cascade {
-        left: prepare(before, &mut interner),
-        right: prepare(after, &mut interner),
+        left,
+        right,
         left_free: vec![true; before.functions.len()],
         right_free: vec![true; after.functions.len()],
         matched: Vec::new(),
         options,
     };
 
-    cascade.match_identical_code();
-    cascade.match_identical_shape();
+    cascade.match_identical_code(progress);
+    cascade.match_identical_shape(progress);
     if options.use_names == UseNames::Yes {
-        cascade.match_by_name();
+        cascade.match_by_name(progress);
     }
-    cascade.match_by_similarity();
+    cascade.match_by_similarity(progress);
 
-    cascade.finish()
+    cascade.finish(progress)
 }
 
 /// The functions still to pair, and the pairs found so far.
@@ -314,7 +398,7 @@ impl Cascade<'_> {
     }
 
     /// Sort the pairs and collect what stayed unmatched.
-    fn finish(mut self) -> Diff {
+    fn finish(mut self, progress: &dyn Progress) -> Diff {
         // Strongest reason first, then highest score, so the rows a reader
         // should trust sit at the top of a report.
         self.matched.sort_by(|a, b| {
@@ -329,7 +413,10 @@ impl Cascade<'_> {
 
         let removed = unpaired(&self.left_free);
         let added = unpaired(&self.right_free);
-        let near_misses = self.near_misses(&removed, &added);
+
+        progress.start(Phase::NearMisses, removed.len());
+        let near_misses = self.near_misses(&removed, &added, progress);
+        progress.finish();
 
         Diff { removed, added, near_misses, matched: self.matched }
     }
@@ -340,10 +427,16 @@ impl Cascade<'_> {
     /// functions still free to take. Both sets are small by the time the
     /// cascade is done, so the cost is a fraction of the matching pass that
     /// preceded it.
-    fn near_misses(&self, removed: &[usize], added: &[usize]) -> Vec<NearMiss> {
+    fn near_misses(
+        &self,
+        removed: &[usize],
+        added: &[usize],
+        progress: &dyn Progress,
+    ) -> Vec<NearMiss> {
         removed
             .iter()
             .map(|before| {
+                progress.advance(1);
                 let best = added
                     .iter()
                     .map(|after| {
@@ -454,7 +547,8 @@ impl Cascade<'_> {
     ///
     /// The strongest evidence there is, and the cheapest to find. A function
     /// that was not touched and did not move lands here.
-    fn match_identical_code(&mut self) {
+    fn match_identical_code(&mut self, progress: &dyn Progress) {
+        progress.start(Phase::IdenticalCode, self.left.len());
         let mut by_code: HashMap<&[u8], Vec<usize>> = HashMap::new();
         for (index, prepared) in self.right.iter().enumerate() {
             by_code.entry(prepared.function.code.as_slice()).or_default().push(index);
@@ -462,6 +556,7 @@ impl Cascade<'_> {
 
         let mut pairs = Vec::new();
         for (index, prepared) in self.left.iter().enumerate() {
+            progress.advance(1);
             let Some(candidates) = by_code.get(prepared.function.code.as_slice()) else { continue };
             // Only pair when the answer is unambiguous. Several functions can
             // share a body, and guessing between them helps nobody.
@@ -477,6 +572,7 @@ impl Cascade<'_> {
                 self.take_pair(index, other, Confidence::IdenticalCode, 1.0);
             }
         }
+        progress.finish();
     }
 
     /// Stage two: identical normalized instructions.
@@ -484,8 +580,10 @@ impl Cascade<'_> {
     /// This is the stage that survives recompilation. Two builds of one
     /// function differ in register choice and branch addresses, which
     /// normalizing removes, so what remains agrees exactly.
-    fn match_identical_shape(&mut self) {
+    fn match_identical_shape(&mut self, progress: &dyn Progress) {
+        progress.start(Phase::IdenticalShape, self.left.len());
         for index in 0..self.left.len() {
+            progress.advance(1);
             // An empty body carries no evidence, so pairing on it would be a
             // guess dressed up as a certainty.
             if !self.left_free[index] || self.left[index].body.is_empty() {
@@ -502,6 +600,7 @@ impl Cascade<'_> {
                 self.take_pair(index, only, Confidence::IdenticalShape, 1.0);
             }
         }
+        progress.finish();
     }
 
     /// Stage three: the same symbol name.
@@ -510,7 +609,8 @@ impl Cascade<'_> {
     /// stripped binary has none, and a renamed function keeps its behavior. It
     /// runs after the two code-based stages so that evidence from the code
     /// always wins.
-    fn match_by_name(&mut self) {
+    fn match_by_name(&mut self, progress: &dyn Progress) {
+        progress.start(Phase::Names, self.left.len());
         let mut by_name: HashMap<String, usize> = HashMap::new();
         for (index, prepared) in self.right.iter().enumerate() {
             if self.right_free[index] && !prepared.function.name.is_empty() {
@@ -519,6 +619,7 @@ impl Cascade<'_> {
         }
 
         for index in 0..self.left.len() {
+            progress.advance(1);
             if !self.left_free[index] || self.left[index].function.name.is_empty() {
                 continue;
             }
@@ -531,6 +632,7 @@ impl Cascade<'_> {
                 similarity_of_symbols(&self.left[index].symbols, &self.right[other].symbols);
             self.take_pair(index, other, Confidence::SameName, score);
         }
+        progress.finish();
     }
 }
 
@@ -543,10 +645,19 @@ impl Cascade<'_> {
 /// Taking them in order would let a mediocre pair claim a function that a
 /// later, better pair needed.
 impl Cascade<'_> {
-    fn match_by_similarity(&mut self) {
+    fn match_by_similarity(&mut self, progress: &dyn Progress) {
+        // Only the functions still free reach the inner loop, so counting them
+        // gives a total the bar can actually reach.
+        let remaining = self.left_free.iter().filter(|free| **free).count();
+        progress.start(Phase::Similarity, remaining);
+
         let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
         for index in 0..self.left.len() {
-            if !self.left_free[index] || self.left[index].body.is_empty() {
+            if !self.left_free[index] {
+                continue;
+            }
+            progress.advance(1);
+            if self.left[index].body.is_empty() {
                 continue;
             }
             for other in 0..self.right.len() {
@@ -575,6 +686,7 @@ impl Cascade<'_> {
                 self.take_pair(index, other, Confidence::Similar, score);
             }
         }
+        progress.finish();
     }
 }
 
@@ -891,6 +1003,101 @@ mod tests {
         let third = interner.intern(different[0].clone());
         assert_ne!(first, third, "a different operation needs a different symbol");
         assert_eq!(interner.len(), 2, "two distinct instructions were seen");
+    }
+
+    /// Record what a comparison reports, to check the reporting itself.
+    #[derive(Default)]
+    struct Recorder {
+        events: std::cell::RefCell<Vec<Event>>,
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum Event {
+        Start(Phase, usize),
+        Advance(usize),
+        Finish,
+    }
+
+    impl Progress for Recorder {
+        fn start(&self, phase: Phase, total: usize) {
+            self.events.borrow_mut().push(Event::Start(phase, total));
+        }
+        fn advance(&self, steps: usize) {
+            self.events.borrow_mut().push(Event::Advance(steps));
+        }
+        fn finish(&self) {
+            self.events.borrow_mut().push(Event::Finish);
+        }
+    }
+
+    /// A bar that runs past its own total, or never ends, reads as a fault in
+    /// the tool. Every phase must announce a total it then reaches exactly, and
+    /// must close before the next one opens.
+    #[test]
+    fn every_phase_reports_a_total_it_reaches() {
+        let before = binary_of(&[("same", ADD_THEN_RETURN), ("gone", MUL_THEN_RETURN)]);
+        let after = binary_of(&[("same", ADD_THEN_RETURN), ("new", &[0x00, 0x00, 0xa0, 0xe1])]);
+
+        let recorder = Recorder::default();
+        diff_reporting(&before, &after, Options::default(), &recorder);
+
+        let events = recorder.events.borrow();
+        let mut open: Option<(Phase, usize)> = None;
+        let mut seen = 0usize;
+        let mut phases = Vec::new();
+
+        for event in events.iter() {
+            match event {
+                Event::Start(phase, total) => {
+                    assert!(open.is_none(), "{phase:?} started while another phase was open");
+                    open = Some((*phase, *total));
+                    seen = 0;
+                    phases.push(*phase);
+                }
+                Event::Advance(steps) => {
+                    let (phase, total) = open.expect("a step was reported outside a phase");
+                    seen += steps;
+                    assert!(seen <= total, "{phase:?} passed its total of {total} at {seen}");
+                }
+                Event::Finish => {
+                    let (phase, total) = open.take().expect("a phase ended without starting");
+                    assert_eq!(seen, total, "{phase:?} ended at {seen} of {total}");
+                }
+            }
+        }
+
+        assert!(open.is_none(), "a phase was left open");
+        assert!(phases.contains(&Phase::Preparing), "preparing is always reported");
+        assert!(phases.contains(&Phase::Similarity), "the long phase is always reported");
+    }
+
+    /// Every phase needs something to show, or a bar displays an empty label.
+    #[test]
+    fn every_phase_has_a_label() {
+        for phase in [
+            Phase::Preparing,
+            Phase::IdenticalCode,
+            Phase::IdenticalShape,
+            Phase::Names,
+            Phase::Similarity,
+            Phase::NearMisses,
+        ] {
+            assert!(!phase.label().is_empty(), "{phase:?} needs a label");
+        }
+    }
+
+    /// Reporting progress must not change the answer.
+    #[test]
+    fn reporting_progress_does_not_change_the_result() {
+        let before = binary_of(&[("same", ADD_THEN_RETURN), ("gone", MUL_THEN_RETURN)]);
+        let after = binary_of(&[("same", ADD_THEN_RETURN), ("new", &[0x00, 0x00, 0xa0, 0xe1])]);
+
+        let quiet = diff_with(&before, &after, Options::default());
+        let loud = diff_reporting(&before, &after, Options::default(), &Recorder::default());
+
+        assert_eq!(quiet.matched.len(), loud.matched.len());
+        assert_eq!(quiet.removed, loud.removed);
+        assert_eq!(quiet.added, loud.added);
     }
 
     #[test]
