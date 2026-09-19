@@ -1,0 +1,30 @@
+[workspace]
+members = [
+    "fndiff-cli",
+    "fndiff",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["wc0x2b <wc0x2b@gmail.com>"]
+license = "MIT OR Apache-2.0"
+edition = "2024"
+repository = "https://github.com/wc0x2b/fndiff"
+keywords = ["binary", "diff", "reverse-engineering", "arm", "elf"]
+categories = ["development-tools", "parsing"]
+
+[profile.bench]
+debug = true
+strip = false
+
+[profile.release]
+overflow-checks = true
+
+# Release(dist) binaries are setup for maximum runtime speed, at the cost of CI time
+[profile.dist]
+inherits = "release"
+codegen-units = 1
+lto = true
+strip = true
+overflow-checks = true

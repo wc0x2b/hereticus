@@ -1,0 +1,21 @@
+[package]
+name = "fndiff-cli"
+description = "Command line tool to compare functions between two binaries"
+readme = "../README.md"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version = "1.90"
+
+[[bin]]
+name = "fndiff"
+path = "src/main.rs"
+bench = false
+
+[dependencies]
+fndiff = { path = "../fndiff", version = "0.1.0" }
+clap = { version = "4.5", features = ["derive"] }
