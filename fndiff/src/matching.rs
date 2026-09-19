@@ -167,10 +167,50 @@ impl Default for Options {
     }
 }
 
+/// A distinct normalized instruction, as a number.
+///
+/// Two instructions carry the same symbol exactly when they compare equal.
+type Symbol = u32;
+
+/// Give each distinct normalized instruction a number.
+///
+/// The scoring stage compares every remaining pair, and comparing two bodies
+/// directly means hashing an operation name and an operand list once per
+/// instruction per pair. The same few thousand instructions are hashed over and
+/// over that way.
+///
+/// Numbering them once turns the comparison into counting over small integers.
+/// Both binaries share one interner, so a symbol means the same thing on either
+/// side.
+#[derive(Default)]
+struct Interner {
+    symbols: HashMap<NormInsn, Symbol>,
+}
+
+impl Interner {
+    /// The symbol for an instruction, assigning one when it is new.
+    fn intern(&mut self, insn: NormInsn) -> Symbol {
+        let next = self.symbols.len() as Symbol;
+        *self.symbols.entry(insn).or_insert(next)
+    }
+
+    /// How many distinct instructions have been numbered.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.symbols.len()
+    }
+}
+
 /// A function together with the forms the cascade compares.
 struct Prepared<'a> {
     function: &'a Function,
     body: Vec<NormInsn>,
+    /// The body as symbols, sorted.
+    ///
+    /// Sorted so that [`similarity`] can walk two bodies together instead of
+    /// building a map for each comparison. Order is already irrelevant to the
+    /// score, which counts shared instructions rather than matching positions.
+    symbols: Vec<Symbol>,
     /// Each instruction as decoded, before normalizing: the operation and its
     /// operands.
     ///
@@ -194,7 +234,10 @@ impl Prepared<'_> {
 }
 
 /// Prepare every function of a binary for matching.
-fn prepare(binary: &Binary) -> Vec<Prepared<'_>> {
+///
+/// The interner is shared between the two binaries, so a symbol means the same
+/// instruction on either side.
+fn prepare<'a>(binary: &'a Binary, interner: &mut Interner) -> Vec<Prepared<'a>> {
     let arch = binary.isa.arch();
     binary
         .functions
@@ -203,7 +246,13 @@ fn prepare(binary: &Binary) -> Vec<Prepared<'_>> {
             let (insns, _) = decode_all(&arch, &function.code, function.address);
             let printed =
                 insns.iter().map(|insn| (insn.mnemonic.clone(), insn.operands.clone())).collect();
-            Prepared { function, body: normalize_body(&insns), printed }
+            let body = normalize_body(&insns);
+
+            let mut symbols: Vec<Symbol> =
+                body.iter().map(|insn| interner.intern(insn.clone())).collect();
+            symbols.sort_unstable();
+
+            Prepared { function, body, symbols, printed }
         })
         .collect()
 }
@@ -215,9 +264,10 @@ pub fn diff(before: &Binary, after: &Binary) -> Diff {
 
 /// Compare two binaries.
 pub fn diff_with(before: &Binary, after: &Binary, options: Options) -> Diff {
+    let mut interner = Interner::default();
     let mut cascade = Cascade {
-        left: prepare(before),
-        right: prepare(after),
+        left: prepare(before, &mut interner),
+        right: prepare(after, &mut interner),
         left_free: vec![true; before.functions.len()],
         right_free: vec![true; after.functions.len()],
         matched: Vec::new(),
@@ -297,7 +347,13 @@ impl Cascade<'_> {
                 let best = added
                     .iter()
                     .map(|after| {
-                        (similarity(&self.left[*before].body, &self.right[*after].body), *after)
+                        (
+                            similarity_of_symbols(
+                                &self.left[*before].symbols,
+                                &self.right[*after].symbols,
+                            ),
+                            *after,
+                        )
                     })
                     .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
 
@@ -471,7 +527,8 @@ impl Cascade<'_> {
                 continue;
             }
 
-            let score = similarity(&self.left[index].body, &self.right[other].body);
+            let score =
+                similarity_of_symbols(&self.left[index].symbols, &self.right[other].symbols);
             self.take_pair(index, other, Confidence::SameName, score);
         }
     }
@@ -496,7 +553,8 @@ impl Cascade<'_> {
                 if !self.right_free[other] || self.right[other].body.is_empty() {
                     continue;
                 }
-                let score = similarity(&self.left[index].body, &self.right[other].body);
+                let score =
+                    similarity_of_symbols(&self.left[index].symbols, &self.right[other].symbols);
                 if score >= self.options.threshold {
                     candidates.push((score, index, other));
                 }
@@ -518,6 +576,38 @@ impl Cascade<'_> {
             }
         }
     }
+}
+
+/// Similarity of two bodies already reduced to sorted symbols.
+///
+/// The same Jaccard similarity that [`similarity`] computes, over the same
+/// multiset, but by walking two sorted lists rather than building a map. This
+/// runs once per candidate pair in the scoring stage, so it allocates nothing.
+fn similarity_of_symbols(left: &[Symbol], right: &[Symbol]) -> f64 {
+    if left.is_empty() && right.is_empty() {
+        return 1.0;
+    }
+
+    // Both sides are sorted, so one pass counts the shared instructions. Every
+    // instruction counts toward the combined total either way, so the combined
+    // count needs no separate walk.
+    let mut shared = 0usize;
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < left.len() && j < right.len() {
+        match left[i].cmp(&right[j]) {
+            core::cmp::Ordering::Less => i += 1,
+            core::cmp::Ordering::Greater => j += 1,
+            core::cmp::Ordering::Equal => {
+                shared += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+
+    // |A ∪ B| = |A| + |B| − |A ∩ B| for multisets, so the union needs no walk.
+    let combined = left.len() + right.len() - shared;
+    if combined == 0 { 0.0 } else { shared as f64 / combined as f64 }
 }
 
 /// Similarity of two normalized bodies, from 0.0 to 1.0.
@@ -725,6 +815,82 @@ mod tests {
 
         assert_eq!(diff.matched.len(), 1);
         assert!(diff.near_misses.is_empty(), "nothing went unmatched");
+    }
+
+    /// Reduce bodies to sorted symbols the way `prepare` does.
+    fn symbols_of(bodies: &[&[NormInsn]]) -> Vec<Vec<Symbol>> {
+        let mut interner = Interner::default();
+        bodies
+            .iter()
+            .map(|body| {
+                let mut symbols: Vec<Symbol> =
+                    body.iter().map(|insn| interner.intern(insn.clone())).collect();
+                symbols.sort_unstable();
+                symbols
+            })
+            .collect()
+    }
+
+    /// The fast path must agree with the one it replaced.
+    ///
+    /// `similarity` stays the public, obviously-correct definition. The scoring
+    /// stage uses `similarity_of_symbols` instead, for speed. Nothing in the
+    /// types stops those two drifting apart, so this checks them together.
+    #[test]
+    fn scoring_by_symbol_agrees_with_scoring_by_body() {
+        let cases: Vec<(Vec<NormInsn>, Vec<NormInsn>)> = vec![
+            // Identical.
+            (body(&[("add", "r0, r1, r2")]), body(&[("add", "r0, r1, r2")])),
+            // Nothing shared.
+            (body(&[("ldr", "r0, [r1]")]), body(&[("mul", "r0, r0, r1")])),
+            // Partly shared.
+            (
+                body(&[("add", "r0, r1, r2"), ("mul", "r0, r0, r1")]),
+                body(&[("add", "r0, r1, r2"), ("sub", "r0, r0, r1")]),
+            ),
+            // One side empty.
+            (Vec::new(), body(&[("add", "r0, r1, r2")])),
+            // Both empty.
+            (Vec::new(), Vec::new()),
+            // Repeats, where the multiset matters rather than the set.
+            (
+                body(&[("add", "r0, r1, r2"), ("add", "r0, r1, r2"), ("add", "r0, r1, r2")]),
+                body(&[("add", "r0, r1, r2")]),
+            ),
+            // The same instructions in a different order.
+            (
+                body(&[("add", "r0, r1, r2"), ("mul", "r0, r0, r1")]),
+                body(&[("mul", "r0, r0, r1"), ("add", "r0, r1, r2")]),
+            ),
+        ];
+
+        for (left, right) in &cases {
+            let symbols = symbols_of(&[left, right]);
+            let by_body = similarity(left, right);
+            let by_symbol = similarity_of_symbols(&symbols[0], &symbols[1]);
+            assert!(
+                (by_body - by_symbol).abs() < 1e-12,
+                "{left:?} against {right:?}: body gives {by_body}, symbols give {by_symbol}"
+            );
+        }
+    }
+
+    /// Two equal instructions must get one symbol, and unequal ones must not.
+    ///
+    /// Equality ignores constants on purpose, so the interner has to as well.
+    #[test]
+    fn equal_instructions_share_a_symbol() {
+        let mut interner = Interner::default();
+
+        let same_shape_other_constant = body(&[("mov", "r0, 0x1"), ("mov", "r0, 0x2")]);
+        let first = interner.intern(same_shape_other_constant[0].clone());
+        let second = interner.intern(same_shape_other_constant[1].clone());
+        assert_eq!(first, second, "constants stay out of equality, so out of the symbol");
+
+        let different = body(&[("ldr", "r0, [r1]")]);
+        let third = interner.intern(different[0].clone());
+        assert_ne!(first, third, "a different operation needs a different symbol");
+        assert_eq!(interner.len(), 2, "two distinct instructions were seen");
     }
 
     #[test]
