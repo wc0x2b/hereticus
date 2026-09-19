@@ -73,14 +73,28 @@ pub fn recover_functions<A: Arch>(data: &[u8], arch: &A) -> Vec<Recovered> {
         .filter_map(|section| section.data().ok().map(|data| (section.address(), data)))
         .collect();
 
-    if code_sections.is_empty() {
+    recover_from_regions(&code_sections, &exception_index_starts(&file), arch)
+}
+
+/// Find the functions in code that is already located.
+///
+/// This is the part of recovery that needs no container format. A raw firmware
+/// image is one region at whatever address it loads at, and has no exception
+/// index, so it comes through here with an empty `exception_index`.
+///
+/// Each region is an address and the bytes stored there. Returns the functions
+/// in address order, with empty names.
+pub fn recover_from_regions<A: Arch>(
+    regions: &[(u64, &[u8])],
+    exception_index: &[u64],
+    arch: &A,
+) -> Vec<Recovered> {
+    if regions.is_empty() {
         return Vec::new();
     }
 
     let mut starts: BTreeSet<(u64, Source)> = BTreeSet::new();
-
-    let exception_index = exception_index_starts(&file);
-    for address in &exception_index {
+    for address in exception_index {
         starts.insert((*address, Source::ExceptionIndex));
     }
 
@@ -88,26 +102,26 @@ pub fn recover_functions<A: Arch>(data: &[u8], arch: &A) -> Vec<Recovered> {
     // whole answer. Guessing on top of it only invents boundaries: an
     // internal `bx lr` would split one function into two.
     if !exception_index.is_empty() {
-        for (base, code) in &code_sections {
+        for (base, code) in regions {
             for address in call_targets(arch, code, *base) {
                 starts.insert((address, Source::CallTarget));
             }
         }
-        return build_functions(&starts, &code_sections);
+        return build_functions(&starts, regions);
     }
 
-    for (base, code) in &code_sections {
+    for (base, code) in regions {
         for address in call_targets(arch, code, *base) {
             starts.insert((address, Source::CallTarget));
         }
         for address in starts_after_returns(arch, code, *base) {
             starts.insert((address, Source::AfterReturn));
         }
-        // A section begins with a function unless something says otherwise.
+        // A region begins with a function unless something says otherwise.
         starts.insert((*base, Source::AfterReturn));
     }
 
-    build_functions(&starts, &code_sections)
+    build_functions(&starts, regions)
 }
 
 /// Turn a set of start addresses into functions that reach the next start.

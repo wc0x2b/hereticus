@@ -13,13 +13,60 @@ use bolero::check;
 
 use fndiff::arch::{Arch, DecodeError, InsnKind, arm32::Arm32, decode_all};
 use fndiff::norm::{normalize, normalize_body};
-use fndiff::obj::Binary;
+use fndiff::obj::{Binary, Isa};
+use fndiff::raw::check_base;
 
 /// Reading a file must never panic, whatever it holds.
 #[test]
 fn parsing_never_panics() {
     check!().with_type::<Vec<u8>>().for_each(|data| {
         let _ = Binary::parse(data);
+    });
+}
+
+/// Reading a raw image must never panic, at any base.
+///
+/// A firmware image is bytes with no header to sanity check, and the base
+/// comes from a person who may have it wrong. Both are fully controlled by
+/// whoever supplies them, so this is the widest attack surface the crate has.
+#[test]
+fn reading_a_raw_image_never_panics() {
+    check!().with_type::<(Vec<u8>, u64)>().for_each(|(data, base)| {
+        let _ = Binary::parse_raw(data, *base, Isa::Arm32);
+    });
+}
+
+/// Checking a load address must never panic, including near the top of the
+/// address range where the image would wrap.
+#[test]
+fn checking_a_base_never_panics() {
+    check!().with_type::<(Vec<u8>, u64)>().for_each(|(data, base)| {
+        let _ = check_base(data, *base);
+    });
+}
+
+/// Where an image loads must not change how many functions are found.
+///
+/// Recovery works from the code, and the code does not change when the base
+/// does. A difference here would mean an address calculation had overflowed or
+/// wrapped.
+#[test]
+fn the_base_does_not_change_what_is_recovered() {
+    check!().with_type::<Vec<u8>>().for_each(|data| {
+        let low = Binary::parse_raw(data, 0, Isa::Arm32);
+        let high = Binary::parse_raw(data, 0x0800_0000, Isa::Arm32);
+
+        match (low, high) {
+            (Ok(low), Ok(high)) => {
+                assert_eq!(
+                    low.functions.len(),
+                    high.functions.len(),
+                    "the base changed how many functions were found"
+                );
+            }
+            (Err(_), Err(_)) => {}
+            _ => panic!("the base decided whether the image could be read at all"),
+        }
     });
 }
 

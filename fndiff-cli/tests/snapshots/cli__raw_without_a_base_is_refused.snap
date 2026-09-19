@@ -1,0 +1,15 @@
+---
+source: fndiff-cli/tests/cli.rs
+info:
+  program: fndiff
+  args:
+    - "--raw"
+    - fixtures/build/raw/O2-basic.bin
+    - fixtures/build/raw/O2-basic_v2.bin
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+fndiff: --raw needs --base, because a raw image does not say where it loads

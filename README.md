@@ -56,6 +56,7 @@ sub_90    changed          0.84  similar
 | Function matching | Works |
 | Command line tool | Works |
 | Function recovery without symbols | Works |
+| Raw images with no container format | Works, with `--base` |
 
 ## Use
 
@@ -65,6 +66,9 @@ fndiff --all before.o after.o        # every function
 fndiff --ignore-names a.o b.o        # match from the code alone
 fndiff --format compact a.o b.o      # tab separated, for scripts
 fndiff --exit-code a.o b.o           # exit 1 when anything changed
+
+# A firmware image dumped from flash, with no ELF header
+fndiff --raw --base 0x08000000 v1.bin v2.bin
 ```
 
 Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
@@ -86,6 +90,40 @@ which is too close to separate. Closing that gap needs semantic comparison,
 which is separate work.
 
 This matters less than it sounds: shipped firmware is built optimized.
+
+## Raw firmware images
+
+A flash dump has no ELF header, so nothing in the file says what architecture
+it holds or where it loads. `--raw` takes the code as it is and `--base` says
+where it sits:
+
+```console
+$ fndiff --raw --base 0x08000000 v1.bin v2.bin
+```
+
+Two things are worse than with an object file, and both are reported rather
+than hidden.
+
+**Boundaries are approximate.** A raw image has no exception index, so
+functions are recovered from call targets and from the code after a return.
+That finds every real function and also splits some at an internal return: the
+test corpus recovers 16 starts where there are 8 functions. Matching still
+works, because each piece matches its counterpart, but the function count is
+not a fact.
+
+**A wrong `--base` is nearly silent.** ARM branches are relative, so the code
+decodes and every branch resolves whatever base you give. Only the reported
+addresses are wrong. `fndiff` warns when the image holds stored addresses that
+do not fit:
+
+```
+fndiff: v1.bin may not load at 0x8000400: 4 words look like addresses,
+        but none point into the image at this base
+```
+
+It stays quiet when the image holds no stored addresses at all, which is
+normal for small position-independent code. Silence means "cannot tell", not
+"looks right".
 
 ## Using this on firmware
 
@@ -117,8 +155,11 @@ normalizing.
   stripping, and every fixture carries one. Without it the scan falls back to
   call targets and to the code after a return, which finds every real function
   but also splits some at internal returns.
-* **ARM32 only.** AArch64 is the next architecture. The `Arch` trait exists so
-  that adding one does not disturb the normalizer or the matcher.
+* **ARM32 little-endian A32 only.** Thumb is not decoded. A Thumb or
+  mixed-mode image reads as nonsense with no warning, which matters most for
+  raw images, where nothing declares the instruction set. AArch64 is the next
+  architecture; the `Arch` trait exists so adding one does not disturb the
+  normalizer or the matcher.
 
 ## Design
 
@@ -173,7 +214,7 @@ would split one function into two.
 ## Testing
 
 ```
-just quick-test   # 126 tests, about four seconds
+just quick-test   # 149 tests, about five seconds
 just test         # the same, plus slow tests
 just fixtures     # rebuild the ARM32 corpus
 just fuzz <name>  # one property test under a fuzzer, needs nightly

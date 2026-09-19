@@ -59,6 +59,16 @@ impl Isa {
         }
     }
 
+    /// The shortest instruction this architecture has, in bytes.
+    ///
+    /// Used to refuse an image too short to hold one. A32 is fixed at four;
+    /// an architecture with variable width would report its minimum.
+    pub fn instruction_width(self) -> usize {
+        match self {
+            Self::Arm32 => 4,
+        }
+    }
+
     fn from_object(arch: object::Architecture) -> Option<Self> {
         match arch {
             object::Architecture::Arm => Some(Self::Arm32),
@@ -147,6 +157,42 @@ impl Binary {
         }
 
         Ok(Self { isa, functions: scanned, found_by: FoundBy::Scanning })
+    }
+
+    /// Read a blob that carries no container format.
+    ///
+    /// A flash dump is bytes and nothing else. There is no header to say what
+    /// architecture the code is for, and no section table to say where it
+    /// loads, so the caller states both.
+    ///
+    /// The whole blob is treated as code. Data mixed into it decodes as
+    /// instructions, which is wrong but harmless: those words become opaque or
+    /// meaningless entries that the matcher compares by content, so they
+    /// affect one function's score rather than derailing the comparison.
+    ///
+    /// Boundaries are less reliable than in an object file. A raw image has no
+    /// exception index, so recovery falls back to call targets and to the code
+    /// after a return, which splits some functions at an internal return. See
+    /// [`crate::scan`].
+    pub fn parse_raw(data: &[u8], base: u64, isa: Isa) -> Result<Self, ObjError> {
+        // Too short to hold one instruction. Without this the scanner reports
+        // a "function" of two or three bytes that can never decode.
+        if data.len() < isa.instruction_width() {
+            return Err(ObjError::NoCode);
+        }
+
+        let regions = [(base, data)];
+        let functions: Vec<Function> =
+            crate::scan::recover_from_regions(&regions, &[], &isa.arch())
+                .into_iter()
+                .map(|found| found.function)
+                .collect();
+
+        if functions.is_empty() {
+            return Err(ObjError::NoFunctions);
+        }
+
+        Ok(Self { isa, functions, found_by: FoundBy::Scanning })
     }
 }
 

@@ -8,7 +8,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
 use fndiff::matching::{Changed, Confidence, Diff, Match, Options, UseNames, diff_with};
-use fndiff::obj::Binary;
+use fndiff::obj::{Binary, Isa};
+use fndiff::raw::check_base;
 
 /// Compare two binaries and report the functions that changed.
 #[derive(Parser, Debug)]
@@ -49,9 +50,53 @@ struct Args {
     #[arg(long, default_value_t = 0.25, value_parser = parse_threshold)]
     near_miss: f64,
 
+    /// Read the inputs as raw code with no container format.
+    ///
+    /// For a firmware image dumped from flash, which has no ELF header. Needs
+    /// `--base`, because nothing in the file says where it loads.
+    #[arg(long)]
+    raw: bool,
+
+    /// Address a raw image loads at, for example `0x08000000`.
+    ///
+    /// Required with `--raw`. Branch targets and reported addresses are all
+    /// relative to this, so a wrong value produces a report against the wrong
+    /// addresses.
+    #[arg(long, value_parser = parse_address, requires = "raw")]
+    base: Option<u64>,
+
+    /// Architecture of a raw image.
+    #[arg(long, value_enum, default_value_t = ArchName::Arm32, requires = "raw")]
+    arch: ArchName,
+
     /// How to print the result.
     #[arg(long, value_enum, default_value_t = Format::Text)]
     format: Format,
+}
+
+/// The architectures a raw image can be read as.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum ArchName {
+    /// ARM32, little endian, A32 instructions. Thumb is not supported.
+    Arm32,
+}
+
+impl From<ArchName> for Isa {
+    fn from(name: ArchName) -> Self {
+        match name {
+            ArchName::Arm32 => Self::Arm32,
+        }
+    }
+}
+
+/// Read a load address, in hex with `0x` or in decimal.
+fn parse_address(text: &str) -> Result<u64, String> {
+    let text = text.trim();
+    let parsed = match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => text.parse::<u64>(),
+    };
+    parsed.map_err(|_| format!("`{text}` is not an address"))
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -94,8 +139,29 @@ fn run(args: &Args) -> Result<bool, String> {
     let before_bytes = read_file(&args.before)?;
     let after_bytes = read_file(&args.after)?;
 
-    let before = parse(&before_bytes, &args.before)?;
-    let after = parse(&after_bytes, &args.after)?;
+    let (before, after) = if args.raw {
+        let base = args
+            .base
+            .ok_or("--raw needs --base, because a raw image does not say where it loads")?;
+
+        check_and_report_base(&before_bytes, base, &args.before);
+        // Comparing a file with itself is a normal way to inspect one image,
+        // and saying the same thing twice about it helps nobody.
+        if args.after != args.before {
+            check_and_report_base(&after_bytes, base, &args.after);
+        }
+        eprintln!(
+            "fndiff: a raw image has no exception index, so function boundaries \
+             are recovered from the code and are approximate"
+        );
+
+        (
+            parse_raw(&before_bytes, base, args.arch.into(), &args.before)?,
+            parse_raw(&after_bytes, base, args.arch.into(), &args.after)?,
+        )
+    } else {
+        (parse(&before_bytes, &args.before)?, parse(&after_bytes, &args.after)?)
+    };
 
     if before.isa != after.isa {
         return Err(format!(
@@ -124,6 +190,23 @@ fn read_file(path: &Path) -> Result<Vec<u8>, String> {
 
 fn parse(data: &[u8], path: &Path) -> Result<Binary, String> {
     Binary::parse(data).map_err(|error| format!("cannot read {}: {error}", path.display()))
+}
+
+fn parse_raw(data: &[u8], base: u64, isa: Isa, path: &Path) -> Result<Binary, String> {
+    Binary::parse_raw(data, base, isa)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))
+}
+
+/// Warn when the given load address looks wrong for an image.
+///
+/// A wrong base does not stop anything: the code still decodes and every
+/// branch still resolves, because ARM branches are relative. Only the reported
+/// addresses are wrong, and silently so. This is the one chance to notice.
+fn check_and_report_base(data: &[u8], base: u64, path: &Path) {
+    let fit = check_base(data, base);
+    if fit.is_suspect() {
+        eprintln!("fndiff: {} may not load at {base:#x}: {fit}", path.display());
+    }
 }
 
 /// Name a function, falling back to its address when it has no symbol.

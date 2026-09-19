@@ -114,6 +114,50 @@ fn near_miss_floor_controls_what_is_shown() {
     ]));
 }
 
+/// A firmware image with no container format.
+#[test]
+fn compares_raw_images() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(fndiff().args([
+        "--raw",
+        "--base",
+        "0x0",
+        "fixtures/build/raw/O2-basic.bin",
+        "fixtures/build/raw/O2-basic_v2.bin",
+    ]));
+}
+
+/// A raw image needs a load address, and there is no safe default.
+#[test]
+fn raw_without_a_base_is_refused() {
+    assert_cmd_snapshot!(fndiff().args([
+        "--raw",
+        "fixtures/build/raw/O2-basic.bin",
+        "fixtures/build/raw/O2-basic_v2.bin",
+    ]));
+}
+
+/// A base that is wrong by a little is worth saying so about.
+#[test]
+fn warns_about_a_base_that_looks_wrong() {
+    if !Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/raw/vectors.bin").exists() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(fndiff().args([
+        "--raw",
+        "--base",
+        "0x08000400",
+        "fixtures/build/raw/vectors.bin",
+        "fixtures/build/raw/vectors.bin",
+    ]));
+}
+
 #[test]
 fn explains_a_file_it_cannot_find() {
     assert_cmd_snapshot!(fndiff().args(["does-not-exist.o", "fixtures/build/O2/basic.o"]));

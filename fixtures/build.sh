@@ -11,6 +11,10 @@ src="$here/src"
 build="$here/build"
 target="arm-linux-gnueabi"
 
+# Where the vector-table fixture is linked. Tests check the load-address
+# check against this exact value, so the two must agree.
+VECTOR_BASE="0x08000000"
+
 if ! command -v clang >/dev/null 2>&1; then
     echo "fixtures: clang not found, cannot build ARM32 fixtures" >&2
     exit 1
@@ -54,9 +58,36 @@ if [ -n "$strip_tool" ]; then
         mkdir -p "$build/bare"
         llvm-objcopy --remove-section=.ARM.exidx --remove-section=.ARM.extab \
             "$build/O2-stripped/basic.o" "$build/bare/basic.o"
+
+        # Raw images: the code with no container at all, as a flash dump is.
+        # The symbol table of the object they came from is the answer.
+        mkdir -p "$build/raw"
+        for opt in O1 O2 Os; do
+            for source in "$src"/*.c; do
+                name="$(basename "$source" .c)"
+                llvm-objcopy -O binary --only-section=.text \
+                    "$build/$opt/$name.o" "$build/raw/$opt-$name.bin"
+            done
+        done
     fi
 else
     echo "fixtures: no strip tool found, skipping the stripped copies" >&2
 fi
 
-echo "fixtures: built $(find "$build" -name '*.o' | wc -l) objects in $build"
+# The vector table is the only fixture holding absolute addresses, so it is
+# the only one that can exercise the load-address check. It must be linked,
+# not just assembled, for those addresses to be real.
+if command -v ld.lld >/dev/null 2>&1 && command -v llvm-objcopy >/dev/null 2>&1; then
+    mkdir -p "$build/raw"
+    clang --target="$target" -march=armv7-a -marm \
+        -c "$src/vectors.s" -o "$build/raw/vectors.o"
+    ld.lld -Ttext="$VECTOR_BASE" -e _start --no-dynamic-linker \
+        "$build/raw/vectors.o" -o "$build/raw/vectors.elf"
+    llvm-objcopy -O binary "$build/raw/vectors.elf" "$build/raw/vectors.bin"
+    rm -f "$build/raw/vectors.o"
+    echo "fixtures: vector table linked at $VECTOR_BASE"
+else
+    echo "fixtures: no ld.lld, skipping the vector table" >&2
+fi
+
+echo "fixtures: built $(find "$build" -name '*.o' -o -name '*.bin' | wc -l) files in $build"
