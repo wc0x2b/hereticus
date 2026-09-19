@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use crate::arch::decode_all;
-use crate::norm::{NormInsn, normalize_body};
+use crate::norm::{NormInsn, normalize_body, normalize_operation};
 use crate::obj::{Binary, Function};
 
 /// How confident a pairing is, and what justified it.
@@ -171,6 +171,13 @@ impl Default for Options {
 struct Prepared<'a> {
     function: &'a Function,
     body: Vec<NormInsn>,
+    /// Each instruction as decoded, before normalizing: the operation and its
+    /// operands.
+    ///
+    /// Normalizing throws away detail on purpose, which is what lets a
+    /// function match itself across builds. Telling a changed register from a
+    /// changed word of data needs that detail back, so it is kept here.
+    printed: Vec<(String, String)>,
 }
 
 impl Prepared<'_> {
@@ -194,7 +201,9 @@ fn prepare(binary: &Binary) -> Vec<Prepared<'_>> {
         .iter()
         .map(|function| {
             let (insns, _) = decode_all(&arch, &function.code, function.address);
-            Prepared { function, body: normalize_body(&insns) }
+            let printed =
+                insns.iter().map(|insn| (insn.mnemonic.clone(), insn.operands.clone())).collect();
+            Prepared { function, body: normalize_body(&insns), printed }
         })
         .collect()
 }
@@ -301,6 +310,46 @@ impl Cascade<'_> {
     }
 }
 
+/// Report whether two bodies differ only in which registers they name.
+///
+/// Both sides already normalize alike, so this decides whether the bytes
+/// behind them differ for a reason a reader should hear about. It compares the
+/// instructions as printed: register names are allowed to differ, anything
+/// else is a real difference.
+///
+/// A word of data among the instructions fails this check, which is the point.
+/// It decodes as some instruction, and when its bits change it usually becomes
+/// a *different* instruction rather than the same one with another register.
+fn differs_only_in_registers(before: &Prepared<'_>, after: &Prepared<'_>) -> bool {
+    if before.printed.len() != after.printed.len() {
+        return false;
+    }
+
+    before.printed.iter().zip(&after.printed).all(|(left, right)| {
+        // Compare the operation the way the normalizer does, so a condition
+        // code the compiler chose differently — `movwlt` against `movwlo` —
+        // stays the free choice it is rather than reading as an edit.
+        normalize_operation(&left.0) == normalize_operation(&right.0)
+            && operands_differ_only_by_register(&left.1, &right.1)
+    })
+}
+
+/// Compare two operand lists, allowing register names to differ.
+fn operands_differ_only_by_register(left: &str, right: &str) -> bool {
+    let left = left.split(',').map(str::trim);
+    let right = right.split(',').map(str::trim);
+
+    left.zip(right).all(|(a, b)| a == b || (is_register_name(a) && is_register_name(b)))
+}
+
+/// Report whether an operand is a bare register name.
+fn is_register_name(operand: &str) -> bool {
+    matches!(operand, "sp" | "lr" | "pc" | "fp" | "ip" | "sl")
+        || operand
+            .strip_prefix('r')
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Work out whether a matched pair differs.
 ///
 /// The order of these checks runs from cheapest and most certain to least.
@@ -310,10 +359,24 @@ fn classify_change(before: &Prepared<'_>, after: &Prepared<'_>) -> Changed {
     }
 
     if before.same_shape_as(after) {
-        return if before.same_detail_as(after) {
-            // The instructions and their constants agree, so what differs is
-            // something normalizing hides on purpose, such as a register
-            // choice or a branch address.
+        if !before.same_detail_as(after) {
+            return Changed::InDetail;
+        }
+
+        // The instructions and their constants agree, yet the bytes do not.
+        // Two very different things look like this:
+        //
+        // * A register or a branch address changed, which normalizing hides
+        //   on purpose because a compiler picks those freely.
+        // * A word of **data** changed. Data stored among instructions
+        //   decodes as one, and normalizing then buckets its operands and
+        //   loses the difference. Measured on a vendor kernel image, the
+        //   stored kernel size `0x2b08a8` decoded as `eoreq r0, fp, r8, lsr
+        //   17` and its change to `0x2b3c48` vanished entirely.
+        //
+        // Saying "unchanged" about bytes that differ is the one answer this
+        // tool must never give, so the second case is reported.
+        return if differs_only_in_registers(before, after) {
             Changed::No
         } else {
             Changed::InDetail
@@ -545,6 +608,53 @@ mod tests {
 
         assert_eq!(original_sorted, moved_sorted, "the same instructions, moved");
         assert_ne!(original_sorted, edited_sorted, "a replaced instruction is a real change");
+    }
+
+    /// A changed word of data must not be reported as unchanged.
+    ///
+    /// Data stored among instructions decodes as one, so normalizing buckets
+    /// its operands and loses the difference. Measured on a vendor kernel
+    /// image: the stored kernel size `0x2b08a8` decoded as
+    /// `eoreq r0, fp, r8, lsr 17`, and when the next release changed it to
+    /// `0x2b3c48` the function was called unchanged. Three of eleven real
+    /// changes were missed that way.
+    #[test]
+    fn a_changed_data_word_is_not_called_unchanged() {
+        // The two encodings of that kernel size field, as they decode.
+        let before = [("eoreq".to_string(), "r0, fp, r8, lsr 17".to_string())];
+        let after = [("eoreq".to_string(), "r3, fp, r8, asr 24".to_string())];
+
+        assert!(
+            !operands_differ_only_by_register(&before[0].1, &after[0].1),
+            "a shift that changed is not a register that changed"
+        );
+    }
+
+    /// A register the compiler picked differently is not an edit.
+    #[test]
+    fn a_changed_register_is_not_a_change() {
+        assert!(operands_differ_only_by_register("r0, r1, r2", "r4, r5, r6"));
+        assert!(operands_differ_only_by_register("r0, fp, r8", "r3, fp, r8"));
+    }
+
+    /// A condition code is the compiler's choice, not an edit.
+    ///
+    /// `movwlt` against `movwlo` is signed against unsigned less-than. Both
+    /// appear for the same source at different optimization levels, and
+    /// reporting it as a change cried wolf on the test corpus.
+    #[test]
+    fn a_changed_condition_is_not_a_change() {
+        assert_eq!(normalize_operation("movwlt"), normalize_operation("movwlo"));
+    }
+
+    #[test]
+    fn a_register_name_is_recognized() {
+        for name in ["r0", "r12", "sp", "lr", "pc", "fp"] {
+            assert!(is_register_name(name), "{name} is a register");
+        }
+        for other in ["0x1c", "[sp, 0x4]", "{r4, lr}", "lsr 17", ""] {
+            assert!(!is_register_name(other), "{other} is not a register");
+        }
     }
 
     #[test]

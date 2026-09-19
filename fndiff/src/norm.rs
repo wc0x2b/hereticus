@@ -286,9 +286,12 @@ fn mentions_stack_slot(operands: &str) -> bool {
 
 /// Strip the flag-setting suffix and the condition from a mnemonic.
 ///
+/// Public because telling a changed register from a changed word of data
+/// needs to compare operations the same way matching does.
+///
 /// A compiler picks between `add` and `adds`, and between a branch and a
 /// conditional move, for reasons that do not change what the code computes.
-fn normalize_operation(mnemonic: &str) -> String {
+pub fn normalize_operation(mnemonic: &str) -> String {
     const CONDITIONS: [&str; 17] = [
         "eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al",
         "lo", "hs",

@@ -125,6 +125,47 @@ It stays quiet when the image holds no stored addresses at all, which is
 normal for small position-independent code. Silence means "cannot tell", not
 "looks right".
 
+## Tried on shipped vendor firmware
+
+Two OpenWrt releases for the same device — 22.03.2 and 22.03.5 for the Netgear
+EX6100v2, an ipq40xx (ARMv7) target. These are the images a user flashes: a
+vendor header, a FIT image holding an uncompressed ARM kernel, then a squashfs
+root. The kernel declares its own load address, `0x80208000`.
+
+A byte comparison is useless here — 6.8 MB of 6.8 MB differs, because the
+squashfs is compressed. The uncompressed ARM decompressor stub is 15 KB of real
+shipped code with no symbols and no exception index, and 43 of its 15,120 bytes
+changed between the two releases.
+
+```console
+$ fndiff --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
+FUNCTION      CHANGE          SCORE  MATCHED BY
+sub_8020a8f8  changed          1.00  similar
+sub_80208f14  changed          0.91  similar
+...
+149 matched, 11 changed
+```
+
+Scored against the byte-level truth:
+
+| | |
+|---|---|
+| Functions recovered | 149 |
+| Functions holding a changed byte | 11 |
+| Reported | 11 |
+| **Precision** | **1.00** |
+| **Recall** | **1.00** |
+
+Every function that changed was found, and nothing else was reported.
+
+That was not the first answer. The first run scored 1.00 precision but only
+0.73 recall, missing three functions whose only change was a word of **data**
+stored among the instructions. Data decodes as some instruction — the stored
+kernel size `0x2b08a8` decodes as `eoreq r0, fp, r8, lsr 17` — and normalizing
+then bucketed its operands and lost the difference. Calling byte-different code
+unchanged is the one answer this tool must never give, so `classify_change` now
+checks whether the difference is really just a register before it says no.
+
 ## Tried on a real kernel patch
 
 The fixtures are small and written for the tests, so `fndiff` was also run
@@ -255,7 +296,7 @@ would split one function into two.
 ## Testing
 
 ```
-just quick-test   # 149 tests, about five seconds
+just quick-test   # 153 tests, about five seconds
 just test         # the same, plus slow tests
 just fixtures     # rebuild the ARM32 corpus
 just fuzz <name>  # one property test under a fuzzer, needs nightly
