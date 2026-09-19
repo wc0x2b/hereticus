@@ -20,5 +20,8 @@ yaxpeax-arch = "0.3"
 yaxpeax-arm = "0.4"
 
 [dev-dependencies]
+# One test body runs as a plain property test on stable, and under a
+# coverage-guided fuzzer when one is available.
+bolero = { version = "0.13", features = ["arbitrary"] }
 insta = "1.48"
 rstest = "0.27"
