@@ -7,6 +7,7 @@ info:
     - compact
     - fixtures/build/O2/basic.o
     - fixtures/build/O2/basic_v2.o
+snapshot_kind: text
 ---
 success: true
 exit_code: 0
@@ -14,6 +15,6 @@ exit_code: 0
 changed values	mul_by_constant	mul_by_constant	1.00
 changed values	classify	classify	1.00
 changed values	call_chain	call_chain	1.00
-changed	array_max	array_min	0.84
+changed unread	array_max	array_min	0.84
 
 ----- stderr -----

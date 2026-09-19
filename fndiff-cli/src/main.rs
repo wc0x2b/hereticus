@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use clap::{Parser, ValueEnum};
 use console::Term;
 use fndiff::matching::{
-    Changed, Confidence, Diff, Match, Options, Phase, Progress, UseNames, diff_reporting,
+    Changed, Confidence, Diff, Edits, Match, Options, Phase, Progress, UseNames, diff_reporting,
 };
 use fndiff::obj::{Binary, Isa};
 use fndiff::raw::check_base;
@@ -297,6 +297,7 @@ fn describe(change: Changed) -> &'static str {
         Changed::No => "same",
         Changed::Reordered => "reordered",
         Changed::InDetail => "changed values",
+        Changed::Unreadable => "changed unread",
         Changed::Yes => "changed",
     }
 }
@@ -442,7 +443,9 @@ mod tests {
 
     #[test]
     fn every_change_has_a_description() {
-        for change in [Changed::No, Changed::Reordered, Changed::InDetail, Changed::Yes] {
+        for change in
+            [Changed::No, Changed::Reordered, Changed::InDetail, Changed::Unreadable, Changed::Yes]
+        {
             assert!(!describe(change).is_empty());
         }
     }
@@ -456,11 +459,13 @@ mod tests {
             confidence: Confidence::IdenticalCode,
             score: 1.0,
             changed,
+            edits: Edits::default(),
         };
 
         assert!(!is_interesting(&pair(Changed::No)));
         assert!(is_interesting(&pair(Changed::Reordered)));
         assert!(is_interesting(&pair(Changed::InDetail)));
+        assert!(is_interesting(&pair(Changed::Unreadable)));
         assert!(is_interesting(&pair(Changed::Yes)));
     }
 }

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 
 use crate::arch::{InsnKind, decode_all};
-use crate::norm::{NormInsn, normalize_body, normalize_operation};
+use crate::norm::{FlowShape, NormInsn, normalize_body, normalize_operation};
 use crate::obj::{Binary, Function};
 
 /// How confident a pairing is, and what justified it.
@@ -60,6 +60,38 @@ pub struct Match {
     pub score: f64,
     /// Whether the pair differs in any way a reader would care about.
     pub changed: Changed,
+    /// How many instructions the edit added, removed and rewrote.
+    pub edits: Edits,
+}
+
+/// The size of an edit, in normalized instructions.
+///
+/// The score says how alike two functions are; this says how much work the
+/// difference amounts to. A function at 0.98 that rewrote forty instructions
+/// deserves a reader's attention before one at 0.98 that rewrote one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Edits {
+    /// Instructions the later build has and the earlier one does not.
+    pub added: usize,
+    /// Instructions the earlier build has and the later one does not.
+    pub removed: usize,
+    /// Instructions present in both, in the same place, that differ.
+    pub edited: usize,
+}
+
+impl Edits {
+    /// Report whether the two bodies are the same size.
+    ///
+    /// A function that only rewrote instructions kept its length, which is a
+    /// different kind of edit from one that grew or shrank.
+    pub fn same_length(self) -> bool {
+        self.added == 0 && self.removed == 0
+    }
+
+    /// How many instructions the edit touched in total.
+    pub fn total(self) -> usize {
+        self.added + self.removed + self.edited
+    }
 }
 
 /// Whether a matched pair differs, and how.
@@ -69,7 +101,8 @@ pub struct Match {
 /// different constants.
 ///
 /// The variants rise in how much a reader should care, so
-/// `Changed::No < Changed::Reordered < Changed::InDetail < Changed::Yes`.
+/// `Changed::No < Changed::Reordered < Changed::InDetail < Changed::Unreadable
+/// < Changed::Yes`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Changed {
     /// Nothing a reader would call a change.
@@ -87,6 +120,21 @@ pub enum Changed {
     ///
     /// This is the shape a changed threshold or a changed magic number takes.
     InDetail,
+    /// The difference sits in bytes the decoder cannot read.
+    ///
+    /// Two unrelated things produce this, and nothing local tells them apart:
+    /// a word of **data** stored among the code, and an **instruction** from
+    /// an extension the decoder does not implement. Measured on the test
+    /// corpus, `array_max` rewritten as `array_min` differs in three opaque
+    /// words of NEON, which is the same shape a changed table entry takes.
+    ///
+    /// So this variant claims only what it can prove: the bytes differ, and
+    /// the tool cannot say what they mean. A reader who needs to know must
+    /// open a disassembler. Saying that plainly is worth a variant, because
+    /// 1039 of the 5650 differing functions in a measured kernel
+    /// pair are in this position and were previously indistinguishable from
+    /// the 1513 that hold a readable edit.
+    Unreadable,
     /// The instructions themselves differ.
     Yes,
 }
@@ -419,12 +467,14 @@ impl Cascade<'_> {
     fn take_pair(&mut self, before: usize, after: usize, confidence: Confidence, score: f64) {
         self.left_free[before] = false;
         self.right_free[after] = false;
+        let (left, right) = (&self.left[before], &self.right[after]);
         self.matched.push(Match {
             before,
             after,
             confidence,
             score,
-            changed: classify_change(&self.left[before], &self.right[after]),
+            changed: classify_change(left, right),
+            edits: count_edits(left, right),
         });
     }
 
@@ -610,7 +660,58 @@ fn classify_change(before: &Prepared<'_>, after: &Prepared<'_>) -> Changed {
     before_sorted.sort();
     after_sorted.sort();
 
-    if before_sorted == after_sorted { Changed::Reordered } else { Changed::Yes }
+    if before_sorted == after_sorted {
+        return Changed::Reordered;
+    }
+
+    if differs_only_where_unreadable(before, after) { Changed::Unreadable } else { Changed::Yes }
+}
+
+/// Report whether every difference sits in bytes the decoder cannot read.
+///
+/// Such a difference is real — the bytes differ — but the tool cannot say
+/// whether it edited an instruction or a word of data stored among the code.
+/// Separating it from a readable edit lets a reader spend attention where the
+/// tool has something to show.
+///
+/// Bodies of different length never qualify. An edit that added or removed an
+/// instruction changed the code, whatever else it touched.
+fn differs_only_where_unreadable(before: &Prepared<'_>, after: &Prepared<'_>) -> bool {
+    if before.body.len() != after.body.len() {
+        return false;
+    }
+
+    let mut differs = false;
+    for (left, right) in before.body.iter().zip(&after.body) {
+        if left == right {
+            continue;
+        }
+        differs = true;
+        if left.flow != FlowShape::Opaque && right.flow != FlowShape::Opaque {
+            return false;
+        }
+    }
+
+    differs
+}
+
+/// Count how many instructions an edit added, removed and rewrote.
+///
+/// Length gives the added and removed counts: normalizing keeps one entry per
+/// instruction, so a body that grew by eight entries gained eight
+/// instructions. The rewritten count compares the overlap position by
+/// position, which suits a compiler that edits in place far better than it
+/// suits one that inserted a line near the top. It is therefore a lower bound
+/// on how much moved, and an exact count of how much differs.
+fn count_edits(before: &Prepared<'_>, after: &Prepared<'_>) -> Edits {
+    let (left, right) = (&before.body, &after.body);
+    let edited = left.iter().zip(right).filter(|(a, b)| a != b).count();
+
+    Edits {
+        added: right.len().saturating_sub(left.len()),
+        removed: left.len().saturating_sub(right.len()),
+        edited,
+    }
 }
 
 impl Cascade<'_> {
@@ -962,6 +1063,94 @@ mod tests {
     fn a_reordering_still_counts_as_a_change_to_report() {
         assert!(Changed::Reordered > Changed::No);
         assert!(Changed::Yes > Changed::InDetail);
+        assert!(Changed::Unreadable > Changed::InDetail);
+        assert!(Changed::Yes > Changed::Unreadable);
+    }
+
+    /// `(unknown) 0xf26206e0` then `bx lr`, as NEON decodes.
+    const OPAQUE_WORD: &[u8] = &[0xe0, 0x06, 0x62, 0xf2, 0x1e, 0xff, 0x2f, 0xe1];
+    /// The same word changed: `(unknown) 0xf26206f0`.
+    const OPAQUE_WORD_EDITED: &[u8] = &[0xf0, 0x06, 0x62, 0xf2, 0x1e, 0xff, 0x2f, 0xe1];
+    /// `sub r0, r1, r0` then `bx lr`, which the decoder reads.
+    const SUB_THEN_RETURN: &[u8] = &[0x00, 0x00, 0x41, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+
+    /// A difference the decoder cannot read is reported as exactly that.
+    ///
+    /// Two opaque words that differ share no instruction but the return, so
+    /// pairing them needs a permissive threshold. What the pair is called
+    /// once it exists is the point here.
+    #[test]
+    fn an_unreadable_difference_is_told_apart_from_an_edit() {
+        let before = binary_of(&[("f", OPAQUE_WORD)]);
+        let after = binary_of(&[("f", OPAQUE_WORD_EDITED)]);
+        let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
+        let pair = diff.matched.first().expect("a threshold of zero pairs anything");
+        assert_eq!(pair.changed, Changed::Unreadable);
+    }
+
+    /// A difference in readable code stays a plain change, so the new variant
+    /// does not swallow the edits a reader came for.
+    ///
+    /// These two share only their return, so pairing them needs a threshold
+    /// low enough to accept a weak match. The classification under test runs
+    /// once a pair exists, whatever justified it.
+    #[test]
+    fn a_readable_edit_is_not_called_unreadable() {
+        let before = binary_of(&[("f", ADD_THEN_RETURN)]);
+        let after = binary_of(&[("f", SUB_THEN_RETURN)]);
+        let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
+        let pair = diff.matched.first().expect("a threshold of zero pairs anything");
+        assert_eq!(pair.changed, Changed::Yes);
+    }
+
+    /// Counting an edit that rewrote one instruction in place.
+    #[test]
+    fn an_edit_counts_the_instructions_it_rewrote() {
+        let edits = edits_between(ADD_THEN_RETURN, SUB_THEN_RETURN);
+        assert_eq!(edits, Edits { added: 0, removed: 0, edited: 1 });
+        assert!(edits.same_length(), "nothing was added or removed");
+        assert_eq!(edits.total(), 1);
+    }
+
+    /// An edit that grew the function counts what it added.
+    #[test]
+    fn an_edit_counts_the_instructions_it_added() {
+        // `add` then `add` then `bx lr`, against `add` then `bx lr`.
+        let longer: &[u8] =
+            &[0x00, 0x00, 0x81, 0xe0, 0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+        let edits = edits_between(ADD_THEN_RETURN, longer);
+        assert_eq!(edits.added, 1, "one instruction appeared");
+        assert_eq!(edits.removed, 0);
+        assert!(!edits.same_length());
+    }
+
+    /// The same comparison reversed must report a removal, not an addition.
+    #[test]
+    fn an_edit_counts_the_instructions_it_removed() {
+        let longer: &[u8] =
+            &[0x00, 0x00, 0x81, 0xe0, 0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+        let edits = edits_between(longer, ADD_THEN_RETURN);
+        assert_eq!(edits.removed, 1, "one instruction went away");
+        assert_eq!(edits.added, 0);
+    }
+
+    /// A function compared with itself has nothing to count.
+    #[test]
+    fn an_unedited_function_counts_no_edits() {
+        let edits = edits_between(ADD_THEN_RETURN, ADD_THEN_RETURN);
+        assert_eq!(edits, Edits::default());
+        assert_eq!(edits.total(), 0);
+    }
+
+    /// Count the edits between two one-function images.
+    ///
+    /// A threshold of zero pairs the two whatever they score, so a test can
+    /// measure the count without first arguing that the pair is a good one.
+    fn edits_between(before: &[u8], after: &[u8]) -> Edits {
+        let before = binary_of(&[("f", before)]);
+        let after = binary_of(&[("f", after)]);
+        let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
+        diff.matched.first().expect("a threshold of zero pairs anything").edits
     }
 
     /// Building a `Binary` by hand keeps these tests free of fixture files.
