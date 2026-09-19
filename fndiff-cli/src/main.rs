@@ -80,7 +80,7 @@ struct Args {
     /// When to show a progress bar.
     ///
     /// The bar goes to standard error, so it never mixes with the report.
-    #[arg(long, value_enum, default_value_t = When::Auto)]
+    #[arg(long, value_enum, default_value_t = When::Auto, verbatim_doc_comment)]
     progress: When,
 }
 
@@ -89,7 +89,9 @@ struct Args {
 enum When {
     /// Show it when standard error is a terminal.
     Auto,
+    /// Show it even when standard error is redirected.
     Always,
+    /// Never show it.
     Never,
 }
 

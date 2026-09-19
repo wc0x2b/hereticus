@@ -57,6 +57,7 @@ sub_90    changed          0.84  similar
 | Command line tool | Works |
 | Function recovery without symbols | Works |
 | Raw images with no container format | Works, with `--base` |
+| Progress while it runs | Works, on standard error |
 
 ## Use
 
@@ -66,6 +67,7 @@ fndiff --all before.o after.o        # every function
 fndiff --ignore-names a.o b.o        # match from the code alone
 fndiff --format compact a.o b.o      # tab separated, for scripts
 fndiff --exit-code a.o b.o           # exit 1 when anything changed
+fndiff --progress never a.o b.o      # no progress bar
 
 # A firmware image dumped from flash, with no ELF header
 fndiff --raw --base 0x08000000 v1.bin v2.bin
@@ -73,6 +75,28 @@ fndiff --raw --base 0x08000000 v1.bin v2.bin
 
 Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
 and 2 when the input could not be read.
+
+A comparison of two firmware images takes seconds, so the tool draws a progress
+bar for each stage. The bar goes to standard error, which leaves the report on
+standard output for a pipe to read. `--progress` chooses when to draw it:
+`auto` draws only to a terminal, `never` turns it off, and `always` draws it
+even when standard error is redirected.
+
+## Speed
+
+A comparison scores every remaining pair of functions, so the cost grows with
+the product of the two function counts. Two measurements on a 2.8MB ARM32
+vendor kernel, 2053 functions against 2024, over 4 cores:
+
+| Stage | Time |
+|---|---|
+| Reading functions | 2.5s |
+| Matching identical code and shape | 0.03s |
+| Scoring pairs | 3.3s |
+| Finding near misses | 3.3s |
+
+The two scoring stages run on all cores. The result does not depend on how the
+work is spread: candidates are sorted before any pair is taken.
 
 ## Scope, and one thing outside it
 
