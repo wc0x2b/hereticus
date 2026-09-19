@@ -15,6 +15,8 @@
 
 use std::collections::HashMap;
 
+use rayon::prelude::*;
+
 use crate::arch::decode_all;
 use crate::norm::{NormInsn, normalize_body, normalize_operation};
 use crate::obj::{Binary, Function};
@@ -306,7 +308,10 @@ impl Phase {
 ///
 /// Every method takes `&self`, so an implementation holds its own state behind
 /// whatever it needs.
-pub trait Progress {
+///
+/// The scoring stages run on several threads, so an implementation must be
+/// safe to call from all of them, and must not assume steps arrive in order.
+pub trait Progress: Sync {
     /// A phase is starting, and will report `total` steps.
     fn start(&self, phase: Phase, total: usize);
 
@@ -433,8 +438,10 @@ impl Cascade<'_> {
         added: &[usize],
         progress: &dyn Progress,
     ) -> Vec<NearMiss> {
+        // Read-only, like the scoring stage, and the same shape of work. The
+        // output keeps the order of `removed`, which `Diff` documents.
         removed
-            .iter()
+            .par_iter()
             .map(|before| {
                 progress.advance(1);
                 let best = added
@@ -651,26 +658,32 @@ impl Cascade<'_> {
         let remaining = self.left_free.iter().filter(|free| **free).count();
         progress.start(Phase::Similarity, remaining);
 
-        let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
-        for index in 0..self.left.len() {
-            if !self.left_free[index] {
-                continue;
-            }
-            progress.advance(1);
-            if self.left[index].body.is_empty() {
-                continue;
-            }
-            for other in 0..self.right.len() {
-                if !self.right_free[other] || self.right[other].body.is_empty() {
-                    continue;
+        // Scoring only reads, so the rows run in parallel. Each row keeps its
+        // own results, and the sort below decides the order, so the answer does
+        // not depend on the order the rows finished in.
+        let threshold = self.options.threshold;
+        let mut candidates: Vec<(f64, usize, usize)> = (0..self.left.len())
+            .into_par_iter()
+            .filter(|index| self.left_free[*index])
+            .map(|index| {
+                progress.advance(1);
+                if self.left[index].body.is_empty() {
+                    return Vec::new();
                 }
-                let score =
-                    similarity_of_symbols(&self.left[index].symbols, &self.right[other].symbols);
-                if score >= self.options.threshold {
-                    candidates.push((score, index, other));
-                }
-            }
-        }
+
+                (0..self.right.len())
+                    .filter(|other| self.right_free[*other] && !self.right[*other].body.is_empty())
+                    .filter_map(|other| {
+                        let score = similarity_of_symbols(
+                            &self.left[index].symbols,
+                            &self.right[other].symbols,
+                        );
+                        (score >= threshold).then_some((score, index, other))
+                    })
+                    .collect()
+            })
+            .flatten()
+            .collect();
 
         // Best first. Ties break on index so the answer does not depend on
         // the order two equal scores happened to be found in.
@@ -1006,9 +1019,11 @@ mod tests {
     }
 
     /// Record what a comparison reports, to check the reporting itself.
+    ///
+    /// Behind a lock because the scoring stages report from several threads.
     #[derive(Default)]
     struct Recorder {
-        events: std::cell::RefCell<Vec<Event>>,
+        events: std::sync::Mutex<Vec<Event>>,
     }
 
     #[derive(Debug, PartialEq)]
@@ -1018,15 +1033,21 @@ mod tests {
         Finish,
     }
 
+    impl Recorder {
+        fn events(&self) -> std::sync::MutexGuard<'_, Vec<Event>> {
+            self.events.lock().expect("no test panics while holding the lock")
+        }
+    }
+
     impl Progress for Recorder {
         fn start(&self, phase: Phase, total: usize) {
-            self.events.borrow_mut().push(Event::Start(phase, total));
+            self.events().push(Event::Start(phase, total));
         }
         fn advance(&self, steps: usize) {
-            self.events.borrow_mut().push(Event::Advance(steps));
+            self.events().push(Event::Advance(steps));
         }
         fn finish(&self) {
-            self.events.borrow_mut().push(Event::Finish);
+            self.events().push(Event::Finish);
         }
     }
 
@@ -1041,7 +1062,7 @@ mod tests {
         let recorder = Recorder::default();
         diff_reporting(&before, &after, Options::default(), &recorder);
 
-        let events = recorder.events.borrow();
+        let events = recorder.events();
         let mut open: Option<(Phase, usize)> = None;
         let mut seen = 0usize;
         let mut phases = Vec::new();
@@ -1098,6 +1119,45 @@ mod tests {
         assert_eq!(quiet.matched.len(), loud.matched.len());
         assert_eq!(quiet.removed, loud.removed);
         assert_eq!(quiet.added, loud.added);
+    }
+
+    /// The answer must not depend on how the work was spread over threads.
+    ///
+    /// The scoring stages run in parallel, so rows finish in whatever order the
+    /// threads happen to take. Sorting the candidates is what makes the result
+    /// repeatable, and this checks that it does.
+    #[test]
+    fn the_result_does_not_depend_on_thread_order() {
+        // Bodies close enough to score above the threshold against several
+        // candidates, so the order pairs are taken in decides the answer.
+        let before = binary_of(&[
+            ("a", ADD_THEN_RETURN),
+            ("b", MUL_THEN_RETURN),
+            ("c", ADD_THEN_RETURN),
+            ("d", MUL_THEN_RETURN),
+            ("e", ADD_THEN_RETURN),
+        ]);
+        let after = binary_of(&[
+            ("v", MUL_THEN_RETURN),
+            ("w", ADD_THEN_RETURN),
+            ("x", MUL_THEN_RETURN),
+            ("y", ADD_THEN_RETURN),
+            ("z", MUL_THEN_RETURN),
+        ]);
+
+        let options = Options { threshold: 0.3, use_names: UseNames::No };
+        let first = diff_with(&before, &after, options);
+
+        let pairs = |diff: &Diff| -> Vec<(usize, usize, Confidence)> {
+            diff.matched.iter().map(|m| (m.before, m.after, m.confidence)).collect()
+        };
+
+        for run in 0..16 {
+            let again = diff_with(&before, &after, options);
+            assert_eq!(pairs(&first), pairs(&again), "run {run} paired differently");
+            assert_eq!(first.removed, again.removed, "run {run} removed differently");
+            assert_eq!(first.added, again.added, "run {run} added differently");
+        }
     }
 
     #[test]
