@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use fndiff::arch::decode_all;
-use fndiff::norm::{NormInsn, normalize_body};
+use fndiff::norm::{NormInsn, constant_signature, normalize_body};
 use fndiff::obj::Binary;
 
 /// Optimization levels that `fndiff` claims to match across.
@@ -196,6 +196,79 @@ fn edited_functions_differ_from_the_original() {
         .expect("one instruction must differ");
     assert_eq!(before, vec![37]);
     assert_eq!(after, vec![41]);
+}
+
+/// A constant signature is stable across optimization levels, except where
+/// the compiler vectorizes.
+///
+/// This is the regression test for a measurement that decided a design. The
+/// constants a function uses come from the source, so they survive a change of
+/// flags that rewrites the instructions around them — until vectorizing adds
+/// vector widths and alignment masks and takes the set apart.
+///
+/// The measurement is recorded here because it is the reason `fndiff` does
+/// **not** pair functions by their constants. See `norm::constant_signature`.
+#[test]
+fn constant_signatures_survive_optimization_except_when_vectorized() {
+    assert!(fixtures_present(), "run `just fixtures` first");
+
+    // Functions whose constants must be identical at every level.
+    const STABLE: [&str; 3] = ["mul_by_constant", "classify", "switch_dense"];
+    // Functions the compiler vectorizes at `-O2`, which breaks the signature.
+    const VECTORIZED: [&str; 2] = ["array_max", "factorial"];
+
+    for function in STABLE {
+        let signatures: Vec<_> = LEVELS
+            .iter()
+            .filter_map(|level| normalized(level, "basic", function))
+            .map(|body| constant_signature(&body))
+            .collect();
+
+        let Some(first) = signatures.first() else { continue };
+        assert!(!first.is_empty(), "{function} must have constants to compare");
+        for other in &signatures[1..] {
+            assert_eq!(other, first, "{function} must keep its constants at every level");
+        }
+    }
+
+    for function in VECTORIZED {
+        let (Some(scalar), Some(vector)) = (
+            normalized("O1", "basic", function).map(|body| constant_signature(&body)),
+            normalized("O2", "basic", function).map(|body| constant_signature(&body)),
+        ) else {
+            continue;
+        };
+
+        assert_ne!(
+            scalar, vector,
+            "{function} is vectorized at -O2, so its constants must not still agree; \
+             if this now passes, the decoder learned to read NEON and the note in \
+             norm::constant_signature needs revisiting"
+        );
+    }
+}
+
+/// Two different functions can share a constant signature.
+///
+/// Inlining `mul_by_constant` into `call_chain` leaves both holding only 37.
+/// This is the measured false positive that kept constants out of the matching
+/// cascade, so it is asserted rather than left as a comment.
+#[test]
+fn constant_signatures_do_not_identify_a_function() {
+    assert!(fixtures_present(), "run `just fixtures` first");
+
+    let (Some(callee), Some(caller)) = (
+        normalized("O2", "basic", "mul_by_constant").map(|body| constant_signature(&body)),
+        normalized("O2", "basic", "call_chain").map(|body| constant_signature(&body)),
+    ) else {
+        panic!("fixtures are missing");
+    };
+
+    assert_eq!(
+        callee, caller,
+        "these are different functions with the same constants, which is why \
+         pairing on constants would pair the wrong two"
+    );
 }
 
 /// The other two edits in `basic_v2.c` must also be visible.

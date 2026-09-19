@@ -19,6 +19,8 @@
 //! bridges that. Matching an unoptimized build against an optimized one needs
 //! semantic comparison, which is separate work.
 
+use std::collections::BTreeSet;
+
 use crate::arch::{Insn, InsnKind};
 
 /// An instruction with the build-specific detail removed.
@@ -200,6 +202,51 @@ where
     I: IntoIterator<Item = &'a Insn>,
 {
     insns.into_iter().filter(|insn| !is_frame_management(insn)).map(normalize).collect()
+}
+
+/// The distinct constants a function uses.
+///
+/// A constant comes from the source, not from the compiler, so it survives a
+/// change of optimization level that rewrites everything around it. Measured
+/// on the test corpus, the set is **identical** across `-O1`, `-O2` and `-Os`
+/// for every function the compiler did not vectorize: `mul_by_constant` keeps
+/// `{37}`, `classify` keeps `{2, 100}`, `switch_dense` keeps `{2, 6, 10}`.
+///
+/// # Do not match on this
+///
+/// This is for **reporting**, not for pairing functions. Matching on it was
+/// tried and measured, and it is worse than the instruction comparison it
+/// would have joined:
+///
+/// * **False pairs at 1.00.** `mul_by_constant` and `call_chain` both reduce
+///   to `{37}`, because the compiler inlined the first into the second. A
+///   stage that paired on equal sets would confidently pair the wrong two
+///   functions.
+/// * **Half the true pairs missed.** Four of eight fixtures score below the
+///   match threshold: `add` and `sum_to` hold no distinctive constants at all,
+///   and `array_max` and `factorial` are vectorized.
+/// * **Worst where it was wanted.** For the case it was meant to rescue — a
+///   reference build against a differently optimized one — the true pair
+///   scores 0.40 while a decoy scores 1.00, because four of five functions
+///   there share the same uninformative set.
+///
+/// Vectorizing is what breaks it. At `-O2` the compiler rewrites `array_max`
+/// with NEON and adds vector widths, alignment masks and unrolled offsets,
+/// taking the set from four values to ten. `yaxpeax-arm` 0.4 cannot decode
+/// NEON either, so those instructions contribute no constants at all. An empty
+/// set therefore does not mean "the source used no constants".
+pub fn constant_signature(body: &[NormInsn]) -> BTreeSet<u64> {
+    // Values so common that they name no function in particular. Measured
+    // across the corpus: `1` appears in five of eight functions and `0` in
+    // four, while nothing else appears in more than two. Keep this list at
+    // the values the measurement justifies, because every entry here is
+    // signal thrown away.
+    const TOO_COMMON: [u64; 2] = [0, 1];
+
+    body.iter()
+        .flat_map(|insn| insn.constants.iter().copied())
+        .filter(|value| !TOO_COMMON.contains(value))
+        .collect()
 }
 
 /// Report whether an instruction only maintains the stack frame.
@@ -486,6 +533,94 @@ mod tests {
     fn keeps_loads_that_are_not_spills() {
         let body = [insn("ldr", "r0, [r1, 0x8]", InsnKind::Normal)];
         assert_eq!(normalize_body(&body).len(), 1, "a data load is real work");
+    }
+
+    #[test]
+    fn a_constant_signature_holds_the_values_a_function_uses() {
+        let body = normalize_body(&[
+            insn("mov", "r1, 0x25", InsnKind::Normal),
+            insn("cmp", "r0, 0x64", InsnKind::Normal),
+        ]);
+        assert_eq!(constant_signature(&body), BTreeSet::from([0x25, 0x64]));
+    }
+
+    /// Values in almost every function cannot identify one, so they go.
+    #[test]
+    fn a_constant_signature_drops_the_common_values() {
+        let body = normalize_body(&[
+            insn("mov", "r0, 0x0", InsnKind::Normal),
+            insn("add", "r0, r0, 0x1", InsnKind::Normal),
+            insn("cmp", "r0, 0x25", InsnKind::Normal),
+        ]);
+        assert_eq!(constant_signature(&body), BTreeSet::from([0x25]), "only 37 identifies this");
+    }
+
+    #[test]
+    fn a_constant_signature_is_empty_without_constants() {
+        let body = normalize_body(&[insn("bx", "lr", InsnKind::Return)]);
+        assert!(constant_signature(&body).is_empty());
+    }
+
+    /// The same value used twice is one entry, so the set does not depend on
+    /// how many times the compiler happened to materialize it.
+    #[test]
+    fn a_constant_signature_counts_each_value_once() {
+        let body = normalize_body(&[
+            insn("mov", "r0, 0x25", InsnKind::Normal),
+            insn("mov", "r1, 0x25", InsnKind::Normal),
+        ]);
+        assert_eq!(constant_signature(&body), BTreeSet::from([0x25]));
+    }
+
+    /// Frame offsets move with unrelated edits, so they are not part of the
+    /// signature. This follows from `constant_value`, and is checked here so
+    /// a change there cannot quietly widen the signature.
+    #[test]
+    fn a_constant_signature_ignores_frame_offsets() {
+        let body = normalize_body(&[insn("ldr", "r0, [r1, 0x25]", InsnKind::Normal)]);
+        assert!(constant_signature(&body).is_empty());
+    }
+
+    /// Two different functions can share a constant set, which is why this
+    /// must not be used to pair them.
+    ///
+    /// Measured on the corpus: inlining `mul_by_constant` into `call_chain`
+    /// leaves both holding `{37}` and nothing else. The signature cannot tell
+    /// them apart, so a matching stage built on it would pair the wrong two.
+    #[test]
+    fn different_functions_can_share_a_constant_signature() {
+        let caller = normalize_body(&[
+            insn("mov", "r1, 0x25", InsnKind::Normal),
+            insn("mul", "r0, r0, r1", InsnKind::Normal),
+            insn("add", "r0, r0, 0x1", InsnKind::Normal),
+            insn("bx", "lr", InsnKind::Return),
+        ]);
+        let callee = normalize_body(&[
+            insn("mov", "r1, 0x25", InsnKind::Normal),
+            insn("mul", "r0, r0, r1", InsnKind::Normal),
+            insn("bx", "lr", InsnKind::Return),
+        ]);
+
+        assert_eq!(
+            constant_signature(&caller),
+            constant_signature(&callee),
+            "one inlined into the other leaves the same constants"
+        );
+        assert_ne!(caller, callee, "the instructions still tell them apart");
+    }
+
+    /// A function whose constants are all common has no signature at all.
+    ///
+    /// Most code that copies or parses is in this position, so an empty set is
+    /// the normal case rather than an unusual one.
+    #[test]
+    fn a_function_of_common_constants_has_no_signature() {
+        let body = normalize_body(&[
+            insn("cmp", "r0, 0x0", InsnKind::Normal),
+            insn("add", "r0, r0, 0x1", InsnKind::Normal),
+            insn("bx", "lr", InsnKind::Return),
+        ]);
+        assert!(constant_signature(&body).is_empty());
     }
 
     #[test]

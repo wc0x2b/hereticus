@@ -40,6 +40,15 @@ struct Args {
     #[arg(long)]
     exit_code: bool,
 
+    /// Lowest score at which an unmatched function names its closest
+    /// candidate, from 0.0 to 1.0.
+    ///
+    /// A function that no stage could pair still has a nearest neighbour.
+    /// Naming it says whether the function was removed or only compiled
+    /// differently. Raise this to hide weak guesses, lower it to see them all.
+    #[arg(long, default_value_t = 0.25, value_parser = parse_threshold)]
+    near_miss: f64,
+
     /// How to print the result.
     #[arg(long, value_enum, default_value_t = Format::Text)]
     format: Format,
@@ -102,7 +111,7 @@ fn run(args: &Args) -> Result<bool, String> {
     let diff = diff_with(&before, &after, options);
 
     match args.format {
-        Format::Text => print_text(&diff, &before, &after, args.all),
+        Format::Text => print_text(&diff, &before, &after, args.all, args.near_miss),
         Format::Compact => print_compact(&diff, &before, &after, args.all),
     }
 
@@ -152,7 +161,7 @@ fn is_interesting(pair: &Match) -> bool {
     pair.changed != Changed::No
 }
 
-fn print_text(diff: &Diff, before: &Binary, after: &Binary, show_all: bool) {
+fn print_text(diff: &Diff, before: &Binary, after: &Binary, show_all: bool, near_miss_floor: f64) {
     let shown: Vec<&Match> =
         diff.matched.iter().filter(|pair| show_all || is_interesting(pair)).collect();
 
@@ -184,13 +193,30 @@ fn print_text(diff: &Diff, before: &Binary, after: &Binary, show_all: bool) {
     }
 
     for index in &diff.removed {
-        println!("{}: gone", name_of(before, *index));
+        match near_miss_note(diff, *index, after, near_miss_floor) {
+            Some(note) => println!("{}: gone, {note}", name_of(before, *index)),
+            None => println!("{}: gone", name_of(before, *index)),
+        }
     }
     for index in &diff.added {
         println!("{}: new", name_of(after, *index));
     }
 
     summarize(diff);
+}
+
+/// Describe the closest candidate for a function that went unmatched.
+///
+/// A function can go unmatched because it was removed, or because the two
+/// builds compiled it too differently to recognize. The score separates those
+/// two, and naming the candidate turns a dead end into somewhere to look.
+fn near_miss_note(diff: &Diff, index: usize, after: &Binary, floor: f64) -> Option<String> {
+    let miss = diff.near_miss(index)?;
+    let best = miss.best?;
+    if miss.score < floor {
+        return None;
+    }
+    Some(format!("closest {} at {:.2}", name_of(after, best), miss.score))
 }
 
 /// Print one line per function, with no header or alignment.
@@ -207,7 +233,13 @@ fn print_compact(diff: &Diff, before: &Binary, after: &Binary, show_all: bool) {
         }
     }
     for index in &diff.removed {
-        println!("gone\t{}\t\t", name_of(before, *index));
+        // The fourth column holds the near-miss score, so a script reading
+        // this format finds it where a matched pair keeps its score.
+        let miss = diff.near_miss(*index);
+        let closest =
+            miss.and_then(|miss| miss.best).map(|best| name_of(after, best)).unwrap_or_default();
+        let score = miss.map_or(0.0, |miss| miss.score);
+        println!("gone\t{}\t{closest}\t{score:.2}", name_of(before, *index));
     }
     for index in &diff.added {
         println!("new\t\t{}\t", name_of(after, *index));

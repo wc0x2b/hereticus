@@ -1,0 +1,24 @@
+---
+source: fndiff-cli/tests/cli.rs
+info:
+  program: fndiff
+  args:
+    - "--ignore-names"
+    - "--near-miss"
+    - "0.0"
+    - fixtures/build/O1/basic.o
+    - fixtures/build/O2/basic.o
+---
+success: true
+exit_code: 0
+----- stdout -----
+FUNCTION      CHANGE          SCORE  MATCHED BY
+switch_dense  reordered        1.00  similar
+array_max: gone, closest array_max at 0.40
+factorial: gone, closest factorial at 0.16
+array_max: new
+factorial: new
+
+6 matched (5 unchanged, 1 changed), 2 gone, 2 new
+
+----- stderr -----

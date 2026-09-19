@@ -89,6 +89,25 @@ pub enum Changed {
     Yes,
 }
 
+/// A function with no counterpart, and the closest thing to one.
+///
+/// A function can go unmatched because it really was removed, or because the
+/// two builds compiled it too differently to recognize. Those need different
+/// responses from a reader, and the score separates them: a near miss at 0.38
+/// is worth opening a disassembler for, one at 0.02 is not.
+///
+/// Reporting the score costs nothing. It was computed while matching and then
+/// thrown away.
+#[derive(Clone, Copy, Debug)]
+pub struct NearMiss {
+    /// Index into the functions of the first binary.
+    pub before: usize,
+    /// The closest candidate in the second binary, if any was scored.
+    pub best: Option<usize>,
+    /// How close that candidate came, from 0.0 to 1.0.
+    pub score: f64,
+}
+
 /// The result of comparing two binaries.
 #[derive(Clone, Debug)]
 pub struct Diff {
@@ -98,12 +117,21 @@ pub struct Diff {
     pub removed: Vec<usize>,
     /// Functions of the second binary with no counterpart.
     pub added: Vec<usize>,
+    /// For each removed function, the candidate that came closest.
+    ///
+    /// In the same order as [`Diff::removed`].
+    pub near_misses: Vec<NearMiss>,
 }
 
 impl Diff {
     /// Matched pairs that differ in any way.
     pub fn changed(&self) -> impl Iterator<Item = &Match> {
         self.matched.iter().filter(|pair| pair.changed != Changed::No)
+    }
+
+    /// The near miss for a removed function, if one was found.
+    pub fn near_miss(&self, before: usize) -> Option<&NearMiss> {
+        self.near_misses.iter().find(|miss| miss.before == before)
     }
 }
 
@@ -240,11 +268,36 @@ impl Cascade<'_> {
             free.iter().enumerate().filter(|(_, free)| **free).map(|(index, _)| index).collect()
         };
 
-        Diff {
-            removed: unpaired(&self.left_free),
-            added: unpaired(&self.right_free),
-            matched: self.matched,
-        }
+        let removed = unpaired(&self.left_free);
+        let added = unpaired(&self.right_free);
+        let near_misses = self.near_misses(&removed, &added);
+
+        Diff { removed, added, near_misses, matched: self.matched }
+    }
+
+    /// Find the closest candidate for each function that stayed unmatched.
+    ///
+    /// This compares only the functions no stage could place, against only the
+    /// functions still free to take. Both sets are small by the time the
+    /// cascade is done, so the cost is a fraction of the matching pass that
+    /// preceded it.
+    fn near_misses(&self, removed: &[usize], added: &[usize]) -> Vec<NearMiss> {
+        removed
+            .iter()
+            .map(|before| {
+                let best = added
+                    .iter()
+                    .map(|after| {
+                        (similarity(&self.left[*before].body, &self.right[*after].body), *after)
+                    })
+                    .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
+
+                match best {
+                    Some((score, after)) => NearMiss { before: *before, best: Some(after), score },
+                    None => NearMiss { before: *before, best: None, score: 0.0 },
+                }
+            })
+            .collect()
     }
 }
 
@@ -498,6 +551,70 @@ mod tests {
     fn a_reordering_still_counts_as_a_change_to_report() {
         assert!(Changed::Reordered > Changed::No);
         assert!(Changed::Yes > Changed::InDetail);
+    }
+
+    /// Building a `Binary` by hand keeps these tests free of fixture files.
+    fn binary_of(functions: &[(&str, &[u8])]) -> crate::obj::Binary {
+        crate::obj::Binary {
+            isa: crate::obj::Isa::Arm32,
+            found_by: crate::obj::FoundBy::Symbols,
+            functions: functions
+                .iter()
+                .enumerate()
+                .map(|(index, (name, code))| Function {
+                    name: (*name).to_string(),
+                    address: index as u64 * 0x100,
+                    code: code.to_vec(),
+                })
+                .collect(),
+        }
+    }
+
+    /// `add r0, r1, r0` then `bx lr`.
+    const ADD_THEN_RETURN: &[u8] = &[0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+    /// `mul r0, r0, r1` then `bx lr`, which shares no operation with the above.
+    const MUL_THEN_RETURN: &[u8] = &[0x91, 0x00, 0x00, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+
+    #[test]
+    fn an_unmatched_function_reports_its_closest_candidate() {
+        let before = binary_of(&[("only", ADD_THEN_RETURN)]);
+        let after = binary_of(&[("other", MUL_THEN_RETURN)]);
+
+        // A threshold of 1.0 refuses everything below an exact match, so the
+        // pair is left for the near-miss report.
+        let diff = diff_with(&before, &after, Options { threshold: 1.0, use_names: UseNames::No });
+
+        assert_eq!(diff.removed, vec![0], "nothing could be paired");
+        let miss = diff.near_miss(0).expect("the removed function needs a near miss");
+        assert_eq!(miss.best, Some(0), "the only candidate is the closest one");
+        assert!(miss.score > 0.0, "the two share a return, so they are not unrelated");
+        assert!(miss.score < 1.0, "they are not the same function either");
+    }
+
+    /// With nothing to compare against, a near miss names no candidate rather
+    /// than inventing one.
+    #[test]
+    fn a_near_miss_without_candidates_names_none() {
+        let before = binary_of(&[("gone", ADD_THEN_RETURN)]);
+        let after = binary_of(&[]);
+
+        let diff = diff_with(&before, &after, Options::default());
+
+        let miss = diff.near_miss(0).expect("the removed function needs a near miss");
+        assert_eq!(miss.best, None);
+        assert_eq!(miss.score, 0.0);
+    }
+
+    /// A matched function is not a near miss, so the report stays short.
+    #[test]
+    fn matched_functions_are_not_reported_as_near_misses() {
+        let before = binary_of(&[("same", ADD_THEN_RETURN)]);
+        let after = binary_of(&[("same", ADD_THEN_RETURN)]);
+
+        let diff = diff_with(&before, &after, Options::default());
+
+        assert_eq!(diff.matched.len(), 1);
+        assert!(diff.near_misses.is_empty(), "nothing went unmatched");
     }
 
     #[test]

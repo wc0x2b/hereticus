@@ -97,6 +97,23 @@ fn comparing_a_binary_with_itself_reports_nothing() {
     assert_cmd_snapshot!(fndiff().args(["fixtures/build/O2/basic.o", "fixtures/build/O2/basic.o"]));
 }
 
+/// Lowering the floor shows the weaker guesses as well.
+#[test]
+fn near_miss_floor_controls_what_is_shown() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(fndiff().args([
+        "--ignore-names",
+        "--near-miss",
+        "0.0",
+        "fixtures/build/O1/basic.o",
+        "fixtures/build/O2/basic.o",
+    ]));
+}
+
 #[test]
 fn explains_a_file_it_cannot_find() {
     assert_cmd_snapshot!(fndiff().args(["does-not-exist.o", "fixtures/build/O2/basic.o"]));

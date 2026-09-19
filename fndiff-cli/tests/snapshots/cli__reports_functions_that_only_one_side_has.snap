@@ -12,7 +12,7 @@ exit_code: 0
 ----- stdout -----
 FUNCTION      CHANGE          SCORE  MATCHED BY
 switch_dense  reordered        1.00  similar
-array_max: gone
+array_max: gone, closest array_max at 0.40
 factorial: gone
 array_max: new
 factorial: new
