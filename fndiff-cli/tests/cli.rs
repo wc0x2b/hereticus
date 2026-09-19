@@ -56,6 +56,25 @@ fn reports_every_function_when_asked() {
     ]));
 }
 
+/// Functions that only changed a constant are listed when asked for.
+///
+/// The default report holds these back, so this is the only place the edited
+/// constant in `mul_by_constant` — and its inlined copy in `call_chain` — is
+/// still visible end to end.
+#[test]
+fn lists_retouched_functions_when_asked() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(fndiff().args([
+        "--show-retouched",
+        "fixtures/build/O2/basic.o",
+        "fixtures/build/O2/basic_v2.o"
+    ]));
+}
+
 /// The compact format is for scripts, so its columns must stay put.
 #[test]
 fn compact_format_is_stable() {

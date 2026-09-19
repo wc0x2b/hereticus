@@ -19,32 +19,55 @@ Works end to end for ARM32 objects, with or without symbols.
 
 ```console
 $ fndiff before.o after.o
-FUNCTION                CHANGE          SCORE  MATCHED BY
-mul_by_constant         changed values   1.00  identical shape
-classify                changed values   1.00  identical shape
-call_chain              changed values   1.00  identical shape
-array_max -> array_min  changed          0.84  similar
+FUNCTION                CHANGE          SCORE  +/-/~       MATCHED BY
+array_max -> array_min  changed unread   0.84  0/0/3       similar
+
+8 matched (4 unchanged, 4 changed), 0 gone, 0 new
+3 changed only a constant, hidden. Use --show-retouched to list them.
+```
+
+`array_max` was renamed *and* rewritten, and is still matched to its
+counterpart.
+
+The `+/-/~` column counts the instructions the edit added, removed and
+rewrote, and a dash means it touched none. `changed unread` says the bytes
+differ inside instructions the decoder cannot read, so the tool reports the
+difference without claiming to know whether it edited code or a word of stored
+data.
+
+### What the default hides
+
+A function that scores a perfect 1.00 *and* touched no instruction changed
+nothing but a constant. These outnumber the real edits on anything the size of
+a kernel, so they are held back and counted in the footer instead. Both tests
+must pass to hide a function: an instruction that was rewritten is a real edit
+whatever the pair scores.
+
+```console
+$ fndiff --show-retouched before.o after.o
+FUNCTION                CHANGE          SCORE  +/-/~       MATCHED BY
+mul_by_constant         changed values   1.00  -           identical shape
+classify                changed values   1.00  -           identical shape
+call_chain              changed values   1.00  -           identical shape
+array_max -> array_min  changed unread   0.84  0/0/3       similar
 
 8 matched (4 unchanged, 4 changed), 0 gone, 0 new
 ```
 
-Two things to notice, both from the test corpus. `array_max` was renamed *and*
-rewritten, and is still matched to its counterpart. `call_chain` is reported
-although its source never changed: at `-O2` the compiler inlines
-`mul_by_constant` into it, so the edited constant lands there too.
+`call_chain` is worth a look: its source never changed, but at `-O2` the
+compiler inlines `mul_by_constant` into it, so the edited constant lands there
+too. `--all` implies this flag.
 
 The same comparison on stripped copies of those two files gives the same
 answer, with addresses in place of names:
 
 ```console
 $ fndiff before-stripped.o after-stripped.o
-FUNCTION  CHANGE          SCORE  MATCHED BY
-sub_8     changed values   1.00  identical shape
-sub_3c    changed values   1.00  identical shape
-sub_80    changed values   1.00  identical shape
-sub_90    changed          0.84  similar
+FUNCTION  CHANGE          SCORE  +/-/~       MATCHED BY
+sub_90    changed unread   0.84  0/0/3       similar
 
 8 matched (4 unchanged, 4 changed), 0 gone, 0 new
+3 changed only a constant, hidden. Use --show-retouched to list them.
 ```
 
 | Part | State |
@@ -64,6 +87,7 @@ sub_90    changed          0.84  similar
 ```console
 fndiff before.o after.o              # what changed
 fndiff --all before.o after.o        # every function
+fndiff --show-retouched a.o b.o      # add the ones that only changed a constant
 fndiff --ignore-names a.o b.o        # match from the code alone
 fndiff --format compact a.o b.o      # tab separated, for scripts
 fndiff --exit-code a.o b.o           # exit 1 when anything changed
@@ -170,11 +194,13 @@ changed between the two releases.
 
 ```console
 $ fndiff --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
-FUNCTION      CHANGE          SCORE  MATCHED BY
-sub_8020a8f8  changed          1.00  similar
-sub_80208f14  changed          0.91  similar
+FUNCTION      CHANGE          SCORE  +/-/~       MATCHED BY
+sub_8020a3bc  changed          1.00  0/0/1       similar
+sub_8020b1f8  changed          0.98  0/0/1       similar
+sub_80208e20  changed unread   0.98  0/0/1       similar
 ...
-62 matched, 11 changed
+62 matched (51 unchanged, 11 changed), 0 gone, 0 new
+3 changed only a constant, hidden. Use --show-retouched to list them.
 ```
 
 Scored against the byte-level truth:
@@ -211,19 +237,22 @@ change and the other three should not.
 
 ```console
 $ fndiff before.o after.o
-FUNCTION      CHANGE          SCORE  MATCHED BY
-objpool_init  changed          0.93  same name
+FUNCTION      CHANGE          SCORE  +/-/~       MATCHED BY
+objpool_init  changed          0.93  0/3/119     same name
 
 4 matched (3 unchanged, 1 changed), 0 gone, 0 new
 ```
+
+The counts say how big the patch was: it removed three instructions and
+rewrote 119, which a score of 0.93 alone does not convey.
 
 Stripping both objects and ignoring names gives the same answer, with the
 address in place of the name:
 
 ```console
 $ fndiff --ignore-names before-stripped.o after-stripped.o
-FUNCTION  CHANGE          SCORE  MATCHED BY
-sub_0     changed          0.93  similar
+FUNCTION  CHANGE          SCORE  +/-/~       MATCHED BY
+sub_0     changed          0.93  0/3/119     similar
 
 4 matched (3 unchanged, 1 changed), 0 gone, 0 new
 ```
@@ -236,7 +265,8 @@ answer:
 
 ```console
 $ fndiff --raw --base 0x0 before.bin after.bin
-sub_0  changed  0.93  similar
+FUNCTION  CHANGE          SCORE  +/-/~       MATCHED BY
+sub_0     changed          0.93  0/3/119     similar
 
 4 matched (3 unchanged, 1 changed), 0 gone, 0 new
 ```
@@ -302,7 +332,9 @@ and left unrelated functions at 0.21, so it removes noise rather than signal.
 `NormInsn` keeps exact constants but leaves them out of equality. Both
 properties are needed at once: a function whose threshold changed from 100 to
 50 must still match the function it came from, and the changed value must still
-be reportable afterwards.
+be reportable afterwards. The default report holds such a function back,
+because a changed constant alone rarely repays a reader's attention at the
+scale of a kernel; `--show-retouched` lists it.
 
 `matching.rs` runs an ordered cascade: identical bytes, then identical
 normalized instructions, then names, then similarity above a threshold. Each

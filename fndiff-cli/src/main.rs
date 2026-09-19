@@ -35,6 +35,14 @@ struct Args {
     #[arg(long)]
     ignore_names: bool,
 
+    /// List functions that differ in nothing but a constant.
+    ///
+    /// A function whose shape is identical and whose instruction counts are
+    /// all zero changed only a stored value. These outnumber the real edits on
+    /// a whole kernel, so they are hidden by default.
+    #[arg(long)]
+    show_retouched: bool,
+
     /// Lowest similarity that still counts as a match, from 0.0 to 1.0.
     #[arg(long, default_value_t = 0.65, value_parser = parse_threshold)]
     threshold: f64,
@@ -249,8 +257,15 @@ fn run(args: &Args) -> Result<bool, String> {
     let diff = diff_reporting(&before, &after, options, &Bar::new(args.progress));
 
     match args.format {
-        Format::Text => print_text(&diff, &before, &after, args.all, args.near_miss),
-        Format::Compact => print_compact(&diff, &before, &after, args.all),
+        // `--all` asks for every function, so it implies the retouched ones.
+        Format::Text => {
+            let retouched = Retouched::from(args.show_retouched || args.all);
+            print_text(&diff, &before, &after, args.all, args.near_miss, retouched)
+        }
+        Format::Compact => {
+            let retouched = Retouched::from(args.show_retouched || args.all);
+            print_compact(&diff, &before, &after, args.all, retouched)
+        }
     }
 
     Ok(diff.changed().count() > 0 || !diff.removed.is_empty() || !diff.added.is_empty())
@@ -302,6 +317,21 @@ fn describe(change: Changed) -> &'static str {
     }
 }
 
+/// Render an edit as added, removed and rewritten instructions.
+///
+/// A dash rather than three zeros where nothing was counted, so the eye finds
+/// the functions that did change.
+///
+/// A function whose constants changed shows a dash, and that is right: no
+/// instruction was touched. The `CHANGE` column names what did change, and
+/// the two columns answer different questions.
+fn describe_edits(edits: Edits) -> String {
+    if edits.total() == 0 {
+        return "-".to_string();
+    }
+    format!("{}/{}/{}", edits.added, edits.removed, edits.edited)
+}
+
 /// Describe why two functions were paired.
 fn describe_confidence(confidence: Confidence) -> &'static str {
     match confidence {
@@ -313,13 +343,53 @@ fn describe_confidence(confidence: Confidence) -> &'static str {
 }
 
 /// Report whether a pair should appear when only changes are wanted.
-fn is_interesting(pair: &Match) -> bool {
-    pair.changed != Changed::No
+///
+/// A pair that scores a perfect 1.00 and touched no instruction has nothing a
+/// reader can act on: the shape is identical and only a constant moved. On a
+/// whole kernel these crowd out the real edits, so they are hidden unless
+/// asked for. Measured on a whole-kernel pair, hiding them drops
+/// the report from 8744 rows to 6375 while keeping every function that added,
+/// removed or rewrote an instruction.
+fn is_interesting(pair: &Match, retouched: Retouched) -> bool {
+    if pair.changed == Changed::No {
+        return false;
+    }
+
+    retouched == Retouched::Show || !is_retouched(pair)
 }
 
-fn print_text(diff: &Diff, before: &Binary, after: &Binary, show_all: bool, near_miss_floor: f64) {
+/// Report whether a pair differs in nothing but its constants.
+///
+/// The score and the edit counts must both be clean. A function that rewrote
+/// an instruction is a real edit whatever it scores, and one that scores below
+/// a perfect match differs in shape even if the counts round to nothing.
+fn is_retouched(pair: &Match) -> bool {
+    pair.edits.total() == 0 && pair.score >= 1.0
+}
+
+/// Whether to list pairs that only differ in a constant.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Retouched {
+    Show,
+    Hide,
+}
+
+impl From<bool> for Retouched {
+    fn from(show: bool) -> Self {
+        if show { Self::Show } else { Self::Hide }
+    }
+}
+
+fn print_text(
+    diff: &Diff,
+    before: &Binary,
+    after: &Binary,
+    show_all: bool,
+    near_miss_floor: f64,
+    retouched: Retouched,
+) {
     let shown: Vec<&Match> =
-        diff.matched.iter().filter(|pair| show_all || is_interesting(pair)).collect();
+        diff.matched.iter().filter(|pair| show_all || is_interesting(pair, retouched)).collect();
 
     if !shown.is_empty() {
         // A renamed function prints as `old -> new`, which is longer than
@@ -336,13 +406,18 @@ fn print_text(diff: &Diff, before: &Binary, after: &Binary, show_all: bool, near
 
         let width = labels.iter().map(String::len).max().unwrap_or(0).clamp(8, 60);
 
-        println!("{:<width$}  {:<14}  {:>5}  MATCHED BY", "FUNCTION", "CHANGE", "SCORE");
+        // The edit column is headed `+/-/~`: added, removed, rewritten.
+        println!(
+            "{:<width$}  {:<14}  {:>5}  {:<10}  MATCHED BY",
+            "FUNCTION", "CHANGE", "SCORE", "+/-/~"
+        );
         for (pair, label) in shown.iter().zip(&labels) {
             println!(
-                "{:<width$}  {:<14}  {:>5.2}  {}",
+                "{:<width$}  {:<14}  {:>5.2}  {:<10}  {}",
                 label,
                 describe(pair.changed),
                 pair.score,
+                describe_edits(pair.edits),
                 describe_confidence(pair.confidence),
             );
         }
@@ -358,7 +433,7 @@ fn print_text(diff: &Diff, before: &Binary, after: &Binary, show_all: bool, near
         println!("{}: new", name_of(after, *index));
     }
 
-    summarize(diff);
+    summarize(diff, retouched);
 }
 
 /// Describe the closest candidate for a function that went unmatched.
@@ -376,15 +451,26 @@ fn near_miss_note(diff: &Diff, index: usize, after: &Binary, floor: f64) -> Opti
 }
 
 /// Print one line per function, with no header or alignment.
-fn print_compact(diff: &Diff, before: &Binary, after: &Binary, show_all: bool) {
+fn print_compact(
+    diff: &Diff,
+    before: &Binary,
+    after: &Binary,
+    show_all: bool,
+    retouched: Retouched,
+) {
     for pair in &diff.matched {
-        if show_all || is_interesting(pair) {
+        if show_all || is_interesting(pair, retouched) {
+            // The edit counts go last so a reader of the first four columns
+            // keeps working.
             println!(
-                "{}\t{}\t{}\t{:.2}",
+                "{}\t{}\t{}\t{:.2}\t{}\t{}\t{}",
                 describe(pair.changed),
                 name_of(before, pair.before),
                 name_of(after, pair.after),
-                pair.score
+                pair.score,
+                pair.edits.added,
+                pair.edits.removed,
+                pair.edits.edited,
             );
         }
     }
@@ -395,17 +481,25 @@ fn print_compact(diff: &Diff, before: &Binary, after: &Binary, show_all: bool) {
         let closest =
             miss.and_then(|miss| miss.best).map(|best| name_of(after, best)).unwrap_or_default();
         let score = miss.map_or(0.0, |miss| miss.score);
-        println!("gone\t{}\t{closest}\t{score:.2}", name_of(before, *index));
+        println!("gone\t{}\t{closest}\t{score:.2}\t\t\t", name_of(before, *index));
     }
     for index in &diff.added {
-        println!("new\t\t{}\t", name_of(after, *index));
+        println!("new\t\t{}\t\t\t\t", name_of(after, *index));
     }
 }
 
-fn summarize(diff: &Diff) {
+fn summarize(diff: &Diff, retouched: Retouched) {
     let changed = diff.changed().count();
     let same = diff.matched.len() - changed;
     let nothing_happened = changed == 0 && diff.removed.is_empty() && diff.added.is_empty();
+
+    // A count that disagrees with the table reads like a bug, so say how many
+    // rows were held back and how to see them.
+    let hidden = if retouched == Retouched::Hide {
+        diff.changed().filter(|pair| is_retouched(pair)).count()
+    } else {
+        0
+    };
 
     // Say so plainly when there is nothing to report. A bare count after an
     // empty table reads like the tool failed.
@@ -421,6 +515,9 @@ fn summarize(diff: &Diff) {
         diff.removed.len(),
         diff.added.len()
     );
+    if hidden > 0 {
+        println!("{hidden} changed only a constant, hidden. Use --show-retouched to list them.");
+    }
 }
 
 #[cfg(test)]
@@ -450,22 +547,65 @@ mod tests {
         }
     }
 
-    /// Only unchanged functions are hidden when a reader wants changes.
-    #[test]
-    fn unchanged_functions_are_the_only_ones_hidden() {
-        let pair = |changed| Match {
+    /// Build a pair that scores below a perfect match and rewrote one
+    /// instruction, so only its [`Changed`] decides whether it is shown.
+    fn edited_pair(changed: Changed) -> Match {
+        Match {
             before: 0,
             after: 0,
             confidence: Confidence::IdenticalCode,
-            score: 1.0,
+            score: 0.9,
             changed,
-            edits: Edits::default(),
-        };
+            edits: Edits { added: 0, removed: 0, edited: 1 },
+        }
+    }
 
-        assert!(!is_interesting(&pair(Changed::No)));
-        assert!(is_interesting(&pair(Changed::Reordered)));
-        assert!(is_interesting(&pair(Changed::InDetail)));
-        assert!(is_interesting(&pair(Changed::Unreadable)));
-        assert!(is_interesting(&pair(Changed::Yes)));
+    /// Build a pair that changed nothing but a constant.
+    fn retouched_pair(changed: Changed) -> Match {
+        Match { score: 1.0, edits: Edits::default(), ..edited_pair(changed) }
+    }
+
+    /// Only unchanged functions are hidden when a reader wants changes.
+    #[test]
+    fn unchanged_functions_are_the_only_ones_hidden() {
+        let shown = |changed| is_interesting(&edited_pair(changed), Retouched::Hide);
+
+        assert!(!shown(Changed::No));
+        assert!(shown(Changed::Reordered));
+        assert!(shown(Changed::InDetail));
+        assert!(shown(Changed::Unreadable));
+        assert!(shown(Changed::Yes));
+    }
+
+    /// A function that only changed a constant is held back by default.
+    #[test]
+    fn a_retouched_function_is_hidden_unless_asked_for() {
+        let pair = retouched_pair(Changed::InDetail);
+
+        assert!(is_retouched(&pair));
+        assert!(!is_interesting(&pair, Retouched::Hide), "hidden by default");
+        assert!(is_interesting(&pair, Retouched::Show), "--show-retouched lists it");
+    }
+
+    /// A rewritten instruction is a real edit whatever the pair scores.
+    ///
+    /// `do_mount` in a measured kernel pair scores 1.00 and rewrote
+    /// one instruction. Hiding it would lose a real finding.
+    #[test]
+    fn a_perfect_score_with_an_edit_is_still_shown() {
+        let pair = Match { score: 1.0, ..edited_pair(Changed::Yes) };
+
+        assert!(!is_retouched(&pair), "an edited instruction is not a retouch");
+        assert!(is_interesting(&pair, Retouched::Hide));
+    }
+
+    /// A pair below a perfect score differs in shape, so it is shown even
+    /// when its counts round to nothing.
+    #[test]
+    fn an_imperfect_score_without_counts_is_still_shown() {
+        let pair = Match { score: 0.9, edits: Edits::default(), ..edited_pair(Changed::Yes) };
+
+        assert!(!is_retouched(&pair));
+        assert!(is_interesting(&pair, Retouched::Hide));
     }
 }
