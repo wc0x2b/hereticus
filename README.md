@@ -87,6 +87,25 @@ which is separate work.
 
 This matters less than it sounds: shipped firmware is built optimized.
 
+## Using this on firmware
+
+For finding what a vendor changed between two releases, which is the workflow
+this was built for:
+
+| Task | Works |
+|---|---|
+| Vendor v1.2 against v1.3, both stripped — what changed? | **Yes** |
+| Find a known function inside a different image built the same way | **Yes**, matched at 1.00 in testing |
+| Is this CVE patched? — a reference build against the vendor's build | **No**, reported as a near miss |
+
+The third one fails because the vendor's compiler and flags are rarely the ones
+you have. A reference at `-O2` against the same source at `-O1` scores 0.38:
+the compiler vectorized one and not the other, so the two really are different
+algorithms. `fndiff` reports the near miss with its score rather than claiming
+a match, because a wrong "unchanged" is the one answer a defensive tool must
+never give. Closing that gap needs semantic comparison, not better
+normalizing.
+
 ## Other limits
 
 * **NEON is not decoded.** `yaxpeax-arm` 0.4 reports "incomplete decoder" for
@@ -134,6 +153,17 @@ firmware image has none and a renamed function keeps its behavior, so evidence
 from the code wins. With `--ignore-names` the cascade skips that stage
 entirely, and on the test corpus it still matches every function.
 
+A function the cascade cannot pair still names its nearest neighbour, so a
+reader can tell a removed function from one that was only compiled differently:
+
+```
+sub_0: gone, closest sub_0 at 0.38
+```
+
+`--near-miss` sets the floor for showing one. `fndiff` does not lower the match
+threshold to swallow these: a wrong "unchanged" hides a live bug, which is the
+one failure this tool must not have.
+
 `scan.rs` finds the functions when the symbol table is gone. The ARM exception
 index is the strongest source: it lists one entry per function and survives
 stripping, and where it is present the weaker sources are not consulted at all.
@@ -143,7 +173,7 @@ would split one function into two.
 ## Testing
 
 ```
-just quick-test   # 113 tests, about four seconds
+just quick-test   # 126 tests, about four seconds
 just test         # the same, plus slow tests
 just fixtures     # rebuild the ARM32 corpus
 just fuzz <name>  # one property test under a fuzzer, needs nightly
@@ -207,6 +237,31 @@ relocatable object holds unrelocated calls encoding `bl .-8`, which reads back
 as the call site, so every call appeared to start a function. And a recovered
 function ran to the start of the next one, swallowing the padding between them,
 which made `array_max` at `-Os` look changed when only stripping had happened.
+
+## Matching on constants: measured, and rejected
+
+Worth recording, because it sounds obviously right and is not.
+
+The constants a function uses come from the source, so they should outlive a
+change of compiler flags that rewrites everything around them. Measured, they
+do: `mul_by_constant` keeps `{37}` and `classify` keeps `{2, 100}` at `-O1`,
+`-O2` and `-Os`.
+
+As a way to *pair* functions it is still worse than comparing instructions:
+
+* **It pairs the wrong functions.** `mul_by_constant` and `call_chain` both
+  reduce to `{37}`, because the compiler inlined the first into the second.
+  Constants cannot tell them apart.
+* **It misses half of them.** Four of eight fixtures fall below the match
+  threshold, including both functions the compiler vectorizes — which were the
+  reason to try this.
+* **It is worst where it was wanted.** On a reference build against a
+  differently optimized one, the true pair scores 0.40 while a decoy scores
+  1.00, because most functions there share the same uninformative set.
+
+`norm::constant_signature` remains, because the constants a function uses are
+worth *reporting*. Nothing matches on them, and two corpus tests assert the
+false positive so the finding cannot quietly be lost.
 
 ## Prior art
 
