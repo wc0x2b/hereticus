@@ -19,8 +19,11 @@ Works end to end for ARM32 objects, with or without symbols.
 
 ```console
 $ fndiff before.o after.o
-FUNCTION                CHANGE          SCORE  +/-/~       MATCHED BY
-array_max -> array_min  changed unread   0.84  0/0/3       similar
+╭────────────────────────┬────────────────┬───────┬───────┬────────────╮
+│ FUNCTION               │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY │
+├────────────────────────┼────────────────┼───────┼───────┼────────────┤
+│ array_max -> array_min │ changed unread │  0.84 │ 0/0/3 │ similar    │
+╰────────────────────────┴────────────────┴───────┴───────┴────────────╯
 
 8 matched (4 unchanged, 4 changed), 0 gone, 0 new
 3 changed only a constant, hidden. Use --show-retouched to list them.
@@ -45,11 +48,14 @@ whatever the pair scores.
 
 ```console
 $ fndiff --show-retouched before.o after.o
-FUNCTION                CHANGE          SCORE  +/-/~       MATCHED BY
-mul_by_constant         changed values   1.00  -           identical shape
-classify                changed values   1.00  -           identical shape
-call_chain              changed values   1.00  -           identical shape
-array_max -> array_min  changed unread   0.84  0/0/3       similar
+╭────────────────────────┬────────────────┬───────┬───────┬─────────────────╮
+│ FUNCTION               │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY      │
+├────────────────────────┼────────────────┼───────┼───────┼─────────────────┤
+│ mul_by_constant        │ changed values │  1.00 │ -     │ identical shape │
+│ classify               │ changed values │  1.00 │ -     │ identical shape │
+│ call_chain             │ changed values │  1.00 │ -     │ identical shape │
+│ array_max -> array_min │ changed unread │  0.84 │ 0/0/3 │ similar         │
+╰────────────────────────┴────────────────┴───────┴───────┴─────────────────╯
 
 8 matched (4 unchanged, 4 changed), 0 gone, 0 new
 ```
@@ -63,8 +69,11 @@ answer, with addresses in place of names:
 
 ```console
 $ fndiff before-stripped.o after-stripped.o
-FUNCTION  CHANGE          SCORE  +/-/~       MATCHED BY
-sub_90    changed unread   0.84  0/0/3       similar
+╭──────────┬────────────────┬───────┬───────┬────────────╮
+│ FUNCTION │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY │
+├──────────┼────────────────┼───────┼───────┼────────────┤
+│ sub_90   │ changed unread │  0.84 │ 0/0/3 │ similar    │
+╰──────────┴────────────────┴───────┴───────┴────────────╯
 
 8 matched (4 unchanged, 4 changed), 0 gone, 0 new
 3 changed only a constant, hidden. Use --show-retouched to list them.
@@ -81,6 +90,7 @@ sub_90    changed unread   0.84  0/0/3       similar
 | Function recovery without symbols | Works |
 | Raw images with no container format | Works, with `--base` |
 | Progress while it runs | Works, on standard error |
+| Colored report | Works, on a terminal |
 
 ## Use
 
@@ -92,6 +102,7 @@ fndiff --ignore-names a.o b.o        # match from the code alone
 fndiff --format compact a.o b.o      # tab separated, for scripts
 fndiff --exit-code a.o b.o           # exit 1 when anything changed
 fndiff --progress never a.o b.o      # no progress bar
+fndiff --color never a.o b.o         # no color
 
 # A firmware image dumped from flash, with no ELF header
 fndiff --raw --base 0x08000000 v1.bin v2.bin
@@ -105,6 +116,14 @@ bar for each stage. The bar goes to standard error, which leaves the report on
 standard output for a pipe to read. `--progress` chooses when to draw it:
 `auto` draws only to a terminal, `never` turns it off, and `always` draws it
 even when standard error is redirected.
+
+The report colors the `CHANGE` column by what happened to the function, so the
+real edits stand out from the ones that only moved a constant. In the `+/-/~`
+column each count takes the color of its own kind, as in a patch: green added,
+red removed, yellow rewritten. Color goes to standard
+output with the report, so `--color` defaults to `auto` and writes plain text
+unless standard output is a terminal. A report redirected to a file stays plain
+for another tool to read. `always` and `never` override that test.
 
 ## Speed
 
@@ -194,11 +213,15 @@ changed between the two releases.
 
 ```console
 $ fndiff --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
-FUNCTION      CHANGE          SCORE  +/-/~       MATCHED BY
-sub_8020a3bc  changed          1.00  0/0/1       similar
-sub_8020b1f8  changed          0.98  0/0/1       similar
-sub_80208e20  changed unread   0.98  0/0/1       similar
-...
+╭──────────────┬────────────────┬───────┬───────┬────────────╮
+│ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY │
+├──────────────┼────────────────┼───────┼───────┼────────────┤
+│ sub_8020a3bc │ changed        │  1.00 │ 0/0/1 │ similar    │
+│ sub_8020b1f8 │ changed        │  0.98 │ 0/0/1 │ similar    │
+│ sub_80208e20 │ changed unread │  0.98 │ 0/0/1 │ similar    │
+│ ...          │                │       │       │            │
+╰──────────────┴────────────────┴───────┴───────┴────────────╯
+
 62 matched (51 unchanged, 11 changed), 0 gone, 0 new
 3 changed only a constant, hidden. Use --show-retouched to list them.
 ```
@@ -237,8 +260,11 @@ change and the other three should not.
 
 ```console
 $ fndiff before.o after.o
-FUNCTION      CHANGE          SCORE  +/-/~       MATCHED BY
-objpool_init  changed          0.93  0/3/119     same name
+╭──────────────┬─────────┬───────┬─────────┬────────────╮
+│ FUNCTION     │ CHANGE  │ SCORE │ +/-/~   │ MATCHED BY │
+├──────────────┼─────────┼───────┼─────────┼────────────┤
+│ objpool_init │ changed │  0.93 │ 0/3/119 │ same name  │
+╰──────────────┴─────────┴───────┴─────────┴────────────╯
 
 4 matched (3 unchanged, 1 changed), 0 gone, 0 new
 ```
@@ -251,8 +277,11 @@ address in place of the name:
 
 ```console
 $ fndiff --ignore-names before-stripped.o after-stripped.o
-FUNCTION  CHANGE          SCORE  +/-/~       MATCHED BY
-sub_0     changed          0.93  0/3/119     similar
+╭──────────┬─────────┬───────┬─────────┬────────────╮
+│ FUNCTION │ CHANGE  │ SCORE │ +/-/~   │ MATCHED BY │
+├──────────┼─────────┼───────┼─────────┼────────────┤
+│ sub_0    │ changed │  0.93 │ 0/3/119 │ similar    │
+╰──────────┴─────────┴───────┴─────────┴────────────╯
 
 4 matched (3 unchanged, 1 changed), 0 gone, 0 new
 ```
@@ -265,8 +294,11 @@ answer:
 
 ```console
 $ fndiff --raw --base 0x0 before.bin after.bin
-FUNCTION  CHANGE          SCORE  +/-/~       MATCHED BY
-sub_0     changed          0.93  0/3/119     similar
+╭──────────┬─────────┬───────┬─────────┬────────────╮
+│ FUNCTION │ CHANGE  │ SCORE │ +/-/~   │ MATCHED BY │
+├──────────┼─────────┼───────┼─────────┼────────────┤
+│ sub_0    │ changed │  0.93 │ 0/3/119 │ similar    │
+╰──────────┴─────────┴───────┴─────────┴────────────╯
 
 4 matched (3 unchanged, 1 changed), 0 gone, 0 new
 ```

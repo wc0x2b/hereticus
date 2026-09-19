@@ -232,3 +232,94 @@ fn a_forced_progress_bar_stays_off_standard_output() {
     );
     assert!(!loud.stderr.is_empty(), "a forced bar writes something to standard error");
 }
+
+/// A redirected report must stay plain text.
+///
+/// The tests capture standard output through a pipe, so `--color auto` must
+/// decide against color here. If it did not, every escape code would land in
+/// the snapshots and in any report a user redirects to a file.
+#[test]
+fn a_redirected_report_carries_no_color() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    let plain = fndiff()
+        .args(["--progress", "never", "fixtures/build/O2/basic.o", "fixtures/build/O2/basic_v2.o"])
+        .output()
+        .expect("the tool runs");
+
+    assert!(
+        !plain.stdout.contains(&ESCAPE),
+        "a report that is not going to a terminal must hold no escape codes"
+    );
+}
+
+/// `--color always` overrides the test for a terminal.
+///
+/// Color is the only difference: the same rows, in the same order, with the
+/// same values.
+#[test]
+fn forced_color_paints_the_report() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    let painted = fndiff()
+        .args([
+            "--progress",
+            "never",
+            "--color",
+            "always",
+            "fixtures/build/O2/basic.o",
+            "fixtures/build/O2/basic_v2.o",
+        ])
+        .output()
+        .expect("the tool runs");
+
+    assert!(painted.stdout.contains(&ESCAPE), "a forced color report holds escape codes");
+
+    let plain = fndiff()
+        .args([
+            "--progress",
+            "never",
+            "--color",
+            "never",
+            "fixtures/build/O2/basic.o",
+            "fixtures/build/O2/basic_v2.o",
+        ])
+        .output()
+        .expect("the tool runs");
+
+    assert!(!plain.stdout.contains(&ESCAPE), "`--color never` holds none");
+    assert_eq!(
+        strip_color(&painted.stdout),
+        String::from_utf8_lossy(&plain.stdout),
+        "color must not change what the report says"
+    );
+}
+
+/// The byte that opens an ANSI escape sequence.
+const ESCAPE: u8 = 0x1b;
+
+/// Remove ANSI escape sequences, so two reports compare on their text alone.
+///
+/// Every sequence the report writes is a Select Graphic Rendition one, which
+/// ends at `m`.
+fn strip_color(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut plain = String::with_capacity(text.len());
+    let mut rest = text.as_ref();
+
+    while let Some(start) = rest.find(char::from(ESCAPE)) {
+        plain.push_str(&rest[..start]);
+        match rest[start..].find('m') {
+            Some(end) => rest = &rest[start + end + 1..],
+            None => return plain,
+        }
+    }
+    plain.push_str(rest);
+    plain
+}

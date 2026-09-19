@@ -14,6 +14,10 @@ use fndiff::matching::{
 use fndiff::obj::{Binary, Isa};
 use fndiff::raw::check_base;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use tabled::settings::object::{Columns, Rows};
+use tabled::settings::style::HorizontalLine;
+use tabled::settings::{Alignment, Color, Style};
+use tabled::{Table, Tabled};
 
 /// Compare two binaries and report the functions that changed.
 #[derive(Parser, Debug)]
@@ -90,6 +94,14 @@ struct Args {
     /// The bar goes to standard error, so it never mixes with the report.
     #[arg(long, value_enum, default_value_t = When::Auto, verbatim_doc_comment)]
     progress: When,
+
+    /// When to color the report.
+    ///
+    /// Color goes to standard output with the report, so it is off by default
+    /// unless standard output is a terminal. A redirected report stays plain
+    /// text that another tool can read.
+    #[arg(long, value_enum, default_value_t = When::Auto, verbatim_doc_comment)]
+    color: When,
 }
 
 /// Whether to show a display that only a terminal can use.
@@ -260,7 +272,8 @@ fn run(args: &Args) -> Result<bool, String> {
         // `--all` asks for every function, so it implies the retouched ones.
         Format::Text => {
             let retouched = Retouched::from(args.show_retouched || args.all);
-            print_text(&diff, &before, &after, args.all, args.near_miss, retouched)
+            let paint = Paint::resolve(args.color);
+            print_text(&diff, &before, &after, args.all, args.near_miss, retouched, paint)
         }
         Format::Compact => {
             let retouched = Retouched::from(args.show_retouched || args.all);
@@ -325,12 +338,26 @@ fn describe(change: Changed) -> &'static str {
 /// A function whose constants changed shows a dash, and that is right: no
 /// instruction was touched. The `CHANGE` column names what did change, and
 /// the two columns answer different questions.
-fn describe_edits(edits: Edits) -> String {
+///
+/// Each count carries the color of its own kind, not of the row, because the
+/// three numbers say three different things. The colors follow a patch: green
+/// added, red removed, yellow rewritten. The separators stay plain, so the
+/// field still reads as one value.
+fn describe_edits(edits: Edits, paint: Paint) -> String {
     if edits.total() == 0 {
         return "-".to_string();
     }
-    format!("{}/{}/{}", edits.added, edits.removed, edits.edited)
+
+    let added = paint.pick(ADDED_COLOR).colorize(edits.added.to_string());
+    let removed = paint.pick(REMOVED_COLOR).colorize(edits.removed.to_string());
+    let edited = paint.pick(EDITED_COLOR).colorize(edits.edited.to_string());
+    format!("{added}/{removed}/{edited}")
 }
+
+/// The color of each count in the `+/-/~` column.
+const ADDED_COLOR: Color = Color::FG_GREEN;
+const REMOVED_COLOR: Color = Color::FG_RED;
+const EDITED_COLOR: Color = Color::FG_YELLOW;
 
 /// Describe why two functions were paired.
 fn describe_confidence(confidence: Confidence) -> &'static str {
@@ -380,6 +407,84 @@ impl From<bool> for Retouched {
     }
 }
 
+/// Whether the report is colored.
+///
+/// Resolved once, before anything prints, so every line agrees.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Paint {
+    On,
+    Off,
+}
+
+impl Paint {
+    /// Decide from the flag and, for `Auto`, from what standard output is.
+    ///
+    /// Color belongs to a person reading a terminal. A report sent to a file
+    /// or a pipe must stay plain, or the escape codes become part of whatever
+    /// reads it next.
+    fn resolve(when: When) -> Self {
+        match when {
+            When::Always => Self::On,
+            When::Never => Self::Off,
+            When::Auto => {
+                if console::colors_enabled() && Term::stdout().is_term() {
+                    Self::On
+                } else {
+                    Self::Off
+                }
+            }
+        }
+    }
+
+    /// Give a color, or an empty one that prints no escape codes.
+    fn pick(self, color: Color) -> Color {
+        match self {
+            Self::On => color,
+            Self::Off => Color::empty(),
+        }
+    }
+}
+
+/// Where the change sits in [`Row`], which is the one column to color.
+const CHANGE_COLUMN: usize = 1;
+
+/// Where the score sits in [`Row`], which is the one column to align right.
+const SCORE_COLUMN: usize = 2;
+
+/// One line of the text report.
+///
+/// The column headings are short because the table sizes itself to the widest
+/// cell, and a long heading would widen a column that holds nothing wide.
+#[derive(Tabled)]
+struct Row {
+    #[tabled(rename = "FUNCTION")]
+    function: String,
+    #[tabled(rename = "CHANGE")]
+    change: &'static str,
+    #[tabled(rename = "SCORE")]
+    score: String,
+    /// Added, removed and rewritten instructions.
+    #[tabled(rename = "+/-/~")]
+    edits: String,
+    #[tabled(rename = "MATCHED BY")]
+    matched_by: &'static str,
+}
+
+/// Color a row by what happened to the function.
+///
+/// The severity runs from an unread difference, through a changed constant, to
+/// a rewritten body. A reader scanning a long report finds the real edits by
+/// color before reading a word.
+fn color_of(change: Changed) -> Color {
+    match change {
+        Changed::Yes => Color::FG_RED,
+        Changed::Unreadable => Color::FG_MAGENTA,
+        Changed::InDetail => Color::FG_YELLOW,
+        Changed::Reordered => Color::FG_CYAN,
+        Changed::No => Color::FG_GREEN,
+    }
+}
+
 fn print_text(
     diff: &Diff,
     before: &Binary,
@@ -387,50 +492,66 @@ fn print_text(
     show_all: bool,
     near_miss_floor: f64,
     retouched: Retouched,
+    paint: Paint,
 ) {
     let shown: Vec<&Match> =
         diff.matched.iter().filter(|pair| show_all || is_interesting(pair, retouched)).collect();
 
     if !shown.is_empty() {
-        // A renamed function prints as `old -> new`, which is longer than
-        // either name. Build the labels first, then size the column to them,
-        // so a rename cannot push the table out of line.
-        let labels: Vec<String> = shown
-            .iter()
-            .map(|pair| {
-                let name = name_of(before, pair.before);
-                let renamed = name_of(after, pair.after);
-                if name == renamed { name } else { format!("{name} -> {renamed}") }
-            })
-            .collect();
+        let rows = shown.iter().map(|pair| {
+            // A renamed function reads as `old -> new`. The table sizes the
+            // column to the widest label, so a rename cannot push it out of
+            // line.
+            let name = name_of(before, pair.before);
+            let renamed = name_of(after, pair.after);
+            Row {
+                function: if name == renamed { name } else { format!("{name} -> {renamed}") },
+                change: describe(pair.changed),
+                score: format!("{:.2}", pair.score),
+                edits: describe_edits(pair.edits, paint),
+                matched_by: describe_confidence(pair.confidence),
+            }
+        });
 
-        let width = labels.iter().map(String::len).max().unwrap_or(0).clamp(8, 60);
+        let mut table = Table::new(rows);
+        table
+            // `rounded` draws no line under the heading, so borrow one from
+            // `modern_rounded`, which uses the same corner characters.
+            .with(
+                Style::rounded()
+                    .horizontals([(1, HorizontalLine::inherit(Style::modern_rounded()))]),
+            )
+            .with(Alignment::left())
+            // The score is a number, so it reads better against the decimal
+            // point than against the left edge.
+            .modify(Columns::one(SCORE_COLUMN), Alignment::right())
+            .modify(Rows::first(), paint.pick(Color::BOLD));
 
-        // The edit column is headed `+/-/~`: added, removed, rewritten.
-        println!(
-            "{:<width$}  {:<14}  {:>5}  {:<10}  MATCHED BY",
-            "FUNCTION", "CHANGE", "SCORE", "+/-/~"
-        );
-        for (pair, label) in shown.iter().zip(&labels) {
-            println!(
-                "{:<width$}  {:<14}  {:>5.2}  {:<10}  {}",
-                label,
-                describe(pair.changed),
-                pair.score,
-                describe_edits(pair.edits),
-                describe_confidence(pair.confidence),
-            );
+        // Only the `CHANGE` cell takes the severity color. A whole colored row
+        // buries the one word a reader is looking for, and the counts beside it
+        // carry colors of their own. Row 0 is the heading, so the pairs start
+        // at row 1.
+        for (offset, pair) in shown.iter().enumerate() {
+            let cell = (offset + 1, CHANGE_COLUMN);
+            table.modify(cell, paint.pick(color_of(pair.changed)));
         }
+
+        println!("{table}");
     }
 
+    // Only the status word takes a color, as in the `CHANGE` column. The name
+    // beside it stays plain, so the word is what the eye finds.
+    let gone = paint.pick(REMOVED_COLOR).colorize("gone");
+    let new = paint.pick(ADDED_COLOR).colorize("new");
     for index in &diff.removed {
+        let name = name_of(before, *index);
         match near_miss_note(diff, *index, after, near_miss_floor) {
-            Some(note) => println!("{}: gone, {note}", name_of(before, *index)),
-            None => println!("{}: gone", name_of(before, *index)),
+            Some(note) => println!("{name}: {gone}, {note}"),
+            None => println!("{name}: {gone}"),
         }
     }
     for index in &diff.added {
-        println!("{}: new", name_of(after, *index));
+        println!("{}: {new}", name_of(after, *index));
     }
 
     summarize(diff, retouched);
@@ -607,5 +728,75 @@ mod tests {
 
         assert!(!is_retouched(&pair));
         assert!(is_interesting(&pair, Retouched::Hide));
+    }
+
+    /// The two flags that do not ask about the terminal always agree.
+    #[test]
+    fn the_color_flag_overrides_what_standard_output_is() {
+        assert_eq!(Paint::resolve(When::Always), Paint::On);
+        assert_eq!(Paint::resolve(When::Never), Paint::Off);
+    }
+
+    /// A test suite captures standard output through a pipe, so `Auto` must
+    /// decide against color while these tests run.
+    #[test]
+    fn auto_gives_no_color_when_standard_output_is_not_a_terminal() {
+        assert_eq!(Paint::resolve(When::Auto), Paint::Off);
+    }
+
+    /// An unpainted report must write no escape codes at all.
+    #[test]
+    fn no_color_prints_nothing_around_the_text() {
+        let painted = Paint::On.pick(Color::FG_RED).colorize("do_mount").to_string();
+        let plain = Paint::Off.pick(Color::FG_RED).colorize("do_mount").to_string();
+
+        assert_eq!(plain, "do_mount");
+        assert_ne!(painted, plain, "a painted cell carries escape codes");
+    }
+
+    /// The counts read the same with color as without.
+    #[test]
+    fn color_does_not_change_what_the_counts_say() {
+        let edits = Edits { added: 1, removed: 2, edited: 3 };
+
+        assert_eq!(describe_edits(edits, Paint::Off), "1/2/3");
+        assert_eq!(describe_edits(Edits::default(), Paint::Off), "-");
+        // A dash is not a count, so no color applies to it.
+        assert_eq!(describe_edits(Edits::default(), Paint::On), "-");
+    }
+
+    /// Each count carries the color of its own kind.
+    ///
+    /// Coloring the three numbers alike would waste the column: the point is
+    /// to tell an addition from a removal at a glance.
+    #[test]
+    fn each_count_carries_its_own_color() {
+        let painted = describe_edits(Edits { added: 1, removed: 2, edited: 3 }, Paint::On);
+
+        assert!(painted.contains(&ADDED_COLOR.colorize("1").to_string()));
+        assert!(painted.contains(&REMOVED_COLOR.colorize("2").to_string()));
+        assert!(painted.contains(&EDITED_COLOR.colorize("3").to_string()));
+        // The separators stay plain, so the field still reads as one value.
+        assert_eq!(painted.matches('/').count(), 2);
+    }
+
+    /// Each kind of change must be told apart by color.
+    ///
+    /// Two kinds sharing a color would hide the difference the report exists
+    /// to show.
+    #[test]
+    fn every_change_has_its_own_color() {
+        let changes =
+            [Changed::No, Changed::Reordered, Changed::InDetail, Changed::Unreadable, Changed::Yes];
+
+        for (index, change) in changes.iter().enumerate() {
+            for other in &changes[index + 1..] {
+                assert_ne!(
+                    color_of(*change).colorize("x").to_string(),
+                    color_of(*other).colorize("x").to_string(),
+                    "{change:?} and {other:?} must not share a color"
+                );
+            }
+        }
     }
 }
