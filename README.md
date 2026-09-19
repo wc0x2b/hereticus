@@ -125,6 +125,47 @@ It stays quiet when the image holds no stored addresses at all, which is
 normal for small position-independent code. Silence means "cannot tell", not
 "looks right".
 
+## Tried on a real kernel patch
+
+The fixtures are small and written for the tests, so `fndiff` was also run
+against a real upstream change: commit `cb6fcef8b4b6`, *"objpool: fix to make
+percpu slot allocation more robust"*, which rewrites the allocation path in
+`lib/objpool.c`. Both versions were cross compiled for ARM with the kernel's
+own build system, giving two objects that differ only by that patch.
+
+Ground truth: the patch touches `objpool_init_percpu_slots`, which is `static`
+and inlined into its only caller, so `objpool_init` is the function that should
+change and the other three should not.
+
+```console
+$ fndiff before.o after.o
+FUNCTION      CHANGE          SCORE  MATCHED BY
+objpool_init  changed          0.93  same name
+
+4 matched (3 unchanged, 1 changed), 0 gone, 0 new
+```
+
+Stripping both objects and ignoring names gives the same answer, with the
+address in place of the name:
+
+```console
+$ fndiff --ignore-names before-stripped.o after-stripped.o
+FUNCTION  CHANGE          SCORE  MATCHED BY
+sub_0     changed          0.93  similar
+
+4 matched (3 unchanged, 1 changed), 0 gone, 0 new
+```
+
+`sub_0` is `objpool_init`. One patched function found, three left alone, with
+no symbols at all.
+
+As raw blobs it is noisier, which is the documented cost of recovering
+boundaries without an exception index. `objpool_init` is 776 bytes and gets
+split, so the report becomes two changes plus one gone and one new. Three of
+those four findings fall inside `objpool_init`, and the fourth is
+`objpool_free`, flagged because everything after the grown function shifted.
+An analyst is pointed at the right function, with one lead to discard.
+
 ## Using this on firmware
 
 For finding what a vendor changed between two releases, which is the workflow
