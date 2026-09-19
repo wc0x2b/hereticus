@@ -105,11 +105,18 @@ Two things are worse than with an object file, and both are reported rather
 than hidden.
 
 **Boundaries are approximate.** A raw image has no exception index, so
-functions are recovered from call targets and from the code after a return.
-That finds every real function and also splits some at an internal return: the
-test corpus recovers 16 starts where there are 8 functions. Matching still
-works, because each piece matches its counterpart, but the function count is
-not a fact.
+functions are recovered from call targets, from the code after a return, and
+from prologues. Every real function is found, and some are still split at a
+return the scan cannot rule out: the test corpus recovers 14 starts where there
+are 8 functions. Matching still works, because each piece matches its
+counterpart, but the function count is not a fact.
+
+Two rules keep the splitting down, and on a stripped kernel object they take
+recovery from ten functions to exactly the four that exist. A return that a
+branch reaches across is inside a function, because control flows past it. And
+a `push` that saves the link register opens a function whatever precedes it,
+which matters because an error path can jump backwards over the end of its own
+function and hide the next one.
 
 **A wrong `--base` is nearly silent.** ARM branches are relative, so the code
 decodes and every branch resolves whatever base you give. Only the reported
@@ -143,14 +150,14 @@ FUNCTION      CHANGE          SCORE  MATCHED BY
 sub_8020a8f8  changed          1.00  similar
 sub_80208f14  changed          0.91  similar
 ...
-149 matched, 11 changed
+62 matched, 11 changed
 ```
 
 Scored against the byte-level truth:
 
 | | |
 |---|---|
-| Functions recovered | 149 |
+| Functions recovered | 62 |
 | Functions holding a changed byte | 11 |
 | Reported | 11 |
 | **Precision** | **1.00** |
@@ -200,12 +207,20 @@ sub_0     changed          0.93  similar
 `sub_0` is `objpool_init`. One patched function found, three left alone, with
 no symbols at all.
 
-As raw blobs it is noisier, which is the documented cost of recovering
-boundaries without an exception index. `objpool_init` is 776 bytes and gets
-split, so the report becomes two changes plus one gone and one new. Three of
-those four findings fall inside `objpool_init`, and the fourth is
-`objpool_free`, flagged because everything after the grown function shifted.
-An analyst is pointed at the right function, with one lead to discard.
+As raw blobs, with no symbols and no exception index, it now gives the same
+answer:
+
+```console
+$ fndiff --raw --base 0x0 before.bin after.bin
+sub_0  changed  0.93  similar
+
+4 matched (3 unchanged, 1 changed), 0 gone, 0 new
+```
+
+Four functions recovered at exactly the addresses the symbol table names, and
+the one that changed reported. An earlier version split those four into ten and
+reported two changes plus one gone and one new; the rules in `scan.rs` about
+which returns end a function are what closed the gap.
 
 ## Using this on firmware
 
@@ -296,7 +311,7 @@ would split one function into two.
 ## Testing
 
 ```
-just quick-test   # 153 tests, about five seconds
+just quick-test   # 157 tests, about five seconds
 just test         # the same, plus slow tests
 just fixtures     # rebuild the ARM32 corpus
 just fuzz <name>  # one property test under a fuzzer, needs nightly

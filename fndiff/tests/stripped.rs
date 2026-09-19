@@ -165,10 +165,21 @@ fn recovers_functions_with_nothing_but_the_code() {
         recovered.functions.iter().map(|function| function.address).collect();
 
     // Every real function must be found. Without the exception index the scan
-    // also splits functions at internal returns, so it finds more than there
-    // are; those extra boundaries are the known cost of guessing.
+    // still splits some functions at a return it cannot rule out, so it finds
+    // more than there are; those extra boundaries are the cost of guessing.
     let missed: Vec<&u64> = real_starts.difference(&found).collect();
     assert!(missed.is_empty(), "every real function must be found, but missed {missed:?}");
+
+    // How much it over-splits is worth holding still. Ignoring returns that a
+    // branch crosses took this corpus from 16 recovered starts to 14, and a
+    // kernel object from 10 to exactly its 4. A change that makes this worse
+    // should have to say so.
+    assert!(
+        found.len() <= real_starts.len() * 2,
+        "recovered {} starts for {} functions, which is more splitting than expected",
+        found.len(),
+        real_starts.len()
+    );
 }
 
 /// A file with code but no recoverable function must say so.

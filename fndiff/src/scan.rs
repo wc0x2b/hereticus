@@ -12,13 +12,27 @@
 //!    leave it out.
 //! 2. **Call targets.** Anything a `bl` jumps to is the start of a function.
 //!    This finds what is called but misses what is not.
-//! 3. **What follows a return.** Code after a function ends usually starts a
-//!    new one. This is the weakest source, so it only fills gaps the other two
-//!    left, and only when the bytes there decode.
+//! 3. **What follows a return, and what looks like a prologue.** Code after a
+//!    function ends usually starts a new one, and a `push` that saves the link
+//!    register opens almost every non-leaf function. This is the weakest
+//!    source, so it only fills gaps the other two left.
 //!
 //! Recovery is a guess wherever the first source is missing. [`Recovered`]
 //! records which source found each function so a caller can tell an exact
 //! answer from an inferred one.
+//!
+//! # Not every return ends a function
+//!
+//! The obvious rule — a function starts after every return — cuts functions
+//! apart, because most of them return from more than one place. Two things
+//! keep that in check, and together they took a stripped kernel object from
+//! ten recovered functions to exactly the four it holds:
+//!
+//! * A return that a branch reaches across is inside a function, since control
+//!   flows past it.
+//! * A prologue starts a function whatever precedes it. An error path can jump
+//!   backwards over the end of its own function, and without this the function
+//!   after it is lost.
 
 use std::collections::BTreeSet;
 
@@ -266,15 +280,49 @@ fn call_targets<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
 
 /// Guess that code following a return starts a new function.
 ///
-/// The weakest source, and the one that invents boundaries. Padding between
-/// functions makes it worse, so an address is only offered when the bytes
-/// there decode into something that is not padding.
+/// The weakest source, and the one that invents boundaries. Two things keep it
+/// from inventing too many.
+///
+/// Padding between functions is stepped over, so an address is only offered
+/// when the bytes there decode into something real.
+///
+/// A return in the middle of a function is ignored. Most functions return from
+/// more than one place — a guard clause, an early exit — and treating each as
+/// the end of a function cuts one function into several. A branch that starts
+/// at or before the return and lands after it proves control flows across it,
+/// which marks it internal. Measured on a stripped kernel object, this drops
+/// the count from ten recovered functions to the four that exist, missing
+/// none. On a vendor firmware image it removes 104 of 144 candidate
+/// boundaries.
 fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
     let (insns, _) = decode_all(arch, code, base);
-    let mut out = Vec::new();
+    let end = base + code.len() as u64;
 
+    // Branches that stay inside this region, as (from, to). A function can
+    // return from several places — an early exit, a guard clause — and each
+    // of those returns is followed by more of the same function.
+    let branches: Vec<(u64, u64)> = insns
+        .iter()
+        .filter_map(|insn| match insn.kind {
+            InsnKind::Branch { target: Some(target) } | InsnKind::Jump { target: Some(target) } => {
+                Some((insn.address, target))
+            }
+            _ => None,
+        })
+        .filter(|(_, target)| *target >= base && *target < end)
+        .collect();
+
+    // A branch that starts at or before a return and lands after it proves
+    // control flows across that return, so the return is inside a function
+    // rather than at the end of one.
+    let is_internal =
+        |address: u64| branches.iter().any(|(from, to)| *from <= address && *to > address);
+
+    let mut out = Vec::new();
     for (index, insn) in insns.iter().enumerate() {
-        if insn.kind != InsnKind::Return {
+        // Only code that does not fall through can be followed by a new
+        // function. Everything else continues the one it is in.
+        if !matches!(insn.kind, InsnKind::Return | InsnKind::Jump { .. }) {
             continue;
         }
 
@@ -284,14 +332,43 @@ fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
             next += 1;
         }
 
-        if let Some(following) = insns.get(next)
-            && following.kind != InsnKind::Unknown
-        {
+        let Some(following) = insns.get(next) else { continue };
+        if following.kind == InsnKind::Unknown {
+            continue;
+        }
+
+        // A prologue is a function start whatever precedes it. This is the
+        // stronger signal, so it is not subject to the spanning test: an
+        // error path that jumps backwards over the end of its own function
+        // would otherwise hide the function that follows.
+        if is_prologue(following) {
+            out.push(following.address);
+            continue;
+        }
+
+        // Otherwise only a return that nothing branches across ends a
+        // function. A jump without a prologue after it is a tail call or a
+        // loop, which stays inside.
+        if insn.kind == InsnKind::Return && !is_internal(insn.address) {
             out.push(following.address);
         }
     }
 
     out
+}
+
+/// Report whether an instruction opens a function.
+///
+/// A function that calls anything must save the link register first, so
+/// `push {..., lr}` is how almost every non-leaf ARM function begins. Measured
+/// on a stripped kernel object, every real function start matched this and
+/// nothing else did.
+///
+/// A leaf function has no prologue at all, which is why this adds to the
+/// return-based rule rather than replacing it.
+fn is_prologue(insn: &crate::arch::Insn) -> bool {
+    (insn.mnemonic.starts_with("push") || insn.mnemonic.starts_with("stm"))
+        && insn.operands.contains("lr")
 }
 
 /// Remove the alignment padding a linker put after a function.
@@ -436,6 +513,67 @@ mod tests {
         // add, bx lr, add
         let code = [0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1, 0x00, 0x00, 0x81, 0xe0];
         assert_eq!(starts_after_returns(&Arm32, &code, 0x1000), vec![0x1008]);
+    }
+
+    /// A return in the middle of a function must not start a new one.
+    ///
+    /// Most functions return from more than one place. Treating an early exit
+    /// as the end of a function cut one function into several: a stripped
+    /// kernel object recovered ten functions where four exist.
+    #[test]
+    fn a_return_branched_across_does_not_start_a_function() {
+        // b +0x8 (past the return), bx lr, add
+        let code = [
+            0x00, 0x00, 0x00, 0xea, // b, two words forward
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr, inside the function
+            0x00, 0x00, 0x81, 0xe0, // add, still the same function
+        ];
+        assert!(
+            starts_after_returns(&Arm32, &code, 0).is_empty(),
+            "a branch lands past this return, so control flows through it"
+        );
+    }
+
+    /// A return nothing branches across still ends a function.
+    #[test]
+    fn a_return_nothing_crosses_starts_a_function() {
+        // bx lr, add
+        let code = [0x1e, 0xff, 0x2f, 0xe1, 0x00, 0x00, 0x81, 0xe0];
+        assert_eq!(starts_after_returns(&Arm32, &code, 0), vec![0x4]);
+    }
+
+    /// A prologue starts a function whatever comes before it.
+    ///
+    /// An error path can jump backwards over the end of its own function, and
+    /// that jump would otherwise hide the function that follows. Measured on a
+    /// kernel object: `objpool_free` sits after `b` rather than after a
+    /// return, and was lost until the prologue was trusted on its own.
+    #[test]
+    fn a_prologue_starts_a_function_after_a_jump() {
+        // b backwards, then push {r4, lr}
+        let code = [
+            0xfe, 0xff, 0xff, 0xea, // b, to itself
+            0x10, 0x40, 0x2d, 0xe9, // push {r4, lr}
+        ];
+        assert_eq!(
+            starts_after_returns(&Arm32, &code, 0),
+            vec![0x4],
+            "a saved link register opens a function"
+        );
+    }
+
+    #[test]
+    fn a_prologue_is_recognized_by_its_saved_link_register() {
+        let push_lr = Arm32.decode(&[0x10, 0x40, 0x2d, 0xe9], 0, 0).unwrap();
+        assert!(is_prologue(&push_lr), "push {{r4, lr}} opens a function");
+
+        // `push {r4, r5}` saves no link register, so it calls nothing and is
+        // not the start of a non-leaf function.
+        let push_plain = Arm32.decode(&[0x30, 0x00, 0x2d, 0xe9], 0, 0).unwrap();
+        assert!(!is_prologue(&push_plain));
+
+        let add = Arm32.decode(&[0x00, 0x00, 0x81, 0xe0], 0, 0).unwrap();
+        assert!(!is_prologue(&add));
     }
 
     #[test]
