@@ -92,12 +92,23 @@ fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build")
 }
 
-/// Fixture objects, or an empty list when `just fixtures` has not run.
+/// Fixture objects that keep their symbols, or an empty list when
+/// `just fixtures` has not run.
+///
+/// Stripped fixtures are skipped. This harness asks `llvm-objdump` to
+/// disassemble one symbol at a time, which needs a name, and a recovered
+/// function has none. Recovery is measured in `tests/stripped.rs` instead.
 fn fixture_objects() -> Vec<PathBuf> {
     let mut objects = Vec::new();
     let Ok(levels) = std::fs::read_dir(fixtures_dir()) else { return objects };
 
     for level in levels.flatten() {
+        let name = level.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with("-stripped") || name == "bare" {
+            continue;
+        }
+
         let Ok(entries) = std::fs::read_dir(level.path()) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();

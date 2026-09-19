@@ -13,6 +13,11 @@ pub enum ObjError {
     UnsupportedArch(object::Architecture),
     /// The file holds no executable code.
     NoCode,
+    /// The file holds code, but no function could be found in it.
+    ///
+    /// Reported rather than returning nothing, because an empty result would
+    /// read as "nothing changed" when the truth is "nothing was examined".
+    NoFunctions,
 }
 
 impl core::fmt::Display for ObjError {
@@ -21,6 +26,9 @@ impl core::fmt::Display for ObjError {
             Self::Parse(err) => write!(f, "cannot parse object: {err}"),
             Self::UnsupportedArch(arch) => write!(f, "unsupported architecture: {arch:?}"),
             Self::NoCode => write!(f, "object has no executable code"),
+            Self::NoFunctions => {
+                write!(f, "object has code, but no function could be found in it")
+            }
         }
     }
 }
@@ -70,19 +78,33 @@ pub struct Function {
     pub code: Vec<u8>,
 }
 
+/// Where the functions of a binary came from.
+///
+/// A caller should treat a scanned binary more carefully than one read from a
+/// symbol table: boundaries found by scanning can be wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoundBy {
+    /// The symbol table named every function.
+    Symbols,
+    /// The binary is stripped, so the functions were recovered from the code.
+    Scanning,
+}
+
 /// A binary, with the functions found in it.
 #[derive(Clone, Debug)]
 pub struct Binary {
     pub isa: Isa,
     pub functions: Vec<Function>,
+    /// How the functions were found.
+    pub found_by: FoundBy,
 }
 
 impl Binary {
-    /// Read a binary and recover its functions from the symbol table.
+    /// Read a binary and find the functions in it.
     ///
-    /// Only symbols marked as functions with a known size are recovered. A
-    /// stripped binary therefore yields nothing here; finding functions
-    /// without symbols needs scanning, which is separate work.
+    /// The symbol table comes first, because a name is exact. A stripped
+    /// binary has none, so the functions are recovered from the code instead.
+    /// See [`crate::scan`] for how, and for what that costs in accuracy.
     pub fn parse(data: &[u8]) -> Result<Self, ObjError> {
         let file = object::File::parse(data)?;
         let isa = Isa::from_object(file.architecture())
@@ -102,14 +124,29 @@ impl Binary {
             });
         }
 
-        if functions.is_empty() && !has_code_section(&file) {
+        if !functions.is_empty() {
+            // A stable order keeps output and snapshots reproducible; the
+            // symbol table order is not guaranteed.
+            functions.sort_by_key(|function| (function.address, function.name.clone()));
+            return Ok(Self { isa, functions, found_by: FoundBy::Symbols });
+        }
+
+        if !has_code_section(&file) {
             return Err(ObjError::NoCode);
         }
 
-        // A stable order keeps output and snapshots reproducible; the symbol
-        // table order is not guaranteed.
-        functions.sort_by_key(|function| (function.address, function.name.clone()));
-        Ok(Self { isa, functions })
+        let scanned: Vec<Function> = crate::scan::recover_functions(data, &isa.arch())
+            .into_iter()
+            .map(|found| found.function)
+            .collect();
+
+        // Code that yields no functions means the scan failed, not that the
+        // binary is empty. Saying so beats reporting that nothing changed.
+        if scanned.is_empty() {
+            return Err(ObjError::NoFunctions);
+        }
+
+        Ok(Self { isa, functions: scanned, found_by: FoundBy::Scanning })
     }
 }
 

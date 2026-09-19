@@ -42,7 +42,13 @@ impl Arch for Arm32 {
 
         let mut reader = U8Reader::new(bytes);
         let mut inst = Instruction::default();
-        if InstDecoder::default().decode_into(&mut inst, &mut reader).is_err() {
+
+        // `yaxpeax` rejects a word it cannot read in two different ways: it
+        // returns an error, or it succeeds and sets `Opcode::Invalid`. The
+        // standard ARM `nop`, `0xe320f000`, takes the second path. Both mean
+        // the same thing here.
+        let failed = InstDecoder::default().decode_into(&mut inst, &mut reader).is_err();
+        if failed || inst.opcode == Opcode::Invalid {
             // A32 instructions are all 4 bytes, so stepping over an
             // unreadable word keeps everything after it aligned. Reporting an
             // error instead would throw away the rest of the function.
@@ -262,6 +268,16 @@ mod tests {
         assert_eq!(err, None);
         let addresses: Vec<u64> = insns.iter().map(|i| i.address).collect();
         assert_eq!(addresses, vec![0x1000, 0x1004, 0x1008]);
+    }
+
+    /// The usual ARM `nop` is one `yaxpeax` decodes "successfully" as
+    /// `Opcode::Invalid`. It must still come back as unreadable, or a linker's
+    /// padding looks like a real instruction.
+    #[test]
+    fn nop_encoding_decodes_as_unknown() {
+        let insn = decode_one([0x00, 0xf0, 0x20, 0xe3]);
+        assert_eq!(insn.kind, InsnKind::Unknown);
+        assert_eq!(insn.operands, "0xe320f000", "the raw word must be kept");
     }
 
     /// NEON is outside what `yaxpeax-arm` 0.4 decodes. `vdup.32 q8, r2` must
