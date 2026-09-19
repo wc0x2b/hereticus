@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::arch::decode_all;
+use crate::arch::{InsnKind, decode_all};
 use crate::norm::{NormInsn, normalize_body, normalize_operation};
 use crate::obj::{Binary, Function};
 
@@ -213,13 +213,33 @@ struct Prepared<'a> {
     /// building a map for each comparison. Order is already irrelevant to the
     /// score, which counts shared instructions rather than matching positions.
     symbols: Vec<Symbol>,
-    /// Each instruction as decoded, before normalizing: the operation and its
-    /// operands.
+    /// Each instruction as decoded, before normalizing: the operation, its
+    /// operands, and how it moves control.
     ///
     /// Normalizing throws away detail on purpose, which is what lets a
     /// function match itself across builds. Telling a changed register from a
-    /// changed word of data needs that detail back, so it is kept here.
-    printed: Vec<(String, String)>,
+    /// changed word of data needs that detail back, so it is kept here. The
+    /// kind comes along because a branch target is only a free choice when the
+    /// instruction really does branch.
+    printed: Vec<PrintedInsn>,
+}
+
+/// One instruction as the decoder printed it, kept for the detail comparison.
+struct PrintedInsn {
+    mnemonic: String,
+    operands: String,
+    kind: InsnKind,
+}
+
+impl PrintedInsn {
+    /// Report whether this instruction moves control to a target address.
+    ///
+    /// Only these may have a `$...` operand that moves for free. A word of
+    /// data that happens to decode as a branch is excluded by the operation
+    /// check that runs first, which a changed data word almost always fails.
+    fn transfers_control(&self) -> bool {
+        matches!(self.kind, InsnKind::Call { .. } | InsnKind::Jump { .. } | InsnKind::Branch { .. })
+    }
 }
 
 impl Prepared<'_> {
@@ -251,8 +271,14 @@ fn prepare<'a>(
         .map(|function| {
             progress.advance(1);
             let (insns, _) = decode_all(&arch, &function.code, function.address);
-            let printed =
-                insns.iter().map(|insn| (insn.mnemonic.clone(), insn.operands.clone())).collect();
+            let printed = insns
+                .iter()
+                .map(|insn| PrintedInsn {
+                    mnemonic: insn.mnemonic.clone(),
+                    operands: insn.operands.clone(),
+                    kind: insn.kind,
+                })
+                .collect();
             let body = normalize_body(&insns);
 
             let mut symbols: Vec<Symbol> =
@@ -466,17 +492,24 @@ impl Cascade<'_> {
     }
 }
 
-/// Report whether two bodies differ only in which registers they name.
+/// Report whether two bodies differ only in choices the compiler makes freely.
 ///
 /// Both sides already normalize alike, so this decides whether the bytes
 /// behind them differ for a reason a reader should hear about. It compares the
-/// instructions as printed: register names are allowed to differ, anything
-/// else is a real difference.
+/// instructions as printed, and allows two kinds of difference that carry no
+/// meaning: which register holds a value, and where a branch goes.
 ///
-/// A word of data among the instructions fails this check, which is the point.
-/// It decodes as some instruction, and when its bits change it usually becomes
-/// a *different* instruction rather than the same one with another register.
-fn differs_only_in_registers(before: &Prepared<'_>, after: &Prepared<'_>) -> bool {
+/// A branch target moves whenever anything before it changes size. In a whole
+/// kernel almost every function calls something that moved, so counting a
+/// moved target as an edit reports the entire image as changed. Measured on
+/// a whole-kernel pair, 6899 functions of otherwise identical
+/// shape differ in nothing but their targets.
+///
+/// A word of data among the instructions still fails this check, which is the
+/// point. It decodes as some instruction, and when its bits change it usually
+/// becomes a *different* instruction rather than the same one with another
+/// register or target.
+fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> bool {
     if before.printed.len() != after.printed.len() {
         return false;
     }
@@ -485,17 +518,48 @@ fn differs_only_in_registers(before: &Prepared<'_>, after: &Prepared<'_>) -> boo
         // Compare the operation the way the normalizer does, so a condition
         // code the compiler chose differently — `movwlt` against `movwlo` —
         // stays the free choice it is rather than reading as an edit.
-        normalize_operation(&left.0) == normalize_operation(&right.0)
-            && operands_differ_only_by_register(&left.1, &right.1)
+        normalize_operation(&left.mnemonic) == normalize_operation(&right.mnemonic)
+            && operands_are_interchangeable(
+                &left.operands,
+                &right.operands,
+                // A `$...` operand is a free choice only on an instruction
+                // that truly branches. Both sides agree on the operation by
+                // now, so either one answers.
+                TargetMoves::from(left.transfers_control() && right.transfers_control()),
+            )
     })
 }
 
-/// Compare two operand lists, allowing register names to differ.
-fn operands_differ_only_by_register(left: &str, right: &str) -> bool {
+/// Whether a differing branch target counts as a free choice.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TargetMoves {
+    /// The instruction branches, so a moved target means nothing.
+    Freely,
+    /// The instruction does not branch, so a `$...` operand is data.
+    Never,
+}
+
+impl From<bool> for TargetMoves {
+    fn from(transfers_control: bool) -> Self {
+        if transfers_control { Self::Freely } else { Self::Never }
+    }
+}
+
+/// Compare two operand lists, allowing the differences that carry no meaning.
+fn operands_are_interchangeable(left: &str, right: &str, targets: TargetMoves) -> bool {
     let left = left.split(',').map(str::trim);
     let right = right.split(',').map(str::trim);
 
-    left.zip(right).all(|(a, b)| a == b || (is_register_name(a) && is_register_name(b)))
+    left.zip(right).all(|(a, b)| {
+        a == b
+            || (is_register_name(a) && is_register_name(b))
+            || (targets == TargetMoves::Freely && is_branch_target(a) && is_branch_target(b))
+    })
+}
+
+/// Report whether an operand is a branch target, which prints as `$+0x24`.
+fn is_branch_target(operand: &str) -> bool {
+    operand.starts_with('$')
 }
 
 /// Report whether an operand is a bare register name.
@@ -532,7 +596,7 @@ fn classify_change(before: &Prepared<'_>, after: &Prepared<'_>) -> Changed {
         //
         // Saying "unchanged" about bytes that differ is the one answer this
         // tool must never give, so the second case is reported.
-        return if differs_only_in_registers(before, after) {
+        return if differs_only_in_free_choices(before, after) {
             Changed::No
         } else {
             Changed::InDetail
@@ -840,7 +904,7 @@ mod tests {
         let after = [("eoreq".to_string(), "r3, fp, r8, asr 24".to_string())];
 
         assert!(
-            !operands_differ_only_by_register(&before[0].1, &after[0].1),
+            !operands_are_interchangeable(&before[0].1, &after[0].1, TargetMoves::Never),
             "a shift that changed is not a register that changed"
         );
     }
@@ -848,8 +912,30 @@ mod tests {
     /// A register the compiler picked differently is not an edit.
     #[test]
     fn a_changed_register_is_not_a_change() {
-        assert!(operands_differ_only_by_register("r0, r1, r2", "r4, r5, r6"));
-        assert!(operands_differ_only_by_register("r0, fp, r8", "r3, fp, r8"));
+        assert!(operands_are_interchangeable("r0, r1, r2", "r4, r5, r6", TargetMoves::Never));
+        assert!(operands_are_interchangeable("r0, fp, r8", "r3, fp, r8", TargetMoves::Never));
+    }
+
+    /// A call whose callee moved is not an edit.
+    ///
+    /// Anything that changes size shifts every target after it, so a whole
+    /// image of unedited functions would otherwise read as changed.
+    #[test]
+    fn a_moved_branch_target_is_not_a_change() {
+        assert!(operands_are_interchangeable("$+0x50a734", "$+0x50b2d4", TargetMoves::Freely));
+    }
+
+    /// A `$...` operand on an instruction that does not branch is data, and a
+    /// changed data word must stay visible.
+    #[test]
+    fn a_target_that_is_not_a_branch_stays_a_change() {
+        assert!(!operands_are_interchangeable("$+0x50a734", "$+0x50b2d4", TargetMoves::Never));
+    }
+
+    /// Allowing targets to move must not let anything else move with them.
+    #[test]
+    fn a_branch_still_reports_its_other_operands() {
+        assert!(!operands_are_interchangeable("r0, 0x10", "r0, 0x20", TargetMoves::Freely));
     }
 
     /// A condition code is the compiler's choice, not an edit.
@@ -899,6 +985,55 @@ mod tests {
     const ADD_THEN_RETURN: &[u8] = &[0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
     /// `mul r0, r0, r1` then `bx lr`, which shares no operation with the above.
     const MUL_THEN_RETURN: &[u8] = &[0x91, 0x00, 0x00, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+
+    /// `bl $+0x20` then `bx lr`.
+    const CALL_NEAR: &[u8] = &[0x06, 0x00, 0x00, 0xeb, 0x1e, 0xff, 0x2f, 0xe1];
+    /// The same call after its callee moved: `bl $+0x40` then `bx lr`.
+    const CALL_FAR: &[u8] = &[0x0e, 0x00, 0x00, 0xeb, 0x1e, 0xff, 0x2f, 0xe1];
+
+    /// The kernel size `0x2b08a8` stored among code, then `bx lr`.
+    ///
+    /// The word decodes as `eoreq r0, fp, r8, lsr 17`.
+    const DATA_WORD: &[u8] = &[0xa8, 0x08, 0x2b, 0x00, 0x1e, 0xff, 0x2f, 0xe1];
+    /// The same field changed to `0x2b3c48`: `eoreq r3, fp, r8, asr 24`.
+    const DATA_WORD_EDITED: &[u8] = &[0x48, 0x3c, 0x2b, 0x00, 0x1e, 0xff, 0x2f, 0xe1];
+
+    /// Compare two one-function images and report what happened to the pair.
+    fn change_between(before: &[u8], after: &[u8]) -> Changed {
+        let before = binary_of(&[("f", before)]);
+        let after = binary_of(&[("f", after)]);
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        diff.matched.first().expect("the pair must match").changed
+    }
+
+    /// A call whose callee moved must reach the report as no change at all.
+    ///
+    /// The unit tests above cover the operand rule directly. This one runs the
+    /// whole pipeline, so it still fails if the instruction kind stops
+    /// reaching the comparison and every target starts counting as data.
+    #[test]
+    fn a_moved_call_target_reports_no_change() {
+        assert_eq!(change_between(CALL_NEAR, CALL_FAR), Changed::No);
+    }
+
+    /// The same difference in a word of data must stay visible.
+    ///
+    /// Both cases change four bytes of an otherwise identical function. Only
+    /// the kind of the instruction tells them apart, which is why the pair of
+    /// tests belongs together.
+    #[test]
+    fn a_changed_data_word_still_reports_a_change() {
+        assert_ne!(change_between(DATA_WORD, DATA_WORD_EDITED), Changed::No);
+    }
+
+    /// Identical code stays unchanged, so the tests above measure the edit
+    /// rather than a comparison that reports everything.
+    #[test]
+    fn an_unedited_function_reports_no_change() {
+        assert_eq!(change_between(CALL_NEAR, CALL_NEAR), Changed::No);
+        assert_eq!(change_between(DATA_WORD, DATA_WORD), Changed::No);
+    }
 
     #[test]
     fn an_unmatched_function_reports_its_closest_candidate() {
