@@ -177,10 +177,14 @@ fn unreadable_bytes_are_marked_opaque() {
         let Ok(insn) = Arm32.decode(bytes, 0, 0) else { return };
 
         // Opaque bytes still take up their full width, which is what keeps
-        // the instructions after them aligned.
+        // the instructions after them aligned, and they carry the raw word so
+        // that one unreadable instruction can be told from another.
         if insn.kind == InsnKind::Unknown {
             assert_eq!(insn.bytes_len, 4);
-            assert!(insn.operands.is_empty(), "opaque bytes must not carry operands");
+            assert!(!insn.operands.is_empty(), "opaque bytes must carry their raw word");
+
+            let word = u32::from_le_bytes(*bytes);
+            assert_eq!(insn.operands, format!("{word:#010x}"), "the raw word must be reported");
         }
     });
 }

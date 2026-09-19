@@ -46,11 +46,16 @@ impl Arch for Arm32 {
             // A32 instructions are all 4 bytes, so stepping over an
             // unreadable word keeps everything after it aligned. Reporting an
             // error instead would throw away the rest of the function.
+            //
+            // The raw word goes in the operand field. Without it every
+            // unreadable instruction would look like every other one, and an
+            // edit inside a NEON loop would be reported as no change at all.
+            let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             return Ok(Insn {
                 address: insn_address,
                 bytes_len: INSN_WIDTH,
                 mnemonic: UNKNOWN_MNEMONIC.to_string(),
-                operands: String::new(),
+                operands: format!("{word:#010x}"),
                 kind: InsnKind::Unknown,
             });
         }

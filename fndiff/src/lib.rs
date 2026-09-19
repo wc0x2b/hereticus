@@ -6,5 +6,6 @@
 //! in compilation.
 
 pub mod arch;
+pub mod matching;
 pub mod norm;
 pub mod obj;

@@ -164,6 +164,20 @@ impl From<InsnKind> for FlowShape {
 
 /// Normalize one instruction.
 pub fn normalize(insn: &Insn) -> NormInsn {
+    // Bytes the decoder cannot read carry their raw word as the operand.
+    // Keeping that word in the operation name is what separates one
+    // unreadable instruction from another: without it, a NEON `vmax` and a
+    // NEON `vmin` would normalize alike and an edit between them would be
+    // reported as no change.
+    if insn.kind == InsnKind::Unknown {
+        return NormInsn {
+            operation: format!("{}{}", insn.mnemonic, insn.operands),
+            operands: Vec::new(),
+            flow: FlowShape::Opaque,
+            constants: Vec::new(),
+        };
+    }
+
     let fields = insn.operands.split(',');
     NormInsn {
         operation: normalize_operation(&insn.mnemonic),
@@ -476,8 +490,27 @@ mod tests {
 
     #[test]
     fn opaque_bytes_stay_opaque() {
-        let body = [insn("(unknown)", "", InsnKind::Unknown)];
+        let body = [insn("(unknown)", "0x00000000", InsnKind::Unknown)];
         assert_eq!(normalize_body(&body)[0].flow, FlowShape::Opaque);
+    }
+
+    /// Two unreadable instructions must stay apart when their bytes differ.
+    ///
+    /// The compiler turns `vmax.s32` into `vmin.s32` when a comparison flips.
+    /// Both are NEON, which the decoder cannot read. If they normalized alike
+    /// the change would be reported as no change at all.
+    #[test]
+    fn different_opaque_words_do_not_normalize_alike() {
+        let first = normalize(&insn("(unknown)", "0xf2600680", InsnKind::Unknown));
+        let second = normalize(&insn("(unknown)", "0xf2200680", InsnKind::Unknown));
+        assert_ne!(first, second, "an edit inside unreadable bytes must stay visible");
+    }
+
+    #[test]
+    fn matching_opaque_words_normalize_alike() {
+        let first = normalize(&insn("(unknown)", "0xf2600680", InsnKind::Unknown));
+        let second = normalize(&insn("(unknown)", "0xf2600680", InsnKind::Unknown));
+        assert_eq!(first, second);
     }
 
     #[test]
