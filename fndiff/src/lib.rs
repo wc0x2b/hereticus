@@ -6,3 +6,4 @@
 //! in compilation.
 
 pub mod arch;
+pub mod obj;
