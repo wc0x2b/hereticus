@@ -1,0 +1,14 @@
+---
+source: fndiff-cli/tests/cli.rs
+info:
+  program: fndiff
+  args:
+    - fixtures/build/O2/basic.o
+    - fixtures/build/O2/basic.o
+---
+success: true
+exit_code: 0
+----- stdout -----
+No functions changed. 8 matched.
+
+----- stderr -----

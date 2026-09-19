@@ -15,8 +15,23 @@ same one.
 
 ## State
 
-Early. The parts below work and are tested. There is no matcher and no usable
-command line tool yet, so `fndiff` cannot diff two binaries end to end.
+Works end to end for ARM32 objects with symbols.
+
+```console
+$ fndiff before.o after.o
+FUNCTION                CHANGE          SCORE  MATCHED BY
+mul_by_constant         changed values   1.00  identical shape
+classify                changed values   1.00  identical shape
+call_chain              changed values   1.00  identical shape
+array_max -> array_min  changed          0.84  similar
+
+8 matched (4 unchanged, 4 changed), 0 gone, 0 new
+```
+
+Two things to notice, both from the test corpus. `array_max` was renamed *and*
+rewritten, and is still matched to its counterpart. `call_chain` is reported
+although its source never changed: at `-O2` the compiler inlines
+`mul_by_constant` into it, so the edited constant lands there too.
 
 | Part | State |
 |---|---|
@@ -24,8 +39,22 @@ command line tool yet, so `fndiff` cannot diff two binaries end to end.
 | Instruction decoding | Works, less NEON |
 | Function recovery from symbols | Works |
 | Instruction normalizing | Works for `-O1` and above |
-| Function matching | Not started |
-| Command line tool | Placeholder |
+| Function matching | Works |
+| Command line tool | Works |
+| Function recovery without symbols | Not started |
+
+## Use
+
+```console
+fndiff before.o after.o              # what changed
+fndiff --all before.o after.o        # every function
+fndiff --ignore-names a.o b.o        # match from the code alone
+fndiff --format compact a.o b.o      # tab separated, for scripts
+fndiff --exit-code a.o b.o           # exit 1 when anything changed
+```
+
+Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
+and 2 when the input could not be read.
 
 ## Scope, and one thing outside it
 
@@ -58,9 +87,10 @@ This matters less than it sounds: shipped firmware is built optimized.
 ## Design
 
 ```
-obj.rs      read ELF, recover functions from the symbol table
-arch/       decode machine code behind a trait, so the decoder can be replaced
-norm.rs     remove the detail a compiler picks freely
+obj.rs       read ELF, recover functions from the symbol table
+arch/        decode machine code behind a trait, so the decoder can be replaced
+norm.rs      remove the detail a compiler picks freely
+matching.rs  pair the functions of one binary with those of another
 ```
 
 `norm.rs` holds the idea the project rests on. A compiler chooses registers,
@@ -75,16 +105,27 @@ properties are needed at once: a function whose threshold changed from 100 to
 50 must still match the function it came from, and the changed value must still
 be reportable afterwards.
 
+`matching.rs` runs an ordered cascade: identical bytes, then identical
+normalized instructions, then names, then similarity above a threshold. Each
+stage pairs what it is sure about and removes it from the pool. A confident
+answer is therefore never overruled by a guess, and the expensive all-pairs
+stage runs only on what the cheap stages could not place.
+
+Names come third, not first. A name is good evidence when it is there, but a
+firmware image has none and a renamed function keeps its behavior, so evidence
+from the code wins. With `--ignore-names` the cascade skips that stage
+entirely, and on the test corpus it still matches every function.
+
 ## Testing
 
 ```
-just quick-test   # 60 tests, about four seconds
+just quick-test   # 89 tests, about five seconds
 just test         # the same, plus slow tests
 just fixtures     # rebuild the ARM32 corpus
 just fuzz <name>  # one property test under a fuzzer, needs nightly
 ```
 
-Four kinds of test, each covering what the others cannot:
+Five kinds of test, each covering what the others cannot:
 
 **Against `llvm-objdump`.** Every fixture function is decoded twice, once by
 `fndiff` and once by `llvm-objdump`, and the results must agree on instruction
@@ -102,10 +143,13 @@ ground truth for detection.
 and under a coverage-guided fuzzer on nightly. Reading a file must never panic,
 whatever the bytes hold.
 
+**Snapshot tests.** `insta` locks what the command line tool prints, so a
+refactor cannot quietly change the output a script depends on.
+
 **Unit tests.** Named encodings that are easy to get wrong, such as the four
 different ways an ARM function can return.
 
-### Two bugs the tests caught
+### Three bugs the tests caught
 
 Recorded because each shows what a kind of test is for.
 
@@ -118,6 +162,13 @@ itself, and a width that is wrong everywhere stays self-consistent. The tests
 now state the four-byte width against the architecture, and check each address
 against the position it must hold. A property test is only worth as much as the
 property it states.
+
+The third came from the corpus. `array_max` became `array_min`, and `fndiff`
+reported it as unchanged. The edit sits inside NEON instructions the decoder
+cannot read, and every unreadable instruction normalized to the same thing, so
+the change vanished. Unreadable bytes now carry their raw word. Reporting no
+change for a function that changed is worse than admitting the bytes cannot be
+read.
 
 ## Prior art
 

@@ -1,0 +1,18 @@
+---
+source: fndiff-cli/tests/cli.rs
+info:
+  program: fndiff
+  args:
+    - "--threshold"
+    - "2.0"
+    - fixtures/build/O2/basic.o
+    - fixtures/build/O2/basic.o
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+error: invalid value '2.0' for '--threshold <THRESHOLD>': threshold must be between 0.0 and 1.0, but is 2
+
+For more information, try '--help'.
