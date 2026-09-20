@@ -1,4 +1,4 @@
-# fndiff
+# tech-heresy
 
 Compare two versions of a binary and find the functions that changed.
 
@@ -10,7 +10,7 @@ at two optimization levels, gives this:
 -O2   add r0, r1, r0 / bx lr
 ```
 
-A byte comparison calls these two different functions. `fndiff` calls them the
+A byte comparison calls these two different functions. `tech-heresy` calls them the
 same one.
 
 ## State
@@ -18,7 +18,7 @@ same one.
 Works end to end for ARM32 objects, with or without symbols.
 
 ```console
-$ fndiff before.o after.o
+$ tech-heresy before.o after.o
 ╭────────────────────────┬────────────────┬───────┬───────┬────────────╮
 │ FUNCTION               │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY │
 ├────────────────────────┼────────────────┼───────┼───────┼────────────┤
@@ -47,7 +47,7 @@ must pass to hide a function: an instruction that was rewritten is a real edit
 whatever the pair scores.
 
 ```console
-$ fndiff --show-retouched before.o after.o
+$ tech-heresy --show-retouched before.o after.o
 ╭────────────────────────┬────────────────┬───────┬───────┬─────────────────╮
 │ FUNCTION               │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY      │
 ├────────────────────────┼────────────────┼───────┼───────┼─────────────────┤
@@ -70,7 +70,7 @@ The table says a function changed and by how much. `--diff` says *what*
 changed, line by line, against whatever the function was matched to:
 
 ```console
-$ fndiff --diff mul_by_constant before.o after.o
+$ tech-heresy --diff mul_by_constant before.o after.o
 mul_by_constant
 - mov r1, 0x25
 + mov r1, 0x29
@@ -87,7 +87,7 @@ The same comparison on stripped copies of those two files gives the same
 answer, with addresses in place of names:
 
 ```console
-$ fndiff before-stripped.o after-stripped.o
+$ tech-heresy before-stripped.o after-stripped.o
 ╭──────────┬────────────────┬───────┬───────┬────────────╮
 │ FUNCTION │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY │
 ├──────────┼────────────────┼───────┼───────┼────────────┤
@@ -114,19 +114,19 @@ $ fndiff before-stripped.o after-stripped.o
 ## Use
 
 ```console
-fndiff before.o after.o              # what changed
-fndiff --all before.o after.o        # every function
-fndiff --show-retouched a.o b.o      # add the ones that only changed a constant
-fndiff --diff array_max a.o b.o      # the instruction-level diff of one function
-fndiff --sort modified a.o b.o       # most-rewritten functions first (also: added, removed)
-fndiff --ignore-names a.o b.o        # match from the code alone
-fndiff --format compact a.o b.o      # tab separated, for scripts
-fndiff --exit-code a.o b.o           # exit 1 when anything changed
-fndiff --progress never a.o b.o      # no progress bar
-fndiff --color never a.o b.o         # no color
+tech-heresy before.o after.o              # what changed
+tech-heresy --all before.o after.o        # every function
+tech-heresy --show-retouched a.o b.o      # add the ones that only changed a constant
+tech-heresy --diff array_max a.o b.o      # the instruction-level diff of one function
+tech-heresy --sort modified a.o b.o       # most-rewritten functions first (also: added, removed)
+tech-heresy --ignore-names a.o b.o        # match from the code alone
+tech-heresy --format compact a.o b.o      # tab separated, for scripts
+tech-heresy --exit-code a.o b.o           # exit 1 when anything changed
+tech-heresy --progress never a.o b.o      # no progress bar
+tech-heresy --color never a.o b.o         # no color
 
 # A firmware image dumped from flash, with no ELF header
-fndiff --raw --base 0x08000000 v1.bin v2.bin
+tech-heresy --raw --base 0x08000000 v1.bin v2.bin
 ```
 
 Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
@@ -164,7 +164,7 @@ work is spread: candidates are sorted before any pair is taken.
 
 ## Scope, and one thing outside it
 
-`fndiff` matches builds at `-O1`, `-O2` and `-Os`. Measured on the test corpus,
+`tech-heresy` matches builds at `-O1`, `-O2` and `-Os`. Measured on the test corpus,
 18 of 18 pairs of the same function score 1.00, and the closest pair of
 different functions scores 0.50.
 
@@ -186,7 +186,7 @@ it holds or where it loads. `--raw` takes the code as it is and `--base` says
 where it sits:
 
 ```console
-$ fndiff --raw --base 0x08000000 v1.bin v2.bin
+$ tech-heresy --raw --base 0x08000000 v1.bin v2.bin
 ```
 
 Two things are worse than with an object file, and both are reported rather
@@ -208,11 +208,11 @@ function and hide the next one.
 
 **A wrong `--base` is nearly silent.** ARM branches are relative, so the code
 decodes and every branch resolves whatever base you give. Only the reported
-addresses are wrong. `fndiff` warns when the image holds stored addresses that
+addresses are wrong. `tech-heresy` warns when the image holds stored addresses that
 do not fit:
 
 ```
-fndiff: v1.bin may not load at 0x8000400: 4 words look like addresses,
+tech-heresy: v1.bin may not load at 0x8000400: 4 words look like addresses,
         but none point into the image at this base
 ```
 
@@ -233,7 +233,7 @@ shipped code with no symbols and no exception index, and 43 of its 15,120 bytes
 changed between the two releases.
 
 ```console
-$ fndiff --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
+$ tech-heresy --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
 ╭──────────────┬────────────────┬───────┬───────┬────────────╮
 │ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY │
 ├──────────────┼────────────────┼───────┼───────┼────────────┤
@@ -269,7 +269,7 @@ checks whether the difference is really just a register before it says no.
 
 ## Tried on a real kernel patch
 
-The fixtures are small and written for the tests, so `fndiff` was also run
+The fixtures are small and written for the tests, so `tech-heresy` was also run
 against a real upstream change: commit `cb6fcef8b4b6`, *"objpool: fix to make
 percpu slot allocation more robust"*, which rewrites the allocation path in
 `lib/objpool.c`. Both versions were cross compiled for ARM with the kernel's
@@ -280,7 +280,7 @@ and inlined into its only caller, so `objpool_init` is the function that should
 change and the other three should not.
 
 ```console
-$ fndiff before.o after.o
+$ tech-heresy before.o after.o
 ╭──────────────┬─────────┬───────┬─────────┬────────────╮
 │ FUNCTION     │ CHANGE  │ SCORE │ +/-/~   │ MATCHED BY │
 ├──────────────┼─────────┼───────┼─────────┼────────────┤
@@ -297,7 +297,7 @@ Stripping both objects and ignoring names gives the same answer, with the
 address in place of the name:
 
 ```console
-$ fndiff --ignore-names before-stripped.o after-stripped.o
+$ tech-heresy --ignore-names before-stripped.o after-stripped.o
 ╭──────────┬─────────┬───────┬─────────┬────────────╮
 │ FUNCTION │ CHANGE  │ SCORE │ +/-/~   │ MATCHED BY │
 ├──────────┼─────────┼───────┼─────────┼────────────┤
@@ -314,7 +314,7 @@ As raw blobs, with no symbols and no exception index, it now gives the same
 answer:
 
 ```console
-$ fndiff --raw --base 0x0 before.bin after.bin
+$ tech-heresy --raw --base 0x0 before.bin after.bin
 ╭──────────┬─────────┬───────┬─────────┬────────────╮
 │ FUNCTION │ CHANGE  │ SCORE │ +/-/~   │ MATCHED BY │
 ├──────────┼─────────┼───────┼─────────┼────────────┤
@@ -343,7 +343,7 @@ this was built for:
 The third one fails because the vendor's compiler and flags are rarely the ones
 you have. A reference at `-O2` against the same source at `-O1` scores 0.38:
 the compiler vectorized one and not the other, so the two really are different
-algorithms. `fndiff` reports the near miss with its score rather than claiming
+algorithms. `tech-heresy` reports the near miss with its score rather than claiming
 a match, because a wrong "unchanged" is the one answer a defensive tool must
 never give. Closing that gap needs semantic comparison, not better
 normalizing.
@@ -407,7 +407,7 @@ reader can tell a removed function from one that was only compiled differently:
 sub_0: gone, closest sub_0 at 0.38
 ```
 
-`--near-miss` sets the floor for showing one. `fndiff` does not lower the match
+`--near-miss` sets the floor for showing one. `tech-heresy` does not lower the match
 threshold to swallow these: a wrong "unchanged" hides a live bug, which is the
 one failure this tool must not have.
 
@@ -429,7 +429,7 @@ just fuzz <name>  # one property test under a fuzzer, needs nightly
 Six kinds of test, each covering what the others cannot:
 
 **Against `llvm-objdump`.** Every fixture function is decoded twice, once by
-`fndiff` and once by `llvm-objdump`, and the results must agree on instruction
+`tech-heresy` and once by `llvm-objdump`, and the results must agree on instruction
 boundaries and mnemonics: 738 instructions in 64 functions. Operand text is not
 compared, because the two tools spell the same encoding differently. This is
 what catches a decoder that has lost sync.
@@ -470,7 +470,7 @@ now state the four-byte width against the architecture, and check each address
 against the position it must hold. A property test is only worth as much as the
 property it states.
 
-The third came from the corpus. `array_max` became `array_min`, and `fndiff`
+The third came from the corpus. `array_max` became `array_min`, and `tech-heresy`
 reported it as unchanged. The edit sits inside NEON instructions the decoder
 cannot read, and every unreadable instruction normalized to the same thing, so
 the change vanished. Unreadable bytes now carry their raw word. Reporting no
@@ -519,7 +519,7 @@ this problem well, and all need IDA or Ghidra.
 it matches functions **by symbol name**, which is the one assumption a stripped
 firmware image does not allow.
 
-The gap `fndiff` aims at is a standalone command line tool that matches
+The gap `tech-heresy` aims at is a standalone command line tool that matches
 functions without trusting their names.
 
 ## License

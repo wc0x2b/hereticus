@@ -1,0 +1,14 @@
+---
+source: tech-heresy-cli/tests/cli.rs
+info:
+  program: tech-heresy
+  args:
+    - does-not-exist.o
+    - fixtures/build/O2/basic.o
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+tech-heresy: cannot read does-not-exist.o: No such file or directory (os error 2)

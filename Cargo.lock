@@ -394,32 +394,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fndiff"
-version = "0.1.0"
-dependencies = [
- "bolero",
- "insta",
- "object",
- "rayon",
- "rstest",
- "yaxpeax-arch",
- "yaxpeax-arm",
-]
-
-[[package]]
-name = "fndiff-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "console",
- "fndiff",
- "indicatif",
- "insta",
- "insta-cmd",
- "tabled",
-]
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1039,6 +1013,32 @@ name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
+
+[[package]]
+name = "tech-heresy"
+version = "0.1.0"
+dependencies = [
+ "bolero",
+ "insta",
+ "object",
+ "rayon",
+ "rstest",
+ "yaxpeax-arch",
+ "yaxpeax-arm",
+]
+
+[[package]]
+name = "tech-heresy-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "console",
+ "indicatif",
+ "insta",
+ "insta-cmd",
+ "tabled",
+ "tech-heresy",
+]
 
 [[package]]
 name = "tempfile"
