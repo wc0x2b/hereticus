@@ -3,6 +3,9 @@
 [<img alt="crates.io" src="https://img.shields.io/crates/v/heresy-cli.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/heresy-cli)
 [<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/wc0x2b/heresy/main.yml?branch=master&style=for-the-badge" height="20">](https://github.com/wc0x2b/heresy/actions?query=branch%3Amaster)
 
+> [!NOTE]
+> Written heavily with the assistance of AI.
+
 Compare two versions of an ARM32 binary and find the functions that changed.
 
 * **No symbols needed**: a stripped firmware image gives the same answer as an object file, because functions are matched from their code.
