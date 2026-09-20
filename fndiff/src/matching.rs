@@ -141,18 +141,22 @@ pub enum Changed {
 
 /// A function with no counterpart, and the closest thing to one.
 ///
-/// A function can go unmatched because it really was removed, or because the
-/// two builds compiled it too differently to recognize. Those need different
-/// responses from a reader, and the score separates them: a near miss at 0.38
-/// is worth opening a disassembler for, one at 0.02 is not.
+/// A function can go unmatched because it really was removed or added, or
+/// because the two builds compiled it too differently to recognize. Those need
+/// different responses from a reader, and the score separates them: a near miss
+/// at 0.38 is worth opening a disassembler for, one at 0.02 is not.
+///
+/// The same shape serves both directions. For a removed function the candidate
+/// is in the second binary; for an added one it is in the first. Which binary
+/// each index reads holds is fixed by the list the miss came from.
 ///
 /// Reporting the score costs nothing. It was computed while matching and then
 /// thrown away.
 #[derive(Clone, Copy, Debug)]
 pub struct NearMiss {
-    /// Index into the functions of the first binary.
-    pub before: usize,
-    /// The closest candidate in the second binary, if any was scored.
+    /// The unmatched function this candidate is for, in its own binary.
+    pub unmatched: usize,
+    /// The closest candidate in the other binary, if any was scored.
     pub best: Option<usize>,
     /// How close that candidate came, from 0.0 to 1.0.
     pub score: f64,
@@ -171,6 +175,13 @@ pub struct Diff {
     ///
     /// In the same order as [`Diff::removed`].
     pub near_misses: Vec<NearMiss>,
+    /// For each added function, the candidate that came closest.
+    ///
+    /// The mirror of [`Diff::near_misses`]: the candidate is a function of the
+    /// first binary. An added function with no close candidate is real new
+    /// code; one with a close candidate is likely a function the cascade could
+    /// not pair, not truly new. In the same order as [`Diff::added`].
+    pub added_near_misses: Vec<NearMiss>,
 }
 
 impl Diff {
@@ -181,7 +192,12 @@ impl Diff {
 
     /// The near miss for a removed function, if one was found.
     pub fn near_miss(&self, before: usize) -> Option<&NearMiss> {
-        self.near_misses.iter().find(|miss| miss.before == before)
+        self.near_misses.iter().find(|miss| miss.unmatched == before)
+    }
+
+    /// The near miss for an added function, if one was found.
+    pub fn added_near_miss(&self, after: usize) -> Option<&NearMiss> {
+        self.added_near_misses.iter().find(|miss| miss.unmatched == after)
     }
 }
 
@@ -495,11 +511,16 @@ impl Cascade<'_> {
         let removed = unpaired(&self.left_free);
         let added = unpaired(&self.right_free);
 
-        progress.start(Phase::NearMisses, removed.len());
-        let near_misses = self.near_misses(&removed, &added, progress);
+        // Each unmatched function looks for its closest candidate on the other
+        // side. The two passes together score every unmatched function against
+        // every one on the far side, so the phase counts both.
+        progress.start(Phase::NearMisses, removed.len() + added.len());
+        let near_misses = self.near_misses(&removed, &self.left, &added, &self.right, progress);
+        let added_near_misses =
+            self.near_misses(&added, &self.right, &removed, &self.left, progress);
         progress.finish();
 
-        Diff { removed, added, near_misses, matched: self.matched }
+        Diff { removed, added, near_misses, added_near_misses, matched: self.matched }
     }
 
     /// Find the closest candidate for each function that stayed unmatched.
@@ -508,34 +529,42 @@ impl Cascade<'_> {
     /// functions still free to take. Both sets are small by the time the
     /// cascade is done, so the cost is a fraction of the matching pass that
     /// preceded it.
+    ///
+    /// The direction is a parameter, so one body serves both removed against
+    /// added and added against removed. Each `NearMiss` reads its `unmatched`
+    /// index in `theirs` and its `best` index in `others`.
     fn near_misses(
         &self,
-        removed: &[usize],
-        added: &[usize],
+        unmatched: &[usize],
+        theirs: &[Prepared<'_>],
+        others: &[usize],
+        others_side: &[Prepared<'_>],
         progress: &dyn Progress,
     ) -> Vec<NearMiss> {
         // Read-only, like the scoring stage, and the same shape of work. The
-        // output keeps the order of `removed`, which `Diff` documents.
-        removed
+        // output keeps the order of `unmatched`, which `Diff` documents.
+        unmatched
             .par_iter()
-            .map(|before| {
+            .map(|one| {
                 progress.advance(1);
-                let best = added
+                let best = others
                     .iter()
-                    .map(|after| {
+                    .map(|other| {
                         (
                             similarity_of_symbols(
-                                &self.left[*before].symbols,
-                                &self.right[*after].symbols,
+                                &theirs[*one].symbols,
+                                &others_side[*other].symbols,
                             ),
-                            *after,
+                            *other,
                         )
                     })
                     .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
 
                 match best {
-                    Some((score, after)) => NearMiss { before: *before, best: Some(after), score },
-                    None => NearMiss { before: *before, best: None, score: 0.0 },
+                    Some((score, other)) => {
+                        NearMiss { unmatched: *one, best: Some(other), score }
+                    }
+                    None => NearMiss { unmatched: *one, best: None, score: 0.0 },
                 }
             })
             .collect()
@@ -1264,6 +1293,25 @@ mod tests {
 
         assert_eq!(diff.matched.len(), 1);
         assert!(diff.near_misses.is_empty(), "nothing went unmatched");
+        assert!(diff.added_near_misses.is_empty(), "nothing went unmatched");
+    }
+
+    /// An added function names its closest candidate on the first binary, the
+    /// mirror of the removed-side near miss.
+    #[test]
+    fn an_added_function_reports_its_closest_candidate() {
+        let before = binary_of(&[("only", ADD_THEN_RETURN)]);
+        let after = binary_of(&[("other", MUL_THEN_RETURN)]);
+
+        // A threshold of 1.0 refuses everything below an exact match, so both
+        // sides are left for the near-miss report.
+        let diff = diff_with(&before, &after, Options { threshold: 1.0, use_names: UseNames::No });
+
+        assert_eq!(diff.added, vec![0], "nothing could be paired");
+        let miss = diff.added_near_miss(0).expect("the added function needs a near miss");
+        assert_eq!(miss.best, Some(0), "the only candidate is the closest one");
+        assert!(miss.score > 0.0, "the two share a return, so they are not unrelated");
+        assert!(miss.score < 1.0, "they are not the same function either");
     }
 
     /// Reduce bodies to sorted symbols the way `prepare` does.

@@ -551,7 +551,11 @@ fn print_text(
         }
     }
     for index in &diff.added {
-        println!("{}: {new}", name_of(after, *index));
+        let name = name_of(after, *index);
+        match added_near_miss_note(diff, *index, before, near_miss_floor) {
+            Some(note) => println!("{name}: {new}, {note}"),
+            None => println!("{name}: {new}"),
+        }
     }
 
     summarize(diff, retouched);
@@ -569,6 +573,20 @@ fn near_miss_note(diff: &Diff, index: usize, after: &Binary, floor: f64) -> Opti
         return None;
     }
     Some(format!("closest {} at {:.2}", name_of(after, best), miss.score))
+}
+
+/// Describe the closest candidate for a function that appears to be new.
+///
+/// The mirror of [`near_miss_note`]: the candidate is on the first binary. A
+/// new function with a close candidate is likely one the cascade could not
+/// pair, not truly new code, which is the distinction the finding needed.
+fn added_near_miss_note(diff: &Diff, index: usize, before: &Binary, floor: f64) -> Option<String> {
+    let miss = diff.added_near_miss(index)?;
+    let best = miss.best?;
+    if miss.score < floor {
+        return None;
+    }
+    Some(format!("closest {} at {:.2}", name_of(before, best), miss.score))
 }
 
 /// Print one line per function, with no header or alignment.
@@ -605,7 +623,13 @@ fn print_compact(
         println!("gone\t{}\t{closest}\t{score:.2}\t\t\t", name_of(before, *index));
     }
     for index in &diff.added {
-        println!("new\t\t{}\t\t\t\t", name_of(after, *index));
+        // The candidate on the first binary and its score go in the same two
+        // columns a removed line uses, so one reader parses both.
+        let miss = diff.added_near_miss(*index);
+        let closest =
+            miss.and_then(|miss| miss.best).map(|best| name_of(before, best)).unwrap_or_default();
+        let score = miss.map_or(0.0, |miss| miss.score);
+        println!("new\t{closest}\t{}\t{score:.2}\t\t\t", name_of(after, *index));
     }
 }
 
