@@ -12,14 +12,6 @@ Compare two versions of an ARM32 binary and find the functions that changed.
 * **No IDA or Ghidra**: one command line tool, no framework to install.
 * **No container needed**: `--raw` reads a flash dump that has no ELF header.
 
-A byte comparison calls these two functions different. `heresy` calls them the
-same one:
-
-```
--O0   push {fp,lr} / mov fp,sp / sub sp,#8 / str / str / ldr / ldr / add / bx lr
--O2   add r0, r1, r0 / bx lr
-```
-
 ## Installation
 Either build from published source in crates.io.
 ```
