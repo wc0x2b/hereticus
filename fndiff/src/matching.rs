@@ -996,62 +996,130 @@ pub fn instruction_diff(
     after: &Function,
     after_isa: Isa,
 ) -> Vec<DiffLine> {
-    let (before_insns, before_norm) = decode_and_normalize(before, before_isa);
-    let (after_insns, after_norm) = decode_and_normalize(after, after_isa);
+    let before_insns = decode_all(&before_isa.arch(), &before.code, before.address).0;
+    let after_insns = decode_all(&after_isa.arch(), &after.code, after.address).0;
 
-    let printed = |insn: &Insn| insn.to_string();
-    let choices = longest_common_subsequence(&before_norm, &after_norm);
-    let lines = lines_from_alignment(
-        &choices,
-        &before_insns,
-        &before_norm,
-        &after_insns,
-        &after_norm,
-        &printed,
-    );
-    coalesce_equal_pairs(lines)
+    // Align on the printed text, but with branch targets collapsed. Keeping the
+    // constant in the key is what lets a new `tst r5, #4` stand apart from an
+    // existing `tst r5, #8`: the matcher's normalized form drops both to one
+    // shape and would pair them, hiding the new gate. Collapsing the target
+    // still folds a call whose callee only moved.
+    let before_keys: Vec<String> = before_insns.iter().map(diff_key).collect();
+    let after_keys: Vec<String> = after_insns.iter().map(diff_key).collect();
+
+    let steps = longest_common_subsequence(&before_keys, &after_keys);
+    let lines = lines_from_alignment(&steps, &before_insns, &after_insns);
+    coalesce_changed_constants(lines)
 }
 
-/// Fold a remove-then-add of identical text into one unchanged line.
+/// The text two instructions must share to align, with targets removed.
 ///
-/// A word of data among the code decodes as an instruction, and every such word
-/// normalizes to the same shape, so the alignment cannot tell two of them apart
-/// and may pair one removal with an unrelated addition. When the two print the
-/// same text they are the same instruction, so the pair is noise the reader
-/// should not have to read past. The genuine edits, whose text differs, stay.
-fn coalesce_equal_pairs(lines: Vec<DiffLine>) -> Vec<DiffLine> {
+/// A branch or a `[pc, #imm]` load prints its target as `$+0x24`; the target
+/// moves whenever anything before it changes size, so it must not decide the
+/// alignment. Everything else, the constant included, stays: a changed value is
+/// a real difference the reader came to see.
+fn diff_key(insn: &Insn) -> String {
+    let operands = insn
+        .operands
+        .split(',')
+        .map(str::trim)
+        .map(|operand| if operand.starts_with('$') { "$" } else { operand })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{} {operands}", insn.mnemonic)
+}
+
+/// Fold an adjacent remove-then-add of the same instruction into one line.
+///
+/// Aligning on the printed text splits a changed constant into a removal and an
+/// addition, because the two print differently. They are the same instruction
+/// with another value, so they belong on one [`DiffLine::Changed`]. When the
+/// two are identical bar their targets they are no change at all. The pair is
+/// always adjacent, because the alignment keeps the order.
+fn coalesce_changed_constants(lines: Vec<DiffLine>) -> Vec<DiffLine> {
     let mut folded: Vec<DiffLine> = Vec::with_capacity(lines.len());
     for line in lines {
-        // A removal followed by an addition of the same text, in either order,
-        // is really one unchanged line.
-        let same_text = match (folded.last(), &line) {
-            (Some(DiffLine::Removed(prev)), DiffLine::Added(text))
-            | (Some(DiffLine::Added(prev)), DiffLine::Removed(text)) => prev == text,
-            _ => false,
+        let pair = match (folded.last(), &line) {
+            (Some(DiffLine::Removed(before)), DiffLine::Added(after)) => {
+                Some((before.clone(), after.clone()))
+            }
+            _ => None,
         };
 
-        if same_text {
-            let text = match line {
-                DiffLine::Added(text) | DiffLine::Removed(text) => text,
-                _ => unreachable!("the match above admits only added or removed"),
-            };
-            folded.pop();
-            folded.push(DiffLine::Same(text));
-        } else {
-            folded.push(line);
+        match pair {
+            // The two share the operation and operand shapes, so they are the
+            // same instruction. A moved register or branch target is a free
+            // choice, so that is no change; a changed constant is a real one.
+            Some((before, after)) if same_operation(&before, &after) => {
+                folded.pop();
+                folded.push(if only_free_choices_differ(&before, &after) {
+                    DiffLine::Same(after)
+                } else {
+                    DiffLine::Changed { before, after }
+                });
+            }
+            _ => folded.push(line),
         }
     }
     folded
 }
 
-/// Decode a function and normalize it, keeping both forms side by side.
+/// Report whether two same-shape instructions differ in nothing but a register
+/// or a branch target.
 ///
-/// The alignment needs the normalized form to compare and the printed form to
-/// show, in the same order, so they are returned together.
-fn decode_and_normalize(function: &Function, isa: Isa) -> (Vec<Insn>, Vec<NormInsn>) {
-    let insns = decode_all(&isa.arch(), &function.code, function.address).0;
-    let norm = normalize_body(&insns);
-    (insns, norm)
+/// Both are free choices the compiler makes, so an instruction that differs
+/// only in them did not really change. A differing literal, by contrast, is a
+/// changed value the reader must see. Call this only on a pair that already
+/// shares its operation.
+fn only_free_choices_differ(before: &str, after: &str) -> bool {
+    let (_, before_args) = before.split_once(' ').unwrap_or((before, ""));
+    let (_, after_args) = after.split_once(' ').unwrap_or((after, ""));
+
+    before_args.split(',').map(str::trim).zip(after_args.split(',').map(str::trim)).all(|(a, b)| {
+        a == b
+            || (is_register_name(a) && is_register_name(b))
+            || (a.starts_with('$') && b.starts_with('$'))
+    })
+}
+
+/// Report whether two printed instructions share operation and operand shapes.
+///
+/// This is the printed-text mirror of what the matcher normalizes to: the two
+/// agree once a register name or a branch target is allowed to differ. It tells
+/// a changed constant, which keeps the same shape, from an unrelated pairing.
+fn same_operation(before: &str, after: &str) -> bool {
+    let (before_op, before_args) = before.split_once(' ').unwrap_or((before, ""));
+    let (after_op, after_args) = after.split_once(' ').unwrap_or((after, ""));
+    if normalize_operation(before_op) != normalize_operation(after_op) {
+        return false;
+    }
+
+    let mut before = before_args.split(',').map(str::trim);
+    let mut after = after_args.split(',').map(str::trim);
+    loop {
+        match (before.next(), after.next()) {
+            (None, None) => return true,
+            (Some(a), Some(b)) => {
+                // A changed constant keeps the same shape, so two literals are
+                // interchangeable here: it is the case this fold exists for.
+                let interchangeable = a == b
+                    || (is_register_name(a) && is_register_name(b))
+                    || (a.starts_with('$') && b.starts_with('$'))
+                    || (is_literal(a) && is_literal(b));
+                if !interchangeable {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// Report whether an operand is a numeric literal, which prints as `0x1c` or a
+/// bare number.
+fn is_literal(operand: &str) -> bool {
+    let digits = operand.strip_prefix("0x").unwrap_or(operand);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// A move through the alignment grid: keep both sides, or drop one.
@@ -1071,7 +1139,7 @@ enum Step {
 /// tails `left[i..]` and `right[j..]`. Reading it back from the top left gives
 /// the alignment. Both sides are function bodies, small enough that the
 /// quadratic table costs nothing worth avoiding.
-fn longest_common_subsequence(left: &[NormInsn], right: &[NormInsn]) -> Vec<Step> {
+fn longest_common_subsequence(left: &[String], right: &[String]) -> Vec<Step> {
     let (rows, cols) = (left.len() + 1, right.len() + 1);
     let mut len = vec![vec![0usize; cols]; rows];
 
@@ -1106,39 +1174,26 @@ fn longest_common_subsequence(left: &[NormInsn], right: &[NormInsn]) -> Vec<Step
 }
 
 /// Turn an alignment into diff lines, reading the printed text for each side.
-fn lines_from_alignment(
-    steps: &[Step],
-    before_insns: &[Insn],
-    before_norm: &[NormInsn],
-    after_insns: &[Insn],
-    after_norm: &[NormInsn],
-    printed: &dyn Fn(&Insn) -> String,
-) -> Vec<DiffLine> {
+///
+/// A line the alignment kept on both sides is unchanged, targets aside.
+/// A changed constant reaches here as a removal next to an addition;
+/// [`coalesce_changed_constants`] folds that pair back into one line.
+fn lines_from_alignment(steps: &[Step], before_insns: &[Insn], after_insns: &[Insn]) -> Vec<DiffLine> {
     let mut lines = Vec::with_capacity(steps.len());
     let (mut i, mut j) = (0, 0);
     for step in steps {
         match step {
             Step::Both => {
-                // Aligned as the same shape. A differing constant is still a
-                // change, so the two forms are compared before calling it same.
-                let line = if before_norm[i].differs_in_detail(&after_norm[j]) {
-                    DiffLine::Changed {
-                        before: printed(&before_insns[i]),
-                        after: printed(&after_insns[j]),
-                    }
-                } else {
-                    DiffLine::Same(printed(&after_insns[j]))
-                };
-                lines.push(line);
+                lines.push(DiffLine::Same(after_insns[j].to_string()));
                 i += 1;
                 j += 1;
             }
             Step::Left => {
-                lines.push(DiffLine::Removed(printed(&before_insns[i])));
+                lines.push(DiffLine::Removed(before_insns[i].to_string()));
                 i += 1;
             }
             Step::Right => {
-                lines.push(DiffLine::Added(printed(&after_insns[j])));
+                lines.push(DiffLine::Added(after_insns[j].to_string()));
                 j += 1;
             }
         }
@@ -1538,26 +1593,36 @@ mod tests {
         assert!(before.contains("0x25") && after.contains("0x29"), "both values shown");
     }
 
-    /// A remove-then-add of identical text folds into one unchanged line.
+    /// A remove-then-add of the same instruction folds by shape.
     ///
-    /// Data words all normalize alike, so the alignment can split a shared one
-    /// into a removal and an addition of the same text. The fold removes that
-    /// noise.
+    /// Aligning on the printed text splits a changed constant, and can split a
+    /// line whose target only moved, into a removal beside an addition. The fold
+    /// puts them back: same text is no change, a changed value is one
+    /// [`DiffLine::Changed`], and an unrelated pair is left apart.
     #[test]
-    fn identical_text_across_an_add_and_remove_folds_to_same() {
+    fn an_adjacent_remove_and_add_fold_by_shape() {
         let lines = vec![
-            DiffLine::Removed("nop".to_string()),
-            DiffLine::Added("nop".to_string()),
+            // Identical bar the target: no change.
+            DiffLine::Removed("bl $+0x40".to_string()),
+            DiffLine::Added("bl $+0x80".to_string()),
+            // Same operation, changed value: one changed line.
+            DiffLine::Removed("mov r1, 0x25".to_string()),
+            DiffLine::Added("mov r1, 0x29".to_string()),
+            // Unrelated: stays two lines.
             DiffLine::Removed("push {lr}".to_string()),
-            DiffLine::Added("pop {pc}".to_string()),
+            DiffLine::Added("mul r0, r0, r1".to_string()),
         ];
-        let folded = coalesce_equal_pairs(lines);
+        let folded = coalesce_changed_constants(lines);
         assert_eq!(
             folded,
             vec![
-                DiffLine::Same("nop".to_string()),
+                DiffLine::Same("bl $+0x80".to_string()),
+                DiffLine::Changed {
+                    before: "mov r1, 0x25".to_string(),
+                    after: "mov r1, 0x29".to_string(),
+                },
                 DiffLine::Removed("push {lr}".to_string()),
-                DiffLine::Added("pop {pc}".to_string()),
+                DiffLine::Added("mul r0, r0, r1".to_string()),
             ]
         );
     }
