@@ -1,0 +1,28 @@
+---
+source: heresy-cli/tests/cli.rs
+info:
+  program: heresy
+  args:
+    - "--ignore-names"
+    - "--near-miss"
+    - "0.0"
+    - fixtures/build/O1/basic.o
+    - fixtures/build/O2/basic.o
+snapshot_kind: text
+---
+success: true
+exit_code: 0
+----- stdout -----
+╭──────────────┬───────────┬───────┬───────┬────────────╮
+│ FUNCTION     │ CHANGE    │ SCORE │ +/-/~ │ MATCHED BY │
+├──────────────┼───────────┼───────┼───────┼────────────┤
+│ switch_dense │ reordered │  1.00 │ 0/0/3 │ similar    │
+╰──────────────┴───────────┴───────┴───────┴────────────╯
+array_max: gone, closest array_max at 0.40
+factorial: gone, closest factorial at 0.16
+array_max: new, closest array_max at 0.40
+factorial: new, closest array_max at 0.21
+
+6 matched (5 unchanged, 1 changed), 2 gone, 2 new
+
+----- stderr -----

@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "tech-heresy-cli",
-    "tech-heresy",
+    "heresy-cli",
+    "heresy",
 ]
 resolver = "2"
 
@@ -10,7 +10,7 @@ version = "0.1.0"
 authors = ["wc0x2b <wc0x2b@gmail.com>"]
 license = "MIT OR Apache-2.0"
 edition = "2024"
-repository = "https://github.com/wc0x2b/tech-heresy"
+repository = "https://github.com/wc0x2b/heresy"
 keywords = ["binary", "diff", "reverse-engineering", "arm", "elf"]
 categories = ["development-tools", "parsing"]
 

@@ -1,0 +1,14 @@
+---
+source: heresy-cli/tests/cli.rs
+info:
+  program: heresy
+  args:
+    - fixtures/src/basic.c
+    - fixtures/build/O2/basic.o
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+heresy: cannot read fixtures/src/basic.c: cannot parse object: Unknown file magic

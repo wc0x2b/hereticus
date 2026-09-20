@@ -23,4 +23,4 @@ lint:
 # Run one property test under a coverage-guided fuzzer. Needs nightly and
 # `cargo install cargo-bolero`. The same tests run on stable under `just test`.
 fuzz target:
-    cargo bolero test {{target}} -p tech-heresy
+    cargo bolero test {{target}} -p heresy
