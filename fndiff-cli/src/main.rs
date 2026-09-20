@@ -98,6 +98,15 @@ struct Args {
     #[arg(long, value_enum, default_value_t = Format::Text)]
     format: Format,
 
+    /// How to order the changed functions.
+    ///
+    /// The default puts the strongest match first. On a whole kernel the real
+    /// edits hide among thousands of small changes, so `--sort modified` (or
+    /// `added` / `removed`) brings the functions that changed the most to the
+    /// top.
+    #[arg(long, value_enum, default_value_t = Sort::Confidence, verbatim_doc_comment)]
+    sort: Sort,
+
     /// When to show a progress bar.
     ///
     /// The bar goes to standard error, so it never mixes with the report.
@@ -155,6 +164,34 @@ enum Format {
     Text,
     /// One line per function, for a script to read.
     Compact,
+}
+
+/// How to order the changed functions in the report.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum Sort {
+    /// Strongest match first, then closest score. The default.
+    Confidence,
+    /// Most instructions added first.
+    Added,
+    /// Most instructions removed first.
+    Removed,
+    /// Most instructions rewritten first.
+    Modified,
+}
+
+impl Sort {
+    /// The edit count this order ranks by, if any.
+    ///
+    /// `Confidence` ranks by no count, so it returns nothing and the report
+    /// keeps the order the library gave it.
+    fn count_of(self, edits: Edits) -> Option<usize> {
+        match self {
+            Self::Confidence => None,
+            Self::Added => Some(edits.added),
+            Self::Removed => Some(edits.removed),
+            Self::Modified => Some(edits.edited),
+        }
+    }
 }
 
 /// Reject a threshold outside the range a similarity score can take.
@@ -289,11 +326,11 @@ fn run(args: &Args) -> Result<bool, String> {
         Format::Text => {
             let retouched = Retouched::from(args.show_retouched || args.all);
             let paint = Paint::resolve(args.color);
-            print_text(&diff, &before, &after, args.all, args.near_miss, retouched, paint)
+            print_text(&diff, &before, &after, args.all, args.near_miss, retouched, paint, args.sort)
         }
         Format::Compact => {
             let retouched = Retouched::from(args.show_retouched || args.all);
-            print_compact(&diff, &before, &after, args.all, retouched)
+            print_compact(&diff, &before, &after, args.all, retouched, args.sort)
         }
     }
 
@@ -584,6 +621,26 @@ fn render_diff_line(line: &DiffLine, paint: Paint) -> String {
     }
 }
 
+/// Order the shown pairs by the chosen edit count, most first.
+///
+/// `Confidence` keeps the order the library gave, which is already strongest
+/// match first. The count orders break a tie by the lowest score, so the least
+/// certain of an equal-sized edit sits on top, where it wants the most
+/// attention. The sort is stable, so pairs that tie on both keep their place.
+fn sort_shown(shown: &mut [&Match], sort: Sort) {
+    if sort == Sort::Confidence {
+        return;
+    }
+
+    shown.sort_by(|a, b| {
+        let a_count = sort.count_of(a.edits).unwrap_or(0);
+        let b_count = sort.count_of(b.edits).unwrap_or(0);
+        b_count
+            .cmp(&a_count)
+            .then_with(|| a.score.partial_cmp(&b.score).unwrap_or(core::cmp::Ordering::Equal))
+    });
+}
+
 fn print_text(
     diff: &Diff,
     before: &Binary,
@@ -592,9 +649,11 @@ fn print_text(
     near_miss_floor: f64,
     retouched: Retouched,
     paint: Paint,
+    sort: Sort,
 ) {
-    let shown: Vec<&Match> =
+    let mut shown: Vec<&Match> =
         diff.matched.iter().filter(|pair| show_all || is_interesting(pair, retouched)).collect();
+    sort_shown(&mut shown, sort);
 
     if !shown.is_empty() {
         let rows = shown.iter().map(|pair| {
@@ -695,22 +754,25 @@ fn print_compact(
     after: &Binary,
     show_all: bool,
     retouched: Retouched,
+    sort: Sort,
 ) {
-    for pair in &diff.matched {
-        if show_all || is_interesting(pair, retouched) {
-            // The edit counts go last so a reader of the first four columns
-            // keeps working.
-            println!(
-                "{}\t{}\t{}\t{:.2}\t{}\t{}\t{}",
-                describe(pair.changed),
-                name_of(before, pair.before),
-                name_of(after, pair.after),
-                pair.score,
-                pair.edits.added,
-                pair.edits.removed,
-                pair.edits.edited,
-            );
-        }
+    let mut shown: Vec<&Match> =
+        diff.matched.iter().filter(|pair| show_all || is_interesting(pair, retouched)).collect();
+    sort_shown(&mut shown, sort);
+
+    for pair in shown {
+        // The edit counts go last so a reader of the first four columns keeps
+        // working.
+        println!(
+            "{}\t{}\t{}\t{:.2}\t{}\t{}\t{}",
+            describe(pair.changed),
+            name_of(before, pair.before),
+            name_of(after, pair.after),
+            pair.score,
+            pair.edits.added,
+            pair.edits.removed,
+            pair.edits.edited,
+        );
     }
     for index in &diff.removed {
         // The fourth column holds the near-miss score, so a script reading
@@ -789,6 +851,59 @@ mod tests {
         {
             assert!(!describe(change).is_empty());
         }
+    }
+
+    /// Build a pair with a given edit count and score, for the sort tests.
+    fn pair_with(edits: Edits, score: f64) -> Match {
+        Match { score, edits, ..edited_pair(Changed::Yes) }
+    }
+
+    /// `--sort modified` puts the most-rewritten function first.
+    #[test]
+    fn sort_by_modified_ranks_by_rewritten_count() {
+        let small = pair_with(Edits { added: 0, removed: 0, edited: 1 }, 0.9);
+        let large = pair_with(Edits { added: 0, removed: 0, edited: 9 }, 0.9);
+        let mut shown = vec![&small, &large];
+
+        sort_shown(&mut shown, Sort::Modified);
+        assert_eq!(shown[0].edits.edited, 9, "the largest edit is first");
+    }
+
+    /// Each count order ranks by its own column.
+    #[test]
+    fn each_sort_ranks_by_its_own_column() {
+        let grew = pair_with(Edits { added: 5, removed: 0, edited: 0 }, 0.9);
+        let shrank = pair_with(Edits { added: 0, removed: 5, edited: 0 }, 0.9);
+        let mut shown = vec![&grew, &shrank];
+
+        sort_shown(&mut shown, Sort::Added);
+        assert_eq!(shown[0].edits.added, 5, "added ranks by the + column");
+
+        sort_shown(&mut shown, Sort::Removed);
+        assert_eq!(shown[0].edits.removed, 5, "removed ranks by the - column");
+    }
+
+    /// An equal-sized edit is broken by the lowest score, which wants the most
+    /// attention.
+    #[test]
+    fn an_equal_edit_puts_the_least_certain_first() {
+        let sure = pair_with(Edits { added: 0, removed: 0, edited: 3 }, 0.95);
+        let unsure = pair_with(Edits { added: 0, removed: 0, edited: 3 }, 0.60);
+        let mut shown = vec![&sure, &unsure];
+
+        sort_shown(&mut shown, Sort::Modified);
+        assert_eq!(shown[0].score, 0.60, "the least certain of an equal edit is first");
+    }
+
+    /// The default order leaves the pairs as the library gave them.
+    #[test]
+    fn sort_by_confidence_keeps_the_order() {
+        let first = pair_with(Edits { added: 0, removed: 0, edited: 1 }, 0.9);
+        let second = pair_with(Edits { added: 0, removed: 0, edited: 9 }, 0.9);
+        let mut shown = vec![&first, &second];
+
+        sort_shown(&mut shown, Sort::Confidence);
+        assert_eq!(shown[0].edits.edited, 1, "the library's order is untouched");
     }
 
     /// Build a pair that scores below a perfect match and rewrote one

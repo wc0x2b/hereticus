@@ -116,6 +116,23 @@ fn comparing_a_binary_with_itself_reports_nothing() {
     assert_cmd_snapshot!(fndiff().args(["fixtures/build/O2/basic.o", "fixtures/build/O2/basic.o"]));
 }
 
+/// The most-rewritten function comes first with `--sort modified`.
+#[test]
+fn sorts_the_report_by_how_much_changed() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(fndiff().args([
+        "--all",
+        "--sort",
+        "modified",
+        "fixtures/build/O2/basic.o",
+        "fixtures/build/O2/basic_v2.o",
+    ]));
+}
+
 /// A changed constant shows as one line, with the old and new value.
 #[test]
 fn diffs_one_function_at_instruction_level() {

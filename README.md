@@ -118,6 +118,7 @@ fndiff before.o after.o              # what changed
 fndiff --all before.o after.o        # every function
 fndiff --show-retouched a.o b.o      # add the ones that only changed a constant
 fndiff --diff array_max a.o b.o      # the instruction-level diff of one function
+fndiff --sort modified a.o b.o       # most-rewritten functions first (also: added, removed)
 fndiff --ignore-names a.o b.o        # match from the code alone
 fndiff --format compact a.o b.o      # tab separated, for scripts
 fndiff --exit-code a.o b.o           # exit 1 when anything changed
