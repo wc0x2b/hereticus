@@ -9,7 +9,8 @@ use std::process::ExitCode;
 use clap::{Parser, ValueEnum};
 use console::Term;
 use fndiff::matching::{
-    Changed, Confidence, Diff, Edits, Match, Options, Phase, Progress, UseNames, diff_reporting,
+    Changed, Confidence, Diff, DiffLine, Edits, Match, Options, Phase, Progress, UseNames,
+    diff_reporting, instruction_diff,
 };
 use fndiff::obj::{Binary, Isa};
 use fndiff::raw::check_base;
@@ -32,6 +33,14 @@ struct Args {
     /// Report every function, not only the ones that changed.
     #[arg(short, long)]
     all: bool,
+
+    /// Show the instruction-level diff of one function, then stop.
+    ///
+    /// Give a name, or `sub_<hex>` for a function the binary did not name. The
+    /// function is looked up in the earlier binary and diffed against whatever
+    /// it was matched to in the later one.
+    #[arg(long, value_name = "FUNCTION")]
+    diff: Option<String>,
 
     /// Ignore symbol names, as though both binaries were stripped.
     ///
@@ -268,6 +277,13 @@ fn run(args: &Args) -> Result<bool, String> {
     };
     let diff = diff_reporting(&before, &after, options, &Bar::new(args.progress));
 
+    // `--diff` asks about one function, so it answers and stops rather than
+    // printing the whole report.
+    if let Some(wanted) = &args.diff {
+        let paint = Paint::resolve(args.color);
+        return print_one_diff(&diff, &before, &after, wanted, paint).map(|()| false);
+    }
+
     match args.format {
         // `--all` asks for every function, so it implies the retouched ones.
         Format::Text => {
@@ -482,6 +498,89 @@ fn color_of(change: Changed) -> Color {
         Changed::InDetail => Color::FG_YELLOW,
         Changed::Reordered => Color::FG_CYAN,
         Changed::No => Color::FG_GREEN,
+    }
+}
+
+/// Find a function in a binary by the name the report would print for it.
+///
+/// A named function matches its name. A stripped one matches `sub_<hex>`, the
+/// same label the report shows, so a reader can copy a name straight out of the
+/// table.
+fn find_function(binary: &Binary, wanted: &str) -> Option<usize> {
+    let by_address = wanted
+        .strip_prefix("sub_")
+        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+        .and_then(|address| binary.functions.iter().position(|f| f.address == address));
+
+    by_address
+        .or_else(|| binary.functions.iter().position(|f| !f.name.is_empty() && f.name == wanted))
+}
+
+/// Print the instruction-level diff of one function.
+///
+/// The function is looked up in the earlier binary. If it was matched, the diff
+/// runs against its counterpart; if it was removed, there is nothing to diff
+/// against and the tool says so.
+fn print_one_diff(
+    diff: &Diff,
+    before: &Binary,
+    after: &Binary,
+    wanted: &str,
+    paint: Paint,
+) -> Result<(), String> {
+    let index = find_function(before, wanted)
+        .ok_or_else(|| format!("no function `{wanted}` in the earlier binary"))?;
+
+    let pair = diff.matched.iter().find(|pair| pair.before == index).ok_or_else(|| {
+        // A removed function has no counterpart, so say that rather than print
+        // an empty diff.
+        match diff.near_miss(index).and_then(|miss| miss.best) {
+            Some(best) => format!(
+                "`{wanted}` was not matched; its closest candidate is {}",
+                name_of(after, best)
+            ),
+            None => format!("`{wanted}` was not matched to anything in the later binary"),
+        }
+    })?;
+
+    let before_name = name_of(before, pair.before);
+    let after_name = name_of(after, pair.after);
+    if before_name == after_name {
+        println!("{before_name}");
+    } else {
+        println!("{before_name} -> {after_name}");
+    }
+
+    let lines = instruction_diff(
+        &before.functions[pair.before],
+        before.isa,
+        &after.functions[pair.after],
+        after.isa,
+    );
+    for line in &lines {
+        println!("{}", render_diff_line(line, paint));
+    }
+
+    Ok(())
+}
+
+/// Draw one diff line with a leading sign, in the color of its kind.
+///
+/// The signs follow a patch: a space for an unchanged line, `+` added, `-`
+/// removed, `~` for a line kept but retouched. Color repeats the sign so the
+/// line reads on a terminal that drops it and on one that keeps it.
+fn render_diff_line(line: &DiffLine, paint: Paint) -> String {
+    match line {
+        DiffLine::Same(text) => format!("  {text}"),
+        DiffLine::Added(text) => paint.pick(ADDED_COLOR).colorize(format!("+ {text}")).to_string(),
+        DiffLine::Removed(text) => {
+            paint.pick(REMOVED_COLOR).colorize(format!("- {text}")).to_string()
+        }
+        DiffLine::Changed { before, after } => {
+            let removed = paint.pick(REMOVED_COLOR).colorize(format!("- {before}"));
+            let added = paint.pick(ADDED_COLOR).colorize(format!("+ {after}"));
+            format!("{removed}\n{added}")
+        }
     }
 }
 

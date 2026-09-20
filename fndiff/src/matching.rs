@@ -17,9 +17,9 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::arch::{InsnKind, decode_all};
+use crate::arch::{Insn, InsnKind, decode_all};
 use crate::norm::{FlowShape, NormInsn, normalize_body, normalize_operation};
-use crate::obj::{Binary, Function};
+use crate::obj::{Binary, Function, Isa};
 
 /// How confident a pairing is, and what justified it.
 ///
@@ -957,6 +957,195 @@ pub fn similarity(left: &[NormInsn], right: &[NormInsn]) -> f64 {
     if combined == 0 { 0.0 } else { shared as f64 / combined as f64 }
 }
 
+/// One line of an instruction-level diff between two matched functions.
+///
+/// The counts in [`Match::edits`] say *how much* changed; this says *what*.
+/// The text is the instruction as the decoder printed it, so a reader sees the
+/// real mnemonic and operands, not the normalized form the matcher compares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffLine {
+    /// The same instruction on both sides.
+    Same(String),
+    /// An instruction the later build added.
+    Added(String),
+    /// An instruction the later build removed.
+    Removed(String),
+    /// An instruction kept in place but with a changed constant.
+    ///
+    /// The operation and operand shapes agree, so the matcher aligns the two,
+    /// but a stored value differs. This is the shape a changed threshold or
+    /// magic number takes.
+    Changed { before: String, after: String },
+}
+
+/// Align two matched functions instruction by instruction.
+///
+/// The alignment keys on the normalized form, so a branch whose target only
+/// moved reads as [`DiffLine::Same`], the same choice the matcher makes
+/// everywhere else. A longest-common-subsequence walk keeps an inserted
+/// instruction from making every line after it look changed, which a plain
+/// position-by-position compare cannot do.
+///
+/// The printed text carries the true disassembly. Where two aligned
+/// instructions agree in shape but differ in a constant, the line is
+/// [`DiffLine::Changed`] rather than [`DiffLine::Same`], so a changed value is
+/// never reported as no change.
+pub fn instruction_diff(
+    before: &Function,
+    before_isa: Isa,
+    after: &Function,
+    after_isa: Isa,
+) -> Vec<DiffLine> {
+    let (before_insns, before_norm) = decode_and_normalize(before, before_isa);
+    let (after_insns, after_norm) = decode_and_normalize(after, after_isa);
+
+    let printed = |insn: &Insn| insn.to_string();
+    let choices = longest_common_subsequence(&before_norm, &after_norm);
+    let lines = lines_from_alignment(
+        &choices,
+        &before_insns,
+        &before_norm,
+        &after_insns,
+        &after_norm,
+        &printed,
+    );
+    coalesce_equal_pairs(lines)
+}
+
+/// Fold a remove-then-add of identical text into one unchanged line.
+///
+/// A word of data among the code decodes as an instruction, and every such word
+/// normalizes to the same shape, so the alignment cannot tell two of them apart
+/// and may pair one removal with an unrelated addition. When the two print the
+/// same text they are the same instruction, so the pair is noise the reader
+/// should not have to read past. The genuine edits, whose text differs, stay.
+fn coalesce_equal_pairs(lines: Vec<DiffLine>) -> Vec<DiffLine> {
+    let mut folded: Vec<DiffLine> = Vec::with_capacity(lines.len());
+    for line in lines {
+        // A removal followed by an addition of the same text, in either order,
+        // is really one unchanged line.
+        let same_text = match (folded.last(), &line) {
+            (Some(DiffLine::Removed(prev)), DiffLine::Added(text))
+            | (Some(DiffLine::Added(prev)), DiffLine::Removed(text)) => prev == text,
+            _ => false,
+        };
+
+        if same_text {
+            let text = match line {
+                DiffLine::Added(text) | DiffLine::Removed(text) => text,
+                _ => unreachable!("the match above admits only added or removed"),
+            };
+            folded.pop();
+            folded.push(DiffLine::Same(text));
+        } else {
+            folded.push(line);
+        }
+    }
+    folded
+}
+
+/// Decode a function and normalize it, keeping both forms side by side.
+///
+/// The alignment needs the normalized form to compare and the printed form to
+/// show, in the same order, so they are returned together.
+fn decode_and_normalize(function: &Function, isa: Isa) -> (Vec<Insn>, Vec<NormInsn>) {
+    let insns = decode_all(&isa.arch(), &function.code, function.address).0;
+    let norm = normalize_body(&insns);
+    (insns, norm)
+}
+
+/// A move through the alignment grid: keep both sides, or drop one.
+#[derive(Clone, Copy)]
+enum Step {
+    /// The instruction is on both sides; advance both.
+    Both,
+    /// The instruction is only on the left; advance the left.
+    Left,
+    /// The instruction is only on the right; advance the right.
+    Right,
+}
+
+/// Table of the classic longest-common-subsequence dynamic program.
+///
+/// `len[i][j]` is the length of the longest run of instructions shared by the
+/// tails `left[i..]` and `right[j..]`. Reading it back from the top left gives
+/// the alignment. Both sides are function bodies, small enough that the
+/// quadratic table costs nothing worth avoiding.
+fn longest_common_subsequence(left: &[NormInsn], right: &[NormInsn]) -> Vec<Step> {
+    let (rows, cols) = (left.len() + 1, right.len() + 1);
+    let mut len = vec![vec![0usize; cols]; rows];
+
+    for i in (0..left.len()).rev() {
+        for j in (0..right.len()).rev() {
+            len[i][j] = if left[i] == right[j] {
+                len[i + 1][j + 1] + 1
+            } else {
+                len[i + 1][j].max(len[i][j + 1])
+            };
+        }
+    }
+
+    let mut steps = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < left.len() && j < right.len() {
+        if left[i] == right[j] {
+            steps.push(Step::Both);
+            i += 1;
+            j += 1;
+        } else if len[i + 1][j] >= len[i][j + 1] {
+            steps.push(Step::Left);
+            i += 1;
+        } else {
+            steps.push(Step::Right);
+            j += 1;
+        }
+    }
+    steps.extend(core::iter::repeat_n(Step::Left, left.len() - i));
+    steps.extend(core::iter::repeat_n(Step::Right, right.len() - j));
+    steps
+}
+
+/// Turn an alignment into diff lines, reading the printed text for each side.
+fn lines_from_alignment(
+    steps: &[Step],
+    before_insns: &[Insn],
+    before_norm: &[NormInsn],
+    after_insns: &[Insn],
+    after_norm: &[NormInsn],
+    printed: &dyn Fn(&Insn) -> String,
+) -> Vec<DiffLine> {
+    let mut lines = Vec::with_capacity(steps.len());
+    let (mut i, mut j) = (0, 0);
+    for step in steps {
+        match step {
+            Step::Both => {
+                // Aligned as the same shape. A differing constant is still a
+                // change, so the two forms are compared before calling it same.
+                let line = if before_norm[i].differs_in_detail(&after_norm[j]) {
+                    DiffLine::Changed {
+                        before: printed(&before_insns[i]),
+                        after: printed(&after_insns[j]),
+                    }
+                } else {
+                    DiffLine::Same(printed(&after_insns[j]))
+                };
+                lines.push(line);
+                i += 1;
+                j += 1;
+            }
+            Step::Left => {
+                lines.push(DiffLine::Removed(printed(&before_insns[i])));
+                i += 1;
+            }
+            Step::Right => {
+                lines.push(DiffLine::Added(printed(&after_insns[j])));
+                j += 1;
+            }
+        }
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1185,7 +1374,7 @@ mod tests {
     /// Building a `Binary` by hand keeps these tests free of fixture files.
     fn binary_of(functions: &[(&str, &[u8])]) -> crate::obj::Binary {
         crate::obj::Binary {
-            isa: crate::obj::Isa::Arm32,
+            isa: Isa::Arm32,
             found_by: crate::obj::FoundBy::Symbols,
             functions: functions
                 .iter()
@@ -1281,6 +1470,96 @@ mod tests {
         let miss = diff.near_miss(0).expect("the removed function needs a near miss");
         assert_eq!(miss.best, None);
         assert_eq!(miss.score, 0.0);
+    }
+
+    /// Diff two one-function images at instruction level.
+    fn diff_lines(before: &[u8], after: &[u8]) -> Vec<DiffLine> {
+        let before = binary_of(&[("f", before)]);
+        let after = binary_of(&[("f", after)]);
+        instruction_diff(&before.functions[0], Isa::Arm32, &after.functions[0], Isa::Arm32)
+    }
+
+    /// A function diffed with itself is every line unchanged.
+    #[test]
+    fn an_unedited_function_diffs_to_all_same() {
+        let lines = diff_lines(ADD_THEN_RETURN, ADD_THEN_RETURN);
+        assert!(lines.iter().all(|line| matches!(line, DiffLine::Same(_))));
+        assert_eq!(lines.len(), 2, "add then bx lr");
+    }
+
+    /// A moved branch target is a free choice, so the diff shows no change.
+    #[test]
+    fn a_moved_target_diffs_to_all_same() {
+        let lines = diff_lines(CALL_NEAR, CALL_FAR);
+        assert!(
+            lines.iter().all(|line| matches!(line, DiffLine::Same(_))),
+            "only the branch target moved"
+        );
+    }
+
+    /// An added instruction shows as one added line, the rest unchanged.
+    #[test]
+    fn an_added_instruction_shows_as_added() {
+        // `add` then `add` then `bx lr`, against `add` then `bx lr`.
+        let longer: &[u8] =
+            &[0x00, 0x00, 0x81, 0xe0, 0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+        let lines = diff_lines(ADD_THEN_RETURN, longer);
+        assert_eq!(lines.iter().filter(|line| matches!(line, DiffLine::Added(_))).count(), 1);
+        assert_eq!(lines.iter().filter(|line| matches!(line, DiffLine::Removed(_))).count(), 0);
+    }
+
+    /// The same comparison reversed shows a removal, not an addition.
+    #[test]
+    fn a_removed_instruction_shows_as_removed() {
+        let longer: &[u8] =
+            &[0x00, 0x00, 0x81, 0xe0, 0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+        let lines = diff_lines(longer, ADD_THEN_RETURN);
+        assert_eq!(lines.iter().filter(|line| matches!(line, DiffLine::Removed(_))).count(), 1);
+        assert_eq!(lines.iter().filter(|line| matches!(line, DiffLine::Added(_))).count(), 0);
+    }
+
+    /// A changed constant shows as one changed line, with both forms.
+    ///
+    /// The two `mov` share every shape a compiler picks freely, so they align;
+    /// only the constant differs, which is the line the reader came for.
+    #[test]
+    fn a_changed_constant_shows_both_forms() {
+        // `mov r1, 0x25` then `mul` then `bx lr`, against `mov r1, 0x29`.
+        let before: &[u8] =
+            &[0x25, 0x10, 0xa0, 0xe3, 0x91, 0x00, 0x00, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+        let after: &[u8] =
+            &[0x29, 0x10, 0xa0, 0xe3, 0x91, 0x00, 0x00, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+        let lines = diff_lines(before, after);
+
+        let changed: Vec<_> =
+            lines.iter().filter(|line| matches!(line, DiffLine::Changed { .. })).collect();
+        assert_eq!(changed.len(), 1, "only the constant changed");
+        let DiffLine::Changed { before, after } = changed[0] else { unreachable!() };
+        assert!(before.contains("0x25") && after.contains("0x29"), "both values shown");
+    }
+
+    /// A remove-then-add of identical text folds into one unchanged line.
+    ///
+    /// Data words all normalize alike, so the alignment can split a shared one
+    /// into a removal and an addition of the same text. The fold removes that
+    /// noise.
+    #[test]
+    fn identical_text_across_an_add_and_remove_folds_to_same() {
+        let lines = vec![
+            DiffLine::Removed("nop".to_string()),
+            DiffLine::Added("nop".to_string()),
+            DiffLine::Removed("push {lr}".to_string()),
+            DiffLine::Added("pop {pc}".to_string()),
+        ];
+        let folded = coalesce_equal_pairs(lines);
+        assert_eq!(
+            folded,
+            vec![
+                DiffLine::Same("nop".to_string()),
+                DiffLine::Removed("push {lr}".to_string()),
+                DiffLine::Added("pop {pc}".to_string()),
+            ]
+        );
     }
 
     /// A matched function is not a near miss, so the report stays short.

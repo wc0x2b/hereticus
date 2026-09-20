@@ -64,6 +64,25 @@ $ fndiff --show-retouched before.o after.o
 compiler inlines `mul_by_constant` into it, so the edited constant lands there
 too. `--all` implies this flag.
 
+### Reading one function
+
+The table says a function changed and by how much. `--diff` says *what*
+changed, line by line, against whatever the function was matched to:
+
+```console
+$ fndiff --diff mul_by_constant before.o after.o
+mul_by_constant
+- mov r1, 0x25
++ mov r1, 0x29
+  mul r0, r0, r1
+  bx lr
+```
+
+The diff aligns on the same terms the matcher uses, so a branch whose target
+only moved reads as no change. A `-` and `+` of the same instruction is a
+changed constant. Give a `sub_<hex>` name to diff a function the binary did not
+name.
+
 The same comparison on stripped copies of those two files gives the same
 answer, with addresses in place of names:
 
@@ -98,6 +117,7 @@ $ fndiff before-stripped.o after-stripped.o
 fndiff before.o after.o              # what changed
 fndiff --all before.o after.o        # every function
 fndiff --show-retouched a.o b.o      # add the ones that only changed a constant
+fndiff --diff array_max a.o b.o      # the instruction-level diff of one function
 fndiff --ignore-names a.o b.o        # match from the code alone
 fndiff --format compact a.o b.o      # tab separated, for scripts
 fndiff --exit-code a.o b.o           # exit 1 when anything changed

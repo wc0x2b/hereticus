@@ -1,0 +1,17 @@
+---
+source: fndiff-cli/tests/cli.rs
+info:
+  program: fndiff
+  args:
+    - "--diff"
+    - no_such_function
+    - fixtures/build/O2/basic.o
+    - fixtures/build/O2/basic_v2.o
+snapshot_kind: text
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+fndiff: no function `no_such_function` in the earlier binary

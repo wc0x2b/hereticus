@@ -116,6 +116,40 @@ fn comparing_a_binary_with_itself_reports_nothing() {
     assert_cmd_snapshot!(fndiff().args(["fixtures/build/O2/basic.o", "fixtures/build/O2/basic.o"]));
 }
 
+/// A changed constant shows as one line, with the old and new value.
+#[test]
+fn diffs_one_function_at_instruction_level() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(fndiff().args([
+        "--color",
+        "never",
+        "--diff",
+        "mul_by_constant",
+        "fixtures/build/O2/basic.o",
+        "fixtures/build/O2/basic_v2.o",
+    ]));
+}
+
+/// A name the earlier binary does not hold is refused with a clear message.
+#[test]
+fn diff_of_an_unknown_function_is_refused() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(fndiff().args([
+        "--diff",
+        "no_such_function",
+        "fixtures/build/O2/basic.o",
+        "fixtures/build/O2/basic_v2.o",
+    ]));
+}
+
 /// Lowering the floor shows the weaker guesses as well.
 #[test]
 fn near_miss_floor_controls_what_is_shown() {
