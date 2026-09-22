@@ -51,6 +51,26 @@ The `+/-/~` column counts the instructions the edit added, removed and rewrote.
 A score of 1.00 with no instruction touched means only a constant changed, so
 those are hidden by default.
 
+The `TOUCHED` column names what kind of code the edit changed: branches, calls,
+jumps, memory accesses, changed constants and bytes the decoder cannot read.
+Plain data instructions are left out, because they are the bulk of any rewrite
+and name nothing to act on. The column matters most on a large edit, where
+`CHANGE` can only say `changed`:
+
+```console
+$ heresy basic-O1.o basic-Os.o
+╭──────────────┬───────────┬───────┬────────┬──────────────────────────────────────┬────────────╮
+│ FUNCTION     │ CHANGE    │ SCORE │ +/-/~  │ TOUCHED                              │ MATCHED BY │
+├──────────────┼───────────┼───────┼────────┼──────────────────────────────────────┼────────────┤
+│ switch_dense │ reordered │  1.00 │ 1/1/0  │ -                                    │ same name  │
+│ factorial    │ changed   │  0.12 │ 35/2/2 │ 1 branch, 6 jump, 1 const, 17 unread │ same name  │
+╰──────────────┴───────────┴───────┴────────┴──────────────────────────────────────┴────────────╯
+```
+
+The `1 const` on `factorial` is a changed value inside a 39-instruction
+rewrite. No other column can show it: the edit is far too large to read as
+`changed values`.
+
 To see what changed inside one function:
 
 ```console

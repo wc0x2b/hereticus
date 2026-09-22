@@ -13,11 +13,11 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-╭──────────────┬───────────┬───────┬───────┬────────────╮
-│ FUNCTION     │ CHANGE    │ SCORE │ +/-/~ │ MATCHED BY │
-├──────────────┼───────────┼───────┼───────┼────────────┤
-│ switch_dense │ reordered │  1.00 │ 1/1/0 │ similar    │
-╰──────────────┴───────────┴───────┴───────┴────────────╯
+╭──────────────┬───────────┬───────┬───────┬─────────┬────────────╮
+│ FUNCTION     │ CHANGE    │ SCORE │ +/-/~ │ TOUCHED │ MATCHED BY │
+├──────────────┼───────────┼───────┼───────┼─────────┼────────────┤
+│ switch_dense │ reordered │  1.00 │ 1/1/0 │ -       │ similar    │
+╰──────────────┴───────────┴───────┴───────┴─────────┴────────────╯
 array_max: gone, closest array_max at 0.40
 factorial: gone, closest factorial at 0.16
 array_max: new, closest array_max at 0.40

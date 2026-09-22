@@ -42,6 +42,20 @@ fn reports_the_functions_that_changed() {
     );
 }
 
+/// The `TOUCHED` column names what kind of code a large rewrite changed.
+///
+/// Comparing two optimization levels rewrites whole functions, which is where
+/// the column earns its place: the `CHANGE` column can only say `changed`.
+#[test]
+fn names_the_kind_of_code_a_rewrite_touched() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(heresy().args(["fixtures/build/O1/basic.o", "fixtures/build/Os/basic.o"]));
+}
+
 #[test]
 fn reports_every_function_when_asked() {
     if !fixtures_present() {

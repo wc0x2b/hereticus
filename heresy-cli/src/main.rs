@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use clap::{Parser, ValueEnum};
 use console::Term;
 use heresy::matching::{
-    Changed, Confidence, Diff, DiffLine, Edits, Match, Options, Phase, Progress, UseNames,
-    diff_reporting, instruction_diff,
+    Changed, Confidence, Diff, DiffLine, EditKind, EditKinds, Edits, Match, Options, Phase,
+    Progress, UseNames, diff_reporting, instruction_diff,
 };
 use heresy::obj::{Binary, Isa};
 use heresy::raw::check_base;
@@ -416,6 +416,45 @@ fn describe_edits(edits: Edits, paint: Paint) -> String {
     format!("{added}/{removed}/{edited}")
 }
 
+/// Name what kind of code an edit touched, most telling kind first.
+///
+/// Reads as `2 branch, 1 const`. Control flow leads, because a branch that
+/// appeared can change what the function does for some input, which a moved
+/// load cannot. A dash where nothing was touched, as in the `+/-/~` column.
+///
+/// This is the one place a changed constant shows inside a larger edit. Once a
+/// rewrite is big enough the `CHANGE` column only says `changed`, and the
+/// value that moved with it would otherwise not appear at all.
+///
+/// Plain data instructions are left out. They are the bulk of any rewrite and
+/// name nothing a reader can act on, so listing them would crowd out the kinds
+/// that do. The `+/-/~` column already reports the size of the edit.
+///
+/// The names are short so that the column stays narrow. `const` rather than
+/// `constant` keeps the common case to one short word.
+fn describe_kinds(kinds: EditKinds) -> String {
+    let named: Vec<String> = kinds
+        .present()
+        .filter(|(kind, _)| *kind != EditKind::Other)
+        .map(|(kind, count)| format!("{count} {}", name_of_kind(kind)))
+        .collect();
+
+    if named.is_empty() { "-".to_string() } else { named.join(", ") }
+}
+
+/// The short name of one kind, for the `TOUCHED` column.
+fn name_of_kind(kind: EditKind) -> &'static str {
+    match kind {
+        EditKind::Branch => "branch",
+        EditKind::Call => "call",
+        EditKind::Jump => "jump",
+        EditKind::Memory => "mem",
+        EditKind::Constant => "const",
+        EditKind::Other => "other",
+        EditKind::Opaque => "unread",
+    }
+}
+
 /// The color of each count in the `+/-/~` column.
 const ADDED_COLOR: Color = Color::FG_GREEN;
 const REMOVED_COLOR: Color = Color::FG_RED;
@@ -528,6 +567,9 @@ struct Row {
     /// Added, removed and rewritten instructions.
     #[tabled(rename = "+/-/~")]
     edits: String,
+    /// What kind of code the edit touched.
+    #[tabled(rename = "TOUCHED")]
+    kinds: String,
     #[tabled(rename = "MATCHED BY")]
     matched_by: &'static str,
 }
@@ -676,6 +718,7 @@ fn print_text(
                 change: describe(pair.changed),
                 score: format!("{:.2}", pair.score),
                 edits: describe_edits(pair.edits, paint),
+                kinds: describe_kinds(pair.kinds),
                 matched_by: describe_confidence(pair.confidence),
             }
         });
@@ -838,7 +881,6 @@ fn summarize(diff: &Diff, retouched: Retouched) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use heresy::matching::EditKinds;
 
     #[test]
     fn rejects_a_threshold_outside_its_range() {

@@ -1,0 +1,4 @@
+# Build static binaries by default. musl links the C library into the
+# executable, thus the result runs on any Linux system with no dependencies.
+[build]
+target = "x86_64-unknown-linux-musl"
