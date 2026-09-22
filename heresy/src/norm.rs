@@ -21,7 +21,23 @@
 
 use std::collections::BTreeSet;
 
+use compact_str::{CompactString, format_compact};
+use smallvec::SmallVec;
+
 use crate::arch::{Insn, InsnKind};
+
+/// Operands held without a heap allocation.
+///
+/// Measured across the corpus, an ARM32 instruction carries up to four
+/// operands, bar a handful of register lists that reach six. Four inline
+/// covers all but those, which spill to the heap and still work.
+pub type Operands = SmallVec<[OperandShape; 4]>;
+
+/// Constants held without a heap allocation.
+///
+/// The same measurement: an instruction holds no constant or one, and never
+/// more than two.
+pub type Constants = SmallVec<[u64; 2]>;
 
 /// An instruction with the build-specific detail removed.
 ///
@@ -33,9 +49,13 @@ use crate::arch::{Insn, InsnKind};
 #[derive(Clone, Debug, Eq)]
 pub struct NormInsn {
     /// Operation name, with the flag-setting suffix and condition removed.
-    pub operation: String,
+    ///
+    /// A mnemonic is two or three characters, so it sits inline. An
+    /// unreadable word carries its raw bits in the name instead and can reach
+    /// twenty, which still fits the inline limit.
+    pub operation: CompactString,
     /// Shape of each operand, in order.
-    pub operands: Vec<OperandShape>,
+    pub operands: Operands,
     /// How the instruction moves control.
     pub flow: FlowShape,
     /// Exact constants, in the order they appear.
@@ -43,7 +63,7 @@ pub struct NormInsn {
     /// Kept out of equality on purpose: a threshold that changes from 100 to
     /// 50 must still match the function it came from, and must still show up
     /// as a difference once matched.
-    pub constants: Vec<u64>,
+    pub constants: Constants,
 }
 
 impl NormInsn {
@@ -173,10 +193,10 @@ pub fn normalize(insn: &Insn) -> NormInsn {
     // reported as no change.
     if insn.kind == InsnKind::Unknown {
         return NormInsn {
-            operation: format!("{}{}", insn.mnemonic, insn.operands),
-            operands: Vec::new(),
+            operation: format_compact!("{}{}", insn.mnemonic, insn.operands),
+            operands: Operands::new(),
             flow: FlowShape::Opaque,
-            constants: Vec::new(),
+            constants: Constants::new(),
         };
     }
 
@@ -291,7 +311,7 @@ fn mentions_stack_slot(operands: &str) -> bool {
 ///
 /// A compiler picks between `add` and `adds`, and between a branch and a
 /// conditional move, for reasons that do not change what the code computes.
-pub fn normalize_operation(mnemonic: &str) -> String {
+pub fn normalize_operation(mnemonic: &str) -> CompactString {
     const CONDITIONS: [&str; 17] = [
         "eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al",
         "lo", "hs",
@@ -303,7 +323,7 @@ pub fn normalize_operation(mnemonic: &str) -> String {
     let mnemonic = mnemonic.trim();
     if NOT_CONDITIONAL.contains(&mnemonic) {
         // `movs` and `cmps` still carry a flag-setting suffix to remove.
-        return mnemonic.trim_end_matches('s').to_string();
+        return mnemonic.trim_end_matches('s').into();
     }
 
     let without_condition = CONDITIONS
@@ -313,8 +333,8 @@ pub fn normalize_operation(mnemonic: &str) -> String {
 
     // Keep a trailing `s` that belongs to the name, as in `bics` versus `bic`.
     match without_condition.strip_suffix('s') {
-        Some(stem) if stem.len() >= 2 => stem.to_string(),
-        _ => without_condition.to_string(),
+        Some(stem) if stem.len() >= 2 => stem.into(),
+        _ => without_condition.into(),
     }
 }
 
@@ -458,8 +478,8 @@ mod tests {
 
         assert_eq!(original, edited, "the same work with a different constant still matches");
         assert!(original.differs_in_detail(&edited), "the changed value must be visible");
-        assert_eq!(original.constants, vec![0x25]);
-        assert_eq!(edited.constants, vec![0x29]);
+        assert_eq!(original.constants.as_slice(), [0x25]);
+        assert_eq!(edited.constants.as_slice(), [0x29]);
     }
 
     #[test]

@@ -194,8 +194,8 @@ fn edited_functions_differ_from_the_original() {
         .find(|(left, right)| left.differs_in_detail(right))
         .map(|(left, right)| (left.constants.clone(), right.constants.clone()))
         .expect("one instruction must differ");
-    assert_eq!(before, vec![37]);
-    assert_eq!(after, vec![41]);
+    assert_eq!(before.as_slice(), [37]);
+    assert_eq!(after.as_slice(), [41]);
 }
 
 /// A constant signature is stable across optimization levels, except where

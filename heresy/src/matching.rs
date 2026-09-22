@@ -400,15 +400,31 @@ struct Prepared<'a> {
     /// building a map for each comparison. Order is already irrelevant to the
     /// score, which counts shared instructions rather than matching positions.
     symbols: Vec<Symbol>,
-    /// Each instruction as decoded, before normalizing: the operation, its
-    /// operands, and how it moves control.
+    /// Which decoder read this function, so the printed form can be recovered.
+    isa: Isa,
+}
+
+impl Prepared<'_> {
+    /// Decode this function again, as the decoder printed it.
     ///
     /// Normalizing throws away detail on purpose, which is what lets a
     /// function match itself across builds. Telling a changed register from a
-    /// changed word of data needs that detail back, so it is kept here. The
-    /// kind comes along because a branch target is only a free choice when the
-    /// instruction really does branch.
-    printed: Vec<PrintedInsn>,
+    /// changed word of data needs that detail back.
+    ///
+    /// Keeping it for every function costs two heap strings per instruction
+    /// for the whole run, and only matched pairs of identical shape ever ask
+    /// for it. Decoding those few again is cheaper than storing them all.
+    fn printed(&self) -> Vec<PrintedInsn> {
+        let (insns, _) = decode_all(&self.isa.arch(), &self.function.code, self.function.address);
+        insns
+            .iter()
+            .map(|insn| PrintedInsn {
+                mnemonic: insn.mnemonic.clone(),
+                operands: insn.operands.clone(),
+                kind: insn.kind,
+            })
+            .collect()
+    }
 }
 
 /// One instruction as the decoder printed it, kept for the detail comparison.
@@ -458,21 +474,13 @@ fn prepare<'a>(
         .map(|function| {
             progress.advance(1);
             let (insns, _) = decode_all(&arch, &function.code, function.address);
-            let printed = insns
-                .iter()
-                .map(|insn| PrintedInsn {
-                    mnemonic: insn.mnemonic.clone(),
-                    operands: insn.operands.clone(),
-                    kind: insn.kind,
-                })
-                .collect();
             let body = normalize_body(&insns);
 
             let mut symbols: Vec<Symbol> =
                 body.iter().map(|insn| interner.intern(insn.clone())).collect();
             symbols.sort_unstable();
 
-            Prepared { function, body, symbols, printed }
+            Prepared { function, body, symbols, isa: binary.isa }
         })
         .collect()
 }
@@ -712,11 +720,12 @@ impl Cascade<'_> {
 /// becomes a *different* instruction rather than the same one with another
 /// register or target.
 fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> bool {
-    if before.printed.len() != after.printed.len() {
+    let (before_printed, after_printed) = (before.printed(), after.printed());
+    if before_printed.len() != after_printed.len() {
         return false;
     }
 
-    before.printed.iter().zip(&after.printed).all(|(left, right)| {
+    before_printed.iter().zip(&after_printed).all(|(left, right)| {
         // Compare the operation the way the normalizer does, so a condition
         // code the compiler chose differently — `movwlt` against `movwlo` —
         // stays the free choice it is rather than reading as an edit.
