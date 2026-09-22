@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 
 use crate::arch::{Insn, InsnKind, decode_all};
-use crate::norm::{FlowShape, NormInsn, normalize_body, normalize_operation};
+use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body, normalize_operation};
 use crate::obj::{Binary, Function, Isa};
 
 /// How confident a pairing is, and what justified it.
@@ -62,6 +62,8 @@ pub struct Match {
     pub changed: Changed,
     /// How many instructions the edit added, removed and rewrote.
     pub edits: Edits,
+    /// What kind of code the edit touched.
+    pub kinds: EditKinds,
 }
 
 /// The size of an edit, in normalized instructions.
@@ -92,6 +94,127 @@ impl Edits {
     pub fn total(self) -> usize {
         self.added + self.removed + self.edited
     }
+}
+
+/// What kind of code an edit touched.
+///
+/// [`Edits`] says how much changed and [`Changed`] says how much to care. This
+/// says *what*: a function that gained a branch reads differently from one
+/// that moved a constant, even when both touched one instruction.
+///
+/// An instruction falls in exactly one kind, chosen by the order the variants
+/// are declared, so the counts sum to the instructions the edit touched. The
+/// order puts control flow first because it is what changes behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EditKind {
+    /// A conditional branch: a gate the code did not have, or lost.
+    Branch,
+    /// A call to another function.
+    Call,
+    /// An unconditional jump or a return.
+    Jump,
+    /// A read or write through memory.
+    Memory,
+    /// A stored value, with the instructions around it untouched.
+    ///
+    /// Reported on its own axis from the rest: a changed threshold leaves
+    /// every instruction in place, so it never reaches the counts in
+    /// [`Edits`]. See [`EditKinds::constants`].
+    Constant,
+    /// Anything the decoder could read that fits no other kind.
+    Other,
+    /// Bytes the decoder cannot read, which may be data rather than code.
+    Opaque,
+}
+
+/// How many instructions of each kind an edit touched.
+///
+/// The first six counts partition the instructions [`Edits`] counted, so they
+/// sum to `Edits::total`. The constant count stands apart: normalizing hides a
+/// constant on purpose, so an instruction whose value changed stays in place
+/// and is never added, removed or rewritten.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EditKinds {
+    /// Conditional branches added, removed or rewritten.
+    pub branches: usize,
+    /// Calls added, removed or rewritten.
+    pub calls: usize,
+    /// Jumps and returns added, removed or rewritten.
+    pub jumps: usize,
+    /// Memory accesses added, removed or rewritten.
+    pub memory: usize,
+    /// Other readable instructions added, removed or rewritten.
+    pub other: usize,
+    /// Undecodable words added, removed or rewritten.
+    pub opaque: usize,
+    /// Instructions kept in place whose stored constants changed.
+    ///
+    /// Outside the sum above, because such an instruction did not move.
+    pub constants: usize,
+}
+
+impl EditKinds {
+    /// Add one instruction of the given kind.
+    fn add(&mut self, kind: EditKind) {
+        let count = match kind {
+            EditKind::Branch => &mut self.branches,
+            EditKind::Call => &mut self.calls,
+            EditKind::Jump => &mut self.jumps,
+            EditKind::Memory => &mut self.memory,
+            EditKind::Constant => &mut self.constants,
+            EditKind::Other => &mut self.other,
+            EditKind::Opaque => &mut self.opaque,
+        };
+        *count += 1;
+    }
+
+    /// Every kind that appears, most telling first.
+    ///
+    /// The order follows [`EditKind`], so a reader sees control flow before
+    /// bookkeeping.
+    pub fn present(self) -> impl Iterator<Item = (EditKind, usize)> {
+        [
+            (EditKind::Branch, self.branches),
+            (EditKind::Call, self.calls),
+            (EditKind::Jump, self.jumps),
+            (EditKind::Memory, self.memory),
+            (EditKind::Constant, self.constants),
+            (EditKind::Other, self.other),
+            (EditKind::Opaque, self.opaque),
+        ]
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+    }
+
+    /// Report whether the edit touched control flow.
+    ///
+    /// A changed branch, call or jump can change what the function does for
+    /// some input, which a changed constant or a moved load cannot.
+    pub fn touches_control_flow(self) -> bool {
+        self.branches > 0 || self.calls > 0 || self.jumps > 0
+    }
+}
+
+/// Work out which kind an instruction belongs to.
+///
+/// Control flow decides first, because it is what changes behavior. An
+/// instruction that moves no control is classified by its operands, where a
+/// memory reference outranks the rest.
+fn kind_of(insn: &NormInsn) -> EditKind {
+    match insn.flow {
+        FlowShape::Branch => return EditKind::Branch,
+        FlowShape::Call => return EditKind::Call,
+        FlowShape::Jump | FlowShape::Return => return EditKind::Jump,
+        FlowShape::Opaque => return EditKind::Opaque,
+        FlowShape::Linear => {}
+    }
+
+    let touches_memory = insn
+        .operands
+        .iter()
+        .any(|shape| matches!(shape, OperandShape::Memory | OperandShape::StackSlot));
+
+    if touches_memory { EditKind::Memory } else { EditKind::Other }
 }
 
 /// Whether a matched pair differs, and how.
@@ -484,13 +607,15 @@ impl Cascade<'_> {
         self.left_free[before] = false;
         self.right_free[after] = false;
         let (left, right) = (&self.left[before], &self.right[after]);
+        let (edits, kinds) = count_edits(left, right);
         self.matched.push(Match {
             before,
             after,
             confidence,
             score,
             changed: classify_change(left, right),
-            edits: count_edits(left, right),
+            edits,
+            kinds,
         });
     }
 
@@ -741,37 +866,58 @@ fn differs_only_where_unreadable(before: &Prepared<'_>, after: &Prepared<'_>) ->
 /// from 100 to 50 rewrote an instruction, when the code around it is
 /// untouched. A reader sorting by this count wants the functions whose
 /// instructions moved.
-fn count_edits(before: &Prepared<'_>, after: &Prepared<'_>) -> Edits {
+fn count_edits(before: &Prepared<'_>, after: &Prepared<'_>) -> (Edits, EditKinds) {
     let (left, right) = (&before.body, &after.body);
     let mut edits = Edits::default();
-    // Removals seen since the last kept instruction, still free to pair with an
+    let mut kinds = EditKinds::default();
+    // Instructions removed since the last kept one, still free to pair with an
     // addition. The alignment emits a run of removals before the additions that
-    // replace them, so the two need not be strictly adjacent.
-    let mut unpaired_removals = 0usize;
+    // replace them, so the two need not be strictly adjacent. Their indexes are
+    // kept so that an unpaired one can still be classified.
+    let mut unpaired_removals: Vec<usize> = Vec::new();
 
+    let (mut i, mut j) = (0, 0);
     for step in longest_common_subsequence(left, right) {
         match step {
             Step::Both => {
-                edits.removed += unpaired_removals;
-                unpaired_removals = 0;
+                // A kept pair agrees in shape, so only its constants can
+                // differ. That is a change in value, not in instructions.
+                if left[i].differs_in_detail(&right[j]) {
+                    kinds.add(EditKind::Constant);
+                }
+                edits.removed += unpaired_removals.len();
+                for index in unpaired_removals.drain(..) {
+                    kinds.add(kind_of(&left[index]));
+                }
+                i += 1;
+                j += 1;
             }
-            Step::Left => unpaired_removals += 1,
+            Step::Left => {
+                unpaired_removals.push(i);
+                i += 1;
+            }
             Step::Right => {
                 // A removal waiting next to this addition means one instruction
                 // took another's place, which is a rewrite rather than a pair
-                // of length changes.
-                if unpaired_removals > 0 {
-                    unpaired_removals -= 1;
+                // of length changes. The later build's instruction names the
+                // kind, because that is the code the reader now has.
+                if unpaired_removals.pop().is_some() {
                     edits.edited += 1;
                 } else {
                     edits.added += 1;
                 }
+                kinds.add(kind_of(&right[j]));
+                j += 1;
             }
         }
     }
-    edits.removed += unpaired_removals;
 
-    edits
+    edits.removed += unpaired_removals.len();
+    for index in unpaired_removals {
+        kinds.add(kind_of(&left[index]));
+    }
+
+    (edits, kinds)
 }
 
 impl Cascade<'_> {
@@ -1513,6 +1659,110 @@ mod tests {
         assert_eq!(edits_between(before, after), Edits::default());
     }
 
+    /// `cmp r0, 0` then `bx lr`, the body the kind tests start from.
+    const COMPARE_THEN_RETURN: &[u8] = &[0x00, 0x00, 0x50, 0xe3, 0x1e, 0xff, 0x2f, 0xe1];
+
+    /// A gate the later build added is reported as a branch.
+    #[test]
+    fn an_added_branch_is_classified_as_control_flow() {
+        // The same body with a `beq` after the compare.
+        let with_branch: &[u8] = &[
+            0x00, 0x00, 0x50, 0xe3, // cmp r0, 0
+            0x02, 0x00, 0x00, 0x0a, // beq
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        ];
+
+        let kinds = kinds_between(COMPARE_THEN_RETURN, with_branch);
+        assert_eq!(kinds.branches, 1, "the added instruction was a branch");
+        assert_eq!(kinds.constants, 0, "no stored value changed");
+        assert!(kinds.touches_control_flow());
+    }
+
+    /// A call the later build added is told apart from a branch.
+    #[test]
+    fn an_added_call_is_classified_as_a_call() {
+        let with_call: &[u8] = &[
+            0x00, 0x00, 0x50, 0xe3, // cmp r0, 0
+            0x03, 0x00, 0x00, 0xeb, // bl
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        ];
+
+        let kinds = kinds_between(COMPARE_THEN_RETURN, with_call);
+        assert_eq!(kinds.calls, 1);
+        assert_eq!(kinds.branches, 0, "a call is not a branch");
+    }
+
+    /// A load the later build added is reported as memory, not control flow.
+    #[test]
+    fn an_added_load_is_classified_as_memory() {
+        let with_load: &[u8] = &[
+            0x00, 0x00, 0x50, 0xe3, // cmp r0, 0
+            0x00, 0x10, 0x90, 0xe5, // ldr r1, [r0]
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        ];
+
+        let kinds = kinds_between(COMPARE_THEN_RETURN, with_load);
+        assert_eq!(kinds.memory, 1);
+        assert!(!kinds.touches_control_flow(), "a load changes no control flow");
+    }
+
+    /// A changed constant is reported on its own, with no instruction touched.
+    ///
+    /// This is the case the edit counts deliberately leave out, so the kinds
+    /// are the only place it appears.
+    #[test]
+    fn a_changed_constant_is_classified_as_a_constant() {
+        // `mov r0, 1` then `bx lr`, against `mov r0, 2` then `bx lr`.
+        let before: &[u8] = &[0x01, 0x00, 0xa0, 0xe3, 0x1e, 0xff, 0x2f, 0xe1];
+        let after: &[u8] = &[0x02, 0x00, 0xa0, 0xe3, 0x1e, 0xff, 0x2f, 0xe1];
+
+        let kinds = kinds_between(before, after);
+        assert_eq!(kinds.constants, 1);
+        assert_eq!(edits_between(before, after), Edits::default(), "no instruction moved");
+        assert!(!kinds.touches_control_flow());
+    }
+
+    /// An edit that both adds a branch and changes a constant reports both.
+    ///
+    /// This is what the severity axis cannot say: [`Changed::Yes`] covers the
+    /// whole edit, and the constant change disappears into it.
+    #[test]
+    fn an_edit_that_adds_code_and_changes_a_value_reports_both() {
+        // `mov r0, 1` then `bx lr`.
+        let before: &[u8] = &[0x01, 0x00, 0xa0, 0xe3, 0x1e, 0xff, 0x2f, 0xe1];
+        // `mov r0, 2`, a `beq`, then `bx lr`.
+        let after: &[u8] = &[
+            0x02, 0x00, 0xa0, 0xe3, // mov r0, 2
+            0x02, 0x00, 0x00, 0x0a, // beq
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        ];
+
+        let kinds = kinds_between(before, after);
+        assert_eq!(kinds.branches, 1, "the added branch is visible");
+        assert_eq!(kinds.constants, 1, "and so is the changed value");
+    }
+
+    /// The kinds of the moved instructions sum to what the counts reported.
+    ///
+    /// Constants stand outside that sum, because such an instruction stayed in
+    /// place.
+    #[test]
+    fn the_kinds_account_for_every_instruction_counted() {
+        let with_branch: &[u8] = &[
+            0x00, 0x00, 0x50, 0xe3, // cmp r0, 0
+            0x02, 0x00, 0x00, 0x0a, // beq
+            0x00, 0x10, 0x90, 0xe5, // ldr r1, [r0]
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        ];
+
+        let edits = edits_between(COMPARE_THEN_RETURN, with_branch);
+        let kinds = kinds_between(COMPARE_THEN_RETURN, with_branch);
+        let counted: usize =
+            kinds.present().filter(|(kind, _)| *kind != EditKind::Constant).map(|(_, n)| n).sum();
+
+        assert_eq!(counted, edits.total(), "every touched instruction has a kind");
+    }
+
     /// A function compared with itself has nothing to count.
     #[test]
     fn an_unedited_function_counts_no_edits() {
@@ -1530,6 +1780,14 @@ mod tests {
         let after = binary_of(&[("f", after)]);
         let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
         diff.matched.first().expect("a threshold of zero pairs anything").edits
+    }
+
+    /// Classify the edits between two one-function images.
+    fn kinds_between(before: &[u8], after: &[u8]) -> EditKinds {
+        let before = binary_of(&[("f", before)]);
+        let after = binary_of(&[("f", after)]);
+        let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
+        diff.matched.first().expect("a threshold of zero pairs anything").kinds
     }
 
     /// Building a `Binary` by hand keeps these tests free of fixture files.

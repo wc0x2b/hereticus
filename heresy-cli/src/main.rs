@@ -326,7 +326,16 @@ fn run(args: &Args) -> Result<bool, String> {
         Format::Text => {
             let retouched = Retouched::from(args.show_retouched || args.all);
             let paint = Paint::resolve(args.color);
-            print_text(&diff, &before, &after, args.all, args.near_miss, retouched, paint, args.sort)
+            print_text(
+                &diff,
+                &before,
+                &after,
+                args.all,
+                args.near_miss,
+                retouched,
+                paint,
+                args.sort,
+            )
         }
         Format::Compact => {
             let retouched = Retouched::from(args.show_retouched || args.all);
@@ -829,6 +838,7 @@ fn summarize(diff: &Diff, retouched: Retouched) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use heresy::matching::EditKinds;
 
     #[test]
     fn rejects_a_threshold_outside_its_range() {
@@ -916,6 +926,7 @@ mod tests {
             score: 0.9,
             changed,
             edits: Edits { added: 0, removed: 0, edited: 1 },
+            kinds: EditKinds { other: 1, ..EditKinds::default() },
         }
     }
 
