@@ -393,69 +393,61 @@ impl Interner {
 /// A function together with the forms the cascade compares.
 struct Prepared<'a> {
     function: &'a Function,
-    body: Vec<NormInsn>,
     /// The body as symbols, sorted.
     ///
     /// Sorted so that [`similarity`] can walk two bodies together instead of
     /// building a map for each comparison. Order is already irrelevant to the
     /// score, which counts shared instructions rather than matching positions.
     symbols: Vec<Symbol>,
+    /// The same symbols in the order the instructions run.
+    ///
+    /// Two functions of identical shape carry identical sequences, because a
+    /// symbol stands for one distinct normalized instruction. That answers the
+    /// shape stage without keeping the instructions themselves: four bytes an
+    /// instruction rather than the eighty-eight a `NormInsn` costs, which is
+    /// what makes a whole kernel fit in memory.
+    ordered: Vec<Symbol>,
     /// Which decoder read this function, so the printed form can be recovered.
     isa: Isa,
 }
 
 impl Prepared<'_> {
-    /// Decode this function again, as the decoder printed it.
+    /// Normalize this function again.
     ///
-    /// Normalizing throws away detail on purpose, which is what lets a
-    /// function match itself across builds. Telling a changed register from a
-    /// changed word of data needs that detail back.
-    ///
-    /// Keeping it for every function costs two heap strings per instruction
-    /// for the whole run, and only matched pairs of identical shape ever ask
-    /// for it. Decoding those few again is cheaper than storing them all.
-    fn printed(&self) -> Vec<PrintedInsn> {
+    /// Kept out of [`Prepared`] for the same reason as [`Prepared::printed`],
+    /// and it matters far more here. A whole kernel holds about two million
+    /// instructions an image, so storing every normalized body costs over
+    /// 160 MB a side and the pair could not be compared at all. Only a matched
+    /// pair needs it, and matching itself reads nothing but the symbols.
+    fn body(&self) -> Vec<NormInsn> {
         let (insns, _) = decode_all(&self.isa.arch(), &self.function.code, self.function.address);
-        insns
-            .iter()
-            .map(|insn| PrintedInsn {
-                mnemonic: insn.mnemonic.clone(),
-                operands: insn.operands.clone(),
-                kind: insn.kind,
-            })
-            .collect()
+        normalize_body(&insns)
     }
-}
 
-/// One instruction as the decoder printed it, kept for the detail comparison.
-struct PrintedInsn {
-    mnemonic: String,
-    operands: String,
-    kind: InsnKind,
-}
-
-impl PrintedInsn {
-    /// Report whether this instruction moves control to a target address.
+    /// Report whether this function normalized to nothing.
     ///
-    /// Only these may have a `$...` operand that moves for free. A word of
-    /// data that happens to decode as a branch is excluded by the operation
-    /// check that runs first, which a changed data word almost always fails.
-    fn transfers_control(&self) -> bool {
-        matches!(self.kind, InsnKind::Call { .. } | InsnKind::Jump { .. } | InsnKind::Branch { .. })
+    /// The symbols carry one entry per normalized instruction, so they answer
+    /// this without normalizing again.
+    fn is_empty(&self) -> bool {
+        self.symbols.is_empty()
     }
 }
 
-impl Prepared<'_> {
-    /// Report whether the normalized instructions agree, constants aside.
-    fn same_shape_as(&self, other: &Self) -> bool {
-        self.body == other.body
-    }
+/// Report whether an instruction moves control to a target address.
+///
+/// Only these may have a `$...` operand that moves for free. A word of data
+/// that happens to decode as a branch is excluded by the operation check that
+/// runs first, which a changed data word almost always fails.
+fn transfers_control(kind: InsnKind) -> bool {
+    matches!(kind, InsnKind::Call { .. } | InsnKind::Jump { .. } | InsnKind::Branch { .. })
+}
 
-    /// Report whether two bodies that match also hold the same constants.
-    fn same_detail_as(&self, other: &Self) -> bool {
-        self.body.len() == other.body.len()
-            && self.body.iter().zip(&other.body).all(|(left, right)| !left.differs_in_detail(right))
-    }
+/// Report whether two normalized bodies hold the same constants.
+///
+/// Call this only on bodies that already compare equal, which fixes their
+/// lengths as equal too.
+fn same_detail(before: &[NormInsn], after: &[NormInsn]) -> bool {
+    before.iter().zip(after).all(|(left, right)| !left.differs_in_detail(right))
 }
 
 /// Prepare every function of a binary for matching.
@@ -474,13 +466,16 @@ fn prepare<'a>(
         .map(|function| {
             progress.advance(1);
             let (insns, _) = decode_all(&arch, &function.code, function.address);
+            // The body is interned and then dropped. Matching reads only the
+            // symbols, and the few pairs that need the instructions back
+            // normalize again on demand.
             let body = normalize_body(&insns);
 
-            let mut symbols: Vec<Symbol> =
-                body.iter().map(|insn| interner.intern(insn.clone())).collect();
+            let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
+            let mut symbols = ordered.clone();
             symbols.sort_unstable();
 
-            Prepared { function, body, symbols, isa: binary.isa }
+            Prepared { function, symbols, ordered, isa: binary.isa }
         })
         .collect()
 }
@@ -615,13 +610,16 @@ impl Cascade<'_> {
         self.left_free[before] = false;
         self.right_free[after] = false;
         let (left, right) = (&self.left[before], &self.right[after]);
-        let (edits, kinds) = count_edits(left, right);
+        // Normalize each side once and share it between the two answers below;
+        // neither the cascade nor the scoring stage keeps a body around.
+        let (left_body, right_body) = (left.body(), right.body());
+        let (edits, kinds) = count_edits(&left_body, &right_body);
         self.matched.push(Match {
             before,
             after,
             confidence,
             score,
-            changed: classify_change(left, right),
+            changed: classify_change(left, right, &left_body, &right_body),
             edits,
             kinds,
         });
@@ -720,12 +718,19 @@ impl Cascade<'_> {
 /// becomes a *different* instruction rather than the same one with another
 /// register or target.
 fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> bool {
-    let (before_printed, after_printed) = (before.printed(), after.printed());
-    if before_printed.len() != after_printed.len() {
+    // Decoded rather than stored, and walked in step rather than collected:
+    // a function of twenty thousand instructions would otherwise hold two
+    // heap strings apiece on both sides at once, which is what exhausted
+    // memory on a whole kernel.
+    let (before_insns, _) =
+        decode_all(&before.isa.arch(), &before.function.code, before.function.address);
+    let (after_insns, _) =
+        decode_all(&after.isa.arch(), &after.function.code, after.function.address);
+    if before_insns.len() != after_insns.len() {
         return false;
     }
 
-    before_printed.iter().zip(&after_printed).all(|(left, right)| {
+    before_insns.iter().zip(&after_insns).all(|(left, right)| {
         // Compare the operation the way the normalizer does, so a condition
         // code the compiler chose differently — `movwlt` against `movwlo` —
         // stays the free choice it is rather than reading as an edit.
@@ -736,7 +741,7 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
                 // A `$...` operand is a free choice only on an instruction
                 // that truly branches. Both sides agree on the operation by
                 // now, so either one answers.
-                TargetMoves::from(left.transfers_control() && right.transfers_control()),
+                TargetMoves::from(transfers_control(left.kind) && transfers_control(right.kind)),
             )
     })
 }
@@ -784,13 +789,18 @@ fn is_register_name(operand: &str) -> bool {
 /// Work out whether a matched pair differs.
 ///
 /// The order of these checks runs from cheapest and most certain to least.
-fn classify_change(before: &Prepared<'_>, after: &Prepared<'_>) -> Changed {
+fn classify_change(
+    before: &Prepared<'_>,
+    after: &Prepared<'_>,
+    before_body: &[NormInsn],
+    after_body: &[NormInsn],
+) -> Changed {
     if before.function.code == after.function.code {
         return Changed::No;
     }
 
-    if before.same_shape_as(after) {
-        if !before.same_detail_as(after) {
+    if before_body == after_body {
+        if !same_detail(before_body, after_body) {
             return Changed::InDetail;
         }
 
@@ -815,17 +825,21 @@ fn classify_change(before: &Prepared<'_>, after: &Prepared<'_>) -> Changed {
     }
 
     // The instructions differ in position. They may still be the same
-    // instructions, moved. Sorting both sides answers that.
-    let mut before_sorted = before.body.clone();
-    let mut after_sorted = after.body.clone();
-    before_sorted.sort();
-    after_sorted.sort();
-
-    if before_sorted == after_sorted {
+    // instructions, moved, which the sorted symbols already answer: a symbol
+    // stands for one distinct normalized instruction, so two functions hold
+    // the same multiset exactly when their sorted symbols agree. Comparing
+    // those rather than sorting two copies of the instructions keeps a
+    // twenty-thousand-instruction function from allocating twice its own size
+    // here, which is what exhausted memory on a whole kernel.
+    if before.symbols == after.symbols {
         return Changed::Reordered;
     }
 
-    if differs_only_where_unreadable(before, after) { Changed::Unreadable } else { Changed::Yes }
+    if differs_only_where_unreadable(before_body, after_body) {
+        Changed::Unreadable
+    } else {
+        Changed::Yes
+    }
 }
 
 /// Report whether every difference sits in bytes the decoder cannot read.
@@ -837,13 +851,13 @@ fn classify_change(before: &Prepared<'_>, after: &Prepared<'_>) -> Changed {
 ///
 /// Bodies of different length never qualify. An edit that added or removed an
 /// instruction changed the code, whatever else it touched.
-fn differs_only_where_unreadable(before: &Prepared<'_>, after: &Prepared<'_>) -> bool {
-    if before.body.len() != after.body.len() {
+fn differs_only_where_unreadable(before: &[NormInsn], after: &[NormInsn]) -> bool {
+    if before.len() != after.len() {
         return false;
     }
 
     let mut differs = false;
-    for (left, right) in before.body.iter().zip(&after.body) {
+    for (left, right) in before.iter().zip(after) {
         if left == right {
             continue;
         }
@@ -854,6 +868,45 @@ fn differs_only_where_unreadable(before: &Prepared<'_>, after: &Prepared<'_>) ->
     }
 
     differs
+}
+
+/// Count an edit without aligning the two bodies.
+///
+/// For a pair too large for [`longest_common_subsequence`]. Length gives the
+/// added and removed counts, and the overlap is compared position by position.
+/// An instruction inserted near the top therefore makes every instruction after
+/// it look rewritten, which overstates the edit. The alternative is to report
+/// nothing at all for such a function.
+fn count_edits_by_position(left: &[NormInsn], right: &[NormInsn]) -> (Edits, EditKinds) {
+    let mut kinds = EditKinds::default();
+    let overlap = left.len().min(right.len());
+
+    let mut edited = 0usize;
+    for (a, b) in left.iter().zip(right) {
+        if a == b {
+            if a.differs_in_detail(b) {
+                kinds.add(EditKind::Constant);
+            }
+            continue;
+        }
+        edited += 1;
+        kinds.add(kind_of(b));
+    }
+
+    // Whatever one side has beyond the overlap was added or removed outright.
+    for insn in right.iter().skip(overlap) {
+        kinds.add(kind_of(insn));
+    }
+    for insn in left.iter().skip(overlap) {
+        kinds.add(kind_of(insn));
+    }
+
+    let edits = Edits {
+        added: right.len().saturating_sub(left.len()),
+        removed: left.len().saturating_sub(right.len()),
+        edited,
+    };
+    (edits, kinds)
 }
 
 /// Count how many instructions an edit added, removed and rewrote.
@@ -875,8 +928,16 @@ fn differs_only_where_unreadable(before: &Prepared<'_>, after: &Prepared<'_>) ->
 /// from 100 to 50 rewrote an instruction, when the code around it is
 /// untouched. A reader sorting by this count wants the functions whose
 /// instructions moved.
-fn count_edits(before: &Prepared<'_>, after: &Prepared<'_>) -> (Edits, EditKinds) {
-    let (left, right) = (&before.body, &after.body);
+///
+/// A pair too large to align falls back to comparing position by position.
+/// That misattributes everything after an insertion, but it is bounded work,
+/// and it only happens on functions of many thousand instructions where the
+/// exact split between added and rewritten helps nobody.
+fn count_edits(left: &[NormInsn], right: &[NormInsn]) -> (Edits, EditKinds) {
+    if !can_align(left.len(), right.len()) {
+        return count_edits_by_position(left, right);
+    }
+
     let mut edits = Edits::default();
     let mut kinds = EditKinds::default();
     // Instructions removed since the last kept one, still free to pair with an
@@ -973,13 +1034,14 @@ impl Cascade<'_> {
             progress.advance(1);
             // An empty body carries no evidence, so pairing on it would be a
             // guess dressed up as a certainty.
-            if !self.left_free[index] || self.left[index].body.is_empty() {
+            if !self.left_free[index] || self.left[index].is_empty() {
                 continue;
             }
 
             let candidates: Vec<usize> = (0..self.right.len())
                 .filter(|other| {
-                    self.right_free[*other] && self.left[index].same_shape_as(&self.right[*other])
+                    self.right_free[*other]
+                        && self.left[index].ordered == self.right[*other].ordered
                 })
                 .collect();
 
@@ -1047,20 +1109,25 @@ impl Cascade<'_> {
             .filter(|index| self.left_free[*index])
             .map(|index| {
                 progress.advance(1);
-                if self.left[index].body.is_empty() {
+                if self.left[index].is_empty() {
                     return Vec::new();
                 }
 
-                (0..self.right.len())
-                    .filter(|other| self.right_free[*other] && !self.right[*other].body.is_empty())
-                    .filter_map(|other| {
-                        let score = similarity_of_symbols(
-                            &self.left[index].symbols,
-                            &self.right[other].symbols,
-                        );
-                        (score >= threshold).then_some((score, index, other))
-                    })
-                    .collect()
+                let mut best: Vec<(f64, usize, usize)> = Vec::new();
+                for other in 0..self.right.len() {
+                    if !self.right_free[other] || self.right[other].is_empty() {
+                        continue;
+                    }
+                    let score = similarity_of_symbols(
+                        &self.left[index].symbols,
+                        &self.right[other].symbols,
+                    );
+                    if score >= threshold {
+                        best.push((score, index, other));
+                        keep_best_candidates(&mut best);
+                    }
+                }
+                best
             })
             .flatten()
             .collect();
@@ -1080,6 +1147,44 @@ impl Cascade<'_> {
             }
         }
         progress.finish();
+    }
+}
+
+/// How many candidates one function keeps.
+///
+/// A function needs more than its single best candidate, because that one can
+/// be claimed by a better pair and the function must then fall back rather
+/// than go unmatched. It does not need all of them: a candidate is only ever
+/// reached after every stronger one for the same function was taken by a
+/// stronger pair, which the measurement below shows does not run deep.
+///
+/// Keeping every candidate is what made a whole kernel impossible to compare.
+/// Two 11 MB images recover about 25000 functions each, and a kernel holds
+/// thousands of near-identical wrappers, so the list grew to millions of
+/// entries and the process was killed before it could report anything.
+const CANDIDATES_PER_FUNCTION: usize = 8;
+
+/// Keep only the strongest candidates for one function.
+///
+/// Called with one new candidate appended, so at most one entry is over the
+/// limit and a single pass finds the weakest.
+fn keep_best_candidates(candidates: &mut Vec<(f64, usize, usize)>) {
+    if candidates.len() <= CANDIDATES_PER_FUNCTION {
+        return;
+    }
+
+    // Drop the weakest. Ties break on the right-hand index, so the choice does
+    // not depend on the order the scores arrived in.
+    let weakest = candidates
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal).then_with(|| b.2.cmp(&a.2))
+        })
+        .map(|(position, _)| position);
+
+    if let Some(position) = weakest {
+        candidates.swap_remove(position);
     }
 }
 
@@ -1192,6 +1297,16 @@ pub fn instruction_diff(
     // still folds a call whose callee only moved.
     let before_keys: Vec<String> = before_insns.iter().map(diff_key).collect();
     let after_keys: Vec<String> = after_insns.iter().map(diff_key).collect();
+
+    // A function too large to align is shown as a whole replacement rather
+    // than line by line. Aligning it would ask for more memory than the
+    // machine has, and no reader follows a diff of twenty thousand lines.
+    if !can_align(before_keys.len(), after_keys.len()) {
+        let mut lines: Vec<DiffLine> =
+            before_insns.iter().map(|insn| DiffLine::Removed(insn.to_string())).collect();
+        lines.extend(after_insns.iter().map(|insn| DiffLine::Added(insn.to_string())));
+        return lines;
+    }
 
     let steps = longest_common_subsequence(&before_keys, &after_keys);
     let lines = lines_from_alignment(&steps, &before_insns, &after_insns);
@@ -1319,13 +1434,31 @@ enum Step {
     Right,
 }
 
+/// Largest alignment table worth building, in cells.
+///
+/// The table holds one `usize` a cell, so this caps it at about 128 MB. Most
+/// functions are a few hundred instructions and never come close. A whole
+/// kernel holds a few that do: measured on a vendor image, one pair of 19926
+/// and 19872 instructions asks for 3.2 GB and the process is killed before it
+/// can report anything.
+const LARGEST_ALIGNMENT: usize = 16 * 1024 * 1024;
+
+/// Report whether two bodies are small enough to align.
+fn can_align(left: usize, right: usize) -> bool {
+    left.saturating_add(1).saturating_mul(right.saturating_add(1)) <= LARGEST_ALIGNMENT
+}
+
 /// Table of the classic longest-common-subsequence dynamic program.
 ///
 /// `len[i][j]` is the length of the longest run of instructions shared by the
 /// tails `left[i..]` and `right[j..]`. Reading it back from the top left gives
-/// the alignment. Both sides are function bodies, small enough that the
-/// quadratic table costs nothing worth avoiding.
+/// the alignment.
+///
+/// The caller must check [`can_align`] first. The table is quadratic, and on
+/// the largest functions of a whole kernel it would ask for more memory than
+/// the machine has.
 fn longest_common_subsequence<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
+    debug_assert!(can_align(left.len(), right.len()), "the caller must check the size first");
     let (rows, cols) = (left.len() + 1, right.len() + 1);
     let mut len = vec![vec![0usize; cols]; rows];
 
@@ -1770,6 +1903,28 @@ mod tests {
             kinds.present().filter(|(kind, _)| *kind != EditKind::Constant).map(|(_, n)| n).sum();
 
         assert_eq!(counted, edits.total(), "every touched instruction has a kind");
+    }
+
+    /// A pair too large to align is still counted, without the table.
+    ///
+    /// The alignment table is quadratic. A vendor kernel holds functions of
+    /// about twenty thousand instructions, where the table asks for over
+    /// three gigabytes and the process is killed. Such a pair must fall back
+    /// rather than bring the run down.
+    #[test]
+    fn a_pair_too_large_to_align_is_still_counted() {
+        assert!(!can_align(19926, 19872), "a whole-kernel pair is over the limit");
+        assert!(can_align(500, 500), "an ordinary function is well under it");
+
+        // One instruction rewritten, in bodies past the alignment limit.
+        let left = vec![body(&[("add", "r0, r1, r2")])[0].clone(); 5000];
+        let mut right = left.clone();
+        right[0] = body(&[("sub", "r0, r1, r2")])[0].clone();
+        assert!(!can_align(left.len(), right.len()), "the test bodies are over the limit");
+
+        let (edits, kinds) = count_edits(&left, &right);
+        assert_eq!(edits, Edits { added: 0, removed: 0, edited: 1 });
+        assert_eq!(kinds.other, 1, "the rewritten instruction is classified");
     }
 
     /// A function compared with itself has nothing to count.
