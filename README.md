@@ -54,8 +54,11 @@ those are hidden by default.
 The `TOUCHED` column names what kind of code the edit changed: branches, calls,
 jumps, memory accesses, changed constants and bytes the decoder cannot read.
 Plain data instructions are left out, because they are the bulk of any rewrite
-and name nothing to act on. The column matters most on a large edit, where
-`CHANGE` can only say `changed`:
+and name nothing to act on. The column also stays quiet where it would only
+repeat the `CHANGE` word beside it, so a row of `changed values` shows a dash
+rather than `1 const`.
+
+The column matters most on a large edit, where `CHANGE` can only say `changed`:
 
 ```console
 $ heresy basic-O1.o basic-Os.o

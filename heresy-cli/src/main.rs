@@ -432,14 +432,34 @@ fn describe_edits(edits: Edits, paint: Paint) -> String {
 ///
 /// The names are short so that the column stays narrow. `const` rather than
 /// `constant` keeps the common case to one short word.
-fn describe_kinds(kinds: EditKinds) -> String {
-    let named: Vec<String> = kinds
-        .present()
-        .filter(|(kind, _)| *kind != EditKind::Other)
-        .map(|(kind, count)| format!("{count} {}", name_of_kind(kind)))
-        .collect();
+///
+/// The column stays quiet where it would only repeat the `CHANGE` word beside
+/// it. `changed values` already says a constant moved and `changed unread`
+/// already says the difference is unreadable, so naming that one kind again
+/// fills the column on every row of a report and tells the reader nothing. A
+/// second kind alongside it is new information, and then the whole list shows.
+fn describe_kinds(kinds: EditKinds, change: Changed) -> String {
+    let named: Vec<(EditKind, usize)> =
+        kinds.present().filter(|(kind, _)| *kind != EditKind::Other).collect();
 
-    if named.is_empty() { "-".to_string() } else { named.join(", ") }
+    if let [(only, _)] = named[..]
+        && restates(change, only)
+    {
+        return "-".to_string();
+    }
+
+    let listed: Vec<String> =
+        named.iter().map(|(kind, count)| format!("{count} {}", name_of_kind(*kind))).collect();
+
+    if listed.is_empty() { "-".to_string() } else { listed.join(", ") }
+}
+
+/// Report whether naming this kind would only repeat the `CHANGE` column.
+fn restates(change: Changed, kind: EditKind) -> bool {
+    matches!(
+        (change, kind),
+        (Changed::InDetail, EditKind::Constant) | (Changed::Unreadable, EditKind::Opaque)
+    )
 }
 
 /// The short name of one kind, for the `TOUCHED` column.
@@ -718,7 +738,7 @@ fn print_text(
                 change: describe(pair.changed),
                 score: format!("{:.2}", pair.score),
                 edits: describe_edits(pair.edits, paint),
-                kinds: describe_kinds(pair.kinds),
+                kinds: describe_kinds(pair.kinds, pair.changed),
                 matched_by: describe_confidence(pair.confidence),
             }
         });
@@ -975,6 +995,56 @@ mod tests {
     /// Build a pair that changed nothing but a constant.
     fn retouched_pair(changed: Changed) -> Match {
         Match { score: 1.0, edits: Edits::default(), ..edited_pair(changed) }
+    }
+
+    /// A lone changed constant is left to the `CHANGE` column to report.
+    #[test]
+    fn a_constant_alone_does_not_repeat_the_change_column() {
+        let kinds = EditKinds { constants: 1, ..EditKinds::default() };
+        assert_eq!(describe_kinds(kinds, Changed::InDetail), "-");
+    }
+
+    /// The same for a difference that sits in unreadable bytes.
+    #[test]
+    fn unreadable_bytes_alone_do_not_repeat_the_change_column() {
+        let kinds = EditKinds { opaque: 3, ..EditKinds::default() };
+        assert_eq!(describe_kinds(kinds, Changed::Unreadable), "-");
+    }
+
+    /// A second kind makes the whole list worth printing.
+    ///
+    /// `changed unread` says the difference is unreadable, but it cannot say a
+    /// branch went with it, so the column speaks up.
+    #[test]
+    fn a_second_kind_brings_the_list_back() {
+        let kinds = EditKinds { opaque: 3, branches: 1, ..EditKinds::default() };
+        assert_eq!(describe_kinds(kinds, Changed::Unreadable), "1 branch, 3 unread");
+    }
+
+    /// A constant inside a larger rewrite is the case the column exists for.
+    ///
+    /// Here `CHANGE` says only `changed`, so nothing else reports the value.
+    #[test]
+    fn a_constant_inside_a_rewrite_is_still_named() {
+        let kinds = EditKinds { constants: 1, branches: 2, ..EditKinds::default() };
+        assert_eq!(describe_kinds(kinds, Changed::Yes), "2 branch, 1 const");
+    }
+
+    /// The suppression follows the `CHANGE` word, not the kind alone.
+    ///
+    /// A lone constant under a plain `changed` is not a repeat of anything, so
+    /// it must still be named.
+    #[test]
+    fn a_constant_under_a_plain_change_is_not_suppressed() {
+        let kinds = EditKinds { constants: 1, ..EditKinds::default() };
+        assert_eq!(describe_kinds(kinds, Changed::Yes), "1 const");
+    }
+
+    /// Plain data instructions never reach the column.
+    #[test]
+    fn other_instructions_are_left_out() {
+        let kinds = EditKinds { other: 12, ..EditKinds::default() };
+        assert_eq!(describe_kinds(kinds, Changed::Yes), "-");
     }
 
     /// Only unchanged functions are hidden when a reader wants changes.
