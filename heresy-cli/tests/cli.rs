@@ -56,6 +56,62 @@ fn names_the_kind_of_code_a_rewrite_touched() {
     assert_cmd_snapshot!(heresy().args(["fixtures/build/O1/basic.o", "fixtures/build/Os/basic.o"]));
 }
 
+/// Two versions of one firmware, built the same way.
+///
+/// This is the shape a reader actually compares: the same source at the same
+/// optimization level, one release apart. Each function changed in one known
+/// way, so the `TOUCHED` column can be checked against a real answer rather
+/// than against whatever the compiler happened to do.
+#[test]
+fn names_the_kind_of_edit_between_two_firmware_versions() {
+    if !fixture("O2", "firmware").exists() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(heresy().args([
+        "--show-retouched",
+        "fixtures/build/O2/firmware.o",
+        "fixtures/build/O2/firmware_v2.o",
+    ]));
+}
+
+/// The added authentication call is reported at every optimization level.
+///
+/// The counts around it move with the optimizer, but `check_header` gains a
+/// call to `crypto_verify` in the source, so the column must say so whatever
+/// the compiler did with the code around it.
+#[test]
+fn an_added_call_is_reported_at_every_optimization_level() {
+    if !fixture("O2", "firmware").exists() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    for level in ["O0", "O1", "O2", "Os"] {
+        let output = heresy()
+            .args([
+                format!("fixtures/build/{level}/firmware.o"),
+                format!("fixtures/build/{level}/firmware_v2.o"),
+            ])
+            .output()
+            .expect("heresy runs");
+        let report = String::from_utf8(output.stdout).expect("the report is text");
+
+        let row = report
+            .lines()
+            .find(|line| line.contains("check_header"))
+            .unwrap_or_else(|| panic!("at -{level} the report names check_header:\n{report}"));
+        assert!(row.contains("1 call"), "at -{level} the added call is named, got:\n{row}");
+
+        // The control must stay out of the report at every level.
+        assert!(
+            !report.contains("checksum"),
+            "at -{level} the untouched function is reported as changed:\n{report}"
+        );
+    }
+}
+
 #[test]
 fn reports_every_function_when_asked() {
     if !fixtures_present() {

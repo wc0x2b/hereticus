@@ -58,21 +58,28 @@ and name nothing to act on. The column also stays quiet where it would only
 repeat the `CHANGE` word beside it, so a row of `changed values` shows a dash
 rather than `1 const`.
 
-The column matters most on a large edit, where `CHANGE` can only say `changed`:
+Two versions of one firmware, built the same way, one release apart:
 
 ```console
-$ heresy basic-O1.o basic-Os.o
-╭──────────────┬───────────┬───────┬────────┬──────────────────────────────────────┬────────────╮
-│ FUNCTION     │ CHANGE    │ SCORE │ +/-/~  │ TOUCHED                              │ MATCHED BY │
-├──────────────┼───────────┼───────┼────────┼──────────────────────────────────────┼────────────┤
-│ switch_dense │ reordered │  1.00 │ 1/1/0  │ -                                    │ same name  │
-│ factorial    │ changed   │  0.12 │ 35/2/2 │ 1 branch, 6 jump, 1 const, 17 unread │ same name  │
-╰──────────────┴───────────┴───────┴────────┴──────────────────────────────────────┴────────────╯
+$ heresy --show-retouched fw-v1.o fw-v2.o
+╭─────────────────┬────────────────┬───────┬─────────┬────────────────────────────────────────────────────┬─────────────────╮
+│ FUNCTION        │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                            │ MATCHED BY      │
+├─────────────────┼────────────────┼───────┼─────────┼────────────────────────────────────────────────────┼─────────────────┤
+│ validate_length │ changed values │  1.00 │ -       │ -                                                  │ identical shape │
+│ handle          │ changed        │  0.70 │ 8/4/6   │ 1 branch, 1 call, 2 jump, 1 mem, 1 const, 3 unread │ same name       │
+│ dispatch        │ changed        │  0.60 │ 21/11/5 │ 4 branch, 1 call, 7 jump, 5 mem, 1 const           │ same name       │
+│ check_header    │ changed        │  0.31 │ 8/1/0   │ 1 call, 1 jump, 1 mem                              │ same name       │
+╰─────────────────┴────────────────┴───────┴─────────┴────────────────────────────────────────────────────┴─────────────────╯
 ```
 
-The `1 const` on `factorial` is a changed value inside a 39-instruction
-rewrite. No other column can show it: the edit is far too large to read as
-`changed values`.
+The `1 call` on `check_header` is an added call to an authentication routine.
+The `1 const` on `handle` is a bound that moved from 1024 to 512, arriving
+through inlining: that function was never edited. Both would otherwise read as
+plain `changed`, and the constant is invisible to every other column, because
+the edit around it is far too large to read as `changed values`.
+
+Run it with `just run`, or `just run O0` to see how much the optimizer moves
+the counts.
 
 To see what changed inside one function:
 
