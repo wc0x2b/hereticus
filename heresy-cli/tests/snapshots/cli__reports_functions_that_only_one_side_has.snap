@@ -1,12 +1,12 @@
 ---
 source: heresy-cli/tests/cli.rs
+assertion_line: 102
 info:
   program: heresy
   args:
     - "--ignore-names"
     - fixtures/build/O1/basic.o
     - fixtures/build/O2/basic.o
-snapshot_kind: text
 ---
 success: true
 exit_code: 0
@@ -14,7 +14,7 @@ exit_code: 0
 ╭──────────────┬───────────┬───────┬───────┬────────────╮
 │ FUNCTION     │ CHANGE    │ SCORE │ +/-/~ │ MATCHED BY │
 ├──────────────┼───────────┼───────┼───────┼────────────┤
-│ switch_dense │ reordered │  1.00 │ 0/0/3 │ similar    │
+│ switch_dense │ reordered │  1.00 │ 1/1/0 │ similar    │
 ╰──────────────┴───────────┴───────┴───────┴────────────╯
 array_max: gone, closest array_max at 0.40
 factorial: gone

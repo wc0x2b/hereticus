@@ -561,9 +561,7 @@ impl Cascade<'_> {
                     .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
 
                 match best {
-                    Some((score, other)) => {
-                        NearMiss { unmatched: *one, best: Some(other), score }
-                    }
+                    Some((score, other)) => NearMiss { unmatched: *one, best: Some(other), score },
                     None => NearMiss { unmatched: *one, best: None, score: 0.0 },
                 }
             })
@@ -726,21 +724,54 @@ fn differs_only_where_unreadable(before: &Prepared<'_>, after: &Prepared<'_>) ->
 
 /// Count how many instructions an edit added, removed and rewrote.
 ///
-/// Length gives the added and removed counts: normalizing keeps one entry per
-/// instruction, so a body that grew by eight entries gained eight
-/// instructions. The rewritten count compares the overlap position by
-/// position, which suits a compiler that edits in place far better than it
-/// suits one that inserted a line near the top. It is therefore a lower bound
-/// on how much moved, and an exact count of how much differs.
+/// The two bodies are aligned with the same longest-common-subsequence walk
+/// that [`instruction_diff`] uses, so an instruction inserted near the top
+/// costs one addition rather than making every instruction after it look
+/// rewritten.
+///
+/// An instruction counts as rewritten when the alignment dropped it from both
+/// sides, such as an `add` that became a `sub`. Those arrive as a removal next
+/// to an addition and are folded back into one rewrite, the same way
+/// [`coalesce_changed_constants`] folds them for display. What is left on one
+/// side alone is a true addition or removal.
+///
+/// A pair the alignment kept is not a rewrite even when its constants differ.
+/// Normalizing hides a constant on purpose, and [`Changed::InDetail`] already
+/// reports that case; counting it here as well would say a threshold that went
+/// from 100 to 50 rewrote an instruction, when the code around it is
+/// untouched. A reader sorting by this count wants the functions whose
+/// instructions moved.
 fn count_edits(before: &Prepared<'_>, after: &Prepared<'_>) -> Edits {
     let (left, right) = (&before.body, &after.body);
-    let edited = left.iter().zip(right).filter(|(a, b)| a != b).count();
+    let mut edits = Edits::default();
+    // Removals seen since the last kept instruction, still free to pair with an
+    // addition. The alignment emits a run of removals before the additions that
+    // replace them, so the two need not be strictly adjacent.
+    let mut unpaired_removals = 0usize;
 
-    Edits {
-        added: right.len().saturating_sub(left.len()),
-        removed: left.len().saturating_sub(right.len()),
-        edited,
+    for step in longest_common_subsequence(left, right) {
+        match step {
+            Step::Both => {
+                edits.removed += unpaired_removals;
+                unpaired_removals = 0;
+            }
+            Step::Left => unpaired_removals += 1,
+            Step::Right => {
+                // A removal waiting next to this addition means one instruction
+                // took another's place, which is a rewrite rather than a pair
+                // of length changes.
+                if unpaired_removals > 0 {
+                    unpaired_removals -= 1;
+                    edits.edited += 1;
+                } else {
+                    edits.added += 1;
+                }
+            }
+        }
     }
+    edits.removed += unpaired_removals;
+
+    edits
 }
 
 impl Cascade<'_> {
@@ -1139,7 +1170,7 @@ enum Step {
 /// tails `left[i..]` and `right[j..]`. Reading it back from the top left gives
 /// the alignment. Both sides are function bodies, small enough that the
 /// quadratic table costs nothing worth avoiding.
-fn longest_common_subsequence(left: &[String], right: &[String]) -> Vec<Step> {
+fn longest_common_subsequence<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
     let (rows, cols) = (left.len() + 1, right.len() + 1);
     let mut len = vec![vec![0usize; cols]; rows];
 
@@ -1178,7 +1209,11 @@ fn longest_common_subsequence(left: &[String], right: &[String]) -> Vec<Step> {
 /// A line the alignment kept on both sides is unchanged, targets aside.
 /// A changed constant reaches here as a removal next to an addition;
 /// [`coalesce_changed_constants`] folds that pair back into one line.
-fn lines_from_alignment(steps: &[Step], before_insns: &[Insn], after_insns: &[Insn]) -> Vec<DiffLine> {
+fn lines_from_alignment(
+    steps: &[Step],
+    before_insns: &[Insn],
+    after_insns: &[Insn],
+) -> Vec<DiffLine> {
     let mut lines = Vec::with_capacity(steps.len());
     let (mut i, mut j) = (0, 0);
     for step in steps {
@@ -1405,6 +1440,77 @@ mod tests {
         let edits = edits_between(longer, ADD_THEN_RETURN);
         assert_eq!(edits.removed, 1, "one instruction went away");
         assert_eq!(edits.added, 0);
+    }
+
+    /// An instruction inserted near the top must cost one addition, not a
+    /// rewrite of everything after it.
+    ///
+    /// Counting position by position made the insertion shift every later
+    /// instruction against a different one, so a one-line edit was reported as
+    /// a wholly rewritten body. Aligning the two bodies first is what keeps the
+    /// count honest.
+    #[test]
+    fn an_insertion_does_not_make_the_rest_look_rewritten() {
+        // `add`, `mul`, `sub`, `bx lr`, against the same with a `mov` in front.
+        let before: &[u8] = &[
+            0x00, 0x00, 0x81, 0xe0, // add r0, r1, r0
+            0x91, 0x00, 0x00, 0xe0, // mul r0, r1, r0
+            0x00, 0x00, 0x41, 0xe0, // sub r0, r1, r0
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        ];
+        let after: &[u8] = &[
+            0x01, 0x00, 0xa0, 0xe3, // mov r0, 1
+            0x00, 0x00, 0x81, 0xe0, // add r0, r1, r0
+            0x91, 0x00, 0x00, 0xe0, // mul r0, r1, r0
+            0x00, 0x00, 0x41, 0xe0, // sub r0, r1, r0
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        ];
+
+        let edits = edits_between(before, after);
+        assert_eq!(edits, Edits { added: 1, removed: 0, edited: 0 });
+        assert_eq!(edits.total(), 1, "one instruction appeared, none was rewritten");
+    }
+
+    /// A moved instruction costs one addition and one removal.
+    ///
+    /// Measured on the test corpus: `switch_dense` moves a single `mov` three
+    /// places down between `-O1` and `-O2`, which the position-by-position
+    /// count reported as three rewritten instructions.
+    #[test]
+    fn a_moved_instruction_is_not_counted_as_three_rewrites() {
+        let before: &[u8] = &[
+            0x01, 0x30, 0xa0, 0xe3, // mov r3, 1
+            0x00, 0x00, 0x81, 0xe0, // add r0, r1, r0
+            0x91, 0x00, 0x00, 0xe0, // mul r0, r1, r0
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        ];
+        let after: &[u8] = &[
+            0x00, 0x00, 0x81, 0xe0, // add r0, r1, r0
+            0x91, 0x00, 0x00, 0xe0, // mul r0, r1, r0
+            0x01, 0x30, 0xa0, 0xe3, // mov r3, 1
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        ];
+
+        let edits = edits_between(before, after);
+        assert_eq!(edits.edited, 0, "nothing was rewritten, one instruction moved");
+        assert_eq!(edits.added, 1);
+        assert_eq!(edits.removed, 1);
+    }
+
+    /// A changed constant is reported by `Changed::InDetail`, not by the edit
+    /// counts.
+    ///
+    /// The `+/-/~` column counts instructions whose shape moved. Normalizing
+    /// hides a constant on purpose, so a threshold that changed value leaves
+    /// every instruction in place and the counts stay clean. The CLI relies on
+    /// this to hide such a pair unless asked for it.
+    #[test]
+    fn a_changed_constant_touches_no_instruction() {
+        // `mov r0, 1` then `bx lr`, against `mov r0, 2` then `bx lr`.
+        let before: &[u8] = &[0x01, 0x00, 0xa0, 0xe3, 0x1e, 0xff, 0x2f, 0xe1];
+        let after: &[u8] = &[0x02, 0x00, 0xa0, 0xe3, 0x1e, 0xff, 0x2f, 0xe1];
+
+        assert_eq!(edits_between(before, after), Edits::default());
     }
 
     /// A function compared with itself has nothing to count.
