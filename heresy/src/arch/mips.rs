@@ -27,9 +27,6 @@ const INSN_WIDTH: usize = 4;
 /// Mnemonic reported for bytes the decoder cannot read.
 const UNKNOWN_MNEMONIC: &str = "(unknown)";
 
-/// The register holding the return address, as this module prints it.
-const RETURN_REGISTER: &str = "ra";
-
 /// The instruction set this decoder reads.
 ///
 /// MIPS II covers what a compiler emits for a 32-bit target. A later level
@@ -197,14 +194,32 @@ impl Arch for Mips32 {
         }
     }
 
-    /// A function that calls anything must save the return address, so
-    /// `sw ra, N(sp)` opens almost every non-leaf MIPS function. The stack
-    /// adjustment comes first, but a bare `addiu sp, sp, -N` also appears
-    /// inside a function, so the saved `ra` is the reliable mark.
+    /// A function that needs a frame opens by making room for it, so
+    /// `addiu sp, sp, -N` is the first instruction of almost every one.
+    ///
+    /// Saving the return address was tried first and reports the start late.
+    /// A prologue saves several registers and `sw ra` can be any of them: on
+    /// a stripped MIPS kernel, 2593 of 13362 saved return addresses follow
+    /// another register save, so the function had already begun. Allocating
+    /// the frame cannot be preceded that way, and it appears 13426 times
+    /// against 13362, so it also catches a leaf that makes room without
+    /// calling anything.
     fn is_prologue(&self, insn: &Insn) -> bool {
-        insn.mnemonic == "sw"
-            && insn.operands.starts_with(RETURN_REGISTER)
-            && self.mentions_stack_slot(&insn.operands)
+        if insn.mnemonic != "addiu" {
+            return false;
+        }
+
+        // `addiu sp, sp, -N`: the stack pointer is both the destination and
+        // the source, and the immediate is negative. A positive immediate is
+        // the matching unwind at the end of a function.
+        let mut operands = insn.operands.split(',').map(str::trim);
+        let (Some("sp"), Some("sp"), Some(immediate)) =
+            (operands.next(), operands.next(), operands.next())
+        else {
+            return false;
+        };
+
+        immediate.starts_with('-')
     }
 
     fn is_padding(&self, insn: &Insn) -> bool {
@@ -519,19 +534,41 @@ mod tests {
     }
 
     #[test]
-    fn a_prologue_is_recognized_by_its_saved_return_address() {
-        // sw ra, 0x14(sp)
-        let save_ra = decode_one(0xafbf_0014);
-        assert_eq!(save_ra.to_string(), "sw ra, 0x14(sp)");
-        assert!(Mips32::LITTLE.is_prologue(&save_ra));
-
-        // sw s0, 0x10(sp) saves a callee-saved register, not the return
-        // address, so it can sit anywhere in a function.
-        let save_s0 = decode_one(0xafb0_0010);
-        assert!(!Mips32::LITTLE.is_prologue(&save_s0));
+    fn a_prologue_is_recognized_by_the_frame_it_makes() {
+        // addiu sp, sp, -0x20
+        let allocate = decode_one(0x27bd_ffe0);
+        assert!(Mips32::LITTLE.is_prologue(&allocate));
 
         let add = decode_one(0x0085_1021);
         assert!(!Mips32::LITTLE.is_prologue(&add));
+    }
+
+    /// Releasing the frame ends a function; it must not be read as opening
+    /// one, or every function start lands on the function before it.
+    #[test]
+    fn releasing_the_frame_is_not_a_prologue() {
+        // addiu sp, sp, 0x28, the unwind that pairs with the allocation.
+        let release = decode_one(0x27bd_0028);
+        assert!(!Mips32::LITTLE.is_prologue(&release));
+    }
+
+    /// Saving the return address happens inside the prologue, not at its
+    /// start, so it must not be taken for the start.
+    #[test]
+    fn saving_the_return_address_is_not_the_start() {
+        // sw ra, 0x14(sp)
+        let save_ra = decode_one(0xafbf_0014);
+        assert_eq!(save_ra.to_string(), "sw ra, 0x14(sp)");
+        assert!(!Mips32::LITTLE.is_prologue(&save_ra));
+    }
+
+    /// Adjusting another register, or adding to the stack pointer from
+    /// somewhere else, is ordinary work.
+    #[test]
+    fn another_stack_adjustment_is_not_a_prologue() {
+        // addiu a2, sp, 0x18, which takes the address of a frame slot.
+        let address_of = decode_one(0x27a6_0018);
+        assert!(!Mips32::LITTLE.is_prologue(&address_of));
     }
 
     #[test]

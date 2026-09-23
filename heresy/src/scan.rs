@@ -648,17 +648,18 @@ mod tests {
         for word in [
             0x03e0_0008u32, // jr ra
             0x27bd_0028,    // addiu sp, sp, 0x28, in the delay slot
-            0x27bd_ffd0,    // addiu sp, sp, -0x30, the next function
-            0xafbf_002c,    // sw ra, 0x2c(sp), its prologue
+            0x27bd_ffd0,    // addiu sp, sp, -0x30, the next function's prologue
+            0xafbf_002c,    // sw ra, 0x2c(sp)
         ] {
             code.extend_from_slice(&word.to_le_bytes());
         }
 
-        // The prologue at 0xc is the stronger signal and wins. What matters
-        // here is that 0x4, the delay slot, is not offered at all.
+        // The delay slot holds `addiu sp, sp, 0x28`, which releases the frame
+        // rather than making one, so it is not a prologue either. What matters
+        // is that 0x4 is not offered at all.
         let starts = starts_after_returns(&Mips32::LITTLE, &code, 0);
         assert!(!starts.contains(&0x4), "the delay slot is part of the return, got {starts:?}");
-        assert_eq!(starts, vec![0xc], "the prologue past the slot is the start");
+        assert_eq!(starts, vec![0x8], "the function past the slot is the start");
     }
 
     /// Without a prologue to point at, the start is the instruction after the
