@@ -333,9 +333,6 @@ fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
         }
 
         let Some(following) = insns.get(next) else { continue };
-        if following.kind == InsnKind::Unknown {
-            continue;
-        }
 
         // A prologue is a function start whatever precedes it. This is the
         // stronger signal, so it is not subject to the spanning test: an
@@ -343,6 +340,19 @@ fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
         // would otherwise hide the function that follows.
         if is_prologue(following) {
             out.push(following.address);
+            continue;
+        }
+
+        // A compiler can drop a literal pool between two functions. Its words
+        // are constants, but they still decode as instructions — often valid
+        // ones — so the code right after a terminator is not the next
+        // function's prologue. A prologue a few words past the pool is still a
+        // function start, and a function reached only through a pointer has no
+        // call or branch to name it, so this is the one source that can find
+        // it. Look a short way ahead, stopping at any further terminator so the
+        // scan cannot cross into real control flow.
+        if let Some(prologue) = prologue_past_pool(&insns, next) {
+            out.push(prologue);
             continue;
         }
 
@@ -355,6 +365,47 @@ fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
     }
 
     out
+}
+
+/// Find a prologue that begins just past an inline literal pool.
+///
+/// A terminator can be followed by a literal pool rather than by the next
+/// function's first instruction. Pool words are constants, but they decode as
+/// instructions — sometimes valid, sometimes `Unknown` — so the word right
+/// after the terminator is not the prologue, and a scan that judged only that
+/// word would miss the function behind the pool.
+///
+/// The scan steps over up to a short run of such words and takes a prologue
+/// found within it. It stops at any further terminator: past a second `bx lr`
+/// or branch the scan would be in real control flow, where a prologue is
+/// inside a function rather than after a pool. The bound keeps a pool — a
+/// handful of words — from being confused with the body of a function.
+///
+/// Returns the prologue address, or `None` when no prologue sits within the
+/// window.
+fn prologue_past_pool(insns: &[crate::arch::Insn], from: usize) -> Option<u64> {
+    /// The most words to step over before a prologue. A literal pool between
+    /// two functions holds a few constants; a longer run is a function body,
+    /// not a pool, and its first prologue-shaped word is not a function start.
+    const MOST_POOL_WORDS: usize = 8;
+
+    let mut next = from;
+    for _ in 0..MOST_POOL_WORDS {
+        let insn = insns.get(next)?;
+        if is_prologue(insn) {
+            return Some(insn.address);
+        }
+        // Only pool data may sit between the terminator and the prologue. A
+        // pool word carries no control flow: it decodes as a plain `Normal`
+        // instruction or as `Unknown`. Any branch, call, jump or return means
+        // the scan has entered a function body, where a `push` is a mid-body
+        // save rather than a prologue, so stop before claiming it.
+        if !matches!(insn.kind, InsnKind::Normal | InsnKind::Unknown) {
+            return None;
+        }
+        next += 1;
+    }
+    None
 }
 
 /// Report whether an instruction opens a function.
@@ -580,6 +631,79 @@ mod tests {
     fn a_return_at_the_end_starts_nothing() {
         let code = [0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
         assert!(starts_after_returns(&Arm32, &code, 0).is_empty());
+    }
+
+    /// A prologue behind a literal pool still starts a function.
+    ///
+    /// A compiler can place pool constants between two functions. Those words
+    /// decode as `Unknown`, and a scan that stopped at the first one lost the
+    /// prologue behind them. Measured on a kernel image: functions reached
+    /// only through a pointer (`0x801df80c`, `0x80267d5c`) sit after their
+    /// predecessor's pool, and were the two boundaries Ghidra found that this
+    /// missed.
+    /// A prologue behind a literal pool still starts a function.
+    ///
+    /// The three pool words here are real addresses taken from a firmware
+    /// image at `0x801df800`; they decode as valid-looking instructions, not
+    /// as `Unknown`, which is exactly why judging only the word after the
+    /// terminator missed the prologue two words on. The `push` is the wide
+    /// register save that opens `0x801df80c`, a function reached only through
+    /// a pointer.
+    #[test]
+    fn a_prologue_behind_a_literal_pool_starts_a_function() {
+        let code = [
+            0xed, 0xff, 0xff, 0xea, // b, ends the function
+            0x0a, 0x00, 0x70, 0x00, // 0x00700000, a pool constant, not code
+            0xe8, 0xc0, 0xa1, 0x80, // 0x80a1c0e8, a stored address
+            0x80, 0x04, 0xaa, 0x80, // 0x80aa0480, a stored address
+            0xf0, 0x4f, 0x2d, 0xe9, // push {r4-r8, sb, sl, fp, lr}, the prologue
+        ];
+        assert_eq!(
+            starts_after_returns(&Arm32, &code, 0),
+            vec![0x10],
+            "a prologue past the pool is a function start"
+        );
+    }
+
+    /// A prologue far past a terminator is not read as a function start.
+    ///
+    /// Beyond a short pool the scan is in a function body, where a wide
+    /// register save is not a prologue. The bound keeps the pool scan from
+    /// walking that far.
+    #[test]
+    fn a_prologue_far_past_a_terminator_is_not_claimed() {
+        let mut code = vec![0xed, 0xff, 0xff, 0xea]; // b, ends the function
+        // Ten pool-looking words: longer than a real inter-function pool.
+        for _ in 0..10 {
+            code.extend_from_slice(&[0x80, 0x04, 0xaa, 0x80]);
+        }
+        code.extend_from_slice(&[0xf0, 0x4f, 0x2d, 0xe9]); // push, too far to be a start
+        assert!(
+            starts_after_returns(&Arm32, &code, 0).is_empty(),
+            "a prologue past a long run is not claimed"
+        );
+    }
+
+    /// A second terminator ends the pool scan before a later prologue.
+    ///
+    /// Past a return the scan is in real control flow, so a prologue there is
+    /// inside a function, not after a pool.
+    #[test]
+    fn a_prologue_after_a_second_terminator_is_not_claimed() {
+        let code = [
+            0xed, 0xff, 0xff, 0xea, // b, ends the function
+            0x80, 0x04, 0xaa, 0x80, // one pool word
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr, a second terminator: pool is over
+            0xf0, 0x4f, 0x2d, 0xe9, // push, but now inside real code
+        ];
+        // The second terminator itself starts a scan, and the push right after
+        // it is a genuine start; what must not happen is the FIRST scan
+        // reaching across the bx lr to claim the push.
+        assert_eq!(
+            starts_after_returns(&Arm32, &code, 0),
+            vec![0xc],
+            "only the prologue right after the second terminator is a start"
+        );
     }
 
     /// Padding between functions must not be mistaken for their start.
