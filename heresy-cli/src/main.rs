@@ -138,8 +138,10 @@ enum When {
 enum ArchName {
     /// ARM32, little endian, A32 instructions. Thumb is not supported.
     Arm32,
-    /// MIPS32, little endian. Big-endian MIPS is not supported.
+    /// MIPS32, little endian.
     Mips32,
+    /// MIPS32, big endian, as most shipped firmware is.
+    Mips32Be,
 }
 
 impl From<ArchName> for Isa {
@@ -147,6 +149,7 @@ impl From<ArchName> for Isa {
         match name {
             ArchName::Arm32 => Self::Arm32,
             ArchName::Mips32 => Self::Mips32,
+            ArchName::Mips32Be => Self::Mips32Be,
         }
     }
 }

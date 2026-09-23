@@ -10,8 +10,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 src="$here/src"
 build="$here/build"
 target="arm-linux-gnueabi"
-# MIPS is built little endian only, which is what the decoder reads.
+# MIPS ships in both byte orders, and both are read, so both are built.
 mips_target="mipsel-linux-gnu"
+mipsbe_target="mips-linux-gnu"
 
 # Where the vector-table fixture is linked. Tests check the load-address
 # check against this exact value, so the two must agree.
@@ -36,12 +37,15 @@ done
 
 # MIPS objects, in their own tree so the ARM fixtures keep their paths. Only
 # the levels the MIPS tests use, because nothing needs the full matrix yet.
+# Both byte orders, because both are read and each has its own decoder.
 for opt in O0 O2; do
-    mkdir -p "$build/mips-$opt"
+    mkdir -p "$build/mips-$opt" "$build/mipsbe-$opt"
     for source in "$src"/*.c; do
         name="$(basename "$source" .c)"
         clang --target="$mips_target" -c "-$opt" -g \
             "$source" -o "$build/mips-$opt/$name.o"
+        clang --target="$mipsbe_target" -c "-$opt" -g \
+            "$source" -o "$build/mipsbe-$opt/$name.o"
     done
 done
 

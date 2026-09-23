@@ -113,6 +113,19 @@ pub trait Arch {
         None
     }
 
+    /// Instructions after a branch that still belong to it.
+    ///
+    /// A delay slot runs whether or not the branch is taken, so it is part of
+    /// the instruction before it rather than the start of whatever follows.
+    /// Function recovery must step over it: MIPS ends a function with
+    /// `jr ra` and then unwinds the frame in the slot, and treating that
+    /// unwind as a new function invents one at the end of every function.
+    ///
+    /// Defaults to 0, for the architectures that have no such slot.
+    fn delay_slots(&self) -> usize {
+        0
+    }
+
     /// Bytes in one stored pointer.
     fn pointer_width(&self) -> usize;
 

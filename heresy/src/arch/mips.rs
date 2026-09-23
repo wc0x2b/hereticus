@@ -6,9 +6,10 @@
 //! 1. `rabbitizer` renders registers with a `$` sigil and pads the mnemonic
 //!    to a column. Both are stripped here, because `heresy` reserves a
 //!    leading `$` for a branch target and compares operand text directly.
-//! 2. A word is read as little endian, so this module is `mipsel` only. A
-//!    big-endian image is refused by [`crate::obj`] rather than decoded into
-//!    nonsense.
+//! 2. MIPS ships in both byte orders and a whole image is one of them, so
+//!    [`Mips32`] carries which. Reading at the wrong order does not fail:
+//!    every word still decodes, into a different instruction. An ELF says
+//!    which it is; a raw image is told by the caller.
 //! 3. A MIPS branch counts its offset from the *delay slot*, and `j` and
 //!    `jal` hold an address rather than a distance. `rabbitizer` resolves
 //!    both, so neither correction is made here.
@@ -36,9 +37,41 @@ const RETURN_REGISTER: &str = "ra";
 /// widens what can be read rather than changing what is already right.
 const ISA: IsaVersion = IsaVersion::MIPS_II;
 
-/// MIPS32, little endian.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Mips32;
+/// The byte order a word is stored in.
+///
+/// MIPS ships in both, and a whole image is one or the other. Reading an
+/// image at the wrong order does not fail: every word still decodes, into a
+/// different instruction, so the order has to be known rather than guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByteOrder {
+    /// `mipsel`, as a desktop-built object usually is.
+    Little,
+    /// `mips`, as most shipped firmware is.
+    Big,
+}
+
+impl ByteOrder {
+    /// Assemble one stored word.
+    fn read_word(self, bytes: [u8; INSN_WIDTH]) -> u32 {
+        match self {
+            Self::Little => u32::from_le_bytes(bytes),
+            Self::Big => u32::from_be_bytes(bytes),
+        }
+    }
+}
+
+/// MIPS32, in either byte order.
+#[derive(Clone, Copy, Debug)]
+pub struct Mips32 {
+    order: ByteOrder,
+}
+
+impl Mips32 {
+    /// The decoder for a little-endian image.
+    pub const LITTLE: Self = Self { order: ByteOrder::Little };
+    /// The decoder for a big-endian image, which most firmware is.
+    pub const BIG: Self = Self { order: ByteOrder::Big };
+}
 
 impl Arch for Mips32 {
     fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
@@ -49,7 +82,7 @@ impl Arch for Mips32 {
 
         let insn_address = address + offset as u64;
         let word = &bytes[..INSN_WIDTH];
-        let raw = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+        let raw = self.order.read_word([word[0], word[1], word[2], word[3]]);
 
         // `new_checked` rejects a word it cannot read rather than reading it
         // as something else, which is what makes stepping over the word safe.
@@ -87,7 +120,10 @@ impl Arch for Mips32 {
     }
 
     fn triple(&self) -> &'static str {
-        "mipsel"
+        match self.order {
+            ByteOrder::Little => "mipsel",
+            ByteOrder::Big => "mips",
+        }
     }
 
     fn instruction_width(&self) -> usize {
@@ -178,7 +214,8 @@ impl Arch for Mips32 {
     }
 
     fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
-        /// `nop` and zero are the same word on MIPS: `sll zero, zero, 0`.
+        /// `nop` and zero are the same word on MIPS: `sll zero, zero, 0`. Zero
+        /// reads the same in either byte order.
         const NOP: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 
         let mut end = bytes.len();
@@ -193,12 +230,18 @@ impl Arch for Mips32 {
         &bytes[..end]
     }
 
+    /// MIPS runs the instruction after a branch whether or not the branch is
+    /// taken, so that instruction belongs to the branch.
+    fn delay_slots(&self) -> usize {
+        1
+    }
+
     fn pointer_width(&self) -> usize {
         INSN_WIDTH
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
-        u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        u64::from(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 }
 
@@ -317,7 +360,7 @@ mod tests {
 
     /// Decode one instruction from a little-endian word at address 0.
     fn decode_one(word: u32) -> Insn {
-        Mips32.decode(&word.to_le_bytes(), 0, 0).expect("bytes must decode")
+        Mips32::LITTLE.decode(&word.to_le_bytes(), 0, 0).expect("bytes must decode")
     }
 
     #[test]
@@ -351,10 +394,10 @@ mod tests {
     /// that must be the answer whatever address the instruction sits at.
     #[test]
     fn a_jump_target_is_absolute_not_relative() {
-        let at_zero = Mips32.decode(&0x0c00_0100u32.to_le_bytes(), 0, 0).unwrap();
+        let at_zero = Mips32::LITTLE.decode(&0x0c00_0100u32.to_le_bytes(), 0, 0).unwrap();
         assert_eq!(at_zero.kind, InsnKind::Call { target: Some(0x400) });
 
-        let moved = Mips32.decode(&0x0c00_0100u32.to_le_bytes(), 0, 0x1000).unwrap();
+        let moved = Mips32::LITTLE.decode(&0x0c00_0100u32.to_le_bytes(), 0, 0x1000).unwrap();
         assert_eq!(
             moved.kind,
             InsnKind::Call { target: Some(0x400) },
@@ -379,14 +422,14 @@ mod tests {
     /// sign error that a forward-only test would miss.
     #[test]
     fn a_backwards_branch_resolves_below_itself() {
-        let insn = Mips32.decode(&0x1082_fffeu32.to_le_bytes(), 0, 0x1000).unwrap();
+        let insn = Mips32::LITTLE.decode(&0x1082_fffeu32.to_le_bytes(), 0, 0x1000).unwrap();
         assert_eq!(insn.kind, InsnKind::Branch { target: Some(0x0ffc) });
     }
 
     /// A branch target moves with the instruction, unlike a jump target.
     #[test]
     fn a_branch_target_is_relative_to_the_instruction() {
-        let insn = Mips32.decode(&0x1082_0005u32.to_le_bytes(), 0, 0x1000).unwrap();
+        let insn = Mips32::LITTLE.decode(&0x1082_0005u32.to_le_bytes(), 0, 0x1000).unwrap();
         assert_eq!(insn.kind, InsnKind::Branch { target: Some(0x1018) });
     }
 
@@ -408,18 +451,18 @@ mod tests {
         let mut code = Vec::new();
         code.extend_from_slice(&0x0085_1021u32.to_le_bytes());
         code.extend_from_slice(&0x03e0_0008u32.to_le_bytes());
-        assert_eq!(Mips32.decode(&code, 4, 0x8000).unwrap().address, 0x8004);
+        assert_eq!(Mips32::LITTLE.decode(&code, 4, 0x8000).unwrap().address, 0x8004);
     }
 
     #[test]
     fn rejects_truncated_input() {
-        assert_eq!(Mips32.decode(&[0x00, 0x00], 0, 0), Err(DecodeError::Truncated));
-        assert_eq!(Mips32.decode(&[], 0, 0), Err(DecodeError::Truncated));
+        assert_eq!(Mips32::LITTLE.decode(&[0x00, 0x00], 0, 0), Err(DecodeError::Truncated));
+        assert_eq!(Mips32::LITTLE.decode(&[], 0, 0), Err(DecodeError::Truncated));
     }
 
     #[test]
     fn rejects_offset_past_the_end() {
-        assert_eq!(Mips32.decode(&[0x00; 4], 8, 0), Err(DecodeError::Truncated));
+        assert_eq!(Mips32::LITTLE.decode(&[0x00; 4], 8, 0), Err(DecodeError::Truncated));
     }
 
     #[test]
@@ -428,7 +471,7 @@ mod tests {
         for word in [0x0085_1021u32, 0x03e0_0008, 0x0085_1021] {
             code.extend_from_slice(&word.to_le_bytes());
         }
-        let (insns, err) = decode_all(&Mips32, &code, 0x1000);
+        let (insns, err) = decode_all(&Mips32::LITTLE, &code, 0x1000);
         assert_eq!(err, None);
         let addresses: Vec<u64> = insns.iter().map(|insn| insn.address).collect();
         assert_eq!(addresses, vec![0x1000, 0x1004, 0x1008]);
@@ -438,14 +481,14 @@ mod tests {
     fn decode_all_reports_trailing_partial_bytes() {
         let mut code = 0x0085_1021u32.to_le_bytes().to_vec();
         code.push(0xff);
-        let (insns, err) = decode_all(&Mips32, &code, 0);
+        let (insns, err) = decode_all(&Mips32::LITTLE, &code, 0);
         assert_eq!(insns.len(), 1);
         assert_eq!(err, Some(DecodeError::Truncated));
     }
 
     #[test]
     fn decode_all_handles_empty_input() {
-        let (insns, err) = decode_all(&Mips32, &[], 0);
+        let (insns, err) = decode_all(&Mips32::LITTLE, &[], 0);
         assert!(insns.is_empty());
         assert_eq!(err, None);
     }
@@ -456,15 +499,15 @@ mod tests {
     fn a_zero_word_is_padding() {
         let nop = decode_one(0x0000_0000);
         assert_eq!(nop.mnemonic, "nop");
-        assert!(Mips32.is_padding(&nop));
-        assert!(Mips32.trim_padding(&[0; 4]).is_empty());
+        assert!(Mips32::LITTLE.is_padding(&nop));
+        assert!(Mips32::LITTLE.trim_padding(&[0; 4]).is_empty());
     }
 
     #[test]
     fn trailing_padding_is_removed() {
         let mut code = 0x0085_1021u32.to_le_bytes().to_vec();
         code.extend_from_slice(&[0; 4]);
-        assert_eq!(Mips32.trim_padding(&code), &code[..4]);
+        assert_eq!(Mips32::LITTLE.trim_padding(&code), &code[..4]);
     }
 
     /// Padding inside a function is not padding, so it must stay.
@@ -472,7 +515,7 @@ mod tests {
     fn padding_before_real_code_is_kept() {
         let mut code = vec![0u8; 4];
         code.extend_from_slice(&0x0085_1021u32.to_le_bytes());
-        assert_eq!(Mips32.trim_padding(&code), &code[..], "only the end is trimmed");
+        assert_eq!(Mips32::LITTLE.trim_padding(&code), &code[..], "only the end is trimmed");
     }
 
     #[test]
@@ -480,25 +523,25 @@ mod tests {
         // sw ra, 0x14(sp)
         let save_ra = decode_one(0xafbf_0014);
         assert_eq!(save_ra.to_string(), "sw ra, 0x14(sp)");
-        assert!(Mips32.is_prologue(&save_ra));
+        assert!(Mips32::LITTLE.is_prologue(&save_ra));
 
         // sw s0, 0x10(sp) saves a callee-saved register, not the return
         // address, so it can sit anywhere in a function.
         let save_s0 = decode_one(0xafb0_0010);
-        assert!(!Mips32.is_prologue(&save_s0));
+        assert!(!Mips32::LITTLE.is_prologue(&save_s0));
 
         let add = decode_one(0x0085_1021);
-        assert!(!Mips32.is_prologue(&add));
+        assert!(!Mips32::LITTLE.is_prologue(&add));
     }
 
     #[test]
     fn frame_work_is_told_apart_from_real_work() {
         // addiu sp, sp, -0x20
-        assert!(Mips32.is_frame_management(&decode_one(0x27bd_ffe0)));
+        assert!(Mips32::LITTLE.is_frame_management(&decode_one(0x27bd_ffe0)));
         // sw ra, 0x14(sp)
-        assert!(Mips32.is_frame_management(&decode_one(0xafbf_0014)));
+        assert!(Mips32::LITTLE.is_frame_management(&decode_one(0xafbf_0014)));
         // addu v0, a0, a1 is the work itself
-        assert!(!Mips32.is_frame_management(&decode_one(0x0085_1021)));
+        assert!(!Mips32::LITTLE.is_frame_management(&decode_one(0x0085_1021)));
     }
 
     /// A load from an object is not a spill, even though both are `lw`.
@@ -506,52 +549,52 @@ mod tests {
     fn a_data_load_is_not_frame_work() {
         // lw v0, 0x0(a0)
         let load = decode_one(0x8c82_0000);
-        assert!(!Mips32.is_frame_management(&load), "a load through a0 reads data");
+        assert!(!Mips32::LITTLE.is_frame_management(&load), "a load through a0 reads data");
     }
 
     #[test]
     fn registers_are_recognized_by_their_abi_names() {
         for name in ["zero", "a0", "v0", "t9", "s8", "sp", "fp", "ra", "gp"] {
-            assert!(Mips32.is_register(name), "{name} names a register");
+            assert!(Mips32::LITTLE.is_register(name), "{name} names a register");
         }
         for other in ["", "0x4", "0x4(sp)", "$+0x8", "r0", "x0"] {
-            assert!(!Mips32.is_register(other), "{other} does not name a register");
+            assert!(!Mips32::LITTLE.is_register(other), "{other} does not name a register");
         }
     }
 
     #[test]
     fn the_stack_and_frame_pointers_are_told_apart() {
         for name in ["sp", "fp", "s8"] {
-            assert!(Mips32.is_stack_register(name));
+            assert!(Mips32::LITTLE.is_stack_register(name));
         }
-        assert!(!Mips32.is_stack_register("a0"));
-        assert!(!Mips32.is_stack_register("ra"));
+        assert!(!Mips32::LITTLE.is_stack_register("a0"));
+        assert!(!Mips32::LITTLE.is_stack_register("ra"));
     }
 
     #[test]
     fn a_frame_reference_is_told_apart_from_another_memory_reference() {
-        assert!(Mips32.mentions_stack_slot("ra, 0x14(sp)"));
-        assert!(Mips32.mentions_stack_slot("v0, 0x0(fp)"));
-        assert!(!Mips32.mentions_stack_slot("v0, 0x0(a0)"));
+        assert!(Mips32::LITTLE.mentions_stack_slot("ra, 0x14(sp)"));
+        assert!(Mips32::LITTLE.mentions_stack_slot("v0, 0x0(fp)"));
+        assert!(!Mips32::LITTLE.mentions_stack_slot("v0, 0x0(a0)"));
     }
 
     #[test]
     fn a_constant_reads_in_hex_and_decimal() {
-        assert_eq!(Mips32.constant_value("0x25"), Some(0x25));
-        assert_eq!(Mips32.constant_value("37"), Some(37));
+        assert_eq!(Mips32::LITTLE.constant_value("0x25"), Some(0x25));
+        assert_eq!(Mips32::LITTLE.constant_value("37"), Some(37));
     }
 
     /// A negative immediate must read back as one value, not as its digits.
     #[test]
     fn a_negative_constant_keeps_one_spelling() {
-        assert_eq!(Mips32.constant_value("-0x20"), Some((-0x20i64) as u64));
-        assert_ne!(Mips32.constant_value("-0x20"), Mips32.constant_value("0x20"));
+        assert_eq!(Mips32::LITTLE.constant_value("-0x20"), Some((-0x20i64) as u64));
+        assert_ne!(Mips32::LITTLE.constant_value("-0x20"), Mips32::LITTLE.constant_value("0x20"));
     }
 
     #[test]
     fn what_is_not_a_constant_reads_as_none() {
         for operand in ["a0", "0x4(sp)", "$+0x400", "", "ra"] {
-            assert_eq!(Mips32.constant_value(operand), None, "{operand} is not a constant");
+            assert_eq!(Mips32::LITTLE.constant_value(operand), None, "{operand} is not a constant");
         }
     }
 
@@ -559,14 +602,65 @@ mod tests {
     /// two different branches must stay different.
     #[test]
     fn normalizing_an_operation_keeps_distinct_branches_apart() {
-        assert_eq!(Mips32.normalize_operation("addu"), "addu");
-        assert_ne!(Mips32.normalize_operation("beq"), Mips32.normalize_operation("bne"));
+        assert_eq!(Mips32::LITTLE.normalize_operation("addu"), "addu");
+        assert_ne!(
+            Mips32::LITTLE.normalize_operation("beq"),
+            Mips32::LITTLE.normalize_operation("bne")
+        );
     }
 
     /// The trait's default says this architecture has no unwind index, which
     /// makes function recovery fall back to calls and returns.
     #[test]
     fn there_is_no_unwind_section() {
-        assert_eq!(Mips32.unwind_section(), None);
+        assert_eq!(Mips32::LITTLE.unwind_section(), None);
+    }
+
+    /// MIPS runs the instruction after a branch either way, so recovery must
+    /// not read it as the start of the next function.
+    #[test]
+    fn a_branch_has_one_delay_slot() {
+        assert_eq!(Mips32::LITTLE.delay_slots(), 1);
+        assert_eq!(Mips32::BIG.delay_slots(), 1);
+    }
+
+    /// The same bytes are two different instructions in the two byte orders,
+    /// which is why the order cannot be guessed.
+    #[test]
+    fn byte_order_decides_what_a_word_means() {
+        // `addu v0, a0, a1` stored big endian.
+        let stored = 0x0085_1021u32.to_be_bytes();
+
+        let big = Mips32::BIG.decode(&stored, 0, 0).unwrap();
+        assert_eq!(big.mnemonic, "addu");
+
+        let little = Mips32::LITTLE.decode(&stored, 0, 0).unwrap();
+        assert_ne!(little.mnemonic, "addu", "the wrong order reads another instruction");
+    }
+
+    /// A big-endian image decodes exactly as a little-endian one does once
+    /// the word is assembled, so the whole trait works either way.
+    #[test]
+    fn big_endian_classifies_control_flow_the_same() {
+        let jr_ra = Mips32::BIG.decode(&0x03e0_0008u32.to_be_bytes(), 0, 0).unwrap();
+        assert_eq!(jr_ra.kind, InsnKind::Return);
+
+        let jal = Mips32::BIG.decode(&0x0c00_0100u32.to_be_bytes(), 0, 0).unwrap();
+        assert_eq!(jal.kind, InsnKind::Call { target: Some(0x400) });
+    }
+
+    /// Each order names the triple the differential test disassembles with.
+    #[test]
+    fn each_order_names_its_own_triple() {
+        assert_eq!(Mips32::LITTLE.triple(), "mipsel");
+        assert_eq!(Mips32::BIG.triple(), "mips");
+    }
+
+    /// A stored pointer follows the image byte order, as an instruction does.
+    #[test]
+    fn a_pointer_reads_in_the_image_byte_order() {
+        let stored = 0x8000_0000u32.to_be_bytes();
+        assert_eq!(Mips32::BIG.read_pointer(&stored), 0x8000_0000);
+        assert_ne!(Mips32::LITTLE.read_pointer(&stored), 0x8000_0000);
     }
 }

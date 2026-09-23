@@ -339,8 +339,10 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
             continue;
         }
 
-        // Step over any padding the linker put between functions.
-        let mut next = index + 1;
+        // Step over the delay slot, which belongs to the terminator rather
+        // than to what follows, and then over any padding the linker put
+        // between functions.
+        let mut next = index + 1 + arch.delay_slots();
         while insns.get(next).is_some_and(|insn| arch.is_padding(insn)) {
             next += 1;
         }
@@ -626,5 +628,58 @@ mod tests {
         // bx lr, nop, add
         let code = [0x1e, 0xff, 0x2f, 0xe1, 0x00, 0xf0, 0x20, 0xe3, 0x00, 0x00, 0x81, 0xe0];
         assert_eq!(starts_after_returns(&Arm32, &code, 0), vec![0x8], "the nop is padding");
+    }
+
+    /// A delay slot belongs to the instruction before it, not to the function
+    /// after it.
+    ///
+    /// MIPS unwinds the frame in the slot after `jr ra`, so reading that
+    /// unwind as a function start invents a one-instruction function at the
+    /// end of every real one. Measured on a stripped MIPS kernel, this cut
+    /// nineteen recovered functions out of twenty-six, and the seven it
+    /// removed were all the same stray `addiu sp, sp, N`.
+    #[test]
+    fn a_delay_slot_does_not_start_a_function() {
+        use crate::arch::mips::Mips32;
+
+        // jr ra, then the frame unwind in its delay slot, then a real
+        // function that opens by saving the return address.
+        let mut code = Vec::new();
+        for word in [
+            0x03e0_0008u32, // jr ra
+            0x27bd_0028,    // addiu sp, sp, 0x28, in the delay slot
+            0x27bd_ffd0,    // addiu sp, sp, -0x30, the next function
+            0xafbf_002c,    // sw ra, 0x2c(sp), its prologue
+        ] {
+            code.extend_from_slice(&word.to_le_bytes());
+        }
+
+        // The prologue at 0xc is the stronger signal and wins. What matters
+        // here is that 0x4, the delay slot, is not offered at all.
+        let starts = starts_after_returns(&Mips32::LITTLE, &code, 0);
+        assert!(!starts.contains(&0x4), "the delay slot is part of the return, got {starts:?}");
+        assert_eq!(starts, vec![0xc], "the prologue past the slot is the start");
+    }
+
+    /// Without a prologue to point at, the start is the instruction after the
+    /// delay slot rather than the slot itself.
+    #[test]
+    fn a_start_after_a_delay_slot_skips_the_slot() {
+        use crate::arch::mips::Mips32;
+
+        let mut code = Vec::new();
+        for word in [
+            0x03e0_0008u32, // jr ra
+            0x27bd_0028,    // addiu sp, sp, 0x28, in the delay slot
+            0x0085_1021,    // addu v0, a0, a1, the next function
+        ] {
+            code.extend_from_slice(&word.to_le_bytes());
+        }
+
+        assert_eq!(
+            starts_after_returns(&Mips32::LITTLE, &code, 0),
+            vec![0x8],
+            "the start is past the slot, not at it"
+        );
     }
 }

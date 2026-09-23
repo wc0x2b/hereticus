@@ -259,7 +259,7 @@ fn decoder_agrees_with_objdump() {
             // rules on MIPS would strip real mnemonics down to nothing.
             let canonical: fn(&str) -> String = match binary.isa {
                 Isa::Arm32 => canonical_mnemonic,
-                Isa::Mips32 => canonical_mips_mnemonic,
+                Isa::Mips32 | Isa::Mips32Be => canonical_mips_mnemonic,
             };
 
             for (ours, theirs) in decoded.iter().zip(&expected).take(shared) {
