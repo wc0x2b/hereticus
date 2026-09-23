@@ -65,6 +65,18 @@ for opt in O0 O2; do
     done
 done
 
+# The same pair in big-endian, which is the order shipped firmware uses. The
+# PIC rules read decoded text rather than bytes, so both orders must give one
+# answer; this is what lets a test say so.
+mkdir -p "$build/mipsbe-pic-O2" "$build/mipsbe-nopic-O2"
+for source in "$src"/*.c; do
+    name="$(basename "$source" .c)"
+    clang --target="$mipsbe_target" -fPIC -c -O2 -g \
+        "$source" -o "$build/mipsbe-pic-O2/$name.o"
+    clang --target="$mipsbe_target" -fno-pic -mno-abicalls -c -O2 -g \
+        "$source" -o "$build/mipsbe-nopic-O2/$name.o"
+done
+
 # Stripped copies, for the tests that check recovery without symbols. The
 # unstripped original stays, so a test can use its symbol table as the answer.
 if command -v llvm-strip >/dev/null 2>&1; then

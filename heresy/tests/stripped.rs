@@ -268,12 +268,23 @@ fn a_real_address_load_survives_normalizing() {
 /// in raises the similarity of functions that have nothing to do with each
 /// other. Measured on this fixture, unrelated pairs averaged 0.44 with the
 /// preamble against 0.34 without it, which is signal lost to the ABI.
+/// Both byte orders must give one answer, because the rules read decoded text
+/// rather than stored bytes. Big endian is the order shipped firmware uses, so
+/// it is the one that matters most.
 #[test]
 fn the_pic_preamble_does_not_make_unrelated_functions_look_alike() {
+    for (pic_build, nopic_build) in
+        [("mips-pic-O2", "mips-nopic-O2"), ("mipsbe-pic-O2", "mipsbe-nopic-O2")]
+    {
+        pic_costs_the_comparison_nothing(pic_build, nopic_build);
+    }
+}
+
+/// The body of the test above, run once per byte order.
+fn pic_costs_the_comparison_nothing(pic_build: &str, nopic_build: &str) {
     use heresy::{arch::decode_all, matching::similarity, norm::normalize_body};
 
-    let (Some(pic), Some(nopic)) = (read("mips-pic-O2", "calls"), read("mips-nopic-O2", "calls"))
-    else {
+    let (Some(pic), Some(nopic)) = (read(pic_build, "calls"), read(nopic_build, "calls")) else {
         return;
     };
 
@@ -310,7 +321,46 @@ fn the_pic_preamble_does_not_make_unrelated_functions_look_alike() {
     // part of the idiom returning to the comparison fails this test.
     assert!(
         pic_noise - nopic_noise < 0.02,
-        "PIC decoys at {pic_noise:.3} against {nopic_noise:.3}: the ABI is being compared"
+        "{pic_build}: PIC decoys at {pic_noise:.3} against {nopic_noise:.3}, \
+         so the ABI is being compared"
+    );
+}
+
+/// The same source must normalize alike in either byte order.
+///
+/// Every PIC rule reads the decoded text, which the two decoders render the
+/// same way, so nothing here should depend on how a word is stored. A rule that
+/// reached for raw bytes would work in one order and quietly fail in the other,
+/// and firmware ships big endian: the order that would break is the one that
+/// matters.
+#[test]
+fn the_pic_rules_do_not_depend_on_byte_order() {
+    use heresy::{arch::decode_all, norm::normalize_body};
+
+    let (Some(little), Some(big)) = (read("mips-pic-O2", "calls"), read("mipsbe-pic-O2", "calls"))
+    else {
+        return;
+    };
+
+    assert_eq!(little.isa, heresy::obj::Isa::Mips32, "the fixture must be little endian");
+    assert_eq!(big.isa, heresy::obj::Isa::Mips32Be, "the fixture must be big endian");
+
+    let kept = |binary: &Binary| -> Vec<(String, usize, usize)> {
+        let arch = binary.isa.arch();
+        binary
+            .functions
+            .iter()
+            .map(|function| {
+                let (insns, _) = decode_all(arch, &function.code, function.address);
+                (function.name.clone(), insns.len(), normalize_body(arch, &insns).len())
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        kept(&little),
+        kept(&big),
+        "the same function must keep the same instructions in either order"
     );
 }
 
