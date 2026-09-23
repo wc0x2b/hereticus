@@ -24,13 +24,13 @@ use std::collections::BTreeSet;
 use compact_str::{CompactString, format_compact};
 use smallvec::SmallVec;
 
-use crate::arch::{Insn, InsnKind};
+use crate::arch::{Arch, Insn, InsnKind, is_branch_target};
 
 /// Operands held without a heap allocation.
 ///
-/// Measured across the corpus, an ARM32 instruction carries up to four
-/// operands, bar a handful of register lists that reach six. Four inline
-/// covers all but those, which spill to the heap and still work.
+/// Measured across the corpus, an instruction carries up to four operands,
+/// bar a handful of register lists that reach six. Four inline covers all but
+/// those, which spill to the heap and still work.
 pub type Operands = SmallVec<[OperandShape; 4]>;
 
 /// Constants held without a heap allocation.
@@ -185,7 +185,7 @@ impl From<InsnKind> for FlowShape {
 }
 
 /// Normalize one instruction.
-pub fn normalize(insn: &Insn) -> NormInsn {
+pub fn normalize(arch: &dyn Arch, insn: &Insn) -> NormInsn {
     // Bytes the decoder cannot read carry their raw word as the operand.
     // Keeping that word in the operation name is what separates one
     // unreadable instruction from another: without it, a NEON `vmax` and a
@@ -202,10 +202,10 @@ pub fn normalize(insn: &Insn) -> NormInsn {
 
     let fields = insn.operands.split(',');
     NormInsn {
-        operation: normalize_operation(&insn.mnemonic),
-        operands: fields.clone().filter_map(shape_of).collect(),
+        operation: arch.normalize_operation(&insn.mnemonic),
+        operands: fields.clone().filter_map(|field| shape_of(arch, field)).collect(),
         flow: insn.kind.into(),
-        constants: fields.filter_map(constant_value).collect(),
+        constants: fields.filter_map(|field| arch.constant_value(field)).collect(),
     }
 }
 
@@ -217,11 +217,15 @@ pub fn normalize(insn: &Insn) -> NormInsn {
 /// registers. Removing that traffic raised same-function similarity from 0.13
 /// to 0.31 on the test corpus, and left unrelated functions unchanged at 0.21,
 /// so it removes noise rather than signal.
-pub fn normalize_body<'a, I>(insns: I) -> Vec<NormInsn>
+pub fn normalize_body<'a, I>(arch: &dyn Arch, insns: I) -> Vec<NormInsn>
 where
     I: IntoIterator<Item = &'a Insn>,
 {
-    insns.into_iter().filter(|insn| !is_frame_management(insn)).map(normalize).collect()
+    insns
+        .into_iter()
+        .filter(|insn| !arch.is_frame_management(insn))
+        .map(|insn| normalize(arch, insn))
+        .collect()
 }
 
 /// The distinct constants a function uses.
@@ -269,146 +273,52 @@ pub fn constant_signature(body: &[NormInsn]) -> BTreeSet<u64> {
         .collect()
 }
 
-/// Report whether an instruction only maintains the stack frame.
-///
-/// Saving registers, moving the stack pointer and spilling to a frame slot are
-/// all bookkeeping that the compiler adds or removes freely.
-fn is_frame_management(insn: &Insn) -> bool {
-    let operation = normalize_operation(&insn.mnemonic);
-    let operands = insn.operands.as_str();
-
-    match operation.as_str() {
-        // Saving and restoring registers. A `pop` that loads the program
-        // counter also returns, so it must stay.
-        "push" => true,
-        "pop" => insn.kind != InsnKind::Return,
-
-        // Moving the stack pointer, or setting up the frame pointer.
-        "sub" | "add" | "mov" => starts_with_stack_register(operands),
-
-        // Spilling to and reloading from the frame.
-        "ldr" | "str" | "ldm" | "stm" => mentions_stack_slot(operands),
-
-        _ => false,
-    }
-}
-
-/// Report whether the first operand is the stack or frame pointer.
-fn starts_with_stack_register(operands: &str) -> bool {
-    let first = operands.split(',').next().unwrap_or_default().trim();
-    matches!(first, "sp" | "fp" | "r13" | "r11")
-}
-
-/// Report whether any operand reads or writes a frame slot.
-fn mentions_stack_slot(operands: &str) -> bool {
-    operands.contains("[sp") || operands.contains("[fp") || operands.contains("[r13")
-}
-
-/// Strip the flag-setting suffix and the condition from a mnemonic.
-///
-/// Public because telling a changed register from a changed word of data
-/// needs to compare operations the same way matching does.
-///
-/// A compiler picks between `add` and `adds`, and between a branch and a
-/// conditional move, for reasons that do not change what the code computes.
-pub fn normalize_operation(mnemonic: &str) -> CompactString {
-    const CONDITIONS: [&str; 17] = [
-        "eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al",
-        "lo", "hs",
-    ];
-
-    // Mnemonics that end in condition letters but carry no condition.
-    const NOT_CONDITIONAL: [&str; 6] = ["b", "bl", "ble", "bls", "movs", "cmps"];
-
-    let mnemonic = mnemonic.trim();
-    if NOT_CONDITIONAL.contains(&mnemonic) {
-        // `movs` and `cmps` still carry a flag-setting suffix to remove.
-        return mnemonic.trim_end_matches('s').into();
-    }
-
-    let without_condition = CONDITIONS
-        .iter()
-        .find_map(|suffix| mnemonic.strip_suffix(suffix).filter(|stem| stem.len() >= 2))
-        .unwrap_or(mnemonic);
-
-    // Keep a trailing `s` that belongs to the name, as in `bics` versus `bic`.
-    match without_condition.strip_suffix('s') {
-        Some(stem) if stem.len() >= 2 => stem.into(),
-        _ => without_condition.into(),
-    }
-}
-
 /// Classify one operand from its printed form.
-fn shape_of(operand: &str) -> Option<OperandShape> {
+///
+/// The architecture answers what each form means; the ordering of the
+/// questions is the same whatever answers them, because a memory reference
+/// must be recognized before the constant inside it, and a frame slot before
+/// a plain memory reference.
+fn shape_of(arch: &dyn Arch, operand: &str) -> Option<OperandShape> {
     let operand = operand.trim();
     if operand.is_empty() {
         return None;
     }
 
-    // Register lists print as `{r4, lr}`. Splitting on commas breaks them
-    // apart, so the fragments are recognized by their braces.
-    if operand.starts_with('{') || operand.ends_with('}') {
+    if arch.is_register_list(operand) {
         return Some(OperandShape::RegisterList);
     }
 
     // Memory references print inside brackets.
     if operand.contains('[') || operand.contains(']') {
-        return Some(if mentions_stack_slot(operand) {
+        return Some(if arch.mentions_stack_slot(operand) {
             OperandShape::StackSlot
         } else {
             OperandShape::Memory
         });
     }
 
-    // Branch targets print as `$+0x24`.
-    if operand.starts_with('$') {
+    if is_branch_target(operand) {
         return Some(OperandShape::Target);
     }
 
-    if let Some(value) = constant_value(operand) {
+    if let Some(value) = arch.constant_value(operand) {
         return Some(OperandShape::Immediate(Magnitude::of(value)));
     }
 
-    Some(match operand {
-        "sp" | "fp" | "r13" | "r11" => OperandShape::StackPointer,
-        _ if is_register(operand) => OperandShape::Register,
-        _ => OperandShape::Other,
+    Some(if arch.is_stack_register(operand) {
+        OperandShape::StackPointer
+    } else if arch.is_register(operand) {
+        OperandShape::Register
+    } else {
+        OperandShape::Other
     })
-}
-
-/// Read a constant operand, in hex or decimal.
-///
-/// Returns `None` for anything that is not a plain constant, including
-/// registers, memory references and branch targets.
-fn constant_value(operand: &str) -> Option<u64> {
-    let text = operand.trim().trim_start_matches('#');
-    if text.is_empty() {
-        return None;
-    }
-
-    // A memory reference can hold a constant, but that constant is an offset
-    // into a frame or object and moves with unrelated edits.
-    if text.contains('[') || text.contains(']') || text.starts_with('$') {
-        return None;
-    }
-
-    match text.strip_prefix("0x") {
-        Some(hex) => u64::from_str_radix(hex, 16).ok(),
-        None => text.parse::<u64>().ok(),
-    }
-}
-
-/// Report whether an operand names a general register.
-fn is_register(operand: &str) -> bool {
-    matches!(operand, "lr" | "pc" | "ip" | "sl")
-        || operand
-            .strip_prefix('r')
-            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::arm32::Arm32;
 
     fn insn(mnemonic: &str, operands: &str, kind: InsnKind) -> Insn {
         Insn {
@@ -421,51 +331,27 @@ mod tests {
     }
 
     #[test]
-    fn strips_flag_suffix_and_condition() {
-        assert_eq!(normalize_operation("adds"), "add");
-        assert_eq!(normalize_operation("movlt"), "mov");
-        assert_eq!(normalize_operation("bxeq"), "bx");
-        assert_eq!(normalize_operation("movs"), "mov");
-    }
-
-    /// A mnemonic that merely ends in condition letters must survive.
-    #[test]
-    fn keeps_operations_that_look_conditional() {
-        for operation in ["b", "bl", "ble", "mov", "mul", "push", "pop"] {
-            assert_eq!(normalize_operation(operation), operation);
-        }
-    }
-
-    /// Distinct operations must stay distinct, or matching means nothing.
-    #[test]
-    fn keeps_distinct_operations_apart() {
-        assert_ne!(normalize_operation("add"), normalize_operation("sub"));
-        assert_ne!(normalize_operation("ldr"), normalize_operation("str"));
-        assert_ne!(normalize_operation("push"), normalize_operation("pop"));
-    }
-
-    #[test]
     fn register_choice_does_not_change_the_result() {
-        let first = normalize(&insn("add", "r0, r1, r2", InsnKind::Normal));
-        let second = normalize(&insn("add", "r4, r5, r6", InsnKind::Normal));
+        let first = normalize(&Arm32, &insn("add", "r0, r1, r2", InsnKind::Normal));
+        let second = normalize(&Arm32, &insn("add", "r4, r5, r6", InsnKind::Normal));
         assert_eq!(first, second, "a compiler picks registers freely");
     }
 
     #[test]
     fn small_constants_group_together() {
-        let first = normalize(&insn("add", "r0, r0, 0x1", InsnKind::Normal));
-        let second = normalize(&insn("add", "r0, r0, 0x4", InsnKind::Normal));
+        let first = normalize(&Arm32, &insn("add", "r0, r0, 0x1", InsnKind::Normal));
+        let second = normalize(&Arm32, &insn("add", "r0, r0, 0x4", InsnKind::Normal));
         assert_eq!(first, second);
     }
 
     /// Bucketing must not merge every constant, or a changed mask would hide.
     #[test]
     fn wide_constants_stay_apart_from_small_ones() {
-        let small = normalize(&insn("mov", "r0, 0x4", InsnKind::Normal));
-        let large = normalize(&insn("mov", "r0, 0xdeadbeef", InsnKind::Normal));
+        let small = normalize(&Arm32, &insn("mov", "r0, 0x4", InsnKind::Normal));
+        let large = normalize(&Arm32, &insn("mov", "r0, 0xdeadbeef", InsnKind::Normal));
         assert_ne!(small, large);
 
-        let zero = normalize(&insn("mov", "r0, 0x0", InsnKind::Normal));
+        let zero = normalize(&Arm32, &insn("mov", "r0, 0x0", InsnKind::Normal));
         assert_ne!(zero, small);
     }
 
@@ -473,8 +359,8 @@ mod tests {
     /// and the values must still be there to report the edit.
     #[test]
     fn constants_stay_available_but_out_of_equality() {
-        let original = normalize(&insn("mov", "r1, 0x25", InsnKind::Normal));
-        let edited = normalize(&insn("mov", "r1, 0x29", InsnKind::Normal));
+        let original = normalize(&Arm32, &insn("mov", "r1, 0x25", InsnKind::Normal));
+        let edited = normalize(&Arm32, &insn("mov", "r1, 0x29", InsnKind::Normal));
 
         assert_eq!(original, edited, "the same work with a different constant still matches");
         assert!(original.differs_in_detail(&edited), "the changed value must be visible");
@@ -484,8 +370,8 @@ mod tests {
 
     #[test]
     fn identical_instructions_do_not_differ_in_detail() {
-        let first = normalize(&insn("mov", "r1, 0x25", InsnKind::Normal));
-        let second = normalize(&insn("mov", "r2, 0x25", InsnKind::Normal));
+        let first = normalize(&Arm32, &insn("mov", "r1, 0x25", InsnKind::Normal));
+        let second = normalize(&Arm32, &insn("mov", "r2, 0x25", InsnKind::Normal));
         assert!(!first.differs_in_detail(&second));
     }
 
@@ -501,8 +387,8 @@ mod tests {
             hasher.finish()
         };
 
-        let original = normalize(&insn("mov", "r1, 0x25", InsnKind::Normal));
-        let edited = normalize(&insn("mov", "r1, 0x29", InsnKind::Normal));
+        let original = normalize(&Arm32, &insn("mov", "r1, 0x25", InsnKind::Normal));
+        let edited = normalize(&Arm32, &insn("mov", "r1, 0x29", InsnKind::Normal));
         assert_eq!(hash_of(&original), hash_of(&edited));
     }
 
@@ -510,7 +396,7 @@ mod tests {
     /// constant worth reporting.
     #[test]
     fn frame_offsets_are_not_recorded_as_constants() {
-        let load = normalize(&insn("ldr", "r0, [sp, 0x4]", InsnKind::Normal));
+        let load = normalize(&Arm32, &insn("ldr", "r0, [sp, 0x4]", InsnKind::Normal));
         assert!(load.constants.is_empty());
     }
 
@@ -518,13 +404,17 @@ mod tests {
     fn branch_addresses_do_not_change_the_result() {
         let near = insn("b", "$+0x8", InsnKind::Jump { target: Some(0x100) });
         let far = insn("b", "$+0x400", InsnKind::Jump { target: Some(0x9000) });
-        assert_eq!(normalize(&near), normalize(&far), "addresses move with unrelated edits");
+        assert_eq!(
+            normalize(&Arm32, &near),
+            normalize(&Arm32, &far),
+            "addresses move with unrelated edits"
+        );
     }
 
     #[test]
     fn separates_stack_references_from_other_memory() {
-        let spill = normalize(&insn("ldr", "r0, [sp, 0x4]", InsnKind::Normal));
-        let load = normalize(&insn("ldr", "r0, [r1]", InsnKind::Normal));
+        let spill = normalize(&Arm32, &insn("ldr", "r0, [sp, 0x4]", InsnKind::Normal));
+        let load = normalize(&Arm32, &insn("ldr", "r0, [r1]", InsnKind::Normal));
         assert_ne!(spill, load, "a frame slot is not the same as a data load");
     }
 
@@ -538,7 +428,7 @@ mod tests {
             insn("add", "r0, r0, r1", InsnKind::Normal),
             insn("bx", "lr", InsnKind::Return),
         ];
-        let normalized = normalize_body(&body);
+        let normalized = normalize_body(&Arm32, &body);
 
         assert_eq!(normalized.len(), 2, "only the real work must remain");
         assert_eq!(normalized[0].operation, "add");
@@ -549,38 +439,41 @@ mod tests {
     #[test]
     fn keeps_a_pop_that_returns() {
         let body = [insn("pop", "{fp, pc}", InsnKind::Return)];
-        assert_eq!(normalize_body(&body).len(), 1);
+        assert_eq!(normalize_body(&Arm32, &body).len(), 1);
     }
 
     #[test]
     fn keeps_loads_that_are_not_spills() {
         let body = [insn("ldr", "r0, [r1, 0x8]", InsnKind::Normal)];
-        assert_eq!(normalize_body(&body).len(), 1, "a data load is real work");
+        assert_eq!(normalize_body(&Arm32, &body).len(), 1, "a data load is real work");
     }
 
     #[test]
     fn a_constant_signature_holds_the_values_a_function_uses() {
-        let body = normalize_body(&[
-            insn("mov", "r1, 0x25", InsnKind::Normal),
-            insn("cmp", "r0, 0x64", InsnKind::Normal),
-        ]);
+        let body = normalize_body(
+            &Arm32,
+            &[insn("mov", "r1, 0x25", InsnKind::Normal), insn("cmp", "r0, 0x64", InsnKind::Normal)],
+        );
         assert_eq!(constant_signature(&body), BTreeSet::from([0x25, 0x64]));
     }
 
     /// Values in almost every function cannot identify one, so they go.
     #[test]
     fn a_constant_signature_drops_the_common_values() {
-        let body = normalize_body(&[
-            insn("mov", "r0, 0x0", InsnKind::Normal),
-            insn("add", "r0, r0, 0x1", InsnKind::Normal),
-            insn("cmp", "r0, 0x25", InsnKind::Normal),
-        ]);
+        let body = normalize_body(
+            &Arm32,
+            &[
+                insn("mov", "r0, 0x0", InsnKind::Normal),
+                insn("add", "r0, r0, 0x1", InsnKind::Normal),
+                insn("cmp", "r0, 0x25", InsnKind::Normal),
+            ],
+        );
         assert_eq!(constant_signature(&body), BTreeSet::from([0x25]), "only 37 identifies this");
     }
 
     #[test]
     fn a_constant_signature_is_empty_without_constants() {
-        let body = normalize_body(&[insn("bx", "lr", InsnKind::Return)]);
+        let body = normalize_body(&Arm32, &[insn("bx", "lr", InsnKind::Return)]);
         assert!(constant_signature(&body).is_empty());
     }
 
@@ -588,10 +481,10 @@ mod tests {
     /// how many times the compiler happened to materialize it.
     #[test]
     fn a_constant_signature_counts_each_value_once() {
-        let body = normalize_body(&[
-            insn("mov", "r0, 0x25", InsnKind::Normal),
-            insn("mov", "r1, 0x25", InsnKind::Normal),
-        ]);
+        let body = normalize_body(
+            &Arm32,
+            &[insn("mov", "r0, 0x25", InsnKind::Normal), insn("mov", "r1, 0x25", InsnKind::Normal)],
+        );
         assert_eq!(constant_signature(&body), BTreeSet::from([0x25]));
     }
 
@@ -600,7 +493,7 @@ mod tests {
     /// a change there cannot quietly widen the signature.
     #[test]
     fn a_constant_signature_ignores_frame_offsets() {
-        let body = normalize_body(&[insn("ldr", "r0, [r1, 0x25]", InsnKind::Normal)]);
+        let body = normalize_body(&Arm32, &[insn("ldr", "r0, [r1, 0x25]", InsnKind::Normal)]);
         assert!(constant_signature(&body).is_empty());
     }
 
@@ -612,17 +505,23 @@ mod tests {
     /// them apart, so a matching stage built on it would pair the wrong two.
     #[test]
     fn different_functions_can_share_a_constant_signature() {
-        let caller = normalize_body(&[
-            insn("mov", "r1, 0x25", InsnKind::Normal),
-            insn("mul", "r0, r0, r1", InsnKind::Normal),
-            insn("add", "r0, r0, 0x1", InsnKind::Normal),
-            insn("bx", "lr", InsnKind::Return),
-        ]);
-        let callee = normalize_body(&[
-            insn("mov", "r1, 0x25", InsnKind::Normal),
-            insn("mul", "r0, r0, r1", InsnKind::Normal),
-            insn("bx", "lr", InsnKind::Return),
-        ]);
+        let caller = normalize_body(
+            &Arm32,
+            &[
+                insn("mov", "r1, 0x25", InsnKind::Normal),
+                insn("mul", "r0, r0, r1", InsnKind::Normal),
+                insn("add", "r0, r0, 0x1", InsnKind::Normal),
+                insn("bx", "lr", InsnKind::Return),
+            ],
+        );
+        let callee = normalize_body(
+            &Arm32,
+            &[
+                insn("mov", "r1, 0x25", InsnKind::Normal),
+                insn("mul", "r0, r0, r1", InsnKind::Normal),
+                insn("bx", "lr", InsnKind::Return),
+            ],
+        );
 
         assert_eq!(
             constant_signature(&caller),
@@ -638,18 +537,21 @@ mod tests {
     /// the normal case rather than an unusual one.
     #[test]
     fn a_function_of_common_constants_has_no_signature() {
-        let body = normalize_body(&[
-            insn("cmp", "r0, 0x0", InsnKind::Normal),
-            insn("add", "r0, r0, 0x1", InsnKind::Normal),
-            insn("bx", "lr", InsnKind::Return),
-        ]);
+        let body = normalize_body(
+            &Arm32,
+            &[
+                insn("cmp", "r0, 0x0", InsnKind::Normal),
+                insn("add", "r0, r0, 0x1", InsnKind::Normal),
+                insn("bx", "lr", InsnKind::Return),
+            ],
+        );
         assert!(constant_signature(&body).is_empty());
     }
 
     #[test]
     fn opaque_bytes_stay_opaque() {
         let body = [insn("(unknown)", "0x00000000", InsnKind::Unknown)];
-        assert_eq!(normalize_body(&body)[0].flow, FlowShape::Opaque);
+        assert_eq!(normalize_body(&Arm32, &body)[0].flow, FlowShape::Opaque);
     }
 
     /// Two unreadable instructions must stay apart when their bytes differ.
@@ -659,21 +561,21 @@ mod tests {
     /// the change would be reported as no change at all.
     #[test]
     fn different_opaque_words_do_not_normalize_alike() {
-        let first = normalize(&insn("(unknown)", "0xf2600680", InsnKind::Unknown));
-        let second = normalize(&insn("(unknown)", "0xf2200680", InsnKind::Unknown));
+        let first = normalize(&Arm32, &insn("(unknown)", "0xf2600680", InsnKind::Unknown));
+        let second = normalize(&Arm32, &insn("(unknown)", "0xf2200680", InsnKind::Unknown));
         assert_ne!(first, second, "an edit inside unreadable bytes must stay visible");
     }
 
     #[test]
     fn matching_opaque_words_normalize_alike() {
-        let first = normalize(&insn("(unknown)", "0xf2600680", InsnKind::Unknown));
-        let second = normalize(&insn("(unknown)", "0xf2600680", InsnKind::Unknown));
+        let first = normalize(&Arm32, &insn("(unknown)", "0xf2600680", InsnKind::Unknown));
+        let second = normalize(&Arm32, &insn("(unknown)", "0xf2600680", InsnKind::Unknown));
         assert_eq!(first, second);
     }
 
     #[test]
     fn handles_instructions_without_operands() {
-        let normalized = normalize(&insn("nop", "", InsnKind::Normal));
+        let normalized = normalize(&Arm32, &insn("nop", "", InsnKind::Normal));
         assert!(normalized.operands.is_empty());
     }
 }

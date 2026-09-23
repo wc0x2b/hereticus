@@ -2,6 +2,7 @@
 
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 
+use crate::arch::Arch;
 use crate::arch::arm32::Arm32;
 
 /// Why a binary could not be read.
@@ -53,19 +54,13 @@ pub enum Isa {
 
 impl Isa {
     /// The decoder for this architecture.
-    pub fn arch(self) -> Arm32 {
-        match self {
-            Self::Arm32 => Arm32,
-        }
-    }
-
-    /// The shortest instruction this architecture has, in bytes.
     ///
-    /// Used to refuse an image too short to hold one. A32 is fixed at four;
-    /// an architecture with variable width would report its minimum.
-    pub fn instruction_width(self) -> usize {
+    /// Returned behind the trait so that everything above [`crate::arch`]
+    /// works on any architecture. Adding a variant here must not oblige a
+    /// caller to change.
+    pub fn arch(self) -> &'static dyn Arch {
         match self {
-            Self::Arm32 => 4,
+            Self::Arm32 => &Arm32,
         }
     }
 
@@ -145,7 +140,7 @@ impl Binary {
             return Err(ObjError::NoCode);
         }
 
-        let scanned: Vec<Function> = crate::scan::recover_functions(data, &isa.arch())
+        let scanned: Vec<Function> = crate::scan::recover_functions(data, isa.arch())
             .into_iter()
             .map(|found| found.function)
             .collect();
@@ -177,16 +172,15 @@ impl Binary {
     pub fn parse_raw(data: &[u8], base: u64, isa: Isa) -> Result<Self, ObjError> {
         // Too short to hold one instruction. Without this the scanner reports
         // a "function" of two or three bytes that can never decode.
-        if data.len() < isa.instruction_width() {
+        if data.len() < isa.arch().instruction_width() {
             return Err(ObjError::NoCode);
         }
 
         let regions = [(base, data)];
-        let functions: Vec<Function> =
-            crate::scan::recover_from_regions(&regions, &[], &isa.arch())
-                .into_iter()
-                .map(|found| found.function)
-                .collect();
+        let functions: Vec<Function> = crate::scan::recover_from_regions(&regions, &[], isa.arch())
+            .into_iter()
+            .map(|found| found.function)
+            .collect();
 
         if functions.is_empty() {
             return Err(ObjError::NoFunctions);

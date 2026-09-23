@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use heresy::arch::arm32::Arm32;
 use heresy::matching::{Options, UseNames, diff_with};
 use heresy::obj::{Binary, FoundBy, Isa};
 use heresy::raw::{BaseFit, check_base};
@@ -150,17 +151,17 @@ fn the_base_check_catches_a_nearly_right_base() {
     };
 
     assert!(
-        matches!(check_base(&vectors, VECTOR_BASE), BaseFit::Plausible { .. }),
+        matches!(check_base(&vectors, VECTOR_BASE, &Arm32), BaseFit::Plausible { .. }),
         "the base it was linked at must look right, got {:?}",
-        check_base(&vectors, VECTOR_BASE)
+        check_base(&vectors, VECTOR_BASE, &Arm32)
     );
 
     // Wrong by a page or less, which is the mistake people make.
     for wrong in [VECTOR_BASE + 0x100, VECTOR_BASE + 0x400, VECTOR_BASE + 0x1000] {
         assert!(
-            check_base(&vectors, wrong).is_suspect(),
+            check_base(&vectors, wrong, &Arm32).is_suspect(),
             "{wrong:#x} must be suspect, got {:?}",
-            check_base(&vectors, wrong)
+            check_base(&vectors, wrong, &Arm32)
         );
     }
 }
@@ -175,7 +176,7 @@ fn the_base_check_stays_quiet_without_evidence() {
     let Some(blob) = read_raw("O2-basic.bin") else { return };
 
     for base in [0, 0x0800_0000, 0x2000_0000] {
-        let fit = check_base(&blob, base);
+        let fit = check_base(&blob, base, &Arm32);
         assert!(
             !fit.is_suspect(),
             "position-independent code must not accuse a base, got {fit:?} at {base:#x}"

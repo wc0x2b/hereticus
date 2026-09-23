@@ -17,8 +17,8 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::arch::{Insn, InsnKind, decode_all};
-use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body, normalize_operation};
+use crate::arch::{Arch, Insn, InsnKind, decode_all, is_branch_target};
+use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body};
 use crate::obj::{Binary, Function, Isa};
 
 /// How confident a pairing is, and what justified it.
@@ -420,8 +420,9 @@ impl Prepared<'_> {
     /// 160 MB a side and the pair could not be compared at all. Only a matched
     /// pair needs it, and matching itself reads nothing but the symbols.
     fn body(&self) -> Vec<NormInsn> {
-        let (insns, _) = decode_all(&self.isa.arch(), &self.function.code, self.function.address);
-        normalize_body(&insns)
+        let arch = self.isa.arch();
+        let (insns, _) = decode_all(arch, &self.function.code, self.function.address);
+        normalize_body(arch, &insns)
     }
 
     /// Report whether this function normalized to nothing.
@@ -465,11 +466,11 @@ fn prepare<'a>(
         .iter()
         .map(|function| {
             progress.advance(1);
-            let (insns, _) = decode_all(&arch, &function.code, function.address);
+            let (insns, _) = decode_all(arch, &function.code, function.address);
             // The body is interned and then dropped. Matching reads only the
             // symbols, and the few pairs that need the instructions back
             // normalize again on demand.
-            let body = normalize_body(&insns);
+            let body = normalize_body(arch, &insns);
 
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
@@ -722,10 +723,10 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
     // a function of twenty thousand instructions would otherwise hold two
     // heap strings apiece on both sides at once, which is what exhausted
     // memory on a whole kernel.
-    let (before_insns, _) =
-        decode_all(&before.isa.arch(), &before.function.code, before.function.address);
-    let (after_insns, _) =
-        decode_all(&after.isa.arch(), &after.function.code, after.function.address);
+    let before_arch = before.isa.arch();
+    let after_arch = after.isa.arch();
+    let (before_insns, _) = decode_all(before_arch, &before.function.code, before.function.address);
+    let (after_insns, _) = decode_all(after_arch, &after.function.code, after.function.address);
     if before_insns.len() != after_insns.len() {
         return false;
     }
@@ -734,8 +735,10 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
         // Compare the operation the way the normalizer does, so a condition
         // code the compiler chose differently — `movwlt` against `movwlo` —
         // stays the free choice it is rather than reading as an edit.
-        normalize_operation(&left.mnemonic) == normalize_operation(&right.mnemonic)
+        before_arch.normalize_operation(&left.mnemonic)
+            == after_arch.normalize_operation(&right.mnemonic)
             && operands_are_interchangeable(
+                before_arch,
                 &left.operands,
                 &right.operands,
                 // A `$...` operand is a free choice only on an instruction
@@ -762,28 +765,20 @@ impl From<bool> for TargetMoves {
 }
 
 /// Compare two operand lists, allowing the differences that carry no meaning.
-fn operands_are_interchangeable(left: &str, right: &str, targets: TargetMoves) -> bool {
+fn operands_are_interchangeable(
+    arch: &dyn Arch,
+    left: &str,
+    right: &str,
+    targets: TargetMoves,
+) -> bool {
     let left = left.split(',').map(str::trim);
     let right = right.split(',').map(str::trim);
 
     left.zip(right).all(|(a, b)| {
         a == b
-            || (is_register_name(a) && is_register_name(b))
+            || (arch.is_register(a) && arch.is_register(b))
             || (targets == TargetMoves::Freely && is_branch_target(a) && is_branch_target(b))
     })
-}
-
-/// Report whether an operand is a branch target, which prints as `$+0x24`.
-fn is_branch_target(operand: &str) -> bool {
-    operand.starts_with('$')
-}
-
-/// Report whether an operand is a bare register name.
-fn is_register_name(operand: &str) -> bool {
-    matches!(operand, "sp" | "lr" | "pc" | "fp" | "ip" | "sl")
-        || operand
-            .strip_prefix('r')
-            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Work out whether a matched pair differs.
@@ -1287,8 +1282,10 @@ pub fn instruction_diff(
     after: &Function,
     after_isa: Isa,
 ) -> Vec<DiffLine> {
-    let before_insns = decode_all(&before_isa.arch(), &before.code, before.address).0;
-    let after_insns = decode_all(&after_isa.arch(), &after.code, after.address).0;
+    let before_arch = before_isa.arch();
+    let after_arch = after_isa.arch();
+    let before_insns = decode_all(before_arch, &before.code, before.address).0;
+    let after_insns = decode_all(after_arch, &after.code, after.address).0;
 
     // Align on the printed text, but with branch targets collapsed. Keeping the
     // constant in the key is what lets a new `tst r5, #4` stand apart from an
@@ -1310,7 +1307,7 @@ pub fn instruction_diff(
 
     let steps = longest_common_subsequence(&before_keys, &after_keys);
     let lines = lines_from_alignment(&steps, &before_insns, &after_insns);
-    coalesce_changed_constants(lines)
+    coalesce_changed_constants(before_arch, lines)
 }
 
 /// The text two instructions must share to align, with targets removed.
@@ -1324,7 +1321,7 @@ fn diff_key(insn: &Insn) -> String {
         .operands
         .split(',')
         .map(str::trim)
-        .map(|operand| if operand.starts_with('$') { "$" } else { operand })
+        .map(|operand| if is_branch_target(operand) { "$" } else { operand })
         .collect::<Vec<_>>()
         .join(", ");
     format!("{} {operands}", insn.mnemonic)
@@ -1337,7 +1334,7 @@ fn diff_key(insn: &Insn) -> String {
 /// with another value, so they belong on one [`DiffLine::Changed`]. When the
 /// two are identical bar their targets they are no change at all. The pair is
 /// always adjacent, because the alignment keeps the order.
-fn coalesce_changed_constants(lines: Vec<DiffLine>) -> Vec<DiffLine> {
+fn coalesce_changed_constants(arch: &dyn Arch, lines: Vec<DiffLine>) -> Vec<DiffLine> {
     let mut folded: Vec<DiffLine> = Vec::with_capacity(lines.len());
     for line in lines {
         let pair = match (folded.last(), &line) {
@@ -1351,9 +1348,9 @@ fn coalesce_changed_constants(lines: Vec<DiffLine>) -> Vec<DiffLine> {
             // The two share the operation and operand shapes, so they are the
             // same instruction. A moved register or branch target is a free
             // choice, so that is no change; a changed constant is a real one.
-            Some((before, after)) if same_operation(&before, &after) => {
+            Some((before, after)) if same_operation(arch, &before, &after) => {
                 folded.pop();
-                folded.push(if only_free_choices_differ(&before, &after) {
+                folded.push(if only_free_choices_differ(arch, &before, &after) {
                     DiffLine::Same(after)
                 } else {
                     DiffLine::Changed { before, after }
@@ -1372,14 +1369,14 @@ fn coalesce_changed_constants(lines: Vec<DiffLine>) -> Vec<DiffLine> {
 /// only in them did not really change. A differing literal, by contrast, is a
 /// changed value the reader must see. Call this only on a pair that already
 /// shares its operation.
-fn only_free_choices_differ(before: &str, after: &str) -> bool {
+fn only_free_choices_differ(arch: &dyn Arch, before: &str, after: &str) -> bool {
     let (_, before_args) = before.split_once(' ').unwrap_or((before, ""));
     let (_, after_args) = after.split_once(' ').unwrap_or((after, ""));
 
     before_args.split(',').map(str::trim).zip(after_args.split(',').map(str::trim)).all(|(a, b)| {
         a == b
-            || (is_register_name(a) && is_register_name(b))
-            || (a.starts_with('$') && b.starts_with('$'))
+            || (arch.is_register(a) && arch.is_register(b))
+            || (is_branch_target(a) && is_branch_target(b))
     })
 }
 
@@ -1388,10 +1385,10 @@ fn only_free_choices_differ(before: &str, after: &str) -> bool {
 /// This is the printed-text mirror of what the matcher normalizes to: the two
 /// agree once a register name or a branch target is allowed to differ. It tells
 /// a changed constant, which keeps the same shape, from an unrelated pairing.
-fn same_operation(before: &str, after: &str) -> bool {
+fn same_operation(arch: &dyn Arch, before: &str, after: &str) -> bool {
     let (before_op, before_args) = before.split_once(' ').unwrap_or((before, ""));
     let (after_op, after_args) = after.split_once(' ').unwrap_or((after, ""));
-    if normalize_operation(before_op) != normalize_operation(after_op) {
+    if arch.normalize_operation(before_op) != arch.normalize_operation(after_op) {
         return false;
     }
 
@@ -1404,9 +1401,9 @@ fn same_operation(before: &str, after: &str) -> bool {
                 // A changed constant keeps the same shape, so two literals are
                 // interchangeable here: it is the case this fold exists for.
                 let interchangeable = a == b
-                    || (is_register_name(a) && is_register_name(b))
-                    || (a.starts_with('$') && b.starts_with('$'))
-                    || (is_literal(a) && is_literal(b));
+                    || (arch.is_register(a) && arch.is_register(b))
+                    || (is_branch_target(a) && is_branch_target(b))
+                    || (arch.constant_value(a).is_some() && arch.constant_value(b).is_some());
                 if !interchangeable {
                     return false;
                 }
@@ -1414,13 +1411,6 @@ fn same_operation(before: &str, after: &str) -> bool {
             _ => return false,
         }
     }
-}
-
-/// Report whether an operand is a numeric literal, which prints as `0x1c` or a
-/// bare number.
-fn is_literal(operand: &str) -> bool {
-    let digits = operand.strip_prefix("0x").unwrap_or(operand);
-    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// A move through the alignment grid: keep both sides, or drop one.
@@ -1527,6 +1517,7 @@ fn lines_from_alignment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::arm32::Arm32;
     use crate::arch::{Insn, InsnKind};
     use crate::norm::normalize;
 
@@ -1534,13 +1525,16 @@ mod tests {
         operations
             .iter()
             .map(|(mnemonic, operands)| {
-                normalize(&Insn {
-                    address: 0,
-                    bytes_len: 4,
-                    mnemonic: mnemonic.to_string(),
-                    operands: operands.to_string(),
-                    kind: InsnKind::Normal,
-                })
+                normalize(
+                    &Arm32,
+                    &Insn {
+                        address: 0,
+                        bytes_len: 4,
+                        mnemonic: mnemonic.to_string(),
+                        operands: operands.to_string(),
+                        kind: InsnKind::Normal,
+                    },
+                )
             })
             .collect()
     }
@@ -1601,7 +1595,7 @@ mod tests {
         let after = [("eoreq".to_string(), "r3, fp, r8, asr 24".to_string())];
 
         assert!(
-            !operands_are_interchangeable(&before[0].1, &after[0].1, TargetMoves::Never),
+            !operands_are_interchangeable(&Arm32, &before[0].1, &after[0].1, TargetMoves::Never),
             "a shift that changed is not a register that changed"
         );
     }
@@ -1609,8 +1603,18 @@ mod tests {
     /// A register the compiler picked differently is not an edit.
     #[test]
     fn a_changed_register_is_not_a_change() {
-        assert!(operands_are_interchangeable("r0, r1, r2", "r4, r5, r6", TargetMoves::Never));
-        assert!(operands_are_interchangeable("r0, fp, r8", "r3, fp, r8", TargetMoves::Never));
+        assert!(operands_are_interchangeable(
+            &Arm32,
+            "r0, r1, r2",
+            "r4, r5, r6",
+            TargetMoves::Never
+        ));
+        assert!(operands_are_interchangeable(
+            &Arm32,
+            "r0, fp, r8",
+            "r3, fp, r8",
+            TargetMoves::Never
+        ));
     }
 
     /// A call whose callee moved is not an edit.
@@ -1619,20 +1623,30 @@ mod tests {
     /// image of unedited functions would otherwise read as changed.
     #[test]
     fn a_moved_branch_target_is_not_a_change() {
-        assert!(operands_are_interchangeable("$+0x50a734", "$+0x50b2d4", TargetMoves::Freely));
+        assert!(operands_are_interchangeable(
+            &Arm32,
+            "$+0x50a734",
+            "$+0x50b2d4",
+            TargetMoves::Freely
+        ));
     }
 
     /// A `$...` operand on an instruction that does not branch is data, and a
     /// changed data word must stay visible.
     #[test]
     fn a_target_that_is_not_a_branch_stays_a_change() {
-        assert!(!operands_are_interchangeable("$+0x50a734", "$+0x50b2d4", TargetMoves::Never));
+        assert!(!operands_are_interchangeable(
+            &Arm32,
+            "$+0x50a734",
+            "$+0x50b2d4",
+            TargetMoves::Never
+        ));
     }
 
     /// Allowing targets to move must not let anything else move with them.
     #[test]
     fn a_branch_still_reports_its_other_operands() {
-        assert!(!operands_are_interchangeable("r0, 0x10", "r0, 0x20", TargetMoves::Freely));
+        assert!(!operands_are_interchangeable(&Arm32, "r0, 0x10", "r0, 0x20", TargetMoves::Freely));
     }
 
     /// A condition code is the compiler's choice, not an edit.
@@ -1642,16 +1656,16 @@ mod tests {
     /// reporting it as a change cried wolf on the test corpus.
     #[test]
     fn a_changed_condition_is_not_a_change() {
-        assert_eq!(normalize_operation("movwlt"), normalize_operation("movwlo"));
+        assert_eq!(Arm32.normalize_operation("movwlt"), Arm32.normalize_operation("movwlo"));
     }
 
     #[test]
     fn a_register_name_is_recognized() {
         for name in ["r0", "r12", "sp", "lr", "pc", "fp"] {
-            assert!(is_register_name(name), "{name} is a register");
+            assert!(Arm32.is_register(name), "{name} is a register");
         }
         for other in ["0x1c", "[sp, 0x4]", "{r4, lr}", "lsr 17", ""] {
-            assert!(!is_register_name(other), "{other} is not a register");
+            assert!(!Arm32.is_register(other), "{other} is not a register");
         }
     }
 
@@ -2140,7 +2154,7 @@ mod tests {
             DiffLine::Removed("push {lr}".to_string()),
             DiffLine::Added("mul r0, r0, r1".to_string()),
         ];
-        let folded = coalesce_changed_constants(lines);
+        let folded = coalesce_changed_constants(&Arm32, lines);
         assert_eq!(
             folded,
             vec![

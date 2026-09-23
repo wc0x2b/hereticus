@@ -6,16 +6,21 @@
 //!
 //! Three sources, strongest first:
 //!
-//! 1. **The ARM exception index.** `.ARM.exidx` holds one entry per function,
-//!    each pointing at where that function starts. It survives stripping, and
-//!    when it is there it is exact. It is ARM specific, and a compiler can
-//!    leave it out.
-//! 2. **Call targets.** Anything a `bl` jumps to is the start of a function.
-//!    This finds what is called but misses what is not.
+//! 1. **The unwind index.** Where the ABI has one — ARM keeps it in
+//!    `.ARM.exidx` — it holds one entry per function, each pointing at where
+//!    that function starts. It survives stripping, and when it is there it is
+//!    exact. Not every architecture defines one, and a compiler can leave it
+//!    out.
+//! 2. **Call targets.** Anything a call instruction jumps to is the start of a
+//!    function. This finds what is called but misses what is not.
 //! 3. **What follows a return, and what looks like a prologue.** Code after a
-//!    function ends usually starts a new one, and a `push` that saves the link
-//!    register opens almost every non-leaf function. This is the weakest
-//!    source, so it only fills gaps the other two left.
+//!    function ends usually starts a new one, and the architecture says which
+//!    instruction opens one. This is the weakest source, so it only fills gaps
+//!    the other two left.
+//!
+//! Which section holds the unwind index, which instruction is a prologue and
+//! which word is padding are all architecture specific, so this module asks
+//! [`Arch`] rather than deciding for itself.
 //!
 //! Recovery is a guess wherever the first source is missing. [`Recovered`]
 //! records which source found each function so a caller can tell an exact
@@ -38,10 +43,10 @@ use std::collections::BTreeSet;
 
 use object::{Object, ObjectSection, SectionKind};
 
-use crate::arch::{Arch, InsnKind, decode_all};
+use crate::arch::{Arch, Insn, InsnKind, decode_all};
 use crate::obj::Function;
 
-/// Bytes in one ARM exception index entry: a function address and one word
+/// Bytes in one ARM EHABI unwind entry: a function address and one word
 /// that says how to unwind it.
 const EXIDX_ENTRY_LEN: usize = 8;
 
@@ -50,7 +55,7 @@ const EXIDX_ENTRY_LEN: usize = 8;
 pub enum Source {
     /// The symbol table named it. Exact.
     Symbol,
-    /// The ARM exception index listed it. Exact where it is present.
+    /// The unwind index listed it. Exact where it is present.
     ExceptionIndex,
     /// Something calls it, so it must be a function. Exact for what it finds.
     CallTarget,
@@ -76,7 +81,7 @@ pub struct Recovered {
 ///
 /// Returns them in address order. The name of each is empty, because there is
 /// nothing to read a name from.
-pub fn recover_functions<A: Arch>(data: &[u8], arch: &A) -> Vec<Recovered> {
+pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
     let Ok(file) = object::File::parse(data) else { return Vec::new() };
 
     // Only executable sections hold functions. A binary can hold several, as
@@ -87,7 +92,7 @@ pub fn recover_functions<A: Arch>(data: &[u8], arch: &A) -> Vec<Recovered> {
         .filter_map(|section| section.data().ok().map(|data| (section.address(), data)))
         .collect();
 
-    recover_from_regions(&code_sections, &exception_index_starts(&file), arch)
+    recover_from_regions(&code_sections, &exception_index_starts(&file, arch), arch)
 }
 
 /// Find the functions in code that is already located.
@@ -98,10 +103,10 @@ pub fn recover_functions<A: Arch>(data: &[u8], arch: &A) -> Vec<Recovered> {
 ///
 /// Each region is an address and the bytes stored there. Returns the functions
 /// in address order, with empty names.
-pub fn recover_from_regions<A: Arch>(
+pub fn recover_from_regions(
     regions: &[(u64, &[u8])],
     exception_index: &[u64],
-    arch: &A,
+    arch: &dyn Arch,
 ) -> Vec<Recovered> {
     if regions.is_empty() {
         return Vec::new();
@@ -121,7 +126,7 @@ pub fn recover_from_regions<A: Arch>(
                 starts.insert((address, Source::CallTarget));
             }
         }
-        return build_functions(&starts, regions);
+        return build_functions(&starts, regions, arch);
     }
 
     for (base, code) in regions {
@@ -135,13 +140,14 @@ pub fn recover_from_regions<A: Arch>(
         starts.insert((*base, Source::AfterReturn));
     }
 
-    build_functions(&starts, regions)
+    build_functions(&starts, regions, arch)
 }
 
 /// Turn a set of start addresses into functions that reach the next start.
 fn build_functions(
     starts: &BTreeSet<(u64, Source)>,
     code_sections: &[(u64, &[u8])],
+    arch: &dyn Arch,
 ) -> Vec<Recovered> {
     // One address can come from several sources. Keep the strongest, which is
     // the first for a given address because `Source` sorts that way.
@@ -177,7 +183,7 @@ fn build_functions(
         // A function runs to the next one, but the linker aligns functions,
         // so the gap between them holds padding. Keeping it would make a
         // function look changed when only its neighbour moved.
-        let bytes = trim_padding(bytes);
+        let bytes = arch.trim_padding(bytes);
         if bytes.is_empty() {
             continue;
         }
@@ -191,17 +197,24 @@ fn build_functions(
     out
 }
 
-/// Read function addresses from the ARM exception index.
+/// Read function addresses from the unwind index.
 ///
-/// Each entry is eight bytes: a `PREL31` offset to the function, then one word
-/// describing how to unwind it. `PREL31` is a signed 31-bit offset from the
-/// place the field itself sits.
+/// The architecture names the section, and reports `None` when its ABI has no
+/// such table, which skips this source entirely.
+///
+/// The entry format read here is the one ARM EHABI defines: eight bytes, a
+/// `PREL31` offset to the function then one word describing how to unwind it,
+/// where `PREL31` is a signed 31-bit offset from the place the field itself
+/// sits. An architecture whose table is laid out differently needs this parser
+/// moved behind the trait as well; until one exists, the format stays here
+/// with the rest of the scanning.
 ///
 /// In a relocatable object the field holds the target directly, because the
 /// relocation that would make it relative has not been applied. Both readings
 /// are tried, and the one that lands inside a code section wins.
-fn exception_index_starts(file: &object::File<'_>) -> Vec<u64> {
-    let Some(section) = file.section_by_name(".ARM.exidx") else { return Vec::new() };
+fn exception_index_starts(file: &object::File<'_>, arch: &dyn Arch) -> Vec<u64> {
+    let Some(name) = arch.unwind_section() else { return Vec::new() };
+    let Some(section) = file.section_by_name(name) else { return Vec::new() };
     let Ok(data) = section.data() else { return Vec::new() };
 
     let code_ranges: Vec<(u64, u64)> = file
@@ -261,7 +274,7 @@ fn sign_extend_31(value: u32) -> i64 {
 /// linker has not filled in the target yet, so every such call encodes the
 /// placeholder `bl .-8`, which reads back as the call site. Believing those
 /// would make a function start at every call.
-fn call_targets<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
+fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     let (insns, _) = decode_all(arch, code, base);
     let end = base + code.len() as u64;
 
@@ -294,7 +307,7 @@ fn call_targets<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
 /// the count from ten recovered functions to the four that exist, missing
 /// none. On a vendor firmware image it removes 104 of 144 candidate
 /// boundaries.
-fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
+fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     let (insns, _) = decode_all(arch, code, base);
     let end = base + code.len() as u64;
 
@@ -328,7 +341,7 @@ fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
 
         // Step over any padding the linker put between functions.
         let mut next = index + 1;
-        while insns.get(next).is_some_and(is_padding) {
+        while insns.get(next).is_some_and(|insn| arch.is_padding(insn)) {
             next += 1;
         }
 
@@ -338,7 +351,7 @@ fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
         // stronger signal, so it is not subject to the spanning test: an
         // error path that jumps backwards over the end of its own function
         // would otherwise hide the function that follows.
-        if is_prologue(following) {
+        if arch.is_prologue(following) {
             out.push(following.address);
             continue;
         }
@@ -351,7 +364,7 @@ fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
         // call or branch to name it, so this is the one source that can find
         // it. Look a short way ahead, stopping at any further terminator so the
         // scan cannot cross into real control flow.
-        if let Some(prologue) = prologue_past_pool(&insns, next) {
+        if let Some(prologue) = prologue_past_pool(&insns, next, arch) {
             out.push(prologue);
             continue;
         }
@@ -383,7 +396,7 @@ fn starts_after_returns<A: Arch>(arch: &A, code: &[u8], base: u64) -> Vec<u64> {
 ///
 /// Returns the prologue address, or `None` when no prologue sits within the
 /// window.
-fn prologue_past_pool(insns: &[crate::arch::Insn], from: usize) -> Option<u64> {
+fn prologue_past_pool(insns: &[Insn], from: usize, arch: &dyn Arch) -> Option<u64> {
     /// The most words to step over before a prologue. A literal pool between
     /// two functions holds a few constants; a longer run is a function body,
     /// not a pool, and its first prologue-shaped word is not a function start.
@@ -392,7 +405,7 @@ fn prologue_past_pool(insns: &[crate::arch::Insn], from: usize) -> Option<u64> {
     let mut next = from;
     for _ in 0..MOST_POOL_WORDS {
         let insn = insns.get(next)?;
-        if is_prologue(insn) {
+        if arch.is_prologue(insn) {
             return Some(insn.address);
         }
         // Only pool data may sit between the terminator and the prologue. A
@@ -406,58 +419,6 @@ fn prologue_past_pool(insns: &[crate::arch::Insn], from: usize) -> Option<u64> {
         next += 1;
     }
     None
-}
-
-/// Report whether an instruction opens a function.
-///
-/// A function that calls anything must save the link register first, so
-/// `push {..., lr}` is how almost every non-leaf ARM function begins. Measured
-/// on a stripped kernel object, every real function start matched this and
-/// nothing else did.
-///
-/// A leaf function has no prologue at all, which is why this adds to the
-/// return-based rule rather than replacing it.
-fn is_prologue(insn: &crate::arch::Insn) -> bool {
-    (insn.mnemonic.starts_with("push") || insn.mnemonic.starts_with("stm"))
-        && insn.operands.contains("lr")
-}
-
-/// Remove the alignment padding a linker put after a function.
-///
-/// Only whole words at the end are removed, and only the two encodings a
-/// linker pads with. Padding in the middle of a function stays, because there
-/// it is not padding.
-fn trim_padding(bytes: &[u8]) -> &[u8] {
-    /// The A32 `nop` encoding, little endian.
-    const NOP: [u8; 4] = [0x00, 0xf0, 0x20, 0xe3];
-    const ZERO: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
-
-    let mut end = bytes.len();
-    while end >= 4 {
-        let word = &bytes[end - 4..end];
-        if word == NOP || word == ZERO {
-            end -= 4;
-        } else {
-            break;
-        }
-    }
-
-    &bytes[..end]
-}
-
-/// Report whether an instruction is alignment padding rather than work.
-///
-/// A linker pads with `nop` or with zero words. `yaxpeax-arm` 0.4 does not
-/// decode the usual ARM `nop` encoding `0xe320f000` and reports it as
-/// unreadable, so the raw word is checked as well as the name.
-fn is_padding(insn: &crate::arch::Insn) -> bool {
-    /// The A32 hint encoding that means "no operation".
-    const NOP: &str = "0xe320f000";
-    /// Zero words, which some linkers use to pad instead.
-    const ZERO: &str = "0x00000000";
-
-    insn.mnemonic.starts_with("nop")
-        || (insn.kind == InsnKind::Unknown && (insn.operands == NOP || insn.operands == ZERO))
 }
 
 #[cfg(test)]
@@ -507,39 +468,6 @@ mod tests {
     #[test]
     fn finds_nothing_in_an_empty_input() {
         assert!(recover_functions(&[], &Arm32).is_empty());
-    }
-
-    /// An unrelocated `bl` encodes `.-8`, which reads back as the call site.
-    /// Treating that as a function start would split a function at every call.
-    #[test]
-    fn trailing_padding_is_removed() {
-        // add, then a nop the linker used to align the next function.
-        let code = [0x00, 0x00, 0x81, 0xe0, 0x00, 0xf0, 0x20, 0xe3];
-        assert_eq!(trim_padding(&code), &code[..4]);
-    }
-
-    #[test]
-    fn trailing_zero_words_are_removed() {
-        let code = [0x00, 0x00, 0x81, 0xe0, 0x00, 0x00, 0x00, 0x00];
-        assert_eq!(trim_padding(&code), &code[..4]);
-    }
-
-    /// Padding inside a function is not padding, so it must stay.
-    #[test]
-    fn padding_before_real_code_is_kept() {
-        let code = [0x00, 0xf0, 0x20, 0xe3, 0x00, 0x00, 0x81, 0xe0];
-        assert_eq!(trim_padding(&code), &code[..], "only the end is trimmed");
-    }
-
-    #[test]
-    fn trimming_leaves_a_function_of_only_padding_empty() {
-        assert!(trim_padding(&[0x00, 0xf0, 0x20, 0xe3]).is_empty());
-    }
-
-    #[test]
-    fn trimming_keeps_code_that_needs_no_trimming() {
-        let code = [0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
-        assert_eq!(trim_padding(&code), &code[..]);
     }
 
     #[test]
@@ -611,20 +539,6 @@ mod tests {
             vec![0x4],
             "a saved link register opens a function"
         );
-    }
-
-    #[test]
-    fn a_prologue_is_recognized_by_its_saved_link_register() {
-        let push_lr = Arm32.decode(&[0x10, 0x40, 0x2d, 0xe9], 0, 0).unwrap();
-        assert!(is_prologue(&push_lr), "push {{r4, lr}} opens a function");
-
-        // `push {r4, r5}` saves no link register, so it calls nothing and is
-        // not the start of a non-leaf function.
-        let push_plain = Arm32.decode(&[0x30, 0x00, 0x2d, 0xe9], 0, 0).unwrap();
-        assert!(!is_prologue(&push_plain));
-
-        let add = Arm32.decode(&[0x00, 0x00, 0x81, 0xe0], 0, 0).unwrap();
-        assert!(!is_prologue(&add));
     }
 
     #[test]

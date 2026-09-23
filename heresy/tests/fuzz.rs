@@ -41,7 +41,7 @@ fn reading_a_raw_image_never_panics() {
 #[test]
 fn checking_a_base_never_panics() {
     check!().with_type::<(Vec<u8>, u64)>().for_each(|(data, base)| {
-        let _ = check_base(data, *base);
+        let _ = check_base(data, *base, &Arm32);
     });
 }
 
@@ -161,7 +161,7 @@ fn short_input_reports_truncation() {
 fn normalizing_never_panics() {
     check!().with_type::<Vec<u8>>().for_each(|code| {
         let (insns, _) = decode_all(&Arm32, code, 0);
-        let normalized = normalize_body(&insns);
+        let normalized = normalize_body(&Arm32, &insns);
 
         // Dropping frame management can only remove instructions.
         assert!(normalized.len() <= insns.len(), "normalizing invented instructions");
@@ -176,7 +176,7 @@ fn normalizing_never_panics() {
 fn normalizing_is_deterministic() {
     check!().with_type::<Vec<u8>>().for_each(|code| {
         let (insns, _) = decode_all(&Arm32, code, 0);
-        assert_eq!(normalize_body(&insns), normalize_body(&insns));
+        assert_eq!(normalize_body(&Arm32, &insns), normalize_body(&Arm32, &insns));
     });
 }
 
@@ -189,7 +189,7 @@ fn normalizing_is_deterministic() {
 fn normalized_instructions_equal_themselves() {
     check!().with_type::<[u8; 4]>().for_each(|bytes| {
         let Ok(insn) = Arm32.decode(bytes, 0, 0) else { return };
-        let normalized = normalize(&insn);
+        let normalized = normalize(&Arm32, &insn);
 
         assert_eq!(normalized, normalized.clone(), "a normalized instruction differed from itself");
         assert!(
@@ -213,7 +213,11 @@ fn normalizing_ignores_position() {
             return;
         };
 
-        assert_eq!(normalize(&first), normalize(&second), "position changed the normalized form");
+        assert_eq!(
+            normalize(&Arm32, &first),
+            normalize(&Arm32, &second),
+            "position changed the normalized form"
+        );
     });
 }
 

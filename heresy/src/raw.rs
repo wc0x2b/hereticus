@@ -2,9 +2,9 @@
 //!
 //! A firmware image carries no header, so the caller supplies the address it
 //! loads at. Getting that wrong does not fail loudly: the code still decodes,
-//! and every branch still resolves, because ARM branches are relative and
-//! their targets move with the base. The comparison quietly reports against
-//! the wrong addresses instead.
+//! and every branch still resolves, because a relative branch moves with the
+//! base it is read at. The comparison quietly reports against the wrong
+//! addresses instead.
 //!
 //! # What cannot be used
 //!
@@ -13,7 +13,7 @@
 //! * **Branch targets landing inside the blob.** Scores 1.00 at every base,
 //!   including nonsense ones, for the reason above.
 //! * **Pointer-like words, on compiled position-independent code.** A `clang`
-//!   ARM build keeps its literal pools relative even under `-fno-pic`, so the
+//!   ARM build keeps its constant pools relative even under `-fno-pic`, so the
 //!   correct base scored 0.00 while a wrong one scored 0.18.
 //!
 //! # What works
@@ -46,8 +46,14 @@
 //! from one loaded somewhere else entirely, and claiming otherwise would be a
 //! guess.
 
-/// Bytes in one 32-bit word.
-const WORD: usize = 4;
+use crate::arch::Arch;
+
+/// How far outside the image still counts as "nearly pointing at it", as a
+/// multiple of the image length.
+///
+/// A wrong base is usually wrong by a modest amount, so a few image lengths is
+/// the window a stored address for a neighbouring image falls in.
+const REACH_IN_IMAGES: u64 = 4;
 
 /// How many words must look like pointers before a verdict is worth giving.
 ///
@@ -118,15 +124,19 @@ impl core::fmt::Display for BaseFit {
 }
 
 /// Judge a load address against the words stored in a blob.
-pub fn check_base(data: &[u8], base: u64) -> BaseFit {
+///
+/// The architecture says how wide a stored address is and how to read one, so
+/// an image of 64-bit pointers is examined as such rather than as pairs of
+/// halves.
+pub fn check_base(data: &[u8], base: u64, arch: &dyn Arch) -> BaseFit {
     let end = base.saturating_add(data.len() as u64);
 
     let mut inside = 0;
     let mut near = 0;
     let mut examined = 0;
 
-    for word in data.chunks_exact(WORD) {
-        let value = u64::from(u32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+    for word in data.chunks_exact(arch.pointer_width()) {
+        let value = arch.read_pointer(word);
 
         // A word near zero is padding, a small count or a null pointer. At a
         // base of zero such words all land "inside" the image, which made a
@@ -161,20 +171,19 @@ pub fn check_base(data: &[u8], base: u64) -> BaseFit {
 
 /// Report whether a word looks like an address just outside the image.
 ///
-/// "Looks like an address" cannot mean "is a large number": every ARM
-/// instruction word is large, so that would count the code itself and report
-/// a wrong base on every run. It was measured doing exactly that.
+/// "Looks like an address" cannot mean "is a large number": an instruction
+/// word is usually large too, so that would count the code itself and report a
+/// wrong base on every run. It was measured doing exactly that.
 ///
 /// A wrong base is usually wrong by a modest amount — the caller took the
 /// address of the wrong section, or forgot a header. So the telling sign is a
 /// word that points **just past** where the image would sit, within a few
 /// image lengths of it. An instruction word does not do that, because the
-/// image is nowhere near `0xe1e1e1e1`.
+/// image is nowhere near the value its own bits spell.
 fn lands_near(value: u64, base: u64, length: u64) -> bool {
-    // How far outside the image still counts as "nearly pointing at it".
-    // A few image lengths, and at least a page, so a small image is not held
-    // to an impossibly tight window.
-    let reach = (length.saturating_mul(4)).max(0x1000);
+    // At least a page, so a small image is not held to an impossibly tight
+    // window.
+    let reach = (length.saturating_mul(REACH_IN_IMAGES)).max(0x1000);
 
     let low = base.saturating_sub(reach);
     let high = base.saturating_add(length).saturating_add(reach);
@@ -185,6 +194,7 @@ fn lands_near(value: u64, base: u64, length: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::arm32::Arm32;
 
     /// Build a blob from words, little endian.
     ///
@@ -193,6 +203,8 @@ mod tests {
     /// of a small blob would point past its own end.
     fn image(words: &[u32], size: usize) -> Vec<u8> {
         let mut data: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        // Filler that is not a plausible address: the value stands for "not a
+        // pointer", which is all these tests ask of it.
         data.resize(size.max(data.len()), 0xe1);
         data
     }
@@ -203,9 +215,12 @@ mod tests {
         // Three entries pointing into a 4 KiB image loaded at 0x08000000.
         let data = image(&[0x0800_000c, 0x0800_0014, 0x0800_0100, 0xe3a0_0001], 0x1000);
         assert!(
-            matches!(check_base(&data, 0x0800_0000), BaseFit::Plausible { pointers: 3, .. }),
+            matches!(
+                check_base(&data, 0x0800_0000, &Arm32),
+                BaseFit::Plausible { pointers: 3, .. }
+            ),
             "got {:?}",
-            check_base(&data, 0x0800_0000)
+            check_base(&data, 0x0800_0000, &Arm32)
         );
     }
 
@@ -218,7 +233,7 @@ mod tests {
         let data = image(&[0x0800_200c, 0x0800_2014, 0x0800_2100, 0xe3a0_0001], 0x1000);
 
         // The stored addresses sit just past an image based here.
-        let fit = check_base(&data, 0x0800_0000);
+        let fit = check_base(&data, 0x0800_0000, &Arm32);
         assert!(fit.is_suspect(), "got {fit:?}");
     }
 
@@ -230,7 +245,7 @@ mod tests {
     #[test]
     fn a_base_far_from_everything_gives_no_evidence() {
         let data = image(&[0x0800_000c, 0x0800_0014, 0x0800_0100, 0xe3a0_0001], 0x1000);
-        assert_eq!(check_base(&data, 0x2000_0000), BaseFit::NoEvidence);
+        assert_eq!(check_base(&data, 0x2000_0000, &Arm32), BaseFit::NoEvidence);
     }
 
     /// A plausible verdict is not a confirmation.
@@ -243,9 +258,9 @@ mod tests {
         // Two words that point into an image based at either of two places.
         let data = image(&[0x0000_1004, 0x0000_1008, 0xe3a0_0001], 0x2000);
 
-        assert!(matches!(check_base(&data, 0x1000), BaseFit::Plausible { .. }));
+        assert!(matches!(check_base(&data, 0x1000, &Arm32), BaseFit::Plausible { .. }));
         assert!(
-            matches!(check_base(&data, 0), BaseFit::Plausible { .. }),
+            matches!(check_base(&data, 0, &Arm32), BaseFit::Plausible { .. }),
             "a coincidental fit still reads as plausible, which is why the \
              verdict is worded as it is"
         );
@@ -259,23 +274,26 @@ mod tests {
         // as instructions, not as addresses, so nothing here looks stored.
         let data = image(&[0xe3a0_0001, 0xe12f_ff1e, 0x0000_0008, 0x0000_0010], 0x40);
         assert_eq!(
-            check_base(&data, 0x0800_0000),
+            check_base(&data, 0x0800_0000, &Arm32),
             BaseFit::NoEvidence,
             "instructions are not addresses"
         );
-        assert!(!check_base(&data, 0x0800_0000).is_suspect(), "silence is not an accusation");
+        assert!(
+            !check_base(&data, 0x0800_0000, &Arm32).is_suspect(),
+            "silence is not an accusation"
+        );
     }
 
     /// One matching word is a coincidence, not evidence.
     #[test]
     fn a_single_pointer_is_not_enough() {
         let data = image(&[0x0800_0004, 0x0000_0001, 0x0000_0002], 0x1000);
-        assert!(!matches!(check_base(&data, 0x0800_0000), BaseFit::Plausible { .. }));
+        assert!(!matches!(check_base(&data, 0x0800_0000, &Arm32), BaseFit::Plausible { .. }));
     }
 
     #[test]
     fn an_empty_blob_gives_no_evidence() {
-        assert_eq!(check_base(&[], 0), BaseFit::NoEvidence);
+        assert_eq!(check_base(&[], 0, &Arm32), BaseFit::NoEvidence);
     }
 
     /// Trailing bytes that do not fill a word are ignored rather than read
@@ -285,7 +303,7 @@ mod tests {
         let mut data = image(&[0x0800_000c, 0x0800_0014], 0x1000);
         data.extend_from_slice(&[0xff, 0xff]);
 
-        let fit = check_base(&data, 0x0800_0000);
+        let fit = check_base(&data, 0x0800_0000, &Arm32);
         assert!(matches!(fit, BaseFit::Plausible { pointers: 2, .. }), "got {fit:?}");
     }
 
@@ -293,6 +311,6 @@ mod tests {
     #[test]
     fn a_base_near_the_top_of_the_range_does_not_overflow() {
         let data = image(&[0xffff_fff0, 0xffff_fff4], 0x20);
-        let _ = check_base(&data, u64::MAX - 4);
+        let _ = check_base(&data, u64::MAX - 4, &Arm32);
     }
 }

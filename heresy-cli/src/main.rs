@@ -282,11 +282,12 @@ fn run(args: &Args) -> Result<bool, String> {
             .base
             .ok_or("--raw needs --base, because a raw image does not say where it loads")?;
 
-        check_and_report_base(&before_bytes, base, &args.before);
+        let isa: Isa = args.arch.into();
+        check_and_report_base(&before_bytes, base, isa, &args.before);
         // Comparing a file with itself is a normal way to inspect one image,
         // and saying the same thing twice about it helps nobody.
         if args.after != args.before {
-            check_and_report_base(&after_bytes, base, &args.after);
+            check_and_report_base(&after_bytes, base, isa, &args.after);
         }
         eprintln!(
             "heresy: a raw image has no exception index, so function boundaries \
@@ -294,8 +295,8 @@ fn run(args: &Args) -> Result<bool, String> {
         );
 
         (
-            parse_raw(&before_bytes, base, args.arch.into(), &args.before)?,
-            parse_raw(&after_bytes, base, args.arch.into(), &args.after)?,
+            parse_raw(&before_bytes, base, isa, &args.before)?,
+            parse_raw(&after_bytes, base, isa, &args.after)?,
         )
     } else {
         (parse(&before_bytes, &args.before)?, parse(&after_bytes, &args.after)?)
@@ -362,10 +363,11 @@ fn parse_raw(data: &[u8], base: u64, isa: Isa, path: &Path) -> Result<Binary, St
 /// Warn when the given load address looks wrong for an image.
 ///
 /// A wrong base does not stop anything: the code still decodes and every
-/// branch still resolves, because ARM branches are relative. Only the reported
-/// addresses are wrong, and silently so. This is the one chance to notice.
-fn check_and_report_base(data: &[u8], base: u64, path: &Path) {
-    let fit = check_base(data, base);
+/// branch still resolves, because a relative branch moves with the base it is
+/// read at. Only the reported addresses are wrong, and silently so. This is
+/// the one chance to notice.
+fn check_and_report_base(data: &[u8], base: u64, isa: Isa, path: &Path) {
+    let fit = check_base(data, base, isa.arch());
     if fit.is_suspect() {
         eprintln!("heresy: {} may not load at {base:#x}: {fit}", path.display());
     }

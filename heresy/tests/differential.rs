@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use heresy::arch::{Arch, InsnKind, decode_all};
+use heresy::arch::{InsnKind, decode_all};
 use heresy::obj::Binary;
 
 /// One instruction as `llvm-objdump` reported it.
@@ -212,7 +212,7 @@ fn decoder_agrees_with_objdump() {
             //
             // Compare the overlap, which is the part both call code. Deciding
             // where a function truly ends belongs to function recovery.
-            let (decoded, _error) = decode_all(&arch, &function.code, function.address);
+            let (decoded, _error) = decode_all(arch, &function.code, function.address);
             let where_ = format!("{}: {}", object_path.display(), function.name);
             let shared = decoded.len().min(expected.len());
             assert!(shared > 0, "{where_}: nothing to compare");

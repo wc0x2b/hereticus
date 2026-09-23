@@ -7,6 +7,7 @@
 //! 2. `total_offset()` counts **words**, not bytes. Multiplying by the
 //!    instruction width is what makes reported addresses right.
 
+use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
@@ -14,6 +15,18 @@ use super::{Arch, DecodeError, Insn, InsnKind};
 
 /// Every A32 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
+
+/// The section holding the ARM exception index.
+///
+/// One entry a function, each naming where that function starts. It survives
+/// stripping, so it is the strongest source of function boundaries there is.
+const UNWIND_SECTION: &str = ".ARM.exidx";
+
+/// The A32 `nop` encoding, little endian.
+const NOP_BYTES: [u8; 4] = [0x00, 0xf0, 0x20, 0xe3];
+
+/// Zero words, which some linkers pad with instead.
+const ZERO_BYTES: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 
 /// Mnemonic reported for bytes the decoder cannot read.
 ///
@@ -86,6 +99,156 @@ impl Arch for Arm32 {
 
     fn triple(&self) -> &'static str {
         "arm-linux-gnueabi"
+    }
+
+    fn instruction_width(&self) -> usize {
+        INSN_WIDTH
+    }
+
+    fn is_register(&self, operand: &str) -> bool {
+        // `ip`, `sl` and `fp` are the AAPCS names for r12, r10 and r11.
+        matches!(operand, "sp" | "lr" | "pc" | "ip" | "sl" | "fp")
+            || operand.strip_prefix('r').is_some_and(|number| {
+                !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+            })
+    }
+
+    fn is_stack_register(&self, operand: &str) -> bool {
+        matches!(operand.trim(), "sp" | "fp" | "r13" | "r11")
+    }
+
+    fn mentions_stack_slot(&self, operands: &str) -> bool {
+        operands.contains("[sp") || operands.contains("[fp") || operands.contains("[r13")
+    }
+
+    /// Register lists print as `{r4, lr}`. Splitting the operand list on
+    /// commas breaks them apart, so a fragment is recognized by its braces
+    /// rather than by holding both.
+    fn is_register_list(&self, operand: &str) -> bool {
+        operand.starts_with('{') || operand.ends_with('}')
+    }
+
+    fn constant_value(&self, operand: &str) -> Option<u64> {
+        let text = operand.trim().trim_start_matches('#');
+        if text.is_empty() {
+            return None;
+        }
+
+        // A memory reference can hold a constant, but that constant is an
+        // offset into a frame or object and moves with unrelated edits.
+        if text.contains('[') || text.contains(']') || text.starts_with('$') {
+            return None;
+        }
+
+        match text.strip_prefix("0x") {
+            Some(hex) => u64::from_str_radix(hex, 16).ok(),
+            None => text.parse::<u64>().ok(),
+        }
+    }
+
+    /// A compiler picks between `add` and `adds`, and between a branch and a
+    /// conditional move, for reasons that do not change what the code
+    /// computes.
+    fn normalize_operation(&self, mnemonic: &str) -> CompactString {
+        const CONDITIONS: [&str; 17] = [
+            "eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le",
+            "al", "lo", "hs",
+        ];
+
+        // Mnemonics that end in condition letters but carry no condition.
+        const NOT_CONDITIONAL: [&str; 6] = ["b", "bl", "ble", "bls", "movs", "cmps"];
+
+        let mnemonic = mnemonic.trim();
+        if NOT_CONDITIONAL.contains(&mnemonic) {
+            // `movs` and `cmps` still carry a flag-setting suffix to remove.
+            return mnemonic.trim_end_matches('s').into();
+        }
+
+        let without_condition = CONDITIONS
+            .iter()
+            .find_map(|suffix| mnemonic.strip_suffix(suffix).filter(|stem| stem.len() >= 2))
+            .unwrap_or(mnemonic);
+
+        // Keep a trailing `s` that belongs to the name, as in `bics` versus
+        // `bic`.
+        match without_condition.strip_suffix('s') {
+            Some(stem) if stem.len() >= 2 => stem.into(),
+            _ => without_condition.into(),
+        }
+    }
+
+    fn is_frame_management(&self, insn: &Insn) -> bool {
+        let operation = self.normalize_operation(&insn.mnemonic);
+        let operands = insn.operands.as_str();
+        let first = operands.split(',').next().unwrap_or_default();
+
+        match operation.as_str() {
+            // Saving and restoring registers. A `pop` that loads the program
+            // counter also returns, so it must stay.
+            "push" => true,
+            "pop" => insn.kind != InsnKind::Return,
+
+            // Moving the stack pointer, or setting up the frame pointer.
+            "sub" | "add" | "mov" => self.is_stack_register(first),
+
+            // Spilling to and reloading from the frame.
+            "ldr" | "str" | "ldm" | "stm" => self.mentions_stack_slot(operands),
+
+            _ => false,
+        }
+    }
+
+    /// A function that calls anything must save the link register first, so
+    /// `push {..., lr}` is how almost every non-leaf ARM function begins.
+    /// Measured on a stripped kernel object, every real function start matched
+    /// this and nothing else did.
+    ///
+    /// A leaf function has no prologue at all, which is why the scanner treats
+    /// this as one source among several.
+    fn is_prologue(&self, insn: &Insn) -> bool {
+        (insn.mnemonic.starts_with("push") || insn.mnemonic.starts_with("stm"))
+            && insn.operands.contains("lr")
+    }
+
+    /// `yaxpeax-arm` 0.4 does not decode the usual ARM `nop` encoding
+    /// `0xe320f000` and reports it as unreadable, so the raw word is checked
+    /// as well as the name.
+    fn is_padding(&self, insn: &Insn) -> bool {
+        /// The A32 hint encoding that means "no operation", as printed.
+        const NOP: &str = "0xe320f000";
+        /// Zero words, which some linkers use to pad instead.
+        const ZERO: &str = "0x00000000";
+
+        insn.mnemonic.starts_with("nop")
+            || (insn.kind == InsnKind::Unknown && (insn.operands == NOP || insn.operands == ZERO))
+    }
+
+    /// Only whole words at the end are removed, and only the two encodings a
+    /// linker pads with.
+    fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
+        let mut end = bytes.len();
+        while end >= INSN_WIDTH {
+            let word = &bytes[end - INSN_WIDTH..end];
+            if word == NOP_BYTES || word == ZERO_BYTES {
+                end -= INSN_WIDTH;
+            } else {
+                break;
+            }
+        }
+
+        &bytes[..end]
+    }
+
+    fn unwind_section(&self) -> Option<&'static str> {
+        Some(UNWIND_SECTION)
+    }
+
+    fn pointer_width(&self) -> usize {
+        INSN_WIDTH
+    }
+
+    fn read_pointer(&self, bytes: &[u8]) -> u64 {
+        u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 }
 
@@ -319,5 +482,156 @@ mod tests {
         let (insns, err) = decode_all(&Arm32, &[], 0);
         assert!(insns.is_empty());
         assert_eq!(err, None);
+    }
+
+    #[test]
+    fn trailing_padding_is_removed() {
+        // add, then a nop the linker used to align the next function.
+        let code = [0x00, 0x00, 0x81, 0xe0, 0x00, 0xf0, 0x20, 0xe3];
+        assert_eq!(Arm32.trim_padding(&code), &code[..4]);
+    }
+
+    #[test]
+    fn trailing_zero_words_are_removed() {
+        let code = [0x00, 0x00, 0x81, 0xe0, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(Arm32.trim_padding(&code), &code[..4]);
+    }
+
+    /// Padding inside a function is not padding, so it must stay.
+    #[test]
+    fn padding_before_real_code_is_kept() {
+        let code = [0x00, 0xf0, 0x20, 0xe3, 0x00, 0x00, 0x81, 0xe0];
+        assert_eq!(Arm32.trim_padding(&code), &code[..], "only the end is trimmed");
+    }
+
+    #[test]
+    fn trimming_leaves_a_function_of_only_padding_empty() {
+        assert!(Arm32.trim_padding(&[0x00, 0xf0, 0x20, 0xe3]).is_empty());
+    }
+
+    #[test]
+    fn trimming_keeps_code_that_needs_no_trimming() {
+        let code = [0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+        assert_eq!(Arm32.trim_padding(&code), &code[..]);
+    }
+
+    #[test]
+    fn a_prologue_is_recognized_by_its_saved_link_register() {
+        let push_lr = Arm32.decode(&[0x10, 0x40, 0x2d, 0xe9], 0, 0).unwrap();
+        assert!(Arm32.is_prologue(&push_lr), "push {{r4, lr}} opens a function");
+
+        // `push {r4, r5}` saves no link register, so it calls nothing and is
+        // not the start of a non-leaf function.
+        let push_plain = Arm32.decode(&[0x30, 0x00, 0x2d, 0xe9], 0, 0).unwrap();
+        assert!(!Arm32.is_prologue(&push_plain));
+
+        let add = Arm32.decode(&[0x00, 0x00, 0x81, 0xe0], 0, 0).unwrap();
+        assert!(!Arm32.is_prologue(&add));
+    }
+
+    /// The `nop` the linker pads with is one `yaxpeax` reports as unreadable,
+    /// so it must be recognized by its raw word and not only by its name.
+    #[test]
+    fn padding_is_recognized_by_its_raw_word() {
+        let nop = decode_one(NOP_BYTES);
+        assert_eq!(nop.kind, InsnKind::Unknown, "the decoder cannot read this nop");
+        assert!(Arm32.is_padding(&nop), "the A32 nop encoding is padding");
+
+        let add = decode_one([0x00, 0x00, 0x81, 0xe0]);
+        assert!(!Arm32.is_padding(&add), "real work is not padding");
+    }
+
+    /// A zero word decodes as `andeq r0, r0, r0`, a real instruction, so the
+    /// instruction-level test does not claim it. Only [`Arch::trim_padding`],
+    /// which reads the bytes, removes a run of zeros from the end of a
+    /// function. The two tests differ on purpose: mistaking a zero word inside
+    /// a function for padding would drop real code.
+    #[test]
+    fn a_zero_word_is_padding_only_to_the_byte_level_test() {
+        let zero = decode_one(ZERO_BYTES);
+        assert_eq!(zero.kind, InsnKind::Normal, "a zero word decodes as andeq");
+        assert!(!Arm32.is_padding(&zero));
+        assert!(Arm32.trim_padding(&ZERO_BYTES).is_empty());
+    }
+
+    #[test]
+    fn conditions_are_stripped_from_a_mnemonic() {
+        assert_eq!(Arm32.normalize_operation("movlt"), "mov");
+        assert_eq!(Arm32.normalize_operation("bxeq"), "bx");
+        assert_eq!(Arm32.normalize_operation("movs"), "mov");
+    }
+
+    /// A mnemonic that only looks conditional must survive intact.
+    #[test]
+    fn a_mnemonic_that_is_not_conditional_is_left_alone() {
+        for operation in ["b", "bl", "ble", "mov", "mul", "push", "pop"] {
+            assert_eq!(Arm32.normalize_operation(operation), operation);
+        }
+    }
+
+    #[test]
+    fn distinct_operations_stay_distinct() {
+        assert_ne!(Arm32.normalize_operation("ldr"), Arm32.normalize_operation("str"));
+        assert_ne!(Arm32.normalize_operation("push"), Arm32.normalize_operation("pop"));
+    }
+
+    #[test]
+    fn registers_are_recognized_by_name_and_by_number() {
+        for name in ["r0", "r13", "sp", "lr", "pc", "ip", "sl", "fp"] {
+            assert!(Arm32.is_register(name), "{name} names a register");
+        }
+        for other in ["", "0x4", "[sp", "r", "rx", "$+0x8"] {
+            assert!(!Arm32.is_register(other), "{other} does not name a register");
+        }
+    }
+
+    #[test]
+    fn the_stack_and_frame_pointers_are_told_apart_from_other_registers() {
+        for name in ["sp", "fp", "r13", "r11"] {
+            assert!(Arm32.is_stack_register(name));
+        }
+        assert!(!Arm32.is_stack_register("r0"));
+        assert!(!Arm32.is_stack_register("lr"));
+    }
+
+    #[test]
+    fn a_frame_reference_is_told_apart_from_another_memory_reference() {
+        assert!(Arm32.mentions_stack_slot("r0, [sp, 0x4]"));
+        assert!(Arm32.mentions_stack_slot("r0, [fp, -0x4]"));
+        assert!(!Arm32.mentions_stack_slot("r0, [r1, 0x8]"));
+    }
+
+    #[test]
+    fn a_constant_reads_in_hex_and_decimal_and_past_the_immediate_sigil() {
+        assert_eq!(Arm32.constant_value("0x25"), Some(0x25));
+        assert_eq!(Arm32.constant_value("37"), Some(37));
+        assert_eq!(Arm32.constant_value("#4"), Some(4));
+    }
+
+    /// A register, a frame reference and a branch target are not constants,
+    /// even though each holds digits.
+    #[test]
+    fn what_is_not_a_constant_reads_as_none() {
+        for operand in ["r0", "[sp, 0x4]", "$+0x24", "", "lr"] {
+            assert_eq!(Arm32.constant_value(operand), None, "{operand} is not a constant");
+        }
+    }
+
+    #[test]
+    fn frame_work_is_told_apart_from_real_work() {
+        let push = decode_one([0x10, 0x40, 0x2d, 0xe9]);
+        assert!(Arm32.is_frame_management(&push));
+
+        let add = decode_one([0x00, 0x00, 0x81, 0xe0]);
+        assert!(!Arm32.is_frame_management(&add), "arithmetic is the work itself");
+    }
+
+    /// A `pop` that loads the program counter returns, so it is not mere
+    /// bookkeeping and must survive normalization.
+    #[test]
+    fn a_pop_that_returns_is_not_frame_work() {
+        let pop_pc = decode_one([0x00, 0x88, 0xbd, 0xe8]);
+        assert_eq!(pop_pc.kind, InsnKind::Return);
+        assert!(!Arm32.is_frame_management(&pop_pc));
     }
 }

@@ -47,8 +47,9 @@ fn normalized(level: &str, object: &str, function: &str) -> Option<Vec<NormInsn>
     let data = std::fs::read(object_path(level, object)).ok()?;
     let binary = Binary::parse(&data).ok()?;
     let found = binary.functions.iter().find(|candidate| candidate.name == function)?;
-    let (insns, _) = decode_all(&binary.isa.arch(), &found.code, found.address);
-    Some(normalize_body(&insns))
+    let arch = binary.isa.arch();
+    let (insns, _) = decode_all(arch, &found.code, found.address);
+    Some(normalize_body(arch, &insns))
 }
 
 /// Similarity of two normalized bodies, from 0.0 to 1.0.
