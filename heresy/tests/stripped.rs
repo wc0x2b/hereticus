@@ -226,6 +226,42 @@ fn recovers_the_start_of_a_pic_function() {
     );
 }
 
+/// Dropping the PIC preamble must not take a real address load with it.
+///
+/// A non-PIC build loads the address of a global with the same two words the
+/// preamble opens with — `lui rX, 0x0` then `addiu rX, rX, 0x0`, both immediates
+/// zero because the linker has yet to fill them in. Only what consumes the
+/// result separates the two, so a rule that went by the shape alone would delete
+/// a memory reference from ordinary code.
+#[test]
+fn a_real_address_load_survives_normalizing() {
+    use heresy::{arch::decode_all, norm::normalize_body};
+
+    let Some(binary) = read("mips-nopic-O2", "globals") else { return };
+    let arch = binary.isa.arch();
+
+    let Some(reader) = binary.functions.iter().find(|f| f.name == "read_table") else {
+        panic!("the fixture must hold read_table");
+    };
+
+    let (insns, _) = decode_all(arch, &reader.code, reader.address);
+    let body = normalize_body(arch, &insns);
+
+    // The function is `lui`, `addiu`, `andi`, `sll`, `addu`, `lw`, `jr`, `nop`.
+    // Nothing here is frame work, so normalizing must keep all of it bar the
+    // padding `nop` the decoder reports at the end.
+    assert!(
+        body.len() >= insns.len() - 1,
+        "normalizing dropped {} of {} instructions from a plain address load",
+        insns.len() - body.len(),
+        insns.len()
+    );
+
+    // Said directly: the two words that build the address must still be there.
+    let operations: Vec<&str> = body.iter().map(|insn| insn.operation.as_str()).collect();
+    assert!(operations.contains(&"lui"), "the address load must survive, got {operations:?}");
+}
+
 /// The PIC preamble must not be compared, or it measures the ABI.
 ///
 /// Every function a PIC build compiles carries the same preamble, so leaving it
@@ -267,12 +303,12 @@ fn the_pic_preamble_does_not_make_unrelated_functions_look_alike() {
 
     // PIC still costs something: the GOT-indirect call is shared shape that a
     // direct call does not have, and that part is real code, so the gap does
-    // not close to nothing. Measured on this fixture the gap is 0.075 with the
-    // preamble dropped and 0.098 with it compared, so the bound sits between
-    // the two: loose enough for the call, tight enough that the preamble
-    // coming back fails this test.
+    // not close to nothing. Measured on this fixture the gap is 0.028 with the
+    // whole preamble dropped, 0.075 with the `_gp_disp` pair left in, and 0.098
+    // with none of it dropped. The bound sits below the middle figure, so any
+    // part of the preamble returning to the comparison fails this test.
     assert!(
-        pic_noise - nopic_noise < 0.085,
+        pic_noise - nopic_noise < 0.05,
         "PIC decoys at {pic_noise:.3} against {nopic_noise:.3}: the preamble is being compared"
     );
 }

@@ -90,6 +90,23 @@ pub trait Arch {
     /// are all bookkeeping a compiler adds or removes freely.
     fn is_frame_management(&self, insn: &Insn) -> bool;
 
+    /// The length of an ABI idiom starting at `body[0]`, or 0 for none.
+    ///
+    /// [`Arch::is_frame_management`] judges one instruction at a time, which
+    /// cannot recognize bookkeeping whose shape lives in a *sequence*. The MIPS
+    /// PIC preamble is the case: `lui rX, 0x0` followed by `addiu rX, rX, 0x0`
+    /// loads one link-time constant, but either word alone is an ordinary
+    /// operation that real code uses, so only the pair can be dropped safely.
+    ///
+    /// `body` begins at the instruction being judged and runs to the end of the
+    /// function, so the return value can never exceed `body.len()`.
+    ///
+    /// Defaults to 0, for the architectures whose bookkeeping is all
+    /// recognizable one instruction at a time.
+    fn idiom_length(&self, _body: &[Insn]) -> usize {
+        0
+    }
+
     /// Report whether an instruction opens a function.
     ///
     /// Used to recover function starts from stripped code, so a false positive

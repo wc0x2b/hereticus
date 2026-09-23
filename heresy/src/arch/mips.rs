@@ -202,6 +202,18 @@ impl Arch for Mips32 {
         }
     }
 
+    /// The `_gp_disp` pair is the one piece of PIC scaffolding that needs two
+    /// instructions to recognize.
+    ///
+    /// `lui rX, 0x0` on its own is how any relocated address load begins, and
+    /// `addiu rX, rX, 0x0` on its own adds zero to a register. Dropping either
+    /// alone would take real code with it, so only the pair comes out — and
+    /// only where an `addu` against `t9` proves it is the PIC preamble rather
+    /// than the address of a global.
+    fn idiom_length(&self, body: &[Insn]) -> usize {
+        if is_gp_disp_preamble(body) { 2 } else { 0 }
+    }
+
     /// A function that needs a frame opens by making room for it, so
     /// `addiu sp, sp, -N` is the first instruction of almost every one.
     ///
@@ -236,12 +248,18 @@ impl Arch for Mips32 {
     /// Measured on a stripped PIC object: without this, five of eight function
     /// starts land 8 bytes late, because `lui`/`addiu` open the function and
     /// the frame allocation follows them.
+    ///
+    /// The pair's shape is enough here, with no need to find the `addu` that
+    /// [`is_gp_disp_preamble`] insists on. This is asked only about the two
+    /// words immediately before a frame prologue, and code that loads the
+    /// address of a global does so to use it, not to open a frame. Either
+    /// reading also names a start inside the same function, so the cost of
+    /// being wrong is a boundary 8 bytes out rather than a dropped
+    /// instruction.
     fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
-        let mut words = earlier.iter().rev();
-        let Some(low) = words.next() else { return 0 };
-        let Some(high) = words.next() else { return 0 };
+        let [.., high, low] = earlier else { return 0 };
 
-        if is_gp_disp_pair(high, low) { 2 } else { 0 }
+        if constant_pair_register(high, low).is_some() { 2 } else { 0 }
     }
 
     fn is_padding(&self, insn: &Insn) -> bool {
@@ -294,41 +312,102 @@ fn split_mnemonic(text: &str) -> (String, String) {
     }
 }
 
-/// Report whether two instructions are the `_gp_disp` pair a PIC function
-/// opens with.
-///
-/// The pair loads the halves of one link-time constant into one register:
+/// The register a `lui`/`addiu` pair builds a link-time constant in, if the two
+/// instructions are such a pair.
 ///
 /// ```text
 /// lui   v0, 0x0
 /// addiu v0, v0, 0x0
 /// ```
 ///
-/// Both immediates read as zero because the linker has yet to fill them in,
-/// and both words name the same register. Requiring all of that — the two
-/// mnemonics, one shared register, and two zero immediates — is what keeps an
-/// ordinary relocated address load from matching, since such a load is a
-/// `lui`/`lw` pair or targets a different register.
-fn is_gp_disp_pair(high: &Insn, low: &Insn) -> bool {
+/// Both immediates read as zero because the linker has yet to fill them in, and
+/// both words name one register. That shape alone does **not** mean PIC: a
+/// non-PIC build loads the address of a global exactly this way, so the caller
+/// must confirm what consumes the result. See [`is_gp_disp_preamble`].
+fn constant_pair_register<'a>(high: &'a Insn, low: &Insn) -> Option<&'a str> {
     if high.mnemonic != "lui" || low.mnemonic != "addiu" {
-        return false;
+        return None;
     }
 
     let mut high_operands = high.operands.split(',').map(str::trim);
     let (Some(loaded), Some("0x0"), None) =
         (high_operands.next(), high_operands.next(), high_operands.next())
     else {
-        return false;
+        return None;
     };
 
     // `addiu rX, rX, 0x0` must add into the very register `lui` just wrote,
     // or the two words are unrelated.
     let mut low_operands = low.operands.split(',').map(str::trim);
-    matches!(
-        (low_operands.next(), low_operands.next(), low_operands.next(), low_operands.next()),
-        (Some(destination), Some(source), Some("0x0"), None)
-            if destination == loaded && source == loaded
-    )
+    let (Some(destination), Some(source), Some("0x0"), None) =
+        (low_operands.next(), low_operands.next(), low_operands.next(), low_operands.next())
+    else {
+        return None;
+    };
+
+    (destination == loaded && source == loaded).then_some(loaded)
+}
+
+/// Report whether `body` opens with the `_gp_disp` preamble of a PIC function.
+///
+/// The `lui`/`addiu` pair by itself is ambiguous. Compiled without PIC,
+///
+/// ```c
+/// extern int table[64];
+/// int read_global(int i) { return table[i & 63]; }
+/// ```
+///
+/// opens with `lui at, 0x0` then `addiu at, at, 0x0` — the same two words, the
+/// same zero immediates, loading the address of `table`. Dropping the pair on
+/// its shape alone therefore deletes a real memory reference from ordinary
+/// code, and a function that reads one global would compare equal to one that
+/// reads another.
+///
+/// What separates them is the consumer. A PIC preamble exists to be joined to
+/// the callee address the ABI leaves in `t9`:
+///
+/// ```text
+/// lui   v0, 0x0
+/// addiu v0, v0, 0x0
+/// addu  gp, v0, t9     ; only PIC does this
+/// ```
+///
+/// A data load instead indexes or dereferences the address it built. So the
+/// pair counts as PIC only when an `addu` that reads both the loaded register
+/// and `t9` follows it. The two need not be adjacent: a compiler puts the frame
+/// prologue between them, which is why a window is searched rather than the
+/// next word alone.
+fn is_gp_disp_preamble(body: &[Insn]) -> bool {
+    /// How far to look for the `addu` that consumes the pair. Measured on the
+    /// PIC fixtures the consumer is between zero and six instructions on,
+    /// separated by the frame prologue; eight leaves margin without reaching
+    /// into unrelated code.
+    const MOST_WORDS_TO_CONSUMER: usize = 8;
+
+    let [high, low, rest @ ..] = body else { return false };
+    let Some(loaded) = constant_pair_register(high, low) else { return false };
+
+    rest.iter().take(MOST_WORDS_TO_CONSUMER).any(|insn| joins_to_callee_address(insn, loaded))
+}
+
+/// Report whether an instruction is `addu rD, loaded, t9` in either operand
+/// order, which is what forms the PIC global pointer.
+fn joins_to_callee_address(insn: &Insn, loaded: &str) -> bool {
+    /// The register the ABI leaves the callee address in.
+    const CALLEE_ADDRESS: &str = "t9";
+
+    if insn.mnemonic != "addu" {
+        return false;
+    }
+
+    let mut operands = insn.operands.split(',').map(str::trim);
+    let (_destination, Some(left), Some(right), None) =
+        (operands.next(), operands.next(), operands.next(), operands.next())
+    else {
+        return false;
+    };
+
+    (left == loaded && right == CALLEE_ADDRESS) || (left == CALLEE_ADDRESS && right == loaded)
 }
 
 /// Report whether an instruction only establishes the PIC global pointer.
@@ -729,6 +808,86 @@ mod tests {
             !Mips32::LITTLE.is_frame_management(&decode_one(0x0052_9021)),
             "adding two ordinary registers is the work itself"
         );
+    }
+
+    /// The PIC preamble comes out of the comparison, but only as a pair and
+    /// only where the `addu` against `t9` proves what it is.
+    #[test]
+    fn the_pic_preamble_is_dropped_as_a_pair() {
+        let body = [
+            decode_one(0x3c02_0000), // lui v0, 0x0
+            decode_one(0x2442_0000), // addiu v0, v0, 0x0
+            decode_one(0x0059_e021), // addu gp, v0, t9
+        ];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 2);
+    }
+
+    /// The consumer need not follow the pair at once: a compiler puts the frame
+    /// prologue between them.
+    #[test]
+    fn the_preamble_is_found_across_an_intervening_prologue() {
+        let body = [
+            decode_one(0x3c02_0000), // lui v0, 0x0
+            decode_one(0x2442_0000), // addiu v0, v0, 0x0
+            decode_one(0x27bd_ffd8), // addiu sp, sp, -0x28
+            decode_one(0xafbf_0024), // sw ra, 0x24(sp)
+            decode_one(0x0059_e021), // addu gp, v0, t9
+        ];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 2);
+    }
+
+    /// A non-PIC build loads the address of a global with the very same two
+    /// words, so the pair alone must not be dropped.
+    ///
+    /// From `int read_global(int i) { return table[i & 63]; }` built with
+    /// `-fno-pic`: `lui at, 0x0` then `addiu at, at, 0x0` builds the address of
+    /// `table`, and the `addu` that follows indexes it rather than joining it to
+    /// `t9`. Dropping this pair would delete a real memory reference, and two
+    /// functions reading different globals would compare equal.
+    #[test]
+    fn a_real_address_load_is_not_the_pic_preamble() {
+        let body = [
+            decode_one(0x3c01_0000), // lui at, 0x0
+            decode_one(0x2421_0000), // addiu at, at, 0x0
+            decode_one(0x3082_003f), // andi v0, a0, 0x3f
+            decode_one(0x0002_1080), // sll v0, v0, 2
+            decode_one(0x0022_0821), // addu at, at, v0, indexing, not PIC
+            decode_one(0x8c22_0000), // lw v0, 0x0(at)
+        ];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 0, "the address of a global is real work");
+    }
+
+    /// Without any consumer the pair is not a preamble either.
+    #[test]
+    fn a_pair_nothing_joins_to_t9_is_not_the_preamble() {
+        let body = [
+            decode_one(0x3c02_0000), // lui v0, 0x0
+            decode_one(0x2442_0000), // addiu v0, v0, 0x0
+            decode_one(0x8c42_0000), // lw v0, 0x0(v0), a plain dereference
+        ];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 0);
+    }
+
+    /// A pair at the very end of a function has no consumer to find, and must
+    /// not read past the body.
+    #[test]
+    fn a_pair_at_the_end_of_a_body_is_kept() {
+        let body = [decode_one(0x3c02_0000), decode_one(0x2442_0000)];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 0);
+        assert_eq!(Mips32::LITTLE.idiom_length(&body[..1]), 0);
+        assert_eq!(Mips32::LITTLE.idiom_length(&[]), 0);
+    }
+
+    /// The `addu` must read the register the pair built, not merely any
+    /// register alongside `t9`.
+    #[test]
+    fn an_addu_on_t9_and_another_register_is_not_the_consumer() {
+        let body = [
+            decode_one(0x3c02_0000), // lui v0, 0x0
+            decode_one(0x2442_0000), // addiu v0, v0, 0x0
+            decode_one(0x0079_8021), // addu s0, v1, t9: v1, not v0
+        ];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 0);
     }
 
     /// The `_gp_disp` pair opens a PIC function, so the function starts two

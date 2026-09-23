@@ -210,22 +210,42 @@ pub fn normalize(arch: &dyn Arch, insn: &Insn) -> NormInsn {
 }
 
 /// Normalize a function body, dropping the instructions that only manage the
-/// stack frame.
+/// stack frame or satisfy the ABI.
 ///
 /// Frame work is the largest single difference between builds: an unoptimized
 /// build spills every value to the stack, and an optimized one keeps them in
 /// registers. Removing that traffic raised same-function similarity from 0.13
 /// to 0.31 on the test corpus, and left unrelated functions unchanged at 0.21,
 /// so it removes noise rather than signal.
-pub fn normalize_body<'a, I>(arch: &dyn Arch, insns: I) -> Vec<NormInsn>
-where
-    I: IntoIterator<Item = &'a Insn>,
-{
-    insns
-        .into_iter()
-        .filter(|insn| !arch.is_frame_management(insn))
-        .map(|insn| normalize(arch, insn))
-        .collect()
+///
+/// Two kinds of bookkeeping come out. Most is recognizable one instruction at
+/// a time, which [`Arch::is_frame_management`] answers for. The rest has a
+/// shape only a sequence shows: the MIPS PIC preamble is two ordinary
+/// instructions that are scaffolding *together* and real work apart, so
+/// [`Arch::idiom_length`] is asked about each remaining position and the whole
+/// run it reports is skipped.
+pub fn normalize_body(arch: &dyn Arch, insns: &[Insn]) -> Vec<NormInsn> {
+    let mut out = Vec::with_capacity(insns.len());
+    let mut index = 0;
+
+    while index < insns.len() {
+        // A multi-instruction idiom is tested first: its words can each look
+        // like work on their own, so judging them singly would keep them. The
+        // remaining length bounds the answer, so a decoder that overstates one
+        // drops the rest of the body rather than reading past it.
+        let idiom = arch.idiom_length(&insns[index..]).min(insns.len() - index);
+        if idiom > 0 {
+            index += idiom;
+            continue;
+        }
+
+        if !arch.is_frame_management(&insns[index]) {
+            out.push(normalize(arch, &insns[index]));
+        }
+        index += 1;
+    }
+
+    out
 }
 
 /// The distinct constants a function uses.
@@ -446,6 +466,62 @@ mod tests {
     fn keeps_loads_that_are_not_spills() {
         let body = [insn("ldr", "r0, [r1, 0x8]", InsnKind::Normal)];
         assert_eq!(normalize_body(&Arm32, &body).len(), 1, "a data load is real work");
+    }
+
+    /// An architecture can name a run of instructions as one idiom, and the
+    /// whole run comes out rather than the first word of it.
+    ///
+    /// This is what per-instruction filtering cannot do: the MIPS PIC preamble
+    /// is two words that are scaffolding together and real work apart.
+    #[test]
+    fn drops_a_whole_idiom_rather_than_one_word_of_it() {
+        use crate::arch::mips::Mips32;
+
+        let mips = |mnemonic: &str, operands: &str| Insn {
+            address: 0,
+            bytes_len: 4,
+            mnemonic: mnemonic.to_string(),
+            operands: operands.to_string(),
+            kind: InsnKind::Normal,
+        };
+
+        let body = [
+            mips("lui", "v0, 0x0"),
+            mips("addiu", "v0, v0, 0x0"),
+            mips("addu", "gp, v0, t9"),
+            mips("addu", "v0, a0, a1"),
+        ];
+        let normalized = normalize_body(&Mips32::LITTLE, &body);
+
+        // The pair goes as an idiom and the `addu` into `gp` as frame work,
+        // leaving only the arithmetic.
+        assert_eq!(normalized.len(), 1, "got {normalized:?}");
+        assert_eq!(normalized[0].operation, "addu");
+    }
+
+    /// An idiom the architecture does not confirm stays whole.
+    #[test]
+    fn keeps_a_sequence_that_is_not_an_idiom() {
+        use crate::arch::mips::Mips32;
+
+        let mips = |mnemonic: &str, operands: &str| Insn {
+            address: 0,
+            bytes_len: 4,
+            mnemonic: mnemonic.to_string(),
+            operands: operands.to_string(),
+            kind: InsnKind::Normal,
+        };
+
+        // The same two opening words, but nothing joins the result to `t9`, so
+        // this builds the address of a global rather than the global pointer.
+        let body =
+            [mips("lui", "at, 0x0"), mips("addiu", "at, at, 0x0"), mips("lw", "v0, 0x0(at)")];
+
+        assert_eq!(
+            normalize_body(&Mips32::LITTLE, &body).len(),
+            3,
+            "a real address load is work, not scaffolding"
+        );
     }
 
     #[test]

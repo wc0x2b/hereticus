@@ -11,7 +11,7 @@
 
 use bolero::check;
 
-use heresy::arch::{Arch, DecodeError, InsnKind, arm32::Arm32, decode_all};
+use heresy::arch::{Arch, DecodeError, InsnKind, arm32::Arm32, decode_all, mips::Mips32};
 use heresy::norm::{normalize, normalize_body};
 use heresy::obj::{Binary, Isa};
 use heresy::raw::check_base;
@@ -177,6 +177,27 @@ fn normalizing_is_deterministic() {
     check!().with_type::<Vec<u8>>().for_each(|code| {
         let (insns, _) = decode_all(&Arm32, code, 0);
         assert_eq!(normalize_body(&Arm32, &insns), normalize_body(&Arm32, &insns));
+    });
+}
+
+/// Normalizing MIPS must hold the same promises as ARM.
+///
+/// MIPS is the architecture that drops multi-instruction idioms, so the loop
+/// that steps over them runs here and nowhere else. A wrong length would skip
+/// past the end of the body or fail to advance at all.
+#[test]
+fn normalizing_mips_never_panics_and_always_advances() {
+    // The concrete type rather than `Isa::arch()`: the property harness needs a
+    // value it can carry across an unwind boundary, which `&dyn Arch` is not.
+    let arch = &Mips32::LITTLE;
+    check!().with_type::<Vec<u8>>().for_each(|code| {
+        let (insns, _) = decode_all(arch, code, 0);
+        let normalized = normalize_body(arch, &insns);
+
+        // Dropping bookkeeping can only remove instructions. Reaching this line
+        // at all proves the loop terminated.
+        assert!(normalized.len() <= insns.len(), "normalizing invented instructions");
+        assert_eq!(normalized, normalize_body(arch, &insns), "normalizing is unstable");
     });
 }
 
