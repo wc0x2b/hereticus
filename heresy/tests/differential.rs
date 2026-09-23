@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use heresy::arch::{InsnKind, decode_all};
-use heresy::obj::Binary;
+use heresy::obj::{Binary, Isa};
 
 /// One instruction as `llvm-objdump` reported it.
 #[derive(Debug, PartialEq, Eq)]
@@ -45,6 +45,38 @@ fn canonical_mnemonic(mnemonic: &str) -> String {
     // also the overflow-set condition. Fold again after, because a condition
     // can wrap an alias, as in `movwlt`.
     fold_alias(strip_condition(fold_alias(mnemonic))).to_string()
+}
+
+/// Reduce a MIPS mnemonic to a form both disassemblers agree on.
+///
+/// Kept apart from [`canonical_mnemonic`] because the ARM rules actively
+/// damage MIPS names: `beq` ends in the equal condition, so ARM's stripping
+/// would reduce both `beq` and `bne` to `b` and hide a decoder that confused
+/// the two.
+///
+/// * `move` is `or <reg>, <reg>, zero`, which LLVM prints as the alias and
+///   `yaxpeax` also prefers; both agree, so only the `addu`/`add` pair below
+///   needs folding.
+/// * `b` is `beq` of a register with itself. `yaxpeax` prints the alias,
+///   LLVM prints the underlying branch.
+/// * `nop` is `sll zero, zero, 0`, and `move` is `or <reg>, <reg>, zero`.
+///   Each tool prefers a different one of the two spellings.
+/// * `beqz` and `bnez` compare against `zero`, which LLVM folds into the
+///   mnemonic and `yaxpeax` leaves as an operand. The pair stays distinct:
+///   `beqz` folds to `beq` and `bnez` to `bne`, so a decoder that confused
+///   the two would still fail.
+///
+/// Every entry here hides a real difference, so each is confirmed against the
+/// encoding rather than added to make the test pass.
+fn canonical_mips_mnemonic(mnemonic: &str) -> String {
+    match mnemonic {
+        "b" | "beqz" => "beq",
+        "bnez" => "bne",
+        "nop" => "sll",
+        "move" => "or",
+        other => other,
+    }
+    .to_string()
 }
 
 /// Map the spellings that mean the same encoding onto one name.
@@ -165,6 +197,12 @@ fn parse_objdump(text: &str) -> Vec<ObjdumpInsn> {
         if mnemonic.starts_with('<') {
             continue;
         }
+
+        // An instruction with no operands, such as the MIPS `nop`, has
+        // nothing between the mnemonic and the symbol annotation objdump
+        // appends, so `nop <add>` arrives as one field. Keep the first word.
+        let mnemonic = mnemonic.split_whitespace().next().unwrap_or(mnemonic);
+
         out.push(ObjdumpInsn { address, mnemonic: mnemonic.to_string() });
     }
 
@@ -217,6 +255,13 @@ fn decoder_agrees_with_objdump() {
             let shared = decoded.len().min(expected.len());
             assert!(shared > 0, "{where_}: nothing to compare");
 
+            // Each architecture folds spellings its own way. Using ARM's
+            // rules on MIPS would strip real mnemonics down to nothing.
+            let canonical: fn(&str) -> String = match binary.isa {
+                Isa::Arm32 => canonical_mnemonic,
+                Isa::Mips32 => canonical_mips_mnemonic,
+            };
+
             for (ours, theirs) in decoded.iter().zip(&expected).take(shared) {
                 assert_eq!(
                     ours.address, theirs.address,
@@ -232,8 +277,8 @@ fn decoder_agrees_with_objdump() {
                 }
 
                 assert_eq!(
-                    canonical_mnemonic(&ours.mnemonic),
-                    canonical_mnemonic(&theirs.mnemonic),
+                    canonical(&ours.mnemonic),
+                    canonical(&theirs.mnemonic),
                     "{where_}: mnemonic differs at {:#x}",
                     theirs.address
                 );

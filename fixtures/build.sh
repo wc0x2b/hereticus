@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compile the fixture C sources to ARM32 ELF objects at several optimization
-# levels. Run by `just fixtures`.
+# Compile the fixture C sources to ARM32 and MIPS32 ELF objects at several
+# optimization levels. Run by `just fixtures`.
 #
 # The corpus is generated, not committed, so it stays readable as C source and
 # regenerates on demand. Tests skip themselves if clang cannot target ARM.
@@ -10,6 +10,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 src="$here/src"
 build="$here/build"
 target="arm-linux-gnueabi"
+# MIPS is built little endian only, which is what the decoder reads.
+mips_target="mipsel-linux-gnu"
 
 # Where the vector-table fixture is linked. Tests check the load-address
 # check against this exact value, so the two must agree.
@@ -29,6 +31,17 @@ for opt in O0 O1 O2 Os; do
         clang --target="$target" -march=armv7-a -marm \
             -c "-$opt" -g \
             "$source" -o "$build/$opt/$name.o"
+    done
+done
+
+# MIPS objects, in their own tree so the ARM fixtures keep their paths. Only
+# the levels the MIPS tests use, because nothing needs the full matrix yet.
+for opt in O0 O2; do
+    mkdir -p "$build/mips-$opt"
+    for source in "$src"/*.c; do
+        name="$(basename "$source" .c)"
+        clang --target="$mips_target" -c "-$opt" -g \
+            "$source" -o "$build/mips-$opt/$name.o"
     done
 done
 

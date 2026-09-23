@@ -4,6 +4,7 @@ use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 
 use crate::arch::Arch;
 use crate::arch::arm32::Arm32;
+use crate::arch::mips::Mips32;
 
 /// Why a binary could not be read.
 #[derive(Debug)]
@@ -12,6 +13,11 @@ pub enum ObjError {
     Parse(object::Error),
     /// The file is a valid object, but not for an architecture `heresy` knows.
     UnsupportedArch(object::Architecture),
+    /// The architecture is known, but only in the other byte order.
+    ///
+    /// Reported rather than decoded, because the words would still decode and
+    /// the report would be quietly wrong rather than absent.
+    UnsupportedEndianness(object::Architecture),
     /// The file holds no executable code.
     NoCode,
     /// The file holds code, but no function could be found in it.
@@ -26,6 +32,9 @@ impl core::fmt::Display for ObjError {
         match self {
             Self::Parse(err) => write!(f, "cannot parse object: {err}"),
             Self::UnsupportedArch(arch) => write!(f, "unsupported architecture: {arch:?}"),
+            Self::UnsupportedEndianness(arch) => {
+                write!(f, "{arch:?} is supported in little endian only, and this is big endian")
+            }
             Self::NoCode => write!(f, "object has no executable code"),
             Self::NoFunctions => {
                 write!(f, "object has code, but no function could be found in it")
@@ -50,6 +59,8 @@ impl From<object::Error> for ObjError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Isa {
     Arm32,
+    /// MIPS32, little endian. Big-endian MIPS is refused when read.
+    Mips32,
 }
 
 impl Isa {
@@ -61,13 +72,20 @@ impl Isa {
     pub fn arch(self) -> &'static dyn Arch {
         match self {
             Self::Arm32 => &Arm32,
+            Self::Mips32 => &Mips32,
         }
     }
 
-    fn from_object(arch: object::Architecture) -> Option<Self> {
+    /// Choose a decoder for what an object file says it holds.
+    ///
+    /// `little_endian` decides nothing for ARM, which is only read in that
+    /// order anyway, and decides everything for MIPS, which ships in both.
+    fn from_object(arch: object::Architecture, little_endian: bool) -> Result<Self, ObjError> {
         match arch {
-            object::Architecture::Arm => Some(Self::Arm32),
-            _ => None,
+            object::Architecture::Arm => Ok(Self::Arm32),
+            object::Architecture::Mips if little_endian => Ok(Self::Mips32),
+            object::Architecture::Mips => Err(ObjError::UnsupportedEndianness(arch)),
+            _ => Err(ObjError::UnsupportedArch(arch)),
         }
     }
 }
@@ -112,8 +130,7 @@ impl Binary {
     /// See [`crate::scan`] for how, and for what that costs in accuracy.
     pub fn parse(data: &[u8]) -> Result<Self, ObjError> {
         let file = object::File::parse(data)?;
-        let isa = Isa::from_object(file.architecture())
-            .ok_or_else(|| ObjError::UnsupportedArch(file.architecture()))?;
+        let isa = Isa::from_object(file.architecture(), file.is_little_endian())?;
 
         let mut functions = Vec::new();
         for symbol in file.symbols() {

@@ -138,12 +138,15 @@ enum When {
 enum ArchName {
     /// ARM32, little endian, A32 instructions. Thumb is not supported.
     Arm32,
+    /// MIPS32, little endian. Big-endian MIPS is not supported.
+    Mips32,
 }
 
 impl From<ArchName> for Isa {
     fn from(name: ArchName) -> Self {
         match name {
             ArchName::Arm32 => Self::Arm32,
+            ArchName::Mips32 => Self::Mips32,
         }
     }
 }

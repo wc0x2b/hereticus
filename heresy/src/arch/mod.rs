@@ -21,6 +21,7 @@
 //! second decoder shows what a shared operand type would have to be.
 
 pub mod arm32;
+pub mod mips;
 
 use core::fmt;
 
