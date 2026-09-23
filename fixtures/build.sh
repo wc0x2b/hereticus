@@ -49,6 +49,22 @@ for opt in O0 O2; do
     done
 done
 
+# MIPS ABI PIC, which is what a shared object and most firmware is built as.
+# It opens every non-leaf function with the `_gp_disp` preamble and calls
+# through the GOT, so it exercises code no non-PIC fixture reaches. The
+# matching non-PIC build sits beside it, because the interesting measurement is
+# the difference between the two.
+for opt in O0 O2; do
+    mkdir -p "$build/mips-pic-$opt" "$build/mips-nopic-$opt"
+    for source in "$src"/*.c; do
+        name="$(basename "$source" .c)"
+        clang --target="$mips_target" -fPIC -c "-$opt" -g \
+            "$source" -o "$build/mips-pic-$opt/$name.o"
+        clang --target="$mips_target" -fno-pic -mno-abicalls -c "-$opt" -g \
+            "$source" -o "$build/mips-nopic-$opt/$name.o"
+    done
+done
+
 # Stripped copies, for the tests that check recovery without symbols. The
 # unstripped original stays, so a test can use its symbol table as the answer.
 if command -v llvm-strip >/dev/null 2>&1; then
@@ -67,6 +83,15 @@ if [ -n "$strip_tool" ]; then
             cp "$object" "$build/$opt-stripped/$name"
             "$strip_tool" "$build/$opt-stripped/$name"
         done
+    done
+
+    # A stripped PIC object, so a test can check that function recovery finds
+    # the start of a function whose prologue sits behind the PIC preamble.
+    mkdir -p "$build/mips-pic-O2-stripped"
+    for object in "$build/mips-pic-O2"/*.o; do
+        name="$(basename "$object")"
+        cp "$object" "$build/mips-pic-O2-stripped/$name"
+        "$strip_tool" "$build/mips-pic-O2-stripped/$name"
     done
 
     # One object with the exception index removed as well, so the tests cover

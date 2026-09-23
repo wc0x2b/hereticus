@@ -354,7 +354,7 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         // error path that jumps backwards over the end of its own function
         // would otherwise hide the function that follows.
         if arch.is_prologue(following) {
-            out.push(following.address);
+            out.push(start_of(&insns, next, arch));
             continue;
         }
 
@@ -380,6 +380,21 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     }
 
     out
+}
+
+/// The address a function really starts at, given where its prologue sits.
+///
+/// A prologue opens its function on most ABIs, but not all: MIPS PIC computes
+/// the global pointer first, so the function begins a word or two before the
+/// frame allocation. The architecture decides how far back to look, and the
+/// instructions before `prologue` bound it, so a preamble can never reach past
+/// the start of the slice.
+fn start_of(insns: &[Insn], prologue: usize, arch: &dyn Arch) -> u64 {
+    // An architecture answers for its own ABI, and a wrong answer here would
+    // move a boundary rather than fail. Clamping keeps a decoder bug from
+    // reaching past the words this scan was given.
+    let preamble = arch.preamble_before_prologue(&insns[..prologue]).min(prologue);
+    insns[prologue - preamble].address
 }
 
 /// Find a prologue that begins just past an inline literal pool.
@@ -408,7 +423,10 @@ fn prologue_past_pool(insns: &[Insn], from: usize, arch: &dyn Arch) -> Option<u6
     for _ in 0..MOST_POOL_WORDS {
         let insn = insns.get(next)?;
         if arch.is_prologue(insn) {
-            return Some(insn.address);
+            // A preamble before this prologue belongs to the function, but
+            // only as far back as the pool scan began: earlier words are the
+            // pool, not this function's opening.
+            return Some(start_of(&insns[from..], next - from, arch));
         }
         // Only pool data may sit between the terminator and the prologue. A
         // pool word carries no control flow: it decodes as a plain `Normal`
@@ -660,6 +678,61 @@ mod tests {
         let starts = starts_after_returns(&Mips32::LITTLE, &code, 0);
         assert!(!starts.contains(&0x4), "the delay slot is part of the return, got {starts:?}");
         assert_eq!(starts, vec![0x8], "the function past the slot is the start");
+    }
+
+    /// A PIC function starts at its `_gp_disp` pair, not at its frame
+    /// allocation.
+    ///
+    /// Measured on a stripped PIC object of eight functions, without this five
+    /// starts landed 8 bytes late, because the two preamble words open the
+    /// function and the prologue follows them.
+    #[test]
+    fn a_pic_function_starts_at_its_global_pointer_setup() {
+        use crate::arch::mips::Mips32;
+
+        let mut code = Vec::new();
+        for word in [
+            0x03e0_0008u32, // jr ra
+            0x27bd_0028,    // addiu sp, sp, 0x28, in the delay slot
+            0x3c02_0000,    // lui v0, 0x0, where the next function opens
+            0x2442_0000,    // addiu v0, v0, 0x0
+            0x27bd_ffd8,    // addiu sp, sp, -0x28, the prologue
+            0xafbf_0024,    // sw ra, 0x24(sp)
+        ] {
+            code.extend_from_slice(&word.to_le_bytes());
+        }
+
+        assert_eq!(
+            starts_after_returns(&Mips32::LITTLE, &code, 0),
+            vec![0x8],
+            "the function opens at the lui, two words before its prologue"
+        );
+    }
+
+    /// The preamble rule must not reach back over words that are not one.
+    ///
+    /// Two ordinary instructions before a prologue belong to the function
+    /// before it, so the start stays at the prologue itself.
+    #[test]
+    fn a_prologue_without_a_preamble_starts_where_it_sits() {
+        use crate::arch::mips::Mips32;
+
+        let mut code = Vec::new();
+        for word in [
+            0x03e0_0008u32, // jr ra
+            0x27bd_0028,    // addiu sp, sp, 0x28, in the delay slot
+            0x0085_1021,    // addu v0, a0, a1, not a preamble
+            0x0085_1021,    // addu v0, a0, a1, nor this
+            0x27bd_ffd8,    // addiu sp, sp, -0x28, the prologue
+        ] {
+            code.extend_from_slice(&word.to_le_bytes());
+        }
+
+        // The two `addu` words are a function of their own, found at 0x8 by the
+        // return before them. What matters is that the prologue at 0x10 does
+        // not drag the start back over them.
+        let starts = starts_after_returns(&Mips32::LITTLE, &code, 0);
+        assert!(!starts.contains(&0xc), "a plain instruction is not a preamble, got {starts:?}");
     }
 
     /// Without a prologue to point at, the start is the instruction after the

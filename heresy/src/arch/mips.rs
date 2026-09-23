@@ -179,13 +179,21 @@ impl Arch for Mips32 {
     }
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
+        // The PIC preamble is bookkeeping in the same sense frame work is: the
+        // ABI obliges it, the source never asked for it, and it appears in
+        // every function a PIC build compiles.
+        if is_pic_setup(insn) {
+            return true;
+        }
+
         let operands = insn.operands.as_str();
         let first = operands.split(',').next().unwrap_or_default().trim();
 
         match insn.mnemonic.as_str() {
             // Moving the stack pointer, or setting up the frame pointer.
-            // `move fp, sp` is how a frame is established.
-            "addiu" | "addu" | "subu" | "move" => self.is_stack_register(first),
+            // `or fp, sp, zero` is how a frame is established: this decoder
+            // renders every register move as `or`, never as `move`.
+            "addiu" | "addu" | "subu" | "or" => self.is_stack_register(first),
 
             // Spilling to and reloading from the frame.
             "sw" | "lw" | "swc1" | "lwc1" | "sd" | "ld" => self.mentions_stack_slot(operands),
@@ -220,6 +228,20 @@ impl Arch for Mips32 {
         };
 
         immediate.starts_with('-')
+    }
+
+    /// Under PIC the `_gp_disp` pair sits before the frame allocation, so the
+    /// function starts two words earlier than its prologue.
+    ///
+    /// Measured on a stripped PIC object: without this, five of eight function
+    /// starts land 8 bytes late, because `lui`/`addiu` open the function and
+    /// the frame allocation follows them.
+    fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
+        let mut words = earlier.iter().rev();
+        let Some(low) = words.next() else { return 0 };
+        let Some(high) = words.next() else { return 0 };
+
+        if is_gp_disp_pair(high, low) { 2 } else { 0 }
     }
 
     fn is_padding(&self, insn: &Insn) -> bool {
@@ -269,6 +291,92 @@ fn split_mnemonic(text: &str) -> (String, String) {
     match text.split_once(char::is_whitespace) {
         Some((head, tail)) => (head.to_string(), tail.trim().replace('$', "")),
         None => (text.to_string(), String::new()),
+    }
+}
+
+/// Report whether two instructions are the `_gp_disp` pair a PIC function
+/// opens with.
+///
+/// The pair loads the halves of one link-time constant into one register:
+///
+/// ```text
+/// lui   v0, 0x0
+/// addiu v0, v0, 0x0
+/// ```
+///
+/// Both immediates read as zero because the linker has yet to fill them in,
+/// and both words name the same register. Requiring all of that — the two
+/// mnemonics, one shared register, and two zero immediates — is what keeps an
+/// ordinary relocated address load from matching, since such a load is a
+/// `lui`/`lw` pair or targets a different register.
+fn is_gp_disp_pair(high: &Insn, low: &Insn) -> bool {
+    if high.mnemonic != "lui" || low.mnemonic != "addiu" {
+        return false;
+    }
+
+    let mut high_operands = high.operands.split(',').map(str::trim);
+    let (Some(loaded), Some("0x0"), None) =
+        (high_operands.next(), high_operands.next(), high_operands.next())
+    else {
+        return false;
+    };
+
+    // `addiu rX, rX, 0x0` must add into the very register `lui` just wrote,
+    // or the two words are unrelated.
+    let mut low_operands = low.operands.split(',').map(str::trim);
+    matches!(
+        (low_operands.next(), low_operands.next(), low_operands.next(), low_operands.next()),
+        (Some(destination), Some(source), Some("0x0"), None)
+            if destination == loaded && source == loaded
+    )
+}
+
+/// Report whether an instruction only establishes the PIC global pointer.
+///
+/// MIPS ABI PIC opens every function that calls anything with a fixed
+/// preamble, and restores the global pointer after every call:
+///
+/// ```text
+/// lui   v0, 0x0        ; the halves of _gp_disp, which the linker fills in
+/// addiu v0, v0, 0x0
+/// addu  s0, v0, t9     ; joined to the callee address the ABI leaves in t9
+/// ...
+/// jalr  t9
+/// or    gp, s0, zero   ; restore, usually in the delay slot
+/// ```
+///
+/// None of it comes from the source, and all of it appears in every function,
+/// so comparing it measures the ABI rather than the code. Left in, it raised
+/// the mean similarity of *unrelated* functions from 0.34 to 0.44 on the PIC
+/// corpus: noise that pushes decoys toward the true pairs.
+///
+/// The GOT-indirect call itself — `lw t9, 0x0(s0)` then `jalr t9` — is **not**
+/// matched here. That is the call, which is real work and the one part of the
+/// idiom a source edit can change.
+fn is_pic_setup(insn: &Insn) -> bool {
+    /// The register the ABI leaves the callee address in.
+    const CALLEE_ADDRESS: &str = "t9";
+    /// The global pointer the preamble computes.
+    const GLOBAL_POINTER: &str = "gp";
+
+    let mut operands = insn.operands.split(',').map(str::trim);
+    let (first, second, third) = (operands.next(), operands.next(), operands.next());
+
+    match insn.mnemonic.as_str() {
+        // `addu rX, rY, t9` folds the callee address into the global pointer.
+        // Reading `t9` is what marks it: the ABI supplies that value on entry,
+        // so no computation from the source starts there.
+        "addu" => third == Some(CALLEE_ADDRESS) || second == Some(CALLEE_ADDRESS),
+
+        // A move to or from the global pointer, which this decoder renders as
+        // `or rX, rY, zero`. Either direction is the same bookkeeping: the
+        // preamble parks the value in a callee-saved register and puts it back
+        // around each call.
+        "or" if third == Some("zero") => {
+            first == Some(GLOBAL_POINTER) || second == Some(GLOBAL_POINTER)
+        }
+
+        _ => false,
     }
 }
 
@@ -587,6 +695,92 @@ mod tests {
         // lw v0, 0x0(a0)
         let load = decode_one(0x8c82_0000);
         assert!(!Mips32::LITTLE.is_frame_management(&load), "a load through a0 reads data");
+    }
+
+    /// This decoder renders a register move as `or rX, rY, zero`, never as
+    /// `move`, so a frame pointer established that way must still be seen.
+    #[test]
+    fn a_frame_pointer_set_with_or_is_frame_work() {
+        // or s8, sp, zero: establishing the frame pointer, which this decoder
+        // names by its numbered form rather than as `fp`.
+        assert!(Mips32::LITTLE.is_frame_management(&decode_one(0x03a0_f025)));
+        // or v0, s2, zero: moving a computed value into the return register.
+        assert!(!Mips32::LITTLE.is_frame_management(&decode_one(0x0240_1025)));
+    }
+
+    /// The PIC preamble is in every function a PIC build compiles, so
+    /// comparing it measures the ABI rather than the code.
+    #[test]
+    fn the_pic_global_pointer_setup_is_not_real_work() {
+        // addu s0, v0, t9: folding the callee address into the global pointer.
+        assert!(Mips32::LITTLE.is_frame_management(&decode_one(0x0059_8021)));
+        // addu gp, v0, t9: the same, straight into gp.
+        assert!(Mips32::LITTLE.is_frame_management(&decode_one(0x0059_e021)));
+        // or gp, s0, zero: the restore after a call, in the delay slot.
+        assert!(Mips32::LITTLE.is_frame_management(&decode_one(0x0200_e025)));
+    }
+
+    /// The bookkeeping test keys on `t9` and `gp`, so an `addu` between other
+    /// registers must stay. Taken from the same PIC function, where
+    /// `addu s2, v0, s2` accumulates the running total.
+    #[test]
+    fn an_addu_that_is_not_pic_setup_stays() {
+        assert!(
+            !Mips32::LITTLE.is_frame_management(&decode_one(0x0052_9021)),
+            "adding two ordinary registers is the work itself"
+        );
+    }
+
+    /// The `_gp_disp` pair opens a PIC function, so the function starts two
+    /// words before its prologue.
+    #[test]
+    fn the_global_pointer_pair_counts_as_a_preamble() {
+        // lui v0, 0x0 then addiu v0, v0, 0x0.
+        let pair = [decode_one(0x3c02_0000), decode_one(0x2442_0000)];
+        assert_eq!(Mips32::LITTLE.preamble_before_prologue(&pair), 2);
+    }
+
+    /// The pair must share one register, or the two words are unrelated and
+    /// the second is an ordinary add.
+    #[test]
+    fn a_pair_on_two_registers_is_not_a_preamble() {
+        // lui v0, 0x0 then addiu v1, v1, 0x0: different registers.
+        let pair = [decode_one(0x3c02_0000), decode_one(0x2463_0000)];
+        assert_eq!(Mips32::LITTLE.preamble_before_prologue(&pair), 0);
+    }
+
+    /// A non-zero immediate means a real constant, which the linker has already
+    /// filled in, so the words are not the `_gp_disp` pair.
+    #[test]
+    fn a_pair_holding_a_real_constant_is_not_a_preamble() {
+        // lui v0, 0x1234 then addiu v0, v0, 0x0.
+        let pair = [decode_one(0x3c02_1234), decode_one(0x2442_0000)];
+        assert_eq!(Mips32::LITTLE.preamble_before_prologue(&pair), 0);
+    }
+
+    /// Ordinary work before a prologue belongs to the function before it.
+    #[test]
+    fn plain_instructions_are_not_a_preamble() {
+        let pair = [decode_one(0x0085_1021), decode_one(0x0085_1021)];
+        assert_eq!(Mips32::LITTLE.preamble_before_prologue(&pair), 0);
+    }
+
+    /// A function at the very start of an image has nothing before it, and the
+    /// slice length is what stops the rule reading past the front.
+    #[test]
+    fn a_preamble_cannot_reach_past_the_start() {
+        assert_eq!(Mips32::LITTLE.preamble_before_prologue(&[]), 0);
+        assert_eq!(Mips32::LITTLE.preamble_before_prologue(&[decode_one(0x2442_0000)]), 0);
+    }
+
+    /// The GOT-indirect call is the one part of the PIC idiom a source edit
+    /// can change, so it must reach the comparison.
+    #[test]
+    fn the_got_indirect_call_is_kept() {
+        // lw t9, 0x0(s0): loading the callee address from the GOT.
+        assert!(!Mips32::LITTLE.is_frame_management(&decode_one(0x8e19_0000)));
+        // jalr t9: the call itself.
+        assert!(!Mips32::LITTLE.is_frame_management(&decode_one(0x0320_f809)));
     }
 
     #[test]

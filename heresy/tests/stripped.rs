@@ -196,6 +196,87 @@ fn reports_a_binary_it_cannot_analyze() {
     assert!(Binary::parse(&[]).is_err());
 }
 
+/// Recovery must find the start of a PIC function, not the middle of it.
+///
+/// MIPS ABI PIC — what every shared object and most firmware is built as —
+/// opens a function by computing the global pointer, so the frame allocation
+/// that marks a prologue is the third instruction rather than the first.
+/// Reading the prologue as the start puts every boundary 8 bytes into its own
+/// function: measured on this fixture, five of eight starts were late before
+/// the scanner learned to step back over the preamble.
+#[test]
+fn recovers_the_start_of_a_pic_function() {
+    let (Some(truth), Some(stripped)) =
+        (read("mips-pic-O2", "calls"), read("mips-pic-O2-stripped", "calls"))
+    else {
+        // The PIC fixtures need a clang that targets MIPS. Without them there
+        // is nothing to check, and the ARM tests already cover the rest.
+        return;
+    };
+
+    assert_eq!(truth.found_by, FoundBy::Symbols, "the original keeps its symbols");
+    assert_eq!(stripped.found_by, FoundBy::Scanning, "the copy has none");
+
+    let real_starts: BTreeSet<u64> = truth.functions.iter().map(|f| f.address).collect();
+    let found_starts: BTreeSet<u64> = stripped.functions.iter().map(|f| f.address).collect();
+
+    assert_eq!(
+        found_starts, real_starts,
+        "a PIC function begins at its global-pointer setup, not at its prologue"
+    );
+}
+
+/// The PIC preamble must not be compared, or it measures the ABI.
+///
+/// Every function a PIC build compiles carries the same preamble, so leaving it
+/// in raises the similarity of functions that have nothing to do with each
+/// other. Measured on this fixture, unrelated pairs averaged 0.44 with the
+/// preamble against 0.34 without it, which is signal lost to the ABI.
+#[test]
+fn the_pic_preamble_does_not_make_unrelated_functions_look_alike() {
+    use heresy::{arch::decode_all, matching::similarity, norm::normalize_body};
+
+    let (Some(pic), Some(nopic)) = (read("mips-pic-O2", "calls"), read("mips-nopic-O2", "calls"))
+    else {
+        return;
+    };
+
+    let mean_unrelated = |binary: &Binary| {
+        let arch = binary.isa.arch();
+        let bodies: Vec<_> = binary
+            .functions
+            .iter()
+            .map(|function| {
+                let (insns, _) = decode_all(arch, &function.code, function.address);
+                normalize_body(arch, &insns)
+            })
+            .collect();
+
+        let mut total = 0.0;
+        let mut count = 0;
+        for (index, left) in bodies.iter().enumerate() {
+            for right in bodies.iter().skip(index + 1) {
+                total += similarity(left, right);
+                count += 1;
+            }
+        }
+        total / f64::from(count)
+    };
+
+    let (pic_noise, nopic_noise) = (mean_unrelated(&pic), mean_unrelated(&nopic));
+
+    // PIC still costs something: the GOT-indirect call is shared shape that a
+    // direct call does not have, and that part is real code, so the gap does
+    // not close to nothing. Measured on this fixture the gap is 0.075 with the
+    // preamble dropped and 0.098 with it compared, so the bound sits between
+    // the two: loose enough for the call, tight enough that the preamble
+    // coming back fails this test.
+    assert!(
+        pic_noise - nopic_noise < 0.085,
+        "PIC decoys at {pic_noise:.3} against {nopic_noise:.3}: the preamble is being compared"
+    );
+}
+
 /// Matching a stripped binary against an unstripped one must still work.
 ///
 /// This is the patch-checking case: a vendor image against a reference build.

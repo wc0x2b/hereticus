@@ -96,6 +96,24 @@ pub trait Arch {
     /// invents a function. Answer only for a shape that reliably begins one.
     fn is_prologue(&self, insn: &Insn) -> bool;
 
+    /// How far back a function really starts, given its prologue.
+    ///
+    /// [`Arch::is_prologue`] names the instruction that opens a frame, but an
+    /// ABI can oblige a few words before it. MIPS PIC computes the global
+    /// pointer first, so the frame allocation is the second or third
+    /// instruction of the function rather than the first.
+    ///
+    /// `earlier` holds the instructions before the prologue, closest last, so
+    /// `earlier.last()` is the word immediately before it. Return how many of
+    /// them belong to this function. Returning more than are there is not
+    /// possible, because the slice is the bound.
+    ///
+    /// Defaults to 0: a prologue opens its function, which is true of every
+    /// ABI that needs no preamble.
+    fn preamble_before_prologue(&self, _earlier: &[Insn]) -> usize {
+        0
+    }
+
     /// Report whether an instruction is alignment padding rather than work.
     fn is_padding(&self, insn: &Insn) -> bool;
 
