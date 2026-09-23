@@ -301,15 +301,16 @@ fn the_pic_preamble_does_not_make_unrelated_functions_look_alike() {
 
     let (pic_noise, nopic_noise) = (mean_unrelated(&pic), mean_unrelated(&nopic));
 
-    // PIC still costs something: the GOT-indirect call is shared shape that a
-    // direct call does not have, and that part is real code, so the gap does
-    // not close to nothing. Measured on this fixture the gap is 0.028 with the
-    // whole preamble dropped, 0.075 with the `_gp_disp` pair left in, and 0.098
-    // with none of it dropped. The bound sits below the middle figure, so any
-    // part of the preamble returning to the comparison fails this test.
+    // With the whole idiom accounted for — the preamble, the global-pointer
+    // restores and the GOT reads — PIC costs the comparison nothing: measured on
+    // this fixture the gap is -0.002, so a PIC build is no noisier than the same
+    // code built without it. Each piece left in raises it: 0.028 with the GOT
+    // reads compared, 0.075 with the `_gp_disp` pair as well, and 0.098 with
+    // none of it dropped. The bound sits below the smallest of those, so any
+    // part of the idiom returning to the comparison fails this test.
     assert!(
-        pic_noise - nopic_noise < 0.05,
-        "PIC decoys at {pic_noise:.3} against {nopic_noise:.3}: the preamble is being compared"
+        pic_noise - nopic_noise < 0.02,
+        "PIC decoys at {pic_noise:.3} against {nopic_noise:.3}: the ABI is being compared"
     );
 }
 

@@ -171,11 +171,25 @@ impl Arch for Mips32 {
         Some(if negative { (value as i64).wrapping_neg() as u64 } else { value })
     }
 
-    /// MIPS mnemonics carry no condition or flag-setting suffix: the compare
-    /// is part of the operation, as in `beq` against `bne`. There is nothing
-    /// to strip, so the name passes through.
+    /// MIPS mnemonics carry no condition or flag-setting suffix: the compare is
+    /// part of the operation, as in `beq` against `bne`. So a name mostly passes
+    /// through unchanged.
+    ///
+    /// The exception is the unconditional jump, which MIPS spells two ways. `j`
+    /// holds an absolute address and `b` a distance from here, and a compiler
+    /// picks between them on grounds that have nothing to do with the source: a
+    /// PIC build must stay position independent, so it emits `b` where the same
+    /// code built without PIC emits `j`. Measured on the PIC corpus the two
+    /// account for six jumps each way, and they normalize alike in every other
+    /// respect — one operand, `Jump` flow — so only the name kept them apart.
+    ///
+    /// A conditional branch is untouched. `beq` and `bne` differ in the test
+    /// they apply, which is the source's decision and must keep them apart.
     fn normalize_operation(&self, mnemonic: &str) -> CompactString {
-        mnemonic.trim().into()
+        match mnemonic.trim() {
+            "j" | "b" => "jump".into(),
+            other => other.into(),
+        }
     }
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
@@ -429,9 +443,9 @@ fn joins_to_callee_address(insn: &Insn, loaded: &str) -> bool {
 /// the mean similarity of *unrelated* functions from 0.34 to 0.44 on the PIC
 /// corpus: noise that pushes decoys toward the true pairs.
 ///
-/// The GOT-indirect call itself — `lw t9, 0x0(s0)` then `jalr t9` — is **not**
-/// matched here. That is the call, which is real work and the one part of the
-/// idiom a source edit can change.
+/// The `jalr` is **not** matched here. That is the call itself, which is real
+/// work: a non-PIC build spells the same call `jal`, and a source edit that adds
+/// or removes a call must still show.
 fn is_pic_setup(insn: &Insn) -> bool {
     /// The register the ABI leaves the callee address in.
     const CALLEE_ADDRESS: &str = "t9";
@@ -446,6 +460,23 @@ fn is_pic_setup(insn: &Insn) -> bool {
         // Reading `t9` is what marks it: the ABI supplies that value on entry,
         // so no computation from the source starts there.
         "addu" => third == Some(CALLEE_ADDRESS) || second == Some(CALLEE_ADDRESS),
+
+        // `lw t9, N(rX)` reads the callee address out of the GOT, which is how
+        // PIC reaches a function a non-PIC build simply names in its `jal`. The
+        // load exists only because the call is indirect, so it is scaffolding
+        // around the call rather than work of its own.
+        //
+        // Writing `t9` is what marks it. The ABI reserves that register for the
+        // address being called, and a compiler does not use it for anything
+        // else: across the whole fixture corpus every one of the 48 writes to
+        // `t9` is this load, and a non-PIC build has none at all. The `jalr`
+        // that consumes it still reaches the comparison, so a call that is
+        // added or removed is still visible.
+        //
+        // A reload of `t9` from the frame is frame work rather than a GOT read,
+        // and the caller judges that on its own. Excluding it here keeps each
+        // rule answering for what it actually recognizes.
+        "lw" => first == Some(CALLEE_ADDRESS) && !insn.operands.contains("(sp)"),
 
         // A move to or from the global pointer, which this decoder renders as
         // `or rX, rY, zero`. Either direction is the same bookkeeping: the
@@ -932,14 +963,52 @@ mod tests {
         assert_eq!(Mips32::LITTLE.preamble_before_prologue(&[decode_one(0x2442_0000)]), 0);
     }
 
-    /// The GOT-indirect call is the one part of the PIC idiom a source edit
-    /// can change, so it must reach the comparison.
+    /// The call survives, but the GOT read that reaches it does not.
+    ///
+    /// A non-PIC build spells the same call `jal` and needs no load at all, so
+    /// the load is scaffolding around the call. The `jalr` itself is the work:
+    /// an edit that adds or removes a call must still show.
     #[test]
-    fn the_got_indirect_call_is_kept() {
-        // lw t9, 0x0(s0): loading the callee address from the GOT.
-        assert!(!Mips32::LITTLE.is_frame_management(&decode_one(0x8e19_0000)));
-        // jalr t9: the call itself.
+    fn the_call_is_kept_but_its_got_read_is_not() {
+        // lw t9, 0x0(s0): reading the callee address out of the GOT.
+        assert!(Mips32::LITTLE.is_frame_management(&decode_one(0x8e19_0000)));
+        // lw t9, 0x0(gp): the same, indexed straight off the global pointer.
+        assert!(Mips32::LITTLE.is_frame_management(&decode_one(0x8f99_0000)));
+        // jalr t9: the call itself, which stays.
         assert!(!Mips32::LITTLE.is_frame_management(&decode_one(0x0320_f809)));
+    }
+
+    /// Only a load *into* `t9` is a GOT read. A load through `gp` into any other
+    /// register reads a global, which is work the source asked for.
+    #[test]
+    fn a_global_read_through_gp_is_not_a_got_read() {
+        // lw v0, 0x0(gp)
+        assert!(
+            !Mips32::LITTLE.is_frame_management(&decode_one(0x8f82_0000)),
+            "reading a global is real work"
+        );
+    }
+
+    /// A call that is added or removed must still be visible, or the report
+    /// would call a new call site no change at all.
+    #[test]
+    fn an_added_call_still_shows_after_the_got_read_goes() {
+        use crate::norm::normalize_body;
+
+        let arch = &Mips32::LITTLE;
+        let without = [decode_one(0x0085_1021)]; // addu v0, a0, a1
+        let with = [
+            decode_one(0x8f99_0000), // lw t9, 0x0(gp), dropped
+            decode_one(0x0320_f809), // jalr t9, kept
+            decode_one(0x0085_1021), // addu v0, a0, a1
+        ];
+
+        assert_eq!(normalize_body(arch, &without).len(), 1);
+        assert_eq!(
+            normalize_body(arch, &with).len(),
+            2,
+            "the call must remain once its GOT read is dropped"
+        );
     }
 
     #[test]
@@ -996,6 +1065,65 @@ mod tests {
         assert_ne!(
             Mips32::LITTLE.normalize_operation("beq"),
             Mips32::LITTLE.normalize_operation("bne")
+        );
+    }
+
+    /// `b` and `j` are one jump spelled two ways, and which one a compiler picks
+    /// follows from PIC rather than from the source.
+    #[test]
+    fn the_two_spellings_of_a_jump_normalize_alike() {
+        assert_eq!(
+            Mips32::LITTLE.normalize_operation("j"),
+            Mips32::LITTLE.normalize_operation("b"),
+            "a PIC build emits `b` where a non-PIC build emits `j`"
+        );
+    }
+
+    /// Merging the jumps must not reach the conditional branches that start with
+    /// the same letter, nor the calling forms.
+    #[test]
+    fn merging_the_jumps_leaves_everything_else_apart() {
+        let jump = Mips32::LITTLE.normalize_operation("j");
+        for other in ["beq", "bne", "bgez", "blez", "bltz", "jal", "jalr", "jr"] {
+            assert_ne!(
+                Mips32::LITTLE.normalize_operation(other),
+                jump,
+                "{other} is not a plain unconditional jump"
+            );
+        }
+    }
+
+    /// The whole instruction, not just the name, must come out alike: a `b` and
+    /// a `j` to the same place are one operation.
+    #[test]
+    fn a_jump_normalizes_the_same_either_way() {
+        use crate::norm::normalize;
+
+        // b, which is `beq zero, zero, offset`, and j to an absolute address.
+        let relative = decode_one(0x1000_0002);
+        let absolute = decode_one(0x0800_0010);
+        assert_eq!(relative.mnemonic, "b");
+        assert_eq!(absolute.mnemonic, "j");
+
+        let arch = &Mips32::LITTLE;
+        assert_eq!(normalize(arch, &relative), normalize(arch, &absolute));
+    }
+
+    /// A conditional branch must still differ from an unconditional jump, or a
+    /// new gate around some code would read as no change.
+    #[test]
+    fn a_conditional_branch_is_not_a_jump() {
+        use crate::norm::normalize;
+
+        let arch = &Mips32::LITTLE;
+        // beq a0, v0, offset: a real test, not `b`.
+        let conditional = decode_one(0x1082_0005);
+        let unconditional = decode_one(0x1000_0002);
+        assert_eq!(conditional.mnemonic, "beq");
+        assert_ne!(
+            normalize(arch, &conditional),
+            normalize(arch, &unconditional),
+            "a test that can fall through is not a jump"
         );
     }
 
