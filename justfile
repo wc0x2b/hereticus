@@ -11,6 +11,16 @@ fixtures:
         --workdir /work \
         {{fixtures_image}} ./fixtures/build.sh
 
+# Build real libraries before and after a real upstream fix, so a test can
+# check the comparison against the functions the fix touched.
+backports: fixtures
+    python3 fixtures/backports.py
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --volume "{{justfile_directory()}}:/work" \
+        --workdir /work \
+        {{fixtures_image}} ./fixtures/backports.sh
+
 # Download two OpenWrt releases for three boards, and extract the code the
 # tests compare. Each file is pinned by its SHA-256, and a second run reads the
 # cached downloads instead of the network.
@@ -21,11 +31,11 @@ firmware:
 build:
     cargo build --release
 
-test *args: build fixtures firmware
+test *args: build fixtures firmware backports
     cargo nextest run --release {{args}}
 
 # Skips tests marked slow, for a fast inner loop
-quick-test *args: build fixtures firmware
+quick-test *args: build fixtures firmware backports
     cargo nextest run --release -E 'not test(/slow/)' {{args}}
 
 # Compare the two firmware fixtures, as a reader would compare two releases.
