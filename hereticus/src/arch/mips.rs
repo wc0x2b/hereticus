@@ -20,6 +20,7 @@ use rabbitizer::{
 };
 
 use super::{Arch, DecodeError, Insn, InsnKind};
+use crate::address::{AddressSpace, ConstantKind};
 
 /// Every MIPS32 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
@@ -105,15 +106,26 @@ impl Arch for Mips32 {
 
         let text =
             inst.display::<&str>(&InstructionDisplayFlags::new_gnu_as(), None, 0).to_string();
-        let (mnemonic, operands) = split_mnemonic(&text);
+        let (mnemonic, mut operands) = split_mnemonic(&text);
+        let kind = classify(&inst);
 
-        Ok(Insn {
-            address: insn_address,
-            bytes_len: INSN_WIDTH,
-            mnemonic,
-            operands,
-            kind: classify(&inst),
-        })
+        // `rabbitizer` names a jump target as a label, such as
+        // `func_80001000`, and a branch target as an expression, such as
+        // `. + 4 + (0x7 << 2)`. Every decoder prints a resolved target in the
+        // `$` form instead, which is how the rest of `hereticus` knows it
+        // moves with the code rather than coming from the source.
+        //
+        // A branch is written from its offset rather than its target, which
+        // cannot be resolved when it would lie below address zero.
+        if let Some(offset) = inst.get_branch_offset() {
+            operands = with_target(&operands, i64::from(offset.inner()));
+        } else if let InsnKind::Call { target: Some(target) }
+        | InsnKind::Jump { target: Some(target) } = kind
+        {
+            operands = with_target(&operands, target.wrapping_sub(insn_address) as i64);
+        }
+
+        Ok(Insn { address: insn_address, bytes_len: INSN_WIDTH, mnemonic, operands, kind })
     }
 
     fn triple(&self) -> &'static str {
@@ -228,6 +240,85 @@ impl Arch for Mips32 {
         if is_gp_disp_preamble(body) { 2 } else { 0 }
     }
 
+    /// MIPS builds a 32-bit address in two halves: `lui rX, hi` loads the
+    /// upper sixteen bits, and a later `addiu rY, rX, lo` or `ori` adds the
+    /// lower sixteen. The two are often far apart, with other work between,
+    /// so each register is followed from its `lui` to its uses.
+    ///
+    /// A `lui` whose upper half reaches into `space` is an address. So is a
+    /// lower half that, joined to the address in its source register, lands in
+    /// `space`, and so is a load or store whose offset is that lower half.
+    ///
+    /// Forward branches are followed, so code after a return that a branch
+    /// reaches still knows what its registers hold. A loop is followed only on
+    /// its way in.
+    fn constant_kinds(&self, body: &[Insn], space: &AddressSpace) -> Vec<ConstantKind> {
+        let mut kinds = vec![ConstantKind::Value; body.len()];
+        if space.is_empty() {
+            return kinds;
+        }
+
+        let mut upper = HeldAddresses::default();
+        // What runs after the current delay slot, as the previous instruction
+        // decided.
+        let mut after_slot = AfterSlot::FallThrough;
+        let mut reachable = Reach::FromAbove;
+        // The addresses held on arrival at each forward branch target seen so
+        // far.
+        let mut at_target: Vec<(u64, HeldAddresses<'_>)> = Vec::new();
+
+        for (index, insn) in body.iter().enumerate() {
+            upper = arrive(upper, reachable, take_state(&mut at_target, insn.address));
+            reachable = Reach::FromAbove;
+
+            if let Some((register, high)) = upper_half(insn) {
+                if space.overlaps(reach_of_upper_half(high)) {
+                    kinds[index] = ConstantKind::Address;
+                }
+                upper.set(register, high);
+            } else if let Some((destination, address)) = lower_half(insn, &upper) {
+                // The destination now holds the whole address, and code
+                // reaches the fields of a global through it as it would
+                // through the upper half.
+                if space.contains(address) {
+                    kinds[index] = ConstantKind::Address;
+                    upper.set(destination, address);
+                } else {
+                    upper.forget(destination);
+                }
+            } else if let Some((written, address)) = memory_reference(insn, &upper) {
+                if space.contains(address) {
+                    kinds[index] = ConstantKind::Address;
+                }
+                if let Some(written) = written {
+                    upper.forget(written);
+                }
+            } else if !is_store(&insn.mnemonic)
+                && let Some(written) = insn.operands.split(',').next()
+            {
+                upper.forget(written.trim());
+            }
+
+            // The delay slot runs before control moves, and compilers put the
+            // lower half of an argument address there, so a transfer takes
+            // effect only once its slot has run.
+            match after_slot {
+                AfterSlot::FallThrough => {}
+                AfterSlot::Call => upper.keep_only(is_callee_saved),
+                AfterSlot::Branch(target) => record_state(&mut at_target, target, &upper),
+                AfterSlot::Leave(target) => {
+                    if let Some(target) = target {
+                        record_state(&mut at_target, target, &upper);
+                    }
+                    reachable = Reach::OnlyByBranch;
+                }
+            }
+            after_slot = AfterSlot::of(insn);
+        }
+
+        kinds
+    }
+
     /// A function that needs a frame opens by making room for it, so
     /// `addiu sp, sp, -N` is the first instruction of almost every one.
     ///
@@ -327,6 +418,22 @@ impl Arch for Mips32 {
     }
 }
 
+/// Replace the last operand, which names the target, with the `$` form.
+///
+/// `distance` runs from the instruction to its target, which is how the ARM
+/// decoder writes a target too.
+fn with_target(operands: &str, distance: i64) -> String {
+    let written = if distance < 0 {
+        format!("$-{:#x}", distance.unsigned_abs())
+    } else {
+        format!("$+{distance:#x}")
+    };
+    match operands.rsplit_once(',') {
+        Some((head, _)) => format!("{head}, {written}"),
+        None => written,
+    }
+}
+
 /// Split rendered instruction text into the mnemonic and the rest.
 ///
 /// `rabbitizer` pads the mnemonic to a fixed column and writes every register
@@ -415,6 +522,222 @@ fn is_gp_disp_preamble(body: &[Insn]) -> bool {
     let Some(loaded) = constant_pair_register(high, low) else { return false };
 
     rest.iter().take(MOST_WORDS_TO_CONSUMER).any(|insn| joins_to_callee_address(insn, loaded))
+}
+
+/// What an instruction does to control flow once its delay slot has run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterSlot {
+    /// Nothing: the next instruction runs next.
+    FallThrough,
+    /// A call returns here, with the argument and temporary registers
+    /// clobbered and the saved ones restored.
+    Call,
+    /// A conditional branch goes forward to this address or falls through.
+    Branch(u64),
+    /// A jump or return: the next instruction runs only if a branch reaches
+    /// it. A jump forward to a known address carries it.
+    Leave(Option<u64>),
+}
+
+impl AfterSlot {
+    fn of(insn: &Insn) -> Self {
+        // A backward target is a loop, which is entered from above; its state
+        // on the way back round is not followed.
+        let forward = |target: Option<u64>| target.filter(|&target| target > insn.address);
+        match insn.kind {
+            InsnKind::Call { .. } => Self::Call,
+            InsnKind::Branch { target } => match forward(target) {
+                Some(target) => Self::Branch(target),
+                None => Self::FallThrough,
+            },
+            InsnKind::Jump { target } => Self::Leave(forward(target)),
+            InsnKind::Return => Self::Leave(None),
+            InsnKind::Normal | InsnKind::Unknown => Self::FallThrough,
+        }
+    }
+}
+
+/// How control can reach an instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reach {
+    /// The instruction before runs into it, and branches may join it too.
+    FromAbove,
+    /// The instruction before leaves, so only a branch reaches it.
+    OnlyByBranch,
+}
+
+/// The addresses held on arrival at an instruction.
+///
+/// Where two paths join, only the addresses both agree on survive. Where only
+/// a branch arrives, its addresses are the ones held. Where no branch is
+/// known to arrive, as at a case of a jump table, nothing is held.
+fn arrive<'a>(
+    above: HeldAddresses<'a>,
+    reach: Reach,
+    branched: Option<HeldAddresses<'a>>,
+) -> HeldAddresses<'a> {
+    match (reach, branched) {
+        (Reach::FromAbove, None) => above,
+        (Reach::FromAbove, Some(branched)) => above.agreed_with(&branched),
+        (Reach::OnlyByBranch, Some(branched)) => branched,
+        (Reach::OnlyByBranch, None) => HeldAddresses::default(),
+    }
+}
+
+/// Merge the addresses held on a branch to `target` into those recorded.
+fn record_state<'a>(
+    at_target: &mut Vec<(u64, HeldAddresses<'a>)>,
+    target: u64,
+    upper: &HeldAddresses<'a>,
+) {
+    match at_target.iter_mut().find(|(address, _)| *address == target) {
+        Some((_, recorded)) => *recorded = recorded.agreed_with(upper),
+        None => at_target.push((target, upper.clone())),
+    }
+}
+
+/// Remove and return the addresses recorded for branches to `address`.
+fn take_state<'a>(
+    at_target: &mut Vec<(u64, HeldAddresses<'a>)>,
+    address: u64,
+) -> Option<HeldAddresses<'a>> {
+    let position = at_target.iter().position(|(target, _)| *target == address)?;
+    Some(at_target.swap_remove(position).1)
+}
+
+/// The registers that hold an address: an upper half loaded by `lui`, or a
+/// whole address built from one.
+///
+/// A function holds a handful at a time, so a list beats a map.
+#[derive(Clone, Debug, Default)]
+struct HeldAddresses<'a> {
+    held: Vec<(&'a str, u64)>,
+}
+
+impl<'a> HeldAddresses<'a> {
+    fn set(&mut self, register: &'a str, value: u64) {
+        self.forget(register);
+        self.held.push((register, value));
+    }
+
+    fn get(&self, register: &str) -> Option<u64> {
+        self.held.iter().find(|(held, _)| *held == register).map(|&(_, value)| value)
+    }
+
+    fn forget(&mut self, register: &str) {
+        self.held.retain(|(held, _)| *held != register);
+    }
+
+    fn keep_only(&mut self, survives: fn(&str) -> bool) {
+        self.held.retain(|(held, _)| survives(held));
+    }
+
+    /// The addresses this and `other` both hold, with the same value.
+    fn agreed_with(&self, other: &Self) -> Self {
+        let held = self
+            .held
+            .iter()
+            .filter(|&&(register, value)| other.get(register) == Some(value))
+            .copied()
+            .collect();
+        Self { held }
+    }
+}
+
+/// Report whether the o32 ABI makes a callee restore a register.
+fn is_callee_saved(register: &str) -> bool {
+    matches!(
+        register,
+        "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "s7" | "gp" | "sp" | "fp" | "s8"
+    )
+}
+
+/// Read `lui rX, hi` as the register and the value it loads.
+fn upper_half(insn: &Insn) -> Option<(&str, u64)> {
+    if insn.mnemonic != "lui" {
+        return None;
+    }
+    let mut operands = insn.operands.split(',').map(str::trim);
+    let (Some(register), Some(immediate), None) =
+        (operands.next(), operands.next(), operands.next())
+    else {
+        return None;
+    };
+    let high = Mips32::LITTLE.constant_value(immediate)?;
+    Some((register, (high & 0xffff) << 16))
+}
+
+/// The addresses a `lui` can start, once any lower half is added.
+///
+/// `addiu` adds a signed lower half, so the address can sit up to 32 KiB
+/// below the upper half as well as up to 32 KiB above it. `ori` reaches up to
+/// 64 KiB above.
+fn reach_of_upper_half(high: u64) -> core::ops::Range<u64> {
+    high.saturating_sub(0x8000)..high + 0x1_0000
+}
+
+/// Read `addiu rY, rX, lo` or `ori rY, rX, lo`, where `rX` holds an
+/// address, as the destination and the full address.
+fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str, u64)> {
+    if insn.mnemonic != "addiu" && insn.mnemonic != "ori" {
+        return None;
+    }
+    let mut operands = insn.operands.split(',').map(str::trim);
+    let (Some(destination), Some(source), Some(immediate), None) =
+        (operands.next(), operands.next(), operands.next(), operands.next())
+    else {
+        return None;
+    };
+    let high = upper.get(source)?;
+    let low = Mips32::LITTLE.constant_value(immediate)?;
+
+    // A negative `addiu` immediate reads as a 64-bit two's complement, so
+    // wrapping arithmetic on 32 bits gives the address the processor forms.
+    let address = if insn.mnemonic == "ori" {
+        high | (low & 0xffff)
+    } else {
+        u64::from((high as u32).wrapping_add(low as u32))
+    };
+    Some((destination, address))
+}
+
+/// Read a load or store through a register that holds an address, as the
+/// register the load writes and the full address it reaches.
+///
+/// A store writes no register, so it gives `None` for the first.
+fn memory_reference<'a>(
+    insn: &'a Insn,
+    upper: &HeldAddresses<'_>,
+) -> Option<(Option<&'a str>, u64)> {
+    let (first, reference) = insn.operands.split_once(',')?;
+    let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
+    let high = upper.get(base.trim())?;
+    let low = Mips32::LITTLE.constant_value(offset)?;
+
+    let address = u64::from((high as u32).wrapping_add(low as u32));
+    let written = (!is_store(&insn.mnemonic)).then(|| first.trim());
+    Some((written, address))
+}
+
+/// Report whether an instruction stores, which reads its first operand
+/// rather than writing it.
+fn is_store(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "sb" | "sh"
+            | "sw"
+            | "swl"
+            | "swr"
+            | "sc"
+            | "sd"
+            | "sdl"
+            | "sdr"
+            | "scd"
+            | "swc1"
+            | "sdc1"
+            | "swc2"
+            | "sdc2"
+    )
 }
 
 /// Report whether an instruction is `addu rD, loaded, t9` in either operand
@@ -754,6 +1077,244 @@ mod tests {
         let mut code = 0x0085_1021u32.to_le_bytes().to_vec();
         code.extend_from_slice(&[0; 4]);
         assert_eq!(Mips32::LITTLE.trim_padding(&code), &code[..4]);
+    }
+
+    mod addresses {
+        use super::*;
+        use crate::address::{
+            AddressSpace,
+            ConstantKind::{Address, Value},
+        };
+
+        const V0: u32 = 2;
+        const A0: u32 = 4;
+        const A1: u32 = 5;
+        const T0: u32 = 8;
+        const S0: u32 = 16;
+        const S1: u32 = 17;
+        const SP: u32 = 29;
+
+        fn lui(rt: u32, imm: u32) -> u32 {
+            0x3c00_0000 | rt << 16 | imm
+        }
+        fn addiu(rt: u32, rs: u32, imm: u32) -> u32 {
+            0x2400_0000 | rs << 21 | rt << 16 | (imm & 0xffff)
+        }
+        fn ori(rt: u32, rs: u32, imm: u32) -> u32 {
+            0x3400_0000 | rs << 21 | rt << 16 | imm
+        }
+        fn lw(rt: u32, offset: u32, base: u32) -> u32 {
+            0x8c00_0000 | base << 21 | rt << 16 | (offset & 0xffff)
+        }
+        fn sw(rt: u32, offset: u32, base: u32) -> u32 {
+            0xac00_0000 | base << 21 | rt << 16 | (offset & 0xffff)
+        }
+        fn jal(target: u32) -> u32 {
+            0x0c00_0000 | (target >> 2 & 0x03ff_ffff)
+        }
+        /// `beqz rs`, to `words` instructions past the delay slot.
+        fn beqz(rs: u32, words: u32) -> u32 {
+            0x1000_0000 | rs << 21 | words
+        }
+        const JR_RA: u32 = 0x03e0_0008;
+        const NOP: u32 = 0;
+
+        /// Where the code sits, and the space it refers to.
+        const BASE: u64 = 0x8000_0000;
+
+        fn space() -> AddressSpace {
+            AddressSpace::of_raw_image(BASE, 0x10_0000)
+        }
+
+        fn kinds_in(words: &[u32], space: &AddressSpace) -> Vec<ConstantKind> {
+            let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+            let (body, error) = decode_all(&Mips32::BIG, &code, BASE);
+            assert_eq!(error, None);
+            Mips32::BIG.constant_kinds(&body, space)
+        }
+
+        fn kinds(words: &[u32]) -> Vec<ConstantKind> {
+            kinds_in(words, &space())
+        }
+
+        #[test]
+        fn a_pair_that_builds_an_address_is_an_address() {
+            assert_eq!(kinds(&[lui(V0, 0x8001), addiu(V0, V0, 0x51b8)]), [Address, Address]);
+        }
+
+        #[test]
+        fn a_negative_lower_half_is_joined_as_the_processor_joins_it() {
+            // 0x80010000 - 0x1d78 = 0x8000e288, inside the space.
+            assert_eq!(kinds(&[lui(V0, 0x8001), addiu(V0, V0, 0xe288)]), [Address, Address]);
+        }
+
+        #[test]
+        fn a_pair_joined_with_ori_is_an_address() {
+            assert_eq!(kinds(&[lui(A0, 0x8001), ori(A0, A0, 0xca00)]), [Address, Address]);
+        }
+
+        /// 1,000,000,000 is built the same way, but is not an address here.
+        #[test]
+        fn a_pair_that_builds_a_number_is_a_value() {
+            assert_eq!(kinds(&[lui(A0, 0x3b9a), ori(A0, A0, 0xca00)]), [Value, Value]);
+        }
+
+        /// The sign mask `0x80000000` is a number when the code is elsewhere.
+        #[test]
+        fn a_kseg_constant_outside_the_image_is_a_value() {
+            let space = AddressSpace::of_raw_image(0x8040_0000, 0x1_0000);
+            assert_eq!(kinds_in(&[lui(T0, 0x8000), NOP], &space), [Value, Value]);
+        }
+
+        #[test]
+        fn nothing_is_an_address_without_a_space() {
+            let words = [lui(V0, 0x8001), addiu(V0, V0, 0x51b8)];
+            assert_eq!(kinds_in(&words, &AddressSpace::none()), [Value, Value]);
+        }
+
+        #[test]
+        fn work_between_the_halves_does_not_break_the_pair() {
+            let words = [lui(V0, 0x8001), addiu(T0, A0, 1), sw(T0, 0x10, SP), addiu(A0, V0, 0x20)];
+            assert_eq!(kinds(&words), [Address, Value, Value, Address]);
+        }
+
+        #[test]
+        fn a_register_written_between_the_halves_ends_the_pair() {
+            let words = [lui(V0, 0x8001), addiu(V0, A0, 1), addiu(A0, V0, 0x20)];
+            assert_eq!(kinds(&words), [Address, Value, Value]);
+        }
+
+        /// A load or store offset from an address register is its lower half.
+        #[test]
+        fn a_load_and_a_store_through_the_upper_half_are_addresses() {
+            let words = [lui(S0, 0x8001), lw(A0, 0x1aa0, S0), sw(A1, 0x1aa4, S0)];
+            assert_eq!(kinds(&words), [Address, Address, Address]);
+        }
+
+        /// A load writes its first operand, so it ends a pair on that register.
+        #[test]
+        fn a_load_into_the_register_ends_the_pair() {
+            let words = [lui(S0, 0x8001), lw(S0, 0x10, SP), addiu(A0, S0, 0x20)];
+            assert_eq!(kinds(&words), [Address, Value, Value]);
+        }
+
+        /// A store only reads its first operand, so the pair survives it.
+        #[test]
+        fn a_store_from_the_register_keeps_the_pair() {
+            let words = [lui(S0, 0x8001), sw(S0, 0x10, SP), addiu(A0, S0, 0x20)];
+            assert_eq!(kinds(&words), [Address, Value, Address]);
+        }
+
+        /// The whole address in a register reaches the fields of a global.
+        #[test]
+        fn a_whole_address_in_a_register_is_followed() {
+            let words =
+                [lui(S1, 0x8001), addiu(S1, S1, 0x0100), addiu(A0, S1, 0x10), lw(V0, 0x8, S1)];
+            assert_eq!(kinds(&words), [Address, Address, Address, Address]);
+        }
+
+        /// The delay slot runs before the call, so a lower half there counts.
+        #[test]
+        fn a_lower_half_in_the_delay_slot_of_a_call_counts() {
+            let words = [lui(A0, 0x8001), jal(0x8000_4000), addiu(A0, A0, 0x20)];
+            assert_eq!(kinds(&words), [Address, Value, Address]);
+        }
+
+        #[test]
+        fn a_call_clobbers_the_argument_registers() {
+            let words = [lui(A0, 0x8001), jal(0x8000_4000), NOP, addiu(A0, A0, 0x20)];
+            assert_eq!(kinds(&words), [Address, Value, Value, Value]);
+        }
+
+        #[test]
+        fn a_call_keeps_the_saved_registers() {
+            let words = [lui(S0, 0x8001), jal(0x8000_4000), NOP, addiu(A0, S0, 0x20)];
+            assert_eq!(kinds(&words), [Address, Value, Value, Address]);
+        }
+
+        /// Code after a return runs only when a branch reaches it, holding what
+        /// the branch held, even though the epilogue restored the register.
+        #[test]
+        fn a_block_after_a_return_holds_what_its_branch_held() {
+            let words = [
+                lui(S0, 0x8001),
+                beqz(A0, 4), // to index 6
+                NOP,
+                lw(S0, 0x10, SP), // the epilogue restores s0
+                JR_RA,
+                NOP,
+                addiu(A1, S0, 0x10),
+            ];
+            assert_eq!(kinds(&words)[6], Address);
+        }
+
+        /// With no branch to it, code after a return holds nothing known.
+        #[test]
+        fn a_block_no_branch_reaches_holds_nothing() {
+            let words = [lui(S0, 0x8001), JR_RA, NOP, addiu(A1, S0, 0x10)];
+            assert_eq!(kinds(&words)[3], Value);
+        }
+
+        #[test]
+        fn paths_that_agree_keep_the_address() {
+            let words = [
+                lui(V0, 0x8001),
+                beqz(A0, 3), // to index 5
+                NOP,
+                addiu(T0, A0, 1),
+                NOP,
+                addiu(A1, V0, 0x10),
+            ];
+            assert_eq!(kinds(&words)[5], Address);
+        }
+
+        #[test]
+        fn paths_that_disagree_forget_the_address() {
+            let words = [
+                lui(V0, 0x8001),
+                beqz(A0, 3), // to index 5
+                NOP,
+                lui(V0, 0x8002),
+                NOP,
+                addiu(A1, V0, 0x10),
+            ];
+            assert_eq!(kinds(&words)[5], Value);
+        }
+
+        #[test]
+        fn there_is_one_kind_for_each_instruction() {
+            let words = [lui(V0, 0x8001), JR_RA, addiu(V0, V0, 0x10), NOP, NOP];
+            assert_eq!(kinds(&words).len(), words.len());
+            assert!(kinds(&[]).is_empty());
+        }
+
+        /// The target of `jal` and `j` prints in the `$` form every decoder
+        /// uses for a resolved target.
+        #[test]
+        fn a_jump_target_prints_as_a_resolved_target() {
+            let code = jal(0x8000_4000).to_be_bytes();
+            let insn = Mips32::BIG.decode(&code, 0, BASE).unwrap();
+            assert_eq!(insn.operands, "$+0x4000");
+            assert!(crate::arch::is_branch_target(&insn.operands));
+        }
+
+        /// Normalizing drops the constants of an address, and only those.
+        #[test]
+        fn normalizing_in_a_space_drops_only_the_address() {
+            use crate::norm::{normalize_body, normalize_body_in};
+
+            let words = [lui(V0, 0x8001), addiu(V0, V0, 0x51b8), addiu(A0, A0, 0x25)];
+            let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+            let (body, _) = decode_all(&Mips32::BIG, &code, BASE);
+
+            let plain = normalize_body(&Mips32::BIG, &body);
+            let placed = normalize_body_in(&Mips32::BIG, &body, &space());
+
+            assert_eq!(plain, placed, "the operations and shapes agree");
+            assert_eq!(plain[0].constants.as_slice(), [0x8001]);
+            assert!(placed[0].constants.is_empty() && placed[1].constants.is_empty());
+            assert_eq!(placed[2].constants.as_slice(), [0x25], "a real constant stays");
+        }
     }
 
     /// The `nop` in the delay slot of the last return belongs to the function.

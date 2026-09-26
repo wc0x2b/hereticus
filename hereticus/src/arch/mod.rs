@@ -27,6 +27,8 @@ use core::fmt;
 
 use compact_str::CompactString;
 
+use crate::address::{AddressSpace, ConstantKind};
+
 /// An architecture that `hereticus` can decode.
 ///
 /// The classifying methods take operands as printed, in the spelling this
@@ -89,6 +91,21 @@ pub trait Arch {
     /// Saving registers, moving the stack pointer and spilling to a frame slot
     /// are all bookkeeping a compiler adds or removes freely.
     fn is_frame_management(&self, insn: &Insn) -> bool;
+
+    /// Say, for each instruction of `body`, whether its constants are an
+    /// address inside `space` or a value.
+    ///
+    /// An address moves whenever the linker moves what it points at, so
+    /// comparing it reports a change on every release. Where an architecture
+    /// builds an address from several instructions, only the sequence shows
+    /// which constants are parts of one, so the whole body is judged at once.
+    ///
+    /// The result holds one entry per instruction of `body`. Defaults to
+    /// [`ConstantKind::Value`] for all, for the architectures that reach their
+    /// data through relative offsets, which normalizing already drops.
+    fn constant_kinds(&self, body: &[Insn], _space: &AddressSpace) -> Vec<ConstantKind> {
+        vec![ConstantKind::Value; body.len()]
+    }
 
     /// The length of an ABI idiom starting at `body[0]`, or 0 for none.
     ///

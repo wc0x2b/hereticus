@@ -1,7 +1,8 @@
 //! Read binaries and find the functions in them.
 
-use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
+use object::{Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
 
+use crate::address::AddressSpace;
 use crate::arch::Arch;
 use crate::arch::arm32::Arm32;
 use crate::arch::mips::Mips32;
@@ -115,6 +116,8 @@ pub struct Binary {
     pub functions: Vec<Function>,
     /// How the functions were found.
     pub found_by: FoundBy,
+    /// Where the binary sits in memory, which tells an address from a number.
+    pub addresses: AddressSpace,
 }
 
 impl Binary {
@@ -145,7 +148,8 @@ impl Binary {
             // A stable order keeps output and snapshots reproducible; the
             // symbol table order is not guaranteed.
             functions.sort_by_key(|function| (function.address, function.name.clone()));
-            return Ok(Self { isa, functions, found_by: FoundBy::Symbols });
+            let addresses = address_space(&file);
+            return Ok(Self { isa, functions, found_by: FoundBy::Symbols, addresses });
         }
 
         if !has_code_section(&file) {
@@ -163,7 +167,12 @@ impl Binary {
             return Err(ObjError::NoFunctions);
         }
 
-        Ok(Self { isa, functions: scanned, found_by: FoundBy::Scanning })
+        Ok(Self {
+            isa,
+            functions: scanned,
+            found_by: FoundBy::Scanning,
+            addresses: address_space(&file),
+        })
     }
 
     /// Read a blob that carries no container format.
@@ -198,7 +207,8 @@ impl Binary {
             return Err(ObjError::NoFunctions);
         }
 
-        Ok(Self { isa, functions, found_by: FoundBy::Scanning })
+        let addresses = AddressSpace::of_raw_image(base, data.len() as u64);
+        Ok(Self { isa, functions, found_by: FoundBy::Scanning, addresses })
     }
 }
 
@@ -212,6 +222,23 @@ fn symbol_code(file: &object::File<'_>, symbol: &object::Symbol<'_, '_>) -> Opti
     let start = symbol.address().checked_sub(section.address())? as usize;
     let end = start.checked_add(symbol.size() as usize)?;
     data.get(start..end).map(<[u8]>::to_vec)
+}
+
+/// The addresses a linked file occupies: each section it loads, `.bss`
+/// included.
+///
+/// An unlinked object gets none. Its sections all start at zero, and the code
+/// holds zeros where the linker will write addresses, so nothing in it is an
+/// address yet.
+fn address_space(file: &object::File<'_>) -> AddressSpace {
+    if file.kind() == ObjectKind::Relocatable {
+        return AddressSpace::none();
+    }
+    AddressSpace::from_ranges(
+        file.sections()
+            .filter(|section| section.address() != 0)
+            .map(|section| section.address()..section.address().saturating_add(section.size())),
+    )
 }
 
 fn has_code_section(file: &object::File<'_>) -> bool {
