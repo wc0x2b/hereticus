@@ -1,4 +1,4 @@
-// Fixture functions for heresy tests.
+// Fixture functions for hereticus tests.
 //
 // These cover the shapes that make function matching hard: arithmetic that the
 // optimizer folds, loops it unrolls or rewrites, branches it reorders, and

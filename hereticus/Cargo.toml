@@ -1,0 +1,31 @@
+[package]
+name = "hereticus"
+description = "Compare functions between two binaries, robust to compiler differences"
+readme = "../README.md"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version = "1.90"
+
+[lib]
+bench = false
+
+[dependencies]
+compact_str = "0.9"
+object = "0.40"
+rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = ["std", "MIPS_II"] }
+rayon = "1.12.0"
+smallvec = "1"
+yaxpeax-arch = "0.3"
+yaxpeax-arm = "0.4"
+
+[dev-dependencies]
+# One test body runs as a plain property test on stable, and under a
+# coverage-guided fuzzer when one is available.
+bolero = { version = "0.13", features = ["arbitrary"] }
+insta = "1.48"
+rstest = "0.27"

@@ -18,6 +18,13 @@ mipsbe_target="mips-linux-gnu"
 # check against this exact value, so the two must agree.
 VECTOR_BASE="0x08000000"
 
+# Each distribution patches its own defaults into clang: Arch turns on the
+# stack protector and NEON, Debian turns off the FPU on armel. Every flag that
+# changes the code is stated here, thus the fixtures do not depend on which
+# clang builds them.
+common_flags=(-fstack-protector-strong)
+arm_flags=(-march=armv7-a -marm -mfloat-abi=softfp -mfpu=neon)
+
 if ! command -v clang >/dev/null 2>&1; then
     echo "fixtures: clang not found, cannot build ARM32 fixtures" >&2
     exit 1
@@ -29,7 +36,7 @@ for opt in O0 O1 O2 Os; do
     mkdir -p "$build/$opt"
     for source in "$src"/*.c; do
         name="$(basename "$source" .c)"
-        clang --target="$target" -march=armv7-a -marm \
+        clang --target="$target" "${arm_flags[@]}" "${common_flags[@]}" \
             -c "-$opt" -g \
             "$source" -o "$build/$opt/$name.o"
     done
@@ -42,9 +49,9 @@ for opt in O0 O2; do
     mkdir -p "$build/mips-$opt" "$build/mipsbe-$opt"
     for source in "$src"/*.c; do
         name="$(basename "$source" .c)"
-        clang --target="$mips_target" -c "-$opt" -g \
+        clang --target="$mips_target" "${common_flags[@]}" -c "-$opt" -g \
             "$source" -o "$build/mips-$opt/$name.o"
-        clang --target="$mipsbe_target" -c "-$opt" -g \
+        clang --target="$mipsbe_target" "${common_flags[@]}" -c "-$opt" -g \
             "$source" -o "$build/mipsbe-$opt/$name.o"
     done
 done
@@ -58,9 +65,10 @@ for opt in O0 O2; do
     mkdir -p "$build/mips-pic-$opt" "$build/mips-nopic-$opt"
     for source in "$src"/*.c; do
         name="$(basename "$source" .c)"
-        clang --target="$mips_target" -fPIC -c "-$opt" -g \
+        clang --target="$mips_target" "${common_flags[@]}" -fPIC -c "-$opt" -g \
             "$source" -o "$build/mips-pic-$opt/$name.o"
-        clang --target="$mips_target" -fno-pic -mno-abicalls -c "-$opt" -g \
+        clang --target="$mips_target" "${common_flags[@]}" \
+            -fno-pic -mno-abicalls -c "-$opt" -g \
             "$source" -o "$build/mips-nopic-$opt/$name.o"
     done
 done
@@ -71,9 +79,10 @@ done
 mkdir -p "$build/mipsbe-pic-O2" "$build/mipsbe-nopic-O2"
 for source in "$src"/*.c; do
     name="$(basename "$source" .c)"
-    clang --target="$mipsbe_target" -fPIC -c -O2 -g \
+    clang --target="$mipsbe_target" "${common_flags[@]}" -fPIC -c -O2 -g \
         "$source" -o "$build/mipsbe-pic-O2/$name.o"
-    clang --target="$mipsbe_target" -fno-pic -mno-abicalls -c -O2 -g \
+    clang --target="$mipsbe_target" "${common_flags[@]}" \
+        -fno-pic -mno-abicalls -c -O2 -g \
         "$source" -o "$build/mipsbe-nopic-O2/$name.o"
 done
 
@@ -133,7 +142,7 @@ fi
 # not just assembled, for those addresses to be real.
 if command -v ld.lld >/dev/null 2>&1 && command -v llvm-objcopy >/dev/null 2>&1; then
     mkdir -p "$build/raw"
-    clang --target="$target" -march=armv7-a -marm \
+    clang --target="$target" "${arm_flags[@]}" "${common_flags[@]}" \
         -c "$src/vectors.s" -o "$build/raw/vectors.o"
     ld.lld -Ttext="$VECTOR_BASE" -e _start --no-dynamic-linker \
         "$build/raw/vectors.o" -o "$build/raw/vectors.elf"
