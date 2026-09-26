@@ -1,4 +1,5 @@
-# Toolchain for `fixtures/build.sh`. Run by `just fixtures`.
+# Toolchain for `fixtures/build.sh` and `fixtures/backports.sh`, run by
+# `just fixtures` and `just backports`.
 #
 # The tests compare exact machine code, so every machine must build the
 # fixtures with the same compiler. Keep the LLVM major version in step with the
@@ -20,6 +21,7 @@ RUN apt-get update \
         libgcc-14-dev-armel-cross \
         libgcc-14-dev-mipsel-cross \
         libgcc-14-dev-mips-cross \
+        patch \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/lib/llvm-22/bin:${PATH}"
