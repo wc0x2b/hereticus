@@ -12,6 +12,7 @@ use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
 use super::{Arch, DecodeError, Insn, InsnKind};
+use crate::address::{AddressSpace, ConstantKind};
 
 /// Every A32 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
@@ -239,6 +240,123 @@ impl Arch for Arm32 {
         &bytes[..end]
     }
 
+    /// ARM code reaches its data through literal pool words, and PIC code
+    /// stores a *distance* there rather than an address: the word is added to
+    /// `pc`, or used as an offset from a base built that way.
+    ///
+    /// ```text
+    /// ldr r0, [pc, 0x4]     ; load the pool word
+    /// add r0, pc, r0        ; add it to pc: the word is a distance
+    /// ...
+    /// ldr r3, [pc, 0xa0]
+    /// ldr r3, [pc, r3]      ; read a GOT entry at that distance
+    /// ```
+    ///
+    /// Such a word changes whenever the linker moves the data it reaches,
+    /// which is every release, so it is marked as a stored address, but only
+    /// when the address it forms lies inside `space`. A distance to something
+    /// outside the image, such as the kernel a decompressor stub unpacks,
+    /// stays a value: it changes because the thing it measures changed. A
+    /// pool word used any other way, such as a size or a mask, stays a value.
+    /// Measured on zlib built as an ARM shared library, these words alone made
+    /// 18 unedited functions read as changed.
+    fn constant_kinds(
+        &self,
+        code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+    ) -> Vec<ConstantKind> {
+        /// `pc` reads two instructions ahead of the one that uses it.
+        const PC_AHEAD: u64 = 8;
+
+        let mut kinds = vec![ConstantKind::Value; body.len()];
+        let Some(start) = body.first().map(|insn| insn.address) else { return kinds };
+
+        // Registers holding a pool word: where the word sits, and its value.
+        let mut literal: Vec<(&str, u64, u32)> = Vec::new();
+        // Registers holding an address built from `pc` and a pool word.
+        let mut relative: Vec<(&str, u64)> = Vec::new();
+
+        let word_at = |pool: u64| -> Option<u32> {
+            let offset = usize::try_from(pool.checked_sub(start)?).ok()?;
+            let bytes = code.get(offset..offset.checked_add(INSN_WIDTH)?)?;
+            Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+
+        for insn in body {
+            let operation = self.normalize_operation(&insn.mnemonic);
+            let Some((destination, rest)) = insn.operands.split_once(',') else { continue };
+            let (destination, rest) = (destination.trim(), rest.trim());
+            let pc = insn.address.wrapping_add(PC_AHEAD);
+            let literal_of = |register: &str| {
+                literal
+                    .iter()
+                    .find(|(held, ..)| *held == register)
+                    .map(|&(_, pool, value)| (pool, value))
+            };
+            let base_of = |register: &str| match register {
+                "pc" => Some(pc),
+                _ => relative.iter().find(|(held, _)| *held == register).map(|&(_, at)| at),
+            };
+            // The address a base and a pool word form, when it lies in the
+            // image, marks the word as a stored address.
+            let mut formed = |base: u64, (pool, value): (u64, u32)| {
+                let address = base.wrapping_add(i64::from(value as i32) as u64);
+                if space.contains(address)
+                    && let Ok(index) = body.binary_search_by_key(&pool, |insn| insn.address)
+                {
+                    kinds[index] = ConstantKind::StoredAddress;
+                }
+                address
+            };
+
+            match (operation.as_str(), parse_reference(rest), parse_three(rest)) {
+                // `ldr rX, [pc, imm]`: load a pool word.
+                ("ldr", Some(("pc", Offset::Immediate(offset))), _) => {
+                    let pool = pc.wrapping_add(offset as u64);
+                    forget(&mut literal, &mut relative, destination);
+                    if let Some(value) = word_at(pool) {
+                        literal.push((destination, pool, value));
+                    }
+                    continue;
+                }
+                // `ldr rY, [base, rX]`: read at a distance from a base.
+                ("ldr", Some((base, Offset::Register(index))), _) => {
+                    if let (Some(base), Some(word)) = (base_of(base), literal_of(index)) {
+                        formed(base, word);
+                    }
+                }
+                // `add rY, base, rX`, either order: build an address.
+                ("add", _, Some((left, right))) => {
+                    let joined = match (
+                        base_of(left),
+                        literal_of(right),
+                        base_of(right),
+                        literal_of(left),
+                    ) {
+                        (Some(base), Some(word), ..) | (.., Some(base), Some(word)) => {
+                            Some((base, word))
+                        }
+                        _ => None,
+                    };
+                    if let Some((base, word)) = joined {
+                        let address = formed(base, word);
+                        forget(&mut literal, &mut relative, destination);
+                        relative.push((destination, address));
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+
+            if writes_first_operand(&operation) {
+                forget(&mut literal, &mut relative, destination);
+            }
+        }
+
+        kinds
+    }
+
     fn unwind_section(&self) -> Option<&'static str> {
         Some(UNWIND_SECTION)
     }
@@ -250,6 +368,71 @@ impl Arch for Arm32 {
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
         u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
+}
+
+/// The offset in a memory reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Offset<'a> {
+    Immediate(i64),
+    Register(&'a str),
+}
+
+/// Read `[base, offset]` as the base register and the offset.
+fn parse_reference(text: &str) -> Option<(&str, Offset<'_>)> {
+    let inner = text.strip_prefix('[')?.strip_suffix(']')?;
+    let (base, offset) = inner.split_once(',')?;
+    let offset = offset.trim();
+    let parsed = match offset.strip_prefix('-') {
+        Some(digits) => Offset::Immediate(-parse_number(digits)?),
+        None if offset.starts_with("0x") || offset.starts_with(|c: char| c.is_ascii_digit()) => {
+            Offset::Immediate(parse_number(offset)?)
+        }
+        None => Offset::Register(offset),
+    };
+    Some((base.trim(), parsed))
+}
+
+fn parse_number(text: &str) -> Option<i64> {
+    match text.strip_prefix("0x") {
+        Some(hex) => i64::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    }
+}
+
+/// Read `rA, rB`, the two sources of a three-register operation.
+fn parse_three(text: &str) -> Option<(&str, &str)> {
+    let (left, right) = text.split_once(',')?;
+    let right = right.trim();
+    (!right.contains(',')).then(|| (left.trim(), right))
+}
+
+/// Stop following a register the instruction writes.
+fn forget(literal: &mut Vec<(&str, u64, u32)>, relative: &mut Vec<(&str, u64)>, register: &str) {
+    literal.retain(|(held, ..)| *held != register);
+    relative.retain(|(held, _)| *held != register);
+}
+
+/// Report whether an operation writes its first operand. Stores, compares
+/// and branches read it.
+fn writes_first_operand(operation: &str) -> bool {
+    !matches!(
+        operation,
+        "str"
+            | "strb"
+            | "strh"
+            | "strd"
+            | "push"
+            | "stm"
+            | "stmdb"
+            | "cmp"
+            | "cmn"
+            | "tst"
+            | "teq"
+            | "b"
+            | "bl"
+            | "bx"
+            | "blx"
+    )
 }
 
 /// Split rendered instruction text into the mnemonic and the rest.

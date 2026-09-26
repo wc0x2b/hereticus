@@ -264,7 +264,12 @@ impl Arch for Mips32 {
     /// Forward branches are followed, so code after a return that a branch
     /// reaches still knows what its registers hold. A loop is followed only on
     /// its way in.
-    fn constant_kinds(&self, body: &[Insn], space: &AddressSpace) -> Vec<ConstantKind> {
+    fn constant_kinds(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+    ) -> Vec<ConstantKind> {
         let mut kinds = vec![ConstantKind::Value; body.len()];
 
         // The `_gp_disp` halves are the distance from the function to its
@@ -1289,7 +1294,7 @@ mod tests {
             let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
             let (body, error) = decode_all(&Mips32::BIG, &code, BASE);
             assert_eq!(error, None);
-            Mips32::BIG.constant_kinds(&body, space)
+            Mips32::BIG.constant_kinds(&code, &body, space)
         }
 
         fn kinds(words: &[u32]) -> Vec<ConstantKind> {
@@ -1571,7 +1576,7 @@ mod tests {
             let (body, _) = decode_all(&Mips32::BIG, &code, BASE);
 
             let plain = normalize_body(&Mips32::BIG, &body);
-            let placed = normalize_body_in(&Mips32::BIG, &body, &space());
+            let placed = normalize_body_in(&Mips32::BIG, &code, &body, &space());
 
             assert_eq!(plain, placed, "the operations and shapes agree");
             assert_eq!(plain[0].constants.as_slice(), [0x8001]);

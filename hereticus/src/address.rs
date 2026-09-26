@@ -75,6 +75,9 @@ pub enum ConstantKind {
     Value,
     /// Part of an address, which moves when the linker moves its target.
     Address,
+    /// The whole word is data holding an address, such as a literal pool
+    /// entry, and decodes as an instruction only by accident.
+    StoredAddress,
 }
 
 /// What a stretch of bytes holds, as far as its words show.

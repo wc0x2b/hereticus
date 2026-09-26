@@ -483,7 +483,7 @@ fn mips_constant_kinds_cover_every_instruction() {
         let space = AddressSpace::of_raw_image(u64::from(*base), u64::from(*length));
         for arch in [&Mips32::LITTLE, &Mips32::BIG] {
             let (insns, _) = decode_all(arch, code, u64::from(*base));
-            assert_eq!(arch.constant_kinds(&insns, &space).len(), insns.len());
+            assert_eq!(arch.constant_kinds(code, &insns, &space).len(), insns.len());
         }
     });
 }
@@ -498,7 +498,7 @@ fn a_space_only_removes_constants() {
         for arch in [&Mips32::LITTLE, &Mips32::BIG] {
             let (insns, _) = decode_all(arch, code, base);
             let plain = normalize_body(arch, &insns);
-            let placed = normalize_body_in(arch, &insns, &space);
+            let placed = normalize_body_in(arch, code, &insns, &space);
 
             assert_eq!(plain, placed, "the space changed an operation or a shape");
             for (without, with) in plain.iter().zip(&placed) {
@@ -518,7 +518,7 @@ fn an_empty_space_changes_nothing() {
         for arch in [&Mips32::LITTLE, &Mips32::BIG] {
             let (insns, _) = decode_all(arch, code, 0x8000_0000);
             let plain = normalize_body(arch, &insns);
-            let placed = normalize_body_in(arch, &insns, &AddressSpace::none());
+            let placed = normalize_body_in(arch, code, &insns, &AddressSpace::none());
             for (without, with) in plain.iter().zip(&placed) {
                 assert_eq!(without.constants, with.constants);
             }
