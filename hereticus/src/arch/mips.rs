@@ -478,16 +478,30 @@ impl Arch for Mips32 {
         /// reads the same in either byte order.
         const NOP: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 
+        // A word that does not decode is not code either. MIPS keeps no data
+        // among its instructions, so after a function's last instruction it
+        // is the gap before the next, which moves when a function before it
+        // grows. Measured on zlib built as a shared library, such a word made
+        // an unedited `inflateCodesUsed` read as changed.
+        //
+        // Only whole words are decoded. With a partial word at the end, the
+        // last four bytes straddle two words and read differently in each
+        // byte order, which moved a boundary under the fuzzer.
+        let aligned = bytes.len().is_multiple_of(INSN_WIDTH);
+        let is_filler = |end: usize| {
+            bytes[end - INSN_WIDTH..end] == NOP
+                || (aligned
+                    && self
+                        .decode(bytes, end - INSN_WIDTH, 0)
+                        .is_ok_and(|insn| insn.kind == InsnKind::Unknown))
+        };
+
         let mut end = bytes.len();
-        while end >= INSN_WIDTH {
-            if bytes[end - INSN_WIDTH..end] == NOP {
-                end -= INSN_WIDTH;
-            } else {
-                break;
-            }
+        while end >= INSN_WIDTH && is_filler(end) {
+            end -= INSN_WIDTH;
         }
 
-        // A `nop` in the delay slot of the last branch is part of the
+        // The word in the delay slot of the last branch is part of the
         // function, not padding. The symbol table includes it, so a scan must
         // too, or a scanned function differs from the same function read from
         // its symbol by one word.
@@ -1621,6 +1635,24 @@ mod tests {
         code.extend_from_slice(&0x2402_0001u32.to_le_bytes()); // addiu v0, zero, 1
         code.extend_from_slice(&[0; 8]);
         assert_eq!(Mips32::LITTLE.trim_padding(&code), &code[..8]);
+    }
+
+    /// A word that does not decode after the last return is the gap before
+    /// the next function, as the `nop` padding is.
+    #[test]
+    fn an_unreadable_word_after_the_return_is_trimmed() {
+        let mut code = 0x03e0_0008u32.to_be_bytes().to_vec(); // jr ra
+        code.extend_from_slice(&[0; 4]); // nop, in the delay slot
+        code.extend_from_slice(&0x0417_0001u32.to_be_bytes()); // does not decode
+        assert_eq!(Mips32::BIG.trim_padding(&code), &code[..8]);
+    }
+
+    /// An unreadable word before real code is kept: only the end is trimmed.
+    #[test]
+    fn an_unreadable_word_inside_a_function_is_kept() {
+        let mut code = 0x0417_0001u32.to_be_bytes().to_vec();
+        code.extend_from_slice(&0x2402_0001u32.to_be_bytes()); // addiu v0, zero, 1
+        assert_eq!(Mips32::BIG.trim_padding(&code), &code[..]);
     }
 
     /// Code that ends without a branch keeps no `nop`.

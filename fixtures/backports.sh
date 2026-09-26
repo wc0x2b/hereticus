@@ -8,7 +8,8 @@
 #
 #   lib.so           unstripped, whose symbol table is the answer
 #   lib-stripped.so  what the tool reads, with no symbols
-#   lib.text.bin     the code alone, as a flash dump holds it
+#   lib.bin          the loaded image alone, code and data, as a flash dump
+#                    holds it
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,7 +67,7 @@ build() {
             done
             ld.lld -shared -o "$dest/lib.so" "$objects"/*.o
             llvm-strip -o "$dest/lib-stripped.so" "$dest/lib.so"
-            llvm-objcopy -O binary --only-section=.text "$dest/lib.so" "$dest/lib.text.bin"
+            llvm-objcopy -O binary "$dest/lib.so" "$dest/lib.bin"
             rm -rf "$objects"
         done
     done
