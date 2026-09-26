@@ -163,9 +163,9 @@ fn the_stub_report_is_locked(#[case] board: Board) {
 ///
 /// Each MIPS lzma-loader changed only the constants that say where the
 /// kernel sits and how long it is. The ARM stub was rebuilt with real code
-/// changes, and one function was split differently.
+/// changes.
 #[rstest]
-#[case::arm_ex6100v2(EX6100V2, [70, 69], &[(Changed::No, 58), (Changed::InDetail, 3), (Changed::Yes, 7), (Changed::Unreadable, 1)], 1, 0)]
+#[case::arm_ex6100v2(EX6100V2, [69, 69], &[(Changed::No, 58), (Changed::InDetail, 3), (Changed::Yes, 7), (Changed::Unreadable, 1)], 0, 0)]
 #[case::mipsbe_eap245v3(EAP245V3, [8, 8], &[(Changed::No, 6), (Changed::InDetail, 2)], 0, 0)]
 #[case::mipsel_r6220(R6220, [8, 8], &[(Changed::No, 6), (Changed::InDetail, 2)], 0, 0)]
 fn the_stub_changes_are_known(
@@ -398,7 +398,7 @@ fn check_kernel(board: Board, unreported: usize, base_fit: [BaseFit; 2]) {
 fn slow_the_arm_kernel_report_is_locked() {
     check_kernel(
         EX6100V2,
-        5946,
+        6009,
         [
             BaseFit::Plausible { pointers: 13223, examined: 1_948_430 },
             BaseFit::Plausible { pointers: 13263, examined: 1_957_980 },
@@ -416,7 +416,7 @@ fn slow_the_arm_kernel_report_is_locked() {
 fn slow_the_big_endian_mips_kernel_report_is_locked() {
     check_kernel(
         EAP245V3,
-        12717,
+        12978,
         [
             BaseFit::Plausible { pointers: 47586, examined: 1_624_990 },
             BaseFit::Plausible { pointers: 47778, examined: 1_634_158 },
@@ -429,7 +429,7 @@ fn slow_the_big_endian_mips_kernel_report_is_locked() {
 fn slow_the_little_endian_mips_kernel_report_is_locked() {
     check_kernel(
         R6220,
-        14377,
+        14649,
         [
             BaseFit::Plausible { pointers: 50248, examined: 1_931_464 },
             BaseFit::Plausible { pointers: 50444, examined: 1_941_370 },

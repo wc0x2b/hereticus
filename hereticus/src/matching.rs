@@ -34,6 +34,10 @@ pub enum Confidence {
     IdenticalShape,
     /// The names agree, and no stronger reason applied.
     SameName,
+    /// One of a group of functions with the same normalized instructions,
+    /// paired with its counterpart by position. See
+    /// [`Cascade::match_twins_in_order`].
+    TwinInOrder,
     /// The normalized instructions are similar enough to pair.
     Similar,
 }
@@ -604,6 +608,7 @@ pub fn diff_reporting(
     if options.use_names == UseNames::Yes {
         cascade.match_by_name(progress);
     }
+    cascade.match_twins_in_order();
     cascade.match_by_similarity(progress);
 
     cascade.finish(progress)
@@ -1118,6 +1123,51 @@ impl Cascade<'_> {
             }
         }
         progress.finish();
+    }
+
+    /// Stage three and a half: twins, in the order they sit.
+    ///
+    /// Several functions can share one normalized body: small wrappers that
+    /// differ only in the function they call, such as Lua's `math_sin` and
+    /// `math_sinh`. The shape stage cannot choose between them, and without
+    /// names they would all read as removed and added. Measured on Lua built
+    /// as a stripped shared library, six such wrappers did.
+    ///
+    /// A linker keeps the functions of one object in source order, so when
+    /// both sides hold the same number of free functions of one shape, the
+    /// first pairs with the first, and so on. A group of unequal size is left
+    /// alone, because then an order is no evidence of which pairs with which.
+    fn match_twins_in_order(&mut self) {
+        let mut groups: HashMap<&[Symbol], (Vec<usize>, Vec<usize>)> = HashMap::new();
+        for (index, prepared) in self.left.iter().enumerate() {
+            if self.left_free[index] && !prepared.is_empty() {
+                groups.entry(prepared.ordered.as_slice()).or_default().0.push(index);
+            }
+        }
+        for (index, prepared) in self.right.iter().enumerate() {
+            if self.right_free[index]
+                && let Some((_, right)) = groups.get_mut(prepared.ordered.as_slice())
+            {
+                right.push(index);
+            }
+        }
+
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        for (mut left, mut right) in groups.into_values() {
+            if left.len() < 2 || left.len() != right.len() {
+                continue;
+            }
+            left.sort_by_key(|&index| self.left[index].function.address);
+            right.sort_by_key(|&index| self.right[index].function.address);
+            pairs.extend(left.into_iter().zip(right));
+        }
+
+        // Pairing in a fixed order keeps the result independent of the order
+        // the map yields its groups in.
+        pairs.sort_unstable();
+        for (before, after) in pairs {
+            self.take_pair(before, after, Confidence::TwinInOrder, 1.0);
+        }
     }
 
     /// Stage three: the same symbol name.

@@ -113,6 +113,17 @@ pub trait Arch {
         vec![ConstantKind::Value; body.len()]
     }
 
+    /// The addresses of the words `insns` load from a literal pool.
+    ///
+    /// A pool word is data among the instructions. It decodes as whatever its
+    /// bits spell, which can be a return or a prologue, and its value changes
+    /// with every release, so a scan that read it as code would split a
+    /// function at a different place in each. Defaults to none, for the
+    /// architectures that keep no data among their instructions.
+    fn literal_pool_words(&self, _insns: &[Insn]) -> Vec<u64> {
+        Vec::new()
+    }
+
     /// Say whether a recovered function holds code or data.
     ///
     /// A scan cannot see where code ends and data begins, so it reads a

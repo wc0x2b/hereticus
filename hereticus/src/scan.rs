@@ -50,6 +50,28 @@ use crate::obj::Function;
 /// that says how to unwind it.
 const EXIDX_ENTRY_LEN: usize = 8;
 
+/// The second word of an index entry for code that cannot be unwound.
+const EXIDX_CANTUNWIND: u32 = 1;
+
+/// One entry of an exception index: where a function starts, and whether the
+/// entry describes it alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexEntry {
+    pub address: u64,
+    pub unwinding: Unwinding,
+}
+
+/// Whether an index entry describes how to unwind its function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unwinding {
+    /// The entry describes one function, so the next entry starts the next.
+    Described,
+    /// The code cannot be unwound. A linker merges neighbouring entries of
+    /// this kind into one, so the entry can cover many functions. C built
+    /// without unwind tables has only these.
+    CannotUnwind,
+}
+
 /// How a function was found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Source {
@@ -92,7 +114,7 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
         .filter_map(|section| section.data().ok().map(|data| (section.address(), data)))
         .collect();
 
-    recover_from_regions(&code_sections, &exception_index_starts(&file, arch), arch)
+    recover_from_regions(&code_sections, &exception_index(&file, arch), arch)
 }
 
 /// Find the functions in code that is already located.
@@ -105,7 +127,7 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
 /// in address order, with empty names.
 pub fn recover_from_regions(
     regions: &[(u64, &[u8])],
-    exception_index: &[u64],
+    exception_index: &[IndexEntry],
     arch: &dyn Arch,
 ) -> Vec<Recovered> {
     if regions.is_empty() {
@@ -113,17 +135,30 @@ pub fn recover_from_regions(
     }
 
     let mut starts: BTreeSet<(u64, Source)> = BTreeSet::new();
-    for address in exception_index {
-        starts.insert((*address, Source::ExceptionIndex));
+    for entry in exception_index {
+        starts.insert((entry.address, Source::ExceptionIndex));
     }
 
-    // The exception index lists every function, so when it is there it is the
-    // whole answer. Guessing on top of it only invents boundaries: an
-    // internal `bx lr` would split one function into two.
+    // An entry that describes its function lists it alone, so between two
+    // such entries the index is the whole answer. Guessing there only invents
+    // boundaries: an internal `bx lr` would split one function into two.
+    //
+    // An entry that cannot unwind may cover many functions, merged by the
+    // linker, so its range is scanned as if there were no index. Measured on
+    // zlib built as an ARM shared library, five such entries covered all 123
+    // functions, and trusting them found 27.
     if !exception_index.is_empty() {
+        let blind = cannot_unwind_ranges(exception_index);
         for (base, code) in regions {
             for address in call_targets(arch, code, *base) {
                 starts.insert((address, Source::CallTarget));
+            }
+            for address in starts_after_returns(arch, code, *base) {
+                if blind.iter().any(|range| range.contains(&address))
+                    && opens_a_frame(arch, code, *base, address)
+                {
+                    starts.insert((address, Source::AfterReturn));
+                }
             }
         }
         return build_functions(&starts, regions, arch);
@@ -212,7 +247,33 @@ fn build_functions(
 /// In a relocatable object the field holds the target directly, because the
 /// relocation that would make it relative has not been applied. Both readings
 /// are tried, and the one that lands inside a code section wins.
-fn exception_index_starts(file: &object::File<'_>, arch: &dyn Arch) -> Vec<u64> {
+/// Report whether the instruction at `address` makes a frame.
+fn opens_a_frame(arch: &dyn Arch, code: &[u8], base: u64, address: u64) -> bool {
+    let Some(offset) = address.checked_sub(base).and_then(|offset| usize::try_from(offset).ok())
+    else {
+        return false;
+    };
+    arch.decode(code, offset, base).is_ok_and(|insn| arch.is_prologue(&insn))
+}
+
+/// The address ranges that entries which cannot unwind cover: from each such
+/// entry to the next entry, or to the end of the address space.
+fn cannot_unwind_ranges(index: &[IndexEntry]) -> Vec<core::ops::Range<u64>> {
+    let mut sorted = index.to_vec();
+    sorted.sort_by_key(|entry| entry.address);
+
+    sorted
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.unwinding == Unwinding::CannotUnwind)
+        .map(|(position, entry)| {
+            let end = sorted.get(position + 1).map_or(u64::MAX, |next| next.address);
+            entry.address..end
+        })
+        .collect()
+}
+
+fn exception_index(file: &object::File<'_>, arch: &dyn Arch) -> Vec<IndexEntry> {
     let Some(name) = arch.unwind_section() else { return Vec::new() };
     let Some(section) = file.section_by_name(name) else { return Vec::new() };
     let Ok(data) = section.data() else { return Vec::new() };
@@ -232,6 +293,10 @@ fn exception_index_starts(file: &object::File<'_>, arch: &dyn Arch) -> Vec<u64> 
     let mut out = Vec::new();
     for (index, entry) in data.chunks_exact(EXIDX_ENTRY_LEN).enumerate() {
         let raw = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
+        let unwinding = match u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]) {
+            EXIDX_CANTUNWIND => Unwinding::CannotUnwind,
+            _ => Unwinding::Described,
+        };
 
         // The top bit marks a "cannot unwind" entry, not part of the offset.
         let offset = sign_extend_31(raw & 0x7fff_ffff);
@@ -241,18 +306,26 @@ fn exception_index_starts(file: &object::File<'_>, arch: &dyn Arch) -> Vec<u64> 
         let direct = u64::from(raw & 0x7fff_ffff);
 
         // A linked image holds a true `PREL31` offset, so the relative
-        // reading is right. A relocatable object has not had its relocations
-        // applied, so the field still holds the target itself.
+        // reading is right, and it is the only one taken. A relocatable
+        // object has not had its relocations applied, so the field still
+        // holds the target itself, with the relative reading as a fallback
+        // for an object that does not fit that pattern.
         //
-        // Both land inside code often enough that neither can be preferred
-        // blindly, so `relocated` decides, and the other reading is only a
-        // fallback for a file that does not fit either pattern.
-        let (first, second) = if relocated { (relative, direct) } else { (direct, relative) };
+        // A linked image gets no fallback because its last entry is a
+        // sentinel the linker places at the end of the code, just outside
+        // it. Read as a plain number instead, that field landed inside a
+        // function of Lua built as an ARM shared library, and split it at a
+        // different place in each release.
+        let address = if relocated {
+            in_code(relative).then_some(relative)
+        } else if in_code(direct) {
+            Some(direct)
+        } else {
+            in_code(relative).then_some(relative)
+        };
 
-        if in_code(first) {
-            out.push(first);
-        } else if in_code(second) {
-            out.push(second);
+        if let Some(address) = address {
+            out.push(IndexEntry { address, unwinding });
         }
     }
 
@@ -278,8 +351,12 @@ fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     let (insns, _) = decode_all(arch, code, base);
     let end = base + code.len() as u64;
 
+    // A pool word that decodes as a call names a target made of data bits.
+    let pool: BTreeSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
+
     insns
         .iter()
+        .filter(|insn| !pool.contains(&insn.address))
         .filter_map(|insn| match insn.kind {
             InsnKind::Call { target } => target.map(|target| (insn.address, target)),
             _ => None,
@@ -311,11 +388,17 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     let (insns, _) = decode_all(arch, code, base);
     let end = base + code.len() as u64;
 
+    // Pool words are data. Read as code they are a random return or branch,
+    // which moves with their values from one release to the next.
+    let pool: BTreeSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
+    let is_code = |insn: &&Insn| !pool.contains(&insn.address);
+
     // Branches that stay inside this region, as (from, to). A function can
     // return from several places — an early exit, a guard clause — and each
     // of those returns is followed by more of the same function.
     let branches: Vec<(u64, u64)> = insns
         .iter()
+        .filter(is_code)
         .filter_map(|insn| match insn.kind {
             InsnKind::Branch { target: Some(target) } | InsnKind::Jump { target: Some(target) } => {
                 Some((insn.address, target))
@@ -335,15 +418,15 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     for (index, insn) in insns.iter().enumerate() {
         // Only code that does not fall through can be followed by a new
         // function. Everything else continues the one it is in.
-        if !matches!(insn.kind, InsnKind::Return | InsnKind::Jump { .. }) {
+        if !matches!(insn.kind, InsnKind::Return | InsnKind::Jump { .. }) || !is_code(&insn) {
             continue;
         }
 
         // Step over the delay slot, which belongs to the terminator rather
         // than to what follows, and then over any padding the linker put
-        // between functions.
+        // between functions and the pool the function ends with.
         let mut next = index + 1 + arch.delay_slots();
-        while insns.get(next).is_some_and(|insn| arch.is_padding(insn)) {
+        while insns.get(next).is_some_and(|insn| arch.is_padding(insn) || !is_code(&insn)) {
             next += 1;
         }
 

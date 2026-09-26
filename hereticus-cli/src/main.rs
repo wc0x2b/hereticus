@@ -492,6 +492,7 @@ fn describe_confidence(confidence: Confidence) -> &'static str {
         Confidence::IdenticalCode => "identical bytes",
         Confidence::IdenticalShape => "identical shape",
         Confidence::SameName => "same name",
+        Confidence::TwinInOrder => "twin, in order",
         Confidence::Similar => "similar",
     }
 }
