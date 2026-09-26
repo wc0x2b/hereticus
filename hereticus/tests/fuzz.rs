@@ -260,3 +260,216 @@ fn unreadable_bytes_are_marked_opaque() {
         }
     });
 }
+
+/// Reverse the bytes of each whole word, which turns a little-endian image
+/// into the big-endian image of the same code. A partial word at the end is
+/// left as it is.
+fn swap_words(data: &[u8]) -> Vec<u8> {
+    let whole = data.len() - data.len() % 4;
+    let mut swapped: Vec<u8> =
+        data[..whole].chunks_exact(4).flat_map(|word| word.iter().rev().copied()).collect();
+    swapped.extend_from_slice(&data[whole..]);
+    swapped
+}
+
+/// Reading a raw MIPS image must never panic, in either order, at any base.
+#[test]
+fn reading_a_raw_mips_image_never_panics() {
+    check!().with_type::<(Vec<u8>, u64)>().for_each(|(data, base)| {
+        let _ = Binary::parse_raw(data, *base, Isa::Mips32);
+        let _ = Binary::parse_raw(data, *base, Isa::Mips32Be);
+    });
+}
+
+/// Checking a MIPS load address must never panic, in either order.
+#[test]
+fn checking_a_mips_base_never_panics() {
+    check!().with_type::<(Vec<u8>, u64)>().for_each(|(data, base)| {
+        let _ = check_base(data, *base, &Mips32::LITTLE);
+        let _ = check_base(data, *base, &Mips32::BIG);
+    });
+}
+
+/// Where a MIPS image loads must not change what is recovered.
+///
+/// The bases are the MIPS ones a reader meets: KSEG0 and the boot ROM. Every
+/// function must move by the base and hold the same bytes.
+#[test]
+fn the_base_does_not_change_what_mips_recovers() {
+    check!().with_type::<(Vec<u8>, bool)>().for_each(|(data, big)| {
+        let isa = if *big { Isa::Mips32Be } else { Isa::Mips32 };
+        for base in [0x8000_0000, 0xbfc0_0000] {
+            let low = Binary::parse_raw(data, 0, isa);
+            let high = Binary::parse_raw(data, base, isa);
+
+            match (low, high) {
+                (Ok(low), Ok(high)) => {
+                    let moved: Vec<(u64, &[u8])> = low
+                        .functions
+                        .iter()
+                        .map(|function| (function.address + base, function.code.as_slice()))
+                        .collect();
+                    let found: Vec<(u64, &[u8])> = high
+                        .functions
+                        .iter()
+                        .map(|function| (function.address, function.code.as_slice()))
+                        .collect();
+                    assert_eq!(found, moved, "the base changed what was recovered");
+                }
+                (Err(_), Err(_)) => {}
+                _ => panic!("the base decided whether the image could be read at all"),
+            }
+        }
+    });
+}
+
+/// The same code in either byte order gives the same functions.
+///
+/// Each order has its own decoder, and everything above the decoder reads
+/// decoded text. A rule that reached for raw bytes would split the two here.
+#[test]
+fn both_mips_byte_orders_recover_the_same_functions() {
+    check!().with_type::<Vec<u8>>().for_each(|data| {
+        let little = Binary::parse_raw(data, 0, Isa::Mips32);
+        let big = Binary::parse_raw(&swap_words(data), 0, Isa::Mips32Be);
+
+        match (little, big) {
+            (Ok(little), Ok(big)) => {
+                let span = |binary: &Binary| -> Vec<(u64, usize)> {
+                    binary
+                        .functions
+                        .iter()
+                        .map(|function| (function.address, function.code.len()))
+                        .collect()
+                };
+                assert_eq!(span(&little), span(&big), "the byte order moved a boundary");
+            }
+            (Err(little), Err(big)) => {
+                assert_eq!(format!("{little:?}"), format!("{big:?}"), "the orders failed apart");
+            }
+            _ => panic!("the byte order decided whether the image could be read at all"),
+        }
+    });
+}
+
+/// The load-address check reads a stored address in the order of the image,
+/// so the same table in either order gets the same verdict.
+#[test]
+fn both_mips_byte_orders_judge_a_base_alike() {
+    check!().with_type::<(Vec<u8>, u64)>().for_each(|(data, base)| {
+        assert_eq!(
+            check_base(data, *base, &Mips32::LITTLE),
+            check_base(&swap_words(data), *base, &Mips32::BIG),
+        );
+    });
+}
+
+/// Decoding MIPS must never panic, must always advance, and must place each
+/// instruction one word after the last.
+fn mips_decoding_is_contiguous(arch: &'static Mips32) {
+    check!().with_type::<(Vec<u8>, u32)>().for_each(|(code, base)| {
+        let base = u64::from(*base);
+        let (insns, error) = decode_all(arch, code, base);
+
+        for (index, insn) in insns.iter().enumerate() {
+            assert_eq!(insn.bytes_len, 4, "MIPS32 instructions are always four bytes");
+            assert_eq!(insn.address, base + index as u64 * 4, "instruction {index} is misplaced");
+        }
+        if error.is_none() {
+            assert_eq!(insns.len() * 4, code.len(), "decoding stopped early without an error");
+        } else {
+            assert_eq!(insns.len(), code.len() / 4, "decoding stopped before the partial word");
+        }
+    });
+}
+
+#[test]
+fn mips_little_endian_decoding_is_contiguous() {
+    mips_decoding_is_contiguous(&Mips32::LITTLE);
+}
+
+#[test]
+fn mips_big_endian_decoding_is_contiguous() {
+    mips_decoding_is_contiguous(&Mips32::BIG);
+}
+
+/// A MIPS instruction must not depend on the bytes after it, and too few
+/// bytes must report truncation.
+fn mips_decoding_reads_only_its_own_word(arch: &'static Mips32) {
+    check!().with_type::<([u8; 4], Vec<u8>)>().for_each(|(head, tail)| {
+        let alone = arch.decode(head, 0, 0);
+
+        let mut joined = head.to_vec();
+        joined.extend_from_slice(tail);
+        assert_eq!(alone, arch.decode(&joined, 0, 0), "trailing bytes changed an instruction");
+
+        for length in 0..4 {
+            assert_eq!(arch.decode(&head[..length], 0, 0), Err(DecodeError::Truncated));
+        }
+    });
+}
+
+#[test]
+fn mips_little_endian_decoding_reads_only_its_own_word() {
+    mips_decoding_reads_only_its_own_word(&Mips32::LITTLE);
+}
+
+#[test]
+fn mips_big_endian_decoding_reads_only_its_own_word() {
+    mips_decoding_reads_only_its_own_word(&Mips32::BIG);
+}
+
+/// The two MIPS decoders read a word and its byte swap as one instruction.
+#[test]
+fn mips_byte_orders_decode_alike() {
+    check!().with_type::<([u8; 4], u32)>().for_each(|(word, address)| {
+        let mut swapped = *word;
+        swapped.reverse();
+        let address = u64::from(*address);
+
+        assert_eq!(
+            Mips32::LITTLE.decode(word, 0, address),
+            Mips32::BIG.decode(&swapped, 0, address),
+            "the byte order changed what a word means"
+        );
+    });
+}
+
+/// Where a MIPS instruction sits must not change what it normalizes to, in
+/// either order, and a normalized MIPS instruction equals itself.
+fn mips_normalizing_ignores_position(arch: &'static Mips32) {
+    check!().with_type::<([u8; 4], u32)>().for_each(|(bytes, base)| {
+        let (Ok(first), Ok(second)) =
+            (arch.decode(bytes, 0, 0), arch.decode(bytes, 0, u64::from(*base)))
+        else {
+            return;
+        };
+
+        let normalized = normalize(arch, &first);
+        assert_eq!(normalized, normalize(arch, &second), "position changed the normalized form");
+        assert!(!normalized.differs_in_detail(&normalized.clone()));
+    });
+}
+
+#[test]
+fn mips_little_endian_normalizing_ignores_position() {
+    mips_normalizing_ignores_position(&Mips32::LITTLE);
+}
+
+#[test]
+fn mips_big_endian_normalizing_ignores_position() {
+    mips_normalizing_ignores_position(&Mips32::BIG);
+}
+
+/// Normalizing big-endian MIPS holds the same promises as little endian.
+#[test]
+fn normalizing_big_endian_mips_never_panics_and_always_advances() {
+    let arch = &Mips32::BIG;
+    check!().with_type::<Vec<u8>>().for_each(|code| {
+        let (insns, _) = decode_all(arch, code, 0);
+        let normalized = normalize_body(arch, &insns);
+
+        assert!(normalized.len() <= insns.len(), "normalizing invented instructions");
+        assert_eq!(normalized, normalize_body(arch, &insns), "normalizing is unstable");
+    });
+}

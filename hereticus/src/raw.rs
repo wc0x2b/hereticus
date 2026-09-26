@@ -195,6 +195,7 @@ fn lands_near(value: u64, base: u64, length: u64) -> bool {
 mod tests {
     use super::*;
     use crate::arch::arm32::Arm32;
+    use crate::arch::mips::Mips32;
 
     /// Build a blob from words, little endian.
     ///
@@ -312,5 +313,100 @@ mod tests {
     fn a_base_near_the_top_of_the_range_does_not_overflow() {
         let data = image(&[0xffff_fff0, 0xffff_fff4], 0x20);
         let _ = check_base(&data, u64::MAX - 4, &Arm32);
+    }
+
+    /// Build a blob from words, big endian, as MIPS firmware stores them.
+    fn image_be(words: &[u32], size: usize) -> Vec<u8> {
+        let mut data: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        data.resize(size.max(data.len()), 0xe1);
+        data
+    }
+
+    /// A MIPS vector table in KSEG0, in each byte order, fits the base it was
+    /// linked at.
+    #[test]
+    fn a_right_mips_base_is_plausible_in_either_order() {
+        let words = [0x8000_0010, 0x8000_0018, 0x8000_0100, 0x03e0_0008];
+        // The filler words are large too, so all 1024 words are examined.
+        let expected = BaseFit::Plausible { pointers: 3, examined: 1024 };
+
+        assert_eq!(check_base(&image(&words, 0x1000), 0x8000_0000, &Mips32::LITTLE), expected);
+        assert_eq!(check_base(&image_be(&words, 0x1000), 0x8000_0000, &Mips32::BIG), expected);
+    }
+
+    /// A MIPS base wrong by a little is suspect, in either order.
+    #[test]
+    fn a_nearly_right_mips_base_is_suspect_in_either_order() {
+        let words = [0x8000_2010, 0x8000_2018, 0x8000_2100];
+        let expected = BaseFit::Unlikely { pointers_elsewhere: 3 };
+
+        assert_eq!(check_base(&image(&words, 0x1000), 0x8000_0000, &Mips32::LITTLE), expected);
+        assert_eq!(check_base(&image_be(&words, 0x1000), 0x8000_0000, &Mips32::BIG), expected);
+    }
+
+    /// Read in the wrong order, a table of KSEG0 addresses holds only small
+    /// numbers, so it gives no evidence rather than a false verdict.
+    #[test]
+    fn a_mips_table_read_in_the_wrong_order_gives_no_evidence() {
+        let words = [0x8000_0010, 0x8000_0018, 0x8000_0100];
+
+        assert_eq!(
+            check_base(&image_be(&words, 0x1000), 0x8000_0000, &Mips32::LITTLE),
+            BaseFit::NoEvidence
+        );
+        assert_eq!(
+            check_base(&image(&words, 0x1000), 0x8000_0000, &Mips32::BIG),
+            BaseFit::NoEvidence
+        );
+    }
+
+    /// KSEG0 and KSEG1 map the same memory at two addresses. A table linked
+    /// for one does not fit the other, and the two are too far apart for a
+    /// near miss.
+    #[test]
+    fn a_kseg0_table_gives_no_evidence_at_kseg1() {
+        let data = image_be(&[0x8000_0010, 0x8000_0018, 0x8000_0100], 0x1000);
+        assert_eq!(check_base(&data, 0xa000_0000, &Mips32::BIG), BaseFit::NoEvidence);
+    }
+
+    /// MIPS code with no stored addresses gives no evidence.
+    #[test]
+    fn mips_code_without_stored_addresses_gives_no_evidence() {
+        // `jr $ra`, `addiu $v0, $zero, 1`, `lw $ra, 20($sp)`, `nop`.
+        let words = [0x03e0_0008, 0x2402_0001, 0x8fbf_0014, 0x0000_0000];
+
+        assert_eq!(
+            check_base(&image_be(&words, 0x40), 0x8000_0000, &Mips32::BIG),
+            BaseFit::NoEvidence
+        );
+        assert_eq!(
+            check_base(&image(&words, 0x40), 0x8000_0000, &Mips32::LITTLE),
+            BaseFit::NoEvidence
+        );
+    }
+
+    /// Trailing bytes that do not fill a MIPS word are ignored, in either
+    /// order.
+    #[test]
+    fn a_partial_mips_word_is_ignored() {
+        let words = [0x8000_0010, 0x8000_0018];
+        for (mut data, arch) in
+            [(image(&words, 0x1000), Mips32::LITTLE), (image_be(&words, 0x1000), Mips32::BIG)]
+        {
+            data.extend_from_slice(&[0x80, 0x00, 0x00]);
+            let fit = check_base(&data, 0x8000_0000, &arch);
+            assert!(matches!(fit, BaseFit::Plausible { pointers: 2, .. }), "got {fit:?}");
+        }
+    }
+
+    /// The top of the MIPS address space, where KSEG3 ends, must not wrap.
+    #[test]
+    fn a_mips_base_at_the_top_of_the_range_does_not_overflow() {
+        let data = image_be(&[0xffff_fff0, 0xffff_fff4], 0x20);
+        assert!(matches!(
+            check_base(&data, 0xffff_ffe0, &Mips32::BIG),
+            BaseFit::Plausible { pointers: 2, .. }
+        ));
+        let _ = check_base(&data, u64::MAX - 4, &Mips32::BIG);
     }
 }
