@@ -29,19 +29,25 @@ $ hereticus --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF heade
 
 Two OpenWrt releases for the same device, 22.03.2 and 22.03.5 for the Netgear
 EX6100v2. The ARM decompressor stub is 15 KB of shipped code with no symbols,
-and 43 of its 15,120 bytes changed:
+and 43 of its 15,351 bytes changed:
 
 ```console
 $ hereticus --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
-╭──────────────┬────────────────┬───────┬───────┬────────────╮
-│ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY │
-├──────────────┼────────────────┼───────┼───────┼────────────┤
-│ sub_8020a3bc │ changed        │  1.00 │ 0/0/1 │ similar    │
-│ sub_8020b1f8 │ changed        │  0.98 │ 0/0/1 │ similar    │
-│ sub_80208e20 │ changed unread │  0.98 │ 0/0/1 │ similar    │
-╰──────────────┴────────────────┴───────┴───────┴────────────╯
+╭──────────────┬────────────────┬───────┬───────┬──────────┬────────────╮
+│ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED  │ MATCHED BY │
+├──────────────┼────────────────┼───────┼───────┼──────────┼────────────┤
+│ sub_8020a3bc │ changed        │  1.00 │ 0/0/1 │ -        │ similar    │
+│ sub_8020b1fc │ changed        │  0.98 │ 0/0/1 │ -        │ similar    │
+│ sub_80208e20 │ changed unread │  0.98 │ 0/0/1 │ -        │ similar    │
+│ sub_80209154 │ changed        │  0.96 │ 0/0/1 │ 1 mem    │ similar    │
+│ sub_8020a338 │ changed        │  0.94 │ 0/0/1 │ -        │ similar    │
+│ sub_802082bc │ changed        │  0.89 │ 1/1/1 │ 1 branch │ similar    │
+│ sub_80208ab4 │ changed        │  0.87 │ 0/0/1 │ -        │ similar    │
+│ sub_80208b04 │ changed        │  0.86 │ 5/0/0 │ -        │ similar    │
+╰──────────────┴────────────────┴───────┴───────┴──────────┴────────────╯
+sub_80208b80: gone
 
-62 matched (51 unchanged, 11 changed), 0 gone, 0 new
+69 matched (58 unchanged, 11 changed), 1 gone, 0 new
 3 changed only a constant, hidden. Use --show-retouched to list them.
 ```
 
