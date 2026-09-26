@@ -266,11 +266,21 @@ impl Arch for Mips32 {
     /// its way in.
     fn constant_kinds(&self, body: &[Insn], space: &AddressSpace) -> Vec<ConstantKind> {
         let mut kinds = vec![ConstantKind::Value; body.len()];
-        if space.is_empty() {
-            return kinds;
+
+        // The `_gp_disp` halves are the distance from the function to its
+        // global offset table, which moves with every function before it.
+        for index in 0..body.len() {
+            if is_gp_disp_preamble(&body[index..]) {
+                kinds[index] = ConstantKind::Address;
+                kinds[index + 1] = ConstantKind::Address;
+            }
         }
 
+        // `gp` holds the global pointer on entry: the caller's in non-PIC
+        // code, where it reaches the small data, and the one the preamble
+        // rebuilds in PIC code.
         let mut upper = HeldAddresses::default();
+        upper.set("gp", Held::GlobalPointer);
         // What runs after the current delay slot, as the previous instruction
         // decided.
         let mut after_slot = AfterSlot::FallThrough;
@@ -287,23 +297,59 @@ impl Arch for Mips32 {
                 if space.overlaps(reach_of_upper_half(high)) {
                     kinds[index] = ConstantKind::Address;
                 }
-                upper.set(register, high);
-            } else if let Some((destination, address)) = lower_half(insn, &upper) {
-                // The destination now holds the whole address, and code
-                // reaches the fields of a global through it as it would
-                // through the upper half.
-                if space.contains(address) {
-                    kinds[index] = ConstantKind::Address;
-                    upper.set(destination, address);
-                } else {
-                    upper.forget(destination);
+                upper.set(register, Held::At(high));
+            } else if let Some(destination) = global_pointer_formed(insn) {
+                upper.set(destination, Held::GlobalPointer);
+            } else if let Some((destination, source)) = register_copy(insn) {
+                match upper.get(source) {
+                    Some(held) => upper.set(destination, held),
+                    None => upper.forget(destination),
                 }
-            } else if let Some((written, address)) = memory_reference(insn, &upper) {
-                if space.contains(address) {
-                    kinds[index] = ConstantKind::Address;
+            } else if let Some((destination, source, low)) = lower_half(insn, &upper) {
+                match source {
+                    // The destination now holds the whole address, and code
+                    // reaches the fields of a global through it as it would
+                    // through the upper half.
+                    Held::At(high) => {
+                        let address = join_halves(&insn.mnemonic, high, low);
+                        if space.contains(address) {
+                            kinds[index] = ConstantKind::Address;
+                            upper.set(destination, Held::At(address));
+                        } else {
+                            upper.forget(destination);
+                        }
+                    }
+                    // An offset from the global pointer, or from an address
+                    // read out of the global offset table, is the linker's.
+                    Held::GlobalPointer | Held::Somewhere => {
+                        kinds[index] = ConstantKind::Address;
+                        upper.set(destination, Held::Somewhere);
+                    }
                 }
+            } else if let Some((written, base, offset)) = memory_reference(insn, &upper) {
+                let loaded = match base {
+                    Held::At(high) => {
+                        if space.contains(join_halves("addiu", high, offset)) {
+                            kinds[index] = ConstantKind::Address;
+                        }
+                        None
+                    }
+                    // A slot of the global offset table, which holds an
+                    // address the code then reaches data or a callee through.
+                    Held::GlobalPointer => {
+                        kinds[index] = ConstantKind::Address;
+                        Some(Held::Somewhere)
+                    }
+                    Held::Somewhere => {
+                        kinds[index] = ConstantKind::Address;
+                        None
+                    }
+                };
                 if let Some(written) = written {
-                    upper.forget(written);
+                    match loaded {
+                        Some(held) => upper.set(written, held),
+                        None => upper.forget(written),
+                    }
                 }
             } else if !is_store(&insn.mnemonic)
                 && let Some(written) = insn.operands.split(',').next()
@@ -499,30 +545,35 @@ fn split_mnemonic(text: &str) -> (String, String) {
 /// instructions are such a pair.
 ///
 /// ```text
-/// lui   v0, 0x0
-/// addiu v0, v0, 0x0
+/// lui   v0, 0x4          ; 0x0 in an object the linker has not seen yet
+/// addiu v0, v0, -0x6ff8
 /// ```
 ///
-/// Both immediates read as zero because the linker has yet to fill them in, and
-/// both words name one register. That shape alone does **not** mean PIC: a
-/// non-PIC build loads the address of a global exactly this way, so the caller
-/// must confirm what consumes the result. See [`is_gp_disp_preamble`].
+/// Both words name one register. The immediates are the distance from the
+/// function to its global offset table, which a linked file holds and an
+/// unlinked object leaves as zero, so they say nothing either way. Measured
+/// on zlib and Lua built as MIPS shared libraries: requiring zero missed every
+/// preamble, and every function that moved read as changed.
+///
+/// That shape alone does **not** mean PIC: a non-PIC build loads the address
+/// of a global exactly this way, so the caller must confirm what consumes the
+/// result. See [`is_gp_disp_preamble`].
 fn constant_pair_register<'a>(high: &'a Insn, low: &Insn) -> Option<&'a str> {
     if high.mnemonic != "lui" || low.mnemonic != "addiu" {
         return None;
     }
 
     let mut high_operands = high.operands.split(',').map(str::trim);
-    let (Some(loaded), Some("0x0"), None) =
+    let (Some(loaded), Some(_), None) =
         (high_operands.next(), high_operands.next(), high_operands.next())
     else {
         return None;
     };
 
-    // `addiu rX, rX, 0x0` must add into the very register `lui` just wrote,
+    // `addiu rX, rX, lo` must add into the very register `lui` just wrote,
     // or the two words are unrelated.
     let mut low_operands = low.operands.split(',').map(str::trim);
-    let (Some(destination), Some(source), Some("0x0"), None) =
+    let (Some(destination), Some(source), Some(_), None) =
         (low_operands.next(), low_operands.next(), low_operands.next(), low_operands.next())
     else {
         return None;
@@ -561,16 +612,31 @@ fn constant_pair_register<'a>(high: &'a Insn, low: &Insn) -> Option<&'a str> {
 /// prologue between them, which is why a window is searched rather than the
 /// next word alone.
 fn is_gp_disp_preamble(body: &[Insn]) -> bool {
-    /// How far to look for the `addu` that consumes the pair. Measured on the
-    /// PIC fixtures the consumer is between zero and six instructions on,
-    /// separated by the frame prologue; eight leaves margin without reaching
-    /// into unrelated code.
-    const MOST_WORDS_TO_CONSUMER: usize = 8;
+    /// How far to look for the `addu` that consumes the pair. The frame
+    /// prologue sits between them: an allocation and up to eleven register
+    /// saves. Measured on zlib linked as a shared library, `compress2` puts
+    /// ten words between them, so the eight first measured on the fixtures
+    /// missed it.
+    const MOST_WORDS_TO_CONSUMER: usize = 16;
 
     let [high, low, rest @ ..] = body else { return false };
     let Some(loaded) = constant_pair_register(high, low) else { return false };
 
-    rest.iter().take(MOST_WORDS_TO_CONSUMER).any(|insn| joins_to_callee_address(insn, loaded))
+    // A write to the loaded register ends the search: past it an `addu`
+    // with `t9` joins some other value. A branch does not, because a function
+    // can test an argument and return early before it needs the pointer, as
+    // `gzclose` does.
+    for insn in rest.iter().take(MOST_WORDS_TO_CONSUMER) {
+        if joins_to_callee_address(insn, loaded) {
+            return true;
+        }
+        let writes_loaded = !is_store(&insn.mnemonic)
+            && insn.operands.split(',').next().is_some_and(|first| first.trim() == loaded);
+        if writes_loaded {
+            return false;
+        }
+    }
+    false
 }
 
 /// What an instruction does to control flow once its delay slot has run.
@@ -619,7 +685,8 @@ enum Reach {
 ///
 /// Where two paths join, only the addresses both agree on survive. Where only
 /// a branch arrives, its addresses are the ones held. Where no branch is
-/// known to arrive, as at a case of a jump table, nothing is held.
+/// known to arrive, as at a case of a jump table, only the global pointer is
+/// held: a function sets it once and keeps it in a saved register throughout.
 fn arrive<'a>(
     above: HeldAddresses<'a>,
     reach: Reach,
@@ -629,7 +696,7 @@ fn arrive<'a>(
         (Reach::FromAbove, None) => above,
         (Reach::FromAbove, Some(branched)) => above.agreed_with(&branched),
         (Reach::OnlyByBranch, Some(branched)) => branched,
-        (Reach::OnlyByBranch, None) => HeldAddresses::default(),
+        (Reach::OnlyByBranch, None) => above.global_pointers_only(),
     }
 }
 
@@ -654,22 +721,35 @@ fn take_state<'a>(
     Some(at_target.swap_remove(position).1)
 }
 
-/// The registers that hold an address: an upper half loaded by `lui`, or a
-/// whole address built from one.
+/// What a register holds, as far as addresses go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Held {
+    /// A known address: an upper half loaded by `lui`, or a whole address
+    /// built from one.
+    At(u64),
+    /// An address whose value the code does not show, read out of the global
+    /// offset table or formed from the global pointer.
+    Somewhere,
+    /// The global pointer, which reaches the global offset table in PIC code
+    /// and the small data in non-PIC code.
+    GlobalPointer,
+}
+
+/// The registers that hold an address, and what each holds.
 ///
 /// A function holds a handful at a time, so a list beats a map.
 #[derive(Clone, Debug, Default)]
 struct HeldAddresses<'a> {
-    held: Vec<(&'a str, u64)>,
+    held: Vec<(&'a str, Held)>,
 }
 
 impl<'a> HeldAddresses<'a> {
-    fn set(&mut self, register: &'a str, value: u64) {
+    fn set(&mut self, register: &'a str, value: Held) {
         self.forget(register);
         self.held.push((register, value));
     }
 
-    fn get(&self, register: &str) -> Option<u64> {
+    fn get(&self, register: &str) -> Option<Held> {
         self.held.iter().find(|(held, _)| *held == register).map(|&(_, value)| value)
     }
 
@@ -679,6 +759,11 @@ impl<'a> HeldAddresses<'a> {
 
     fn keep_only(&mut self, survives: fn(&str) -> bool) {
         self.held.retain(|(held, _)| survives(held));
+    }
+
+    fn global_pointers_only(mut self) -> Self {
+        self.held.retain(|&(_, held)| held == Held::GlobalPointer);
+        self
     }
 
     /// The addresses this and `other` both hold, with the same value.
@@ -726,8 +811,8 @@ fn reach_of_upper_half(high: u64) -> core::ops::Range<u64> {
 }
 
 /// Read `addiu rY, rX, lo` or `ori rY, rX, lo`, where `rX` holds an
-/// address, as the destination and the full address.
-fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str, u64)> {
+/// address, as the destination, what `rX` holds, and the lower half.
+fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str, Held, u64)> {
     if insn.mnemonic != "addiu" && insn.mnemonic != "ori" {
         return None;
     }
@@ -737,35 +822,60 @@ fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str,
     else {
         return None;
     };
-    let high = upper.get(source)?;
+    let held = upper.get(source)?;
     let low = Mips32::LITTLE.constant_value(immediate)?;
+    Some((destination, held, low))
+}
 
-    // A negative `addiu` immediate reads as a 64-bit two's complement, so
-    // wrapping arithmetic on 32 bits gives the address the processor forms.
-    let address = if insn.mnemonic == "ori" {
+/// Join an upper half and a lower half as `mnemonic` joins them.
+///
+/// A negative `addiu` immediate reads as a 64-bit two's complement, so
+/// wrapping arithmetic on 32 bits gives the address the processor forms.
+fn join_halves(mnemonic: &str, high: u64, low: u64) -> u64 {
+    if mnemonic == "ori" {
         high | (low & 0xffff)
     } else {
         u64::from((high as u32).wrapping_add(low as u32))
-    };
-    Some((destination, address))
+    }
 }
 
 /// Read a load or store through a register that holds an address, as the
-/// register the load writes and the full address it reaches.
+/// register the load writes, what the base register holds, and the offset.
 ///
 /// A store writes no register, so it gives `None` for the first.
 fn memory_reference<'a>(
     insn: &'a Insn,
     upper: &HeldAddresses<'_>,
-) -> Option<(Option<&'a str>, u64)> {
+) -> Option<(Option<&'a str>, Held, u64)> {
     let (first, reference) = insn.operands.split_once(',')?;
     let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
-    let high = upper.get(base.trim())?;
-    let low = Mips32::LITTLE.constant_value(offset)?;
+    let held = upper.get(base.trim())?;
+    let offset = Mips32::LITTLE.constant_value(offset)?;
 
-    let address = u64::from((high as u32).wrapping_add(low as u32));
     let written = (!is_store(&insn.mnemonic)).then(|| first.trim());
-    Some((written, address))
+    Some((written, held, offset))
+}
+
+/// Read `addu rD, rX, t9`, which forms the PIC global pointer, as `rD`.
+fn global_pointer_formed(insn: &Insn) -> Option<&str> {
+    let (destination, sources) = insn.operands.split_once(',')?;
+    let joins_t9 = sources.split(',').any(|source| source.trim() == "t9");
+    (insn.mnemonic == "addu" && joins_t9).then(|| destination.trim())
+}
+
+/// Read a register copy, `or rD, rS, zero` or `addu rD, rS, zero`, as `rD`
+/// and `rS`. The global pointer is restored after a call this way.
+fn register_copy(insn: &Insn) -> Option<(&str, &str)> {
+    if insn.mnemonic != "or" && insn.mnemonic != "addu" && insn.mnemonic != "move" {
+        return None;
+    }
+    let mut operands = insn.operands.split(',').map(str::trim);
+    match (operands.next(), operands.next(), operands.next(), operands.next()) {
+        (Some(destination), Some(source), None, None) => Some((destination, source)),
+        (Some(destination), Some(source), Some("zero"), None) => Some((destination, source)),
+        (Some(destination), Some("zero"), Some(source), None) => Some((destination, source)),
+        _ => None,
+    }
 }
 
 /// Report whether an instruction stores, which reads its first operand
@@ -1661,6 +1771,45 @@ mod tests {
         assert_eq!(Mips32::LITTLE.idiom_length(&body), 0, "the address of a global is real work");
     }
 
+    /// A large frame puts many register saves between the pair and its
+    /// consumer, as `compress2` in zlib does.
+    #[test]
+    fn the_consumer_is_found_past_a_large_prologue() {
+        let mut body = vec![
+            decode_one(0x3c02_0004), // lui v0, 0x4
+            decode_one(0x2442_8e10), // addiu v0, v0, -0x71f0
+            decode_one(0x27bd_ff98), // addiu sp, sp, -0x68
+        ];
+        body.extend((0..9).map(|slot| decode_one(0xafbf_0064 - slot * 4))); // sw ..., 0x64(sp)
+        body.push(decode_one(0x0059_8021)); // addu s0, v0, t9
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 2);
+    }
+
+    /// An early return before the consumer does not hide it, as in `gzclose`.
+    #[test]
+    fn the_consumer_is_found_past_an_early_return_test() {
+        let body = [
+            decode_one(0x3c02_0003), // lui v0, 0x3
+            decode_one(0x2442_2e00), // addiu v0, v0, 0x2e00
+            decode_one(0x1080_0003), // beqz a0, ...
+            decode_one(0x0000_0000), // nop
+            decode_one(0x0059_8021), // addu s0, v0, t9
+        ];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 2);
+    }
+
+    /// Writing the loaded register ends the search too.
+    #[test]
+    fn overwriting_the_pair_ends_the_search_for_the_consumer() {
+        let body = [
+            decode_one(0x3c02_0004), // lui v0, 0x4
+            decode_one(0x2442_8e10), // addiu v0, v0, -0x71f0
+            decode_one(0x8c82_0000), // lw v0, 0x0(a0)
+            decode_one(0x0059_8021), // addu s0, v0, t9
+        ];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 0);
+    }
+
     /// Without any consumer the pair is not a preamble either.
     #[test]
     fn a_pair_nothing_joins_to_t9_is_not_the_preamble() {
@@ -1712,13 +1861,35 @@ mod tests {
         assert_eq!(Mips32::LITTLE.preamble_before_prologue(&pair), 0);
     }
 
-    /// A non-zero immediate means a real constant, which the linker has already
-    /// filled in, so the words are not the `_gp_disp` pair.
+    /// A linked file holds the real distance to the global offset table, so
+    /// the pair opens the function whatever its values.
     #[test]
-    fn a_pair_holding_a_real_constant_is_not_a_preamble() {
-        // lui v0, 0x1234 then addiu v0, v0, 0x0.
-        let pair = [decode_one(0x3c02_1234), decode_one(0x2442_0000)];
-        assert_eq!(Mips32::LITTLE.preamble_before_prologue(&pair), 0);
+    fn a_linked_pair_counts_as_a_preamble() {
+        // lui v0, 0x4 then addiu v0, v0, -0x6ff8, as ld.lld links zlib.
+        let pair = [decode_one(0x3c02_0004), decode_one(0x2442_9008)];
+        assert_eq!(Mips32::LITTLE.preamble_before_prologue(&pair), 2);
+    }
+
+    /// The linked preamble is dropped as a pair, as the unlinked one is.
+    #[test]
+    fn a_linked_preamble_is_dropped_as_a_pair() {
+        let body = [
+            decode_one(0x3c02_0004), // lui v0, 0x4
+            decode_one(0x2442_9008), // addiu v0, v0, -0x6ff8
+            decode_one(0x0059_e021), // addu gp, v0, t9
+        ];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 2);
+    }
+
+    /// A linked pair that indexes a table is still the address of a global.
+    #[test]
+    fn a_linked_address_load_is_not_the_pic_preamble() {
+        let body = [
+            decode_one(0x3c01_8001), // lui at, 0x8001
+            decode_one(0x2421_1000), // addiu at, at, 0x1000
+            decode_one(0x0022_0821), // addu at, at, v0, indexing, not PIC
+        ];
+        assert_eq!(Mips32::LITTLE.idiom_length(&body), 0);
     }
 
     /// Ordinary work before a prologue belongs to the function before it.
