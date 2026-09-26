@@ -226,7 +226,7 @@ pub fn normalize(arch: &dyn Arch, insn: &Insn) -> NormInsn {
 /// [`Arch::idiom_length`] is asked about each remaining position and the whole
 /// run it reports is skipped.
 pub fn normalize_body(arch: &dyn Arch, insns: &[Insn]) -> Vec<NormInsn> {
-    normalize_body_in(arch, insns, &AddressSpace::none())
+    normalize_body_in(arch, &[], insns, &AddressSpace::none())
 }
 
 /// Normalize a function body that lives in `space`.
@@ -236,8 +236,13 @@ pub fn normalize_body(arch: &dyn Arch, insns: &[Insn]) -> Vec<NormInsn> {
 /// linker moves what they point at, so keeping them would report every
 /// function that refers to moved data as changed. See
 /// [`Arch::constant_kinds`].
-pub fn normalize_body_in(arch: &dyn Arch, insns: &[Insn], space: &AddressSpace) -> Vec<NormInsn> {
-    let kinds = arch.constant_kinds(insns, space);
+pub fn normalize_body_in(
+    arch: &dyn Arch,
+    code: &[u8],
+    insns: &[Insn],
+    space: &AddressSpace,
+) -> Vec<NormInsn> {
+    let kinds = arch.constant_kinds(code, insns, space);
     let mut out = Vec::with_capacity(insns.len());
     let mut index = 0;
 
@@ -252,12 +257,17 @@ pub fn normalize_body_in(arch: &dyn Arch, insns: &[Insn], space: &AddressSpace) 
             continue;
         }
 
-        if !arch.is_frame_management(&insns[index]) {
-            let mut normalized = normalize(arch, &insns[index]);
-            if kinds.get(index) == Some(&ConstantKind::Address) {
+        match kinds.get(index) {
+            // A stored address is data, not an instruction: comparing what it
+            // happens to decode as would report every move of its target.
+            Some(ConstantKind::StoredAddress) => {}
+            _ if arch.is_frame_management(&insns[index]) => {}
+            Some(ConstantKind::Address) => {
+                let mut normalized = normalize(arch, &insns[index]);
                 normalized.constants.clear();
+                out.push(normalized);
             }
-            out.push(normalized);
+            Some(ConstantKind::Value) | None => out.push(normalize(arch, &insns[index])),
         }
         index += 1;
     }

@@ -101,10 +101,15 @@ pub trait Arch {
     /// builds an address from several instructions, only the sequence shows
     /// which constants are parts of one, so the whole body is judged at once.
     ///
-    /// The result holds one entry per instruction of `body`. Defaults to
-    /// [`ConstantKind::Value`] for all, for the architectures that reach their
-    /// data through relative offsets, which normalizing already drops.
-    fn constant_kinds(&self, body: &[Insn], _space: &AddressSpace) -> Vec<ConstantKind> {
+    /// `code` is the bytes `body` was decoded from, for a word whose value
+    /// the decoded text does not show. The result holds one entry per
+    /// instruction of `body`. Defaults to [`ConstantKind::Value`] for all.
+    fn constant_kinds(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        _space: &AddressSpace,
+    ) -> Vec<ConstantKind> {
         vec![ConstantKind::Value; body.len()]
     }
 

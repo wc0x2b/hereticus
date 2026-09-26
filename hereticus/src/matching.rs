@@ -433,7 +433,7 @@ impl Prepared<'_> {
     fn body(&self) -> Vec<NormInsn> {
         let arch = self.isa.arch();
         let (insns, _) = decode_all(arch, &self.function.code, self.function.address);
-        normalize_body_in(arch, &insns, self.addresses)
+        normalize_body_in(arch, &self.function.code, &insns, self.addresses)
     }
 
     /// Report whether this function normalized to nothing.
@@ -481,7 +481,7 @@ fn prepare<'a>(
             // The body is interned and then dropped. Matching reads only the
             // symbols, and the few pairs that need the instructions back
             // normalize again on demand.
-            let body = normalize_body_in(arch, &insns, &binary.addresses);
+            let body = normalize_body_in(arch, &function.code, &insns, &binary.addresses);
             let contents = arch.contents(&function.code, &insns, &binary.addresses);
 
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
@@ -749,11 +749,18 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
     if before_insns.len() != after_insns.len() {
         return false;
     }
-    let before_kinds = before_arch.constant_kinds(&before_insns, before.addresses);
-    let after_kinds = after_arch.constant_kinds(&after_insns, after.addresses);
+    let before_kinds =
+        before_arch.constant_kinds(&before.function.code, &before_insns, before.addresses);
+    let after_kinds =
+        after_arch.constant_kinds(&after.function.code, &after_insns, after.addresses);
 
     before_insns.iter().zip(&after_insns).zip(before_kinds.iter().zip(&after_kinds)).all(
         |((left, right), kinds)| {
+            // A stored address on both sides is data the linker chose, so it
+            // may hold anything and decode as anything.
+            if kinds == (&ConstantKind::StoredAddress, &ConstantKind::StoredAddress) {
+                return true;
+            }
             // Compare the operation the way the normalizer does, so a condition
             // code the compiler chose differently — `movwlt` against `movwlo` —
             // stays the free choice it is rather than reading as an edit.
@@ -789,7 +796,7 @@ impl From<(&ConstantKind, &ConstantKind)> for AddressMoves {
     fn from(kinds: (&ConstantKind, &ConstantKind)) -> Self {
         match kinds {
             (ConstantKind::Address, ConstantKind::Address) => Self::Freely,
-            _ => Self::Never,
+            (_, _) => Self::Never,
         }
     }
 }
