@@ -588,7 +588,6 @@ mod tests {
         assert_eq!(decode_one([0x00, 0x48, 0x2d, 0xe9]).kind, InsnKind::Normal);
     }
 
-    #[test]
     /// `sub sp, sp, 0xc` before a `push` opens a variadic function.
     #[test]
     fn a_stack_reservation_before_the_prologue_opens_the_function() {
