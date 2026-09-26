@@ -6,11 +6,9 @@
 > [!NOTE]
 > Written heavily with the assistance of AI.
 
-Compare two versions of an ARM32 binary and find the functions that changed.
+Compare two versions of a binary or firmware and find the functions that changed.
 
-* **No symbols needed**: a stripped firmware image gives the same answer as an object file, because functions are matched from their code.
-* **No IDA or Ghidra**: one command line tool, no framework to install.
-* **No container needed**: `--raw` reads a flash dump that has no ELF header.
+* **No IDA or Ghidra**: No frameworks and no GUIs. Great for programmers and agents alike.
 
 ## Installation
 Either build from published source in crates.io.
@@ -22,10 +20,10 @@ Or download from [github releases](https://github.com/wc0x2b/hereticus/releases)
 
 ## Example
 ```console
-$ hereticus before.o after.o                        # what changed
-$ hereticus --all before.o after.o                  # every function
-$ hereticus --diff array_max before.o after.o       # the diff of one function
-$ hereticus --ignore-names before.o after.o         # match from the code alone
+$ hereticus before.elf after.elf                    # what changed
+$ hereticus --all before.elf after.elf              # every function
+$ hereticus --diff array_max before.elf after.elf   # the diff of one function
+$ hereticus --ignore-names before.elf after.elf     # match from the code alone
 $ hereticus --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF header
 ```
 
@@ -61,7 +59,7 @@ rather than `1 const`.
 Two versions of one firmware, built the same way, one release apart:
 
 ```console
-$ hereticus --show-retouched fw-v1.o fw-v2.o
+$ hereticus --show-retouched fw-v1.elf fw-v2.elf
 ╭─────────────────┬────────────────┬───────┬─────────┬────────────────────────────────────────────────────┬─────────────────╮
 │ FUNCTION        │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                            │ MATCHED BY      │
 ├─────────────────┼────────────────┼───────┼─────────┼────────────────────────────────────────────────────┼─────────────────┤
@@ -84,7 +82,7 @@ the counts.
 To see what changed inside one function:
 
 ```console
-$ hereticus --diff mul_by_constant before.o after.o
+$ hereticus --diff mul_by_constant before.elf after.elf
 mul_by_constant
 - mov r1, 0x25
 + mov r1, 0x29
