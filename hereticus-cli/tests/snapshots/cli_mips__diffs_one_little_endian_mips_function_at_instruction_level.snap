@@ -1,0 +1,37 @@
+---
+source: hereticus-cli/tests/cli_mips.rs
+info:
+  program: hereticus
+  args:
+    - "--progress"
+    - never
+    - "--raw"
+    - "--base"
+    - "0x80000000"
+    - "--arch"
+    - mips32
+    - fixtures/build/raw/mips-O2-basic.bin
+    - fixtures/build/raw/mips-O2-basic_v2.bin
+    - "--diff"
+    - sub_80000050
+---
+success: true
+exit_code: 0
+----- stdout -----
+sub_80000050
+  bltz a0, . + 4 + (0x7 << 2)
+  nop
+  beqz a0, . + 4 + (0x7 << 2)
+  nop
+- addiu at, zero, 0x63
++ addiu at, zero, 0x31
+  sltu at, at, a0
+  jr ra
+  addiu v0, at, 0x1
+  jr ra
+  addiu v0, zero, -0x1
+  jr ra
+  addiu v0, zero, 0x0
+
+----- stderr -----
+hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate

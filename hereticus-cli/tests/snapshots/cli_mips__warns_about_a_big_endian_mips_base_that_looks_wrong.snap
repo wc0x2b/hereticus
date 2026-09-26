@@ -1,0 +1,23 @@
+---
+source: hereticus-cli/tests/cli_mips.rs
+info:
+  program: hereticus
+  args:
+    - "--progress"
+    - never
+    - "--raw"
+    - "--base"
+    - "0x80000400"
+    - "--arch"
+    - mips32-be
+    - fixtures/build/raw/vectors-mipsbe.bin
+    - fixtures/build/raw/vectors-mipsbe.bin
+---
+success: true
+exit_code: 0
+----- stdout -----
+No functions changed. 4 matched.
+
+----- stderr -----
+hereticus: fixtures/build/raw/vectors-mipsbe.bin may not load at 0x80000400: 4 words look like addresses, but none point into the image at this base
+hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate

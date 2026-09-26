@@ -1,0 +1,24 @@
+---
+source: hereticus-cli/tests/cli_mips.rs
+info:
+  program: hereticus
+  args:
+    - "--progress"
+    - never
+    - "--raw"
+    - "--base"
+    - "0x80000000"
+    - "--arch"
+    - mips32-be
+    - fixtures/build/raw/mipsbe-O2-basic.bin
+    - fixtures/build/raw/mipsbe-O2-basic_v2.bin
+---
+success: true
+exit_code: 0
+----- stdout -----
+
+8 matched (5 unchanged, 3 changed), 0 gone, 0 new
+3 changed only a constant, hidden. Use --show-retouched to list them.
+
+----- stderr -----
+hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate

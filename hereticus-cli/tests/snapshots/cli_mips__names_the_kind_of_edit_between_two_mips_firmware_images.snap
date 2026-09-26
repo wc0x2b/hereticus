@@ -1,0 +1,34 @@
+---
+source: hereticus-cli/tests/cli_mips.rs
+info:
+  program: hereticus
+  args:
+    - "--progress"
+    - never
+    - "--raw"
+    - "--base"
+    - "0x80000000"
+    - "--arch"
+    - mips32-be
+    - fixtures/build/raw/mipsbe-O2-firmware.bin
+    - fixtures/build/raw/mipsbe-O2-firmware_v2.bin
+    - "--show-retouched"
+---
+success: true
+exit_code: 0
+----- stdout -----
+╭──────────────────────────────┬────────────────┬───────┬───────┬───────────────────────────┬─────────────────╮
+│ FUNCTION                     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED                   │ MATCHED BY      │
+├──────────────────────────────┼────────────────┼───────┼───────┼───────────────────────────┼─────────────────┤
+│ sub_80000000                 │ changed values │  1.00 │ -     │ -                         │ identical shape │
+│ sub_800000dc -> sub_8000016c │ changed        │  0.81 │ 8/2/0 │ 1 branch, 3 call, 1 const │ similar         │
+╰──────────────────────────────┴────────────────┴───────┴───────┴───────────────────────────┴─────────────────╯
+sub_80000010: gone, closest sub_80000010 at 0.31
+sub_80000058: gone, closest sub_80000090 at 0.50
+sub_80000010: new, closest sub_80000010 at 0.31
+sub_80000090: new, closest sub_80000058 at 0.50
+
+3 matched (1 unchanged, 2 changed), 2 gone, 2 new
+
+----- stderr -----
+hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate
