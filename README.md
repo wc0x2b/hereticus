@@ -1,7 +1,7 @@
-# heresy
-[<img alt="github" src="https://img.shields.io/badge/github-wc0x2b/heresy-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/wc0x2b/heresy)
-[<img alt="crates.io" src="https://img.shields.io/crates/v/heresy-cli.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/heresy-cli)
-[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/wc0x2b/heresy/main.yml?branch=master&style=for-the-badge" height="20">](https://github.com/wc0x2b/heresy/actions?query=branch%3Amaster)
+# hereticus
+[<img alt="github" src="https://img.shields.io/badge/github-wc0x2b/hereticus-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/wc0x2b/hereticus)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/hereticus-cli.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/hereticus-cli)
+[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/wc0x2b/hereticus/main.yml?branch=master&style=for-the-badge" height="20">](https://github.com/wc0x2b/hereticus/actions?query=branch%3Amaster)
 
 > [!NOTE]
 > Written heavily with the assistance of AI.
@@ -15,18 +15,18 @@ Compare two versions of an ARM32 binary and find the functions that changed.
 ## Installation
 Either build from published source in crates.io.
 ```
-$ cargo install heresy-cli --locked
+$ cargo install hereticus-cli --locked
 ```
 
-Or download from [github releases](https://github.com/wc0x2b/heresy/releases).
+Or download from [github releases](https://github.com/wc0x2b/hereticus/releases).
 
 ## Example
 ```console
-$ heresy before.o after.o                        # what changed
-$ heresy --all before.o after.o                  # every function
-$ heresy --diff array_max before.o after.o       # the diff of one function
-$ heresy --ignore-names before.o after.o         # match from the code alone
-$ heresy --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF header
+$ hereticus before.o after.o                        # what changed
+$ hereticus --all before.o after.o                  # every function
+$ hereticus --diff array_max before.o after.o       # the diff of one function
+$ hereticus --ignore-names before.o after.o         # match from the code alone
+$ hereticus --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF header
 ```
 
 Two OpenWrt releases for the same device, 22.03.2 and 22.03.5 for the Netgear
@@ -34,7 +34,7 @@ EX6100v2. The ARM decompressor stub is 15 KB of shipped code with no symbols,
 and 43 of its 15,120 bytes changed:
 
 ```console
-$ heresy --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
+$ hereticus --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
 ╭──────────────┬────────────────┬───────┬───────┬────────────╮
 │ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ MATCHED BY │
 ├──────────────┼────────────────┼───────┼───────┼────────────┤
@@ -61,7 +61,7 @@ rather than `1 const`.
 Two versions of one firmware, built the same way, one release apart:
 
 ```console
-$ heresy --show-retouched fw-v1.o fw-v2.o
+$ hereticus --show-retouched fw-v1.o fw-v2.o
 ╭─────────────────┬────────────────┬───────┬─────────┬────────────────────────────────────────────────────┬─────────────────╮
 │ FUNCTION        │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                            │ MATCHED BY      │
 ├─────────────────┼────────────────┼───────┼─────────┼────────────────────────────────────────────────────┼─────────────────┤
@@ -84,7 +84,7 @@ the counts.
 To see what changed inside one function:
 
 ```console
-$ heresy --diff mul_by_constant before.o after.o
+$ hereticus --diff mul_by_constant before.o after.o
 mul_by_constant
 - mov r1, 0x25
 + mov r1, 0x29
@@ -108,7 +108,7 @@ and 2 when the input could not be read.
 ```console
 Command line tool to compare functions between two binaries
 
-Usage: heresy [OPTIONS] <BEFORE> <AFTER>
+Usage: hereticus [OPTIONS] <BEFORE> <AFTER>
 
 Arguments:
   <BEFORE>  The earlier binary

@@ -506,7 +506,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "heresy"
+name = "hereticus"
 version = "0.1.0"
 dependencies = [
  "bolero",
@@ -522,12 +522,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "heresy-cli"
+name = "hereticus-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
  "console",
- "heresy",
+ "hereticus",
  "indicatif",
  "insta",
  "insta-cmd",

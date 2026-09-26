@@ -1,6 +1,15 @@
-# Compile the ARM32 test fixtures. Tests that read them depend on this recipe.
+fixtures_image := "hereticus-fixtures"
+
+# Compile the ARM32 and MIPS test fixtures. Tests that read them depend on this
+# recipe. The build runs in a container, because the tests compare exact
+# machine code and thus need the same compiler on every machine.
 fixtures:
-    ./fixtures/build.sh
+    docker build --quiet --tag {{fixtures_image}} fixtures
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --volume "{{justfile_directory()}}:/work" \
+        --workdir /work \
+        {{fixtures_image}} ./fixtures/build.sh
 
 # Matches build-test-native
 build:
@@ -19,7 +28,7 @@ quick-test *args: build fixtures
 # releases does: the difference on show is the source edit, not the compiler.
 # Pass a level to see how much the optimizer changes the picture.
 run level="O2" *args: fixtures
-    cargo run --release --quiet -p heresy-cli -- --show-retouched \
+    cargo run --release --quiet -p hereticus-cli -- --show-retouched \
         fixtures/build/{{level}}/firmware.o \
         fixtures/build/{{level}}/firmware_v2.o {{args}}
 
@@ -33,4 +42,4 @@ lint:
 # Run one property test under a coverage-guided fuzzer. Needs nightly and
 # `cargo install cargo-bolero`. The same tests run on stable under `just test`.
 fuzz target:
-    cargo bolero test {{target}} -p heresy
+    cargo bolero test {{target}} -p hereticus
