@@ -1,0 +1,36 @@
+---
+source: hereticus-cli/tests/cli_mips.rs
+info:
+  program: hereticus
+  args:
+    - "--progress"
+    - never
+    - "--raw"
+    - "--base"
+    - "0x80000000"
+    - "--arch"
+    - mips32-be
+    - fixtures/build/raw/mipsbe-O2-basic.bin
+    - fixtures/build/raw/mipsbe-O2-basic_v2.bin
+    - "--all"
+---
+success: true
+exit_code: 0
+----- stdout -----
+╭──────────────┬────────────────┬───────┬───────┬─────────┬─────────────────╮
+│ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED │ MATCHED BY      │
+├──────────────┼────────────────┼───────┼───────┼─────────┼─────────────────┤
+│ sub_80000000 │ same           │  1.00 │ -     │ -       │ identical bytes │
+│ sub_8000001c │ same           │  1.00 │ -     │ -       │ identical bytes │
+│ sub_80000080 │ same           │  1.00 │ -     │ -       │ identical bytes │
+│ sub_80000100 │ same           │  1.00 │ -     │ -       │ identical bytes │
+│ sub_80000008 │ changed values │  1.00 │ -     │ -       │ identical shape │
+│ sub_80000050 │ changed values │  1.00 │ -     │ -       │ identical shape │
+│ sub_800000a0 │ changed values │  1.00 │ -     │ -       │ identical shape │
+│ sub_800000b8 │ same           │  1.00 │ -     │ -       │ identical shape │
+╰──────────────┴────────────────┴───────┴───────┴─────────┴─────────────────╯
+
+8 matched (5 unchanged, 3 changed), 0 gone, 0 new
+
+----- stderr -----
+hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate
