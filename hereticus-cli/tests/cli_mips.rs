@@ -216,12 +216,7 @@ fn both_byte_orders_print_one_report() {
 /// A raw image reports the changes its objects report.
 ///
 /// The object report names each function, and the raw one numbers it by
-/// address, so the rows are compared on the verdict, score and edit counts.
-///
-/// The closest-match score of a gone or new function differs a little
-/// (0.29 against 0.31, 0.49 against 0.50), because a scan drops the `nop` in
-/// the last delay slot and the symbol table keeps it. Only the verdict of
-/// those rows is compared, and the snapshots hold both scores.
+/// address, so the rows are compared without the two name columns.
 #[test]
 fn a_raw_mips_report_matches_the_object_report() {
     let object = run(hereticus().args([
@@ -240,16 +235,12 @@ fn a_raw_mips_report_matches_the_object_report() {
         "compact",
     ]));
 
-    let rows = |output: &Output| -> Vec<Vec<String>> {
+    let rows = |output: &Output| -> Vec<String> {
         String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(|line| {
                 let fields: Vec<&str> = line.split('\t').collect();
-                let kept: &[usize] = match fields[0] {
-                    "gone" | "new" => &[0],
-                    _ => &[0, 3, 4, 5, 6],
-                };
-                kept.iter().map(|&index| fields[index].to_owned()).collect()
+                [&fields[..1], &fields[3..]].concat().join("\t")
             })
             .collect()
     };
