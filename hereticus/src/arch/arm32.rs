@@ -357,6 +357,42 @@ impl Arch for Arm32 {
         kinds
     }
 
+    /// A variadic function reserves room for its register arguments before it
+    /// saves anything, so `sub sp, sp, #N` opens it one word before the
+    /// `push`. Measured on Lua built as an ARM shared library: without this,
+    /// `lua_pushfstring`, `luaG_runerror` and `luaO_pushfstring` each left a
+    /// one-word fragment that no release could pair.
+    fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
+        let Some(last) = earlier.last() else { return 0 };
+        let reserves_stack = self.normalize_operation(&last.mnemonic) == "sub"
+            && last.operands.starts_with("sp, sp, ");
+        usize::from(reserves_stack)
+    }
+
+    /// `ldr rX, [pc, imm]` loads one pool word, and `ldrd` and `vldr` two.
+    fn literal_pool_words(&self, insns: &[Insn]) -> Vec<u64> {
+        /// `pc` reads two instructions ahead of the one that uses it.
+        const PC_AHEAD: u64 = 8;
+
+        let mut words = Vec::new();
+        for insn in insns {
+            let operation = self.normalize_operation(&insn.mnemonic);
+            let count = match operation.as_str() {
+                "ldr" => 1,
+                "ldrd" | "vldr" => 2,
+                _ => continue,
+            };
+            let Some((_, reference)) = insn.operands.rsplit_once('[') else { continue };
+            let Some(("pc", Offset::Immediate(offset))) = parse_reference(&format!("[{reference}"))
+            else {
+                continue;
+            };
+            let pool = insn.address.wrapping_add(PC_AHEAD).wrapping_add(offset as u64);
+            words.extend((0..count).map(|word| pool + word * INSN_WIDTH as u64));
+        }
+        words
+    }
+
     fn unwind_section(&self) -> Option<&'static str> {
         Some(UNWIND_SECTION)
     }
@@ -550,6 +586,17 @@ mod tests {
     #[test]
     fn push_is_not_a_return() {
         assert_eq!(decode_one([0x00, 0x48, 0x2d, 0xe9]).kind, InsnKind::Normal);
+    }
+
+    #[test]
+    /// `sub sp, sp, 0xc` before a `push` opens a variadic function.
+    #[test]
+    fn a_stack_reservation_before_the_prologue_opens_the_function() {
+        let reserve = decode_one(0xe24d_d00c_u32.to_le_bytes()); // sub sp, sp, 0xc
+        let work = decode_one(0xe080_0001_u32.to_le_bytes()); // add r0, r0, r1
+        assert_eq!(Arm32.preamble_before_prologue(&[work.clone(), reserve]), 1);
+        assert_eq!(Arm32.preamble_before_prologue(&[work]), 0);
+        assert_eq!(Arm32.preamble_before_prologue(&[]), 0);
     }
 
     #[test]

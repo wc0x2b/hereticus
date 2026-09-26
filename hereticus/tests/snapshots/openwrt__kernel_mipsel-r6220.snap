@@ -3,11 +3,11 @@ source: hereticus/tests/openwrt.rs
 expression: "format!(\"{}fingerprint {:#018x}\\n\\nstrongest changes:\\n{}\\n\",\nsummary(&comparison), fingerprint(&report), top.join(\"\\n\"))"
 ---
 functions 20099 -> 20193
-matched 19231
-{No: 15850, Reordered: 13, Data: 17, InDetail: 2535, Yes: 816}
-gone 868
-new 962
-fingerprint 0xeca0e65d5bcb5a23
+matched 19581
+{No: 16185, Reordered: 10, Data: 17, InDetail: 2550, Yes: 819}
+gone 518
+new 612
+fingerprint 0xf42e47ceeb51ce04
 
 strongest changes:
 0x805d88e4 -> 0x805e14bc score=0.999 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }

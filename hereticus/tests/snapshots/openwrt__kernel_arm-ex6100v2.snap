@@ -2,17 +2,17 @@
 source: hereticus/tests/openwrt.rs
 expression: "format!(\"{}fingerprint {:#018x}\\n\\nstrongest changes:\\n{}\\n\",\nsummary(&comparison), fingerprint(&report), top.join(\"\\n\"))"
 ---
-functions 23853 -> 23958
-matched 22616
-{No: 9892, Reordered: 32, InDetail: 11156, Unreadable: 49, Yes: 1487}
-gone 1237
-new 1342
-fingerprint 0x31e0fb757333ac7e
+functions 23823 -> 23928
+matched 22906
+{No: 10011, Reordered: 28, InDetail: 11321, Unreadable: 49, Yes: 1497}
+gone 917
+new 1022
+fingerprint 0xd3b5036fba8fbb27
 
 strongest changes:
 0x80444ea4 -> 0x80445afc score=0.999 edits=Edits { added: 0, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 35 }
 0x80852ec8 -> 0x8085a988 score=0.998 edits=Edits { added: 0, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 7 }
-0x809208ec -> 0x809288f4 score=0.998 edits=Edits { added: 5, removed: 5, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 3, other: 8, opaque: 0, constants: 22 }
+0x809208e8 -> 0x809288f0 score=0.998 edits=Edits { added: 5, removed: 5, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 3, other: 8, opaque: 0, constants: 22 }
 0x808763ac -> 0x8087df9c score=0.998 edits=Edits { added: 4, removed: 5, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 2, other: 7, opaque: 0, constants: 11 }
 0x808f01d0 -> 0x808f7f78 score=0.998 edits=Edits { added: 1, removed: 1, edited: 0 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 1, other: 0, opaque: 0, constants: 16 }
 0x8062818c -> 0x8062cd60 score=0.998 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 48 }
