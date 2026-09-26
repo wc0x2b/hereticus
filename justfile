@@ -11,15 +11,21 @@ fixtures:
         --workdir /work \
         {{fixtures_image}} ./fixtures/build.sh
 
+# Download two OpenWrt releases for three boards, and extract the code the
+# tests compare. Each file is pinned by its SHA-256, and a second run reads the
+# cached downloads instead of the network.
+firmware:
+    python3 fixtures/firmware.py
+
 # Matches build-test-native
 build:
     cargo build --release
 
-test *args: build fixtures
+test *args: build fixtures firmware
     cargo nextest run --release {{args}}
 
 # Skips tests marked slow, for a fast inner loop
-quick-test *args: build fixtures
+quick-test *args: build fixtures firmware
     cargo nextest run --release -E 'not test(/slow/)' {{args}}
 
 # Compare the two firmware fixtures, as a reader would compare two releases.

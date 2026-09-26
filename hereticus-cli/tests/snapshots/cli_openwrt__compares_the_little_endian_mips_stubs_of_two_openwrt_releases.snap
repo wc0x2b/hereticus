@@ -1,0 +1,30 @@
+---
+source: hereticus-cli/tests/cli_openwrt.rs
+info:
+  program: hereticus
+  args:
+    - "--progress"
+    - never
+    - "--raw"
+    - "--base"
+    - "0x80001000"
+    - "--arch"
+    - mips32
+    - fixtures/build/openwrt/mipsel-r6220-stub-22.03.2.bin
+    - fixtures/build/openwrt/mipsel-r6220-stub-22.03.5.bin
+    - "--show-retouched"
+---
+success: true
+exit_code: 0
+----- stdout -----
+╭──────────────┬────────────────┬───────┬───────┬─────────┬─────────────────╮
+│ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED │ MATCHED BY      │
+├──────────────┼────────────────┼───────┼───────┼─────────┼─────────────────┤
+│ sub_80001044 │ changed values │  1.00 │ -     │ -       │ identical shape │
+│ sub_80001920 │ changed values │  1.00 │ -     │ -       │ identical shape │
+╰──────────────┴────────────────┴───────┴───────┴─────────┴─────────────────╯
+
+8 matched (6 unchanged, 2 changed), 0 gone, 0 new
+
+----- stderr -----
+hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate

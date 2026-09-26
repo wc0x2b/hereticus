@@ -1,0 +1,65 @@
+---
+source: hereticus-cli/tests/cli_openwrt.rs
+info:
+  program: hereticus
+  args:
+    - "--progress"
+    - never
+    - "--raw"
+    - "--base"
+    - "0x80208000"
+    - "--arch"
+    - arm32
+    - fixtures/build/openwrt/arm-ex6100v2-stub-22.03.2.bin
+    - fixtures/build/openwrt/arm-ex6100v2-stub-22.03.5.bin
+    - "--diff"
+    - sub_802082bc
+---
+success: true
+exit_code: 0
+----- stdout -----
+sub_802082bc
+  ldr r2, [r1]
+  add r2, r2, r1
+  ldrb r1, [r2]
+  ldrb r3, [r2, 0x1]
+  orr r1, r1, r3, lsl 8
+  ldrb r3, [r2, 0x2]
+  ldrb r2, [r2, 0x3]
+  orr r1, r1, r3, lsl 16
+  orr r1, r1, r2, lsl 24
+  mov r0, r4
+  add r1, r1, r0
+  bl $+0x4d8
+  bl $+0x454
+  mrs r0, spsr
+  and r0, r0, 0x1f
+  cmps r0, r0, 0x1a
+  bne $+0x6a4
+  adr ip, pc, 0x10
+  ldr r0, [ip]
+  add r0, r0, ip
+  bl $+0x3388
+  hvc 0x0
+  b $+0x0
+  andeq r0, r0, r8, ror 12
+  andeq r0, r0, ip, lsl r3
+- eorseq r0, fp, r8, lsr 17
+- eorseq r0, fp, r0, asr 25
+- eoreq r0, fp, r8, ror r8
+- eoreq r0, fp, r0, lsr 17
+- mlaseq fp, r0, sb, r1
+- eoreq r0, fp, r8, ror r5
+- strdeq r4, r5, [fp], -0xb8
+- eoreq r0, fp, fp, lsr 10
++ eorseq r3, fp, r8, asr 24
++ eorseq r4, fp, r0, ror 0
++ eoreq r3, fp, r8, lsl ip
++ eoreq r3, fp, r0, asr 24
++ eorseq r4, fp, r0, lsr sp
++ eoreq r3, fp, r8, lsl sb
++ umaaleq r7, fp, r8, pc
++ eoreq r3, fp, fp, asr 17
+
+----- stderr -----
+hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate
