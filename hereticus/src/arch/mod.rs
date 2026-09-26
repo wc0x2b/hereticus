@@ -22,6 +22,7 @@
 
 pub mod arm32;
 pub mod mips;
+mod mips32;
 
 use core::fmt;
 
