@@ -10,13 +10,15 @@
 //! or boundary shows up as a diff to review rather than passing unseen.
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use hereticus::matching::{Diff, Options, UseNames, diff_with};
 use hereticus::obj::{Binary, FoundBy, Isa, ObjError};
 use hereticus::raw::{BaseFit, check_base};
 use rstest::rstest;
+
+mod common;
+use common::render;
 
 /// Where the MIPS vector tables are linked. Must agree with
 /// `fixtures/build.sh`.
@@ -60,38 +62,6 @@ fn changed_addresses(diff: &Diff, before: &Binary) -> Vec<u64> {
         diff.changed().map(|pair| before.functions[pair.before].address).collect();
     found.sort_unstable();
     found
-}
-
-/// Write a report as plain text, one line per function, for a snapshot.
-///
-/// Names are left out, because a raw image has none. The object comparison is
-/// rendered the same way, which is what lets the two be compared as text.
-fn render(diff: &Diff, before: &Binary, after: &Binary) -> String {
-    let mut pairs: Vec<_> = diff.matched.iter().collect();
-    pairs.sort_by_key(|pair| before.functions[pair.before].address);
-
-    let mut out = String::new();
-    for pair in pairs {
-        writeln!(
-            out,
-            "{:#07x} -> {:#07x} {:?} score={:.3} edits={:?} kinds={:?} confidence={:?}",
-            before.functions[pair.before].address,
-            after.functions[pair.after].address,
-            pair.changed,
-            pair.score,
-            pair.edits,
-            pair.kinds,
-            pair.confidence,
-        )
-        .unwrap();
-    }
-    for &index in &diff.removed {
-        writeln!(out, "gone {:#07x}", before.functions[index].address).unwrap();
-    }
-    for &index in &diff.added {
-        writeln!(out, "new  {:#07x}", after.functions[index].address).unwrap();
-    }
-    out
 }
 
 /// A raw image gives up exactly the functions its object holds.

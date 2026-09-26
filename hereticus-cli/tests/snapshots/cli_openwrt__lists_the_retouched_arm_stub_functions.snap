@@ -1,0 +1,40 @@
+---
+source: hereticus-cli/tests/cli_openwrt.rs
+info:
+  program: hereticus
+  args:
+    - "--progress"
+    - never
+    - "--raw"
+    - "--base"
+    - "0x80208000"
+    - "--arch"
+    - arm32
+    - fixtures/build/openwrt/arm-ex6100v2-stub-22.03.2.bin
+    - fixtures/build/openwrt/arm-ex6100v2-stub-22.03.5.bin
+    - "--show-retouched"
+---
+success: true
+exit_code: 0
+----- stdout -----
+╭──────────────┬────────────────┬───────┬───────┬──────────┬─────────────────╮
+│ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED  │ MATCHED BY      │
+├──────────────┼────────────────┼───────┼───────┼──────────┼─────────────────┤
+│ sub_80208000 │ changed values │  1.00 │ -     │ -        │ identical shape │
+│ sub_802087c0 │ changed values │  1.00 │ -     │ -        │ identical shape │
+│ sub_8020ba20 │ changed values │  1.00 │ -     │ -        │ identical shape │
+│ sub_8020a3bc │ changed        │  1.00 │ 0/0/1 │ -        │ similar         │
+│ sub_8020b1fc │ changed        │  0.98 │ 0/0/1 │ -        │ similar         │
+│ sub_80208e20 │ changed unread │  0.98 │ 0/0/1 │ -        │ similar         │
+│ sub_80209154 │ changed        │  0.96 │ 0/0/1 │ 1 mem    │ similar         │
+│ sub_8020a338 │ changed        │  0.94 │ 0/0/1 │ -        │ similar         │
+│ sub_802082bc │ changed        │  0.89 │ 1/1/1 │ 1 branch │ similar         │
+│ sub_80208ab4 │ changed        │  0.87 │ 0/0/1 │ -        │ similar         │
+│ sub_80208b04 │ changed        │  0.86 │ 5/0/0 │ -        │ similar         │
+╰──────────────┴────────────────┴───────┴───────┴──────────┴─────────────────╯
+sub_80208b80: gone
+
+69 matched (58 unchanged, 11 changed), 1 gone, 0 new
+
+----- stderr -----
+hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate

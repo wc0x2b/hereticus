@@ -1,0 +1,90 @@
+---
+source: hereticus-cli/tests/cli_openwrt.rs
+info:
+  program: hereticus
+  args:
+    - "--progress"
+    - never
+    - "--raw"
+    - "--base"
+    - "0x80001000"
+    - "--arch"
+    - mips32
+    - fixtures/build/openwrt/mipsel-r6220-stub-22.03.2.bin
+    - fixtures/build/openwrt/mipsel-r6220-stub-22.03.5.bin
+    - "--diff"
+    - sub_80001044
+---
+success: true
+exit_code: 0
+----- stdout -----
+sub_80001044
+  subu t0, ra, t0
+  beqz t0, . + 4 + (0x1C << 2)
+  nop
+  lui t1, 0x8180
+  addiu t1, t1, 0x0
+  lui t2, 0x81B1
+- addiu t2, t2, 0xEA0
++ addiu t2, t2, 0x42C0
+  addu t0, t0, t1
+  lw t3, 0x0(t0)
+  sw t3, 0x0(t1)
+  addi t1, t1, 0x4
+  slt at, t1, t2
+  bnez at, . + 4 + (-0x5 << 2)
+  addi t0, t0, 0x4
+  lui t0, 0x8180
+  addiu t0, t0, 0x0
+  lui t1, 0x81B1
+- addiu t1, t1, 0xEA0
++ addiu t1, t1, 0x42C0
+  addiu t2, zero, -0x20
+  and t0, t0, t2
+  and t1, t1, t2
+  addiu t2, zero, 0x20
+  b . + 4 + (0x4 << 2)
+  nop
+  cache 0x15, 0x0(t0)
+  cache 0x10, 0x0(t0)
+  add t0, t0, t2
+  bne t0, t1, . + 4 + (-0x4 << 2)
+  nop
+  sync
+  lui t0, 0x81B1
+- addiu t0, t0, 0xEA0
++ addiu t0, t0, 0x42C0
+  lui t1, 0x81B1
+- addiu t1, t1, 0xEC0
++ addiu t1, t1, 0x42E0
+  b . + 4 + (0x3 << 2)
+  nop
+  sw zero, 0x0(t0)
+  addi t0, t0, 0x4
+  bne t0, t1, . + 4 + (-0x3 << 2)
+  nop
+  lui sp, 0x81B1
+- addiu sp, sp, 0x2EC0
++ addiu sp, sp, 0x62E0
+  addiu sp, sp, -0x10
+  lui t0, 0x8180
+  addiu t0, t0, 0x920
+  jr t0
+  nop
+  lui v1, 0x81B1
+- lw v0, 0xEBC(v1)
++ lw v0, 0x42DC(v1)
+  addiu v0, v0, -0x1
+- sw v0, 0xEBC(v1)
++ sw v0, 0x42DC(v1)
+  lui v1, 0x81B1
+- lw v0, 0xEB8(v1)
++ lw v0, 0x42D8(v1)
+  addiu a0, v0, 0x1
+  lbu v0, 0x0(v0)
+  jr ra
+- sw a0, 0xEB8(v1)
++ sw a0, 0x42D8(v1)
+
+----- stderr -----
+hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate
