@@ -100,26 +100,8 @@ fn recovers_exactly_the_functions_of_its_object(
             .iter()
             .find(|function| function.address == real.address)
             .expect("the address was checked above");
-        assert_eq!(
-            found.code,
-            without_trailing_nops(&real.code),
-            "{tree}/{name}: {} must hold the same bytes",
-            real.name
-        );
+        assert_eq!(found.code, real.code, "{tree}/{name}: {} must hold the same bytes", real.name);
     }
-}
-
-/// Remove the `nop` words at the end of a function.
-///
-/// A scan cannot tell the `nop` in the last delay slot from the padding after
-/// it, so it drops both. The symbol table includes the slot. The matcher
-/// ignores padding, so the two reads still compare alike.
-fn without_trailing_nops(code: &[u8]) -> &[u8] {
-    let mut end = code.len();
-    while end >= 4 && code[end - 4..end] == [0; 4] {
-        end -= 4;
-    }
-    &code[..end]
 }
 
 /// Reading a raw image reports what reading its objects reports.
@@ -413,10 +395,7 @@ fn an_image_of_padding_is_refused(
     assert!(matches!(Binary::parse_raw(&data, 0, isa), Err(ObjError::NoFunctions)));
 }
 
-/// The smallest real function: `jr $ra` and its delay slot.
-///
-/// The `nop` in the delay slot is trimmed as padding, so the function is one
-/// word long.
+/// The smallest real function: `jr $ra` and the `nop` in its delay slot.
 #[rstest]
 #[case::little(Isa::Mips32, [0x08, 0x00, 0xe0, 0x03, 0, 0, 0, 0])]
 #[case::big(Isa::Mips32Be, [0x03, 0xe0, 0x00, 0x08, 0, 0, 0, 0])]
@@ -425,7 +404,7 @@ fn a_lone_return_is_one_function(#[case] isa: Isa, #[case] data: [u8; 8]) {
 
     assert_eq!(binary.functions.len(), 1);
     assert_eq!(binary.functions[0].address, 0x8000_0000);
-    assert_eq!(binary.functions[0].code, data[..4]);
+    assert_eq!(binary.functions[0].code, data, "the delay slot belongs to the return");
 }
 
 /// Every source built for MIPS has its raw image, so no case above quietly

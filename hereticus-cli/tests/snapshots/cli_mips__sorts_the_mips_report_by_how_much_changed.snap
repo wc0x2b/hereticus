@@ -23,10 +23,10 @@ exit_code: 0
 ├──────────────────────────────┼─────────┼───────┼───────┼───────────────────────────┼────────────┤
 │ sub_800000dc -> sub_8000016c │ changed │  0.81 │ 8/2/0 │ 1 branch, 3 call, 1 const │ similar    │
 ╰──────────────────────────────┴─────────┴───────┴───────┴───────────────────────────┴────────────╯
-sub_80000010: gone, closest sub_80000010 at 0.31
-sub_80000058: gone, closest sub_80000090 at 0.50
-sub_80000010: new, closest sub_80000010 at 0.31
-sub_80000090: new, closest sub_80000058 at 0.50
+sub_80000010: gone, closest sub_80000010 at 0.29
+sub_80000058: gone, closest sub_80000090 at 0.49
+sub_80000010: new, closest sub_80000010 at 0.29
+sub_80000090: new, closest sub_80000058 at 0.49
 
 3 matched (1 unchanged, 2 changed), 2 gone, 2 new
 1 changed only a constant, hidden. Use --show-retouched to list them.

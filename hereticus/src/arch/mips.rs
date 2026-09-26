@@ -296,6 +296,19 @@ impl Arch for Mips32 {
             }
         }
 
+        // A `nop` in the delay slot of the last branch is part of the
+        // function, not padding. The symbol table includes it, so a scan must
+        // too, or a scanned function differs from the same function read from
+        // its symbol by one word.
+        let trimmed_a_slot = end < bytes.len()
+            && end >= INSN_WIDTH
+            && self
+                .decode(bytes, end - INSN_WIDTH, 0)
+                .is_ok_and(|insn| insn.kind != InsnKind::Normal && insn.kind != InsnKind::Unknown);
+        if trimmed_a_slot {
+            end += INSN_WIDTH;
+        }
+
         &bytes[..end]
     }
 
@@ -741,6 +754,52 @@ mod tests {
         let mut code = 0x0085_1021u32.to_le_bytes().to_vec();
         code.extend_from_slice(&[0; 4]);
         assert_eq!(Mips32::LITTLE.trim_padding(&code), &code[..4]);
+    }
+
+    /// The `nop` in the delay slot of the last return belongs to the function.
+    #[test]
+    fn a_delay_slot_nop_is_kept() {
+        // jr ra, nop in its slot, then two words of padding.
+        let mut code = 0x03e0_0008u32.to_be_bytes().to_vec();
+        code.extend_from_slice(&[0; 12]);
+        assert_eq!(Mips32::BIG.trim_padding(&code), &code[..8]);
+    }
+
+    /// The same holds after a branch or a jump, and in either byte order.
+    #[test]
+    fn a_delay_slot_nop_is_kept_after_any_branch() {
+        for word in [
+            0x0800_0010u32, // j 0x40
+            0x1000_ffff,    // b .
+            0x1440_0003,    // bnez v0, . + 16
+            0x0c00_0010,    // jal 0x40
+            0x0320_f809,    // jalr t9
+        ] {
+            let mut little = word.to_le_bytes().to_vec();
+            little.extend_from_slice(&[0; 8]);
+            assert_eq!(Mips32::LITTLE.trim_padding(&little).len(), 8, "{word:#010x}");
+
+            let mut big = word.to_be_bytes().to_vec();
+            big.extend_from_slice(&[0; 8]);
+            assert_eq!(Mips32::BIG.trim_padding(&big).len(), 8, "{word:#010x}");
+        }
+    }
+
+    /// A branch whose slot holds real work loses only the padding after it.
+    #[test]
+    fn a_filled_delay_slot_is_not_padded_out() {
+        let mut code = 0x03e0_0008u32.to_le_bytes().to_vec();
+        code.extend_from_slice(&0x2402_0001u32.to_le_bytes()); // addiu v0, zero, 1
+        code.extend_from_slice(&[0; 8]);
+        assert_eq!(Mips32::LITTLE.trim_padding(&code), &code[..8]);
+    }
+
+    /// Code that ends without a branch keeps no `nop`.
+    #[test]
+    fn a_nop_after_plain_work_is_padding() {
+        let mut code = 0x2402_0001u32.to_be_bytes().to_vec();
+        code.extend_from_slice(&[0; 4]);
+        assert_eq!(Mips32::BIG.trim_padding(&code), &code[..4]);
     }
 
     /// Padding inside a function is not padding, so it must stay.
