@@ -1,0 +1,11 @@
+---
+source: hereticus/tests/raw_mips.rs
+expression: raw_report
+---
+0x00000 -> 0x00000 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1 } confidence=IdenticalShape
+0x000e4 -> 0x0014c No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
+0x00288 -> 0x00314 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
+gone 0x00070
+gone 0x0017c
+new  0x00070
+new  0x001e4
