@@ -17,6 +17,9 @@ mipsbe_target="mips-linux-gnu"
 # Where the vector-table fixture is linked. Tests check the load-address
 # check against this exact value, so the two must agree.
 VECTOR_BASE="0x08000000"
+# The same for the MIPS vector table: the start of KSEG0, where MIPS firmware
+# loads.
+MIPS_VECTOR_BASE="0x80000000"
 
 # Each distribution patches its own defaults into clang: Arch turns on the
 # stack protector and NEON, Debian turns off the FPU on armel. Every flag that
@@ -132,6 +135,17 @@ if [ -n "$strip_tool" ]; then
                     "$build/$opt/$name.o" "$build/raw/$opt-$name.bin"
             done
         done
+
+        # MIPS raw images, named after the object tree they came from. Both
+        # byte orders, and PIC beside non-PIC, because each reads differently.
+        for tree in mips-O0 mips-O2 mipsbe-O0 mipsbe-O2 \
+            mips-pic-O2 mipsbe-pic-O2 mips-nopic-O2 mipsbe-nopic-O2; do
+            for source in "$src"/*.c; do
+                name="$(basename "$source" .c)"
+                llvm-objcopy -O binary --only-section=.text \
+                    "$build/$tree/$name.o" "$build/raw/$tree-$name.bin"
+            done
+        done
     fi
 else
     echo "fixtures: no strip tool found, skipping the stripped copies" >&2
@@ -149,6 +163,21 @@ if command -v ld.lld >/dev/null 2>&1 && command -v llvm-objcopy >/dev/null 2>&1;
     llvm-objcopy -O binary "$build/raw/vectors.elf" "$build/raw/vectors.bin"
     rm -f "$build/raw/vectors.o"
     echo "fixtures: vector table linked at $VECTOR_BASE"
+
+    for order in mipsel:mips mips:mipsbe; do
+        triple="${order%%:*}-linux-gnu"
+        stem="vectors-${order##*:}"
+        clang --target="$triple" -c "$src/vectors_mips.s" \
+            -o "$build/raw/$stem.o"
+        ld.lld -Ttext="$MIPS_VECTOR_BASE" -e _start --no-dynamic-linker \
+            "$build/raw/$stem.o" -o "$build/raw/$stem.elf"
+        # Only .text: lld adds the MIPS ABI sections 64 KiB further on, and
+        # the gap would fill the image with zeros.
+        llvm-objcopy -O binary --only-section=.text \
+            "$build/raw/$stem.elf" "$build/raw/$stem.bin"
+        rm -f "$build/raw/$stem.o"
+    done
+    echo "fixtures: MIPS vector tables linked at $MIPS_VECTOR_BASE"
 else
     echo "fixtures: no ld.lld, skipping the vector table" >&2
 fi
