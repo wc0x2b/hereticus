@@ -30,9 +30,9 @@ const UNKNOWN_MNEMONIC: &str = "(unknown)";
 
 /// The instruction set this decoder reads.
 ///
-/// MIPS II covers what a compiler emits for a 32-bit target. A later level
-/// adds instructions that would otherwise read as undecodable, so raising it
-/// widens what can be read rather than changing what is already right.
+/// MIPS II covers most of what a compiler emits for a 32-bit target. The
+/// MIPS32 and Release 2 words it refuses are read by [`super::mips32`]
+/// instead, which leaves every word MIPS II reads as it was.
 const ISA: IsaVersion = IsaVersion::MIPS_II;
 
 /// The byte order a word is stored in.
@@ -91,6 +91,18 @@ impl Arch for Mips32 {
         );
 
         let Some(inst) = decoded else {
+            // `rabbitizer` stops at MIPS IV, so a MIPS32 word it refuses may
+            // still be one this crate reads. None of these move control.
+            if let Some((mnemonic, operands)) = super::mips32::decode(raw) {
+                return Ok(Insn {
+                    address: insn_address,
+                    bytes_len: INSN_WIDTH,
+                    mnemonic: mnemonic.to_string(),
+                    operands,
+                    kind: InsnKind::Normal,
+                });
+            }
+
             // Stepping over an unreadable word keeps everything after it
             // aligned, because every instruction is the same width. The raw
             // word goes in the operand field so that two unreadable words
@@ -325,17 +337,15 @@ impl Arch for Mips32 {
     ///
     /// * Words that do not decode, or that hold an address inside the image.
     ///   A pointer inside a KSEG0 image reads as `lb rX, off(zero)`, which no
-    ///   compiler emits. At least two words in five mark data. Real code
-    ///   reaches a third, because this decoder reads MIPS II and a MIPS32r2
-    ///   kernel uses `rotr`, `ext` and `ins`, which it cannot read.
+    ///   compiler emits. At least two words in five mark data.
     /// * Zero fill, which reads as `nop`. At least half the words mark data.
-    ///   A short function can reach nearly half with the `nop` in its delay
-    ///   slots.
     ///
-    /// Below 64 words a function is not judged: every region of data measured
-    /// was far longer, and short code can look like anything. Measured on two
-    /// OpenWrt MIPS kernels, this marks every region of tables and zero fill
-    /// after the code, and none of the compiled fixture functions.
+    /// Below 64 words a function is not judged: short code can look like
+    /// anything, and every region of data measured was far longer. On two
+    /// OpenWrt MIPS kernels, code of 64 words or more reaches at most 19% of
+    /// the first and 25% of the second, and the regions of tables and zero
+    /// fill after the code start at 44% and 67%. None of the compiled fixture
+    /// functions is marked.
     fn contents(&self, code: &[u8], insns: &[Insn], space: &AddressSpace) -> Contents {
         const FEWEST_WORDS: usize = 64;
 
@@ -1423,8 +1433,8 @@ mod tests {
             assert_eq!(contents_of(&words, &space()), Contents::Data);
         }
 
-        /// A third of the words unreadable is what MIPS32r2 code reaches, so it
-        /// stays code.
+        /// A third of the words unreadable is below two in five, so it stays
+        /// code.
         #[test]
         fn some_unreadable_words_are_code() {
             use crate::address::Contents;

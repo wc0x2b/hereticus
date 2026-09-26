@@ -416,7 +416,7 @@ fn slow_the_arm_kernel_report_is_locked() {
 fn slow_the_big_endian_mips_kernel_report_is_locked() {
     check_kernel(
         EAP245V3,
-        12248,
+        12249,
         [
             BaseFit::Plausible { pointers: 47586, examined: 1_624_990 },
             BaseFit::Plausible { pointers: 47778, examined: 1_634_158 },
@@ -429,7 +429,7 @@ fn slow_the_big_endian_mips_kernel_report_is_locked() {
 fn slow_the_little_endian_mips_kernel_report_is_locked() {
     check_kernel(
         R6220,
-        13907,
+        13908,
         [
             BaseFit::Plausible { pointers: 50248, examined: 1_931_464 },
             BaseFit::Plausible { pointers: 50444, examined: 1_941_370 },
