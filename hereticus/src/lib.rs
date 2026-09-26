@@ -5,6 +5,7 @@
 //! functions that changed in behavior, and ignores the ones that only changed
 //! in compilation.
 
+pub mod address;
 pub mod arch;
 pub mod matching;
 pub mod norm;

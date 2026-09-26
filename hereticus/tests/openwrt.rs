@@ -408,14 +408,15 @@ fn slow_the_arm_kernel_report_is_locked() {
 
 /// The big-endian MIPS kernel.
 ///
-/// MIPS code holds absolute addresses in `lui` and `jal`, so code that only
-/// moved reads as `changed values` rather than unchanged. That is why nearly
-/// every function is `InDetail` here and so few are `No`.
+/// MIPS code holds absolute addresses in `lui` and `jal`. Those that point
+/// into the image are dropped as addresses, so code that only moved reads as
+/// unchanged, as it does on ARM, and its bytes still differ. The `changed
+/// values` left are mostly struct offsets that moved, which are real.
 #[test]
 fn slow_the_big_endian_mips_kernel_report_is_locked() {
     check_kernel(
         EAP245V3,
-        0,
+        12249,
         [
             BaseFit::Plausible { pointers: 47586, examined: 1_624_990 },
             BaseFit::Plausible { pointers: 47778, examined: 1_634_158 },
@@ -428,7 +429,7 @@ fn slow_the_big_endian_mips_kernel_report_is_locked() {
 fn slow_the_little_endian_mips_kernel_report_is_locked() {
     check_kernel(
         R6220,
-        0,
+        13910,
         [
             BaseFit::Plausible { pointers: 50248, examined: 1_931_464 },
             BaseFit::Plausible { pointers: 50444, examined: 1_941_370 },

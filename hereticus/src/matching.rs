@@ -17,8 +17,9 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
+use crate::address::{AddressSpace, ConstantKind};
 use crate::arch::{Arch, Insn, InsnKind, decode_all, is_branch_target};
-use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body};
+use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body_in};
 use crate::obj::{Binary, Function, Isa};
 
 /// How confident a pairing is, and what justified it.
@@ -409,6 +410,8 @@ struct Prepared<'a> {
     ordered: Vec<Symbol>,
     /// Which decoder read this function, so the printed form can be recovered.
     isa: Isa,
+    /// Where the binary sits, so the body normalizes again the same way.
+    addresses: &'a AddressSpace,
 }
 
 impl Prepared<'_> {
@@ -422,7 +425,7 @@ impl Prepared<'_> {
     fn body(&self) -> Vec<NormInsn> {
         let arch = self.isa.arch();
         let (insns, _) = decode_all(arch, &self.function.code, self.function.address);
-        normalize_body(arch, &insns)
+        normalize_body_in(arch, &insns, self.addresses)
     }
 
     /// Report whether this function normalized to nothing.
@@ -470,13 +473,13 @@ fn prepare<'a>(
             // The body is interned and then dropped. Matching reads only the
             // symbols, and the few pairs that need the instructions back
             // normalize again on demand.
-            let body = normalize_body(arch, &insns);
+            let body = normalize_body_in(arch, &insns, &binary.addresses);
 
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
             symbols.sort_unstable();
 
-            Prepared { function, symbols, ordered, isa: binary.isa }
+            Prepared { function, symbols, ordered, isa: binary.isa, addresses: &binary.addresses }
         })
         .collect()
 }
@@ -730,23 +733,62 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
     if before_insns.len() != after_insns.len() {
         return false;
     }
+    let before_kinds = before_arch.constant_kinds(&before_insns, before.addresses);
+    let after_kinds = after_arch.constant_kinds(&after_insns, after.addresses);
 
-    before_insns.iter().zip(&after_insns).all(|(left, right)| {
-        // Compare the operation the way the normalizer does, so a condition
-        // code the compiler chose differently — `movwlt` against `movwlo` —
-        // stays the free choice it is rather than reading as an edit.
-        before_arch.normalize_operation(&left.mnemonic)
-            == after_arch.normalize_operation(&right.mnemonic)
-            && operands_are_interchangeable(
-                before_arch,
-                &left.operands,
-                &right.operands,
-                // A `$...` operand is a free choice only on an instruction
-                // that truly branches. Both sides agree on the operation by
-                // now, so either one answers.
-                TargetMoves::from(transfers_control(left.kind) && transfers_control(right.kind)),
-            )
-    })
+    before_insns.iter().zip(&after_insns).zip(before_kinds.iter().zip(&after_kinds)).all(
+        |((left, right), kinds)| {
+            // Compare the operation the way the normalizer does, so a condition
+            // code the compiler chose differently — `movwlt` against `movwlo` —
+            // stays the free choice it is rather than reading as an edit.
+            before_arch.normalize_operation(&left.mnemonic)
+                == after_arch.normalize_operation(&right.mnemonic)
+                && operands_are_interchangeable(
+                    before_arch,
+                    &left.operands,
+                    &right.operands,
+                    // A `$...` operand is a free choice only on an instruction
+                    // that truly branches. Both sides agree on the operation by
+                    // now, so either one answers.
+                    TargetMoves::from(
+                        transfers_control(left.kind) && transfers_control(right.kind),
+                    ),
+                    AddressMoves::from(kinds),
+                )
+        },
+    )
+}
+
+/// Whether a differing constant counts as a free choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AddressMoves {
+    /// The constant is part of an address on both sides, so the linker chose
+    /// it, not the source.
+    Freely,
+    /// The constant is a value on at least one side.
+    Never,
+}
+
+impl From<(&ConstantKind, &ConstantKind)> for AddressMoves {
+    fn from(kinds: (&ConstantKind, &ConstantKind)) -> Self {
+        match kinds {
+            (ConstantKind::Address, ConstantKind::Address) => Self::Freely,
+            _ => Self::Never,
+        }
+    }
+}
+
+/// Report whether two operands differ only in the part of an address the
+/// linker chose: a constant, or the offset of a memory reference through the
+/// same register.
+fn is_moved_address(arch: &dyn Arch, left: &str, right: &str) -> bool {
+    if arch.constant_value(left).is_some() && arch.constant_value(right).is_some() {
+        return true;
+    }
+    match (left.split_once('('), right.split_once('(')) {
+        (Some((_, left_base)), Some((_, right_base))) => left_base == right_base,
+        _ => false,
+    }
 }
 
 /// Whether a differing branch target counts as a free choice.
@@ -770,6 +812,7 @@ fn operands_are_interchangeable(
     left: &str,
     right: &str,
     targets: TargetMoves,
+    addresses: AddressMoves,
 ) -> bool {
     let left = left.split(',').map(str::trim);
     let right = right.split(',').map(str::trim);
@@ -778,6 +821,7 @@ fn operands_are_interchangeable(
         a == b
             || (arch.is_register(a) && arch.is_register(b))
             || (targets == TargetMoves::Freely && is_branch_target(a) && is_branch_target(b))
+            || (addresses == AddressMoves::Freely && is_moved_address(arch, a, b))
     })
 }
 
@@ -1518,6 +1562,7 @@ fn lines_from_alignment(
 mod tests {
     use super::*;
     use crate::arch::arm32::Arm32;
+    use crate::arch::mips::Mips32;
     use crate::arch::{Insn, InsnKind};
     use crate::norm::normalize;
 
@@ -1595,7 +1640,13 @@ mod tests {
         let after = [("eoreq".to_string(), "r3, fp, r8, asr 24".to_string())];
 
         assert!(
-            !operands_are_interchangeable(&Arm32, &before[0].1, &after[0].1, TargetMoves::Never),
+            !operands_are_interchangeable(
+                &Arm32,
+                &before[0].1,
+                &after[0].1,
+                TargetMoves::Never,
+                AddressMoves::Never
+            ),
             "a shift that changed is not a register that changed"
         );
     }
@@ -1607,13 +1658,15 @@ mod tests {
             &Arm32,
             "r0, r1, r2",
             "r4, r5, r6",
-            TargetMoves::Never
+            TargetMoves::Never,
+            AddressMoves::Never
         ));
         assert!(operands_are_interchangeable(
             &Arm32,
             "r0, fp, r8",
             "r3, fp, r8",
-            TargetMoves::Never
+            TargetMoves::Never,
+            AddressMoves::Never
         ));
     }
 
@@ -1627,7 +1680,8 @@ mod tests {
             &Arm32,
             "$+0x50a734",
             "$+0x50b2d4",
-            TargetMoves::Freely
+            TargetMoves::Freely,
+            AddressMoves::Never
         ));
     }
 
@@ -1639,14 +1693,91 @@ mod tests {
             &Arm32,
             "$+0x50a734",
             "$+0x50b2d4",
-            TargetMoves::Never
+            TargetMoves::Never,
+            AddressMoves::Never
         ));
     }
 
     /// Allowing targets to move must not let anything else move with them.
     #[test]
     fn a_branch_still_reports_its_other_operands() {
-        assert!(!operands_are_interchangeable(&Arm32, "r0, 0x10", "r0, 0x20", TargetMoves::Freely));
+        assert!(!operands_are_interchangeable(
+            &Arm32,
+            "r0, 0x10",
+            "r0, 0x20",
+            TargetMoves::Freely,
+            AddressMoves::Never
+        ));
+    }
+
+    /// A constant that is part of an address on both sides moves with the
+    /// linker, so it is not an edit.
+    #[test]
+    fn a_moved_address_is_not_a_change() {
+        let mips = &Mips32::BIG;
+        assert!(operands_are_interchangeable(
+            mips,
+            "v0, 0x806F",
+            "v0, 0x8070",
+            TargetMoves::Never,
+            AddressMoves::Freely
+        ));
+        assert!(operands_are_interchangeable(
+            mips,
+            "a3, 0x1AA0(s0)",
+            "a3, -0x4560(s0)",
+            TargetMoves::Never,
+            AddressMoves::Freely
+        ));
+    }
+
+    /// The same constants, when either side is a value, stay a change.
+    #[test]
+    fn a_changed_value_is_still_a_change() {
+        let mips = &Mips32::BIG;
+        assert!(!operands_are_interchangeable(
+            mips,
+            "v0, 0x806F",
+            "v0, 0x8070",
+            TargetMoves::Never,
+            AddressMoves::Never
+        ));
+        assert!(!operands_are_interchangeable(
+            mips,
+            "v0, 0x3C0(v0)",
+            "v0, 0x3C8(v0)",
+            TargetMoves::Never,
+            AddressMoves::Never
+        ));
+    }
+
+    /// An address may move, but not the register it is read through.
+    #[test]
+    fn a_moved_address_through_another_register_is_a_change() {
+        assert!(!operands_are_interchangeable(
+            &Mips32::BIG,
+            "a3, 0x1AA0(s0)",
+            "a3, 0x1AA0(s1)",
+            TargetMoves::Never,
+            AddressMoves::Freely
+        ));
+    }
+
+    /// Only one side being an address is not enough to let it move.
+    #[test]
+    fn an_address_on_one_side_only_does_not_move() {
+        assert_eq!(
+            AddressMoves::from((&ConstantKind::Address, &ConstantKind::Value)),
+            AddressMoves::Never
+        );
+        assert_eq!(
+            AddressMoves::from((&ConstantKind::Value, &ConstantKind::Address)),
+            AddressMoves::Never
+        );
+        assert_eq!(
+            AddressMoves::from((&ConstantKind::Address, &ConstantKind::Address)),
+            AddressMoves::Freely
+        );
     }
 
     /// A condition code is the compiler's choice, not an edit.
@@ -1973,6 +2104,7 @@ mod tests {
         crate::obj::Binary {
             isa: Isa::Arm32,
             found_by: crate::obj::FoundBy::Symbols,
+            addresses: crate::address::AddressSpace::none(),
             functions: functions
                 .iter()
                 .enumerate()

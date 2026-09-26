@@ -11,8 +11,9 @@
 
 use bolero::check;
 
+use hereticus::address::AddressSpace;
 use hereticus::arch::{Arch, DecodeError, InsnKind, arm32::Arm32, decode_all, mips::Mips32};
-use hereticus::norm::{normalize, normalize_body};
+use hereticus::norm::{normalize, normalize_body, normalize_body_in};
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::check_base;
 
@@ -471,5 +472,56 @@ fn normalizing_big_endian_mips_never_panics_and_always_advances() {
 
         assert!(normalized.len() <= insns.len(), "normalizing invented instructions");
         assert_eq!(normalized, normalize_body(arch, &insns), "normalizing is unstable");
+    });
+}
+
+/// Judging MIPS addresses must never panic, and must give one kind for each
+/// instruction, whatever the code and wherever it sits.
+#[test]
+fn mips_constant_kinds_cover_every_instruction() {
+    check!().with_type::<(Vec<u8>, u32, u32)>().for_each(|(code, base, length)| {
+        let space = AddressSpace::of_raw_image(u64::from(*base), u64::from(*length));
+        for arch in [&Mips32::LITTLE, &Mips32::BIG] {
+            let (insns, _) = decode_all(arch, code, u64::from(*base));
+            assert_eq!(arch.constant_kinds(&insns, &space).len(), insns.len());
+        }
+    });
+}
+
+/// Placing a body in a space only removes constants: it keeps every
+/// instruction and every operand shape, and adds nothing.
+#[test]
+fn a_space_only_removes_constants() {
+    check!().with_type::<(Vec<u8>, u32)>().for_each(|(code, length)| {
+        let base = 0x8000_0000;
+        let space = AddressSpace::of_raw_image(base, u64::from(*length));
+        for arch in [&Mips32::LITTLE, &Mips32::BIG] {
+            let (insns, _) = decode_all(arch, code, base);
+            let plain = normalize_body(arch, &insns);
+            let placed = normalize_body_in(arch, &insns, &space);
+
+            assert_eq!(plain, placed, "the space changed an operation or a shape");
+            for (without, with) in plain.iter().zip(&placed) {
+                assert!(
+                    with.constants.is_empty() || with.constants == without.constants,
+                    "the space changed a constant rather than removing it"
+                );
+            }
+        }
+    });
+}
+
+/// An empty space changes nothing at all.
+#[test]
+fn an_empty_space_changes_nothing() {
+    check!().with_type::<Vec<u8>>().for_each(|code| {
+        for arch in [&Mips32::LITTLE, &Mips32::BIG] {
+            let (insns, _) = decode_all(arch, code, 0x8000_0000);
+            let plain = normalize_body(arch, &insns);
+            let placed = normalize_body_in(arch, &insns, &AddressSpace::none());
+            for (without, with) in plain.iter().zip(&placed) {
+                assert_eq!(without.constants, with.constants);
+            }
+        }
     });
 }

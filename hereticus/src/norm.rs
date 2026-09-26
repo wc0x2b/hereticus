@@ -24,6 +24,7 @@ use std::collections::BTreeSet;
 use compact_str::{CompactString, format_compact};
 use smallvec::SmallVec;
 
+use crate::address::{AddressSpace, ConstantKind};
 use crate::arch::{Arch, Insn, InsnKind, is_branch_target};
 
 /// Operands held without a heap allocation.
@@ -225,6 +226,18 @@ pub fn normalize(arch: &dyn Arch, insn: &Insn) -> NormInsn {
 /// [`Arch::idiom_length`] is asked about each remaining position and the whole
 /// run it reports is skipped.
 pub fn normalize_body(arch: &dyn Arch, insns: &[Insn]) -> Vec<NormInsn> {
+    normalize_body_in(arch, insns, &AddressSpace::none())
+}
+
+/// Normalize a function body that lives in `space`.
+///
+/// As [`normalize_body`], and in addition the constants that are addresses
+/// inside `space` are dropped, as branch targets are. They move whenever the
+/// linker moves what they point at, so keeping them would report every
+/// function that refers to moved data as changed. See
+/// [`Arch::constant_kinds`].
+pub fn normalize_body_in(arch: &dyn Arch, insns: &[Insn], space: &AddressSpace) -> Vec<NormInsn> {
+    let kinds = arch.constant_kinds(insns, space);
     let mut out = Vec::with_capacity(insns.len());
     let mut index = 0;
 
@@ -240,7 +253,11 @@ pub fn normalize_body(arch: &dyn Arch, insns: &[Insn]) -> Vec<NormInsn> {
         }
 
         if !arch.is_frame_management(&insns[index]) {
-            out.push(normalize(arch, &insns[index]));
+            let mut normalized = normalize(arch, &insns[index]);
+            if kinds.get(index) == Some(&ConstantKind::Address) {
+                normalized.constants.clear();
+            }
+            out.push(normalized);
         }
         index += 1;
     }

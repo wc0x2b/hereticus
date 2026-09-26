@@ -19,9 +19,9 @@ success: true
 exit_code: 0
 ----- stdout -----
 sub_80000050
-  bltz a0, . + 4 + (0x7 << 2)
+  bltz a0, $+0x20
   nop
-  beqz a0, . + 4 + (0x7 << 2)
+  beqz a0, $+0x20
   nop
 - addiu at, zero, 0x63
 + addiu at, zero, 0x31

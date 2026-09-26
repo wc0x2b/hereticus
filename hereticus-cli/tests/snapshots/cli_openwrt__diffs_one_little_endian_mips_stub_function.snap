@@ -20,7 +20,7 @@ exit_code: 0
 ----- stdout -----
 sub_80001044
   subu t0, ra, t0
-  beqz t0, . + 4 + (0x1C << 2)
+  beqz t0, $+0x74
   nop
   lui t1, 0x8180
   addiu t1, t1, 0x0
@@ -32,7 +32,7 @@ sub_80001044
   sw t3, 0x0(t1)
   addi t1, t1, 0x4
   slt at, t1, t2
-  bnez at, . + 4 + (-0x5 << 2)
+  bnez at, $-0x10
   addi t0, t0, 0x4
   lui t0, 0x8180
   addiu t0, t0, 0x0
@@ -43,12 +43,12 @@ sub_80001044
   and t0, t0, t2
   and t1, t1, t2
   addiu t2, zero, 0x20
-  b . + 4 + (0x4 << 2)
+  b $+0x14
   nop
   cache 0x15, 0x0(t0)
   cache 0x10, 0x0(t0)
   add t0, t0, t2
-  bne t0, t1, . + 4 + (-0x4 << 2)
+  bne t0, t1, $-0xc
   nop
   sync
   lui t0, 0x81B1
@@ -57,11 +57,11 @@ sub_80001044
   lui t1, 0x81B1
 - addiu t1, t1, 0xEC0
 + addiu t1, t1, 0x42E0
-  b . + 4 + (0x3 << 2)
+  b $+0x10
   nop
   sw zero, 0x0(t0)
   addi t0, t0, 0x4
-  bne t0, t1, . + 4 + (-0x3 << 2)
+  bne t0, t1, $-0x8
   nop
   lui sp, 0x81B1
 - addiu sp, sp, 0x2EC0
