@@ -56,6 +56,14 @@ struct Args {
     #[arg(long)]
     show_retouched: bool,
 
+    /// List regions that look like data rather than code.
+    ///
+    /// A raw image holds tables and zero fill after its code, and a scan
+    /// reads them as long functions. Every release changes thousands of
+    /// their words, so they are hidden by default.
+    #[arg(long)]
+    show_data: bool,
+
     /// Lowest similarity that still counts as a match, from 0.0 to 1.0.
     #[arg(long, default_value_t = 0.65, value_parser = parse_threshold)]
     threshold: f64,
@@ -329,24 +337,13 @@ fn run(args: &Args) -> Result<bool, String> {
     }
 
     match args.format {
-        // `--all` asks for every function, so it implies the retouched ones.
         Format::Text => {
-            let retouched = Retouched::from(args.show_retouched || args.all);
+            let hidden = Hidden::from_args(args);
             let paint = Paint::resolve(args.color);
-            print_text(
-                &diff,
-                &before,
-                &after,
-                args.all,
-                args.near_miss,
-                retouched,
-                paint,
-                args.sort,
-            )
+            print_text(&diff, &before, &after, args.all, args.near_miss, hidden, paint, args.sort)
         }
         Format::Compact => {
-            let retouched = Retouched::from(args.show_retouched || args.all);
-            print_compact(&diff, &before, &after, args.all, retouched, args.sort)
+            print_compact(&diff, &before, &after, args.all, Hidden::from_args(args), args.sort)
         }
     }
 
@@ -395,6 +392,7 @@ fn describe(change: Changed) -> &'static str {
         Changed::No => "same",
         Changed::Reordered => "reordered",
         Changed::InDetail => "changed values",
+        Changed::Data => "changed data",
         Changed::Unreadable => "changed unread",
         Changed::Yes => "changed",
     }
@@ -506,12 +504,12 @@ fn describe_confidence(confidence: Confidence) -> &'static str {
 /// asked for. Measured on a whole-kernel pair, hiding them drops
 /// the report from 8744 rows to 6375 while keeping every function that added,
 /// removed or rewrote an instruction.
-fn is_interesting(pair: &Match, retouched: Retouched) -> bool {
-    if pair.changed == Changed::No {
-        return false;
+fn is_interesting(pair: &Match, hidden: Hidden) -> bool {
+    match pair.changed {
+        Changed::No => false,
+        Changed::Data => hidden.data == DataRegions::Show,
+        _ => hidden.retouched == Retouched::Show || !is_retouched(pair),
     }
-
-    retouched == Retouched::Show || !is_retouched(pair)
 }
 
 /// Report whether a pair differs in nothing but its constants.
@@ -521,6 +519,36 @@ fn is_interesting(pair: &Match, retouched: Retouched) -> bool {
 /// a perfect match differs in shape even if the counts round to nothing.
 fn is_retouched(pair: &Match) -> bool {
     pair.edits.total() == 0 && pair.score >= 1.0
+}
+
+/// Which quiet changes to list.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct Hidden {
+    retouched: Retouched,
+    data: DataRegions,
+}
+
+impl Hidden {
+    /// `--all` asks for every function, so it lists every quiet change too.
+    fn from_args(args: &Args) -> Self {
+        Self {
+            retouched: Retouched::from(args.show_retouched || args.all),
+            data: DataRegions::from(args.show_data || args.all),
+        }
+    }
+}
+
+/// Whether to list pairs that look like data.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum DataRegions {
+    Show,
+    Hide,
+}
+
+impl From<bool> for DataRegions {
+    fn from(show: bool) -> Self {
+        if show { Self::Show } else { Self::Hide }
+    }
 }
 
 /// Whether to list pairs that only differ in a constant.
@@ -613,6 +641,7 @@ fn color_of(change: Changed) -> Color {
         Changed::Unreadable => Color::FG_MAGENTA,
         Changed::InDetail => Color::FG_YELLOW,
         Changed::Reordered => Color::FG_CYAN,
+        Changed::Data => Color::FG_BLUE,
         Changed::No => Color::FG_GREEN,
     }
 }
@@ -726,12 +755,12 @@ fn print_text(
     after: &Binary,
     show_all: bool,
     near_miss_floor: f64,
-    retouched: Retouched,
+    hidden: Hidden,
     paint: Paint,
     sort: Sort,
 ) {
     let mut shown: Vec<&Match> =
-        diff.matched.iter().filter(|pair| show_all || is_interesting(pair, retouched)).collect();
+        diff.matched.iter().filter(|pair| show_all || is_interesting(pair, hidden)).collect();
     sort_shown(&mut shown, sort);
 
     if !shown.is_empty() {
@@ -796,7 +825,7 @@ fn print_text(
         }
     }
 
-    summarize(diff, retouched);
+    summarize(diff, hidden);
 }
 
 /// Describe the closest candidate for a function that went unmatched.
@@ -833,11 +862,11 @@ fn print_compact(
     before: &Binary,
     after: &Binary,
     show_all: bool,
-    retouched: Retouched,
+    hidden: Hidden,
     sort: Sort,
 ) {
     let mut shown: Vec<&Match> =
-        diff.matched.iter().filter(|pair| show_all || is_interesting(pair, retouched)).collect();
+        diff.matched.iter().filter(|pair| show_all || is_interesting(pair, hidden)).collect();
     sort_shown(&mut shown, sort);
 
     for pair in shown {
@@ -874,15 +903,20 @@ fn print_compact(
     }
 }
 
-fn summarize(diff: &Diff, retouched: Retouched) {
+fn summarize(diff: &Diff, hidden: Hidden) {
     let changed = diff.changed().count();
     let same = diff.matched.len() - changed;
     let nothing_happened = changed == 0 && diff.removed.is_empty() && diff.added.is_empty();
 
     // A count that disagrees with the table reads like a bug, so say how many
     // rows were held back and how to see them.
-    let hidden = if retouched == Retouched::Hide {
-        diff.changed().filter(|pair| is_retouched(pair)).count()
+    let hidden_retouched = if hidden.retouched == Retouched::Hide {
+        diff.changed().filter(|pair| pair.changed != Changed::Data && is_retouched(pair)).count()
+    } else {
+        0
+    };
+    let hidden_data = if hidden.data == DataRegions::Hide {
+        diff.changed().filter(|pair| pair.changed == Changed::Data).count()
     } else {
         0
     };
@@ -901,8 +935,14 @@ fn summarize(diff: &Diff, retouched: Retouched) {
         diff.removed.len(),
         diff.added.len()
     );
-    if hidden > 0 {
-        println!("{hidden} changed only a constant, hidden. Use --show-retouched to list them.");
+    if hidden_retouched > 0 {
+        println!(
+            "{hidden_retouched} changed only a constant, hidden. Use --show-retouched to list them."
+        );
+    }
+    if hidden_data > 0 {
+        let regions = if hidden_data == 1 { "region" } else { "regions" };
+        println!("{hidden_data} data {regions} changed, hidden. Use --show-data to list them.");
     }
 }
 
@@ -926,9 +966,14 @@ mod tests {
 
     #[test]
     fn every_change_has_a_description() {
-        for change in
-            [Changed::No, Changed::Reordered, Changed::InDetail, Changed::Unreadable, Changed::Yes]
-        {
+        for change in [
+            Changed::No,
+            Changed::Reordered,
+            Changed::Data,
+            Changed::InDetail,
+            Changed::Unreadable,
+            Changed::Yes,
+        ] {
             assert!(!describe(change).is_empty());
         }
     }
@@ -1055,12 +1100,17 @@ mod tests {
         assert_eq!(describe_kinds(kinds, Changed::Yes), "-");
     }
 
-    /// Only unchanged functions are hidden when a reader wants changes.
+    /// What the report hides when no flag asks for more.
+    const DEFAULT: Hidden = Hidden { retouched: Retouched::Hide, data: DataRegions::Hide };
+
+    /// Only unchanged functions and quiet changes are hidden when a reader
+    /// wants changes.
     #[test]
     fn unchanged_functions_are_the_only_ones_hidden() {
-        let shown = |changed| is_interesting(&edited_pair(changed), Retouched::Hide);
+        let shown = |changed| is_interesting(&edited_pair(changed), DEFAULT);
 
         assert!(!shown(Changed::No));
+        assert!(!shown(Changed::Data), "data is hidden too, by its own flag");
         assert!(shown(Changed::Reordered));
         assert!(shown(Changed::InDetail));
         assert!(shown(Changed::Unreadable));
@@ -1073,8 +1123,32 @@ mod tests {
         let pair = retouched_pair(Changed::InDetail);
 
         assert!(is_retouched(&pair));
-        assert!(!is_interesting(&pair, Retouched::Hide), "hidden by default");
-        assert!(is_interesting(&pair, Retouched::Show), "--show-retouched lists it");
+        assert!(!is_interesting(&pair, DEFAULT), "hidden by default");
+        assert!(
+            is_interesting(&pair, Hidden { retouched: Retouched::Show, ..DEFAULT }),
+            "--show-retouched lists it"
+        );
+        assert!(
+            !is_interesting(&pair, Hidden { data: DataRegions::Show, ..DEFAULT }),
+            "--show-data does not"
+        );
+    }
+
+    /// A pair that looks like data is held back by default, even with a
+    /// perfect score, and `--show-data` lists it.
+    #[test]
+    fn a_data_region_is_hidden_unless_asked_for() {
+        for pair in [edited_pair(Changed::Data), retouched_pair(Changed::Data)] {
+            assert!(!is_interesting(&pair, DEFAULT), "hidden by default");
+            assert!(
+                !is_interesting(&pair, Hidden { retouched: Retouched::Show, ..DEFAULT }),
+                "--show-retouched does not list it"
+            );
+            assert!(
+                is_interesting(&pair, Hidden { data: DataRegions::Show, ..DEFAULT }),
+                "--show-data lists it"
+            );
+        }
     }
 
     /// A rewritten instruction is a real edit whatever the pair scores.
@@ -1086,7 +1160,7 @@ mod tests {
         let pair = Match { score: 1.0, ..edited_pair(Changed::Yes) };
 
         assert!(!is_retouched(&pair), "an edited instruction is not a retouch");
-        assert!(is_interesting(&pair, Retouched::Hide));
+        assert!(is_interesting(&pair, DEFAULT));
     }
 
     /// A pair below a perfect score differs in shape, so it is shown even
@@ -1096,7 +1170,7 @@ mod tests {
         let pair = Match { score: 0.9, edits: Edits::default(), ..edited_pair(Changed::Yes) };
 
         assert!(!is_retouched(&pair));
-        assert!(is_interesting(&pair, Retouched::Hide));
+        assert!(is_interesting(&pair, DEFAULT));
     }
 
     /// The two flags that do not ask about the terminal always agree.
@@ -1155,8 +1229,14 @@ mod tests {
     /// to show.
     #[test]
     fn every_change_has_its_own_color() {
-        let changes =
-            [Changed::No, Changed::Reordered, Changed::InDetail, Changed::Unreadable, Changed::Yes];
+        let changes = [
+            Changed::No,
+            Changed::Reordered,
+            Changed::Data,
+            Changed::InDetail,
+            Changed::Unreadable,
+            Changed::Yes,
+        ];
 
         for (index, change) in changes.iter().enumerate() {
             for other in &changes[index + 1..] {

@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::address::{AddressSpace, ConstantKind};
+use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::arch::{Arch, Insn, InsnKind, decode_all, is_branch_target};
 use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body_in};
 use crate::obj::{Binary, Function, Isa};
@@ -225,8 +225,8 @@ fn kind_of(insn: &NormInsn) -> EditKind {
 /// different constants.
 ///
 /// The variants rise in how much a reader should care, so
-/// `Changed::No < Changed::Reordered < Changed::InDetail < Changed::Unreadable
-/// < Changed::Yes`.
+/// `Changed::No < Changed::Reordered < Changed::Data < Changed::InDetail <
+/// Changed::Unreadable < Changed::Yes`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Changed {
     /// Nothing a reader would call a change.
@@ -240,6 +240,12 @@ pub enum Changed {
     /// reported separately rather than hidden, because a reordering can also
     /// come from an edit that moved code.
     Reordered,
+    /// The pair looks like data rather than code, and its bytes differ.
+    ///
+    /// A scan reads the tables after the last function of a region as more of
+    /// that function. Every release changes thousands of their words, which
+    /// would put them above every real edit. See [`crate::arch::Arch::contents`].
+    Data,
     /// The instructions agree but their constants do not.
     ///
     /// This is the shape a changed threshold or a changed magic number takes.
@@ -412,6 +418,8 @@ struct Prepared<'a> {
     isa: Isa,
     /// Where the binary sits, so the body normalizes again the same way.
     addresses: &'a AddressSpace,
+    /// Whether the function holds code or data.
+    contents: Contents,
 }
 
 impl Prepared<'_> {
@@ -474,12 +482,20 @@ fn prepare<'a>(
             // symbols, and the few pairs that need the instructions back
             // normalize again on demand.
             let body = normalize_body_in(arch, &insns, &binary.addresses);
+            let contents = arch.contents(&function.code, &insns, &binary.addresses);
 
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
             symbols.sort_unstable();
 
-            Prepared { function, symbols, ordered, isa: binary.isa, addresses: &binary.addresses }
+            Prepared {
+                function,
+                symbols,
+                ordered,
+                isa: binary.isa,
+                addresses: &binary.addresses,
+                contents,
+            }
         })
         .collect()
 }
@@ -836,6 +852,12 @@ fn classify_change(
 ) -> Changed {
     if before.function.code == after.function.code {
         return Changed::No;
+    }
+
+    // Data decodes as nonsense instructions, so comparing them says nothing.
+    // The bytes differ, and that is all that can be said.
+    if before.contents == Contents::Data || after.contents == Contents::Data {
+        return Changed::Data;
     }
 
     if before_body == after_body {
@@ -2115,6 +2137,54 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// A MIPS table of pointers into its own image, after a `jr ra`.
+    fn pointer_table(first: u32) -> Vec<u8> {
+        let mut words = vec![0x03e0_0008u32, 0];
+        words.extend((0..64).map(|index| first + index * 0x40));
+        words.iter().flat_map(|word| word.to_be_bytes()).collect()
+    }
+
+    fn raw_mips(code: &[u8]) -> crate::obj::Binary {
+        crate::obj::Binary {
+            isa: Isa::Mips32Be,
+            found_by: crate::obj::FoundBy::Scanning,
+            addresses: AddressSpace::of_raw_image(0x8000_0000, 0x10_0000),
+            functions: vec![Function {
+                name: String::new(),
+                address: 0x8000_0000,
+                code: code.to_vec(),
+            }],
+        }
+    }
+
+    /// A table whose pointers moved is reported as changed data, not as a
+    /// rewritten function.
+    #[test]
+    fn a_changed_table_is_changed_data() {
+        let before = raw_mips(&pointer_table(0x8000_1000));
+        let after = raw_mips(&pointer_table(0x8000_2000));
+        let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
+
+        assert_eq!(diff.matched.len(), 1);
+        assert_eq!(diff.matched[0].changed, Changed::Data);
+    }
+
+    /// The same table on both sides is not a change at all.
+    #[test]
+    fn an_unchanged_table_is_no_change() {
+        let table = raw_mips(&pointer_table(0x8000_1000));
+        let diff = diff_with(&table, &table, Options { threshold: 0.0, use_names: UseNames::No });
+
+        assert_eq!(diff.matched[0].changed, Changed::No);
+    }
+
+    /// Data counts for less than a changed constant, and for more than none.
+    #[test]
+    fn data_ranks_between_a_reorder_and_a_changed_value() {
+        assert!(Changed::Data > Changed::Reordered);
+        assert!(Changed::Data < Changed::InDetail);
     }
 
     /// `add r0, r1, r0` then `bx lr`.

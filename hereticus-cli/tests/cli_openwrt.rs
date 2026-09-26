@@ -99,3 +99,28 @@ fn a_changed_stub_sets_the_exit_status() {
         assert_eq!(output.status.code(), Some(1), "{board}");
     }
 }
+
+/// The tables and zero fill after a MIPS kernel's code are hidden as data,
+/// and `--show-data` lists every one of them.
+#[test]
+fn slow_hides_the_data_regions_of_a_mips_kernel() {
+    let file =
+        |release: &str| format!("fixtures/build/openwrt/mipsbe-eap245v3-kernel-{release}.bin");
+    let run = |extra: &[&str]| {
+        let output = hereticus()
+            .args(["--progress", "never", "--raw", "--base", "0x80060000", "--arch", "mips32-be"])
+            .args(extra)
+            .args([file("22.03.2"), file("22.03.5")])
+            .output()
+            .expect("the tool runs");
+        String::from_utf8(output.stdout).expect("the report is text")
+    };
+
+    let hidden = run(&[]);
+    assert!(!hidden.contains("changed data"), "no data row by default");
+    assert!(hidden.contains("12 data regions changed, hidden. Use --show-data to list them."));
+
+    let shown = run(&["--show-data"]);
+    assert_eq!(shown.matches("changed data").count(), 12, "every hidden region is listed");
+    assert!(!shown.contains("data regions changed, hidden"));
+}

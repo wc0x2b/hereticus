@@ -27,7 +27,7 @@ use core::fmt;
 
 use compact_str::CompactString;
 
-use crate::address::{AddressSpace, ConstantKind};
+use crate::address::{AddressSpace, ConstantKind, Contents};
 
 /// An architecture that `hereticus` can decode.
 ///
@@ -105,6 +105,20 @@ pub trait Arch {
     /// data through relative offsets, which normalizing already drops.
     fn constant_kinds(&self, body: &[Insn], _space: &AddressSpace) -> Vec<ConstantKind> {
         vec![ConstantKind::Value; body.len()]
+    }
+
+    /// Say whether a recovered function holds code or data.
+    ///
+    /// A scan cannot see where code ends and data begins, so it reads a
+    /// table after the last function as more of that function. Its words
+    /// decode as nonsense instructions, and every release changes thousands
+    /// of them, which puts the table at the top of any report.
+    ///
+    /// `code` is the bytes of the function, `insns` the same decoded.
+    /// Defaults to [`Contents::Code`], for the architectures whose code holds
+    /// data of its own, where no share of odd words tells the two apart.
+    fn contents(&self, _code: &[u8], _insns: &[Insn], _space: &AddressSpace) -> Contents {
+        Contents::Code
     }
 
     /// The length of an ABI idiom starting at `body[0]`, or 0 for none.

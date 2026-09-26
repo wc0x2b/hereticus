@@ -525,3 +525,15 @@ fn an_empty_space_changes_nothing() {
         }
     });
 }
+
+/// Judging code against data must never panic, in either byte order.
+#[test]
+fn judging_mips_contents_never_panics() {
+    check!().with_type::<(Vec<u8>, u32)>().for_each(|(code, length)| {
+        let space = AddressSpace::of_raw_image(0x8000_0000, u64::from(*length));
+        for arch in [&Mips32::LITTLE, &Mips32::BIG] {
+            let (insns, _) = decode_all(arch, code, 0x8000_0000);
+            let _ = arch.contents(code, &insns, &space);
+        }
+    });
+}

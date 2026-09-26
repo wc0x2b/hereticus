@@ -20,7 +20,7 @@ use rabbitizer::{
 };
 
 use super::{Arch, DecodeError, Insn, InsnKind};
-use crate::address::{AddressSpace, ConstantKind};
+use crate::address::{AddressSpace, ConstantKind, Contents};
 
 /// Every MIPS32 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
@@ -317,6 +317,45 @@ impl Arch for Mips32 {
         }
 
         kinds
+    }
+
+    /// A compiler keeps no data among MIPS instructions: constants are built
+    /// with `lui` and literal pools do not exist. So a long function where
+    /// many words are data is mostly not a function. Two shapes give it away:
+    ///
+    /// * Words that do not decode, or that hold an address inside the image.
+    ///   A pointer inside a KSEG0 image reads as `lb rX, off(zero)`, which no
+    ///   compiler emits. At least two words in five mark data. Real code
+    ///   reaches a third, because this decoder reads MIPS II and a MIPS32r2
+    ///   kernel uses `rotr`, `ext` and `ins`, which it cannot read.
+    /// * Zero fill, which reads as `nop`. At least half the words mark data.
+    ///   A short function can reach nearly half with the `nop` in its delay
+    ///   slots.
+    ///
+    /// Below 64 words a function is not judged: every region of data measured
+    /// was far longer, and short code can look like anything. Measured on two
+    /// OpenWrt MIPS kernels, this marks every region of tables and zero fill
+    /// after the code, and none of the compiled fixture functions.
+    fn contents(&self, code: &[u8], insns: &[Insn], space: &AddressSpace) -> Contents {
+        const FEWEST_WORDS: usize = 64;
+
+        let words = insns.len();
+        if words < FEWEST_WORDS {
+            return Contents::Code;
+        }
+
+        let unreadable = insns.iter().filter(|insn| insn.kind == InsnKind::Unknown).count();
+        let pointers = code
+            .chunks_exact(INSN_WIDTH)
+            .filter(|word| space.contains(self.read_pointer(word)))
+            .count();
+        let zeros = insns.iter().filter(|insn| self.is_padding(insn)).count();
+
+        if (unreadable + pointers) * 5 >= words * 2 || zeros * 2 >= words {
+            Contents::Data
+        } else {
+            Contents::Code
+        }
     }
 
     /// A function that needs a frame opens by making room for it, so
@@ -1296,6 +1335,110 @@ mod tests {
             let insn = Mips32::BIG.decode(&code, 0, BASE).unwrap();
             assert_eq!(insn.operands, "$+0x4000");
             assert!(crate::arch::is_branch_target(&insn.operands));
+        }
+
+        fn contents_of(words: &[u32], space: &AddressSpace) -> crate::address::Contents {
+            let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+            let (body, _) = decode_all(&Mips32::BIG, &code, BASE);
+            Mips32::BIG.contents(&code, &body, space)
+        }
+
+        /// A long function of ordinary instructions is code.
+        #[test]
+        fn compiled_code_is_code() {
+            use crate::address::Contents;
+            let block = [
+                addiu(SP, SP, 0xffe8),
+                sw(S0, 0x10, SP),
+                lui(V0, 0x8001),
+                lw(A0, 0x20, V0),
+                jal(0x8000_4000),
+                addiu(A1, A0, 1),
+                lw(S0, 0x10, SP),
+                JR_RA,
+                addiu(SP, SP, 0x18),
+            ];
+            let words = block.repeat(8);
+            assert_eq!(contents_of(&words, &space()), Contents::Code);
+        }
+
+        /// A table of pointers into the image is data.
+        #[test]
+        fn a_table_of_pointers_is_data() {
+            use crate::address::Contents;
+            let mut words = vec![JR_RA, NOP];
+            words.extend((0..64).map(|index| 0x8000_1000 + index * 0x40));
+            assert_eq!(contents_of(&words, &space()), Contents::Data);
+        }
+
+        /// The same words are only numbers where the image is elsewhere.
+        #[test]
+        fn pointers_count_only_inside_the_space() {
+            use crate::address::Contents;
+            let mut words = vec![JR_RA, NOP];
+            words.extend((0..64).map(|index| 0x8000_1000 + index * 0x40));
+            let elsewhere = AddressSpace::of_raw_image(0x9000_0000, 0x1000);
+            assert_eq!(contents_of(&words, &elsewhere), Contents::Code);
+        }
+
+        /// Zero fill after a return is data once it is half the words.
+        #[test]
+        fn zero_fill_is_data() {
+            use crate::address::Contents;
+            let mut words = vec![addiu(V0, V0, 1); 30];
+            words.extend([JR_RA, NOP]);
+            words.extend([0; 32]);
+            assert_eq!(contents_of(&words, &space()), Contents::Data);
+        }
+
+        /// The `nop` in every delay slot of `-O0` code stays below half.
+        #[test]
+        fn delay_slot_nops_are_code() {
+            use crate::address::Contents;
+            let block = [
+                addiu(V0, V0, 1),
+                beqz(A0, 1),
+                NOP,
+                addiu(V0, V0, 2),
+                jal(0x8000_4000),
+                NOP,
+                addiu(V0, V0, 3),
+                addiu(V0, V0, 4),
+                JR_RA,
+                NOP,
+            ];
+            let words = block.repeat(7);
+            assert_eq!(contents_of(&words, &space()), Contents::Code);
+        }
+
+        /// Opcode 0x3b is reserved in MIPS II, so these words do not decode.
+        const UNREADABLE: u32 = 0xec00_0001;
+
+        /// Mostly words that do not decode is data.
+        #[test]
+        fn unreadable_words_are_data() {
+            use crate::address::Contents;
+            let mut words = vec![addiu(V0, V0, 1); 38];
+            words.extend([UNREADABLE; 26]);
+            assert_eq!(contents_of(&words, &space()), Contents::Data);
+        }
+
+        /// A third of the words unreadable is what MIPS32r2 code reaches, so it
+        /// stays code.
+        #[test]
+        fn some_unreadable_words_are_code() {
+            use crate::address::Contents;
+            let mut words = vec![addiu(V0, V0, 1); 44];
+            words.extend([UNREADABLE; 22]);
+            assert_eq!(contents_of(&words, &space()), Contents::Code);
+        }
+
+        /// Too short to judge, so it stays code.
+        #[test]
+        fn a_short_function_is_code() {
+            use crate::address::Contents;
+            assert_eq!(contents_of(&[0; 63], &space()), Contents::Code);
+            assert_eq!(contents_of(&[], &space()), Contents::Code);
         }
 
         /// Normalizing drops the constants of an address, and only those.

@@ -77,6 +77,16 @@ pub enum ConstantKind {
     Address,
 }
 
+/// What a stretch of bytes holds, as far as its words show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Contents {
+    /// Instructions a compiler emitted.
+    Code,
+    /// Tables, pointers, strings or zero fill, which decode as instructions
+    /// only because every word decodes as something.
+    Data,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
