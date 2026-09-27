@@ -218,6 +218,17 @@ pub trait Arch {
     /// invents a function. Answer only for a shape that reliably begins one.
     fn is_prologue(&self, insn: &Insn) -> bool;
 
+    /// The operands before a reference to memory at a distance from the
+    /// program counter, as a load from a literal pool makes, or `None` for
+    /// operands with no such reference.
+    ///
+    /// The distance says only where the pool sits, which moves whenever code
+    /// before it grows, and the words of the pool are compared on their own.
+    /// Defaults to `None`, for the architectures with no such load.
+    fn before_pc_reference<'a>(&self, _operands: &'a str) -> Option<&'a str> {
+        None
+    }
+
     /// Report whether a function can open with the instruction in `word`.
     ///
     /// Asked of the word after a return, where a guess would start a

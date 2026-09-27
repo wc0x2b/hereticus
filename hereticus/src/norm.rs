@@ -262,6 +262,9 @@ pub fn normalize_body_in(
             // happens to decode as would report every move of its target.
             Some(ConstantKind::StoredAddress) => {}
             _ if arch.is_frame_management(&insns[index]) => {}
+            // A `nop` does nothing, and a compiler puts one where alignment
+            // asks, as before a pool of doubles.
+            _ if arch.is_padding(&insns[index]) => {}
             Some(ConstantKind::Address) => {
                 let mut normalized = normalize(arch, &insns[index]);
                 normalized.constants.clear();
@@ -653,7 +656,7 @@ mod tests {
 
     #[test]
     fn opaque_bytes_stay_opaque() {
-        let body = [insn("(unknown)", "0x00000000", InsnKind::Unknown)];
+        let body = [insn("(unknown)", "0xf2600680", InsnKind::Unknown)];
         assert_eq!(normalize_body(&Arm32, &body)[0].flow, FlowShape::Opaque);
     }
 

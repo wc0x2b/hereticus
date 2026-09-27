@@ -66,6 +66,13 @@ pub struct IndexEntry {
 pub enum Unwinding {
     /// The entry describes one function, so the next entry starts the next.
     Described,
+    /// The entry lists its function's start and end exactly, as call frame
+    /// information does, so nothing but that function lies in its range.
+    ///
+    /// An unwind index lists only starts: code with no entry of its own,
+    /// such as hand-written assembly in a kernel, runs on inside the range
+    /// of the entry before.
+    Listed,
     /// The code cannot be unwound. A linker merges neighbouring entries of
     /// this kind into one, so the entry can cover many functions. C built
     /// without unwind tables has only these.
@@ -151,7 +158,7 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
 pub fn index_from_ranges(ranges: &[core::ops::Range<u64>]) -> Vec<IndexEntry> {
     let mut entries = Vec::new();
     for (position, range) in ranges.iter().enumerate() {
-        entries.push(IndexEntry { address: range.start, unwinding: Unwinding::Described });
+        entries.push(IndexEntry { address: range.start, unwinding: Unwinding::Listed });
         let next = ranges.get(position + 1).map(|next| next.start);
         if next.is_none_or(|next| next > range.end) {
             entries.push(IndexEntry { address: range.end, unwinding: Unwinding::CannotUnwind });
@@ -203,6 +210,7 @@ pub fn recover_in_memory(
     // functions, and trusting them found 27.
     if !exception_index.is_empty() {
         let mut blind = cannot_unwind_ranges(exception_index);
+        let described = described_ranges(exception_index);
         for (base, code) in regions {
             // Code before the first entry of a region is listed by nothing,
             // so it is searched as a region with no index.
@@ -217,8 +225,17 @@ pub fn recover_in_memory(
                 starts.insert((*base, Source::AfterReturn));
                 blind.push(*base..first);
             }
+            // An entry that lists its function exactly covers it to the next
+            // entry, so a "call" into the middle of it is data that decodes
+            // as one, or a `bal` that only reads the program counter. An
+            // unwind index lists only starts, so it proves no such thing.
+            // Measured on tinyxml2 for MIPS at -O3 as a raw image, one cut a
+            // template function short, and its caller then read as changed.
             for address in call_targets(arch, code, *base) {
-                starts.insert((address, Source::CallTarget));
+                if !described.iter().any(|range| range.start < address && range.contains(&address))
+                {
+                    starts.insert((address, Source::CallTarget));
+                }
             }
             for address in starts_after_returns_in(arch, code, *base, memory) {
                 if blind.iter().any(|range| range.contains(&address)) {
@@ -406,6 +423,22 @@ pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<Inde
 /// In a relocatable object the field holds the target directly, because the
 /// relocation that would make it relative has not been applied. Both readings
 /// are tried, and the one that lands inside a code section wins.
+/// The address ranges that entries which list their function exactly cover:
+/// from each such entry to the next entry.
+fn described_ranges(index: &[IndexEntry]) -> Vec<core::ops::Range<u64>> {
+    let mut sorted = index.to_vec();
+    sorted.sort_by_key(|entry| entry.address);
+    sorted
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.unwinding == Unwinding::Listed)
+        .filter_map(|(position, entry)| {
+            let end = sorted.get(position + 1)?.address;
+            (end > entry.address).then_some(entry.address..end)
+        })
+        .collect()
+}
+
 /// The address ranges that entries which cannot unwind cover: from each such
 /// entry to the next entry, or to the end of the address space.
 fn cannot_unwind_ranges(index: &[IndexEntry]) -> Vec<core::ops::Range<u64>> {
@@ -626,11 +659,56 @@ fn starts_after_returns_in(
         .chain(function_entries(arch, code, base))
         .collect();
     let is_sure_start = |address: u64| sure_starts.contains(&address);
+    let may_open = |address: u64| {
+        usize::try_from(address - base)
+            .ok()
+            .and_then(|offset| code.get(offset..))
+            .is_some_and(|word| arch.may_open_function(word))
+    };
+    // The block a prologue sits in, and whether a conditional branch reaches
+    // it. Code reaches another function only by a call or an unconditional
+    // jump, so such a block is inside a function, and so is its frame: GCC
+    // at `-Os` returns early with `bxle lr` and makes the frame after, in
+    // `aux_upvalue` of Lua.
+    //
+    // Nor is a frame on one path of a conditional branch: walking back over
+    // plain code and early returns, the first other control word is such a
+    // branch, whose other path is the rest of the function. Clang does this
+    // on MIPS in `lua_gettable`, after `bnez` and its delay slot.
+    let is_inside_a_function = |index: usize| {
+        let mut start = index;
+        while start > 0 && is_code(&&insns[start - 1]) {
+            match insns[start - 1].kind {
+                InsnKind::Normal | InsnKind::Unknown | InsnKind::Branch { target: None } => {
+                    start -= 1;
+                }
+                InsnKind::Branch { target: Some(_) } => return true,
+                // The block starts after the delay slots of what ends the
+                // one before it.
+                _ => {
+                    start = (start + arch.delay_slots(&insns[start - 1])).min(index);
+                    break;
+                }
+            }
+        }
+        // A conditional branch never comes from another function, and nor
+        // does any branch from after the last sure start: a tail call comes
+        // from the function before. Clang on MIPS jumps with `b` to the late
+        // frame of `lua_setmetatable`, which opens with an entry sequence.
+        let block = insns[start].address;
+        let last_sure_start = sure_starts.range(..=block).next_back().copied();
+        sources_of.get(&block).is_some_and(|sources| {
+            sources.iter().any(|&(from, transfer)| {
+                transfer == Transfer::Conditional
+                    || last_sure_start.is_some_and(|start| from >= start && from < block)
+            })
+        })
+    };
     let anchors: BTreeSet<u64> = insns
         .iter()
         .enumerate()
         .filter(|(index, insn)| {
-            is_code(insn) && arch.is_prologue(insn) && !follows_a_branch(&insns[..*index], arch)
+            is_code(insn) && arch.is_prologue(insn) && !is_inside_a_function(*index)
         })
         .map(|(_, insn)| insn.address)
         .chain(sure_starts.iter().copied())
@@ -678,12 +756,19 @@ fn starts_after_returns_in(
         // decodes as branches too, and these land anywhere. Measured on zlib
         // for MIPS, a word of `.rodata` "branched" to the start of
         // `inflateMark`, 126 KiB away.
+        // A branch of this function comes from after its start, the last sure
+        // start before here, or after the last return where no sure start is
+        // known. A function can return more than once, so the last return
+        // alone would miss a branch from before an early one.
+        let function_start = anchors.range(..=insn.address).next_back().copied();
         let reached_by = |address: u64, accepted: &[Transfer]| {
             sources_of.get(&address).is_some_and(|sources| {
                 sources.iter().any(|&(from, transfer)| {
-                    from < insn.address
-                        && since.is_none_or(|since| from > since)
-                        && accepted.contains(&transfer)
+                    let of_this_function = match function_start {
+                        Some(start) => from >= start,
+                        None => since.is_none_or(|since| from > since),
+                    };
+                    from < insn.address && of_this_function && accepted.contains(&transfer)
                 })
             })
         };
@@ -733,6 +818,7 @@ fn starts_after_returns_in(
             &reached_here,
             &|address| pool.contains(&address),
             &is_sure_start,
+            &may_open,
             arch,
         ) {
             out.push(prologue);
@@ -742,33 +828,13 @@ fn starts_after_returns_in(
         // Otherwise only a return that nothing branches across ends a
         // function. A jump without a prologue after it is a tail call or a
         // loop, which stays inside.
-        let opens = usize::try_from(following.address - base)
-            .ok()
-            .and_then(|offset| code.get(offset..))
-            .is_some_and(|word| arch.may_open_function(word));
+        let opens = may_open(following.address);
         if insn.kind == InsnKind::Return && !is_internal(insn.address) && opens {
             out.push(following.address);
         }
     }
 
     out
-}
-
-/// Report whether the code before an instruction runs into it from a
-/// conditional branch to elsewhere, directly or from the branch's delay slot.
-///
-/// A conditional return, such as `bxmi lr`, does not count: it is how a
-/// function exits early before it makes its frame, and that frame is the
-/// start of the function in all but a few words.
-///
-/// `earlier` holds the instructions before it, closest last.
-fn follows_a_branch(earlier: &[Insn], arch: &dyn Arch) -> bool {
-    let is_branch = |insn: &Insn| matches!(insn.kind, InsnKind::Branch { target: Some(_) });
-    match earlier {
-        [.., owner, _slot] if is_branch(owner) && arch.delay_slots(owner) > 0 => true,
-        [.., last] => is_branch(last) && arch.delay_slots(last) == 0,
-        [] => false,
-    }
 }
 
 /// The words of a region that are data among the code: literal pools, and
@@ -835,6 +901,7 @@ fn prologue_past_pool(
     reached: &dyn Fn(u64) -> bool,
     is_pool: &dyn Fn(u64) -> bool,
     is_sure_start: &dyn Fn(u64) -> bool,
+    may_open: &dyn Fn(u64) -> bool,
     arch: &dyn Arch,
 ) -> Option<u64> {
     /// The most words not known to be pool data to step over before a
@@ -872,7 +939,24 @@ fn prologue_past_pool(
             // words are the pool, not this function's opening.
             return Some(match arch.data_among_code() {
                 DataAmongCode::Never => insns[from].address,
-                DataAmongCode::LiteralPools => start_of(&insns[from..], next - from, arch),
+                // The words just before the prologue that could open a
+                // function, and are no known pool, are this function's: a
+                // compiler schedules work before the frame, as GCC puts
+                // `add ip, r0, 4096` before the `push` of `_tr_stored_block`.
+                DataAmongCode::LiteralPools => {
+                    let mut start = next;
+                    while start > from
+                        && !is_pool(insns[start - 1].address)
+                        && may_open(insns[start - 1].address)
+                    {
+                        start -= 1;
+                    }
+                    if start == next {
+                        start_of(&insns[from..], next - from, arch)
+                    } else {
+                        insns[start].address
+                    }
+                }
             });
         }
         // Only pool data may sit between the terminator and the prologue. A
@@ -1189,26 +1273,32 @@ mod tests {
     fn a_branch_from_before_a_prologue_does_not_cross_a_return() {
         use crate::arch::mips::Mips32;
 
-        let with_fourth = |fourth: u32| {
+        // The branch is in the function before, which returns at 0x08.
+        let with_frame = |frame: u32| {
             mips_code(&[
-                0x1080_0008,     // 0x00 beq a0, zero, 0x24
+                0x1080_000a,     // 0x00 beq a0, zero, 0x2c
                 0x0000_0000,     // 0x04 nop
-                0x2402_0003,     // 0x08 addiu v0, zero, 3
-                fourth,          // 0x0c
-                0x27bd_0008,     // 0x10 addiu sp, sp, 8
-                0x03e0_0008,     // 0x14 jr ra
-                0x0000_0000,     // 0x18 nop
-                0x2402_0001,     // 0x1c addiu v0, zero, 1
-                0x03e0_0008,     // 0x20 jr ra
-                0x0000_0000_u32, // 0x24 nop
+                0x03e0_0008,     // 0x08 jr ra
+                0x0000_0000,     // 0x0c nop
+                frame,           // 0x10
+                0x27bd_0008,     // 0x14 addiu sp, sp, 8
+                0x03e0_0008,     // 0x18 jr ra
+                0x0000_0000,     // 0x1c nop
+                0x2402_0001,     // 0x20 addiu v0, zero, 1
+                0x03e0_0008,     // 0x24 jr ra
+                0x0000_0000,     // 0x28 nop
+                0x0000_0000_u32, // 0x2c nop
             ])
         };
 
         // addiu sp, sp, -8: a function starts between the branch and the
         // return, so the branch does not cross it.
-        assert_eq!(starts_after_returns(&Mips32::LITTLE, &with_fourth(0x27bd_fff8), 0), vec![0x1c]);
+        assert_eq!(
+            starts_after_returns(&Mips32::LITTLE, &with_frame(0x27bd_fff8), 0),
+            vec![0x10, 0x20]
+        );
         // addiu v0, zero, 2: the branch can be of this function.
-        assert!(starts_after_returns(&Mips32::LITTLE, &with_fourth(0x2402_0002), 0).is_empty());
+        assert!(starts_after_returns(&Mips32::LITTLE, &with_frame(0x2402_0002), 0).is_empty());
     }
 
     /// The cases of a `switch` table each end with a return, and only the
@@ -1259,7 +1349,7 @@ mod tests {
                 call,        // 0x00
                 0xe12f_ff1e, // 0x04 bx lr
                 0x0000_0010, // 0x08 a pool word
-                0xe1a0_1000, // 0x0c mov r1, r0
+                0x11a0_1000, // 0x0c movne r1, r0
                 0xe92d_4010, // 0x10 push {r4, lr}
                 0xe8bd_8010, // 0x14 pop {r4, pc}
             ])
@@ -1267,7 +1357,8 @@ mod tests {
 
         // bl 0x0c
         assert_eq!(starts_after_returns(&Arm32, &with_call(0xeb00_0001), 0), vec![0x0c]);
-        // mov r0, r0: nothing calls 0x0c, so the prologue starts the function.
+        // mov r0, r0: nothing calls 0x0c, and a conditional word cannot open
+        // a function, so the prologue starts it.
         assert_eq!(starts_after_returns(&Arm32, &with_call(0xe1a0_0000), 0), vec![0x10]);
     }
 
@@ -1292,6 +1383,20 @@ mod tests {
             .map(|found| found.function.address)
             .collect();
         assert_eq!(starts, [0x00, 0x08]);
+    }
+
+    /// GCC schedules work before the frame. The unconditional word before
+    /// the `push` opens the function; the pool word before it does not.
+    #[test]
+    fn an_unconditional_word_before_a_frame_opens_the_function() {
+        let code = arm_code(&[
+            0xe12f_ff1e, // 0x00 bx lr
+            0x0000_0010, // 0x04 a pool word
+            0xe28d_c601, // 0x08 add ip, sp, 0x100000
+            0xe92d_4010, // 0x0c push {r4, lr}
+            0xe8bd_8010, // 0x10 pop {r4, pc}
+        ]);
+        assert_eq!(starts_after_returns(&Arm32, &code, 0), vec![0x08]);
     }
 
     /// A branch from before the last return is not of this function. In a

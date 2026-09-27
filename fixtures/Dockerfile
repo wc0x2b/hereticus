@@ -2,7 +2,8 @@
 # `just fixtures` and `just backports`.
 #
 # The tests compare exact machine code, so every machine must build the
-# fixtures with the same compiler. Keep the LLVM major version in step with the
+# fixtures with the same compiler. GCC and GNU ld build most shipped firmware,
+# so the backports are built with them as well as with clang and lld. Keep the LLVM major version in step with the
 # snapshots: a new version changes the code, and the snapshots with it.
 FROM debian:trixie
 
@@ -26,6 +27,12 @@ RUN apt-get update \
         libstdc++-14-dev-mipsel-cross \
         libstdc++-14-dev-mips-cross \
         patch \
+        gcc-14-arm-linux-gnueabi \
+        g++-14-arm-linux-gnueabi \
+        gcc-14-mips-linux-gnu \
+        g++-14-mips-linux-gnu \
+        gcc-14-mipsel-linux-gnu \
+        g++-14-mipsel-linux-gnu \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/lib/llvm-22/bin:${PATH}"

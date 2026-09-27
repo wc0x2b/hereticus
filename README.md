@@ -42,11 +42,11 @@ $ hereticus --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
 │ sub_8020b1f8 │ changed        │  0.98 │ 0/0/1 │ -       │ similar    │
 │ sub_80208a18 │ changed        │  0.96 │ 0/0/1 │ -       │ similar    │
 │ sub_80209154 │ changed        │  0.96 │ 0/0/1 │ 1 mem   │ similar    │
+│ sub_80208af8 │ changed        │  0.95 │ 0/0/1 │ -       │ similar    │
 │ sub_8020a338 │ changed        │  0.94 │ 0/0/1 │ -       │ similar    │
-│ sub_80208b78 │ changed        │  0.75 │ 0/0/1 │ -       │ similar    │
 ╰──────────────┴────────────────┴───────┴───────┴─────────┴────────────╯
 
-68 matched (58 unchanged, 10 changed), 0 gone, 0 new
+67 matched (57 unchanged, 10 changed), 0 gone, 0 new
 1 changed only a constant, hidden. Use --show-retouched to list them.
 1 data region changed, hidden. Use --show-data to list them.
 ```

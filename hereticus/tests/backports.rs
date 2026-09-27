@@ -241,7 +241,7 @@ fn build(project: Project, arch: &'static str, level: &'static str) -> Build {
 fn with_symbols_the_fix_is_named_exactly(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values("arm", "mips", "mipsel")] arch: &'static str,
-    #[values("O2", "Os")] level: &'static str,
+    #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     let build = build(project, arch, level);
     let before = parse(build, "before", "lib.so");
@@ -265,7 +265,7 @@ fn with_symbols_the_fix_is_named_exactly(
 fn stripped_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values("arm", "mips", "mipsel")] arch: &'static str,
-    #[values("O2", "Os")] level: &'static str,
+    #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     let build = build(project, arch, level);
     let before = parse(build, "before", "lib-stripped.so");
@@ -281,7 +281,7 @@ fn stripped_the_fix_is_covered_and_nothing_else(
 fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values("arm", "mips", "mipsel")] arch: &'static str,
-    #[values("O2", "Os")] level: &'static str,
+    #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     let build = build(project, arch, level);
     let before = parse_raw(build, "before");

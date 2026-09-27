@@ -76,6 +76,15 @@ impl Arch for Arm32 {
             // unreadable instruction would look like every other one, and an
             // edit inside a NEON loop would be reported as no change at all.
             let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            if let Some((mnemonic, operands)) = decode_fallback(word) {
+                return Ok(Insn {
+                    address: insn_address,
+                    bytes_len: INSN_WIDTH,
+                    mnemonic,
+                    operands,
+                    kind: InsnKind::Normal,
+                });
+            }
             return Ok(Insn {
                 address: insn_address,
                 bytes_len: INSN_WIDTH,
@@ -325,6 +334,21 @@ impl Arch for Arm32 {
                     }
                     continue;
                 }
+                // `mov rY, rX`: a copy holds what its source holds. GCC
+                // copies the address of the global offset table so before it
+                // reads a slot through it.
+                ("mov", _, _) if !rest.contains(',') => {
+                    let copied_address = base_of(rest).filter(|_| rest != "pc");
+                    let copied_word = literal_of(rest);
+                    forget(&mut literal, &mut relative, destination);
+                    if let Some(address) = copied_address {
+                        relative.push((destination, address));
+                    }
+                    if let Some((pool, value)) = copied_word {
+                        literal.push((destination, pool, value));
+                    }
+                    continue;
+                }
                 // `ldr rY, [base, rX]`: read at a distance from a base.
                 ("ldr", Some((base, Offset::Register(index))), _) => {
                     if let (Some(base), Some(word)) = (base_of(base), literal_of(index)) {
@@ -406,6 +430,10 @@ impl Arch for Arm32 {
         word.get(3).is_some_and(|&top| top >= 0xe0)
     }
 
+    fn before_pc_reference<'a>(&self, operands: &'a str) -> Option<&'a str> {
+        operands.split_once("[pc").map(|(before, _)| before.trim_end_matches([',', ' ']))
+    }
+
     fn data_among_code(&self) -> DataAmongCode {
         DataAmongCode::LiteralPools
     }
@@ -420,6 +448,7 @@ impl Arch for Arm32 {
             let operation = self.normalize_operation(&insn.mnemonic);
             let count = match operation.as_str() {
                 "ldr" => 1,
+                "vldr" if insn.operands.starts_with('s') => 1,
                 "ldrd" | "vldr" => 2,
                 _ => continue,
             };
@@ -499,6 +528,12 @@ fn read_jump_table(
     /// More cases than any `switch` a compiler turns into one table.
     const MOST_CASES: usize = 1024;
 
+    if let Some(table) = read_branch_table(memory, code, jump) {
+        return Some(table);
+    }
+    if let Some(table) = read_offset_table(memory, code, earlier, jump) {
+        return Some(table);
+    }
     if jump.mnemonic != "add" || jump.kind != (InsnKind::Jump { target: None }) {
         return None;
     }
@@ -562,6 +597,152 @@ fn read_jump_table(
     (!targets.is_empty()).then_some(JumpTable { jump: jump.address, words: table..word, targets })
 }
 
+/// Read the table GCC emits for a `switch`: the jump adds the case number,
+/// times four, to `pc`, which reads two words ahead, so it lands on one of
+/// the `b` instructions that follow it.
+///
+/// ```text
+/// cmp    r3, 5
+/// addls  pc, pc, r3, lsl 2
+/// b      default
+/// b      case_0
+/// b      case_1
+/// ```
+///
+/// The table is code, so it names no data words.
+fn read_branch_table(memory: &Memory<'_>, code: &Range<u64>, jump: &Insn) -> Option<JumpTable> {
+    /// More cases than any `switch` a compiler turns into one table.
+    const MOST_CASES: usize = 1024;
+
+    let is_jump =
+        matches!(jump.kind, InsnKind::Jump { target: None } | InsnKind::Branch { target: None });
+    let operation = Arm32.normalize_operation(&jump.mnemonic);
+    let shape = jump.operands.starts_with("pc, pc, ") && jump.operands.ends_with(", lsl 2");
+    if operation != "add" || !is_jump || !shape {
+        return None;
+    }
+
+    let mut targets = Vec::new();
+    let mut entry = jump.address + INSN_WIDTH as u64;
+    while targets.len() < MOST_CASES && code.contains(&entry) {
+        let Some(bytes) = memory.bytes(entry, INSN_WIDTH) else { break };
+        let Ok(insn) = Arm32.decode(bytes, 0, entry) else { break };
+        match insn.kind {
+            InsnKind::Jump { target: Some(target) } if code.contains(&target) => {
+                targets.push(target)
+            }
+            _ => break,
+        }
+        entry += INSN_WIDTH as u64;
+    }
+
+    (!targets.is_empty()).then_some(JumpTable { jump: jump.address, words: entry..entry, targets })
+}
+
+/// Read the compressed table GCC emits for a `switch`: each case is a byte,
+/// or a halfword, that says how many words past the jump it starts.
+///
+/// ```text
+/// ldr    ip, [pc, imm]     ; the table, from here
+/// add    ip, pc, ip
+/// cmp    r3, 3             ; four cases
+/// bhi    default
+/// ldrb   r3, [ip, r3]
+/// add    pc, pc, r3, lsl 2
+/// ```
+///
+/// Measured on Lua built by GCC for ARM, `luaK_storevar` jumps this way, and
+/// its cases after the first return read as functions of their own.
+fn read_offset_table(
+    memory: &Memory<'_>,
+    code: &Range<u64>,
+    earlier: &[Insn],
+    jump: &Insn,
+) -> Option<JumpTable> {
+    const LOOK_BACK: usize = 16;
+    const PC_AHEAD: u64 = 8;
+
+    let is_jump =
+        matches!(jump.kind, InsnKind::Jump { target: None } | InsnKind::Branch { target: None });
+    if Arm32.normalize_operation(&jump.mnemonic) != "add" || !is_jump {
+        return None;
+    }
+    let offset_register = jump.operands.strip_prefix("pc, pc, ")?.strip_suffix(", lsl 2")?;
+
+    let window = || earlier.iter().rev().take(LOOK_BACK);
+    let last_write = |register: &str| {
+        window().find(|insn| insn.operands.split(',').next().map(str::trim) == Some(register))
+    };
+
+    // `ldrb rX, [rB, rI]`: one entry of the table.
+    let load = last_write(offset_register)?;
+    let width = match Arm32.normalize_operation(&load.mnemonic).as_str() {
+        "ldrb" => 1,
+        "ldrh" => 2,
+        _ => return None,
+    };
+    let (_, reference) = load.operands.split_once(',')?;
+    let (table_register, Offset::Register(index_register)) = parse_reference(reference.trim())?
+    else {
+        return None;
+    };
+
+    // The table's address: `ldr rB, [pc, imm]` then `add rB, pc, rB`.
+    let add = last_write(table_register)?;
+    let expected = format!("{table_register}, pc, {table_register}");
+    if Arm32.normalize_operation(&add.mnemonic) != "add" || add.operands != expected {
+        return None;
+    }
+    let pool_load = earlier
+        .iter()
+        .rev()
+        .skip_while(|insn| insn.address >= add.address)
+        .take(LOOK_BACK)
+        .find(|insn| insn.operands.split(',').next().map(str::trim) == Some(table_register))?;
+    let (_, pool_reference) = pool_load.operands.split_once(',')?;
+    let ("pc", Offset::Immediate(pool_offset)) = parse_reference(pool_reference.trim())? else {
+        return None;
+    };
+    let pool = pool_load.address.checked_add(PC_AHEAD)?.checked_add_signed(pool_offset)?;
+    let pool_word = memory.bytes(pool, INSN_WIDTH)?;
+    let distance = u32::from_le_bytes([pool_word[0], pool_word[1], pool_word[2], pool_word[3]]);
+    let table = (add.address + PC_AHEAD).wrapping_add(u64::from(distance)) & 0xffff_ffff;
+
+    // `cmp rI, n` bounds the case number, so there are n + 1 cases. The
+    // decoder writes it as `cmps r0, rI, n`, so the last two operands count.
+    fn compared(insn: &Insn) -> Option<(&str, &str)> {
+        let operands: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
+        match operands.as_slice() {
+            [.., register, bound] => Some((*register, *bound)),
+            _ => None,
+        }
+    }
+    let (_, bound) = window()
+        .filter(|insn| Arm32.normalize_operation(&insn.mnemonic) == "cmp")
+        .filter_map(compared)
+        .find(|&(register, _)| register == index_register)?;
+    let last_case = parse_hex(bound)?;
+    let cases = usize::try_from(last_case).ok()?.checked_add(1).filter(|&cases| cases <= 1024)?;
+
+    let base = jump.address + PC_AHEAD;
+    let mut targets = Vec::with_capacity(cases);
+    for case in 0..cases {
+        let bytes = memory.bytes(table + (case * width) as u64, width)?;
+        let entry = if width == 1 {
+            u64::from(bytes[0])
+        } else {
+            u64::from(u16::from_le_bytes([bytes[0], bytes[1]]))
+        };
+        let target = base + entry * INSN_WIDTH as u64;
+        if !code.contains(&target) {
+            return None;
+        }
+        targets.push(target);
+    }
+    let words = table..table + (cases * width) as u64;
+    Some(JumpTable { jump: jump.address, words, targets })
+}
+
 /// Read a hexadecimal immediate as the decoder prints it, such as `0x4`.
 fn parse_hex(text: &str) -> Option<u64> {
     u64::from_str_radix(text.strip_prefix("0x")?, 16).ok()
@@ -577,7 +758,10 @@ enum Offset<'a> {
 /// Read `[base, offset]` as the base register and the offset.
 fn parse_reference(text: &str) -> Option<(&str, Offset<'_>)> {
     let inner = text.strip_prefix('[')?.strip_suffix(']')?;
-    let (base, offset) = inner.split_once(',')?;
+    // `[rX]` is an offset of zero.
+    let Some((base, offset)) = inner.split_once(',') else {
+        return Some((inner.trim(), Offset::Immediate(0)));
+    };
     let offset = offset.trim();
     let parsed = match offset.strip_prefix('-') {
         Some(digits) => Offset::Immediate(-parse_number(digits)?),
@@ -594,6 +778,52 @@ fn parse_number(text: &str) -> Option<i64> {
         Some(hex) => i64::from_str_radix(hex, 16).ok(),
         None => text.parse().ok(),
     }
+}
+
+/// Read the words `yaxpeax` refuses that this crate knows: the hints, and
+/// the VFP loads and stores.
+///
+/// A VFP load reads a constant pool as `ldr` does, so a scan must see it to
+/// know the pool is data. Measured on tinyxml2 built by GCC for ARM,
+/// `vldr d16, [pc, 0x90]` did not decode, its offset changed whenever an
+/// alignment `nop` moved the pool, and that read as an edit.
+fn decode_fallback(word: u32) -> Option<(String, String)> {
+    const CONDITIONS: [&str; 15] =
+        ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", ""];
+    const REGISTERS: [&str; 16] = [
+        "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "sl", "fp", "ip", "sp", "lr",
+        "pc",
+    ];
+
+    let condition = *CONDITIONS.get((word >> 28) as usize)?;
+
+    // The hints: `nop`, `yield`, `wfe`, `wfi` and `sev`.
+    if word & 0x0fff_ff00 == 0x0320_f000 {
+        let hint = ["nop", "yield", "wfe", "wfi", "sev"].get((word & 0xff) as usize)?;
+        return Some((format!("{hint}{condition}"), String::new()));
+    }
+
+    // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
+    if word >> 24 & 0xf == 0b1101 && word >> 21 & 1 == 0 && word >> 9 & 0b111 == 0b101 {
+        let load = word >> 20 & 1 == 1;
+        let up = word >> 23 & 1 == 1;
+        let (d, vd) = (word >> 22 & 1, word >> 12 & 0xf);
+        let register = if word >> 8 & 1 == 1 {
+            format!("d{}", d << 4 | vd)
+        } else {
+            format!("s{}", vd << 1 | d)
+        };
+        let base = REGISTERS[(word >> 16 & 0xf) as usize];
+        let offset = (word & 0xff) * 4;
+        let reference = match (offset, up) {
+            (0, _) => format!("[{base}]"),
+            (_, true) => format!("[{base}, {offset:#x}]"),
+            (_, false) => format!("[{base}, -{offset:#x}]"),
+        };
+        let operation = if load { "vldr" } else { "vstr" };
+        return Some((format!("{operation}{condition}"), format!("{register}, {reference}")));
+    }
+    None
 }
 
 /// Read `rA, rB`, the two sources of a three-register operation.
@@ -879,6 +1109,50 @@ mod tests {
         assert_eq!(tables_of(&switch_code(&[0x11]))[..], [], "not on a whole word");
     }
 
+    /// GCC's table is a run of `b` after `add pc, pc, rX, lsl 2`.
+    #[test]
+    fn reads_a_table_of_branches() {
+        let words = [
+            0xe353_0002_u32, // 0x00 cmp r3, 2
+            0x908f_f103,     // 0x04 addls pc, pc, r3, lsl 2
+            0xea00_0003,     // 0x08 b 0x1c: the default
+            0xea00_0002,     // 0x0c b 0x1c
+            0xea00_0002,     // 0x10 b 0x20
+            0xea00_0002,     // 0x14 b 0x24
+            0xe12f_ff1e,     // 0x18 bx lr
+            0xe3a0_0000,     // 0x1c mov r0, 0
+            0xe3a0_0001,     // 0x20 mov r0, 1
+            0xe3a0_0002,     // 0x24 mov r0, 2
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let tables = tables_of(&code);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].jump, 0x04);
+        assert_eq!(tables[0].targets, [0x1c, 0x1c, 0x20, 0x24]);
+        assert!(tables[0].words.is_empty(), "the table is code");
+    }
+
+    /// GCC's compressed table: a byte for each case, in `.rodata`.
+    #[test]
+    fn reads_a_table_of_byte_offsets() {
+        let words = [
+            0xe59f_c010_u32, // 0x00 ldr ip, [pc, 0x10]: the word at 0x18
+            0xe08f_c00c,     // 0x04 add ip, pc, ip: ip = 0x0c + 0x14 = 0x20
+            0xe353_0002,     // 0x08 cmp r3, 2
+            0xe7dc_3003,     // 0x0c ldrb r3, [ip, r3]
+            0xe08f_f103,     // 0x10 add pc, pc, r3, lsl 2
+            0xe12f_ff1e,     // 0x14 bx lr
+            0x0000_0014,     // 0x18 the distance to the table
+            0xe12f_ff1e,     // 0x1c bx lr
+            0x0001_0100,     // 0x20 the table: cases at +0, +1, +1 words
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let tables = tables_of(&code);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].targets, [0x18, 0x1c, 0x1c]);
+        assert_eq!(tables[0].words, 0x20..0x23);
+    }
+
     /// Without the `adr` and the scaled `ldr`, the jump is not through a
     /// table this can read.
     #[test]
@@ -890,6 +1164,52 @@ mod tests {
         let mut code = switch_code(&[0x08, 0x10]);
         code[4..8].copy_from_slice(&0xe591_0000_u32.to_le_bytes()); // ldr r0, [r1]
         assert!(tables_of(&code).is_empty());
+    }
+
+    /// `vldr d16, [pc, 0x90]`, as GCC loads a double from its pool, and the
+    /// hints `yaxpeax` leaves unread.
+    #[test]
+    fn reads_vfp_loads_and_hints() {
+        let text = |word: u32| decode_one(word.to_le_bytes()).to_string();
+        assert_eq!(text(0xeddf_0b24), "vldr d16, [pc, 0x90]");
+        assert_eq!(text(0xed1f_0a01), "vldr s0, [pc, -0x4]");
+        assert_eq!(text(0x0d8d_1b00), "vstreq d1, [sp]");
+        assert_eq!(text(0xe320_f000), "nop");
+        assert_eq!(text(0xe320_f003), "wfi");
+        assert_eq!(decode_one(0xeddf_0b24_u32.to_le_bytes()).kind, InsnKind::Normal);
+    }
+
+    /// A pool a VFP load reads is data, one word for a single and two for a
+    /// double.
+    #[test]
+    fn a_vfp_load_names_its_pool_words() {
+        let words = [0xeddf_0b00_u32, 0xed9f_0a00]; // vldr d16, [pc]; vldr s0, [pc]
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0);
+        assert_eq!(Arm32.literal_pool_words(&insns), [0x08, 0x0c, 0x0c]);
+    }
+
+    /// GCC copies the address of the global offset table with `mov` before
+    /// it reads a slot through it. The pool word that holds the slot's
+    /// offset is then chosen by the linker, as the address itself is.
+    #[test]
+    fn a_copied_table_address_marks_its_slot_offset() {
+        let words = [
+            0xe59f_c00c_u32, // 0x00 ldr ip, [pc, 0xc]: the word at 0x14
+            0xe08f_c00c,     // 0x04 add ip, pc, ip: the table at 0x14 + 0xc
+            0xe1a0_000c,     // 0x08 mov r0, ip
+            0xe59f_c004,     // 0x0c ldr ip, [pc, 0x4]: the word at 0x18
+            0xe790_000c,     // 0x10 ldr r0, [r0, ip]
+            0x0000_0014,     // 0x14 the distance to the table
+            0x0000_0008,     // 0x18 the slot's offset in the table
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        // Numbers below a page are never addresses, so the code sits higher.
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0x8000);
+        let space = AddressSpace::of_raw_image(0x8000, 0x100);
+        let kinds = Arm32.constant_kinds(&code, &insns, &space);
+        assert_eq!(kinds[5], ConstantKind::StoredAddress, "the table's distance");
+        assert_eq!(kinds[6], ConstantKind::StoredAddress, "the slot's offset");
     }
 
     /// Code runs always; text and tables do not.
@@ -1024,13 +1344,12 @@ mod tests {
     }
 
     /// The usual ARM `nop` is one `yaxpeax` decodes "successfully" as
-    /// `Opcode::Invalid`. It must still come back as unreadable, or a linker's
-    /// padding looks like a real instruction.
+    /// `Opcode::Invalid`. The fallback reads it as `nop`, which moves nothing.
     #[test]
-    fn nop_encoding_decodes_as_unknown() {
+    fn nop_encoding_decodes_as_nop() {
         let insn = decode_one([0x00, 0xf0, 0x20, 0xe3]);
-        assert_eq!(insn.kind, InsnKind::Unknown);
-        assert_eq!(insn.operands, "0xe320f000", "the raw word must be kept");
+        assert_eq!(insn.mnemonic, "nop");
+        assert_eq!(insn.kind, InsnKind::Normal);
     }
 
     /// NEON is outside what `yaxpeax-arm` 0.4 decodes. `vdup.32 q8, r2` must
@@ -1119,12 +1438,11 @@ mod tests {
         assert!(!Arm32.is_prologue(&add));
     }
 
-    /// The `nop` the linker pads with is one `yaxpeax` reports as unreadable,
-    /// so it must be recognized by its raw word and not only by its name.
+    /// The `nop` the linker pads with is padding, by its name now that the
+    /// fallback reads it.
     #[test]
-    fn padding_is_recognized_by_its_raw_word() {
+    fn the_nop_encoding_is_padding() {
         let nop = decode_one(NOP_BYTES);
-        assert_eq!(nop.kind, InsnKind::Unknown, "the decoder cannot read this nop");
         assert!(Arm32.is_padding(&nop), "the A32 nop encoding is padding");
 
         let add = decode_one([0x00, 0x00, 0x81, 0xe0]);
