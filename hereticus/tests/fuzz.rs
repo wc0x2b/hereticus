@@ -15,7 +15,7 @@ use hereticus::address::AddressSpace;
 use hereticus::arch::{Arch, DecodeError, InsnKind, arm32::Arm32, decode_all, mips::Mips32};
 use hereticus::norm::{normalize, normalize_body, normalize_body_in};
 use hereticus::obj::{Binary, Isa};
-use hereticus::raw::check_base;
+use hereticus::raw::{check_base, suggest_base};
 
 /// Reading a file must never panic, whatever it holds.
 #[test]
@@ -288,6 +288,49 @@ fn checking_a_mips_base_never_panics() {
     check!().with_type::<(Vec<u8>, u64)>().for_each(|(data, base)| {
         let _ = check_base(data, *base, &Mips32::LITTLE);
         let _ = check_base(data, *base, &Mips32::BIG);
+    });
+}
+
+/// Build MIPS code rich in calls and prologues from arbitrary input.
+///
+/// Arbitrary bytes hold a `jal` in one word of 64, too few for the call check
+/// to judge anything. Each pair here picks a `jal`, a frame allocation or a
+/// plain word, so the voting runs on every input.
+fn calls_and_prologues(words: &[(u8, u32)]) -> Vec<u8> {
+    words
+        .iter()
+        .map(|&(kind, value)| match kind % 3 {
+            0 => 0x0c00_0000 | (value & 0x03ff_ffff),
+            1 => 0x27bd_8000 | (value & 0x7fff),
+            _ => value,
+        })
+        .flat_map(u32::to_be_bytes)
+        .collect()
+}
+
+/// Suggesting a MIPS base must never panic, in either order.
+#[test]
+fn suggesting_a_mips_base_never_panics() {
+    check!().with_type::<(Vec<(u8, u32)>, u64)>().for_each(|(words, base)| {
+        let data = calls_and_prologues(words);
+        let _ = suggest_base(&data, &Mips32::BIG);
+        let _ = suggest_base(&data, &Mips32::LITTLE);
+        let _ = check_base(&data, *base, &Mips32::BIG);
+    });
+}
+
+/// The call check reads each word in the order of the image, so the same
+/// code in either order gets the same verdict and the same suggestion.
+#[test]
+fn both_mips_byte_orders_judge_calls_alike() {
+    check!().with_type::<(Vec<(u8, u32)>, u64)>().for_each(|(words, base)| {
+        let big = calls_and_prologues(words);
+        let little = swap_words(&big);
+        assert_eq!(
+            check_base(&big, *base, &Mips32::BIG),
+            check_base(&little, *base, &Mips32::LITTLE)
+        );
+        assert_eq!(suggest_base(&big, &Mips32::BIG), suggest_base(&little, &Mips32::LITTLE));
     });
 }
 

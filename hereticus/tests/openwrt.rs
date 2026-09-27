@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use hereticus::matching::{Changed, Diff, Options, UseNames, diff_with};
 use hereticus::obj::{Binary, Isa};
-use hereticus::raw::{BaseFit, check_base};
+use hereticus::raw::{BaseFit, check_base, suggest_base};
 use rstest::rstest;
 
 mod common;
@@ -535,6 +535,40 @@ fn slow_the_mt7628_kernel_report_is_locked() {
             BaseFit::Plausible { pointers: 45992, examined: 1_334_689 },
         ],
     );
+}
+
+/// Each MIPS kernel names its own base through its calls, in every release.
+///
+/// A kernel holds so many stored pointers that a base a page off still finds
+/// thousands inside the image. The calls tell the two apart.
+#[rstest]
+#[case::mipsbe_eap245v3(EAP245V3, &["21.02.7", BEFORE, AFTER, "23.05.5"])]
+#[case::mipsel_r6220(R6220, &["21.02.7", BEFORE, AFTER, "23.05.5"])]
+#[case::mipsbe_vr200(VR200, &[BEFORE, AFTER])]
+#[case::mipsel_mt300nv2(MT300NV2, &[BEFORE, AFTER])]
+fn slow_the_calls_of_a_mips_kernel_give_its_base(#[case] board: Board, #[case] releases: &[&str]) {
+    for &release in releases {
+        let data = read(board, Part::Kernel, release);
+        let arch = board.isa.arch();
+        assert_eq!(suggest_base(&data, arch), Some(board.kernel_base), "{} {release}", board.name);
+
+        for wrong in
+            [board.kernel_base - 0x1000, board.kernel_base + 0x1000, board.kernel_base + 0x100]
+        {
+            let fit = check_base(&data, wrong, arch);
+            assert!(
+                matches!(fit, BaseFit::CallsMissFunctions { better_base, .. } if better_base == board.kernel_base),
+                "{} {release} at {wrong:#x}: got {fit:?}",
+                board.name
+            );
+        }
+    }
+}
+
+/// An ARM kernel calls by distance, so it names no base.
+#[test]
+fn slow_an_arm_kernel_suggests_no_base() {
+    assert_eq!(suggest_base(&read(EX6100V2, Part::Kernel, BEFORE), Isa::Arm32.arch()), None);
 }
 
 /// The OpenWrt fixtures are all present, so no test above reads a stale or a

@@ -13,7 +13,7 @@ use hereticus::matching::{
     Progress, UseNames, diff_reporting, instruction_diff,
 };
 use hereticus::obj::{Binary, Isa};
-use hereticus::raw::check_base;
+use hereticus::raw::{check_base, suggest_base};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use tabled::settings::object::{Columns, Rows};
 use tabled::settings::style::HorizontalLine;
@@ -94,7 +94,8 @@ struct Args {
     ///
     /// Required with `--raw`. Branch targets and reported addresses are all
     /// relative to this, so a wrong value produces a report against the wrong
-    /// addresses.
+    /// addresses. Without it, the tool stops, and for MIPS it names the base
+    /// that the calls in the image show.
     #[arg(long, value_parser = parse_address, requires = "raw")]
     base: Option<u64>,
 
@@ -292,11 +293,9 @@ fn run(args: &Args) -> Result<bool, String> {
     let after_bytes = read_file(&args.after)?;
 
     let (before, after) = if args.raw {
-        let base = args
-            .base
-            .ok_or("--raw needs --base, because a raw image does not say where it loads")?;
-
         let isa: Isa = args.arch.into();
+        let base = args.base.ok_or_else(|| missing_base(&before_bytes, isa))?;
+
         check_and_report_base(&before_bytes, base, isa, &args.before);
         // Comparing a file with itself is a normal way to inspect one image,
         // and saying the same thing twice about it helps nobody.
@@ -361,6 +360,18 @@ fn parse(data: &[u8], path: &Path) -> Result<Binary, String> {
 fn parse_raw(data: &[u8], base: u64, isa: Isa, path: &Path) -> Result<Binary, String> {
     Binary::parse_raw(data, base, isa)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))
+}
+
+/// Say that `--raw` needs `--base`, and suggest one when the image shows it.
+///
+/// The suggestion is not used in place of `--base`. It can be wrong, and a
+/// wrong base gives a report against the wrong addresses with no other sign.
+fn missing_base(data: &[u8], isa: Isa) -> String {
+    let needed = "--raw needs --base, because a raw image does not say where it loads";
+    match suggest_base(data, isa.arch()) {
+        Some(base) => format!("{needed}. Its calls show that it loads at --base {base:#x}"),
+        None => needed.to_string(),
+    }
 }
 
 /// Warn when the given load address looks wrong for an image.
