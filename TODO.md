@@ -47,8 +47,3 @@ return inside one: about 18 false starts in each backport library. The
 The tests now download about 150 MB of OpenWrt images and build libraries
 in a container. Cache `fixtures/build` in CI, keyed on the pinned SHA-256
 values and on `fixtures/`, so a run fetches and builds only what changed.
-
-## Bring the README up to date
-
-The README does not mention `--show-data`, the MIPS `--arch` values, or
-`just firmware` and `just backports`.

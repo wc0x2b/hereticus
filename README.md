@@ -40,14 +40,13 @@ $ hereticus --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
 │ sub_8020b1fc │ changed        │  0.98 │ 0/0/1 │ -        │ similar    │
 │ sub_80208e20 │ changed unread │  0.98 │ 0/0/1 │ -        │ similar    │
 │ sub_80209154 │ changed        │  0.96 │ 0/0/1 │ 1 mem    │ similar    │
+│ sub_80208b04 │ changed        │  0.94 │ 0/0/1 │ -        │ similar    │
 │ sub_8020a338 │ changed        │  0.94 │ 0/0/1 │ -        │ similar    │
 │ sub_802082bc │ changed        │  0.89 │ 1/1/1 │ 1 branch │ similar    │
 │ sub_80208ab4 │ changed        │  0.87 │ 0/0/1 │ -        │ similar    │
-│ sub_80208b04 │ changed        │  0.86 │ 5/0/0 │ -        │ similar    │
 ╰──────────────┴────────────────┴───────┴───────┴──────────┴────────────╯
-sub_80208b80: gone
 
-69 matched (58 unchanged, 11 changed), 1 gone, 0 new
+67 matched (56 unchanged, 11 changed), 0 gone, 0 new
 3 changed only a constant, hidden. Use --show-retouched to list them.
 ```
 
@@ -100,8 +99,8 @@ Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
 and 2 when the input could not be read.
 
 ## Limits
-* **ARM32 little-endian A32 only.** Thumb is not decoded, and a Thumb image
-  reads as nonsense with no warning.
+* **ARM32 little-endian A32, and MIPS32 in either byte order.** Thumb is not
+  decoded, and a Thumb image reads as nonsense with no warning.
 * **NEON is not decoded.** Those words stay opaque, so decoding continues but
   their content is not compared.
 * **Unoptimized against optimized is out of scope.** At `-O2` the compiler
@@ -123,12 +122,13 @@ Options:
       --diff <FUNCTION>        Show the instruction-level diff of one function, then stop
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
+      --show-data              List regions that look like data rather than code
       --threshold <THRESHOLD>  Lowest similarity that still counts as a match, from 0.0 to 1.0 [default: 0.65]
       --exit-code              Exit with a failure status when anything changed
       --near-miss <NEAR_MISS>  Lowest score at which an unmatched function names its closest candidate, from 0.0 to 1.0 [default: 0.25]
       --raw                    Read the inputs as raw code with no container format
       --base <BASE>            Address a raw image loads at, for example `0x08000000`
-      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32]
+      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, mips32, mips32-be]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact]
       --sort <SORT>            How to order the changed functions. [default: confidence] [possible values: confidence, added, removed, modified]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]
@@ -143,7 +143,7 @@ All patches/merge requests are welcome!
 ```
 just quick-test   # about five seconds
 just test         # the same, plus slow tests
-just fixtures     # rebuild the ARM32 corpus
+just fixtures     # rebuild the ARM32 and MIPS corpus
 ```
 
 ## License
