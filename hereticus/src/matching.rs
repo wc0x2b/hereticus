@@ -19,7 +19,7 @@ use rayon::prelude::*;
 
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::arch::{Arch, Insn, InsnKind, decode_all, is_branch_target};
-use crate::callee::{Callee, callees};
+use crate::callee::{Callee, callees, callees_in};
 use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body_in};
 use crate::obj::{Binary, Function, Isa};
 
@@ -471,9 +471,27 @@ struct Prepared<'a> {
     addresses: &'a AddressSpace,
     /// Whether the function holds code or data.
     contents: Contents,
+    /// The callee of each call, in order.
+    calls: Vec<Callee>,
 }
 
 impl Prepared<'_> {
+    /// The callees the linker or a symbol names, sorted. Unlike the code,
+    /// these tell apart twins that call different imports, as `math_exp`
+    /// and `math_log10` in Lua.
+    fn named_calls(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .calls
+            .iter()
+            .filter_map(|callee| match callee {
+                Callee::Named(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
     /// Normalize this function again.
     ///
     /// Kept out of [`Prepared`] for the same reason as [`Prepared::printed`],
@@ -519,10 +537,23 @@ fn same_detail(before: &[NormInsn], after: &[NormInsn]) -> bool {
 /// instruction on either side.
 fn prepare<'a>(
     binary: &'a Binary,
+    use_names: UseNames,
     interner: &mut Interner,
     progress: &dyn Progress,
 ) -> Vec<Prepared<'a>> {
     let arch = binary.isa.arch();
+    // Without names, a callee the symbol table names is known only as the
+    // function it is, as in a stripped binary. What the linker names stays.
+    let own_names: HashMap<&str, usize> = match use_names {
+        UseNames::Yes => HashMap::new(),
+        UseNames::No => binary
+            .functions
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(index, function)| (function.name.as_str(), index))
+            .collect(),
+    };
     binary
         .functions
         .iter()
@@ -534,6 +565,16 @@ fn prepare<'a>(
             // normalize again on demand.
             let body = normalize_body_in(arch, &function.code, &insns, &binary.addresses);
             let contents = arch.contents(&function.code, &insns, &binary.addresses);
+            let calls = callees_in(arch, &binary.links, &binary.functions, &insns)
+                .into_iter()
+                .map(|callee| match callee {
+                    Callee::Named(name) => match own_names.get(name.as_str()) {
+                        Some(&index) => Callee::Function(index),
+                        None => Callee::Named(name),
+                    },
+                    other => other,
+                })
+                .collect();
 
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
@@ -546,6 +587,7 @@ fn prepare<'a>(
                 isa: binary.isa,
                 addresses: &binary.addresses,
                 contents,
+                calls,
             }
         })
         .collect()
@@ -637,8 +679,8 @@ pub fn diff_reporting(
 ) -> Diff {
     progress.start(Phase::Preparing, before.functions.len() + after.functions.len());
     let mut interner = Interner::default();
-    let left = prepare(before, &mut interner, progress);
-    let right = prepare(after, &mut interner, progress);
+    let left = prepare(before, options.use_names, &mut interner, progress);
+    let right = prepare(after, options.use_names, &mut interner, progress);
     progress.finish();
 
     let mut cascade = Cascade {
@@ -656,12 +698,24 @@ pub fn diff_reporting(
         cascade.match_by_name(progress);
     }
     cascade.match_twins_in_order();
+    // The close pairs first, so their callees tell the rest apart.
+    let threshold = cascade.options.threshold;
+    cascade.options.threshold = threshold.max(CLOSE_SIMILARITY);
+    cascade.match_by_similarity(progress);
+    cascade.options.threshold = threshold;
     cascade.match_by_similarity(progress);
 
     cascade.align_stubs(before, after);
     cascade.pair_by_callers(before, after);
     cascade.compare_callees(before, after);
     cascade.finish(progress)
+}
+
+/// Which binary of a comparison.
+#[derive(Clone, Copy)]
+enum Side {
+    Before,
+    After,
 }
 
 /// The functions still to pair, and the pairs found so far.
@@ -686,6 +740,44 @@ impl Cascade<'_> {
         self.right_free[after] = false;
         let pair = self.assess(before, after, confidence, score);
         self.matched.push(pair);
+    }
+
+    /// The callees of each free function, as keys both sides share, sorted.
+    ///
+    /// A callee counts where the linker names it, or where it is a function
+    /// already paired. Others say nothing yet.
+    fn callee_keys(&self) -> (Vec<Vec<CalleeKey>>, Vec<Vec<CalleeKey>>) {
+        let partner: HashMap<usize, usize> =
+            self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
+        let keys = |side: &[Prepared<'_>], free: &[bool], which: Side| -> Vec<Vec<CalleeKey>> {
+            side.iter()
+                .enumerate()
+                .map(|(index, prepared)| {
+                    if !free[index] {
+                        return Vec::new();
+                    }
+                    let mut keys: Vec<CalleeKey> = prepared
+                        .calls
+                        .iter()
+                        .filter_map(|callee| match callee {
+                            Callee::Named(name) => Some(CalleeKey::Named(name.clone())),
+                            Callee::Function(callee) => match which {
+                                Side::Before => partner.get(callee).copied(),
+                                Side::After => (!self.right_free[*callee]).then_some(*callee),
+                            }
+                            .map(CalleeKey::Paired),
+                            Callee::Unknown => None,
+                        })
+                        .collect();
+                    keys.sort_unstable();
+                    keys
+                })
+                .collect()
+        };
+        (
+            keys(&self.left, &self.left_free, Side::Before),
+            keys(&self.right, &self.right_free, Side::After),
+        )
     }
 
     /// Compare two functions as a pair.
@@ -1576,12 +1668,17 @@ impl Cascade<'_> {
                 continue;
             }
 
-            let candidates: Vec<usize> = (0..self.right.len())
+            let mut candidates: Vec<usize> = (0..self.right.len())
                 .filter(|other| {
                     self.right_free[*other]
                         && self.left[index].ordered == self.right[*other].ordered
                 })
                 .collect();
+            // Twins that call different named functions are told apart.
+            if candidates.len() > 1 {
+                let named = self.left[index].named_calls();
+                candidates.retain(|&other| self.right[other].named_calls() == named);
+            }
 
             if let [only] = candidates[..] {
                 self.take_pair(index, only, Confidence::IdenticalShape, 1.0);
@@ -1603,15 +1700,21 @@ impl Cascade<'_> {
     /// first pairs with the first, and so on. A group of unequal size is left
     /// alone, because then an order is no evidence of which pairs with which.
     fn match_twins_in_order(&mut self) {
-        let mut groups: HashMap<&[Symbol], (Vec<usize>, Vec<usize>)> = HashMap::new();
+        // A group holds one shape that calls the same named functions: order
+        // is no evidence across compilers, and GCC places functions in
+        // another order than clang does.
+        type Group<'a> = (&'a [Symbol], Vec<&'a str>);
+        let mut groups: HashMap<Group<'_>, (Vec<usize>, Vec<usize>)> = HashMap::new();
         for (index, prepared) in self.left.iter().enumerate() {
             if self.left_free[index] && !prepared.is_empty() {
-                groups.entry(prepared.ordered.as_slice()).or_default().0.push(index);
+                let key = (prepared.ordered.as_slice(), prepared.named_calls());
+                groups.entry(key).or_default().0.push(index);
             }
         }
         for (index, prepared) in self.right.iter().enumerate() {
             if self.right_free[index]
-                && let Some((_, right)) = groups.get_mut(prepared.ordered.as_slice())
+                && let Some((_, right)) =
+                    groups.get_mut(&(prepared.ordered.as_slice(), prepared.named_calls()))
             {
                 right.push(index);
             }
@@ -1687,7 +1790,8 @@ impl Cascade<'_> {
         // own results, and the sort below decides the order, so the answer does
         // not depend on the order the rows finished in.
         let threshold = self.options.threshold;
-        let mut candidates: Vec<(f64, usize, usize)> = (0..self.left.len())
+        let (left_calls, right_calls) = self.callee_keys();
+        let candidates: Vec<(f64, usize, usize)> = (0..self.left.len())
             .into_par_iter()
             .filter(|index| self.left_free[*index])
             .map(|index| {
@@ -1717,20 +1821,77 @@ impl Cascade<'_> {
 
         // Best first. Ties break on index so the answer does not depend on
         // the order two equal scores happened to be found in.
-        candidates.sort_by(|a, b| {
+        let rank = |&(score, index, other): &(f64, usize, usize)| {
+            score + CALLEE_WEIGHT * callee_agreement(&left_calls[index], &right_calls[other])
+        };
+        let mut ranked: Vec<(f64, (f64, usize, usize))> =
+            candidates.into_iter().map(|candidate| (rank(&candidate), candidate)).collect();
+        ranked.sort_by(|a, b| {
             b.0.partial_cmp(&a.0)
                 .unwrap_or(core::cmp::Ordering::Equal)
-                .then_with(|| a.1.cmp(&b.1))
-                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.1.1.cmp(&b.1.1))
+                .then_with(|| a.1.2.cmp(&b.1.2))
         });
 
-        for (score, index, other) in candidates {
+        for (_, (score, index, other)) in ranked {
             if self.left_free[index] && self.right_free[other] {
                 self.take_pair(index, other, Confidence::Similar, score);
             }
         }
         progress.finish();
     }
+}
+
+/// How much the callees of two functions weigh in the order the similarity
+/// stage takes pairs in, against their code.
+///
+/// Two builds made another way, at `-Os` or by the other compiler, inline
+/// and schedule differently, and the code alone then prefers the wrong
+/// candidate by a few hundredths. What a function calls changes less. At
+/// full agreement against none, the callees outweigh a difference of 0.2 in
+/// the code. Measured on the backports built at other levels and by the
+/// other compiler, stripped, this cut the wrong pairs by a quarter to a half,
+/// and 0.05 or 0.2 did no better.
+const CALLEE_WEIGHT: f64 = 0.1;
+
+/// The similarity at which the first pass of the similarity stage pairs.
+///
+/// The pairs it makes are the callees that tell the second pass's
+/// candidates apart. Measured as for [`CALLEE_WEIGHT`], 0.85 did best of
+/// 0.75, 0.85 and 0.95.
+const CLOSE_SIMILARITY: f64 = 0.85;
+
+/// A callee as both sides can name it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CalleeKey {
+    /// A symbol the linker or the function names.
+    Named(String),
+    /// A function of the second binary, which a function of the first
+    /// already paired with.
+    Paired(usize),
+}
+
+/// How well two sorted callee lists agree, from -1.0 to 1.0, or 0.0 where
+/// neither names any callee.
+fn callee_agreement(left: &[CalleeKey], right: &[CalleeKey]) -> f64 {
+    if left.is_empty() && right.is_empty() {
+        return 0.0;
+    }
+    let mut shared = 0usize;
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < left.len() && j < right.len() {
+        match left[i].cmp(&right[j]) {
+            core::cmp::Ordering::Less => i += 1,
+            core::cmp::Ordering::Greater => j += 1,
+            core::cmp::Ordering::Equal => {
+                shared += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    let combined = left.len() + right.len() - shared;
+    2.0 * shared as f64 / combined as f64 - 1.0
 }
 
 /// How many candidates one function keeps.
@@ -2660,6 +2821,68 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// Two twins that each call one import through a PLT stub, the import
+    /// that `names` gives for the stub at 0x200 and the one at 0x300, and
+    /// placed at 0x0 and 0x100 in that order.
+    fn twins_calling(names: [&str; 2]) -> crate::obj::Binary {
+        /// The distance from an LLD PLT stub to the slot it jumps through.
+        const TO_SLOT: u64 = 0x3ea34 - 0x1dd60;
+        let bl = |from: u32, to: u32| 0xeb00_0000 | ((to.wrapping_sub(from + 8) / 4) & 0x00ff_ffff);
+        let words = |words: &[u32]| -> Vec<u8> {
+            words.iter().flat_map(|word| word.to_le_bytes()).collect()
+        };
+        let stub = words(&[0xe28f_c600, 0xe28c_ca20, 0xe5bc_fccc]);
+        let codes = [
+            words(&[0xe92d_4010, bl(0x4, 0x200), 0xe8bd_8010]),
+            words(&[0xe92d_4010, bl(0x104, 0x300), 0xe8bd_8010]),
+            stub.clone(),
+            stub,
+        ];
+        let mut binary =
+            binary_of(&[("", &codes[0]), ("", &codes[1]), ("", &codes[2]), ("", &codes[3])]);
+        let memory = binary
+            .functions
+            .iter()
+            .map(|function| (function.address, function.code.clone()))
+            .collect();
+        let slots = BTreeMap::from([
+            (0x200 + TO_SLOT, names[0].to_string()),
+            (0x300 + TO_SLOT, names[1].to_string()),
+        ]);
+        binary.links = crate::callee::Links::of_parts(memory, slots);
+        binary
+    }
+
+    /// Twins in another order, as another compiler places them, pair by the
+    /// import each calls rather than by their order.
+    #[test]
+    fn twins_pair_by_what_they_call() {
+        let before = twins_calling(["exp", "log10"]);
+        let after = twins_calling(["log10", "exp"]);
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let partner = |index: usize| {
+            diff.matched.iter().find(|pair| pair.before == index).map(|pair| pair.after)
+        };
+        assert_eq!(partner(0), Some(1), "exp");
+        assert_eq!(partner(1), Some(0), "log10");
+        assert_eq!(diff.changed().count(), 0);
+    }
+
+    #[test]
+    fn callees_agree_by_what_they_share() {
+        let key = |name: &str| CalleeKey::Named(name.to_string());
+        let (exp, log) = (key("exp"), key("log10"));
+        assert_eq!(callee_agreement(&[], &[]), 0.0, "nothing to say");
+        assert_eq!(callee_agreement(&[exp.clone()], &[exp.clone()]), 1.0);
+        assert_eq!(callee_agreement(&[exp.clone()], &[log.clone()]), -1.0);
+        assert_eq!(callee_agreement(&[exp.clone()], &[]), -1.0, "one calls, one does not");
+        let (mut both, one) = (vec![exp.clone(), log], vec![exp]);
+        both.sort();
+        assert_eq!(callee_agreement(&both, &one), 0.0, "half shared");
+        assert_eq!(callee_agreement(&[CalleeKey::Paired(3)], &[CalleeKey::Paired(3)]), 1.0);
     }
 
     /// A MIPS table of pointers into its own image, after a `jr ra`.
