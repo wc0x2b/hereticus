@@ -649,6 +649,7 @@ pub fn diff_reporting(
     cascade.match_twins_in_order();
     cascade.match_by_similarity(progress);
 
+    cascade.align_stubs(before, after);
     cascade.pair_by_callers(before, after);
     cascade.compare_callees(before, after);
     cascade.finish(progress)
@@ -722,6 +723,99 @@ impl Cascade<'_> {
             .collect()
     }
 
+    /// Pair the PLT stubs of the two binaries as two ordered lists.
+    ///
+    /// Every stub is the same code but for the slot it jumps through, and
+    /// where no relocation names the slots, as in a raw image, nothing else
+    /// tells them apart. The linker writes one stub for each import, in
+    /// order, so an import added inserts a stub and moves every stub after
+    /// it by one place. Measured on tinyxml2 for ARM as a raw image, the fix
+    /// adds one, and `vsnprintf` then paired with the stub before its own.
+    ///
+    /// So the stubs are aligned in order, as a diff aligns lines. Each pair
+    /// the alignment makes counts one, and each caller whose code agrees
+    /// counts [`CALLER_WEIGHT`] more for the stubs its calls line up. Every
+    /// place a gap can go keeps as many pairs, so a caller decides where the
+    /// gap goes. It cannot pull a stub out of order, which would cost more
+    /// pairs than it weighs: an edited caller calls a new stub, and that must
+    /// not undo the order that shows the edit. A stub the alignment leaves
+    /// out went or came.
+    fn align_stubs(&mut self, before: &Binary, after: &Binary) {
+        /// What one caller weighs against one pair kept in order.
+        const CALLER_WEIGHT: usize = 2;
+
+        let stubs = |side: &[Prepared<'_>]| -> Vec<usize> {
+            (0..side.len())
+                .filter(|&index| {
+                    let function = side[index].function;
+                    side[index].isa.arch().stub_slot(&function.code, function.address).is_some()
+                })
+                .collect()
+        };
+        let (left, right) = (stubs(&self.left), stubs(&self.right));
+        if left.is_empty() || right.is_empty() {
+            return;
+        }
+
+        let mut voters: BTreeSet<(usize, usize, usize)> = BTreeSet::new();
+        for (caller, calls_before, calls_after) in self.aligned_callees(before, after) {
+            for pair in calls_before.iter().zip(&calls_after) {
+                if let (Callee::Function(x), Callee::Function(y)) = pair {
+                    voters.insert((*x, *y, caller));
+                }
+            }
+        }
+        let mut votes: HashMap<(usize, usize), usize> = HashMap::new();
+        for &(x, y, _) in &voters {
+            *votes.entry((x, y)).or_default() += 1;
+        }
+        let weight =
+            |x: usize, y: usize| votes.get(&(x, y)).copied().unwrap_or(0) * CALLER_WEIGHT + 1;
+
+        // The heaviest alignment that keeps both orders.
+        let (rows, columns) = (left.len(), right.len());
+        let mut best = vec![vec![0usize; columns + 1]; rows + 1];
+        for row in 1..=rows {
+            for column in 1..=columns {
+                let paired = best[row - 1][column - 1] + weight(left[row - 1], right[column - 1]);
+                best[row][column] = paired.max(best[row - 1][column]).max(best[row][column - 1]);
+            }
+        }
+        let mut aligned = Vec::new();
+        let (mut row, mut column) = (rows, columns);
+        while row > 0 && column > 0 {
+            let paired = best[row - 1][column - 1] + weight(left[row - 1], right[column - 1]);
+            if best[row][column] == paired {
+                aligned.push((left[row - 1], right[column - 1]));
+                row -= 1;
+                column -= 1;
+            } else if best[row][column] == best[row - 1][column] {
+                row -= 1;
+            } else {
+                column -= 1;
+            }
+        }
+
+        // Replace every pair that holds a stub with the alignment.
+        let is_stub_pair = |pair: &Match| {
+            left.binary_search(&pair.before).is_ok() || right.binary_search(&pair.after).is_ok()
+        };
+        self.matched.retain(|pair| !is_stub_pair(pair));
+        for &index in &left {
+            self.left_free[index] = true;
+        }
+        for &index in &right {
+            self.right_free[index] = true;
+        }
+        for (x, y) in aligned.into_iter().rev() {
+            if !self.left_free[x] || !self.right_free[y] {
+                continue;
+            }
+            let score = similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols);
+            self.take_pair(x, y, Confidence::SameCallers, score);
+        }
+    }
+
     /// Swap two weak pairings where the calls say they are crossed.
     ///
     /// A small function has many twins, and similarity pairs them by chance:
@@ -733,20 +827,36 @@ impl Cascade<'_> {
     ///
     /// Only pairings by similarity or by twin order swap, because a stronger
     /// reason outweighs a vote. A swap never leaves a function unpaired.
+    ///
+    /// A caller votes once for each pair of callees, however often it calls
+    /// them, and a swap needs [`FEWEST_VOTERS`] callers for it. Otherwise one
+    /// edited caller outvotes the rest and hides its own edit: the tinyxml2
+    /// fix makes three calls to a new PLT stub, whose twins pair by order.
     fn pair_by_callers(&mut self, before: &Binary, after: &Binary) {
-        /// A swap can change whose calls line up, so the votes are counted
-        /// again a few times. Each round only swaps, so this settles fast.
-        const MOST_ROUNDS: usize = 4;
+        /// Each round moves a pairing that is off by one along a run of
+        /// twins by one place: a new PLT stub puts every stub after it one
+        /// place off. Rounds cost only the votes, so a long run can settle.
+        const MOST_ROUNDS: usize = 4096;
+        /// The fewest callers that must agree before a swap.
+        const FEWEST_VOTERS: usize = 2;
 
-        for _ in 0..MOST_ROUNDS {
-            let mut votes: BTreeMap<(usize, usize), usize> = BTreeMap::new();
-            for (_, left, right) in self.aligned_callees(before, after) {
-                for pair in left.iter().zip(&right) {
-                    if let (Callee::Function(x), Callee::Function(y)) = pair {
-                        *votes.entry((*x, *y)).or_default() += 1;
-                    }
+        // Which callees a call reaches does not depend on the pairing, so the
+        // votes are counted once. A swapped pair is a callee, and hardly
+        // ever a caller whose code agrees, so its own vote stays as it was.
+        let mut voters: BTreeSet<(usize, usize, usize)> = BTreeSet::new();
+        for (caller, left, right) in self.aligned_callees(before, after) {
+            for pair in left.iter().zip(&right) {
+                if let (Callee::Function(x), Callee::Function(y)) = pair {
+                    voters.insert((*x, *y, caller));
                 }
             }
+        }
+        let mut votes: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+        for &(x, y, _) in &voters {
+            *votes.entry((x, y)).or_default() += 1;
+        }
+
+        for _ in 0..MOST_ROUNDS {
             let vote = |x: usize, y: usize| votes.get(&(x, y)).copied().unwrap_or(0);
 
             let pair_of_before: HashMap<usize, usize> =
@@ -768,7 +878,8 @@ impl Cascade<'_> {
                     continue;
                 }
                 let (y_other, x_other) = (self.matched[first].after, self.matched[second].before);
-                let wins = for_swap + vote(x_other, y_other) > vote(x, y_other) + vote(x_other, y);
+                let wins = for_swap >= FEWEST_VOTERS
+                    && for_swap + vote(x_other, y_other) > vote(x, y_other) + vote(x_other, y);
                 if wins && is_weak(&self.matched[first]) && is_weak(&self.matched[second]) {
                     touched.extend([first, second]);
                     swaps.push((first, second));
@@ -803,16 +914,24 @@ impl Cascade<'_> {
         let partner_of_after: HashMap<usize, usize> =
             self.matched.iter().map(|pair| (pair.after, pair.before)).collect();
 
-        // A callee pair is different only when the matching says so: both
-        // paired, and not with each other. A callee the code or the linker
-        // does not name says nothing, and nor does one that paired with
-        // nothing, because a scan can cut a function short and leave a piece
-        // that no stage pairs. A call to code that normalizes the same is the
+        // A callee pair is different only when the matching says so: one of
+        // them paired, and not with the other. A call that now reaches a new
+        // function is a change, as the tinyxml2 fix calls a new PLT stub. A
+        // callee the code or the linker does not name says nothing, and nor
+        // do two that both paired with nothing. A call to code that
+        // normalizes the same is the
         // same call, whichever twin the matching picked, if its constants
-        // agree too.
+        // agree too. A PLT stub is the exception: every stub is the same code
+        // but for the slot it jumps through, and the slot is the callee.
         let (left_side, right_side) = (&self.left, &self.right);
+        let is_stub = |side: &Prepared<'_>| {
+            side.isa.arch().stub_slot(&side.function.code, side.function.address).is_some()
+        };
         let same_code = |left: usize, right: usize| {
             let (left, right) = (&left_side[left], &right_side[right]);
+            if is_stub(left) || is_stub(right) {
+                return false;
+            }
             left.function.code == right.function.code
                 || (left.ordered == right.ordered && same_detail(&left.body(), &right.body()))
         };
@@ -820,8 +939,9 @@ impl Cascade<'_> {
             (Callee::Named(left), Callee::Named(right)) => left != right,
             (Callee::Function(left), Callee::Function(right)) => {
                 let crossed = match (partner_of_before.get(left), partner_of_after.get(right)) {
-                    (Some(partner), Some(_)) => partner != right,
-                    _ => false,
+                    (Some(partner), _) => partner != right,
+                    (None, Some(partner)) => partner != left,
+                    (None, None) => false,
                 };
                 crossed && !same_code(*left, *right)
             }

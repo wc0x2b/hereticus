@@ -136,12 +136,19 @@ pub trait Arch {
     }
 
     /// The jumps through a table of cases in `insns`, which were decoded
-    /// from `code` at `base`.
+    /// from the code at `code` in `memory`.
     ///
     /// Such a jump names no target, so without the table a scan cannot see
     /// that the cases after it are more of the same function, and the words
-    /// of the table decode as nonsense instructions. Defaults to none.
-    fn jump_tables(&self, _code: &[u8], _base: u64, _insns: &[Insn]) -> Vec<JumpTable> {
+    /// of the table decode as nonsense instructions. The table and what
+    /// finds it can lie outside the code, in `.rodata` or the global offset
+    /// table, so all of `memory` is there to read. Defaults to none.
+    fn jump_tables(
+        &self,
+        _memory: &Memory<'_>,
+        _code: core::ops::Range<u64>,
+        _insns: &[Insn],
+    ) -> Vec<JumpTable> {
         Vec::new()
     }
 
@@ -182,8 +189,8 @@ pub trait Arch {
     /// of them, which puts the table at the top of any report.
     ///
     /// `code` is the bytes of the function, `insns` the same decoded.
-    /// Defaults to [`Contents::Code`], for the architectures whose code holds
-    /// data of its own, where no share of odd words tells the two apart.
+    /// Defaults to [`Contents::Code`], for an architecture with no test that
+    /// tells the two apart.
     fn contents(&self, _code: &[u8], _insns: &[Insn], _space: &AddressSpace) -> Contents {
         Contents::Code
     }
@@ -210,6 +217,15 @@ pub trait Arch {
     /// Used to recover function starts from stripped code, so a false positive
     /// invents a function. Answer only for a shape that reliably begins one.
     fn is_prologue(&self, insn: &Insn) -> bool;
+
+    /// Report whether a function can open with the instruction in `word`.
+    ///
+    /// Asked of the word after a return, where a guess would start a
+    /// function. Defaults to `true`, for the architectures where any
+    /// instruction can.
+    fn may_open_function(&self, _word: &[u8]) -> bool {
+        true
+    }
 
     /// Report whether `body` opens with a sequence that only the entry of a
     /// function runs, as surely as a call to it would say.
@@ -290,6 +306,27 @@ pub trait Arch {
     /// relative.
     fn absolute_call(&self, _word: &[u8]) -> Option<AbsoluteCall> {
         None
+    }
+}
+
+/// The bytes a binary loads, by address.
+#[derive(Clone, Copy, Debug)]
+pub struct Memory<'a> {
+    regions: &'a [(u64, &'a [u8])],
+}
+
+impl<'a> Memory<'a> {
+    /// Memory made of these regions, each an address and its bytes.
+    pub fn new(regions: &'a [(u64, &'a [u8])]) -> Self {
+        Self { regions }
+    }
+
+    /// The `length` bytes at `address`, if one region holds them all.
+    pub fn bytes(&self, address: u64, length: usize) -> Option<&'a [u8]> {
+        self.regions.iter().find_map(|&(start, data)| {
+            let offset = usize::try_from(address.checked_sub(start)?).ok()?;
+            data.get(offset..offset.checked_add(length)?)
+        })
     }
 }
 

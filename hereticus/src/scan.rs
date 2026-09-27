@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use object::{Object, ObjectSection, SectionKind};
 
-use crate::arch::{Arch, DataAmongCode, Insn, InsnKind, decode_all};
+use crate::arch::{Arch, DataAmongCode, Insn, InsnKind, Memory, decode_all};
 use crate::obj::Function;
 
 /// Bytes in one ARM EHABI unwind entry: a function address and one word
@@ -117,7 +117,47 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
         .filter_map(|section| section.data().ok().map(|data| (section.address(), data)))
         .collect();
 
-    recover_from_regions(&code_sections, &exception_index(&file, arch), arch)
+    // Where the ABI has no index of its own, as on MIPS, the call frame
+    // information of C++ and of C built with unwind tables serves as one.
+    let mut index = exception_index(&file, arch);
+    if index.is_empty()
+        && let Some(section) = file.section_by_name(".eh_frame")
+        && let Ok(bytes) = section.data()
+    {
+        let order = if file.is_little_endian() {
+            crate::unwind::ByteOrder::Little
+        } else {
+            crate::unwind::ByteOrder::Big
+        };
+        index = index_from_ranges(&crate::unwind::function_ranges(bytes, section.address(), order));
+    }
+
+    // Tables that code reads, such as those a `switch` jumps through, can
+    // lie in any section the binary loads.
+    let loaded: Vec<(u64, &[u8])> = file
+        .sections()
+        .filter(|section| section.address() != 0)
+        .filter_map(|section| section.data().ok().map(|data| (section.address(), data)))
+        .collect();
+
+    recover_in_memory(&code_sections, &index, arch, &Memory::new(&loaded))
+}
+
+/// Turn the function ranges of call frame information into index entries.
+///
+/// Each range is described exactly. A gap after one holds code the table
+/// does not list, such as hand-written assembly, so it is marked as an entry
+/// that cannot unwind, which the scan searches as it would with no index.
+pub fn index_from_ranges(ranges: &[core::ops::Range<u64>]) -> Vec<IndexEntry> {
+    let mut entries = Vec::new();
+    for (position, range) in ranges.iter().enumerate() {
+        entries.push(IndexEntry { address: range.start, unwinding: Unwinding::Described });
+        let next = ranges.get(position + 1).map(|next| next.start);
+        if next.is_none_or(|next| next > range.end) {
+            entries.push(IndexEntry { address: range.end, unwinding: Unwinding::CannotUnwind });
+        }
+    }
+    entries
 }
 
 /// Find the functions in code that is already located.
@@ -132,6 +172,17 @@ pub fn recover_from_regions(
     regions: &[(u64, &[u8])],
     exception_index: &[IndexEntry],
     arch: &dyn Arch,
+) -> Vec<Recovered> {
+    recover_in_memory(regions, exception_index, arch, &Memory::new(regions))
+}
+
+/// Find the functions in code that is already located, where `memory` holds
+/// everything else the binary loads, for the tables the code reads.
+pub fn recover_in_memory(
+    regions: &[(u64, &[u8])],
+    exception_index: &[IndexEntry],
+    arch: &dyn Arch,
+    memory: &Memory<'_>,
 ) -> Vec<Recovered> {
     if regions.is_empty() {
         return Vec::new();
@@ -151,15 +202,26 @@ pub fn recover_from_regions(
     // zlib built as an ARM shared library, five such entries covered all 123
     // functions, and trusting them found 27.
     if !exception_index.is_empty() {
-        let blind = cannot_unwind_ranges(exception_index);
+        let mut blind = cannot_unwind_ranges(exception_index);
         for (base, code) in regions {
+            // Code before the first entry of a region is listed by nothing,
+            // so it is searched as a region with no index.
+            let end = base + code.len() as u64;
+            let first = exception_index
+                .iter()
+                .map(|entry| entry.address)
+                .filter(|address| (*base..end).contains(address))
+                .min()
+                .unwrap_or(end);
+            if first > *base {
+                starts.insert((*base, Source::AfterReturn));
+                blind.push(*base..first);
+            }
             for address in call_targets(arch, code, *base) {
                 starts.insert((address, Source::CallTarget));
             }
-            for address in starts_after_returns(arch, code, *base) {
-                if blind.iter().any(|range| range.contains(&address))
-                    && opens_a_frame(arch, code, *base, address)
-                {
+            for address in starts_after_returns_in(arch, code, *base, memory) {
+                if blind.iter().any(|range| range.contains(&address)) {
                     starts.insert((address, Source::AfterReturn));
                 }
             }
@@ -174,7 +236,7 @@ pub fn recover_from_regions(
         for address in function_entries(arch, code, *base) {
             starts.insert((address, Source::Entry));
         }
-        for address in starts_after_returns(arch, code, *base) {
+        for address in starts_after_returns_in(arch, code, *base, memory) {
             starts.insert((address, Source::AfterReturn));
         }
         // A region begins with a function unless something says otherwise.
@@ -238,6 +300,97 @@ fn build_functions(
     out
 }
 
+/// Find the unwind index in a raw image, which a flash dump copies along
+/// with the code.
+///
+/// Nothing says where it is, but it is easy to recognize: entries of two
+/// words, the first an offset from itself to a function of the image, in
+/// rising order, and the second `EXIDX_CANTUNWIND`, an unwind description
+/// held inline with its top bit set, or an offset to one elsewhere in the
+/// image. A run of [`FEWEST_INDEX_ENTRIES`] such entries does not happen by
+/// chance.
+///
+/// Measured on tinyxml2 for ARM as a raw image, the scan without it joined
+/// destructors and short functions that follow a call that does not return.
+pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<IndexEntry> {
+    /// The fewest entries a run needs to be taken for an index.
+    const FEWEST_INDEX_ENTRIES: usize = 16;
+    /// The personalities an inline description can name: 0, 1 and 2.
+    const INLINE_PERSONALITIES: core::ops::RangeInclusive<u32> = 0x80..=0x82;
+
+    if arch.unwind_section().is_none() {
+        return Vec::new();
+    }
+    let end = base + data.len() as u64;
+    let in_image = |address: u64| address >= base && address < end;
+    let word = |offset: usize| {
+        data.get(offset..offset + 4)
+            .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+    let prel31 = |offset: usize, value: u32| {
+        (value & 0x8000_0000 == 0)
+            .then(|| (base + offset as u64).wrapping_add(sign_extend_31(value) as u64))
+    };
+
+    // The entry at `offset`, if it can be one.
+    let entry = |offset: usize| -> Option<IndexEntry> {
+        let (first, second) = (word(offset)?, word(offset + 4)?);
+        let address = prel31(offset, first).filter(|&address| in_image(address))?;
+        if !address.is_multiple_of(4) {
+            return None;
+        }
+        // The entry names the first instruction of a function, which runs
+        // always, as almost every ARM instruction does: its top four bits
+        // are `0xE`. A table of small numbers otherwise reads as an index.
+        let first_instruction = word(usize::try_from(address - base).ok()?)?;
+        if first_instruction >> 28 != 0xe {
+            return None;
+        }
+        let unwinding = match second {
+            EXIDX_CANTUNWIND => Unwinding::CannotUnwind,
+            inline if INLINE_PERSONALITIES.contains(&(inline >> 24)) => Unwinding::Described,
+            elsewhere => {
+                prel31(offset + 4, elsewhere).filter(|&address| in_image(address))?;
+                Unwinding::Described
+            }
+        };
+        Some(IndexEntry { address, unwinding })
+    };
+
+    let mut found = Vec::new();
+    let mut offset = 0;
+    while offset + EXIDX_ENTRY_LEN <= data.len() {
+        let run: Vec<IndexEntry> = (offset..data.len())
+            .step_by(EXIDX_ENTRY_LEN)
+            .map_while(entry)
+            .scan(None, |previous: &mut Option<u64>, entry| {
+                let rising = previous.is_none_or(|previous| entry.address > previous);
+                *previous = Some(entry.address);
+                rising.then_some(entry)
+            })
+            .collect();
+        // An entry names a function, never the table itself. Zero fill
+        // reads as a run of entries that each point at themselves.
+        let span = base + offset as u64..base + (offset + run.len() * EXIDX_ENTRY_LEN) as u64;
+        let outside = run.iter().all(|entry| !span.contains(&entry.address));
+        // A table of one repeated number reads as entries whose targets rise
+        // eight bytes at a time, in step with the entries: on Lua for ARM, 23
+        // such pointed into the middle of `.text`. Functions of two
+        // instructions are not that common.
+        let in_step = run
+            .windows(2)
+            .filter(|pair| pair[1].address - pair[0].address == EXIDX_ENTRY_LEN as u64)
+            .count();
+        if run.len() >= FEWEST_INDEX_ENTRIES && outside && in_step * 2 <= run.len() {
+            offset += run.len() * EXIDX_ENTRY_LEN;
+            found.extend(run);
+        } else {
+            offset += 4;
+        }
+    }
+    found
+}
+
 /// Read function addresses from the unwind index.
 ///
 /// The architecture names the section, and reports `None` when its ABI has no
@@ -253,15 +406,6 @@ fn build_functions(
 /// In a relocatable object the field holds the target directly, because the
 /// relocation that would make it relative has not been applied. Both readings
 /// are tried, and the one that lands inside a code section wins.
-/// Report whether the instruction at `address` makes a frame.
-fn opens_a_frame(arch: &dyn Arch, code: &[u8], base: u64, address: u64) -> bool {
-    let Some(offset) = address.checked_sub(base).and_then(|offset| usize::try_from(offset).ok())
-    else {
-        return false;
-    };
-    arch.decode(code, offset, base).is_ok_and(|insn| arch.is_prologue(&insn))
-}
-
 /// The address ranges that entries which cannot unwind cover: from each such
 /// entry to the next entry, or to the end of the address space.
 fn cannot_unwind_ranges(index: &[IndexEntry]) -> Vec<core::ops::Range<u64>> {
@@ -373,7 +517,8 @@ fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     let end = base + code.len() as u64;
 
     // A pool word that decodes as a call names a target made of data bits.
-    let pool = data_words(arch, code, base, &insns);
+    let regions = [(base, code)];
+    let pool = data_words(arch, &Memory::new(&regions), base..end, &insns);
 
     // A string decodes as instructions too, and on ARM it often reads as a
     // conditional call: `blvs` is `k` in its top byte. Measured on Lua for
@@ -416,13 +561,25 @@ fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
 /// the count from ten recovered functions to the four that exist, missing
 /// none. On a vendor firmware image it removes 104 of 144 candidate
 /// boundaries.
+#[cfg(test)]
 fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
+    let regions = [(base, code)];
+    starts_after_returns_in(arch, code, base, &Memory::new(&regions))
+}
+
+/// [`starts_after_returns`], where `memory` holds what else the binary loads.
+fn starts_after_returns_in(
+    arch: &dyn Arch,
+    code: &[u8],
+    base: u64,
+    memory: &Memory<'_>,
+) -> Vec<u64> {
     let (insns, _) = decode_all(arch, code, base);
     let end = base + code.len() as u64;
 
     // Pool words are data. Read as code they are a random return or branch,
     // which moves with their values from one release to the next.
-    let pool = data_words(arch, code, base, &insns);
+    let pool = data_words(arch, memory, base..end, &insns);
     let is_code = |insn: &&Insn| !pool.contains(&insn.address);
 
     // Every branch, as (from, to, how). A jump through a table picks one
@@ -435,9 +592,10 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         InsnKind::Jump { target: Some(target) } => Some((insn.address, target, Transfer::Always)),
         _ => None,
     });
-    let through_tables = arch.jump_tables(code, base, &insns).into_iter().flat_map(|table| {
-        table.targets.into_iter().map(move |target| (table.jump, target, Transfer::Conditional))
-    });
+    let through_tables =
+        arch.jump_tables(memory, base..end, &insns).into_iter().flat_map(|table| {
+            table.targets.into_iter().map(move |target| (table.jump, target, Transfer::Conditional))
+        });
     let mut all_branches: Vec<(u64, u64, Transfer)> = direct.chain(through_tables).collect();
     all_branches.sort_unstable_by_key(|&(from, to, _)| (from, to));
 
@@ -484,13 +642,19 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     // counts, which is one with no sure start between it and the return. In
     // a raw image, data before the code decodes as branches that cross
     // every return: measured on zlib for MIPS, these hid 48 of 123 functions.
+    //
+    // The same holds for where it lands: a branch to the next sure start or
+    // past it leaves the function, as a tail call does. Measured on tinyxml2
+    // for ARM as a raw image, `b` to a PLT stub past the end of `.text`
+    // otherwise crossed the return of every function after it.
     let is_internal = |address: u64| {
         let function_start = anchors.range(..=address).next_back().copied().unwrap_or(base);
+        let next_start = anchors.range(address + 1..).next().copied().unwrap_or(u64::MAX);
         let first = branches.partition_point(|&(from, _)| from < function_start);
         branches[first..]
             .iter()
             .take_while(|&&(from, _)| from <= address)
-            .any(|&(_, to)| to > address)
+            .any(|&(_, to)| to > address && to < next_start)
     };
 
     let mut out = Vec::new();
@@ -578,7 +742,11 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         // Otherwise only a return that nothing branches across ends a
         // function. A jump without a prologue after it is a tail call or a
         // loop, which stays inside.
-        if insn.kind == InsnKind::Return && !is_internal(insn.address) {
+        let opens = usize::try_from(following.address - base)
+            .ok()
+            .and_then(|offset| code.get(offset..))
+            .is_some_and(|word| arch.may_open_function(word));
+        if insn.kind == InsnKind::Return && !is_internal(insn.address) && opens {
             out.push(following.address);
         }
     }
@@ -605,8 +773,13 @@ fn follows_a_branch(earlier: &[Insn], arch: &dyn Arch) -> bool {
 
 /// The words of a region that are data among the code: literal pools, and
 /// the tables that jumps go through.
-fn data_words(arch: &dyn Arch, code: &[u8], base: u64, insns: &[Insn]) -> BTreeSet<u64> {
-    let tables = arch.jump_tables(code, base, insns);
+fn data_words(
+    arch: &dyn Arch,
+    memory: &Memory<'_>,
+    code: core::ops::Range<u64>,
+    insns: &[Insn],
+) -> BTreeSet<u64> {
+    let tables = arch.jump_tables(memory, code, insns);
     let table_words =
         tables.iter().flat_map(|table| table.words.clone().step_by(arch.instruction_width()));
     arch.literal_pool_words(insns).into_iter().chain(table_words).collect()

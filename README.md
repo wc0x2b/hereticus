@@ -46,8 +46,9 @@ $ hereticus --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
 │ sub_80208b78 │ changed        │  0.75 │ 0/0/1 │ -       │ similar    │
 ╰──────────────┴────────────────┴───────┴───────┴─────────┴────────────╯
 
-64 matched (54 unchanged, 10 changed), 0 gone, 0 new
-2 changed only a constant, hidden. Use --show-retouched to list them.
+68 matched (58 unchanged, 10 changed), 0 gone, 0 new
+1 changed only a constant, hidden. Use --show-retouched to list them.
+1 data region changed, hidden. Use --show-data to list them.
 ```
 
 The `+/-/~` column counts the instructions the edit added, removed and rewrote.

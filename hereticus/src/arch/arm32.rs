@@ -11,8 +11,10 @@ use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg};
 
-use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable};
-use crate::address::{AddressSpace, ConstantKind};
+use core::ops::Range;
+
+use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory};
+use crate::address::{AddressSpace, ConstantKind, Contents};
 
 /// Every A32 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
@@ -372,6 +374,38 @@ impl Arch for Arm32 {
         usize::from(reserves_stack)
     }
 
+    /// Almost every ARM instruction runs always: its top four bits are
+    /// `0xE`, or `0xF` for the few with no condition. Data has no such
+    /// bias. Measured on zlib, Lua and tinyxml2 for ARM, at least 40% of the
+    /// words of every function of 16 words or more are such, and 65% for all
+    /// but one in twenty. Their symbol tables, strings, `.rodata`, relocations
+    /// and unwind tables reach at most 6%. So a quarter is the line.
+    ///
+    /// Below 16 words a function is not judged: a stub can look like
+    /// anything.
+    fn contents(&self, code: &[u8], _insns: &[Insn], _space: &AddressSpace) -> Contents {
+        const FEWEST_WORDS: usize = 16;
+
+        let words: Vec<u32> = code
+            .chunks_exact(INSN_WIDTH)
+            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect();
+        if words.len() < FEWEST_WORDS {
+            return Contents::Code;
+        }
+        let always = words.iter().filter(|&&word| word >> 28 >= 0xe).count();
+        if always * 4 < words.len() { Contents::Data } else { Contents::Code }
+    }
+
+    /// A function opens unconditionally: nothing has set the flags a
+    /// condition would test. Words of a pool mostly decode as conditional
+    /// instructions, `0x00000000` as `andeq`. Measured on `factorial` in the
+    /// `-O2` fixture, the constants `vld1` loads after the return otherwise
+    /// started a function.
+    fn may_open_function(&self, word: &[u8]) -> bool {
+        word.get(3).is_some_and(|&top| top >= 0xe0)
+    }
+
     fn data_among_code(&self) -> DataAmongCode {
         DataAmongCode::LiteralPools
     }
@@ -409,11 +443,11 @@ impl Arch for Arm32 {
     /// ```
     ///
     /// The cases follow the table, so it ends where the first case starts.
-    fn jump_tables(&self, code: &[u8], base: u64, insns: &[Insn]) -> Vec<JumpTable> {
+    fn jump_tables(&self, memory: &Memory<'_>, code: Range<u64>, insns: &[Insn]) -> Vec<JumpTable> {
         insns
             .iter()
             .enumerate()
-            .filter_map(|(index, jump)| read_jump_table(code, base, &insns[..index], jump))
+            .filter_map(|(index, jump)| read_jump_table(memory, &code, &insns[..index], jump))
             .collect()
     }
 
@@ -453,7 +487,12 @@ impl Arch for Arm32 {
 
 /// Read the table behind `add pc, rB, rX`, where `earlier` holds the
 /// instructions before the jump.
-fn read_jump_table(code: &[u8], base: u64, earlier: &[Insn], jump: &Insn) -> Option<JumpTable> {
+fn read_jump_table(
+    memory: &Memory<'_>,
+    code: &Range<u64>,
+    earlier: &[Insn],
+    jump: &Insn,
+) -> Option<JumpTable> {
     /// How far back the load of the table and its address may be. GCC puts
     /// them right before the jump, but can move other work between.
     const LOOK_BACK: usize = 16;
@@ -497,13 +536,13 @@ fn read_jump_table(code: &[u8], base: u64, earlier: &[Insn], jump: &Insn) -> Opt
     }
     let table = address.address.checked_add(8)?.checked_add(parse_hex(immediate)?)?;
 
-    let end = base.checked_add(code.len() as u64)?;
+    let (base, end) = (code.start, code.end);
     let mut targets = Vec::new();
     let mut first_case = end;
     let mut word = table;
     while word < first_case && targets.len() < MOST_CASES {
-        let offset = usize::try_from(word.checked_sub(base)?).ok()?;
-        let bytes = code.get(offset..offset + INSN_WIDTH)?;
+        // The end of the section ends the table.
+        let Some(bytes) = memory.bytes(word, INSN_WIDTH) else { break };
         let delta = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let target = table.checked_add_signed(i64::from(delta))?;
         // A case lies inside the code, on a whole word, and outside the
@@ -809,7 +848,8 @@ mod tests {
 
     fn tables_of(code: &[u8]) -> Vec<JumpTable> {
         let (insns, _) = crate::arch::decode_all(&Arm32, code, 0);
-        Arm32.jump_tables(code, 0, &insns)
+        let regions = [(0, code)];
+        Arm32.jump_tables(&Memory::new(&regions), 0..code.len() as u64, &insns)
     }
 
     /// Each entry is an offset from the table, and the cases follow it.
@@ -850,6 +890,23 @@ mod tests {
         let mut code = switch_code(&[0x08, 0x10]);
         code[4..8].copy_from_slice(&0xe591_0000_u32.to_le_bytes()); // ldr r0, [r1]
         assert!(tables_of(&code).is_empty());
+    }
+
+    /// Code runs always; text and tables do not.
+    #[test]
+    fn tells_code_from_data() {
+        let space = AddressSpace::none();
+        let judge = |words: &[u32]| {
+            let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+            let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0);
+            Arm32.contents(&code, &insns, &space)
+        };
+        let code = [0xe92d_4010_u32, 0xe1a0_4000, 0x0a00_0002, 0xe594_0000, 0xe8bd_8010];
+        let text = u32::from_le_bytes(*b"text");
+        assert_eq!(judge(&code.repeat(4)), Contents::Code);
+        assert_eq!(judge(&[text; 16]), Contents::Data);
+        assert_eq!(judge(&[0x0000_0010; 16]), Contents::Data, "a table of small offsets");
+        assert_eq!(judge(&[text; 15]), Contents::Code, "too short to judge");
     }
 
     /// The PLT stub of `StrPair::Reset` in tinyxml2 for ARM, as LLD wrote
