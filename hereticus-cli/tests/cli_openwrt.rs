@@ -162,3 +162,29 @@ fn slow_warns_about_a_mips_kernel_base_a_page_off() {
     assert!(stderr.contains("may not load at 0x80003000"), "got {stderr}");
     assert!(stderr.contains("58113 do at 0x80002000"), "got {stderr}");
 }
+
+/// Across a major version, data regions go and come as well as change. They
+/// are hidden with the changed ones, and `--show-data` lists each.
+#[test]
+fn slow_hides_the_data_regions_that_go_or_come() {
+    let file =
+        |release: &str| format!("fixtures/build/openwrt/mipsbe-eap245v3-kernel-{release}.bin");
+    let run = |extra: &[&str]| {
+        let output = hereticus()
+            .args(["--progress", "never", "--raw", "--base", "0x80060000", "--arch", "mips32-be"])
+            .args(extra)
+            .args([file("21.02.7"), file("22.03.2")])
+            .output()
+            .expect("the tool runs");
+        String::from_utf8(output.stdout).expect("the report is text")
+    };
+
+    let hidden = run(&[]);
+    assert!(!hidden.contains("gone data") && !hidden.contains("new data"));
+    assert!(hidden.contains("8 data regions changed, hidden. Use --show-data to list them."));
+
+    let shown = run(&["--show-data"]);
+    let listed =
+        ["changed data", ": gone data", ": new data"].map(|word| shown.matches(word).count());
+    assert_eq!(listed, [3, 3, 2], "changed, gone and new data regions");
+}

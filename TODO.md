@@ -29,13 +29,6 @@ and v2 headers and the lzma-loader to reach a stub and a kernel. A user has
 to do the same by hand before the tool can read a vendor image. Read these
 containers directly, and add the formats still missing, such as AVM EVA.
 
-## Hide gone and new data regions
-
-`--show-data` hides a matched region that looks like data, but not one that
-is gone or new. In a raw image of a shared library the headers and
-`.rodata` show as removed and added functions. Judge those with
-`Arch::contents` too, and hide them the same way.
-
 ## Cache the fixtures in CI
 
 The tests now download about 150 MB of OpenWrt images and build libraries

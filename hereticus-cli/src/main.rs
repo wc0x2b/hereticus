@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
 use console::Term;
+use hereticus::address::Contents;
 use hereticus::matching::{
     Changed, Confidence, Diff, DiffLine, EditKind, EditKinds, Edits, Match, Options, Phase,
     Progress, UseNames, diff_reporting, instruction_diff,
@@ -524,6 +525,23 @@ fn is_interesting(pair: &Match, hidden: Hidden) -> bool {
     }
 }
 
+/// Report whether a function that went or came should appear.
+///
+/// A raw image holds its headers and read-only data among its code, and they
+/// move when the code before them grows. Data goes and comes as code does, so
+/// it is hidden as a changed data region is.
+fn is_shown_unmatched(contents: Contents, hidden: Hidden) -> bool {
+    contents == Contents::Code || hidden.data == DataRegions::Show
+}
+
+/// The word that says a function went, or came, for what it holds.
+fn unmatched_word(word: &'static str, contents: Contents) -> String {
+    match contents {
+        Contents::Code => word.to_string(),
+        Contents::Data => format!("{word} data"),
+    }
+}
+
 /// Report whether a pair differs in nothing but its constants.
 ///
 /// The score and the edit counts must both be clean. A function that rewrote
@@ -820,18 +838,24 @@ fn print_text(
 
     // Only the status word takes a color, as in the `CHANGE` column. The name
     // beside it stays plain, so the word is what the eye finds.
-    let gone = paint.pick(REMOVED_COLOR).colorize("gone");
-    let new = paint.pick(ADDED_COLOR).colorize("new");
-    for index in &diff.removed {
-        let name = name_of(before, *index);
-        match near_miss_note(diff, *index, after, near_miss_floor) {
+    for (index, contents) in diff.removed_with_contents() {
+        if !is_shown_unmatched(contents, hidden) {
+            continue;
+        }
+        let name = name_of(before, index);
+        let gone = paint.pick(REMOVED_COLOR).colorize(unmatched_word("gone", contents));
+        match near_miss_note(diff, index, after, near_miss_floor) {
             Some(note) => println!("{name}: {gone}, {note}"),
             None => println!("{name}: {gone}"),
         }
     }
-    for index in &diff.added {
-        let name = name_of(after, *index);
-        match added_near_miss_note(diff, *index, before, near_miss_floor) {
+    for (index, contents) in diff.added_with_contents() {
+        if !is_shown_unmatched(contents, hidden) {
+            continue;
+        }
+        let name = name_of(after, index);
+        let new = paint.pick(ADDED_COLOR).colorize(unmatched_word("new", contents));
+        match added_near_miss_note(diff, index, before, near_miss_floor) {
             Some(note) => println!("{name}: {new}, {note}"),
             None => println!("{name}: {new}"),
         }
@@ -895,23 +919,31 @@ fn print_compact(
             pair.edits.edited,
         );
     }
-    for index in &diff.removed {
+    for (index, contents) in diff.removed_with_contents() {
+        if !show_all && !is_shown_unmatched(contents, hidden) {
+            continue;
+        }
         // The fourth column holds the near-miss score, so a script reading
         // this format finds it where a matched pair keeps its score.
-        let miss = diff.near_miss(*index);
+        let miss = diff.near_miss(index);
         let closest =
             miss.and_then(|miss| miss.best).map(|best| name_of(after, best)).unwrap_or_default();
         let score = miss.map_or(0.0, |miss| miss.score);
-        println!("gone\t{}\t{closest}\t{score:.2}\t\t\t", name_of(before, *index));
+        let gone = unmatched_word("gone", contents);
+        println!("{gone}\t{}\t{closest}\t{score:.2}\t\t\t", name_of(before, index));
     }
-    for index in &diff.added {
+    for (index, contents) in diff.added_with_contents() {
+        if !show_all && !is_shown_unmatched(contents, hidden) {
+            continue;
+        }
         // The candidate on the first binary and its score go in the same two
         // columns a removed line uses, so one reader parses both.
-        let miss = diff.added_near_miss(*index);
+        let miss = diff.added_near_miss(index);
         let closest =
             miss.and_then(|miss| miss.best).map(|best| name_of(before, best)).unwrap_or_default();
         let score = miss.map_or(0.0, |miss| miss.score);
-        println!("new\t{closest}\t{}\t{score:.2}\t\t\t", name_of(after, *index));
+        let new = unmatched_word("new", contents);
+        println!("{new}\t{closest}\t{}\t{score:.2}\t\t\t", name_of(after, index));
     }
 }
 
@@ -927,8 +959,11 @@ fn summarize(diff: &Diff, hidden: Hidden) {
     } else {
         0
     };
+    // A data region that went or came is a change too, so it counts here.
     let hidden_data = if hidden.data == DataRegions::Hide {
-        diff.changed().filter(|pair| pair.changed == Changed::Data).count()
+        let changed = diff.changed().filter(|pair| pair.changed == Changed::Data).count();
+        let unmatched = diff.removed_contents.iter().chain(&diff.added_contents);
+        changed + unmatched.filter(|&&contents| contents == Contents::Data).count()
     } else {
         0
     };
@@ -1114,6 +1149,26 @@ mod tests {
 
     /// What the report hides when no flag asks for more.
     const DEFAULT: Hidden = Hidden { retouched: Retouched::Hide, data: DataRegions::Hide };
+
+    /// Data that went or came is hidden by the flag that hides changed data,
+    /// and code never is.
+    #[test]
+    fn unmatched_data_is_hidden_as_changed_data_is() {
+        assert!(is_shown_unmatched(Contents::Code, DEFAULT));
+        assert!(!is_shown_unmatched(Contents::Data, DEFAULT));
+        assert!(is_shown_unmatched(Contents::Data, Hidden { data: DataRegions::Show, ..DEFAULT }));
+        assert!(
+            !is_shown_unmatched(Contents::Data, Hidden { retouched: Retouched::Show, ..DEFAULT }),
+            "--show-retouched does not show data"
+        );
+    }
+
+    #[test]
+    fn unmatched_data_says_it_is_data() {
+        assert_eq!(unmatched_word("gone", Contents::Code), "gone");
+        assert_eq!(unmatched_word("gone", Contents::Data), "gone data");
+        assert_eq!(unmatched_word("new", Contents::Data), "new data");
+    }
 
     /// Only unchanged functions and quiet changes are hidden when a reader
     /// wants changes.

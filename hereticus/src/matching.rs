@@ -305,6 +305,16 @@ pub struct Diff {
     pub removed: Vec<usize>,
     /// Functions of the second binary with no counterpart.
     pub added: Vec<usize>,
+    /// Whether each removed function holds code or data, in the same order
+    /// as [`Diff::removed`].
+    ///
+    /// A raw image holds its headers and read-only data among its code, and
+    /// they move when the code before them grows, so data goes and comes as
+    /// code does. See [`crate::arch::Arch::contents`].
+    pub removed_contents: Vec<Contents>,
+    /// Whether each added function holds code or data, in the same order as
+    /// [`Diff::added`].
+    pub added_contents: Vec<Contents>,
     /// For each removed function, the candidate that came closest.
     ///
     /// In the same order as [`Diff::removed`].
@@ -332,6 +342,16 @@ impl Diff {
     /// The near miss for an added function, if one was found.
     pub fn added_near_miss(&self, after: usize) -> Option<&NearMiss> {
         self.added_near_misses.iter().find(|miss| miss.unmatched == after)
+    }
+
+    /// Removed functions, each with what it holds.
+    pub fn removed_with_contents(&self) -> impl Iterator<Item = (usize, Contents)> + '_ {
+        self.removed.iter().copied().zip(self.removed_contents.iter().copied())
+    }
+
+    /// Added functions, each with what it holds.
+    pub fn added_with_contents(&self) -> impl Iterator<Item = (usize, Contents)> + '_ {
+        self.added.iter().copied().zip(self.added_contents.iter().copied())
     }
 }
 
@@ -676,7 +696,18 @@ impl Cascade<'_> {
             self.near_misses(&added, &self.right, &removed, &self.left, progress);
         progress.finish();
 
-        Diff { removed, added, near_misses, added_near_misses, matched: self.matched }
+        let removed_contents = removed.iter().map(|&index| self.left[index].contents).collect();
+        let added_contents = added.iter().map(|&index| self.right[index].contents).collect();
+
+        Diff {
+            removed,
+            added,
+            removed_contents,
+            added_contents,
+            near_misses,
+            added_near_misses,
+            matched: self.matched,
+        }
     }
 
     /// Find the closest candidate for each function that stayed unmatched.
@@ -2214,6 +2245,41 @@ mod tests {
                 code: code.to_vec(),
             }],
         }
+    }
+
+    /// A function that returns 1, at 0x80002000, big endian.
+    fn returns_one() -> Function {
+        let words = [0x2402_0001u32, 0x03e0_0008, 0];
+        Function {
+            name: String::new(),
+            address: 0x8000_2000,
+            code: words.iter().flat_map(|word| word.to_be_bytes()).collect(),
+        }
+    }
+
+    /// A table that went or came says it is data, and code says it is code.
+    #[test]
+    fn a_table_that_goes_or_comes_is_data() {
+        let with_table = {
+            let mut binary = raw_mips(&pointer_table(0x8000_1000));
+            binary.functions.push(returns_one());
+            binary
+        };
+        let without = crate::obj::Binary { functions: vec![returns_one()], ..raw_mips(&[]) };
+        let options = Options { threshold: 0.0, use_names: UseNames::No };
+
+        let gone = diff_with(&with_table, &without, options);
+        assert_eq!(gone.removed_with_contents().collect::<Vec<_>>(), [(0, Contents::Data)]);
+        assert!(gone.added.is_empty() && gone.added_contents.is_empty());
+
+        let new = diff_with(&without, &with_table, options);
+        assert_eq!(new.added_with_contents().collect::<Vec<_>>(), [(0, Contents::Data)]);
+        assert!(new.removed.is_empty() && new.removed_contents.is_empty());
+
+        // Code that goes is code.
+        let only_table = raw_mips(&pointer_table(0x8000_1000));
+        let code_gone = diff_with(&with_table, &only_table, options);
+        assert_eq!(code_gone.removed_with_contents().collect::<Vec<_>>(), [(1, Contents::Code)]);
     }
 
     /// A table whose pointers moved is reported as changed data, not as a
