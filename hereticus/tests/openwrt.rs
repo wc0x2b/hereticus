@@ -9,6 +9,12 @@
 //! | Netgear EX6100v2 | ARM32 zImage stub and kernel | `0x80208000` |
 //! | TP-Link EAP245 v3 | MIPS32 big-endian lzma-loader and kernel | `0x80060000` |
 //! | Netgear R6220 | MIPS32 little-endian lzma-loader and kernel | `0x80001000` |
+//! | Marvell A385-DB-AP | ARM32 zImage stub and kernel, a Cortex-A9 | `0x8000` |
+//! | TP-Link VR200 | MIPS32 big-endian kernel, a Lantiq xRX200 | `0x80002000` |
+//! | GL.iNet GL-MT300N v2 | MIPS32 little-endian kernel, an MT7628 | `0x80000000` |
+//!
+//! An ARM kernel is compared at the virtual address it is linked at,
+//! `0xc0000000` up, rather than where the bootloader loads it.
 //!
 //! Nothing here says which answer is right: no symbol table exists to check
 //! against. These tests record what the tool reports, so a change to it is
@@ -36,12 +42,51 @@ use common::render;
 struct Board {
     name: &'static str,
     isa: Isa,
-    base: u64,
+    /// Where the stub runs: the address the bootloader loads it at.
+    stub_base: u64,
+    /// Where the kernel is linked. An ARM kernel is linked at its virtual
+    /// address, `0xc0000000` up, not where the bootloader puts it; measured
+    /// with the base check, the virtual base finds five times the pointers.
+    kernel_base: u64,
 }
 
-const EX6100V2: Board = Board { name: "arm-ex6100v2", isa: Isa::Arm32, base: 0x8020_8000 };
-const EAP245V3: Board = Board { name: "mipsbe-eap245v3", isa: Isa::Mips32Be, base: 0x8006_0000 };
-const R6220: Board = Board { name: "mipsel-r6220", isa: Isa::Mips32, base: 0x8000_1000 };
+impl Board {
+    fn base(self, part: Part) -> u64 {
+        match part {
+            Part::Stub => self.stub_base,
+            Part::Kernel => self.kernel_base,
+        }
+    }
+}
+
+const EX6100V2: Board = Board {
+    name: "arm-ex6100v2",
+    isa: Isa::Arm32,
+    stub_base: 0x8020_8000,
+    kernel_base: 0xc020_8000,
+};
+const EAP245V3: Board = Board {
+    name: "mipsbe-eap245v3",
+    isa: Isa::Mips32Be,
+    stub_base: 0x8006_0000,
+    kernel_base: 0x8006_0000,
+};
+const R6220: Board = Board {
+    name: "mipsel-r6220",
+    isa: Isa::Mips32,
+    stub_base: 0x8000_1000,
+    kernel_base: 0x8000_1000,
+};
+const A385DBAP: Board =
+    Board { name: "arm-a385dbap", isa: Isa::Arm32, stub_base: 0x8000, kernel_base: 0xc000_8000 };
+/// Kernel only: the bootloader decompresses the kernel itself. Lantiq loads
+/// at 0x80002000: there, 58113 of 95023 `jal` targets land on a prologue,
+/// against about 2000 at the neighbouring pages.
+const VR200: Board =
+    Board { name: "mipsbe-vr200", isa: Isa::Mips32Be, stub_base: 0, kernel_base: 0x8000_2000 };
+/// Kernel only, as above.
+const MT300NV2: Board =
+    Board { name: "mipsel-mt300nv2", isa: Isa::Mips32, stub_base: 0, kernel_base: 0x8000_0000 };
 
 /// The two parts of each image the tests compare.
 #[derive(Clone, Copy, Debug)]
@@ -86,7 +131,7 @@ struct Comparison {
 }
 
 fn compare(board: Board, part: Part) -> Comparison {
-    compare_at(board, part, board.base)
+    compare_at(board, part, board.base(part))
 }
 
 fn compare_at(board: Board, part: Part, base: u64) -> Comparison {
@@ -153,6 +198,7 @@ fn swap_words(data: &[u8]) -> Vec<u8> {
 #[case::arm_ex6100v2(EX6100V2)]
 #[case::mipsbe_eap245v3(EAP245V3)]
 #[case::mipsel_r6220(R6220)]
+#[case::arm_a385dbap(A385DBAP)]
 fn the_stub_report_is_locked(#[case] board: Board) {
     let comparison = compare(board, Part::Stub);
     let report = render(&comparison.diff, &comparison.before, &comparison.after);
@@ -168,6 +214,7 @@ fn the_stub_report_is_locked(#[case] board: Board) {
 #[case::arm_ex6100v2(EX6100V2, [69, 69], &[(Changed::No, 58), (Changed::InDetail, 3), (Changed::Yes, 7), (Changed::Unreadable, 1)], 0, 0)]
 #[case::mipsbe_eap245v3(EAP245V3, [8, 8], &[(Changed::No, 6), (Changed::InDetail, 2)], 0, 0)]
 #[case::mipsel_r6220(R6220, [8, 8], &[(Changed::No, 6), (Changed::InDetail, 2)], 0, 0)]
+#[case::arm_a385dbap(A385DBAP, [155, 155], &[(Changed::No, 144), (Changed::InDetail, 4), (Changed::Yes, 7)], 0, 0)]
 fn the_stub_changes_are_known(
     #[case] board: Board,
     #[case] functions: [usize; 2],
@@ -217,6 +264,7 @@ fn the_mips_stub_changes_sit_where_expected(#[case] board: Board, #[case] expect
 #[case::arm_ex6100v2(EX6100V2)]
 #[case::mipsbe_eap245v3(EAP245V3)]
 #[case::mipsel_r6220(R6220)]
+#[case::arm_a385dbap(A385DBAP)]
 fn every_changed_stub_byte_is_reported(#[case] board: Board) {
     let comparison = compare(board, Part::Stub);
     assert_eq!(comparison.before_bytes.len(), comparison.after_bytes.len());
@@ -238,7 +286,7 @@ fn every_changed_stub_byte_is_reported(#[case] board: Board) {
         .zip(&comparison.after_bytes)
         .enumerate()
         .filter(|(_, (before, after))| before != after)
-        .map(|(offset, _)| board.base + offset as u64);
+        .map(|(offset, _)| board.stub_base + offset as u64);
 
     let mut count = 0;
     for address in changed_bytes {
@@ -257,6 +305,7 @@ fn every_changed_stub_byte_is_reported(#[case] board: Board) {
 #[case::arm_ex6100v2(EX6100V2)]
 #[case::mipsbe_eap245v3(EAP245V3)]
 #[case::mipsel_r6220(R6220)]
+#[case::arm_a385dbap(A385DBAP)]
 fn no_stub_pair_with_different_bytes_reads_as_unchanged(#[case] board: Board) {
     assert_eq!(unreported_byte_changes(&compare(board, Part::Stub)), 0);
 }
@@ -266,11 +315,12 @@ fn no_stub_pair_with_different_bytes_reads_as_unchanged(#[case] board: Board) {
 #[case::arm_ex6100v2(EX6100V2)]
 #[case::mipsbe_eap245v3(EAP245V3)]
 #[case::mipsel_r6220(R6220)]
+#[case::arm_a385dbap(A385DBAP)]
 fn a_stub_compared_with_itself_reports_nothing(
     #[case] board: Board,
     #[values(BEFORE, AFTER)] release: &str,
 ) {
-    let binary = Binary::parse_raw(&read(board, Part::Stub, release), board.base, board.isa)
+    let binary = Binary::parse_raw(&read(board, Part::Stub, release), board.stub_base, board.isa)
         .expect("the image must read");
     let diff = diff_with(&binary, &binary, blind());
 
@@ -288,12 +338,13 @@ fn a_stub_compared_with_itself_reports_nothing(
 #[case::arm_ex6100v2(EX6100V2)]
 #[case::mipsbe_eap245v3(EAP245V3)]
 #[case::mipsel_r6220(R6220)]
+#[case::arm_a385dbap(A385DBAP)]
 fn the_base_check_has_no_evidence_in_a_stub(
     #[case] board: Board,
     #[values(BEFORE, AFTER)] release: &str,
 ) {
     let data = read(board, Part::Stub, release);
-    assert_eq!(check_base(&data, board.base, board.isa.arch()), BaseFit::NoEvidence);
+    assert_eq!(check_base(&data, board.stub_base, board.isa.arch()), BaseFit::NoEvidence);
 }
 
 /// The base shifts every address in the report, and changes nothing else.
@@ -301,6 +352,7 @@ fn the_base_check_has_no_evidence_in_a_stub(
 #[case::arm_ex6100v2(EX6100V2)]
 #[case::mipsbe_eap245v3(EAP245V3)]
 #[case::mipsel_r6220(R6220)]
+#[case::arm_a385dbap(A385DBAP)]
 fn the_base_does_not_change_a_stub_report(#[case] board: Board) {
     let at_zero = compare_at(board, Part::Stub, 0);
     let at_base = compare(board, Part::Stub);
@@ -316,7 +368,7 @@ fn the_base_does_not_change_a_stub_report(#[case] board: Board) {
         found.sort_unstable();
         found
     };
-    assert_eq!(changed(&at_zero, 0), changed(&at_base, board.base));
+    assert_eq!(changed(&at_zero, 0), changed(&at_base, board.stub_base));
 }
 
 /// A big-endian stub, word swapped and read as little endian, reports the
@@ -328,8 +380,8 @@ fn a_mips_stub_reads_alike_in_either_byte_order() {
 
     let little_before = swap_words(&big.before_bytes);
     let little_after = swap_words(&big.after_bytes);
-    let before = Binary::parse_raw(&little_before, board.base, Isa::Mips32).unwrap();
-    let after = Binary::parse_raw(&little_after, board.base, Isa::Mips32).unwrap();
+    let before = Binary::parse_raw(&little_before, board.stub_base, Isa::Mips32).unwrap();
+    let after = Binary::parse_raw(&little_after, board.stub_base, Isa::Mips32).unwrap();
 
     assert_eq!(
         render(&diff_with(&before, &after, blind()), &before, &after),
@@ -380,8 +432,8 @@ fn check_kernel(board: Board, unreported: usize, base_fit: [BaseFit; 2]) {
     assert_eq!(unreported_byte_changes(&comparison), unreported, "{}", board.name);
     assert_eq!(
         [
-            check_base(&comparison.before_bytes, board.base, board.isa.arch()),
-            check_base(&comparison.after_bytes, board.base, board.isa.arch()),
+            check_base(&comparison.before_bytes, board.kernel_base, board.isa.arch()),
+            check_base(&comparison.after_bytes, board.kernel_base, board.isa.arch()),
         ],
         base_fit,
         "{}",
@@ -400,8 +452,8 @@ fn slow_the_arm_kernel_report_is_locked() {
         EX6100V2,
         6009,
         [
-            BaseFit::Plausible { pointers: 13223, examined: 1_948_430 },
-            BaseFit::Plausible { pointers: 13263, examined: 1_957_980 },
+            BaseFit::Plausible { pointers: 65274, examined: 1_804_835 },
+            BaseFit::Plausible { pointers: 65514, examined: 1_813_763 },
         ],
     );
 }
@@ -418,8 +470,8 @@ fn slow_the_big_endian_mips_kernel_report_is_locked() {
         EAP245V3,
         12978,
         [
-            BaseFit::Plausible { pointers: 47586, examined: 1_624_990 },
-            BaseFit::Plausible { pointers: 47778, examined: 1_634_158 },
+            BaseFit::Plausible { pointers: 47586, examined: 1_377_328 },
+            BaseFit::Plausible { pointers: 47778, examined: 1_385_296 },
         ],
     );
 }
@@ -431,8 +483,47 @@ fn slow_the_little_endian_mips_kernel_report_is_locked() {
         R6220,
         14649,
         [
-            BaseFit::Plausible { pointers: 50248, examined: 1_931_464 },
-            BaseFit::Plausible { pointers: 50444, examined: 1_941_370 },
+            BaseFit::Plausible { pointers: 50248, examined: 1_606_891 },
+            BaseFit::Plausible { pointers: 50444, examined: 1_615_796 },
+        ],
+    );
+}
+
+/// The Armada 385 kernel, a Cortex-A9.
+#[test]
+fn slow_the_armada_kernel_report_is_locked() {
+    check_kernel(
+        A385DBAP,
+        7134,
+        [
+            BaseFit::Plausible { pointers: 76052, examined: 2_107_105 },
+            BaseFit::Plausible { pointers: 76384, examined: 2_116_947 },
+        ],
+    );
+}
+
+/// The VR200 kernel, a big-endian Lantiq xRX200.
+#[test]
+fn slow_the_lantiq_kernel_report_is_locked() {
+    check_kernel(
+        VR200,
+        14512,
+        [
+            BaseFit::Plausible { pointers: 52265, examined: 1_630_772 },
+            BaseFit::Plausible { pointers: 52465, examined: 1_638_279 },
+        ],
+    );
+}
+
+/// The GL-MT300N v2 kernel, a little-endian MT7628.
+#[test]
+fn slow_the_mt7628_kernel_report_is_locked() {
+    check_kernel(
+        MT300NV2,
+        12520,
+        [
+            BaseFit::Plausible { pointers: 45805, examined: 1_327_211 },
+            BaseFit::Plausible { pointers: 45992, examined: 1_334_689 },
         ],
     );
 }
@@ -441,11 +532,16 @@ fn slow_the_little_endian_mips_kernel_report_is_locked() {
 /// missing file without saying so.
 #[test]
 fn every_firmware_file_is_present() {
-    for board in [EX6100V2, EAP245V3, R6220] {
+    for board in [EX6100V2, EAP245V3, R6220, A385DBAP] {
         for part in [Part::Stub, Part::Kernel] {
             for release in [BEFORE, AFTER] {
                 assert!(!read(board, part, release).is_empty());
             }
+        }
+    }
+    for board in [VR200, MT300NV2] {
+        for release in [BEFORE, AFTER] {
+            assert!(!read(board, Part::Kernel, release).is_empty());
         }
     }
 }
