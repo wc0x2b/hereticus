@@ -409,9 +409,14 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         .collect();
 
     // Where each branch lands, and every place it comes from.
-    let mut sources_of: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
-    for &(from, to) in &branches {
-        sources_of.entry(to).or_default().push(from);
+    let mut sources_of: BTreeMap<u64, Vec<(u64, Transfer)>> = BTreeMap::new();
+    for insn in insns.iter().filter(is_code) {
+        let (target, transfer) = match insn.kind {
+            InsnKind::Branch { target: Some(target) } => (target, Transfer::Conditional),
+            InsnKind::Jump { target: Some(target) } => (target, Transfer::Always),
+            _ => continue,
+        };
+        sources_of.entry(target).or_default().push((insn.address, transfer));
     }
 
     // A branch that starts at or before a return and lands after it proves
@@ -441,13 +446,17 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         // decodes as branches too, and these land anywhere. Measured on zlib
         // for MIPS, a word of `.rodata` "branched" to the start of
         // `inflateMark`, 126 KiB away.
-        let reached_here = |address: u64| {
+        let reached_by = |address: u64, accepted: &[Transfer]| {
             sources_of.get(&address).is_some_and(|sources| {
-                sources
-                    .iter()
-                    .any(|&from| from < insn.address && since.is_none_or(|since| from > since))
+                sources.iter().any(|&(from, transfer)| {
+                    from < insn.address
+                        && since.is_none_or(|since| from > since)
+                        && accepted.contains(&transfer)
+                })
             })
         };
+        let reached_here =
+            |address: u64| reached_by(address, &[Transfer::Conditional, Transfer::Always]);
 
         // Step over the delay slot, which belongs to the terminator rather
         // than to what follows, and then over any padding the linker put
@@ -459,9 +468,19 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
 
         let Some(following) = insns.get(next) else { continue };
 
-        // A prologue is a function start whatever precedes it. This is the
-        // stronger signal, so it is not subject to the spanning test: an
-        // error path that jumps backwards over the end of its own function
+        // Code reaches another function by a call or by an unconditional
+        // tail jump, never on a condition. So what a conditional branch of
+        // this function reaches is more of it, even a prologue: a compiler
+        // that returns early, before it makes a frame, puts the frame on the
+        // path the branch takes, as `gzgetc` in zlib for ARM does after its
+        // `bx lr`.
+        if reached_by(following.address, &[Transfer::Conditional]) {
+            continue;
+        }
+
+        // Otherwise a prologue is a function start whatever precedes it. This
+        // is the stronger signal, so it is not subject to the spanning test:
+        // an error path that jumps backwards over the end of its own function
         // would otherwise hide the function that follows.
         if arch.is_prologue(following) {
             out.push(start_of(&insns, next, arch));
@@ -490,6 +509,13 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     }
 
     out
+}
+
+/// Whether a branch always moves control, or only on a condition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Transfer {
+    Conditional,
+    Always,
 }
 
 /// The address a function really starts at, given where its prologue sits.
@@ -803,6 +829,33 @@ mod tests {
         // pool, and the frame after it starts a function.
         let not_branched = with_first(0x2402_0003);
         assert_eq!(starts_after_returns(&Mips32::LITTLE, &not_branched, 0), vec![0x18]);
+    }
+
+    /// Little-endian ARM code from words.
+    fn arm_code(words: &[u32]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    /// An early `bx lr` before the frame is made, as `gzgetc` in zlib has.
+    /// The frame after it is on the path of a conditional branch, so it is
+    /// more of the same function.
+    #[test]
+    fn a_frame_after_an_early_return_does_not_start_a_function() {
+        let with_second = |second: u32| {
+            arm_code(&[
+                0xe350_0000, // 0x00 cmp r0, 0
+                second,      // 0x04
+                0xe3a0_0001, // 0x08 mov r0, 1
+                0xe12f_ff1e, // 0x0c bx lr
+                0xe92d_4010, // 0x10 push {r4, lr}
+                0xe8bd_8010, // 0x14 pop {r4, pc}
+            ])
+        };
+
+        // beq 0x10
+        assert!(starts_after_returns(&Arm32, &with_second(0x0a00_0001), 0).is_empty());
+        // mov r1, r1: nothing of this function reaches the frame.
+        assert_eq!(starts_after_returns(&Arm32, &with_second(0xe1a0_1001), 0), vec![0x10]);
     }
 
     /// A branch from before the last return is not of this function. In a

@@ -79,8 +79,8 @@ enum Reading {
 /// offset table through a register the earlier piece set. The scan cannot
 /// see that register, so a table offset reads as a changed constant.
 const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
-    // A raw image has no exception index, so `luaopen_base` splits after
-    // an internal return.
+    // A word of `.rodata` in the raw image decodes as `blvs` into the middle
+    // of `luaopen_base`, so it reads as a call target and splits it.
     (Reading::Raw, "lua", "arm", "Os", "luaopen_base"),
 ];
 

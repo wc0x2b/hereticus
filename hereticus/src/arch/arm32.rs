@@ -490,7 +490,10 @@ fn classify(inst: &Instruction, address: u64) -> InsnKind {
     match inst.opcode {
         Opcode::BL | Opcode::BLX => InsnKind::Call { target: branch_target(inst, address) },
 
-        // `bx lr` returns; `bx <other>` is an indirect jump.
+        // `bx lr` returns; `bx <other>` is an indirect jump. A conditional
+        // one falls through when its condition fails, as `bxeq lr` does in
+        // an early exit, so it is a branch and does not end the function.
+        Opcode::BX if !unconditional => InsnKind::Branch { target: None },
         Opcode::BX => match inst.operands[0] {
             Operand::Reg(reg) if reg.number() as u16 == REG_LR => InsnKind::Return,
             _ => InsnKind::Jump { target: None },
@@ -531,14 +534,42 @@ fn branch_target(inst: &Instruction, address: u64) -> Option<u64> {
 }
 
 /// Report whether the instruction writes the program counter.
+///
+/// Only a destination counts. `add r1, pc, r1` reads the PC to form an
+/// address, which PIC code does in every function that reaches a global, and
+/// reading it as a write ended the function there.
 fn writes_pc(inst: &Instruction) -> bool {
-    inst.operands.iter().any(|operand| match operand {
-        Operand::Reg(reg) => reg.number() as u16 == REG_PC,
-        Operand::RegWBack(reg, _) => reg.number() as u16 == REG_PC,
-        // `pop {..., pc}` carries the PC as a bit in a register-list mask.
-        Operand::RegList(mask) => mask & (1 << REG_PC) != 0,
+    let is_pc = |operand: &Operand| match operand {
+        Operand::Reg(reg) | Operand::RegWBack(reg, _) => reg.number() as u16 == REG_PC,
         _ => false,
-    })
+    };
+
+    match inst.opcode {
+        // A store or a comparison has no destination register.
+        Opcode::CMP
+        | Opcode::CMN
+        | Opcode::TST
+        | Opcode::TEQ
+        | Opcode::PUSH
+        | Opcode::STM(..)
+        | Opcode::STR
+        | Opcode::STRB
+        | Opcode::STRH
+        | Opcode::STRD
+        | Opcode::STRT
+        | Opcode::STRBT
+        | Opcode::STRHT
+        | Opcode::STREX
+        | Opcode::STREXB
+        | Opcode::STREXH
+        | Opcode::STREXD => false,
+        // `pop {..., pc}` carries the PC as a bit in a register-list mask.
+        Opcode::LDM(..) | Opcode::POP => inst
+            .operands
+            .iter()
+            .any(|operand| matches!(operand, Operand::RegList(mask) if mask & (1 << REG_PC) != 0)),
+        _ => is_pc(&inst.operands[0]),
+    }
 }
 
 #[cfg(test)]
@@ -581,6 +612,45 @@ mod tests {
     #[test]
     fn mov_pc_lr_is_a_return() {
         assert_eq!(decode_one([0x0e, 0xf0, 0xa0, 0xe1]).kind, InsnKind::Return);
+    }
+
+    /// `add r1, pc, r1` reads the PC to form an address. It does not leave.
+    #[test]
+    fn reading_the_pc_is_not_a_return() {
+        let add = decode_one(0xe08f_1001_u32.to_le_bytes());
+        assert_eq!(add.to_string(), "add r1, pc, r1");
+        assert_eq!(add.kind, InsnKind::Normal);
+    }
+
+    /// `str pc, [sp]` and `cmp pc, r0` name the PC, but do not write it.
+    #[test]
+    fn a_store_or_compare_of_the_pc_is_not_a_return() {
+        assert_eq!(decode_one(0xe58d_f000_u32.to_le_bytes()).kind, InsnKind::Normal);
+        assert_eq!(decode_one(0xe15f_0000_u32.to_le_bytes()).kind, InsnKind::Normal);
+        assert_eq!(
+            decode_one(0xe92d_c000_u32.to_le_bytes()).kind,
+            InsnKind::Normal,
+            "push lr and pc"
+        );
+    }
+
+    /// `add pc, pc, r0, lsl 2` writes the PC: a jump through a table.
+    #[test]
+    fn a_computed_write_of_the_pc_leaves() {
+        assert_eq!(decode_one(0xe08f_f100_u32.to_le_bytes()).kind, InsnKind::Return);
+    }
+
+    /// A conditional return falls through when the condition fails.
+    #[test]
+    fn a_conditional_bx_lr_is_a_branch() {
+        assert_eq!(
+            decode_one(0x012f_ff1e_u32.to_le_bytes()).kind,
+            InsnKind::Branch { target: None }
+        );
+        assert_eq!(
+            decode_one(0x012f_ff13_u32.to_le_bytes()).kind,
+            InsnKind::Branch { target: None }
+        ); // bxeq r3
     }
 
     #[test]
