@@ -28,6 +28,10 @@ TARBALLS = {
         "https://github.com/leethomason/tinyxml2/archive/refs/tags/9.0.0.tar.gz",
         "cc2f1417c308b1f6acc54f88eb70771a0bf65f76282ce5c40e54cfe52952702c",
     ),
+    "smallvec-1.6.0.crate": (
+        "https://static.crates.io/crates/smallvec/smallvec-1.6.0.crate",
+        "1a55ca5f3b68e41c979bf8c46a6f1da892ca4db8f94023ce0bd32407573b1ac0",
+    ),
 }
 
 
