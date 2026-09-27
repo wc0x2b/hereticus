@@ -30,7 +30,7 @@ use object::{
     Object, ObjectKind, ObjectSection, ObjectSymbol, ObjectSymbolTable, RelocationTarget,
 };
 
-use crate::arch::{Arch, CallTarget, decode_all};
+use crate::arch::{Arch, CallTarget, Insn, decode_all};
 use crate::obj::{Function, stable_name};
 
 /// What the linker left that names the callees of a binary.
@@ -79,6 +79,12 @@ impl Links {
         Self { memory, slots, sites: BTreeMap::new() }
     }
 
+    /// Links from loaded bytes and named slots, for a test to build.
+    #[cfg(test)]
+    pub(crate) fn of_parts(memory: Vec<(u64, Vec<u8>)>, slots: BTreeMap<u64, String>) -> Self {
+        Self { memory, slots, sites: BTreeMap::new() }
+    }
+
     /// The loaded bytes from `address` to the end of their section.
     fn bytes_at(&self, address: u64) -> Option<&[u8]> {
         self.memory.iter().find_map(|(start, data)| {
@@ -98,7 +104,17 @@ pub fn callees(
     function: &Function,
 ) -> Vec<Callee> {
     let (insns, _) = decode_all(arch, &function.code, function.address);
-    arch.call_targets(&insns)
+    callees_in(arch, links, functions, &insns)
+}
+
+/// [`callees`], for a function already decoded to `insns`.
+pub fn callees_in(
+    arch: &dyn Arch,
+    links: &Links,
+    functions: &[Function],
+    insns: &[Insn],
+) -> Vec<Callee> {
+    arch.call_targets(insns)
         .into_iter()
         .map(|(index, target)| match links.sites.get(&insns[index].address) {
             Some(name) => Callee::Named(name.clone()),
