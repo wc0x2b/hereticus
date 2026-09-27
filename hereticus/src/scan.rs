@@ -354,9 +354,20 @@ fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     // A pool word that decodes as a call names a target made of data bits.
     let pool: BTreeSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
 
+    // A string decodes as instructions too, and on ARM it often reads as a
+    // conditional call: `blvs` is `k` in its top byte. Measured on Lua for
+    // ARM as a raw image, the text "ON\0k" in `.rodata` "called" the middle
+    // of `luaopen_base` and split it. A real call word is almost never text.
+    let is_text = |insn: &Insn| {
+        usize::try_from(insn.address - base)
+            .ok()
+            .and_then(|offset| code.get(offset..offset + insn.bytes_len))
+            .is_some_and(crate::raw::is_text)
+    };
+
     insns
         .iter()
-        .filter(|insn| !pool.contains(&insn.address))
+        .filter(|insn| !pool.contains(&insn.address) && !is_text(insn))
         .filter_map(|insn| match insn.kind {
             InsnKind::Call { target } => target.map(|target| (insn.address, target)),
             _ => None,
@@ -856,6 +867,29 @@ mod tests {
         assert!(starts_after_returns(&Arm32, &with_second(0x0a00_0001), 0).is_empty());
         // mov r1, r1: nothing of this function reaches the frame.
         assert_eq!(starts_after_returns(&Arm32, &with_second(0xe1a0_1001), 0), vec![0x10]);
+    }
+
+    /// Text decodes as a conditional call often enough to split functions.
+    /// "ON\0k", from `_VERSION` in Lua, reads as `blvs` to 0x13948.
+    #[test]
+    fn a_call_that_is_text_names_no_function() {
+        const MOV_R0_R0: u32 = 0xe1a0_0000;
+        let with_word_at_4 = |word: u32| {
+            let mut words = vec![MOV_R0_R0; 0x13950 / 4];
+            words[1] = word;
+            arm_code(&words)
+        };
+
+        let text = with_word_at_4(u32::from_le_bytes(*b"ON\0k"));
+        assert_eq!(
+            Arm32.decode(&text, 4, 0).map(|insn| insn.kind),
+            Ok(InsnKind::Call { target: Some(0x13948) })
+        );
+        assert!(call_targets(&Arm32, &text, 0).is_empty());
+
+        // bl 0x13948: the same target, from a word that is not text.
+        let call = with_word_at_4(0xeb00_4e4f);
+        assert_eq!(call_targets(&Arm32, &call, 0), vec![0x13948]);
     }
 
     /// A branch from before the last return is not of this function. In a
