@@ -698,6 +698,9 @@ fn track_addresses<'a>(
     let mut at_target: Vec<(u64, HeldAddresses<'_>)> = Vec::new();
     let mut unreached_arrivals = 0;
     let mut saved = SavedRegisters::default();
+    // What was held at the last computed jump, which the cases of a jump
+    // table start from.
+    let mut dispatched: Option<HeldAddresses<'_>> = None;
     // What each stack slot holds, where a register that held an address was
     // stored there. GCC stores the global pointer after its preamble, as
     // `.cprestore` asks, and loads it back after every call.
@@ -708,7 +711,7 @@ fn track_addresses<'a>(
         if reachable == Reach::OnlyByBranch && branched.is_none() {
             unreached_arrivals += 1;
         }
-        upper = arrive(upper, reachable, branched, invariant);
+        upper = arrive(upper, reachable, branched, dispatched.as_ref(), invariant);
         reachable = Reach::FromAbove;
 
         if let Some((register, high)) = upper_half(insn) {
@@ -743,6 +746,7 @@ fn track_addresses<'a>(
                     kinds[index] = ConstantKind::Address;
                     upper.set(destination, Held::Somewhere);
                 }
+                Held::PerhapsGlobalPointer => upper.forget(destination),
             }
         } else if let Some((register, slot, access)) = stack_slot(insn) {
             match access {
@@ -775,6 +779,11 @@ fn track_addresses<'a>(
                     kinds[index] = ConstantKind::Address;
                     None
                 }
+                Held::PerhapsGlobalPointer if is_table_slot_offset(offset) => {
+                    kinds[index] = ConstantKind::Address;
+                    Some(Held::Somewhere)
+                }
+                Held::PerhapsGlobalPointer => None,
             };
             if let Some(written) = written {
                 match loaded {
@@ -801,6 +810,10 @@ fn track_addresses<'a>(
                 if let Some(target) = target {
                     record_state(&mut at_target, target, &upper);
                 }
+                reachable = Reach::OnlyByBranch;
+            }
+            AfterSlot::Dispatch => {
+                dispatched = Some(upper.clone());
                 reachable = Reach::OnlyByBranch;
             }
         }
@@ -1087,6 +1100,9 @@ enum AfterSlot {
     /// A jump or return: the next instruction runs only if a branch reaches
     /// it. A jump forward to a known address carries it.
     Leave(Option<u64>),
+    /// A jump to a computed address, as through a jump table. The next
+    /// instruction runs only if a branch reaches it, or if it is a case.
+    Dispatch,
 }
 
 impl AfterSlot {
@@ -1100,6 +1116,7 @@ impl AfterSlot {
                 Some(target) => Self::Branch(target),
                 None => Self::FallThrough,
             },
+            InsnKind::Jump { target: None } => Self::Dispatch,
             InsnKind::Jump { target } => Self::Leave(forward(target)),
             InsnKind::Return => Self::Leave(None),
             InsnKind::Normal | InsnKind::Unknown => Self::FallThrough,
@@ -1124,10 +1141,18 @@ enum Reach {
 /// `invariant` are held: what a function sets once and keeps in a saved
 /// register throughout. On MIPS -Os tinyxml2, a C++ landing pad, entered by
 /// the unwinder, reached the global offset table through `s0` that way.
+///
+/// The global pointer is taken both from above and from `dispatched`, the
+/// last computed jump, which is where a case of a jump table comes from. One
+/// case can reuse the register that holds the pointer, and the case after it
+/// in the code still has it. Measured on `core::fmt::Formatter::pad_integral`
+/// built by Rust for MIPS at `-O2`, a case loaded `s2` and the cases after it
+/// lost the global pointer.
 fn arrive<'a>(
     above: HeldAddresses<'a>,
     reach: Reach,
     branched: Option<HeldAddresses<'a>>,
+    dispatched: Option<&HeldAddresses<'a>>,
     invariant: &HeldAddresses<'a>,
 ) -> HeldAddresses<'a> {
     match (reach, branched) {
@@ -1136,6 +1161,11 @@ fn arrive<'a>(
         (Reach::OnlyByBranch, Some(branched)) => branched,
         (Reach::OnlyByBranch, None) => {
             let mut held = above.global_pointers_only();
+            for &(register, value) in dispatched.map_or(&[][..], |at| &at.held[..]) {
+                if value.may_be_global_pointer() && held.get(register).is_none() {
+                    held.set(register, value);
+                }
+            }
             for &(register, value) in &invariant.held {
                 held.set(register, value);
             }
@@ -1165,6 +1195,23 @@ fn take_state<'a>(
     Some(at_target.swap_remove(position).1)
 }
 
+impl Held {
+    fn may_be_global_pointer(self) -> bool {
+        matches!(self, Self::GlobalPointer | Self::PerhapsGlobalPointer)
+    }
+}
+
+/// Report whether an offset from the global pointer can only reach a slot
+/// of the global offset table.
+///
+/// The table starts `0x7ff0` below the pointer, so the first 4096 slots lie
+/// below `-0x4000`, and no field of a structure lies that far below the
+/// structure.
+fn is_table_slot_offset(offset: u64) -> bool {
+    const HIGHEST_SLOT_OFFSET: i64 = -0x4000;
+    (offset as i64) < HIGHEST_SLOT_OFFSET
+}
+
 /// What a register holds, as far as addresses go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Held {
@@ -1177,6 +1224,16 @@ enum Held {
     /// The global pointer, which reaches the global offset table in PIC code
     /// and the small data in non-PIC code.
     GlobalPointer,
+    /// The global pointer on one path here, and no known address on another.
+    ///
+    /// A call that never returns, as a Rust panic does, ends the other path,
+    /// but nothing in the code says so. Measured on `SmallVec::extend` built
+    /// by Rust for MIPS at `-O2`, `s0` held a byte before such a call and the
+    /// global pointer after it, and the table slots read through it looked
+    /// like changed values. A small offset from such a register can be a
+    /// field of whatever the other path left there, so only an offset that
+    /// only a slot of the table has counts. See [`is_table_slot_offset`].
+    PerhapsGlobalPointer,
 }
 
 /// The registers that hold an address, and what each holds.
@@ -1210,19 +1267,33 @@ impl<'a> HeldAddresses<'a> {
     }
 
     fn global_pointers_only(mut self) -> Self {
-        self.held.retain(|&(_, held)| held == Held::GlobalPointer);
+        self.held.retain(|&(_, held)| held.may_be_global_pointer());
         self
     }
 
     /// The addresses this and `other` both hold, with the same value.
+    ///
+    /// A global pointer that only one side holds is kept as
+    /// [`Held::PerhapsGlobalPointer`].
     fn agreed_with(&self, other: &Self) -> Self {
-        let held = self
-            .held
-            .iter()
-            .filter(|&&(register, value)| other.get(register) == Some(value))
-            .copied()
-            .collect();
-        Self { held }
+        let mut agreed = Self::default();
+        let registers = self.held.iter().chain(&other.held).map(|&(register, _)| register);
+        for register in registers {
+            if agreed.get(register).is_some() {
+                continue;
+            }
+            match (self.get(register), other.get(register)) {
+                (Some(left), Some(right)) if left == right => agreed.set(register, left),
+                (left, right)
+                    if left.is_some_and(Held::may_be_global_pointer)
+                        || right.is_some_and(Held::may_be_global_pointer) =>
+                {
+                    agreed.set(register, Held::PerhapsGlobalPointer);
+                }
+                _ => {}
+            }
+        }
+        agreed
     }
 }
 
@@ -1348,6 +1419,7 @@ fn indexed_address<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a
     Some(match held {
         Held::At(high) => (destination, Held::At(high)),
         Held::Somewhere | Held::GlobalPointer => (destination, Held::Somewhere),
+        Held::PerhapsGlobalPointer => return None,
     })
 }
 
@@ -2175,6 +2247,53 @@ mod tests {
                 addiu(A1, S0, 0x10),
             ];
             assert_eq!(kinds(&words)[4], Address);
+        }
+
+        /// A case of a jump table starts from what the jump held. A case
+        /// before it in the code can load the register that holds the global
+        /// pointer, and the next case still has the pointer.
+        #[test]
+        fn a_case_holds_the_global_pointer_the_jump_held() {
+            const T9: u32 = 25;
+            const JR_T0: u32 = (T0 << 21) | 0x08;
+            let words = [
+                addu(S1, V0, T9), // the global pointer, in s1
+                lw(T0, 0x10, A1),
+                JR_T0,
+                NOP,
+                lw(S1, 0x0, A0), // one case reuses s1
+                beqz(0, 8),      // b: to the end of the switch
+                NOP,
+                lw(A1, 0x8010, S1), // the next case reads a slot
+            ];
+            assert_eq!(kinds(&words)[7], Address);
+
+            // After a return, with no computed jump before it, nothing is
+            // held but what `gp` holds.
+            let words = [addu(S1, V0, T9), lw(S1, 0x0, A0), JR_RA, NOP, lw(A1, 0x8010, S1)];
+            assert_eq!(kinds(&words)[4], Value);
+        }
+
+        /// Where one path holds the global pointer and the other a value, a
+        /// slot of the table read through the register is still an address,
+        /// but a small offset is a field and stays a value.
+        #[test]
+        fn a_global_pointer_one_path_lost_still_reaches_the_table() {
+            const T9: u32 = 25;
+            let join = |read: u32| {
+                let words = [
+                    addu(S0, V0, T9), // the global pointer, in s0
+                    beqz(A0, 3),      // to index 5, holding it
+                    NOP,
+                    lw(S0, 0x0, A1), // a value in s0 on this path
+                    NOP,
+                    read,
+                ];
+                kinds(&words)[5]
+            };
+            assert_eq!(join(lw(T0, 0x8020, S0)), Address, "-0x7fe0, a slot");
+            assert_eq!(join(lw(T0, 0x10, S0)), Value, "a field");
+            assert_eq!(join(addiu(T0, S0, 0x8020)), Value, "no load, no slot");
         }
 
         #[test]
