@@ -334,6 +334,8 @@ pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<Inde
     const FEWEST_INDEX_ENTRIES: usize = 16;
     /// The personalities an inline description can name: 0, 1 and 2.
     const INLINE_PERSONALITIES: core::ops::RangeInclusive<u32> = 0x80..=0x82;
+    /// The most zero fill words to step over, enough to align to 64 bytes.
+    const MOST_FILL_WORDS: usize = 15;
 
     if arch.unwind_section().is_none() {
         return Vec::new();
@@ -352,15 +354,8 @@ pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<Inde
     // The entry at `offset`, if it can be one.
     let entry = |offset: usize| -> Option<IndexEntry> {
         let (first, second) = (word(offset)?, word(offset + 4)?);
-        let address = prel31(offset, first).filter(|&address| in_image(address))?;
+        let mut address = prel31(offset, first).filter(|&address| in_image(address))?;
         if !address.is_multiple_of(4) {
-            return None;
-        }
-        // The entry names the first instruction of a function, which runs
-        // always, as almost every ARM instruction does: its top four bits
-        // are `0xE`. A table of small numbers otherwise reads as an index.
-        let first_instruction = word(usize::try_from(address - base).ok()?)?;
-        if first_instruction >> 28 != 0xe {
             return None;
         }
         let unwinding = match second {
@@ -371,6 +366,23 @@ pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<Inde
                 Unwinding::Described
             }
         };
+        let word_at = |address: u64| word(usize::try_from(address - base).ok()?);
+        // The last entry marks the end of `.text`, where the linker can put
+        // zero fill before the next aligned section, as before `.plt`. What
+        // follows the fill is code no entry lists.
+        if unwinding == Unwinding::CannotUnwind {
+            let mut skipped = 0;
+            while skipped < MOST_FILL_WORDS && word_at(address) == Some(0) {
+                address += 4;
+                skipped += 1;
+            }
+        }
+        // The entry names the first instruction of a function, which runs
+        // always, as almost every ARM instruction does: its top four bits
+        // are `0xE`. A table of small numbers otherwise reads as an index.
+        if word_at(address)? >> 28 != 0xe {
+            return None;
+        }
         Some(IndexEntry { address, unwinding })
     };
 
@@ -782,6 +794,19 @@ fn starts_after_returns_in(
         while insns.get(next).is_some_and(|insn| arch.is_padding(insn) || !is_code(&insn)) {
             next += 1;
         }
+        // A linker fills the gap before an aligned section with zeros, which
+        // ARM reads as `andeq r0, r0, r0`: measured on smallvec for ARM as a
+        // raw image, one such word before `.plt` joined the PLT header to the
+        // last function of `.text`. A zero word is also a constant in a pool
+        // no load names, so only a prologue past the fill counts.
+        let past_fill = next
+            + insns[next.min(insns.len())..]
+                .iter()
+                .take_while(|insn| is_zero_fill(code, base, insn))
+                .count();
+        if past_fill > next && insns.get(past_fill).is_some_and(|insn| arch.is_prologue(insn)) {
+            next = past_fill;
+        }
 
         let Some(following) = insns.get(next) else { continue };
 
@@ -835,6 +860,14 @@ fn starts_after_returns_in(
     }
 
     out
+}
+
+/// Report whether every byte of `insn` is zero.
+fn is_zero_fill(code: &[u8], base: u64, insn: &Insn) -> bool {
+    usize::try_from(insn.address - base)
+        .ok()
+        .and_then(|offset| code.get(offset..offset.checked_add(insn.bytes_len)?))
+        .is_some_and(|bytes| bytes.iter().all(|&byte| byte == 0))
 }
 
 /// The words of a region that are data among the code: literal pools, and
@@ -991,6 +1024,62 @@ mod tests {
         assert_eq!(sign_extend_31(0x7fff_fffe), -2);
     }
 
+    /// A raw ARM image to load at 0x1000: `functions` functions of four
+    /// words from 0, then `tail` at 0x200, then an index at 0x400 with an
+    /// inline entry for each function and a last entry that cannot unwind,
+    /// which names 0x200.
+    fn image_with_index(functions: usize, tail: &[u32]) -> Vec<u8> {
+        const TAIL: usize = 0x200;
+        const TABLE: usize = 0x400;
+        let body = [0xe92d_4010_u32, 0xe1a0_0000, 0xe1a0_0000, 0xe8bd_8010];
+
+        let mut words = vec![0_u32; 0x600 / 4];
+        for function in 0..functions {
+            words[function * 4..function * 4 + 4].copy_from_slice(&body);
+        }
+        words[TAIL / 4..TAIL / 4 + tail.len()].copy_from_slice(tail);
+        let prel31 = |from: usize, to: usize| (to as u32).wrapping_sub(from as u32) & 0x7fff_ffff;
+        let targets = (0..functions).map(|function| (function * 16, 0x80b0_b0b0));
+        for (entry, (target, unwinding)) in
+            targets.chain(core::iter::once((TAIL, EXIDX_CANTUNWIND))).enumerate()
+        {
+            let at = TABLE + entry * EXIDX_ENTRY_LEN;
+            words[at / 4] = prel31(at, target);
+            words[at / 4 + 1] = unwinding;
+        }
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn reads_an_index_in_a_raw_image() {
+        let image = image_with_index(20, &[0xe52d_e004]);
+        let index = find_exception_index(&image, 0x1000, &Arm32);
+        assert_eq!(index.len(), 21);
+        assert_eq!(index[0], IndexEntry { address: 0x1000, unwinding: Unwinding::Described });
+        assert_eq!(index[20], IndexEntry { address: 0x1200, unwinding: Unwinding::CannotUnwind });
+    }
+
+    /// The last entry names the end of `.text`, and zero fill can come
+    /// before the section after it: the entry then names what follows.
+    #[test]
+    fn the_last_entry_steps_over_zero_fill() {
+        let image = image_with_index(20, &[0, 0, 0xe52d_e004]);
+        let index = find_exception_index(&image, 0x1000, &Arm32);
+        assert_eq!(index.last().map(|entry| entry.address), Some(0x1208));
+
+        // Past the fill there must be code, or the entry is no entry.
+        let image = image_with_index(20, &[0, 0, 0x0000_0010]);
+        let index = find_exception_index(&image, 0x1000, &Arm32);
+        assert_eq!(index.len(), 20, "the run ends before it");
+    }
+
+    /// A few entries can occur by chance, so too short a run is no index.
+    #[test]
+    fn a_short_run_is_no_index() {
+        let image = image_with_index(10, &[0xe52d_e004]);
+        assert!(find_exception_index(&image, 0x1000, &Arm32).is_empty());
+    }
+
     #[test]
     fn an_exact_source_is_told_from_a_guess() {
         assert!(Source::Symbol.is_exact());
@@ -1070,6 +1159,18 @@ mod tests {
         // bx lr, add
         let code = [0x1e, 0xff, 0x2f, 0xe1, 0x00, 0x00, 0x81, 0xe0];
         assert_eq!(starts_after_returns(&Arm32, &code, 0), vec![0x4]);
+    }
+
+    /// Zero fill after a return is the linker's, and the code after it
+    /// starts a function, as the PLT header does after `.text`.
+    #[test]
+    fn a_return_then_zero_fill_starts_a_function_after_the_fill() {
+        let code = [
+            0x1e, 0xff, 0x2f, 0xe1, // bx lr
+            0x00, 0x00, 0x00, 0x00, // zero fill, `andeq r0, r0, r0`
+            0x04, 0xe0, 0x2d, 0xe5, // str lr, [sp, -0x4]!: the PLT header
+        ];
+        assert_eq!(starts_after_returns(&Arm32, &code, 0x1000), vec![0x1008]);
     }
 
     /// A prologue starts a function whatever comes before it.
