@@ -204,8 +204,11 @@ pub trait Arch {
     /// `jr ra` and then unwinds the frame in the slot, and treating that
     /// unwind as a new function invents one at the end of every function.
     ///
+    /// `insn` is the branch or return, because an architecture can have both
+    /// kinds: MIPS `eret` leaves at once, with no slot.
+    ///
     /// Defaults to 0, for the architectures that have no such slot.
-    fn delay_slots(&self) -> usize {
+    fn delay_slots(&self, _insn: &Insn) -> usize {
         0
     }
 

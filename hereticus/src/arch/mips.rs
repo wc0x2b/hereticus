@@ -92,14 +92,14 @@ impl Arch for Mips32 {
 
         let Some(inst) = decoded else {
             // `rabbitizer` stops at MIPS IV, so a MIPS32 word it refuses may
-            // still be one this crate reads. None of these move control.
-            if let Some((mnemonic, operands)) = super::mips32::decode(raw) {
+            // still be one this crate reads.
+            if let Some(word) = super::mips32::decode(raw) {
                 return Ok(Insn {
                     address: insn_address,
                     bytes_len: INSN_WIDTH,
-                    mnemonic: mnemonic.to_string(),
-                    operands,
-                    kind: InsnKind::Normal,
+                    mnemonic: word.mnemonic.to_string(),
+                    operands: word.operands,
+                    kind: word.kind,
                 });
             }
 
@@ -507,9 +507,11 @@ impl Arch for Mips32 {
         // its symbol by one word.
         let trimmed_a_slot = end < bytes.len()
             && end >= INSN_WIDTH
-            && self
-                .decode(bytes, end - INSN_WIDTH, 0)
-                .is_ok_and(|insn| insn.kind != InsnKind::Normal && insn.kind != InsnKind::Unknown);
+            && self.decode(bytes, end - INSN_WIDTH, 0).is_ok_and(|insn| {
+                insn.kind != InsnKind::Normal
+                    && insn.kind != InsnKind::Unknown
+                    && self.delay_slots(&insn) > 0
+            });
         if trimmed_a_slot {
             end += INSN_WIDTH;
         }
@@ -518,9 +520,10 @@ impl Arch for Mips32 {
     }
 
     /// MIPS runs the instruction after a branch whether or not the branch is
-    /// taken, so that instruction belongs to the branch.
-    fn delay_slots(&self) -> usize {
-        1
+    /// taken, so that instruction belongs to the branch. An exception return
+    /// is the exception: it leaves at once.
+    fn delay_slots(&self, insn: &Insn) -> usize {
+        if super::mips32::is_exception_return(&insn.mnemonic) { 0 } else { 1 }
     }
 
     fn pointer_width(&self) -> usize {
@@ -2148,8 +2151,37 @@ mod tests {
     /// not read it as the start of the next function.
     #[test]
     fn a_branch_has_one_delay_slot() {
-        assert_eq!(Mips32::LITTLE.delay_slots(), 1);
-        assert_eq!(Mips32::BIG.delay_slots(), 1);
+        let return_ = decode_one(0x03e0_0008);
+        assert_eq!(Mips32::LITTLE.delay_slots(&return_), 1);
+        assert_eq!(Mips32::BIG.delay_slots(&return_), 1);
+    }
+
+    /// `eret` and `deret` leave at once, so the word after them is not
+    /// theirs.
+    #[test]
+    fn an_exception_return_has_no_delay_slot() {
+        for word in [0x4200_0018, 0x4200_001f] {
+            let insn = decode_one(word);
+            assert_eq!(insn.kind, InsnKind::Return, "{insn}");
+            assert_eq!(Mips32::LITTLE.delay_slots(&insn), 0, "{insn}");
+        }
+    }
+
+    /// Padding after an `eret` is padding, not the slot of a branch.
+    #[test]
+    fn padding_after_an_exception_return_is_trimmed() {
+        let code: Vec<u8> =
+            [0x2402_0001u32, 0x4200_0018, 0, 0].into_iter().flat_map(u32::to_le_bytes).collect();
+        assert_eq!(Mips32::LITTLE.trim_padding(&code).len(), 8);
+    }
+
+    /// `jr.hb ra` returns, and `jr.hb` through another register jumps, as
+    /// `jr` does.
+    #[test]
+    fn a_hazard_barrier_jump_moves_control_as_jr_does() {
+        assert_eq!(decode_one(0x03e0_0408).kind, InsnKind::Return);
+        assert_eq!(decode_one(0x0060_0408).kind, InsnKind::Jump { target: None });
+        assert_eq!(decode_one(0x0320_fc09).kind, InsnKind::Call { target: None });
     }
 
     /// The same bytes are two different instructions in the two byte orders,
