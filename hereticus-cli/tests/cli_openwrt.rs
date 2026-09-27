@@ -34,6 +34,9 @@ fn compare_stubs(board: &str, arch: &str, base: &str) -> Command {
 }
 
 /// The README example: the ARM zImage stub of the Netgear EX6100v2.
+///
+/// `README.md` shows this output. When this snapshot changes, copy the new
+/// output there too.
 #[test]
 fn compares_the_arm_stubs_of_two_openwrt_releases() {
     assert_cmd_snapshot!(compare_stubs("arm-ex6100v2", "arm32", "0x80208000"));
