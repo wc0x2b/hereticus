@@ -79,10 +79,6 @@ enum Reading {
 /// offset table through a register the earlier piece set. The scan cannot
 /// see that register, so a table offset reads as a changed constant.
 const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
-    // At -Os the compiler places a second piece of `_tr_align`, with its own
-    // frame, after its first return.
-    (Reading::Stripped, "zlib", "mips", "Os", "_tr_align"),
-    (Reading::Raw, "zlib", "mips", "Os", "_tr_align"),
     // A raw image has no exception index, so `luaopen_base` splits after
     // an internal return.
     (Reading::Raw, "lua", "arm", "Os", "luaopen_base"),

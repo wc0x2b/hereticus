@@ -1,5 +1,6 @@
 ---
 source: hereticus/tests/openwrt.rs
+assertion_line: 629
 expression: report
 ---
 0x80208000 -> 0x80208000 Unreadable score=0.952 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 1, constants: 0 } confidence=Similar
@@ -26,8 +27,6 @@ expression: report
 0x80208b04 -> 0x80208b34 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalShape
 0x80208b94 -> 0x80208bc4 Yes score=0.911 edits=Edits { added: 1, removed: 1, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 3, opaque: 0, constants: 0 } confidence=Similar
 0x80208c44 -> 0x80208c74 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
-0x80208d58 -> 0x80208d88 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
-0x80208dbc -> 0x80208dec No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
 0x80208e08 -> 0x8020cd5c Yes score=0.800 edits=Edits { added: 0, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 } confidence=Similar
 0x80208e20 -> 0x8020a224 Yes score=0.773 edits=Edits { added: 16, removed: 8, edited: 6 } kinds=EditKinds { branches: 2, calls: 0, jumps: 3, memory: 7, other: 18, opaque: 0, constants: 0 } confidence=Similar
 0x80208f68 -> 0x80208e38 Yes score=0.969 edits=Edits { added: 0, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 1 } confidence=Similar

@@ -1,13 +1,14 @@
 ---
 source: hereticus/tests/openwrt.rs
-expression: "format!(\"{}fingerprint {:#018x}\\n\\nstrongest changes:\\n{}\\n\",\nsummary(&comparison), fingerprint(&report), top.join(\"\\n\"))"
+assertion_line: 406
+expression: kernel_digest(&comparison)
 ---
-functions 26909 -> 27018
-matched 25943
-{No: 11667, Reordered: 27, InDetail: 12436, Unreadable: 37, Yes: 1776}
-gone 966
-new 1075
-fingerprint 0x0807631cd5b75db7
+functions 26785 -> 26891
+matched 25827
+{No: 11591, Reordered: 27, InDetail: 12396, Unreadable: 37, Yes: 1776}
+gone 958
+new 1064
+fingerprint 0x6345834c105aca7e
 
 strongest changes:
 0xc0680c58 -> 0xc0687630 score=0.999 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 9 }

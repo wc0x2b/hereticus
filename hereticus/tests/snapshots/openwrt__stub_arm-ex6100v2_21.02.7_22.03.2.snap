@@ -1,5 +1,6 @@
 ---
 source: hereticus/tests/openwrt.rs
+assertion_line: 629
 expression: report
 ---
 0x80208000 -> 0x80208000 Yes score=0.952 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 } confidence=Similar
@@ -22,12 +23,14 @@ expression: report
 0x80208af8 -> 0x80208af8 Reordered score=1.000 edits=Edits { added: 1, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0 } confidence=Similar
 0x80208b04 -> 0x80208b04 Yes score=0.682 edits=Edits { added: 2, removed: 6, edited: 4 } kinds=EditKinds { branches: 2, calls: 0, jumps: 2, memory: 2, other: 6, opaque: 0, constants: 0 } confidence=Similar
 0x80208ba4 -> 0x80208b94 Yes score=0.655 edits=Edits { added: 6, removed: 11, edited: 5 } kinds=EditKinds { branches: 1, calls: 0, jumps: 4, memory: 3, other: 11, opaque: 3, constants: 0 } confidence=Similar
+0x80208ce8 -> 0x80208c44 Yes score=0.899 edits=Edits { added: 18, removed: 20, edited: 5 } kinds=EditKinds { branches: 2, calls: 0, jumps: 1, memory: 22, other: 17, opaque: 1, constants: 0 } confidence=Similar
 0x80208eb4 -> 0x80208e08 Yes score=0.833 edits=Edits { added: 1, removed: 2, edited: 0 } kinds=EditKinds { branches: 0, calls: 1, jumps: 0, memory: 2, other: 0, opaque: 0, constants: 0 } confidence=Similar
 0x80208ed0 -> 0x80208e20 Yes score=0.856 edits=Edits { added: 9, removed: 12, edited: 6 } kinds=EditKinds { branches: 3, calls: 1, jumps: 1, memory: 6, other: 16, opaque: 0, constants: 0 } confidence=Similar
 0x80209024 -> 0x80208f68 Yes score=0.844 edits=Edits { added: 7, removed: 2, edited: 1 } kinds=EditKinds { branches: 1, calls: 0, jumps: 1, memory: 0, other: 8, opaque: 0, constants: 0 } confidence=Similar
 0x80209098 -> 0x80208ff0 Yes score=0.964 edits=Edits { added: 4, removed: 5, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 7, other: 2, opaque: 0, constants: 0 } confidence=Similar
 0x8020910c -> 0x80209060 Reordered score=1.000 edits=Edits { added: 2, removed: 2, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 4, opaque: 0, constants: 0 } confidence=Similar
 0x8020917c -> 0x802090d0 Yes score=0.829 edits=Edits { added: 1, removed: 1, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 1, memory: 0, other: 3, opaque: 0, constants: 0 } confidence=Similar
+0x80209200 -> 0x8020921c Yes score=0.861 edits=Edits { added: 98, removed: 99, edited: 49 } kinds=EditKinds { branches: 12, calls: 3, jumps: 8, memory: 82, other: 135, opaque: 6, constants: 3 } confidence=Similar
 0x80209b04 -> 0x80209b08 Yes score=0.934 edits=Edits { added: 100, removed: 112, edited: 21 } kinds=EditKinds { branches: 20, calls: 0, jumps: 10, memory: 95, other: 106, opaque: 2, constants: 3 } confidence=Similar
 0x8020a364 -> 0x80209154 Yes score=0.719 edits=Edits { added: 13, removed: 11, edited: 3 } kinds=EditKinds { branches: 5, calls: 0, jumps: 1, memory: 9, other: 12, opaque: 0, constants: 2 } confidence=Similar
 0x8020a424 -> 0x8020a3bc Yes score=0.657 edits=Edits { added: 316, removed: 256, edited: 109 } kinds=EditKinds { branches: 69, calls: 8, jumps: 21, memory: 275, other: 295, opaque: 13, constants: 13 } confidence=Similar
@@ -62,10 +65,6 @@ gone 0x802089fc
 gone 0x80208a10
 gone 0x80208c6c
 gone 0x80208ca4
-gone 0x80208ce8
-gone 0x80209200
-gone 0x802096c4
-gone 0x80209878
 gone 0x8020b6e0
 gone 0x8020b7fc
 new  0x802080cc
@@ -75,10 +74,6 @@ new  0x802082bc
 new  0x802087c0
 new  0x802089fc
 new  0x80208af0
-new  0x80208c44
-new  0x80208d58
-new  0x80208dbc
-new  0x8020921c
 new  0x8020a338
 new  0x8020b598
 new  0x8020b5a4
