@@ -75,14 +75,10 @@ enum Reading {
 /// line with the reason. A test fails if any other appears, and also if one
 /// of these stops appearing, so the list stays true.
 ///
-/// Each is a function a scan splits, whose later piece reaches the global
-/// offset table through a register the earlier piece set. The scan cannot
-/// see that register, so a table offset reads as a changed constant.
-const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
-    // A word of `.rodata` in the raw image decodes as `blvs` into the middle
-    // of `luaopen_base`, so it reads as a call target and splits it.
-    (Reading::Raw, "lua", "arm", "Os", "luaopen_base"),
-];
+/// None is known now. A split function was the usual cause: its later piece
+/// reaches the global offset table through a register the earlier piece set,
+/// which the scan cannot see, so a table offset reads as a changed constant.
+const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[];
 
 fn backports() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/backports")
