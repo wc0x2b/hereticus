@@ -6,9 +6,10 @@
 # snapshots: a new version changes the code, and the snapshots with it.
 FROM debian:trixie
 
-# The cross libc headers supply <stdint.h> for each target. clang searches
-# them only when it finds a GCC cross installation for that target, thus the
-# cross libgcc packages are necessary too. clang, lld and the LLVM tools read
+# The cross libc headers supply <stdint.h> for each target, and the cross
+# libstdc++ headers <cstdio> and the rest for C++. clang searches them only
+# when it finds a GCC cross installation for that target, thus the cross
+# libgcc packages are necessary too. clang, lld and the LLVM tools read
 # every architecture, thus no cross binutils are necessary.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -21,6 +22,9 @@ RUN apt-get update \
         libgcc-14-dev-armel-cross \
         libgcc-14-dev-mipsel-cross \
         libgcc-14-dev-mips-cross \
+        libstdc++-14-dev-armel-cross \
+        libstdc++-14-dev-mipsel-cross \
+        libstdc++-14-dev-mips-cross \
         patch \
     && rm -rf /var/lib/apt/lists/*
 
