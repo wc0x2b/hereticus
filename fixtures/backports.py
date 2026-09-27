@@ -24,6 +24,10 @@ TARBALLS = {
         "https://www.lua.org/ftp/lua-5.1.5.tar.gz",
         "2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333",
     ),
+    "tinyxml2-9.0.0.tar.gz": (
+        "https://github.com/leethomason/tinyxml2/archive/refs/tags/9.0.0.tar.gz",
+        "cc2f1417c308b1f6acc54f88eb70771a0bf65f76282ce5c40e54cfe52952702c",
+    ),
 }
 
 

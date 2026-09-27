@@ -32,6 +32,13 @@ zlib_sources=(adler32 compress crc32 deflate gzclose gzlib gzread gzwrite
 lua_sources=(lapi lcode ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes
     lparser lstate lstring ltable ltm lundump lvm lzio lauxlib lbaselib ldblib
     liolib lmathlib loslib ltablib lstrlib loadlib linit)
+tinyxml2_sources=(tinyxml2)
+
+# The compiler and source suffix of the project being built. C++ keeps the
+# default exceptions, so each function carries an unwind entry, as shipped
+# C++ does.
+compiler=(clang)
+suffix=c
 
 # Unpack a tarball into $out/src/<name>-<variant>, patched when asked.
 unpack() {
@@ -62,8 +69,8 @@ build() {
             local objects="$dest/obj"
             mkdir -p "$objects"
             for source in "${sources[@]}"; do
-                clang --target="$triple" "${flags[@]}" "-$level" \
-                    -c "$source_dir/$source.c" -o "$objects/$source.o"
+                "${compiler[@]}" --target="$triple" "${flags[@]}" "-$level" \
+                    -c "$source_dir/$source.$suffix" -o "$objects/$source.o"
             done
             ld.lld -shared -o "$dest/lib.so" "$objects"/*.o
             llvm-strip -o "$dest/lib-stripped.so" "$dest/lib.so"
@@ -77,6 +84,8 @@ unpack zlib-1.2.12.tar.gz zlib before
 unpack zlib-1.2.12.tar.gz zlib after zlib-1.2.12-cve-2022-37434.patch
 unpack lua-5.1.5.tar.gz lua before
 unpack lua-5.1.5.tar.gz lua after lua-5.1.5-bug-2.patch
+unpack tinyxml2-9.0.0.tar.gz tinyxml2 before
+unpack tinyxml2-9.0.0.tar.gz tinyxml2 after tinyxml2-9.0.0-parse-deep-delete.patch
 
 for variant in before after; do
     # zlib's configure finds <unistd.h>, which the gz* functions need.
@@ -84,6 +93,12 @@ for variant in before after; do
     build zlib "$variant" "$out/src/zlib-$variant" "${zlib_sources[@]}"
     project_flags=()
     build lua "$variant" "$out/src/lua-$variant/src" "${lua_sources[@]}"
+
+    compiler=(clang++ -std=c++17)
+    suffix=cpp
+    build tinyxml2 "$variant" "$out/src/tinyxml2-$variant" "${tinyxml2_sources[@]}"
+    compiler=(clang)
+    suffix=c
 done
 
 echo "backports: built $(find "$out" -name lib.so | wc -l) libraries in $out"

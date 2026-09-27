@@ -1,0 +1,2 @@
+# The patches must apply byte for byte, and tinyxml2 uses CRLF line endings.
+fixtures/patches/*.patch -text
