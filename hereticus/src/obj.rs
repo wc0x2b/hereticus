@@ -6,6 +6,7 @@ use crate::address::AddressSpace;
 use crate::arch::Arch;
 use crate::arch::arm32::Arm32;
 use crate::arch::mips::Mips32;
+use crate::callee::Links;
 
 /// Why a binary could not be read.
 #[derive(Debug)]
@@ -118,6 +119,8 @@ pub struct Binary {
     pub found_by: FoundBy,
     /// Where the binary sits in memory, which tells an address from a number.
     pub addresses: AddressSpace,
+    /// What the linker left that names the callee of each call.
+    pub links: Links,
 }
 
 impl Binary {
@@ -149,7 +152,8 @@ impl Binary {
             // symbol table order is not guaranteed.
             functions.sort_by_key(|function| (function.address, function.name.clone()));
             let addresses = address_space(&file);
-            return Ok(Self { isa, functions, found_by: FoundBy::Symbols, addresses });
+            let links = Links::of_object(&file);
+            return Ok(Self { isa, functions, found_by: FoundBy::Symbols, addresses, links });
         }
 
         if !has_code_section(&file) {
@@ -172,6 +176,7 @@ impl Binary {
             functions: scanned,
             found_by: FoundBy::Scanning,
             addresses: address_space(&file),
+            links: Links::of_object(&file),
         })
     }
 
@@ -208,7 +213,8 @@ impl Binary {
         }
 
         let addresses = AddressSpace::of_raw_image(base, data.len() as u64);
-        Ok(Self { isa, functions, found_by: FoundBy::Scanning, addresses })
+        let links = Links::of_raw_image(base, data);
+        Ok(Self { isa, functions, found_by: FoundBy::Scanning, addresses, links })
     }
 }
 

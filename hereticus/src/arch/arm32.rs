@@ -11,7 +11,7 @@ use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg};
 
-use super::{Arch, DecodeError, Insn, InsnKind, JumpTable};
+use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable};
 use crate::address::{AddressSpace, ConstantKind};
 
 /// Every A32 instruction is 4 bytes wide.
@@ -372,6 +372,10 @@ impl Arch for Arm32 {
         usize::from(reserves_stack)
     }
 
+    fn data_among_code(&self) -> DataAmongCode {
+        DataAmongCode::LiteralPools
+    }
+
     /// `ldr rX, [pc, imm]` loads one pool word, and `ldrd` and `vldr` two.
     fn literal_pool_words(&self, insns: &[Insn]) -> Vec<u64> {
         /// `pc` reads two instructions ahead of the one that uses it.
@@ -411,6 +415,27 @@ impl Arch for Arm32 {
             .enumerate()
             .filter_map(|(index, jump)| read_jump_table(code, base, &insns[..index], jump))
             .collect()
+    }
+
+    /// The stub LLD and GNU `ld` write for each PLT entry:
+    ///
+    /// ```text
+    /// add ip, pc, imm        ; the decoder writes `adr ip, pc, imm`
+    /// add ip, ip, imm
+    /// ldr pc, [ip, imm]!
+    /// ```
+    ///
+    /// The slot is the sum, from `pc`, which reads two words ahead.
+    fn stub_slot(&self, code: &[u8], address: u64) -> Option<u64> {
+        const PC_AHEAD: u64 = 8;
+
+        let (insns, _) = super::decode_all(self, code.get(..3 * INSN_WIDTH)?, address);
+        let [first, second, third] = insns.as_slice() else { return None };
+        let high = parse_hex(first.operands.strip_prefix("ip, pc, ")?)?;
+        let middle = parse_hex(second.operands.strip_prefix("ip, ip, ")?)?;
+        let low = parse_hex(third.operands.strip_prefix("pc, [ip, ")?.strip_suffix("]!")?)?;
+        let shape = first.mnemonic == "adr" && second.mnemonic == "add" && third.mnemonic == "ldr";
+        shape.then(|| address + PC_AHEAD + high + middle + low)
     }
 
     fn unwind_section(&self) -> Option<&'static str> {
@@ -825,6 +850,22 @@ mod tests {
         let mut code = switch_code(&[0x08, 0x10]);
         code[4..8].copy_from_slice(&0xe591_0000_u32.to_le_bytes()); // ldr r0, [r1]
         assert!(tables_of(&code).is_empty());
+    }
+
+    /// The PLT stub of `StrPair::Reset` in tinyxml2 for ARM, as LLD wrote
+    /// it, jumps through the slot at 0x3ea34.
+    #[test]
+    fn reads_the_slot_a_plt_stub_jumps_through() {
+        let stub: Vec<u8> = [0xe28f_c600_u32, 0xe28c_ca20, 0xe5bc_fccc]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        assert_eq!(Arm32.stub_slot(&stub, 0x1dd60), Some(0x3ea34));
+        assert_eq!(Arm32.stub_slot(&stub[..8], 0x1dd60), None, "too short");
+
+        let mut other = stub.clone();
+        other[8..].copy_from_slice(&0xe59c_f000_u32.to_le_bytes()); // ldr pc, [ip]
+        assert_eq!(Arm32.stub_slot(&other, 0x1dd60), None);
     }
 
     /// `ldm sp!, {r4, pc}` returns, as `pop` does.

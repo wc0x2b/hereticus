@@ -124,6 +124,17 @@ pub trait Arch {
         Vec::new()
     }
 
+    /// Whether this architecture keeps data among its instructions.
+    ///
+    /// Where it does not, every word between the end of one function and the
+    /// prologue of the next is code of the next: a compiler schedules work
+    /// before the frame allocation, as MIPS `lui` often is. Where it does,
+    /// those words can be the pool of the function before. Defaults to
+    /// [`DataAmongCode::Never`].
+    fn data_among_code(&self) -> DataAmongCode {
+        DataAmongCode::Never
+    }
+
     /// The jumps through a table of cases in `insns`, which were decoded
     /// from `code` at `base`.
     ///
@@ -132,6 +143,35 @@ pub trait Arch {
     /// of the table decode as nonsense instructions. Defaults to none.
     fn jump_tables(&self, _code: &[u8], _base: u64, _insns: &[Insn]) -> Vec<JumpTable> {
         Vec::new()
+    }
+
+    /// Where each call in `insns` goes, as far as the code shows, with the
+    /// index of the call.
+    ///
+    /// A call that names its target gives the address. PIC code on some
+    /// architectures calls through a slot of the global offset table
+    /// instead, and an architecture that can see which slot says so.
+    /// Defaults to the targets the decoder resolved.
+    fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
+        insns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, insn)| match insn.kind {
+                InsnKind::Call { target } => Some((index, target.map(CallTarget::Address))),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The slot of the global offset table that a PLT stub jumps through, or
+    /// `None` when `code`, found at `address`, is no such stub.
+    ///
+    /// PIC code calls another library, and any function a library exports,
+    /// through such a stub, so the stub stands between a call and its callee.
+    /// Defaults to `None`, for the architectures that call through the global
+    /// offset table directly.
+    fn stub_slot(&self, _code: &[u8], _address: u64) -> Option<u64> {
+        None
     }
 
     /// Say whether a recovered function holds code or data.
@@ -241,6 +281,25 @@ pub trait Arch {
     fn absolute_call(&self, _word: &[u8]) -> Option<AbsoluteCall> {
         None
     }
+}
+
+/// Whether an architecture keeps data among its instructions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataAmongCode {
+    /// Constants sit in pools between functions, as on ARM.
+    LiteralPools,
+    /// Every word between functions is code or padding.
+    Never,
+}
+
+/// Where a call goes, as far as its code shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallTarget {
+    /// The address of the callee, or of a stub that stands for it.
+    Address(u64),
+    /// The address of a slot of the global offset table that holds the
+    /// callee's address.
+    Slot(u64),
 }
 
 /// A jump through a table of cases.

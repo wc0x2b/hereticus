@@ -19,7 +19,7 @@ use rabbitizer::{
     Instruction, InstructionDisplayFlags, InstructionFlags, IsaVersion, Vram, opcodes::Opcode,
 };
 
-use super::{AbsoluteCall, Arch, DecodeError, Insn, InsnKind, JumpTable};
+use super::{AbsoluteCall, Arch, CallTarget, DecodeError, Insn, InsnKind, JumpTable};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 
 /// Every MIPS32 instruction is 4 bytes wide.
@@ -547,6 +547,47 @@ impl Arch for Mips32 {
     fn jump_tables(&self, code: &[u8], base: u64, insns: &[Insn]) -> Vec<JumpTable> {
         let image = Image { code, base, order: self.order };
         (0..insns.len()).filter_map(|index| read_jump_table(&image, insns, index)).collect()
+    }
+
+    /// PIC code calls a function it does not reach with `bal` through a slot
+    /// of the global offset table:
+    ///
+    /// ```text
+    /// lw   t9, %call16(callee)(gp)
+    /// jalr t9
+    /// ```
+    ///
+    /// The global pointer comes from the `_gp_disp` preamble of the function,
+    /// so `insns` must be one whole function for a slot to be found.
+    fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
+        /// The register the ABI calls through.
+        const CALLEE_ADDRESS: &str = "t9";
+
+        let through_slot = |index: usize| {
+            let (_, load) = last_write(insns, index, CALLEE_ADDRESS)?;
+            if load.mnemonic != "lw" {
+                return None;
+            }
+            let (offset, base) = load_operands(load)?;
+            let (global_pointer, register) = global_pointer_before(insns, index)?;
+            (base == register || base == "gp")
+                .then(|| u64::from((global_pointer as u32).wrapping_add(offset as u32)))
+        };
+
+        insns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, insn)| match insn.kind {
+                InsnKind::Call { target: Some(target) } => {
+                    Some((index, Some(CallTarget::Address(target))))
+                }
+                InsnKind::Call { target: None } if insn.operands.ends_with(CALLEE_ADDRESS) => {
+                    Some((index, through_slot(index).map(CallTarget::Slot)))
+                }
+                InsnKind::Call { target: None } => Some((index, None)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// MIPS runs the instruction after a branch whether or not the branch is
@@ -1492,6 +1533,35 @@ mod tests {
         assert_eq!(
             tables_in(&words, 0),
             [JumpTable { jump: 0x20, words: 0x58..0x60, targets: vec![0x28, 0x30] }]
+        );
+    }
+
+    /// PIC code calls through a slot at the global pointer plus an offset,
+    /// and the preamble gives the global pointer.
+    #[test]
+    fn a_call_through_the_global_offset_table_names_its_slot() {
+        use crate::arch::CallTarget;
+
+        let words = [
+            0x3c02_0000_u32, // 0x00 lui v0, 0
+            0x2442_7ff0,     // 0x04 addiu v0, v0, 0x7ff0: gp is 0x7ff0
+            0x0059_8821,     // 0x08 addu s1, v0, t9
+            0x8e39_8010,     // 0x0c lw t9, -0x7ff0(s1): the slot at 0x0
+            0x0320_f809,     // 0x10 jalr t9
+            0,               // 0x14 nop
+            0x0c00_0010,     // 0x18 jal 0x40
+            0,               // 0x1c nop
+            0x0320_f809,     // 0x20 jalr t9: t9 still holds the slot's callee
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0);
+        assert_eq!(
+            Mips32::BIG.call_targets(&insns),
+            [
+                (4, Some(CallTarget::Slot(0))),
+                (6, Some(CallTarget::Address(0x40))),
+                (8, Some(CallTarget::Slot(0))),
+            ]
         );
     }
 

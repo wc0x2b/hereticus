@@ -3,11 +3,11 @@ source: hereticus/tests/openwrt.rs
 assertion_line: 629
 expression: report
 ---
-0x80060000 -> 0x80060000 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
-0x80060260 -> 0x80060148 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
-0x80060314 -> 0x80060338 Yes score=0.925 edits=Edits { added: 61, removed: 66, edited: 16 } kinds=EditKinds { branches: 23, calls: 6, jumps: 5, memory: 0, other: 109, opaque: 0, constants: 32 } confidence=Similar
-0x800608fc -> 0x8006090c InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1 } confidence=IdenticalShape
-0x80060930 -> 0x80060940 Yes score=0.957 edits=Edits { added: 48, removed: 50, edited: 16 } kinds=EditKinds { branches: 11, calls: 0, jumps: 2, memory: 0, other: 101, opaque: 0, constants: 33 } confidence=Similar
+0x80060000 -> 0x80060000 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
+0x80060260 -> 0x80060148 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
+0x80060314 -> 0x80060338 Yes score=0.925 edits=Edits { added: 61, removed: 66, edited: 16 } kinds=EditKinds { branches: 23, calls: 6, jumps: 5, memory: 0, other: 109, opaque: 0, constants: 32, callees: 0 } confidence=Similar
+0x800608fc -> 0x8006090c InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1, callees: 0 } confidence=IdenticalShape
+0x80060930 -> 0x80060940 Yes score=0.957 edits=Edits { added: 48, removed: 50, edited: 16 } kinds=EditKinds { branches: 11, calls: 0, jumps: 2, memory: 0, other: 101, opaque: 0, constants: 33, callees: 0 } confidence=Similar
 gone 0x8006005c
 gone 0x80060294
 new  0x8006005c

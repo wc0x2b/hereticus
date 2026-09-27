@@ -7,6 +7,7 @@
 
 pub mod address;
 pub mod arch;
+pub mod callee;
 pub mod matching;
 pub mod norm;
 pub mod obj;

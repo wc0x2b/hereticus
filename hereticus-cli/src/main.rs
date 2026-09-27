@@ -485,6 +485,7 @@ fn name_of_kind(kind: EditKind) -> &'static str {
     match kind {
         EditKind::Branch => "branch",
         EditKind::Call => "call",
+        EditKind::Callee => "callee",
         EditKind::Jump => "jump",
         EditKind::Memory => "mem",
         EditKind::Constant => "const",
@@ -505,6 +506,7 @@ fn describe_confidence(confidence: Confidence) -> &'static str {
         Confidence::IdenticalShape => "identical shape",
         Confidence::SameName => "same name",
         Confidence::TwinInOrder => "twin, in order",
+        Confidence::SameCallers => "same callers",
         Confidence::Similar => "similar",
     }
 }
@@ -548,7 +550,7 @@ fn unmatched_word(word: &'static str, contents: Contents) -> String {
 /// an instruction is a real edit whatever it scores, and one that scores below
 /// a perfect match differs in shape even if the counts round to nothing.
 fn is_retouched(pair: &Match) -> bool {
-    pair.edits.total() == 0 && pair.score >= 1.0
+    pair.edits.total() == 0 && pair.kinds.callees == 0 && pair.score >= 1.0
 }
 
 /// Which quiet changes to list.
