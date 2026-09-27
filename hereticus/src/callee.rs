@@ -31,7 +31,7 @@ use object::{
 };
 
 use crate::arch::{Arch, CallTarget, decode_all};
-use crate::obj::Function;
+use crate::obj::{Function, stable_name};
 
 /// What the linker left that names the callees of a binary.
 #[derive(Clone, Debug, Default)]
@@ -229,7 +229,7 @@ fn call_site_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
             let Some(name) = file
                 .symbol_by_index(index)
                 .ok()
-                .and_then(|symbol| symbol.name().ok().map(str::to_string))
+                .and_then(|symbol| symbol.name().ok().map(|name| stable_name(name).to_string()))
                 .filter(|name| !name.is_empty())
             else {
                 continue;
