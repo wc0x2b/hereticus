@@ -9,7 +9,7 @@
 
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
-use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
+use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg};
 
 use super::{Arch, DecodeError, Insn, InsnKind};
 use crate::address::{AddressSpace, ConstantKind};
@@ -40,6 +40,9 @@ const UNKNOWN_MNEMONIC: &str = "(unknown)";
 const REG_PC: u16 = 15;
 /// Register number of the link register.
 const REG_LR: u16 = 14;
+
+/// Register number of the stack pointer.
+const REG_SP: u16 = 13;
 
 /// ARM32 in A32 (not Thumb) mode.
 #[derive(Clone, Copy, Debug, Default)]
@@ -505,13 +508,11 @@ fn classify(inst: &Instruction, address: u64) -> InsnKind {
         }
 
         // Anything that writes the PC leaves the current block.
-        _ if writes_pc(inst) => {
-            if unconditional {
-                InsnKind::Return
-            } else {
-                InsnKind::Branch { target: None }
-            }
-        }
+        _ if writes_pc(inst) => match (unconditional, returns(inst)) {
+            (false, _) => InsnKind::Branch { target: None },
+            (true, true) => InsnKind::Return,
+            (true, false) => InsnKind::Jump { target: None },
+        },
 
         _ => InsnKind::Normal,
     }
@@ -530,6 +531,33 @@ fn branch_target(inst: &Instruction, address: u64) -> Option<u64> {
             u64::try_from(address as i64 + byte_offset).ok()
         }
         _ => None,
+    }
+}
+
+/// Report whether a write of the program counter returns: it takes the PC
+/// from the stack, as `pop {..., pc}` does, or from the link register.
+///
+/// Any other write is a computed jump. `add pc, r3, r2` jumps through a
+/// table of cases, and the code after it is more of the same function.
+fn returns(inst: &Instruction) -> bool {
+    let is = |reg: &Reg, number: u16| reg.number() as u16 == number;
+    let base_is_sp = |operand: &Operand| match operand {
+        Operand::Reg(reg) | Operand::RegWBack(reg, _) | Operand::RegDeref(reg) => is(reg, REG_SP),
+        Operand::RegDerefPostindexRegShift(reg, ..)
+        | Operand::RegDerefPreindexRegShift(reg, ..)
+        | Operand::RegDerefPostindexOffset(reg, ..)
+        | Operand::RegDerefPreindexOffset(reg, ..)
+        | Operand::RegDerefPostindexReg(reg, ..)
+        | Operand::RegDerefPreindexReg(reg, ..) => is(reg, REG_SP),
+        _ => false,
+    };
+
+    match inst.opcode {
+        Opcode::POP => true,
+        Opcode::LDM(..) => base_is_sp(&inst.operands[0]),
+        Opcode::LDR => base_is_sp(&inst.operands[1]),
+        Opcode::MOV => matches!(&inst.operands[1], Operand::Reg(reg) if is(reg, REG_LR)),
+        _ => false,
     }
 }
 
@@ -634,10 +662,23 @@ mod tests {
         );
     }
 
-    /// `add pc, pc, r0, lsl 2` writes the PC: a jump through a table.
+    /// `add pc, pc, r0, lsl 2` and `ldr pc, [r1, r0, lsl 2]` jump through a
+    /// table. They leave the block, but not the function.
     #[test]
-    fn a_computed_write_of_the_pc_leaves() {
-        assert_eq!(decode_one(0xe08f_f100_u32.to_le_bytes()).kind, InsnKind::Return);
+    fn a_computed_write_of_the_pc_is_a_jump() {
+        assert_eq!(decode_one(0xe08f_f100_u32.to_le_bytes()).kind, InsnKind::Jump { target: None });
+        assert_eq!(decode_one(0xe791_f100_u32.to_le_bytes()).kind, InsnKind::Jump { target: None });
+        assert_eq!(
+            decode_one(0xe1a0_f003_u32.to_le_bytes()).kind,
+            InsnKind::Jump { target: None },
+            "mov pc, r3"
+        );
+    }
+
+    /// `ldm sp!, {r4, pc}` returns, as `pop` does.
+    #[test]
+    fn a_load_multiple_from_the_stack_is_a_return() {
+        assert_eq!(decode_one(0xe8bd_8010_u32.to_le_bytes()).kind, InsnKind::Return);
     }
 
     /// A conditional return falls through when the condition fails.
