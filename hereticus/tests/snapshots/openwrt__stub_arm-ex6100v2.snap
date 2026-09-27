@@ -1,5 +1,6 @@
 ---
 source: hereticus/tests/openwrt.rs
+assertion_line: 211
 expression: report
 ---
 0x80208000 -> 0x80208000 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalShape
@@ -30,8 +31,6 @@ expression: report
 0x80208b04 -> 0x80208b04 Yes score=0.944 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 } confidence=Similar
 0x80208b94 -> 0x80208b94 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
 0x80208c44 -> 0x80208c44 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
-0x80208d58 -> 0x80208d58 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
-0x80208dbc -> 0x80208dbc No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
 0x80208e08 -> 0x80208e08 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
 0x80208e20 -> 0x80208e20 Unreadable score=0.976 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 1, constants: 0 } confidence=Similar
 0x80208f68 -> 0x80208f68 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode

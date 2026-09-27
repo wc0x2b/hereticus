@@ -39,7 +39,7 @@
 //!   backwards over the end of its own function, and without this the function
 //!   after it is lost.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use object::{Object, ObjectSection, SectionKind};
 
@@ -408,6 +408,12 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         .filter(|(_, target)| *target >= base && *target < end)
         .collect();
 
+    // Where each branch lands, and every place it comes from.
+    let mut sources_of: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    for &(from, to) in &branches {
+        sources_of.entry(to).or_default().push(from);
+    }
+
     // A branch that starts at or before a return and lands after it proves
     // control flows across that return, so the return is inside a function
     // rather than at the end of one.
@@ -415,12 +421,33 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         |address: u64| branches.iter().any(|(from, to)| *from <= address && *to > address);
 
     let mut out = Vec::new();
+    // The last return before the current instruction. The code after it is
+    // the function the current instruction is in, or the start of it.
+    let mut previous_return = None;
     for (index, insn) in insns.iter().enumerate() {
         // Only code that does not fall through can be followed by a new
         // function. Everything else continues the one it is in.
         if !matches!(insn.kind, InsnKind::Return | InsnKind::Jump { .. }) || !is_code(&insn) {
             continue;
         }
+        let since = previous_return;
+        if insn.kind == InsnKind::Return {
+            previous_return = Some(insn.address);
+        }
+
+        // No branch lands on data, so a word that a branch from this
+        // function reaches is code, and a literal pool cannot hold it. Only
+        // a branch from after the last return counts: in a raw image, data
+        // decodes as branches too, and these land anywhere. Measured on zlib
+        // for MIPS, a word of `.rodata` "branched" to the start of
+        // `inflateMark`, 126 KiB away.
+        let reached_here = |address: u64| {
+            sources_of.get(&address).is_some_and(|sources| {
+                sources
+                    .iter()
+                    .any(|&from| from < insn.address && since.is_none_or(|since| from > since))
+            })
+        };
 
         // Step over the delay slot, which belongs to the terminator rather
         // than to what follows, and then over any padding the linker put
@@ -449,7 +476,7 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         // call or branch to name it, so this is the one source that can find
         // it. Look a short way ahead, stopping at any further terminator so the
         // scan cannot cross into real control flow.
-        if let Some(prologue) = prologue_past_pool(&insns, next, arch) {
+        if let Some(prologue) = prologue_past_pool(&insns, next, &reached_here, arch) {
             out.push(prologue);
             continue;
         }
@@ -494,9 +521,20 @@ fn start_of(insns: &[Insn], prologue: usize, arch: &dyn Arch) -> u64 {
 /// inside a function rather than after a pool. The bound keeps a pool — a
 /// handful of words — from being confused with the body of a function.
 ///
+/// A word a branch lands on is code, not a pool, so the scan stops there too.
+/// Without this, a compiler that moves the frame allocation down to the one
+/// path that calls, as `-Os` does, splits the function at it: measured on
+/// zlib for MIPS, `_tr_align` split in two after an internal `b`.
+///
+/// `reached` says whether a branch of the function lands on an address.
 /// Returns the prologue address, or `None` when no prologue sits within the
 /// window.
-fn prologue_past_pool(insns: &[Insn], from: usize, arch: &dyn Arch) -> Option<u64> {
+fn prologue_past_pool(
+    insns: &[Insn],
+    from: usize,
+    reached: &dyn Fn(u64) -> bool,
+    arch: &dyn Arch,
+) -> Option<u64> {
     /// The most words to step over before a prologue. A literal pool between
     /// two functions holds a few constants; a longer run is a function body,
     /// not a pool, and its first prologue-shaped word is not a function start.
@@ -516,7 +554,7 @@ fn prologue_past_pool(insns: &[Insn], from: usize, arch: &dyn Arch) -> Option<u6
         // instruction or as `Unknown`. Any branch, call, jump or return means
         // the scan has entered a function body, where a `push` is a mid-body
         // save rather than a prologue, so stop before claiming it.
-        if !matches!(insn.kind, InsnKind::Normal | InsnKind::Unknown) {
+        if !matches!(insn.kind, InsnKind::Normal | InsnKind::Unknown) || reached(insn.address) {
             return None;
         }
         next += 1;
@@ -729,6 +767,63 @@ mod tests {
         // bx lr, nop, add
         let code = [0x1e, 0xff, 0x2f, 0xe1, 0x00, 0xf0, 0x20, 0xe3, 0x00, 0x00, 0x81, 0xe0];
         assert_eq!(starts_after_returns(&Arm32, &code, 0), vec![0x8], "the nop is padding");
+    }
+
+    /// Little-endian MIPS code from words.
+    fn mips_code(words: &[u32]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    /// `-Os` can make the frame only on the path that calls. The code
+    /// between the jump and that frame is a branch target, so it is not a
+    /// pool, and the frame does not start a function.
+    #[test]
+    fn a_frame_made_late_does_not_split_its_function() {
+        use crate::arch::mips::Mips32;
+
+        let with_first = |first: u32| {
+            mips_code(&[
+                first,           // 0x00
+                0x0000_0000,     // 0x04 nop
+                0x2402_0001,     // 0x08 addiu v0, zero, 1
+                0x1000_0002,     // 0x0c b 0x18
+                0x0000_0000,     // 0x10 nop
+                0x2402_0002,     // 0x14 addiu v0, zero, 2
+                0x27bd_fff8,     // 0x18 addiu sp, sp, -8
+                0x03e0_0008,     // 0x1c jr ra
+                0x27bd_0008_u32, // 0x20 addiu sp, sp, 8
+            ])
+        };
+
+        // beq a0, zero, 0x14: the word after the jump is code.
+        let branched = with_first(0x1080_0004);
+        assert!(starts_after_returns(&Mips32::LITTLE, &branched, 0).is_empty());
+
+        // addiu v0, zero, 3: nothing shows the word is code, so it can be a
+        // pool, and the frame after it starts a function.
+        let not_branched = with_first(0x2402_0003);
+        assert_eq!(starts_after_returns(&Mips32::LITTLE, &not_branched, 0), vec![0x18]);
+    }
+
+    /// A branch from before the last return is not of this function. In a
+    /// raw image such a "branch" is often data, and it must not hide a
+    /// function start.
+    #[test]
+    fn a_branch_from_an_earlier_function_does_not_block_a_start() {
+        use crate::arch::mips::Mips32;
+
+        let code = mips_code(&[
+            0x1080_0006,     // 0x00 beq a0, zero, 0x1c
+            0x0000_0000,     // 0x04 nop
+            0x03e0_0008,     // 0x08 jr ra
+            0x0000_0000,     // 0x0c nop
+            0x2402_0001,     // 0x10 addiu v0, zero, 1
+            0x03e0_0008,     // 0x14 jr ra
+            0x0000_0000,     // 0x18 nop
+            0x2402_0002,     // 0x1c addiu v0, zero, 2
+            0x27bd_fff8_u32, // 0x20 addiu sp, sp, -8
+        ]);
+        assert_eq!(starts_after_returns(&Mips32::LITTLE, &code, 0), vec![0x20]);
     }
 
     /// A delay slot belongs to the instruction before it, not to the function

@@ -1,19 +1,5 @@
 # TODO
 
-## Follow a split function across its pieces
-
-A scan without symbols splits a function when the compiler puts a second
-piece, with its own frame, after the first return. The later piece reaches
-the global offset table through a register the earlier piece set, which the
-scan cannot see, so a table offset reads as a changed constant. The backport
-tests list the two known cases in `KNOWN_EXTRAS`:
-
-- `_tr_align`, zlib, MIPS `-Os`, stripped and raw.
-- `luaopen_base`, Lua, ARM `-Os`, raw.
-
-Carrying the global pointer, and any base built from `pc`, from one
-recovered function into the next one would remove both.
-
 ## Test C++ and Rust code
 
 Every fixture and backport is C. C++ and Rust compilers emit code C does not:
