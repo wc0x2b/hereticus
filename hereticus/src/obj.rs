@@ -203,10 +203,20 @@ impl Binary {
         }
 
         let regions = [(base, data)];
-        let functions: Vec<Function> = crate::scan::recover_from_regions(&regions, &[], isa.arch())
-            .into_iter()
-            .map(|found| found.function)
-            .collect();
+        let mut index = crate::scan::find_exception_index(data, base, isa.arch());
+        if index.is_empty() {
+            let order = match isa {
+                Isa::Mips32Be => crate::unwind::ByteOrder::Big,
+                Isa::Arm32 | Isa::Mips32 => crate::unwind::ByteOrder::Little,
+            };
+            let ranges = crate::unwind::find_function_ranges(data, base, order);
+            index = crate::scan::index_from_ranges(&ranges);
+        }
+        let functions: Vec<Function> =
+            crate::scan::recover_from_regions(&regions, &index, isa.arch())
+                .into_iter()
+                .map(|found| found.function)
+                .collect();
 
         if functions.is_empty() {
             return Err(ObjError::NoFunctions);

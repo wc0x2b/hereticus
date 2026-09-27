@@ -19,7 +19,7 @@ use rabbitizer::{
     Instruction, InstructionDisplayFlags, InstructionFlags, IsaVersion, Vram, opcodes::Opcode,
 };
 
-use super::{AbsoluteCall, Arch, CallTarget, DecodeError, Insn, InsnKind, JumpTable};
+use super::{AbsoluteCall, Arch, CallTarget, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 
 /// Every MIPS32 instruction is 4 bytes wide.
@@ -451,8 +451,13 @@ impl Arch for Mips32 {
     ///
     /// Only a raw image holds the global offset table among its code, so only
     /// there is the second shape read.
-    fn jump_tables(&self, code: &[u8], base: u64, insns: &[Insn]) -> Vec<JumpTable> {
-        let image = Image { code, base, order: self.order };
+    fn jump_tables(
+        &self,
+        memory: &Memory<'_>,
+        code: core::ops::Range<u64>,
+        insns: &[Insn],
+    ) -> Vec<JumpTable> {
+        let image = Image { memory, code, order: self.order };
         (0..insns.len()).filter_map(|index| read_jump_table(&image, insns, index)).collect()
     }
 
@@ -849,24 +854,21 @@ impl<'a> SavedRegisters<'a> {
 
 /// Code and where it lies, to read the words a table holds.
 struct Image<'a> {
-    code: &'a [u8],
-    base: u64,
+    memory: &'a Memory<'a>,
+    code: core::ops::Range<u64>,
     order: ByteOrder,
 }
 
 impl Image<'_> {
-    /// The word at `address`, or `None` outside the code.
+    /// The word at `address`, or `None` where nothing loads.
     fn word(&self, address: u64) -> Option<u32> {
-        let offset = usize::try_from(address.checked_sub(self.base)?).ok()?;
-        let bytes = self.code.get(offset..offset.checked_add(INSN_WIDTH)?)?;
+        let bytes = self.memory.bytes(address, INSN_WIDTH)?;
         Some(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     /// Report whether a case can start at `address`.
     fn holds_code_at(&self, address: u64) -> bool {
-        address.is_multiple_of(INSN_WIDTH as u64)
-            && address >= self.base
-            && address < self.base + self.code.len() as u64
+        address.is_multiple_of(INSN_WIDTH as u64) && self.code.contains(&address)
     }
 }
 
@@ -932,7 +934,9 @@ fn read_jump_table(image: &Image<'_>, insns: &[Insn], index: usize) -> Option<Ju
     let mut targets = Vec::new();
     let mut word = table;
     for _ in 0..bound.unwrap_or(MOST_CASES) {
-        let value = image.word(word)?;
+        // The end of the section ends the table, as `Arith` in Lua for MIPS
+        // ends `.rodata`.
+        let Some(value) = image.word(word) else { break };
         let target = match entries {
             Entries::Addresses => u64::from(value),
             Entries::FromGlobalPointer { global_pointer } => {
@@ -1579,7 +1583,8 @@ mod tests {
     fn tables_in(words: &[u32], base: u64) -> Vec<JumpTable> {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
         let (insns, _) = decode_all(&Mips32::BIG, &code, base);
-        Mips32::BIG.jump_tables(&code, base, &insns)
+        let regions = [(base, code.as_slice())];
+        Mips32::BIG.jump_tables(&Memory::new(&regions), base..base + code.len() as u64, &insns)
     }
 
     /// Code that is not PIC holds the address of each case. The `sltiu`
@@ -1618,6 +1623,16 @@ mod tests {
                 words: 0x8000_0040..0x8000_004c,
                 targets: vec![0x8000_0024, 0x8000_002c, 0x8000_0030],
             }]
+        );
+    }
+
+    /// The end of what loads ends a table, even before its bound.
+    #[test]
+    fn the_end_of_memory_ends_the_table() {
+        let words = absolute_switch(4);
+        assert_eq!(
+            tables_in(&words[..19], 0x8000_0000)[0].targets,
+            [0x8000_0024, 0x8000_002c, 0x8000_0030]
         );
     }
 

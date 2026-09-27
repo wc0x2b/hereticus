@@ -37,6 +37,7 @@ struct Build {
 enum Project {
     Zlib,
     Lua,
+    Tinyxml2,
 }
 
 impl Project {
@@ -44,6 +45,7 @@ impl Project {
         match self {
             Self::Zlib => "zlib",
             Self::Lua => "lua",
+            Self::Tinyxml2 => "tinyxml2",
         }
     }
 
@@ -52,6 +54,7 @@ impl Project {
         match self {
             Self::Zlib => &["inflate"],
             Self::Lua => &["luaZ_fill", "luaZ_init"],
+            Self::Tinyxml2 => &["_ZN8tinyxml27XMLNode9ParseDeepEPcPNS_7StrPairEPi"],
         }
     }
 
@@ -60,6 +63,7 @@ impl Project {
         match self {
             Self::Zlib => &[],
             Self::Lua => &["lua_load", "luaZ_read", "luaZ_lookahead"],
+            Self::Tinyxml2 => &[],
         }
     }
 }
@@ -235,7 +239,7 @@ fn build(project: Project, arch: &'static str, level: &'static str) -> Build {
 /// With symbols, the report names exactly the functions the fix touched.
 #[rstest]
 fn with_symbols_the_fix_is_named_exactly(
-    #[values(Project::Zlib, Project::Lua)] project: Project,
+    #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values("arm", "mips", "mipsel")] arch: &'static str,
     #[values("O2", "Os")] level: &'static str,
 ) {
@@ -259,7 +263,7 @@ fn with_symbols_the_fix_is_named_exactly(
 /// Stripped, the report covers the fix and strays nowhere else.
 #[rstest]
 fn stripped_the_fix_is_covered_and_nothing_else(
-    #[values(Project::Zlib, Project::Lua)] project: Project,
+    #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values("arm", "mips", "mipsel")] arch: &'static str,
     #[values("O2", "Os")] level: &'static str,
 ) {
@@ -275,7 +279,7 @@ fn stripped_the_fix_is_covered_and_nothing_else(
 /// As a raw image, with no container at all, the same holds.
 #[rstest]
 fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
-    #[values(Project::Zlib, Project::Lua)] project: Project,
+    #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values("arm", "mips", "mipsel")] arch: &'static str,
     #[values("O2", "Os")] level: &'static str,
 ) {
@@ -291,7 +295,7 @@ fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
 /// Each build compared with itself reports nothing, in every reading.
 #[rstest]
 fn a_build_compared_with_itself_reports_nothing(
-    #[values(Project::Zlib, Project::Lua)] project: Project,
+    #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values("arm", "mips", "mipsel")] arch: &'static str,
     #[values("before", "after")] variant: &str,
 ) {

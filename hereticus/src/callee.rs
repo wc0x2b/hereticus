@@ -114,8 +114,12 @@ fn resolve(arch: &dyn Arch, links: &Links, functions: &[Function], target: CallT
     match target {
         CallTarget::Address(address) => {
             let stub = links.bytes_at(address).and_then(|code| arch.stub_slot(code, address));
-            match stub {
-                Some(slot) => resolve_slot(arch, links, functions, slot),
+            // A stub's slot holds the address of the PLT header until the
+            // dynamic linker binds it, the same for every callee. So where
+            // no relocation names the slot, as in a raw image, the stub
+            // itself stands for its callee: each callee has one.
+            match stub.and_then(|slot| links.slots.get(&slot)) {
+                Some(name) => Callee::Named(name.clone()),
                 None => function_at(functions, address),
             }
         }

@@ -5,15 +5,18 @@ expression: report
 ---
 0x80208000 -> 0x80208000 Yes score=0.885 edits=Edits { added: 11, removed: 6, edited: 5 } kinds=EditKinds { branches: 1, calls: 1, jumps: 0, memory: 6, other: 12, opaque: 2, constants: 9, callees: 0 } confidence=Similar
 0x80208340 -> 0x80208360 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
+0x802083a0 -> 0x802083c0 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x802083dc -> 0x802083fc No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x80208450 -> 0x80208470 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x80208558 -> 0x80208578 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x802085bc -> 0x802085dc No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=TwinInOrder
-0x802085c0 -> 0x802085e0 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=TwinInOrder
-0x802085c4 -> 0x802085e4 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
+0x802085c0 -> 0x802085e0 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x802085d0 -> 0x802085f0 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=TwinInOrder
-0x802085d4 -> 0x802085f4 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=TwinInOrder
-0x802085d8 -> 0x802085f8 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
+0x802085d4 -> 0x802085f4 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
+0x80208634 -> 0x80208654 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=TwinInOrder
+0x80208638 -> 0x80208658 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
+0x80208724 -> 0x80208744 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=TwinInOrder
+0x80208728 -> 0x80208748 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=TwinInOrder
 0x80208740 -> 0x80208760 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x80208768 -> 0x80208788 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x80208780 -> 0x802087a0 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
@@ -56,14 +59,15 @@ expression: report
 0x8020b6a4 -> 0x8020b864 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x8020b6c0 -> 0x8020b880 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x8020b6e8 -> 0x8020e150 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
+0x8020b784 -> 0x8020e1ec No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x8020b828 -> 0x8020e290 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
+0x8020b8f4 -> 0x8020e35c No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x8020b9ac -> 0x8020e414 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x8020b9c4 -> 0x8020e42c No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x8020b9dc -> 0x8020e444 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalShape
 0x8020b9ec -> 0x8020e454 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
 0x8020ba08 -> 0x8020e470 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
-0x8020ba10 -> 0x8020e478 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0 } confidence=IdenticalCode
-0x8020ba20 -> 0x8020e488 Yes score=0.763 edits=Edits { added: 34, removed: 0, edited: 1 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 6, other: 21, opaque: 7, constants: 0, callees: 0 } confidence=Similar
+0x8020ba10 -> 0x8020e478 Data score=0.769 edits=Edits { added: 34, removed: 0, edited: 1 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 6, other: 21, opaque: 7, constants: 0, callees: 0 } confidence=Similar
 gone 0x80209154
 gone 0x8020b1f8
 gone 0x8020b554
