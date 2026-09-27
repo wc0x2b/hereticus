@@ -1,13 +1,5 @@
 # TODO
 
-## Read the rest of MIPS32 Release 2
-
-A few MIPS32 words in each OpenWrt MIPS kernel still do not decode, and
-LLVM reads them: `jr.hb` (7 to 23 in each), `eret`, `deret` and `synci`.
-`jr.hb ra` is a return, so a function that ends with one runs on into the
-next. Add them to `hereticus/src/arch/mips32.rs`, and let a word read there
-move control.
-
 ## Follow a split function across its pieces
 
 A scan without symbols splits a function when the compiler puts a second

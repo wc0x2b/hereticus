@@ -425,7 +425,7 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         // Step over the delay slot, which belongs to the terminator rather
         // than to what follows, and then over any padding the linker put
         // between functions and the pool the function ends with.
-        let mut next = index + 1 + arch.delay_slots();
+        let mut next = index + 1 + arch.delay_slots(insn);
         while insns.get(next).is_some_and(|insn| arch.is_padding(insn) || !is_code(&insn)) {
             next += 1;
         }

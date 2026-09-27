@@ -8,7 +8,7 @@ matched 16643
 {No: 13921, Reordered: 9, Data: 16, InDetail: 2049, Yes: 648}
 gone 426
 new 515
-fingerprint 0xe38c90d23f038d63
+fingerprint 0xbf0ffa293db49d10
 
 strongest changes:
 0x800ae5a8 -> 0x800aee78 score=0.999 edits=Edits { added: 2, removed: 1, edited: 0 } kinds=EditKinds { branches: 2, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }

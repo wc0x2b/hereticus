@@ -27,8 +27,11 @@ const REGISTERS: [&str; 32] = [
     "ra",
 ];
 
+use super::InsnKind;
+
 /// The major opcodes this module reads under.
 const SPECIAL: u32 = 0x00;
+const REGIMM: u32 = 0x01;
 const COP0: u32 = 0x10;
 const SPECIAL2: u32 = 0x1c;
 const SPECIAL3: u32 = 0x1f;
@@ -37,22 +40,91 @@ const PREF: u32 = 0x33;
 /// `rs` of the COP0 `mfmc0` group, which holds `di` and `ei`.
 const MFMC0: u32 = 0x0b;
 
-/// Read a MIPS32 or MIPS32r2 word as a mnemonic and its operands.
+/// One word this module reads.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Word {
+    pub(super) mnemonic: &'static str,
+    pub(super) operands: String,
+    pub(super) kind: InsnKind,
+}
+
+/// `eret` and `deret`, which return from an exception and from a debug
+/// exception. Each is one fixed word.
+const ERET: u32 = 0x4200_0018;
+const DERET: u32 = 0x4200_001f;
+
+/// Report whether a mnemonic returns from an exception.
+///
+/// Unlike every other MIPS jump, such a return has no delay slot.
+pub(super) fn is_exception_return(mnemonic: &str) -> bool {
+    matches!(mnemonic, "eret" | "deret")
+}
+
+/// Read a MIPS32 or MIPS32r2 word.
 ///
 /// Returns `None` for a word this module does not know, which leaves it
 /// unreadable.
-pub(super) fn decode(word: u32) -> Option<(&'static str, String)> {
+pub(super) fn decode(word: u32) -> Option<Word> {
     let fields = Fields::of(word);
-    match fields.opcode {
+    if let Some(found) = control(word, &fields) {
+        return Some(found);
+    }
+
+    let (mnemonic, operands) = match fields.opcode {
         SPECIAL => special(&fields),
         SPECIAL2 => special2(&fields),
         SPECIAL3 => special3(&fields),
         COP0 => cop0(&fields),
+        // `synci offset(base)` makes a written instruction visible. It sits
+        // under REGIMM, in the `rt` MIPS II leaves reserved.
+        REGIMM if fields.rt == 0x1f => {
+            Some(("synci", format!("{}({})", fields.offset(), fields.rs_name())))
+        }
         PREF => {
             Some(("pref", format!("{:#x}, {}({})", fields.rt, fields.offset(), fields.rs_name())))
         }
         _ => None,
-    }
+    }?;
+    Some(Word { mnemonic, operands, kind: InsnKind::Normal })
+}
+
+/// The words that move control: the exception returns, and `jr` and `jalr`
+/// with the hazard barrier bit.
+///
+/// Release 2 marks the barrier with the top bit of the field `jr` leaves
+/// zero. The jump itself is the same as without it, so it moves control the
+/// same: `jr.hb ra` returns, and a kernel uses `jr.hb` through another
+/// register to reach the next instruction once a hazard clears.
+fn control(word: u32, fields: &Fields) -> Option<Word> {
+    const JR: u32 = 0x08;
+    const JALR: u32 = 0x09;
+    const HAZARD_BARRIER: u32 = 0x10;
+    const RA: u32 = 31;
+
+    let (mnemonic, operands, kind) = match word {
+        ERET => ("eret", String::new(), InsnKind::Return),
+        DERET => ("deret", String::new(), InsnKind::Return),
+        _ if fields.opcode != SPECIAL || fields.sa != HAZARD_BARRIER || fields.rt != 0 => {
+            return None;
+        }
+        _ if fields.function == JR && fields.rd == 0 => {
+            let kind =
+                if fields.rs == RA { InsnKind::Return } else { InsnKind::Jump { target: None } };
+            ("jr.hb", fields.rs_name().to_string(), kind)
+        }
+        // `jalr` names its link register only when it is not `ra`, as
+        // `rabbitizer` writes `jalr`.
+        _ if fields.function == JALR => {
+            let operands = if fields.rd == RA {
+                fields.rs_name().to_string()
+            } else {
+                format!("{}, {}", fields.rd_name(), fields.rs_name())
+            };
+            ("jalr.hb", operands, InsnKind::Call { target: None })
+        }
+        _ => return None,
+    };
+    Some(Word { mnemonic, operands, kind })
 }
 
 /// The fields of an instruction word.
@@ -316,13 +388,56 @@ mod tests {
     use super::*;
 
     fn text(word: u32) -> Option<String> {
-        decode(word).map(|(mnemonic, operands)| {
+        decode(word).map(|Word { mnemonic, operands, .. }| {
             if operands.is_empty() {
                 mnemonic.to_string()
             } else {
                 format!("{mnemonic} {operands}")
             }
         })
+    }
+
+    fn kind(word: u32) -> Option<InsnKind> {
+        decode(word).map(|word| word.kind)
+    }
+
+    /// `jr.hb $ra`, `jr.hb $3` and `jalr.hb $25`, as LLVM assembles them.
+    #[test]
+    fn reads_the_hazard_barrier_jumps() {
+        assert_eq!(text(0x03e0_0408).as_deref(), Some("jr.hb ra"));
+        assert_eq!(kind(0x03e0_0408), Some(InsnKind::Return));
+        assert_eq!(text(0x0060_0408).as_deref(), Some("jr.hb v1"));
+        assert_eq!(kind(0x0060_0408), Some(InsnKind::Jump { target: None }));
+        assert_eq!(text(0x0320_fc09).as_deref(), Some("jalr.hb t9"));
+        assert_eq!(text(0x0320_2409).as_deref(), Some("jalr.hb a0, t9"));
+        assert_eq!(kind(0x0320_fc09), Some(InsnKind::Call { target: None }));
+    }
+
+    /// A `jr` with any other bit in the hint field is not `jr.hb`.
+    #[test]
+    fn a_jump_with_another_hint_is_refused() {
+        assert_eq!(decode(0x03e0_0208), None, "hint 8");
+        assert_eq!(decode(0x03e1_0408), None, "rt set");
+        assert_eq!(decode(0x03e0_0c08), None, "rd set");
+    }
+
+    #[test]
+    fn reads_the_exception_returns() {
+        assert_eq!(text(0x4200_0018).as_deref(), Some("eret"));
+        assert_eq!(text(0x4200_001f).as_deref(), Some("deret"));
+        assert_eq!(kind(0x4200_0018), Some(InsnKind::Return));
+        assert_eq!(kind(0x4200_001f), Some(InsnKind::Return));
+        assert!(is_exception_return("eret") && is_exception_return("deret"));
+        assert!(!is_exception_return("jr"));
+    }
+
+    /// `synci 0($4)` and `synci -16($13)`.
+    #[test]
+    fn reads_synci() {
+        assert_eq!(text(0x049f_0000).as_deref(), Some("synci 0x0(a0)"));
+        assert_eq!(text(0x05bf_fff0).as_deref(), Some("synci -0x10(t5)"));
+        assert_eq!(kind(0x049f_0000), Some(InsnKind::Normal));
+        assert_eq!(decode(0x049e_0000), None, "another REGIMM rt");
     }
 
     /// The encodings below come from the MIPS32 Release 2 manual, as GNU `as`
@@ -447,8 +562,10 @@ mod tests {
     /// target, so no instruction here reads as a branch to the matcher.
     #[test]
     fn no_operand_reads_as_a_branch_target() {
-        for word in [0x7c03_e83b_u32, 0x4002_6001, 0x0022_1602, 0x7c82_3a00, 0xcc80_0010] {
-            let (_, operands) = decode(word).expect("a known word");
+        for word in
+            [0x7c03_e83b_u32, 0x4002_6001, 0x0022_1602, 0x7c82_3a00, 0xcc80_0010, 0x0060_0408]
+        {
+            let Word { operands, .. } = decode(word).expect("a known word");
             assert!(
                 operands.split(',').all(|operand| !crate::arch::is_branch_target(operand.trim())),
                 "{word:#010x}: {operands}"
