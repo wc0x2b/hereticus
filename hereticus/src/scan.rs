@@ -81,6 +81,9 @@ pub enum Source {
     ExceptionIndex,
     /// Something calls it, so it must be a function. Exact for what it finds.
     CallTarget,
+    /// It opens with a sequence only a function entry runs. See
+    /// [`Arch::is_function_entry`].
+    Entry,
     /// It follows the end of another function. A guess.
     AfterReturn,
 }
@@ -167,6 +170,9 @@ pub fn recover_from_regions(
     for (base, code) in regions {
         for address in call_targets(arch, code, *base) {
             starts.insert((address, Source::CallTarget));
+        }
+        for address in function_entries(arch, code, *base) {
+            starts.insert((address, Source::Entry));
         }
         for address in starts_after_returns(arch, code, *base) {
             starts.insert((address, Source::AfterReturn));
@@ -338,6 +344,21 @@ fn sign_extend_31(value: u32) -> i64 {
     if value & SIGN_BIT != 0 { i64::from(value) - (1 << 31) } else { i64::from(value) }
 }
 
+/// Collect the addresses where a sequence opens that only a function entry
+/// runs.
+///
+/// A function reached only through a pointer or the global offset table has
+/// no call to name it, and one after a call that does not return, such as
+/// `_Unwind_Resume`, follows no return. Measured on tinyxml2 for MIPS, both
+/// joined two functions into one.
+fn function_entries(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
+    let (insns, _) = decode_all(arch, code, base);
+    (0..insns.len())
+        .filter(|&index| arch.is_function_entry(&insns[index..]))
+        .map(|index| insns[index].address)
+        .collect()
+}
+
 /// Collect the addresses that calls jump to.
 ///
 /// Anything called is a function. This misses a function nothing calls, such
@@ -436,14 +457,17 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         sources_of.entry(to).or_default().push((from, transfer));
     }
 
-    // Addresses sure to start a function: what is called, and what opens a
-    // frame. A branch inside a function never crosses the start of another.
+    // Addresses sure to start a function: what is called, what opens with an
+    // entry sequence, and what opens a frame. A branch inside a function never crosses the start of another.
     //
     // A frame that a conditional branch runs into is made late, on the path
     // that needs it, as `luaC_linkupval` in Lua for MIPS does after its
     // early return. It is inside a function, so it is no sure start.
-    let calls: BTreeSet<u64> = call_targets(arch, code, base).into_iter().collect();
-    let is_called = |address: u64| calls.contains(&address);
+    let sure_starts: BTreeSet<u64> = call_targets(arch, code, base)
+        .into_iter()
+        .chain(function_entries(arch, code, base))
+        .collect();
+    let is_sure_start = |address: u64| sure_starts.contains(&address);
     let anchors: BTreeSet<u64> = insns
         .iter()
         .enumerate()
@@ -451,7 +475,7 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
             is_code(insn) && arch.is_prologue(insn) && !follows_a_branch(&insns[..*index], arch)
         })
         .map(|(_, insn)| insn.address)
-        .chain(calls.iter().copied())
+        .chain(sure_starts.iter().copied())
         .collect();
 
     // A branch that starts at or before a return and lands after it proves
@@ -544,7 +568,7 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
             next,
             &reached_here,
             &|address| pool.contains(&address),
-            &is_called,
+            &is_sure_start,
             arch,
         ) {
             out.push(prologue);
@@ -637,7 +661,7 @@ fn prologue_past_pool(
     from: usize,
     reached: &dyn Fn(u64) -> bool,
     is_pool: &dyn Fn(u64) -> bool,
-    is_called: &dyn Fn(u64) -> bool,
+    is_sure_start: &dyn Fn(u64) -> bool,
     arch: &dyn Arch,
 ) -> Option<u64> {
     /// The most words not known to be pool data to step over before a
@@ -658,8 +682,9 @@ fn prologue_past_pool(
             continue;
         }
         guessed += 1;
-        // A call target starts a function for certain, pool or no pool.
-        if is_called(insn.address) {
+        // A call target or an entry sequence starts a function for certain,
+        // pool or no pool.
+        if is_sure_start(insn.address) {
             return Some(insn.address);
         }
         if arch.is_prologue(insn) {
@@ -1071,6 +1096,29 @@ mod tests {
         assert_eq!(starts_after_returns(&Arm32, &with_call(0xeb00_0001), 0), vec![0x0c]);
         // mov r0, r0: nothing calls 0x0c, so the prologue starts the function.
         assert_eq!(starts_after_returns(&Arm32, &with_call(0xe1a0_0000), 0), vec![0x10]);
+    }
+
+    /// The `_gp_disp` preamble opens a function even after a call that does
+    /// not return, and even with no frame.
+    #[test]
+    fn a_mips_entry_sequence_starts_a_function() {
+        use crate::arch::mips::Mips32;
+
+        let code = mips_code(&[
+            0x0320_f809,     // 0x00 jalr t9, as to _Unwind_Resume
+            0x0000_0000,     // 0x04 nop
+            0x3c1c_0002,     // 0x08 lui gp, 0x2
+            0x279c_8000,     // 0x0c addiu gp, gp, -0x8000
+            0x0399_e021,     // 0x10 addu gp, gp, t9
+            0x03e0_0008,     // 0x14 jr ra
+            0x0000_0000_u32, // 0x18 nop
+        ]);
+        assert_eq!(function_entries(&Mips32::LITTLE, &code, 0), vec![0x08]);
+        let starts: Vec<u64> = recover_from_regions(&[(0, &code)], &[], &Mips32::LITTLE)
+            .iter()
+            .map(|found| found.function.address)
+            .collect();
+        assert_eq!(starts, [0x00, 0x08]);
     }
 
     /// A branch from before the last return is not of this function. In a

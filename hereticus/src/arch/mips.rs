@@ -270,116 +270,15 @@ impl Arch for Mips32 {
         body: &[Insn],
         space: &AddressSpace,
     ) -> Vec<ConstantKind> {
-        let mut kinds = vec![ConstantKind::Value; body.len()];
-
-        // The `_gp_disp` halves are the distance from the function to its
-        // global offset table, which moves with every function before it.
-        for index in 0..body.len() {
-            if is_gp_disp_preamble(&body[index..]) {
-                kinds[index] = ConstantKind::Address;
-                kinds[index + 1] = ConstantKind::Address;
-            }
+        // Code that no known branch reaches, as a loop body entered from
+        // below or a landing pad the unwinder enters, still holds what the
+        // function keeps in a saved register throughout. Which registers
+        // those are is known only once the whole function has been read.
+        let first = track_addresses(body, space, &HeldAddresses::default());
+        if first.unreached_arrivals == 0 || first.invariant.is_empty() {
+            return first.kinds;
         }
-
-        // `gp` holds the global pointer on entry: the caller's in non-PIC
-        // code, where it reaches the small data, and the one the preamble
-        // rebuilds in PIC code.
-        let mut upper = HeldAddresses::default();
-        upper.set("gp", Held::GlobalPointer);
-        // What runs after the current delay slot, as the previous instruction
-        // decided.
-        let mut after_slot = AfterSlot::FallThrough;
-        let mut reachable = Reach::FromAbove;
-        // The addresses held on arrival at each forward branch target seen so
-        // far.
-        let mut at_target: Vec<(u64, HeldAddresses<'_>)> = Vec::new();
-
-        for (index, insn) in body.iter().enumerate() {
-            upper = arrive(upper, reachable, take_state(&mut at_target, insn.address));
-            reachable = Reach::FromAbove;
-
-            if let Some((register, high)) = upper_half(insn) {
-                if space.overlaps(reach_of_upper_half(high)) {
-                    kinds[index] = ConstantKind::Address;
-                }
-                upper.set(register, Held::At(high));
-            } else if let Some(destination) = global_pointer_formed(insn) {
-                upper.set(destination, Held::GlobalPointer);
-            } else if let Some((destination, source)) = register_copy(insn) {
-                match upper.get(source) {
-                    Some(held) => upper.set(destination, held),
-                    None => upper.forget(destination),
-                }
-            } else if let Some((destination, source, low)) = lower_half(insn, &upper) {
-                match source {
-                    // The destination now holds the whole address, and code
-                    // reaches the fields of a global through it as it would
-                    // through the upper half.
-                    Held::At(high) => {
-                        let address = join_halves(&insn.mnemonic, high, low);
-                        if space.contains(address) {
-                            kinds[index] = ConstantKind::Address;
-                            upper.set(destination, Held::At(address));
-                        } else {
-                            upper.forget(destination);
-                        }
-                    }
-                    // An offset from the global pointer, or from an address
-                    // read out of the global offset table, is the linker's.
-                    Held::GlobalPointer | Held::Somewhere => {
-                        kinds[index] = ConstantKind::Address;
-                        upper.set(destination, Held::Somewhere);
-                    }
-                }
-            } else if let Some((written, base, offset)) = memory_reference(insn, &upper) {
-                let loaded = match base {
-                    Held::At(high) => {
-                        if space.contains(join_halves("addiu", high, offset)) {
-                            kinds[index] = ConstantKind::Address;
-                        }
-                        None
-                    }
-                    // A slot of the global offset table, which holds an
-                    // address the code then reaches data or a callee through.
-                    Held::GlobalPointer => {
-                        kinds[index] = ConstantKind::Address;
-                        Some(Held::Somewhere)
-                    }
-                    Held::Somewhere => {
-                        kinds[index] = ConstantKind::Address;
-                        None
-                    }
-                };
-                if let Some(written) = written {
-                    match loaded {
-                        Some(held) => upper.set(written, held),
-                        None => upper.forget(written),
-                    }
-                }
-            } else if !is_store(&insn.mnemonic)
-                && let Some(written) = insn.operands.split(',').next()
-            {
-                upper.forget(written.trim());
-            }
-
-            // The delay slot runs before control moves, and compilers put the
-            // lower half of an argument address there, so a transfer takes
-            // effect only once its slot has run.
-            match after_slot {
-                AfterSlot::FallThrough => {}
-                AfterSlot::Call => upper.keep_only(is_callee_saved),
-                AfterSlot::Branch(target) => record_state(&mut at_target, target, &upper),
-                AfterSlot::Leave(target) => {
-                    if let Some(target) = target {
-                        record_state(&mut at_target, target, &upper);
-                    }
-                    reachable = Reach::OnlyByBranch;
-                }
-            }
-            after_slot = AfterSlot::of(insn);
-        }
-
-        kinds
+        track_addresses(body, space, &first.invariant).kinds
     }
 
     /// A compiler keeps no data among MIPS instructions: constants are built
@@ -445,6 +344,14 @@ impl Arch for Mips32 {
         };
 
         immediate.starts_with('-')
+    }
+
+    /// PIC code forms the global pointer from `t9`, which holds the address
+    /// of the function only on entry. So the `_gp_disp` preamble opens a
+    /// function whether or not the function has a frame, and wherever the
+    /// code before it ends.
+    fn is_function_entry(&self, body: &[Insn]) -> bool {
+        is_gp_disp_preamble(body)
     }
 
     /// Under PIC the `_gp_disp` pair sits before the frame allocation, so the
@@ -743,6 +650,203 @@ fn is_gp_disp_preamble(body: &[Insn]) -> bool {
     false
 }
 
+/// What reading a function for its addresses found.
+struct Tracked<'a> {
+    kinds: Vec<ConstantKind>,
+    /// How many instructions no known branch reached.
+    unreached_arrivals: usize,
+    /// The saved registers that hold one address throughout the function.
+    invariant: HeldAddresses<'a>,
+}
+
+/// Read `body` for the constants that are parts of addresses.
+///
+/// `invariant` holds what the saved registers keep throughout, to assume
+/// where no known branch arrives.
+fn track_addresses<'a>(
+    body: &'a [Insn],
+    space: &AddressSpace,
+    invariant: &HeldAddresses<'a>,
+) -> Tracked<'a> {
+    let mut kinds = vec![ConstantKind::Value; body.len()];
+
+    // The `_gp_disp` halves are the distance from the function to its
+    // global offset table, which moves with every function before it.
+    for index in 0..body.len() {
+        if is_gp_disp_preamble(&body[index..]) {
+            kinds[index] = ConstantKind::Address;
+            kinds[index + 1] = ConstantKind::Address;
+        }
+    }
+
+    // `gp` holds the global pointer on entry: the caller's in non-PIC
+    // code, where it reaches the small data, and the one the preamble
+    // rebuilds in PIC code.
+    let mut upper = HeldAddresses::default();
+    upper.set("gp", Held::GlobalPointer);
+    // What runs after the current delay slot, as the previous instruction
+    // decided.
+    let mut after_slot = AfterSlot::FallThrough;
+    let mut reachable = Reach::FromAbove;
+    // The addresses held on arrival at each forward branch target seen so
+    // far.
+    let mut at_target: Vec<(u64, HeldAddresses<'_>)> = Vec::new();
+    let mut unreached_arrivals = 0;
+    let mut saved = SavedRegisters::default();
+
+    for (index, insn) in body.iter().enumerate() {
+        let branched = take_state(&mut at_target, insn.address);
+        if reachable == Reach::OnlyByBranch && branched.is_none() {
+            unreached_arrivals += 1;
+        }
+        upper = arrive(upper, reachable, branched, invariant);
+        reachable = Reach::FromAbove;
+
+        if let Some((register, high)) = upper_half(insn) {
+            if space.overlaps(reach_of_upper_half(high)) {
+                kinds[index] = ConstantKind::Address;
+            }
+            upper.set(register, Held::At(high));
+        } else if let Some(destination) = global_pointer_formed(insn) {
+            upper.set(destination, Held::GlobalPointer);
+        } else if let Some((destination, source)) = register_copy(insn) {
+            match upper.get(source) {
+                Some(held) => upper.set(destination, held),
+                None => upper.forget(destination),
+            }
+        } else if let Some((destination, source, low)) = lower_half(insn, &upper) {
+            match source {
+                // The destination now holds the whole address, and code
+                // reaches the fields of a global through it as it would
+                // through the upper half.
+                Held::At(high) => {
+                    let address = join_halves(&insn.mnemonic, high, low);
+                    if space.contains(address) {
+                        kinds[index] = ConstantKind::Address;
+                        upper.set(destination, Held::At(address));
+                    } else {
+                        upper.forget(destination);
+                    }
+                }
+                // An offset from the global pointer, or from an address
+                // read out of the global offset table, is the linker's.
+                Held::GlobalPointer | Held::Somewhere => {
+                    kinds[index] = ConstantKind::Address;
+                    upper.set(destination, Held::Somewhere);
+                }
+            }
+        } else if let Some((written, base, offset)) = memory_reference(insn, &upper) {
+            let loaded = match base {
+                Held::At(high) => {
+                    if space.contains(join_halves("addiu", high, offset)) {
+                        kinds[index] = ConstantKind::Address;
+                    }
+                    None
+                }
+                // A slot of the global offset table, which holds an
+                // address the code then reaches data or a callee through.
+                Held::GlobalPointer => {
+                    kinds[index] = ConstantKind::Address;
+                    Some(Held::Somewhere)
+                }
+                Held::Somewhere => {
+                    kinds[index] = ConstantKind::Address;
+                    None
+                }
+            };
+            if let Some(written) = written {
+                match loaded {
+                    Some(held) => upper.set(written, held),
+                    None => upper.forget(written),
+                }
+            }
+        } else if let Some((destination, held)) = indexed_address(insn, &upper) {
+            upper.set(destination, held);
+        } else if !is_store(&insn.mnemonic)
+            && let Some(written) = insn.operands.split(',').next()
+        {
+            upper.forget(written.trim());
+        }
+
+        // The delay slot runs before control moves, and compilers put the
+        // lower half of an argument address there, so a transfer takes
+        // effect only once its slot has run.
+        match after_slot {
+            AfterSlot::FallThrough => {}
+            AfterSlot::Call => upper.keep_only(is_callee_saved),
+            AfterSlot::Branch(target) => record_state(&mut at_target, target, &upper),
+            AfterSlot::Leave(target) => {
+                if let Some(target) = target {
+                    record_state(&mut at_target, target, &upper);
+                }
+                reachable = Reach::OnlyByBranch;
+            }
+        }
+        saved.record(insn, &upper);
+        after_slot = AfterSlot::of(insn);
+    }
+
+    Tracked { kinds, unreached_arrivals, invariant: saved.invariant() }
+}
+
+/// What each saved register is set to across a function.
+#[derive(Default)]
+struct SavedRegisters<'a> {
+    /// Each value a saved register was set to, `None` for a value that is no
+    /// address, apart from the restores of an epilogue.
+    assigned: Vec<(&'a str, Option<Held>)>,
+    /// The saved registers an epilogue restores from the stack.
+    restored: Vec<&'a str>,
+}
+
+impl<'a> SavedRegisters<'a> {
+    /// Note what `insn` wrote to a saved register, as `upper` holds it now.
+    ///
+    /// An epilogue restores each saved register from the stack before it
+    /// returns. That only undoes the function's own use of the register, so
+    /// it is not counted.
+    fn record(&mut self, insn: &'a Insn, upper: &HeldAddresses<'a>) {
+        if insn.kind != InsnKind::Normal || is_store(&insn.mnemonic) {
+            return;
+        }
+        let Some(written) = insn.operands.split(',').next().map(str::trim) else { return };
+        if !is_callee_saved(written) || written == "sp" {
+            return;
+        }
+        let restores = insn.mnemonic == "lw" && insn.operands.trim_end().ends_with("(sp)");
+        if restores {
+            self.restored.push(written);
+        } else {
+            self.assigned.push((written, upper.get(written)));
+        }
+    }
+
+    /// The saved registers this function keeps and sets to one address, and
+    /// to nothing else.
+    ///
+    /// A register counts only if an epilogue restores it, which the ABI
+    /// obliges of a function that uses it. Without that, code a scan glued
+    /// on after the return can be another function, where the register
+    /// holds the caller's value.
+    fn invariant(&self) -> HeldAddresses<'a> {
+        let mut invariant = HeldAddresses::default();
+        for &(register, held) in &self.assigned {
+            if !self.restored.contains(&register) {
+                continue;
+            }
+            let all_alike = self
+                .assigned
+                .iter()
+                .filter(|(other, _)| *other == register)
+                .all(|(_, other)| *other == held);
+            if let (Some(held), true) = (held, all_alike) {
+                invariant.set(register, held);
+            }
+        }
+        invariant
+    }
+}
+
 /// Code and where it lies, to read the words a table holds.
 struct Image<'a> {
     code: &'a [u8],
@@ -992,18 +1096,27 @@ enum Reach {
 ///
 /// Where two paths join, only the addresses both agree on survive. Where only
 /// a branch arrives, its addresses are the ones held. Where no branch is
-/// known to arrive, as at a case of a jump table, only the global pointer is
-/// held: a function sets it once and keeps it in a saved register throughout.
+/// known to arrive, as at a case of a jump table, only the global pointer and
+/// `invariant` are held: what a function sets once and keeps in a saved
+/// register throughout. On MIPS -Os tinyxml2, a C++ landing pad, entered by
+/// the unwinder, reached the global offset table through `s0` that way.
 fn arrive<'a>(
     above: HeldAddresses<'a>,
     reach: Reach,
     branched: Option<HeldAddresses<'a>>,
+    invariant: &HeldAddresses<'a>,
 ) -> HeldAddresses<'a> {
     match (reach, branched) {
         (Reach::FromAbove, None) => above,
         (Reach::FromAbove, Some(branched)) => above.agreed_with(&branched),
         (Reach::OnlyByBranch, Some(branched)) => branched,
-        (Reach::OnlyByBranch, None) => above.global_pointers_only(),
+        (Reach::OnlyByBranch, None) => {
+            let mut held = above.global_pointers_only();
+            for &(register, value) in &invariant.held {
+                held.set(register, value);
+            }
+            held
+        }
     }
 }
 
@@ -1054,6 +1167,10 @@ impl<'a> HeldAddresses<'a> {
     fn set(&mut self, register: &'a str, value: Held) {
         self.forget(register);
         self.held.push((register, value));
+    }
+
+    fn is_empty(&self) -> bool {
+        self.held.is_empty()
     }
 
     fn get(&self, register: &str) -> Option<Held> {
@@ -1161,6 +1278,31 @@ fn memory_reference<'a>(
 
     let written = (!is_store(&insn.mnemonic)).then(|| first.trim());
     Some((written, held, offset))
+}
+
+/// Read `addu rD, rX, rY`, where one source holds an address and the other
+/// does not, as the destination and what it holds.
+///
+/// That is an address plus an index, as a table or an array is reached:
+/// `lui v0, %hi(table); addu v0, v0, s1; lw v0, %lo(table)(v0)`. The upper
+/// half still names the table, so a lower half joined to it later is still
+/// part of an address. An address from the global offset table, or the global
+/// pointer, plus an index is an address the code does not show.
+///
+/// Two addresses added make no address, and nor does a sum of two values.
+fn indexed_address<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str, Held)> {
+    if insn.mnemonic != "addu" {
+        return None;
+    }
+    let (destination, left, right) = three_operands(insn)?;
+    let held = match (upper.get(left), upper.get(right)) {
+        (Some(held), None) | (None, Some(held)) => held,
+        _ => return None,
+    };
+    Some(match held {
+        Held::At(high) => (destination, Held::At(high)),
+        Held::Somewhere | Held::GlobalPointer => (destination, Held::Somewhere),
+    })
 }
 
 /// Read `addu rD, rX, t9`, which forms the PIC global pointer, as `rD`.
@@ -1746,6 +1888,9 @@ mod tests {
         fn jal(target: u32) -> u32 {
             0x0c00_0000 | (target >> 2 & 0x03ff_ffff)
         }
+        fn addu(rd: u32, rs: u32, rt: u32) -> u32 {
+            rs << 21 | rt << 16 | rd << 11 | 0x21
+        }
         /// `beqz rs`, to `words` instructions past the delay slot.
         fn beqz(rs: u32, words: u32) -> u32 {
             0x1000_0000 | rs << 21 | words
@@ -1887,6 +2032,37 @@ mod tests {
         fn a_block_no_branch_reaches_holds_nothing() {
             let words = [lui(S0, 0x8001), JR_RA, NOP, addiu(A1, S0, 0x10)];
             assert_eq!(kinds(&words)[3], Value);
+        }
+
+        /// A table address plus an index is still that table: the lower
+        /// half of the load is part of an address.
+        #[test]
+        fn an_indexed_address_keeps_its_upper_half() {
+            let words = [lui(V0, 0x8001), addu(V0, V0, S1), lw(V0, 0x10, V0)];
+            assert_eq!(kinds(&words)[2], Address);
+
+            // Two values added make no address.
+            let words = [addu(V0, A0, S1), lw(V0, 0x10, V0)];
+            assert_eq!(kinds(&words)[1], Value);
+
+            // Nor do two addresses.
+            let words = [lui(V0, 0x8001), lui(S1, 0x8002), addu(V0, V0, S1), lw(V0, 0x10, V0)];
+            assert_eq!(kinds(&words)[3], Value);
+        }
+
+        /// A saved register the function sets once, and restores in its
+        /// epilogue, holds that address where no branch arrives, as in a
+        /// landing pad the unwinder enters.
+        #[test]
+        fn a_kept_register_holds_its_address_where_no_branch_arrives() {
+            let words = [
+                lui(S0, 0x8001),
+                lw(S0, 0x10, SP), // the epilogue restores s0
+                JR_RA,
+                NOP,
+                addiu(A1, S0, 0x10),
+            ];
+            assert_eq!(kinds(&words)[4], Address);
         }
 
         #[test]

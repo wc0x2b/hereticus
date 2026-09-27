@@ -211,6 +211,16 @@ pub trait Arch {
     /// invents a function. Answer only for a shape that reliably begins one.
     fn is_prologue(&self, insn: &Insn) -> bool;
 
+    /// Report whether `body` opens with a sequence that only the entry of a
+    /// function runs, as surely as a call to it would say.
+    ///
+    /// A prologue can be moved, or left out of a function that needs no
+    /// frame. Some ABIs oblige an entry sequence that cannot. Defaults to
+    /// `false`, for the ABIs with none.
+    fn is_function_entry(&self, _body: &[Insn]) -> bool {
+        false
+    }
+
     /// How far back a function really starts, given its prologue.
     ///
     /// [`Arch::is_prologue`] names the instruction that opens a frame, but an
