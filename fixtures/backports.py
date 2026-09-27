@@ -32,6 +32,39 @@ TARBALLS = {
         "https://static.crates.io/crates/smallvec/smallvec-1.6.0.crate",
         "1a55ca5f3b68e41c979bf8c46a6f1da892ca4db8f94023ce0bd32407573b1ac0",
     ),
+    # Consecutive releases, for the comparisons across versions.
+    "zlib-1.2.11.tar.gz": (
+        "https://zlib.net/fossils/zlib-1.2.11.tar.gz",
+        "c3e5e9fdd5004dcb542feda5ee4f0ff0744628baf8ed2dd5d66f8ca1197cb1a1",
+    ),
+    "zlib-1.2.13.tar.gz": (
+        "https://zlib.net/fossils/zlib-1.2.13.tar.gz",
+        "b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30",
+    ),
+    "zlib-1.3.tar.gz": (
+        "https://zlib.net/fossils/zlib-1.3.tar.gz",
+        "ff0ba4c292013dbc27530b3a81e1f9a813cd39de01ca5e0f8bf355702efa593e",
+    ),
+    "lua-5.1.4.tar.gz": (
+        "https://www.lua.org/ftp/lua-5.1.4.tar.gz",
+        "b038e225eaf2a5b57c9bcc35cd13aa8c6c8288ef493d52970c9545074098af3a",
+    ),
+    "lua-5.3.5.tar.gz": (
+        "https://www.lua.org/ftp/lua-5.3.5.tar.gz",
+        "0c2eed3f960446e1a3e4b9a1ca2f3ff893b6ce41942cf54d5dd59ab4b3b058ac",
+    ),
+    "lua-5.3.6.tar.gz": (
+        "https://www.lua.org/ftp/lua-5.3.6.tar.gz",
+        "fc5fd69bb8736323f026672b1b7235da613d7177e72558893a0bdcd320466d60",
+    ),
+    "tinyxml2-8.0.0.tar.gz": (
+        "https://github.com/leethomason/tinyxml2/archive/refs/tags/8.0.0.tar.gz",
+        "6ce574fbb46751842d23089485ae73d3db12c1b6639cda7721bf3a7ee862012c",
+    ),
+    "tinyxml2-10.0.0.tar.gz": (
+        "https://github.com/leethomason/tinyxml2/archive/refs/tags/10.0.0.tar.gz",
+        "3bdf15128ba16686e69bce256cc468e76c7b94ff2c7f391cc5ec09e40bff3839",
+    ),
 }
 
 

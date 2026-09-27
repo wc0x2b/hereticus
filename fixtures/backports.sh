@@ -184,4 +184,41 @@ build_rust before
 patch --quiet -p1 -d "$out/src/smallvec" < "$patches/smallvec-1.6.0-cve-2021-25900.patch"
 build_rust after
 
+# Consecutive releases of the same projects, each built one way with clang
+# and one way with GCC, for the comparisons across versions. The symbols of
+# each release are the answer there too.
+out="$here/build/versions"
+levels=(O2)
+gcc_levels=(O2)
+lua53_sources=(lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject
+    lopcodes lparser lstate lstring ltable ltm lundump lvm lzio lauxlib
+    lbaselib lbitlib lcorolib ldblib liolib lmathlib loslib lstrlib ltablib
+    lutf8lib loadlib linit)
+for version in 1.2.11 1.2.12 1.2.13 1.3; do
+    unpack "zlib-$version.tar.gz" zlib "$version"
+    project_flags=(-DHAVE_UNISTD_H)
+    build zlib "$version" "$out/src/zlib-$version" "${zlib_sources[@]}"
+done
+project_flags=()
+for version in 5.1.4 5.1.5; do
+    unpack "lua-$version.tar.gz" lua "$version"
+    build lua "$version" "$out/src/lua-$version/src" "${lua_sources[@]}"
+done
+for version in 5.3.5 5.3.6; do
+    unpack "lua-$version.tar.gz" lua "$version"
+    build lua "$version" "$out/src/lua-$version/src" "${lua53_sources[@]}"
+done
+compiler=(clang++ -std=c++17)
+gcc_standard=(-std=c++17)
+suffix=cpp
+for version in 8.0.0 9.0.0 10.0.0; do
+    unpack "tinyxml2-$version.tar.gz" tinyxml2 "$version"
+    build tinyxml2 "$version" "$out/src/tinyxml2-$version" "${tinyxml2_sources[@]}"
+done
+compiler=(clang)
+gcc_standard=()
+suffix=c
+echo "versions: built $(find "$out" -name lib.so | wc -l) libraries in $out"
+
+out="$here/build/backports"
 echo "backports: built $(find "$out" -name lib.so | wc -l) libraries in $out"
