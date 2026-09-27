@@ -29,7 +29,11 @@ import urllib.request
 from pathlib import Path
 
 MIRROR = "https://downloads.openwrt.org/releases"
+# Every board ships in these two releases, one point release apart.
 RELEASES = ("22.03.2", "22.03.5")
+# Some boards also ship in the releases either side, a major version apart,
+# for the comparisons across a kernel upgrade.
+WIDE_RELEASES = ("21.02.7", "22.03.2", "22.03.5", "23.05.5")
 
 OUT = Path(__file__).resolve().parent / "build" / "openwrt"
 DOWNLOADS = OUT / "download"
@@ -47,18 +51,24 @@ BOARDS = {
         "path": "ipq40xx/generic",
         "file": "openwrt-{release}-ipq40xx-generic-netgear_ex6100v2-squashfs-sysupgrade.bin",
         "download": {
+            "21.02.7": "730f5111dfd651360a76480304066fa5f5c2ef1d82af2a2be0a50b657850c6bd",
+            "23.05.5": "d39bb9694205fec4f9fbf20529a6cd25e15985113599aae686bcd84bb1d70af2",
             "22.03.2": "f0287b365cb9d850ca3bab8720d39fdb799233ad03429b4b85c12ab24f9e69d2",
             "22.03.5": "588d24cdbd440f6d49b983e74ff04936bc201d7f815de743cf873552470b1f2d",
         },
+        "releases": WIDE_RELEASES,
     },
     # MIPS, big endian. The kernel partition is an ELF lzma-loader.
     "mipsbe-eap245v3": {
         "path": "ath79/generic",
         "file": "openwrt-{release}-ath79-generic-tplink_eap245-v3-squashfs-sysupgrade.bin",
         "download": {
+            "21.02.7": "e55377a1a7888ae11e28b0659456544bf9673d8f4bd51cd4763c06e360c79719",
+            "23.05.5": "e3a1aaf3d8bebc34831602668075b78e2174ce48279f1a10a93a7d10f4e349bf",
             "22.03.2": "2080568ecccd6bbb17272dc829b40fd128ee51f50b8945631ec85724edfd90e9",
             "22.03.5": "2eb311d0006e39e0288066ed8d5c75ae1abde30805d8b4a24d45e30b2428484f",
         },
+        "releases": WIDE_RELEASES,
     },
     # ARM, little endian, a Cortex-A9. The kernel is a zImage inside a
     # uImage, inside a tar.
@@ -95,15 +105,30 @@ BOARDS = {
         "path": "ramips/mt7621",
         "file": "openwrt-{release}-ramips-mt7621-netgear_r6220-squashfs-kernel.bin",
         "download": {
+            "21.02.7": "671ab96cdf2c2e884c2a62be99c776a836ae62156e2346c345f0f77b5af72b8e",
+            "23.05.5": "7a11cb09ead98b8d7e708eddcbfcc10a74b5a7044322fe0229140cb7e39d538c",
             "22.03.2": "f56e428b24b618dfc6de26ae19a9e634d8c3b9086265b451bb868b1dacab6ac6",
             "22.03.5": "f02e7feac346935a682f6f9cc137fed9e1d0f70a4fe00c69aa8e529b95498c11",
         },
+        "releases": WIDE_RELEASES,
     },
 }
 
 # The SHA-256 of every extracted file. A change to the extraction that moves
 # one byte fails here.
 EXTRACTED = {
+    "arm-ex6100v2-stub-21.02.7.bin": "4a2ebb362616f2db8a6774034dcc7050b93f63e5668edd01bfd9eefbf64c8b25",
+    "arm-ex6100v2-kernel-21.02.7.bin": "f5c5cd5b961a0e24b7135258beaafc2e05787e7660a359d8db3c45b148c72a9d",
+    "arm-ex6100v2-stub-23.05.5.bin": "a424f1092a80b559ca37f70ebbdf80ae5cb9b8971abb15f2af060922475ace69",
+    "arm-ex6100v2-kernel-23.05.5.bin": "8b727de38764c0454b57d66e2245271fa82220e3ad6c6604808d2347478ddefe",
+    "mipsbe-eap245v3-stub-21.02.7.bin": "7f30c7e27d1dac5fb997e583773767c6552847afc081f5a34067575474219a8e",
+    "mipsbe-eap245v3-kernel-21.02.7.bin": "88818aa9cd4526d65a82129db6797d397a7644aa405319b688dd1dacff1076b9",
+    "mipsbe-eap245v3-stub-23.05.5.bin": "b9c05585d2435aab767ee3184f40a4df72ad90807cb5aaed6c1e98480ca7aa94",
+    "mipsbe-eap245v3-kernel-23.05.5.bin": "dd1a50b00edf4f648d9c72f0f7161d028c9c702e6e7512cfecbb03be18cfcdd3",
+    "mipsel-r6220-stub-21.02.7.bin": "e08b2d8f86d21ca741ef059e6583f58b2a8ef8ef93cd0cc606576b94ebbdb73b",
+    "mipsel-r6220-kernel-21.02.7.bin": "3cac0dc4bd1b348cc2adacf2cf4ae04d1089e4289a248b44cfd4e64588553c6d",
+    "mipsel-r6220-stub-23.05.5.bin": "8533567ae201867b596234319bf2e3ebf5b8b8b4ef8ea88de0672ead17caab64",
+    "mipsel-r6220-kernel-23.05.5.bin": "87ff6b32a0ef22c6b9017fe767ddf64234925e45b72cd6b555bb66da213e8648",
     "arm-ex6100v2-stub-22.03.2.bin": "d265e563c30d7e4ef5db39b1404f75e39096053f8945263a22b9f498af7e1e85",
     "arm-ex6100v2-stub-22.03.5.bin": "ebcd57cb98d25dd3ef0b894c696072e5cfe63b79609da992b5f8dbaf8efb6831",
     "arm-ex6100v2-kernel-22.03.2.bin": "ea8a0b97470a762b1877de164bac1ae585c70026ac93fb0f25346efdb5beff43",
@@ -256,7 +281,7 @@ def main() -> int:
     failures = []
 
     for name, board in BOARDS.items():
-        for release in RELEASES:
+        for release in board.get("releases", RELEASES):
             for part, data in EXTRACTORS[name](fetch(board, release)).items():
                 file = f"{name}-{part}-{release}.bin"
                 (OUT / file).write_bytes(data)
