@@ -43,28 +43,35 @@ impl AddressSpace {
 
     /// The space made of the given ranges. Empty ranges are dropped.
     pub fn from_ranges(ranges: impl IntoIterator<Item = Range<u64>>) -> Self {
-        let mut ranges: Vec<Range<u64>> = ranges
-            .into_iter()
-            .map(|range| range.start.max(SMALLEST_ADDRESS)..range.end)
-            .filter(|range| !range.is_empty())
-            .collect();
+        let mut ranges: Vec<Range<u64>> =
+            ranges.into_iter().filter(|range| !range.is_empty()).collect();
         ranges.sort_unstable_by_key(|range| range.start);
         Self { ranges }
     }
 
     /// Report whether a value is an address inside this space.
     pub fn contains(&self, value: u64) -> bool {
-        self.ranges.iter().any(|range| range.contains(&value))
+        value >= SMALLEST_ADDRESS && self.contains_formed(value)
+    }
+
+    /// Report whether an address the code formed lies inside this space.
+    ///
+    /// Unlike [`Self::contains`], no floor applies. A distance added to `pc`
+    /// forms an address, however small, and `lld` puts the read-only data
+    /// of a small shared library below [`SMALLEST_ADDRESS`].
+    pub fn contains_formed(&self, address: u64) -> bool {
+        self.ranges.iter().any(|range| range.contains(&address))
     }
 
     /// Report whether any address in `values` lies inside this space.
     pub fn overlaps(&self, values: Range<u64>) -> bool {
+        let values = values.start.max(SMALLEST_ADDRESS)..values.end;
         self.ranges.iter().any(|range| range.start < values.end && values.start < range.end)
     }
 
-    /// Report whether this space holds no address at all.
+    /// Report whether this space holds no address a value can name.
     pub fn is_empty(&self) -> bool {
-        self.ranges.is_empty()
+        self.ranges.iter().all(|range| range.end <= SMALLEST_ADDRESS)
     }
 }
 
@@ -113,6 +120,19 @@ mod tests {
         assert!(!space.contains(0), "zero");
         assert!(!space.contains(0xfff), "a small count");
         assert!(space.contains(0x1000), "the floor is an address");
+    }
+
+    /// Code that adds a distance to `pc` forms an address, and small ones
+    /// count: `lld` loads the read-only data of a small library there.
+    #[test]
+    fn a_formed_address_below_the_floor_counts() {
+        let space = AddressSpace::from_ranges([0x870..0xd40, 0x1_0d40..0x1_6c20]);
+
+        assert!(space.contains_formed(0xbc8), "read-only data");
+        assert!(!space.contains(0xbc8), "the same number as a value");
+        assert!(!space.contains_formed(0x800), "before the data");
+        assert!(space.contains(0x1_0d40), "code, either way");
+        assert!(!space.overlaps(0x800..0x900), "values below the floor");
     }
 
     #[test]
