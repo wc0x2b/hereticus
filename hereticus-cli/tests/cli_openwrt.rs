@@ -121,10 +121,10 @@ fn slow_hides_the_data_regions_of_a_mips_kernel() {
 
     let hidden = run(&[]);
     assert!(!hidden.contains("changed data"), "no data row by default");
-    assert!(hidden.contains("12 data regions changed, hidden. Use --show-data to list them."));
+    assert!(hidden.contains("5 data regions changed, hidden. Use --show-data to list them."));
 
     let shown = run(&["--show-data"]);
-    assert_eq!(shown.matches("changed data").count(), 12, "every hidden region is listed");
+    assert_eq!(shown.matches("changed data").count(), 5, "every hidden region is listed");
     assert!(!shown.contains("data regions changed, hidden"));
 }
 
