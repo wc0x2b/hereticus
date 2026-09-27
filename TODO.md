@@ -1,10 +1,12 @@
 # TODO
 
-## Read the MIPS DSP ASE
+## Read the rest of MIPS32 Release 2
 
-Between 106 and 252 words of real code in each OpenWrt MIPS kernel still do
-not decode. They are DSP ASE instructions: `mfhi` and `mflo` on a second
-accumulator, and `extr`. Add them to `hereticus/src/arch/mips32.rs`.
+A few MIPS32 words in each OpenWrt MIPS kernel still do not decode, and
+LLVM reads them: `jr.hb` (7 to 23 in each), `eret`, `deret` and `synci`.
+`jr.hb ra` is a return, so a function that ends with one runs on into the
+next. Add them to `hereticus/src/arch/mips32.rs`, and let a word read there
+move control.
 
 ## Follow a split function across its pieces
 

@@ -9,6 +9,16 @@
 //! This module reads only those words, and only when `rabbitizer` has already
 //! refused them, so nothing it reads changes. The text follows `rabbitizer`:
 //! ABI register names, decimal shift and field widths.
+//!
+//! # The DSP ASE
+//!
+//! The DSP extension adds three accumulators, `ac1` to `ac3`, beside `hi` and
+//! `lo`, which it calls `ac0`. A kernel built for a DSP core saves and
+//! restores them on each task switch, so every such kernel holds a few dozen
+//! words that name one. Only the words found in real firmware are read here:
+//! measured on four OpenWrt MIPS kernels, the accumulator moves, the
+//! accumulator multiplies, and `rddsp` and `wrdsp`. The packed arithmetic of
+//! the extension, and `extr`, did not occur.
 
 /// ABI names of the general registers, as `rabbitizer` prints them.
 const REGISTERS: [&str; 32] = [
@@ -100,10 +110,47 @@ impl Fields {
     fn two_sources(&self) -> String {
         format!("{}, {}", self.rs_name(), self.rt_name())
     }
+
+    /// The accumulator an operation names in `rd`, or `None` when the bits
+    /// above the two it uses are not zero.
+    fn accumulator_in_rd(&self) -> Option<Accumulator> {
+        (self.rd >> 2 == 0 && self.sa == 0).then_some(Accumulator(self.rd))
+    }
+
+    /// `rs, rt`, after the accumulator unless it is `ac0`.
+    ///
+    /// `ac0` is `hi` and `lo`, which the MIPS32 form names by leaving it
+    /// out, so both spellings of one operation read alike.
+    fn sources_into(&self, accumulator: Accumulator) -> String {
+        if accumulator.is_hi_lo() {
+            self.two_sources()
+        } else {
+            format!("{accumulator}, {}", self.two_sources())
+        }
+    }
 }
 
-/// `movz`, `movn`, `rotr` and `rotrv`.
+/// One of the four DSP accumulators. `ac0` is `hi` and `lo`.
+#[derive(Clone, Copy)]
+struct Accumulator(u32);
+
+impl Accumulator {
+    fn is_hi_lo(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl core::fmt::Display for Accumulator {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ac{}", self.0)
+    }
+}
+
+/// `movz`, `movn`, `rotr`, `rotrv`, and the DSP accumulator forms.
 fn special(fields: &Fields) -> Option<(&'static str, String)> {
+    if let Some(found) = special_accumulator(fields) {
+        return Some(found);
+    }
     match (fields.function, fields.rs, fields.sa) {
         // MIPS IV and MIPS32: a move on a condition.
         (0x0a, _, 0) => Some(("movz", fields.three_registers())),
@@ -116,6 +163,40 @@ fn special(fields: &Fields) -> Option<(&'static str, String)> {
             "rotrv",
             format!("{}, {}, {}", fields.rd_name(), fields.rt_name(), fields.rs_name()),
         )),
+        _ => None,
+    }
+}
+
+/// The moves and multiplies that name a DSP accumulator other than `ac0`.
+///
+/// The `ac0` forms are MIPS II, which `rabbitizer` has already read. Each
+/// form keeps the accumulator in a field MIPS II leaves zero, and the bits
+/// around it must still be zero.
+fn special_accumulator(fields: &Fields) -> Option<(&'static str, String)> {
+    const MFHI: u32 = 0x10;
+    const MTHI: u32 = 0x11;
+    const MFLO: u32 = 0x12;
+    const MTLO: u32 = 0x13;
+    const MULT: u32 = 0x18;
+    const MULTU: u32 = 0x19;
+
+    match fields.function {
+        // `mfhi rd, ac`: the accumulator is in the low two bits of `rs`.
+        MFHI | MFLO if fields.rs >> 2 == 0 && fields.rt == 0 && fields.sa == 0 => {
+            let mnemonic = if fields.function == MFHI { "mfhi" } else { "mflo" };
+            Some((mnemonic, format!("{}, {}", fields.rd_name(), Accumulator(fields.rs))))
+        }
+        // `mthi rs, ac`: the accumulator is in the low two bits of `rd`.
+        MTHI | MTLO if fields.rt == 0 => {
+            let accumulator = fields.accumulator_in_rd()?;
+            let mnemonic = if fields.function == MTHI { "mthi" } else { "mtlo" };
+            Some((mnemonic, format!("{}, {accumulator}", fields.rs_name())))
+        }
+        MULT | MULTU => {
+            let accumulator = fields.accumulator_in_rd()?;
+            let mnemonic = if fields.function == MULT { "mult" } else { "multu" };
+            Some((mnemonic, fields.sources_into(accumulator)))
+        }
         _ => None,
     }
 }
@@ -135,7 +216,8 @@ fn special2(fields: &Fields) -> Option<(&'static str, String)> {
     let operands = match mnemonic {
         "mul" => fields.three_registers(),
         "clz" | "clo" => format!("{}, {}", fields.rd_name(), fields.rs_name()),
-        _ => fields.two_sources(),
+        // The DSP ASE names an accumulator in `rd`, which MIPS32 leaves zero.
+        _ => fields.sources_into(fields.accumulator_in_rd()?),
     };
     Some((mnemonic, operands))
 }
@@ -174,6 +256,29 @@ fn special3(fields: &Fields) -> Option<(&'static str, String)> {
         // marks a branch target here, so it is named instead.
         0x3b if fields.rs == 0 => {
             Some(("rdhwr", format!("{}, hwr{}", fields.rt_name(), fields.rd)))
+        }
+        0x38 => dsp_control(fields),
+        _ => None,
+    }
+}
+
+/// `rddsp` and `wrdsp`, which move the DSP control register.
+///
+/// The mask says which fields of the register move, one bit for each of six.
+fn dsp_control(fields: &Fields) -> Option<(&'static str, String)> {
+    const RDDSP: u32 = 0x12;
+    const WRDSP: u32 = 0x13;
+
+    match fields.sa {
+        // `rddsp rd, mask`: the mask fills `rs` and `rt`.
+        RDDSP => {
+            let mask = (fields.rs << 5) | fields.rt;
+            Some(("rddsp", format!("{}, {mask:#x}", fields.rd_name())))
+        }
+        // `wrdsp rs, mask`: the mask fills `rt` and `rd`.
+        WRDSP => {
+            let mask = (fields.rt << 5) | fields.rd;
+            Some(("wrdsp", format!("{}, {mask:#x}", fields.rs_name())))
         }
         _ => None,
     }
@@ -232,6 +337,46 @@ mod tests {
     fn reads_the_rotates() {
         assert_eq!(text(0x0022_1602).as_deref(), Some("rotr v0, v0, 24")); // rotr $2,$2,24
         assert_eq!(text(0x0082_1046).as_deref(), Some("rotrv v0, v0, a0")); // rotrv $2,$2,$4
+    }
+
+    /// `mfhi $3,$ac1` and friends, as LLVM assembles them with `-mattr=+dsp`.
+    #[test]
+    fn reads_the_accumulator_moves() {
+        assert_eq!(text(0x0020_1810).as_deref(), Some("mfhi v1, ac1"));
+        assert_eq!(text(0x0060_1812).as_deref(), Some("mflo v1, ac3"));
+        assert_eq!(text(0x0080_0811).as_deref(), Some("mthi a0, ac1"));
+        assert_eq!(text(0x00e0_0813).as_deref(), Some("mtlo a3, ac1"));
+    }
+
+    /// Bits beside the accumulator field are not an accumulator.
+    #[test]
+    fn a_move_with_stray_bits_is_refused() {
+        assert_eq!(decode(0x0080_1810), None, "rs above the accumulator");
+        assert_eq!(decode(0x0021_1810), None, "rt set");
+        assert_eq!(decode(0x0080_2011), None, "rd above the accumulator");
+        assert_eq!(decode(0x0080_0851), None, "sa set");
+    }
+
+    /// `mult $ac2,$zero,$8` and `madd $ac1,$4,$5`, with `ac0` left out as
+    /// MIPS32 writes it.
+    #[test]
+    fn reads_the_accumulator_multiplies() {
+        assert_eq!(text(0x0008_1018).as_deref(), Some("mult ac2, zero, t0"));
+        assert_eq!(text(0x0085_1819).as_deref(), Some("multu ac3, a0, a1"));
+        assert_eq!(text(0x7085_0800).as_deref(), Some("madd ac1, a0, a1"));
+        assert_eq!(text(0x7085_1805).as_deref(), Some("msubu ac3, a0, a1"));
+        assert_eq!(decode(0x0085_2018), None, "rd above the accumulator");
+        assert_eq!(decode(0x7085_2000), None, "rd above the accumulator");
+        assert_eq!(decode(0x7085_0040), None, "sa set");
+    }
+
+    /// `rddsp $2,0x1` and `wrdsp $4,0x3f`, as found in OpenWrt kernels.
+    #[test]
+    fn reads_the_dsp_control_moves() {
+        assert_eq!(text(0x7c01_14b8).as_deref(), Some("rddsp v0, 0x1"));
+        assert_eq!(text(0x7c3f_1cb8).as_deref(), Some("rddsp v1, 0x3f"));
+        assert_eq!(text(0x7c81_fcf8).as_deref(), Some("wrdsp a0, 0x3f"));
+        assert_eq!(decode(0x7c01_1478), None, "an operation of the group not read here");
     }
 
     /// `srl` and `srlv` share the encodings, told apart by one bit.
