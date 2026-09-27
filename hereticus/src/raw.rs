@@ -135,6 +135,12 @@ pub fn check_base(data: &[u8], base: u64, arch: &dyn Arch) -> BaseFit {
     let mut near = 0;
     let mut examined = 0;
 
+    // A word smaller than the image is an offset or a size within it as
+    // readily as an address. Measured on an Armada 385 decompressor stub
+    // loaded at 0x8000, 27 such distances landed just below the base and
+    // accused the right one.
+    let smallest = SMALLEST_ADDRESS.max(data.len() as u64);
+
     for word in data.chunks_exact(arch.pointer_width()) {
         let value = arch.read_pointer(word);
 
@@ -143,14 +149,14 @@ pub fn check_base(data: &[u8], base: u64, arch: &dyn Arch) -> BaseFit {
         // 69 KiB firmware image score 17330 of 17439 words as pointers at
         // base 0 while the right base scored 4. Skipping them is what keeps
         // a base of zero from beating every other answer.
-        if value < SMALLEST_ADDRESS {
+        if value < smallest || is_text(word) {
             continue;
         }
         examined += 1;
 
         if value >= base && value < end {
             inside += 1;
-        } else if lands_near(value, base, data.len() as u64) {
+        } else if lands_near(value, base, data.len() as u64) && !is_round(value) {
             near += 1;
         }
     }
@@ -167,6 +173,26 @@ pub fn check_base(data: &[u8], base: u64, arch: &dyn Arch) -> BaseFit {
     } else {
         BaseFit::NoEvidence
     }
+}
+
+/// Report whether a word is text: printable ASCII and zero bytes only, with
+/// at least two printable.
+///
+/// The tail of a string such as "copy" or "error" reads as a small number,
+/// `0x7970` or `0x726f`, which a low base takes for an address just outside
+/// it. A real pointer almost always holds a byte outside that range.
+fn is_text(word: &[u8]) -> bool {
+    let printable = word.iter().filter(|byte| (0x20..0x7f).contains(*byte)).count();
+    printable >= 2 && word.iter().all(|&byte| byte == 0 || (0x20..0x7f).contains(&byte))
+}
+
+/// Report whether a word is a multiple of a page.
+///
+/// Sizes and masks are round, `0x10000` or `0xf000`, and a pointer to code or
+/// to a table almost never is. A round word just outside the image is thus no
+/// evidence that the base is wrong.
+fn is_round(value: u64) -> bool {
+    value.is_multiple_of(0x1000)
 }
 
 /// Report whether a word looks like an address just outside the image.
@@ -257,11 +283,11 @@ mod tests {
     #[test]
     fn plausible_does_not_mean_certain() {
         // Two words that point into an image based at either of two places.
-        let data = image(&[0x0000_1004, 0x0000_1008, 0xe3a0_0001], 0x2000);
+        let data = image(&[0x0010_1004, 0x0010_1008, 0xe3a0_0001], 0x2000);
 
-        assert!(matches!(check_base(&data, 0x1000, &Arm32), BaseFit::Plausible { .. }));
+        assert!(matches!(check_base(&data, 0x0010_1000, &Arm32), BaseFit::Plausible { .. }));
         assert!(
-            matches!(check_base(&data, 0, &Arm32), BaseFit::Plausible { .. }),
+            matches!(check_base(&data, 0x0010_0000, &Arm32), BaseFit::Plausible { .. }),
             "a coincidental fit still reads as plausible, which is why the \
              verdict is worded as it is"
         );
@@ -306,6 +332,32 @@ mod tests {
 
         let fit = check_base(&data, 0x0800_0000, &Arm32);
         assert!(matches!(fit, BaseFit::Plausible { pointers: 2, .. }), "got {fit:?}");
+    }
+
+    /// Distances within a small image, loaded low, do not accuse its base.
+    #[test]
+    fn offsets_within_a_low_image_are_not_near_misses() {
+        // A 16 KiB stub at 0x8000 holding offsets into itself and two sizes.
+        let data = image(&[0x10ec, 0x11ac, 0x1a14, 0x3164, 0xf000, 0x1_0000, 0x2_0000], 0x4000);
+        assert_eq!(check_base(&data, 0x8000, &Arm32), BaseFit::NoEvidence);
+    }
+
+    /// The tail of a string is text, not a near miss.
+    #[test]
+    fn the_tail_of_a_string_is_not_a_near_miss() {
+        // "py\0\0", "or\0\0" and "er\0\0" as little-endian words.
+        let data = image(&[0x7970, 0x726f, 0x7265], 0x4000);
+        assert_eq!(check_base(&data, 0x8000, &Arm32), BaseFit::NoEvidence);
+        assert!(is_text(&0x7970u32.to_le_bytes()));
+        assert!(!is_text(&0x0800_0010u32.to_le_bytes()), "a pointer is not text");
+        assert!(!is_text(&0x0000_0070u32.to_le_bytes()), "one printable byte is a number");
+    }
+
+    /// A round size just outside the image is no evidence either way.
+    #[test]
+    fn a_round_number_is_not_a_near_miss() {
+        let data = image(&[0x0800_2000, 0x0800_3000, 0x0800_4000], 0x1000);
+        assert_eq!(check_base(&data, 0x0800_0000, &Arm32), BaseFit::NoEvidence);
     }
 
     /// A base so high that the image would wrap must not panic.
