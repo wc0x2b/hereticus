@@ -438,12 +438,18 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
 
     // Addresses sure to start a function: what is called, and what opens a
     // frame. A branch inside a function never crosses the start of another.
+    //
+    // A frame that a conditional branch runs into is made late, on the path
+    // that needs it, as `luaC_linkupval` in Lua for MIPS does after its
+    // early return. It is inside a function, so it is no sure start.
     let calls: BTreeSet<u64> = call_targets(arch, code, base).into_iter().collect();
     let anchors: BTreeSet<u64> = insns
         .iter()
-        .filter(is_code)
-        .filter(|insn| arch.is_prologue(insn))
-        .map(|insn| insn.address)
+        .enumerate()
+        .filter(|(index, insn)| {
+            is_code(insn) && arch.is_prologue(insn) && !follows_a_branch(&insns[..*index], arch)
+        })
+        .map(|(_, insn)| insn.address)
         .chain(calls)
         .collect();
 
@@ -552,6 +558,23 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     }
 
     out
+}
+
+/// Report whether the code before an instruction runs into it from a
+/// conditional branch to elsewhere, directly or from the branch's delay slot.
+///
+/// A conditional return, such as `bxmi lr`, does not count: it is how a
+/// function exits early before it makes its frame, and that frame is the
+/// start of the function in all but a few words.
+///
+/// `earlier` holds the instructions before it, closest last.
+fn follows_a_branch(earlier: &[Insn], arch: &dyn Arch) -> bool {
+    let is_branch = |insn: &Insn| matches!(insn.kind, InsnKind::Branch { target: Some(_) });
+    match earlier {
+        [.., owner, _slot] if is_branch(owner) && arch.delay_slots(owner) > 0 => true,
+        [.., last] => is_branch(last) && arch.delay_slots(last) == 0,
+        [] => false,
+    }
 }
 
 /// The words of a region that are data among the code: literal pools, and
@@ -951,25 +974,26 @@ mod tests {
     fn a_branch_from_before_a_prologue_does_not_cross_a_return() {
         use crate::arch::mips::Mips32;
 
-        let with_third = |third: u32| {
+        let with_fourth = |fourth: u32| {
             mips_code(&[
-                0x1080_0007,     // 0x00 beq a0, zero, 0x20
+                0x1080_0008,     // 0x00 beq a0, zero, 0x24
                 0x0000_0000,     // 0x04 nop
-                third,           // 0x08
-                0x27bd_0008,     // 0x0c addiu sp, sp, 8
-                0x03e0_0008,     // 0x10 jr ra
-                0x0000_0000,     // 0x14 nop
-                0x2402_0001,     // 0x18 addiu v0, zero, 1
-                0x03e0_0008,     // 0x1c jr ra
-                0x0000_0000_u32, // 0x20 nop
+                0x2402_0003,     // 0x08 addiu v0, zero, 3
+                fourth,          // 0x0c
+                0x27bd_0008,     // 0x10 addiu sp, sp, 8
+                0x03e0_0008,     // 0x14 jr ra
+                0x0000_0000,     // 0x18 nop
+                0x2402_0001,     // 0x1c addiu v0, zero, 1
+                0x03e0_0008,     // 0x20 jr ra
+                0x0000_0000_u32, // 0x24 nop
             ])
         };
 
         // addiu sp, sp, -8: a function starts between the branch and the
         // return, so the branch does not cross it.
-        assert_eq!(starts_after_returns(&Mips32::LITTLE, &with_third(0x27bd_fff8), 0), vec![0x18]);
+        assert_eq!(starts_after_returns(&Mips32::LITTLE, &with_fourth(0x27bd_fff8), 0), vec![0x1c]);
         // addiu v0, zero, 2: the branch can be of this function.
-        assert!(starts_after_returns(&Mips32::LITTLE, &with_third(0x2402_0002), 0).is_empty());
+        assert!(starts_after_returns(&Mips32::LITTLE, &with_fourth(0x2402_0002), 0).is_empty());
     }
 
     /// The cases of a `switch` table each end with a return, and only the
@@ -989,6 +1013,26 @@ mod tests {
             0xe8bd_8010, // 0x24 pop {r4, pc}
         ]);
         assert!(starts_after_returns(&Arm32, &code, 0).is_empty());
+    }
+
+    /// A frame made after a branch skips it is inside the function, as in
+    /// `luaC_linkupval`, so the branch still crosses the return after it.
+    #[test]
+    fn a_frame_made_on_one_path_is_no_sure_start() {
+        use crate::arch::mips::Mips32;
+
+        let code = mips_code(&[
+            0x1080_0006,     // 0x00 beq a0, zero, 0x1c
+            0x0000_0000,     // 0x04 nop
+            0x27bd_fff8,     // 0x08 addiu sp, sp, -8: runs on from the slot
+            0x27bd_0008,     // 0x0c addiu sp, sp, 8
+            0x03e0_0008,     // 0x10 jr ra
+            0x0000_0000,     // 0x14 nop
+            0x2402_0001,     // 0x18 addiu v0, zero, 1
+            0x03e0_0008,     // 0x1c jr ra
+            0x0000_0000_u32, // 0x20 nop
+        ]);
+        assert!(starts_after_returns(&Mips32::LITTLE, &code, 0).is_empty());
     }
 
     /// A branch from before the last return is not of this function. In a

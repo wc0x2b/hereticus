@@ -41,3 +41,13 @@ is gone or new. In a raw image of a shared library the headers and
 The tests now download about 150 MB of OpenWrt images and build libraries
 in a container. Cache `fixtures/build` in CI, keyed on the pinned SHA-256
 values and on `fixtures/`, so a run fetches and builds only what changed.
+
+## Read MIPS jump tables
+
+PIC code on MIPS jumps through a table in `.rodata`: it loads the page of
+the table from the global offset table, adds the index, loads a
+gp-relative offset, and jumps with `jr`. The scan cannot see the cases,
+so those after the first `jr ra` read as new functions: the last 4 false
+starts in the raw backport images, in Lua's `checkArgMode` and `Arith`.
+Reading them needs the global pointer the preamble forms and the GOT
+entry, both of which a raw image holds.

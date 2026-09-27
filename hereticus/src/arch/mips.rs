@@ -1086,6 +1086,15 @@ fn classify(inst: &Instruction) -> InsnKind {
         // `is_function_call` already accounts for.
         Opcode::core_jalr => InsnKind::Call { target: None },
         Opcode::core_jal => InsnKind::Call { target: jump_target(inst) },
+
+        // A call on a condition. Compilers call with `bal`, which always
+        // links, and never with these, but data decodes as them: a word of
+        // `.rodata` in zlib for little-endian MIPS read as `bltzal t0` into
+        // the middle of `gzrewind`. They still call, but name no target, so
+        // they cannot start a function.
+        Opcode::core_bltzal | Opcode::core_bgezal | Opcode::core_bltzall | Opcode::core_bgezall => {
+            InsnKind::Call { target: None }
+        }
         Opcode::core_j => InsnKind::Jump { target: jump_target(inst) },
         Opcode::core_jr => InsnKind::Jump { target: None },
 
@@ -1149,6 +1158,15 @@ mod tests {
     #[test]
     fn jalr_is_a_call() {
         assert!(matches!(decode_one(0x0320_f809).kind, InsnKind::Call { .. }));
+    }
+
+    /// `bal` calls its target. `bltzal t0` calls only on a condition, which
+    /// compiled code never does, so its target names no function.
+    #[test]
+    fn only_an_unconditional_link_names_its_target() {
+        assert_eq!(decode_one(0x0411_0003).kind, InsnKind::Call { target: Some(0x10) }, "bal");
+        assert_eq!(decode_one(0x0510_0003).kind, InsnKind::Call { target: None }, "bltzal t0");
+        assert_eq!(decode_one(0x0511_0003).kind, InsnKind::Call { target: None }, "bgezal t0");
     }
 
     /// `jal` holds the target's word index, which the region completes.
