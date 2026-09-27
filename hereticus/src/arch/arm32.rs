@@ -316,7 +316,7 @@ impl Arch for Arm32 {
             // image, marks the word as a stored address.
             let mut formed = |base: u64, (pool, value): (u64, u32)| {
                 let address = base.wrapping_add(i64::from(value as i32) as u64);
-                if space.contains(address)
+                if space.contains_formed(address)
                     && let Ok(index) = body.binary_search_by_key(&pool, |insn| insn.address)
                 {
                     kinds[index] = ConstantKind::StoredAddress;
@@ -1210,6 +1210,23 @@ mod tests {
         let kinds = Arm32.constant_kinds(&code, &insns, &space);
         assert_eq!(kinds[5], ConstantKind::StoredAddress, "the table's distance");
         assert_eq!(kinds[6], ConstantKind::StoredAddress, "the slot's offset");
+    }
+
+    /// `lld` puts the read-only data of a small library below the first
+    /// page, and code reaches it by a negative distance from `pc`. Measured
+    /// on a Rust library for ARM, the message a panic prints sat at 0xbc8.
+    #[test]
+    fn a_distance_to_low_data_marks_its_pool_word() {
+        let words = [
+            0xe59f_0000_u32,                // 0x10000 ldr r0, [pc]: the word at 0x10008
+            0xe08f_0000,                    // 0x10004 add r0, pc, r0
+            (0x0bc8_i32 - 0x1_000c) as u32, // 0x10008 the distance to 0xbc8
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0x1_0000);
+        let space = AddressSpace::from_ranges([0x870..0xd40, 0x1_0000..0x1_0100]);
+        let kinds = Arm32.constant_kinds(&code, &insns, &space);
+        assert_eq!(kinds[2], ConstantKind::StoredAddress);
     }
 
     /// Code runs always; text and tables do not.
