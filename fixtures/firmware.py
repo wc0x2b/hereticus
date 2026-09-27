@@ -8,10 +8,11 @@ download and each extracted file is pinned by its SHA-256, so every machine
 tests the same bytes, and a changed mirror fails here rather than as a
 confusing test failure.
 
-Each board gives two images per release:
+Each board gives up to two images per release:
 
 * a stub: the small program that decompresses the kernel. It is 5 to 15 KiB,
-  so its report is small enough to read in full.
+  so its report is small enough to read in full. A board whose bootloader
+  decompresses the kernel itself has none.
 * a kernel: the decompressed Linux kernel, 7 to 11 MiB. The tests that read
   it are marked slow.
 
@@ -19,9 +20,11 @@ Only the Python standard library is used, so no container is necessary.
 """
 
 import hashlib
+import io
 import lzma
 import struct
 import sys
+import tarfile
 import urllib.request
 from pathlib import Path
 
@@ -57,6 +60,36 @@ BOARDS = {
             "22.03.5": "2eb311d0006e39e0288066ed8d5c75ae1abde30805d8b4a24d45e30b2428484f",
         },
     },
+    # ARM, little endian, a Cortex-A9. The kernel is a zImage inside a
+    # uImage, inside a tar.
+    "arm-a385dbap": {
+        "path": "mvebu/cortexa9",
+        "file": "openwrt-{release}-mvebu-cortexa9-marvell_a385-db-ap-squashfs-sysupgrade.bin",
+        "download": {
+            "22.03.2": "059c639b264e9dd73bfecec0af3b37ca253fa6fb69a34bc1dca30beb11f1c122",
+            "22.03.5": "7e934cf7c419b764e4de86934816b9cb11f96b57dc6e9d396946fdf10cf5a712",
+        },
+    },
+    # MIPS, big endian, a Lantiq xRX200 (34Kc). The kernel is lzma behind a
+    # TP-Link v2 header. An ath79 board would add nothing: every ath79 device
+    # shares one kernel build, and only its device tree differs.
+    "mipsbe-vr200": {
+        "path": "lantiq/xrx200",
+        "file": "openwrt-{release}-lantiq-xrx200-tplink_vr200-squashfs-sysupgrade.bin",
+        "download": {
+            "22.03.2": "38909346c8cc55eb96bfc3617555d24361c4adb2ba26f6b57c1b2a2a89620975",
+            "22.03.5": "e55516f694b8eb5f0f65112eb2ff606fd80c5f50c5470b3fbf37341bbe9763bc",
+        },
+    },
+    # MIPS, little endian, an MT7628. The kernel is lzma inside a uImage.
+    "mipsel-mt300nv2": {
+        "path": "ramips/mt76x8",
+        "file": "openwrt-{release}-ramips-mt76x8-glinet_gl-mt300n-v2-squashfs-sysupgrade.bin",
+        "download": {
+            "22.03.2": "406695bff21debb3f9bf9cd8090b2cfd953f639e47e15ba0709f10bc356e900a",
+            "22.03.5": "6f5389f2ced5d95f79c1e187544af3c15e1e744ab872c627794564f49abc45c5",
+        },
+    },
     # MIPS, little endian. The kernel is an lzma-loader inside a uImage.
     "mipsel-r6220": {
         "path": "ramips/mt7621",
@@ -83,6 +116,14 @@ EXTRACTED = {
     "mipsel-r6220-stub-22.03.5.bin": "6bcaa6178a616d4f3de4e115779a994e7eceb19e33195e7294a1ba709586a7b2",
     "mipsel-r6220-kernel-22.03.2.bin": "b3bd89a127791aba348e2f61c51ebedbca2bd0a5fc9ef89fae74bd3574aba436",
     "mipsel-r6220-kernel-22.03.5.bin": "f9bac282a059f69ebfb5e37c59d4c5d431839bf8bc61b6cd5c8313c0d8ca1ae6",
+    "arm-a385dbap-stub-22.03.2.bin": "cd7ac9bc392f7fbacac1f95b608378b13d1172e8bf5a8e7ec324f3b1b9001c6e",
+    "arm-a385dbap-kernel-22.03.2.bin": "6fd5c9687c20607e886126accc994d1299f56c06727b77f53b666f75b1cc0aa1",
+    "arm-a385dbap-stub-22.03.5.bin": "89b6de64723b89dbe7b398f993fc8319dc5f4436a502ab817a5a98679e8e7a4c",
+    "arm-a385dbap-kernel-22.03.5.bin": "0d0d76b20e6b6a3b17b1c6bf162d2e54a37b89f718986094b711409a419e8632",
+    "mipsbe-vr200-kernel-22.03.2.bin": "f15c556f448bf1efeaa7f9b1067a5513ac5ce6de43dee7aa149746b3a4d24e41",
+    "mipsbe-vr200-kernel-22.03.5.bin": "dcf7b836d149b4be316c3992843186c18cfda92b1780db11d1fbbae00168478e",
+    "mipsel-mt300nv2-kernel-22.03.2.bin": "d6f4edca5c09084cca3a18755d62aa6d4a15213113d4bcbf2986c68feceb16a8",
+    "mipsel-mt300nv2-kernel-22.03.5.bin": "dcdf1e35d494f15b0a89f6b7d2799d7b24046821c39fbd40d57fabb74d4cf2ca",
 }
 
 
@@ -134,7 +175,7 @@ def first_stream(data: bytes, start: int, end: int, magic: bytes, fmt: int) -> t
     raise ExtractError(f"no stream with magic {magic.hex()} decodes")
 
 
-def extract_arm_zimage(image: bytes) -> tuple[bytes, bytes]:
+def extract_arm_zimage(image: bytes) -> dict[str, bytes]:
     """Split a zImage into its decompressor stub and the kernel it holds."""
     magic = image.find(ZIMAGE_MAGIC)
     if magic == -1:
@@ -143,10 +184,41 @@ def extract_arm_zimage(image: bytes) -> tuple[bytes, bytes]:
     _, end = struct.unpack("<II", image[magic + 4 : magic + 12])
 
     payload, kernel = first_stream(image, zimage, zimage + end, XZ_MAGIC, lzma.FORMAT_XZ)
-    return image[zimage:payload], kernel
+    return {"stub": image[zimage:payload], "kernel": kernel}
 
 
-def extract_elf_loader(image: bytes) -> tuple[bytes, bytes]:
+def extract_tar_zimage(image: bytes) -> dict[str, bytes]:
+    """Split the zImage in the `kernel` member of a sysupgrade tar."""
+    with tarfile.open(fileobj=io.BytesIO(image)) as archive:
+        member = next((m for m in archive.getmembers() if m.name.endswith("/kernel")), None)
+        if member is None:
+            raise ExtractError("no kernel in the tar")
+        return extract_arm_zimage(archive.extractfile(member).read())
+
+
+def extract_tplink_v2_lzma(image: bytes) -> dict[str, bytes]:
+    """Decompress the kernel behind a TP-Link v2 firmware header.
+
+    The header is 0x200 bytes, and the kernel runs to the root filesystem.
+    """
+    header = 0x200
+    rootfs = image.find(b"hsqs")
+    if rootfs == -1:
+        raise ExtractError("no root filesystem after the kernel")
+    _, kernel = first_stream(image, header, rootfs, LZMA_HEADER, lzma.FORMAT_ALONE)
+    return {"kernel": kernel}
+
+
+def extract_uimage_lzma(image: bytes) -> dict[str, bytes]:
+    """Decompress the kernel an lzma uImage holds."""
+    if image[:4] != b"\x27\x05\x19\x56":
+        raise ExtractError("no uImage")
+    size = struct.unpack(">I", image[12:16])[0]
+    _, kernel = first_stream(image, 64, 64 + size, LZMA_HEADER, lzma.FORMAT_ALONE)
+    return {"kernel": kernel}
+
+
+def extract_elf_loader(image: bytes) -> dict[str, bytes]:
     """Split a big-endian ELF lzma-loader into its code and the kernel."""
     if image[:6] != b"\x7fELF\x01\x02":
         raise ExtractError("no 32-bit big-endian ELF")
@@ -155,10 +227,10 @@ def extract_elf_loader(image: bytes) -> tuple[bytes, bytes]:
     _, offset, _, _, filesz = struct.unpack(">5I", image[phoff : phoff + 20])
 
     payload, kernel = first_stream(image, offset, offset + filesz, LZMA_HEADER, lzma.FORMAT_ALONE)
-    return image[offset:payload], kernel
+    return {"stub": image[offset:payload], "kernel": kernel}
 
 
-def extract_uimage_loader(image: bytes) -> tuple[bytes, bytes]:
+def extract_uimage_loader(image: bytes) -> dict[str, bytes]:
     """Split an uncompressed uImage lzma-loader into its code and the kernel."""
     if image[:4] != b"\x27\x05\x19\x56":
         raise ExtractError("no uImage")
@@ -166,13 +238,16 @@ def extract_uimage_loader(image: bytes) -> tuple[bytes, bytes]:
     body = 64
 
     payload, kernel = first_stream(image, body, body + size, LZMA_HEADER, lzma.FORMAT_ALONE)
-    return image[body:payload], kernel
+    return {"stub": image[body:payload], "kernel": kernel}
 
 
 EXTRACTORS = {
     "arm-ex6100v2": extract_arm_zimage,
     "mipsbe-eap245v3": extract_elf_loader,
     "mipsel-r6220": extract_uimage_loader,
+    "arm-a385dbap": extract_tar_zimage,
+    "mipsbe-vr200": extract_tplink_v2_lzma,
+    "mipsel-mt300nv2": extract_uimage_lzma,
 }
 
 
@@ -182,12 +257,11 @@ def main() -> int:
 
     for name, board in BOARDS.items():
         for release in RELEASES:
-            stub, kernel = EXTRACTORS[name](fetch(board, release))
-            for part, data in (("stub", stub), ("kernel", kernel)):
+            for part, data in EXTRACTORS[name](fetch(board, release)).items():
                 file = f"{name}-{part}-{release}.bin"
                 (OUT / file).write_bytes(data)
-                if sha256(data) != EXTRACTED[file]:
-                    failures.append(f"{file}: SHA-256 is {sha256(data)}, expected {EXTRACTED[file]}")
+                if sha256(data) != EXTRACTED.get(file):
+                    failures.append(f"{file}: SHA-256 is {sha256(data)}, expected {EXTRACTED.get(file, 'no pin')}")
 
     for failure in failures:
         print(f"firmware: {failure}", file=sys.stderr)
