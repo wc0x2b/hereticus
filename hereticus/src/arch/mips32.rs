@@ -48,6 +48,9 @@ pub(super) struct Word {
     pub(super) kind: InsnKind,
 }
 
+/// The mnemonic of the trap that LLD pads with.
+pub(super) const SIGRIE: &str = "sigrie";
+
 /// `eret` and `deret`, which return from an exception and from a debug
 /// exception. Each is one fixed word.
 const ERET: u32 = 0x4200_0018;
@@ -79,6 +82,11 @@ pub(super) fn decode(word: u32) -> Option<Word> {
         // under REGIMM, in the `rt` MIPS II leaves reserved.
         REGIMM if fields.rt == 0x1f => {
             Some(("synci", format!("{}({})", fields.offset(), fields.rs_name())))
+        }
+        // `sigrie code` traps. Release 6 defines it, and LLD fills the gaps
+        // between functions with `sigrie 1` on every release.
+        REGIMM if fields.rt == 0x17 && fields.rs == 0 => {
+            Some((SIGRIE, format!("{:#x}", fields.immediate)))
         }
         PREF => {
             Some(("pref", format!("{:#x}, {}({})", fields.rt, fields.offset(), fields.rs_name())))
@@ -429,6 +437,13 @@ mod tests {
         assert_eq!(kind(0x4200_001f), Some(InsnKind::Return));
         assert!(is_exception_return("eret") && is_exception_return("deret"));
         assert!(!is_exception_return("jr"));
+    }
+
+    /// `sigrie 1`, as LLD pads with.
+    #[test]
+    fn reads_the_padding_trap() {
+        assert_eq!(text(0x0417_0001).as_deref(), Some("sigrie 0x1"));
+        assert_eq!(decode(0x0437_0001), None, "rs set");
     }
 
     /// `synci 0($4)` and `synci -16($13)`.

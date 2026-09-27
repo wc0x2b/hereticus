@@ -430,11 +430,31 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         sources_of.entry(target).or_default().push((insn.address, transfer));
     }
 
+    // Addresses sure to start a function: what is called, and what opens a
+    // frame. A branch inside a function never crosses the start of another.
+    let calls: BTreeSet<u64> = call_targets(arch, code, base).into_iter().collect();
+    let anchors: BTreeSet<u64> = insns
+        .iter()
+        .filter(is_code)
+        .filter(|insn| arch.is_prologue(insn))
+        .map(|insn| insn.address)
+        .chain(calls)
+        .collect();
+
     // A branch that starts at or before a return and lands after it proves
     // control flows across that return, so the return is inside a function
-    // rather than at the end of one.
-    let is_internal =
-        |address: u64| branches.iter().any(|(from, to)| *from <= address && *to > address);
+    // rather than at the end of one. Only a branch from the same function
+    // counts, which is one with no sure start between it and the return. In
+    // a raw image, data before the code decodes as branches that cross
+    // every return: measured on zlib for MIPS, these hid 48 of 123 functions.
+    let is_internal = |address: u64| {
+        let function_start = anchors.range(..=address).next_back().copied().unwrap_or(base);
+        let first = branches.partition_point(|&(from, _)| from < function_start);
+        branches[first..]
+            .iter()
+            .take_while(|&&(from, _)| from <= address)
+            .any(|&(_, to)| to > address)
+    };
 
     let mut out = Vec::new();
     // The last return before the current instruction. The code after it is
@@ -506,7 +526,13 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         // call or branch to name it, so this is the one source that can find
         // it. Look a short way ahead, stopping at any further terminator so the
         // scan cannot cross into real control flow.
-        if let Some(prologue) = prologue_past_pool(&insns, next, &reached_here, arch) {
+        if let Some(prologue) = prologue_past_pool(
+            &insns,
+            next,
+            &reached_here,
+            &|address| pool.contains(&address),
+            arch,
+        ) {
             out.push(prologue);
             continue;
         }
@@ -570,16 +596,27 @@ fn prologue_past_pool(
     insns: &[Insn],
     from: usize,
     reached: &dyn Fn(u64) -> bool,
+    is_pool: &dyn Fn(u64) -> bool,
     arch: &dyn Arch,
 ) -> Option<u64> {
-    /// The most words to step over before a prologue. A literal pool between
-    /// two functions holds a few constants; a longer run is a function body,
-    /// not a pool, and its first prologue-shaped word is not a function start.
+    /// The most words not known to be pool data to step over before a
+    /// prologue. A literal pool between two functions holds a few constants;
+    /// a longer run is a function body, not a pool, and its first
+    /// prologue-shaped word is not a function start.
     const MOST_POOL_WORDS: usize = 8;
 
     let mut next = from;
-    for _ in 0..MOST_POOL_WORDS {
+    let mut guessed = 0;
+    while guessed < MOST_POOL_WORDS {
         let insn = insns.get(next)?;
+        // A word a load names is pool data for certain, so it does not count
+        // against the limit. The words it cannot name, such as the doubles
+        // that VFP `vldr` loads in Lua's `luaopen_math`, still do.
+        if is_pool(insn.address) {
+            next += 1;
+            continue;
+        }
+        guessed += 1;
         if arch.is_prologue(insn) {
             // A preamble before this prologue belongs to the function, but
             // only as far back as the pool scan began: earlier words are the
@@ -890,6 +927,34 @@ mod tests {
         // bl 0x13948: the same target, from a word that is not text.
         let call = with_word_at_4(0xeb00_4e4f);
         assert_eq!(call_targets(&Arm32, &call, 0), vec![0x13948]);
+    }
+
+    /// A branch crosses a return inside its own function only. One from
+    /// before a prologue is of another function, or is data, and it must
+    /// not hide the leaf function after the return.
+    #[test]
+    fn a_branch_from_before_a_prologue_does_not_cross_a_return() {
+        use crate::arch::mips::Mips32;
+
+        let with_third = |third: u32| {
+            mips_code(&[
+                0x1080_0007,     // 0x00 beq a0, zero, 0x20
+                0x0000_0000,     // 0x04 nop
+                third,           // 0x08
+                0x27bd_0008,     // 0x0c addiu sp, sp, 8
+                0x03e0_0008,     // 0x10 jr ra
+                0x0000_0000,     // 0x14 nop
+                0x2402_0001,     // 0x18 addiu v0, zero, 1
+                0x03e0_0008,     // 0x1c jr ra
+                0x0000_0000_u32, // 0x20 nop
+            ])
+        };
+
+        // addiu sp, sp, -8: a function starts between the branch and the
+        // return, so the branch does not cross it.
+        assert_eq!(starts_after_returns(&Mips32::LITTLE, &with_third(0x27bd_fff8), 0), vec![0x18]);
+        // addiu v0, zero, 2: the branch can be of this function.
+        assert!(starts_after_returns(&Mips32::LITTLE, &with_third(0x2402_0002), 0).is_empty());
     }
 
     /// A branch from before the last return is not of this function. In a

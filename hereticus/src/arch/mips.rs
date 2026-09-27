@@ -470,7 +470,8 @@ impl Arch for Mips32 {
     fn is_padding(&self, insn: &Insn) -> bool {
         // A zero word decodes as `nop` on MIPS, so unlike ARM one test covers
         // both the encoding a linker pads with and the named instruction.
-        insn.mnemonic == "nop"
+        // LLD pads with a trap instead.
+        insn.mnemonic == "nop" || insn.mnemonic == super::mips32::SIGRIE
     }
 
     fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
@@ -493,7 +494,7 @@ impl Arch for Mips32 {
                 || (aligned
                     && self
                         .decode(bytes, end - INSN_WIDTH, 0)
-                        .is_ok_and(|insn| insn.kind == InsnKind::Unknown))
+                        .is_ok_and(|insn| insn.kind == InsnKind::Unknown || self.is_padding(&insn)))
         };
 
         let mut end = bytes.len();
@@ -1675,14 +1676,24 @@ mod tests {
     fn an_unreadable_word_after_the_return_is_trimmed() {
         let mut code = 0x03e0_0008u32.to_be_bytes().to_vec(); // jr ra
         code.extend_from_slice(&[0; 4]); // nop, in the delay slot
-        code.extend_from_slice(&0x0417_0001u32.to_be_bytes()); // does not decode
+        code.extend_from_slice(&0xec00_0001u32.to_be_bytes()); // a reserved opcode
+        assert_eq!(Mips32::BIG.trim_padding(&code), &code[..8]);
+    }
+
+    /// LLD fills the gap after a function with `sigrie 1`, which traps.
+    #[test]
+    fn the_padding_trap_after_the_return_is_trimmed() {
+        let mut code = 0x03e0_0008u32.to_be_bytes().to_vec(); // jr ra
+        code.extend_from_slice(&[0; 4]); // nop, in the delay slot
+        code.extend_from_slice(&0x0417_0001u32.to_be_bytes());
+        code.extend_from_slice(&0x0417_0001u32.to_be_bytes());
         assert_eq!(Mips32::BIG.trim_padding(&code), &code[..8]);
     }
 
     /// An unreadable word before real code is kept: only the end is trimmed.
     #[test]
     fn an_unreadable_word_inside_a_function_is_kept() {
-        let mut code = 0x0417_0001u32.to_be_bytes().to_vec();
+        let mut code = 0xec00_0001u32.to_be_bytes().to_vec(); // a reserved opcode
         code.extend_from_slice(&0x2402_0001u32.to_be_bytes()); // addiu v0, zero, 1
         assert_eq!(Mips32::BIG.trim_padding(&code), &code[..]);
     }

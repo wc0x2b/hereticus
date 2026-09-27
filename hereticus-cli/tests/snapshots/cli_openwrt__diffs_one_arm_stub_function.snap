@@ -14,44 +14,12 @@ info:
     - fixtures/build/openwrt/arm-ex6100v2-stub-22.03.2.bin
     - fixtures/build/openwrt/arm-ex6100v2-stub-22.03.5.bin
     - "--diff"
-    - sub_80208af8
+    - sub_80208b78
 ---
 success: true
 exit_code: 0
 ----- stdout -----
-sub_80208af8
-  ldr r1, [pc, 0x80]
-  subs r2, r0, 0x0
-  add r1, pc, r1
-  blt $+0x74
-  ldr r3, [pc, 0x74]
-  push {lr}
-  ldr lr, [r1, r3]
-  ldr r3, [lr]
-  cmps r0, r3, 0x0
-  beq $+0x44
-  add r3, r3, 0x3
-  ldr ip, [pc, 0x5c]
-  bic r0, r3, 0x3
-  add r3, r2, r0
-  str r3, [lr]
-  ldr r2, [r1, ip]
-  ldr r2, [r2]
-  sub r2, r2, 0x1
-  cmps r0, r3, r2
-  bhi $+0x2c
-  ldr r3, [pc, 0x3c]
-  ldr r2, [r1, r3]
-  ldr r3, [r2]
-  add r3, r3, 0x1
-  str r3, [r2]
-  pop {pc}
-  ldr r3, [pc, 0x28]
-  ldr r3, [r1, r3]
-  ldr r3, [r3]
-  b $-0x4c
-  mov r0, 0x0
-  pop {pc}
+sub_80208b78
   mov r0, 0x0
   bx lr
 - eoreq pc, r10, r0, ror sp

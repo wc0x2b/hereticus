@@ -41,3 +41,12 @@ is gone or new. In a raw image of a shared library the headers and
 The tests now download about 150 MB of OpenWrt images and build libraries
 in a container. Cache `fixtures/build` in CI, keyed on the pinned SHA-256
 values and on `fixtures/`, so a run fetches and builds only what changed.
+
+## Read ARM jump tables
+
+`add pc, r3, r2` jumps through a table of offsets that follows it. The
+scan cannot see where the table sends control, so the cases after the
+first `pop {..., pc}` read as new functions: in Lua for ARM at `-O2`, 6
+of the 9 false starts in the raw image are cases of `reallymarkobject`,
+`luaK_dischargevars` and `luaV_equalval`. Read the table as branches from
+the jump.

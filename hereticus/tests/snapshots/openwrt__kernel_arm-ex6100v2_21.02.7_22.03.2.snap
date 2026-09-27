@@ -3,12 +3,12 @@ source: hereticus/tests/openwrt.rs
 assertion_line: 641
 expression: kernel_digest(&comparison)
 ---
-functions 22578 -> 22998
-matched 15975
-{No: 1141, Reordered: 2415, InDetail: 1408, Unreadable: 35, Yes: 10976}
-gone 6603
-new 7023
-fingerprint 0x8197d9e6db381639
+functions 25233 -> 25908
+matched 17862
+{No: 1727, Reordered: 2773, InDetail: 1827, Unreadable: 63, Yes: 11472}
+gone 7371
+new 8046
+fingerprint 0x7a9a4da3c7383cf5
 
 strongest changes:
 0xc089fbe0 -> 0xc0605040 score=0.995 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }
@@ -33,7 +33,6 @@ strongest changes:
 0xc07f8fa4 -> 0xc089112c score=0.989 edits=Edits { added: 11, removed: 12, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 6, other: 18, opaque: 0, constants: 6 }
 0xc07f21dc -> 0xc0889f2c score=0.989 edits=Edits { added: 7, removed: 6, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 4, other: 10, opaque: 0, constants: 18 }
 0xc046a970 -> 0xc048fb48 score=0.988 edits=Edits { added: 15, removed: 15, edited: 1 } kinds=EditKinds { branches: 0, calls: 4, jumps: 2, memory: 0, other: 25, opaque: 0, constants: 6 }
-0xc0318de0 -> 0xc0317e20 score=0.988 edits=Edits { added: 2, removed: 2, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 2, other: 4, opaque: 0, constants: 4 }
 0xc07fa1e0 -> 0xc08921fc score=0.988 edits=Edits { added: 12, removed: 13, edited: 2 } kinds=EditKinds { branches: 3, calls: 2, jumps: 3, memory: 10, other: 9, opaque: 0, constants: 2 }
 0xc0a1fb20 -> 0xc0b217a8 score=0.988 edits=Edits { added: 16, removed: 16, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 33, opaque: 0, constants: 47 }
 0xc0546484 -> 0xc058133c score=0.988 edits=Edits { added: 8, removed: 9, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 2, other: 15, opaque: 0, constants: 9 }
@@ -51,3 +50,4 @@ strongest changes:
 0xc05811d8 -> 0xc05bff1c score=0.986 edits=Edits { added: 4, removed: 3, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 7, opaque: 0, constants: 0 }
 0xc063c67c -> 0xc06a19e4 score=0.986 edits=Edits { added: 5, removed: 4, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 3, other: 7, opaque: 0, constants: 0 }
 0xc07aa9d4 -> 0xc083fca4 score=0.986 edits=Edits { added: 7, removed: 8, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 2, other: 15, opaque: 0, constants: 4 }
+0xc07d66d8 -> 0xc086caac score=0.986 edits=Edits { added: 3, removed: 2, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 2, other: 3, opaque: 0, constants: 3 }
