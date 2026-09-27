@@ -217,10 +217,10 @@ fn the_stub_report_is_locked(#[case] board: Board) {
 /// kernel sits and how long it is. The ARM stub was rebuilt with real code
 /// changes.
 #[rstest]
-#[case::arm_ex6100v2(EX6100V2, [66, 66], &[(Changed::No, 56), (Changed::InDetail, 2), (Changed::Yes, 7), (Changed::Unreadable, 1)], 0, 0)]
+#[case::arm_ex6100v2(EX6100V2, [64, 64], &[(Changed::No, 54), (Changed::InDetail, 2), (Changed::Yes, 7), (Changed::Unreadable, 1)], 0, 0)]
 #[case::mipsbe_eap245v3(EAP245V3, [7, 7], &[(Changed::No, 5), (Changed::InDetail, 2)], 0, 0)]
 #[case::mipsel_r6220(R6220, [7, 7], &[(Changed::No, 5), (Changed::InDetail, 2)], 0, 0)]
-#[case::arm_a385dbap(A385DBAP, [140, 140], &[(Changed::No, 130), (Changed::InDetail, 4), (Changed::Yes, 6)], 0, 0)]
+#[case::arm_a385dbap(A385DBAP, [138, 138], &[(Changed::No, 128), (Changed::InDetail, 4), (Changed::Yes, 6)], 0, 0)]
 fn the_stub_changes_are_known(
     #[case] board: Board,
     #[case] functions: [usize; 2],
@@ -459,7 +459,7 @@ fn kernel_digest(comparison: &Comparison) -> String {
 fn slow_the_arm_kernel_report_is_locked() {
     check_kernel(
         EX6100V2,
-        6170,
+        6096,
         [
             BaseFit::Plausible { pointers: 65274, examined: 1_804_835 },
             BaseFit::Plausible { pointers: 65514, examined: 1_813_763 },
@@ -477,7 +477,7 @@ fn slow_the_arm_kernel_report_is_locked() {
 fn slow_the_big_endian_mips_kernel_report_is_locked() {
     check_kernel(
         EAP245V3,
-        13576,
+        13730,
         [
             BaseFit::Plausible { pointers: 47586, examined: 1_377_328 },
             BaseFit::Plausible { pointers: 47778, examined: 1_385_296 },
@@ -490,7 +490,7 @@ fn slow_the_big_endian_mips_kernel_report_is_locked() {
 fn slow_the_little_endian_mips_kernel_report_is_locked() {
     check_kernel(
         R6220,
-        15280,
+        15505,
         [
             BaseFit::Plausible { pointers: 50248, examined: 1_606_891 },
             BaseFit::Plausible { pointers: 50444, examined: 1_615_796 },
@@ -503,7 +503,7 @@ fn slow_the_little_endian_mips_kernel_report_is_locked() {
 fn slow_the_armada_kernel_report_is_locked() {
     check_kernel(
         A385DBAP,
-        7287,
+        7201,
         [
             BaseFit::Plausible { pointers: 76052, examined: 2_107_105 },
             BaseFit::Plausible { pointers: 76384, examined: 2_116_947 },
@@ -516,7 +516,7 @@ fn slow_the_armada_kernel_report_is_locked() {
 fn slow_the_lantiq_kernel_report_is_locked() {
     check_kernel(
         VR200,
-        15232,
+        15460,
         [
             BaseFit::Plausible { pointers: 52265, examined: 1_630_772 },
             BaseFit::Plausible { pointers: 52465, examined: 1_638_279 },
@@ -529,7 +529,7 @@ fn slow_the_lantiq_kernel_report_is_locked() {
 fn slow_the_mt7628_kernel_report_is_locked() {
     check_kernel(
         MT300NV2,
-        13154,
+        13317,
         [
             BaseFit::Plausible { pointers: 45805, examined: 1_327_211 },
             BaseFit::Plausible { pointers: 45992, examined: 1_334_689 },

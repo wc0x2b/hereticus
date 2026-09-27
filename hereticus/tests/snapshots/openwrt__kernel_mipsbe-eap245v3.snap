@@ -3,51 +3,51 @@ source: hereticus/tests/openwrt.rs
 assertion_line: 406
 expression: kernel_digest(&comparison)
 ---
-functions 19685 -> 19791
-matched 18921
-{No: 15995, Reordered: 11, Data: 5, InDetail: 2113, Yes: 797}
-gone 764
-new 870
-fingerprint 0xda68cf9cf2777870
+functions 19470 -> 19571
+matched 18797
+{No: 16049, Reordered: 9, Data: 5, InDetail: 1936, Yes: 798}
+gone 673
+new 774
+fingerprint 0xe17beeee59d02ff0
 
 strongest changes:
-0x8010dd34 -> 0x8010e740 score=0.999 edits=Edits { added: 2, removed: 1, edited: 0 } kinds=EditKinds { branches: 2, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }
-0x80078f10 -> 0x80078f9c score=0.999 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 3 }
-0x805ff6f0 -> 0x80607f50 score=0.998 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }
-0x80524ac0 -> 0x8052cbe0 score=0.998 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }
-0x80583100 -> 0x8058b320 score=0.998 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 1 }
-0x804ed91c -> 0x804f586c score=0.998 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0 }
-0x805829a8 -> 0x8058abc4 score=0.998 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0 }
-0x80489ad0 -> 0x8048fe4c score=0.997 edits=Edits { added: 4, removed: 2, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 6, opaque: 0, constants: 2 }
-0x80584344 -> 0x8058c568 score=0.997 edits=Edits { added: 2, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 1 }
-0x80577710 -> 0x8057f82c score=0.997 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }
-0x801616a8 -> 0x80162618 score=0.997 edits=Edits { added: 0, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }
-0x805bbeec -> 0x805c421c score=0.997 edits=Edits { added: 3, removed: 2, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 6, opaque: 0, constants: 0 }
-0x8055c794 -> 0x80564868 score=0.997 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }
-0x803d576c -> 0x803db07c score=0.997 edits=Edits { added: 1, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0 }
-0x805e4f2c -> 0x805ed4c8 score=0.997 edits=Edits { added: 2, removed: 4, edited: 1 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 0, other: 6, opaque: 0, constants: 0 }
-0x804ee4e8 -> 0x804f643c score=0.997 edits=Edits { added: 2, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 1 }
-0x804eaae8 -> 0x804f2a2c score=0.997 edits=Edits { added: 2, removed: 1, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 4, opaque: 0, constants: 0 }
-0x805461ec -> 0x8054e3bc score=0.997 edits=Edits { added: 9, removed: 7, edited: 1 } kinds=EditKinds { branches: 3, calls: 4, jumps: 0, memory: 0, other: 10, opaque: 0, constants: 0 }
-0x804f0110 -> 0x804f806c score=0.996 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0 }
-0x805e239c -> 0x805ea928 score=0.996 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }
-0x804c7134 -> 0x804ceff0 score=0.996 edits=Edits { added: 2, removed: 1, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 4, opaque: 0, constants: 0 }
-0x801170cc -> 0x80117b70 score=0.996 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 4 }
-0x8053c340 -> 0x80544470 score=0.996 edits=Edits { added: 2, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 3, opaque: 0, constants: 0 }
-0x805a79ac -> 0x805afca0 score=0.995 edits=Edits { added: 0, removed: 0, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0 }
-0x8056fbf4 -> 0x80577d14 score=0.995 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0 }
-0x803d2c8c -> 0x803d859c score=0.995 edits=Edits { added: 1, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0 }
-0x805c6e50 -> 0x805cf264 score=0.995 edits=Edits { added: 1, removed: 1, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 4, opaque: 0, constants: 1 }
-0x804ecf5c -> 0x804f4ea4 score=0.995 edits=Edits { added: 3, removed: 1, edited: 1 } kinds=EditKinds { branches: 0, calls: 2, jumps: 0, memory: 0, other: 3, opaque: 0, constants: 1 }
-0x80500ca4 -> 0x80508ce4 score=0.995 edits=Edits { added: 22, removed: 18, edited: 6 } kinds=EditKinds { branches: 4, calls: 4, jumps: 3, memory: 0, other: 35, opaque: 0, constants: 2 }
-0x8018dce0 -> 0x8018ec34 score=0.995 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 1 }
-0x8037d3fc -> 0x80382a48 score=0.995 edits=Edits { added: 4, removed: 0, edited: 0 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 0, other: 3, opaque: 0, constants: 1 }
-0x803e0e8c -> 0x803e6780 score=0.995 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 2 }
-0x80586284 -> 0x8058e4b0 score=0.994 edits=Edits { added: 6, removed: 5, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 13, opaque: 0, constants: 0 }
-0x801c9d28 -> 0x801caf80 score=0.994 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 }
-0x804c211c -> 0x804c9fc8 score=0.994 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 }
-0x8038ec9c -> 0x8039453c score=0.994 edits=Edits { added: 1, removed: 7, edited: 0 } kinds=EditKinds { branches: 1, calls: 1, jumps: 0, memory: 0, other: 6, opaque: 0, constants: 1 }
-0x80575368 -> 0x8057d488 score=0.994 edits=Edits { added: 0, removed: 1, edited: 3 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 4, opaque: 0, constants: 6 }
-0x8044566c -> 0x8044b668 score=0.994 edits=Edits { added: 21, removed: 17, edited: 1 } kinds=EditKinds { branches: 9, calls: 0, jumps: 2, memory: 0, other: 28, opaque: 0, constants: 0 }
-0x805cfdd8 -> 0x805d7ef8 score=0.994 edits=Edits { added: 1, removed: 0, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 3, opaque: 0, constants: 0 }
-0x804cc124 -> 0x804d4004 score=0.994 edits=Edits { added: 33, removed: 36, edited: 1 } kinds=EditKinds { branches: 1, calls: 0, jumps: 2, memory: 0, other: 67, opaque: 0, constants: 1 }
+0x80084528 -> 0x804ab8ec score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 2, callees: 1 }
+0x8008b928 -> 0x8008bf08 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
+0x8008bf1c -> 0x8008cc18 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
+0x80228268 -> 0x8026bea8 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
+0x8036ba04 -> 0x80370e2c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
+0x80409370 -> 0x80415888 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
+0x804537dc -> 0x800c8f24 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 3 }
+0x80459fa8 -> 0x8039eab0 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
+0x8010dd34 -> 0x8010e740 score=0.999 edits=Edits { added: 2, removed: 1, edited: 0 } kinds=EditKinds { branches: 2, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0 }
+0x80078f10 -> 0x80078f9c score=0.999 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 3, callees: 0 }
+0x805ff6f0 -> 0x80607f50 score=0.998 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0 }
+0x80524ac0 -> 0x8052cbe0 score=0.998 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0 }
+0x80583100 -> 0x8058b320 score=0.998 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 1, callees: 0 }
+0x804ed91c -> 0x804f586c score=0.998 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0, callees: 0 }
+0x805829a8 -> 0x8058abc4 score=0.998 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0, callees: 0 }
+0x80489ad0 -> 0x8048fe4c score=0.997 edits=Edits { added: 4, removed: 2, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 6, opaque: 0, constants: 2, callees: 0 }
+0x80584344 -> 0x8058c568 score=0.997 edits=Edits { added: 2, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 1, callees: 0 }
+0x80577710 -> 0x8057f82c score=0.997 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0 }
+0x801616a8 -> 0x80162618 score=0.997 edits=Edits { added: 0, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0 }
+0x805bbeec -> 0x805c421c score=0.997 edits=Edits { added: 3, removed: 2, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 6, opaque: 0, constants: 0, callees: 0 }
+0x8055c78c -> 0x80564860 score=0.997 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0 }
+0x803d576c -> 0x803db07c score=0.997 edits=Edits { added: 1, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0, callees: 0 }
+0x805e4f2c -> 0x805ed4c8 score=0.997 edits=Edits { added: 2, removed: 4, edited: 1 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 0, other: 6, opaque: 0, constants: 0, callees: 0 }
+0x804ee4e8 -> 0x804f643c score=0.997 edits=Edits { added: 2, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 1, callees: 0 }
+0x804eaae8 -> 0x804f2a2c score=0.997 edits=Edits { added: 2, removed: 1, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 4, opaque: 0, constants: 0, callees: 0 }
+0x805461ec -> 0x8054e3bc score=0.997 edits=Edits { added: 9, removed: 7, edited: 1 } kinds=EditKinds { branches: 3, calls: 4, jumps: 0, memory: 0, other: 10, opaque: 0, constants: 0, callees: 0 }
+0x804f0110 -> 0x804f806c score=0.996 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0, callees: 0 }
+0x805e239c -> 0x805ea928 score=0.996 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0 }
+0x804c7134 -> 0x804ceff0 score=0.996 edits=Edits { added: 2, removed: 1, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 4, opaque: 0, constants: 0, callees: 0 }
+0x801170cc -> 0x80117b70 score=0.996 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 4, callees: 0 }
+0x8053c340 -> 0x80544470 score=0.996 edits=Edits { added: 2, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 3, opaque: 0, constants: 0, callees: 0 }
+0x805a79ac -> 0x805afca0 score=0.995 edits=Edits { added: 0, removed: 0, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0, callees: 0 }
+0x8056fbf4 -> 0x80577d14 score=0.995 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0 }
+0x803d2c8c -> 0x803d859c score=0.995 edits=Edits { added: 1, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0, callees: 0 }
+0x805c6e50 -> 0x805cf264 score=0.995 edits=Edits { added: 1, removed: 1, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 4, opaque: 0, constants: 1, callees: 0 }
+0x804ecf5c -> 0x804f4ea4 score=0.995 edits=Edits { added: 3, removed: 1, edited: 1 } kinds=EditKinds { branches: 0, calls: 2, jumps: 0, memory: 0, other: 3, opaque: 0, constants: 1, callees: 0 }
+0x80500ca4 -> 0x80508ce4 score=0.995 edits=Edits { added: 22, removed: 18, edited: 6 } kinds=EditKinds { branches: 4, calls: 4, jumps: 3, memory: 0, other: 35, opaque: 0, constants: 2, callees: 0 }
+0x8018dce0 -> 0x8018ec34 score=0.995 edits=Edits { added: 0, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 1, callees: 0 }
+0x8037d3fc -> 0x80382a48 score=0.995 edits=Edits { added: 4, removed: 0, edited: 0 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 0, other: 3, opaque: 0, constants: 1, callees: 0 }
+0x803e0e8c -> 0x803e6780 score=0.995 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 2, callees: 0 }

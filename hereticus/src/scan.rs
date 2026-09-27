@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use object::{Object, ObjectSection, SectionKind};
 
-use crate::arch::{Arch, Insn, InsnKind, decode_all};
+use crate::arch::{Arch, DataAmongCode, Insn, InsnKind, decode_all};
 use crate::obj::Function;
 
 /// Bytes in one ARM EHABI unwind entry: a function address and one word
@@ -443,6 +443,7 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     // that needs it, as `luaC_linkupval` in Lua for MIPS does after its
     // early return. It is inside a function, so it is no sure start.
     let calls: BTreeSet<u64> = call_targets(arch, code, base).into_iter().collect();
+    let is_called = |address: u64| calls.contains(&address);
     let anchors: BTreeSet<u64> = insns
         .iter()
         .enumerate()
@@ -450,7 +451,7 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
             is_code(insn) && arch.is_prologue(insn) && !follows_a_branch(&insns[..*index], arch)
         })
         .map(|(_, insn)| insn.address)
-        .chain(calls)
+        .chain(calls.iter().copied())
         .collect();
 
     // A branch that starts at or before a return and lands after it proves
@@ -543,6 +544,7 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
             next,
             &reached_here,
             &|address| pool.contains(&address),
+            &is_called,
             arch,
         ) {
             out.push(prologue);
@@ -635,6 +637,7 @@ fn prologue_past_pool(
     from: usize,
     reached: &dyn Fn(u64) -> bool,
     is_pool: &dyn Fn(u64) -> bool,
+    is_called: &dyn Fn(u64) -> bool,
     arch: &dyn Arch,
 ) -> Option<u64> {
     /// The most words not known to be pool data to step over before a
@@ -655,11 +658,24 @@ fn prologue_past_pool(
             continue;
         }
         guessed += 1;
+        // A call target starts a function for certain, pool or no pool.
+        if is_called(insn.address) {
+            return Some(insn.address);
+        }
         if arch.is_prologue(insn) {
-            // A preamble before this prologue belongs to the function, but
-            // only as far back as the pool scan began: earlier words are the
-            // pool, not this function's opening.
-            return Some(start_of(&insns[from..], next - from, arch));
+            // Where no pool can sit between functions, every word before the
+            // prologue is this function's: a compiler schedules work before
+            // the frame allocation. Measured on the VR200 kernel, a `lui`
+            // before `addiu sp, sp, -0x40` otherwise put the start one word
+            // late and left that word a function of its own.
+            //
+            // Elsewhere, a preamble before this prologue belongs to the
+            // function, but only as far back as the pool scan began: earlier
+            // words are the pool, not this function's opening.
+            return Some(match arch.data_among_code() {
+                DataAmongCode::Never => insns[from].address,
+                DataAmongCode::LiteralPools => start_of(&insns[from..], next - from, arch),
+            });
         }
         // Only pool data may sit between the terminator and the prologue. A
         // pool word carries no control flow: it decodes as a plain `Normal`
@@ -911,10 +927,11 @@ mod tests {
         let branched = with_first(0x1080_0004);
         assert!(starts_after_returns(&Mips32::LITTLE, &branched, 0).is_empty());
 
-        // addiu v0, zero, 3: nothing shows the word is code, so it can be a
-        // pool, and the frame after it starts a function.
+        // addiu v0, zero, 3: nothing shows the word is code of this
+        // function, and MIPS keeps no pool, so the function after the jump
+        // starts right after its slot, with the word before its frame.
         let not_branched = with_first(0x2402_0003);
-        assert_eq!(starts_after_returns(&Mips32::LITTLE, &not_branched, 0), vec![0x18]);
+        assert_eq!(starts_after_returns(&Mips32::LITTLE, &not_branched, 0), vec![0x14]);
     }
 
     /// Little-endian ARM code from words.
@@ -1035,6 +1052,27 @@ mod tests {
         assert!(starts_after_returns(&Mips32::LITTLE, &code, 0).is_empty());
     }
 
+    /// A called word is a function start, so the search for a prologue past
+    /// a pool stops there rather than cutting that function short.
+    #[test]
+    fn the_search_for_a_prologue_stops_at_a_called_word() {
+        let with_call = |call: u32| {
+            arm_code(&[
+                call,        // 0x00
+                0xe12f_ff1e, // 0x04 bx lr
+                0x0000_0010, // 0x08 a pool word
+                0xe1a0_1000, // 0x0c mov r1, r0
+                0xe92d_4010, // 0x10 push {r4, lr}
+                0xe8bd_8010, // 0x14 pop {r4, pc}
+            ])
+        };
+
+        // bl 0x0c
+        assert_eq!(starts_after_returns(&Arm32, &with_call(0xeb00_0001), 0), vec![0x0c]);
+        // mov r0, r0: nothing calls 0x0c, so the prologue starts the function.
+        assert_eq!(starts_after_returns(&Arm32, &with_call(0xe1a0_0000), 0), vec![0x10]);
+    }
+
     /// A branch from before the last return is not of this function. In a
     /// raw image such a "branch" is often data, and it must not hide a
     /// function start.
@@ -1053,7 +1091,7 @@ mod tests {
             0x2402_0002,     // 0x1c addiu v0, zero, 2
             0x27bd_fff8_u32, // 0x20 addiu sp, sp, -8
         ]);
-        assert_eq!(starts_after_returns(&Mips32::LITTLE, &code, 0), vec![0x20]);
+        assert_eq!(starts_after_returns(&Mips32::LITTLE, &code, 0), vec![0x1c]);
     }
 
     /// A delay slot belongs to the instruction before it, not to the function

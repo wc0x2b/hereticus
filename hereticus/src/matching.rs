@@ -13,12 +13,13 @@
 //! function changed: two matched functions can still differ, and
 //! [`Match::changed`] reports that.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rayon::prelude::*;
 
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::arch::{Arch, Insn, InsnKind, decode_all, is_branch_target};
+use crate::callee::{Callee, callees};
 use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body_in};
 use crate::obj::{Binary, Function, Isa};
 
@@ -38,6 +39,10 @@ pub enum Confidence {
     /// paired with its counterpart by position. See
     /// [`Cascade::match_twins_in_order`].
     TwinInOrder,
+    /// Calls from functions paired on firmer ground reach these two, where a
+    /// weaker reason had paired each with another. See
+    /// [`Cascade::pair_by_callers`].
+    SameCallers,
     /// The normalized instructions are similar enough to pair.
     Similar,
 }
@@ -116,6 +121,13 @@ pub enum EditKind {
     Branch,
     /// A call to another function.
     Call,
+    /// A call kept in place that now reaches a different function.
+    ///
+    /// Reported on its own axis, as [`EditKind::Constant`] is: normalizing
+    /// hides a call target on purpose, because a callee moves whenever code
+    /// before it grows, so such a call is never added, removed or rewritten.
+    /// See [`EditKinds::callees`].
+    Callee,
     /// An unconditional jump or a return.
     Jump,
     /// A read or write through memory.
@@ -156,6 +168,10 @@ pub struct EditKinds {
     ///
     /// Outside the sum above, because such an instruction did not move.
     pub constants: usize,
+    /// Calls kept in place that reach a different function.
+    ///
+    /// Outside the sum above, for the same reason as `constants`.
+    pub callees: usize,
 }
 
 impl EditKinds {
@@ -164,6 +180,7 @@ impl EditKinds {
         let count = match kind {
             EditKind::Branch => &mut self.branches,
             EditKind::Call => &mut self.calls,
+            EditKind::Callee => &mut self.callees,
             EditKind::Jump => &mut self.jumps,
             EditKind::Memory => &mut self.memory,
             EditKind::Constant => &mut self.constants,
@@ -181,6 +198,7 @@ impl EditKinds {
         [
             (EditKind::Branch, self.branches),
             (EditKind::Call, self.calls),
+            (EditKind::Callee, self.callees),
             (EditKind::Jump, self.jumps),
             (EditKind::Memory, self.memory),
             (EditKind::Constant, self.constants),
@@ -196,7 +214,7 @@ impl EditKinds {
     /// A changed branch, call or jump can change what the function does for
     /// some input, which a changed constant or a moved load cannot.
     pub fn touches_control_flow(self) -> bool {
-        self.branches > 0 || self.calls > 0 || self.jumps > 0
+        self.branches > 0 || self.calls > 0 || self.callees > 0 || self.jumps > 0
     }
 }
 
@@ -631,6 +649,8 @@ pub fn diff_reporting(
     cascade.match_twins_in_order();
     cascade.match_by_similarity(progress);
 
+    cascade.pair_by_callers(before, after);
+    cascade.compare_callees(before, after);
     cascade.finish(progress)
 }
 
@@ -654,12 +674,18 @@ impl Cascade<'_> {
     fn take_pair(&mut self, before: usize, after: usize, confidence: Confidence, score: f64) {
         self.left_free[before] = false;
         self.right_free[after] = false;
+        let pair = self.assess(before, after, confidence, score);
+        self.matched.push(pair);
+    }
+
+    /// Compare two functions as a pair.
+    fn assess(&self, before: usize, after: usize, confidence: Confidence, score: f64) -> Match {
         let (left, right) = (&self.left[before], &self.right[after]);
         // Normalize each side once and share it between the two answers below;
         // neither the cascade nor the scoring stage keeps a body around.
         let (left_body, right_body) = (left.body(), right.body());
         let (edits, kinds) = count_edits(&left_body, &right_body);
-        self.matched.push(Match {
+        Match {
             before,
             after,
             confidence,
@@ -667,7 +693,164 @@ impl Cascade<'_> {
             changed: classify_change(left, right, &left_body, &right_body),
             edits,
             kinds,
-        });
+        }
+    }
+
+    /// The callees of each pair whose code agrees, so that its calls line up
+    /// one for one, by the index of the pair.
+    fn aligned_callees(
+        &self,
+        before: &Binary,
+        after: &Binary,
+    ) -> Vec<(usize, Vec<Callee>, Vec<Callee>)> {
+        self.matched
+            .iter()
+            .enumerate()
+            .filter(|(_, pair)| matches!(pair.changed, Changed::No | Changed::InDetail))
+            .filter_map(|(index, pair)| {
+                let [left, right] =
+                    [(before, pair.before), (after, pair.after)].map(|(binary, function)| {
+                        callees(
+                            binary.isa.arch(),
+                            &binary.links,
+                            &binary.functions,
+                            &binary.functions[function],
+                        )
+                    });
+                (left.len() == right.len()).then_some((index, left, right))
+            })
+            .collect()
+    }
+
+    /// Swap two weak pairings where the calls say they are crossed.
+    ///
+    /// A small function has many twins, and similarity pairs them by chance:
+    /// on the VR200 kernel, an eight-byte function paired by similarity with
+    /// one of its twins while forty callers called another. Each call of a
+    /// pair whose code agrees votes that its two callees are one function.
+    /// Two pairs `x`–`y′` and `x′`–`y` swap to `x`–`y` and `x′`–`y′` when the
+    /// votes for the swap outnumber those against it.
+    ///
+    /// Only pairings by similarity or by twin order swap, because a stronger
+    /// reason outweighs a vote. A swap never leaves a function unpaired.
+    fn pair_by_callers(&mut self, before: &Binary, after: &Binary) {
+        /// A swap can change whose calls line up, so the votes are counted
+        /// again a few times. Each round only swaps, so this settles fast.
+        const MOST_ROUNDS: usize = 4;
+
+        for _ in 0..MOST_ROUNDS {
+            let mut votes: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+            for (_, left, right) in self.aligned_callees(before, after) {
+                for pair in left.iter().zip(&right) {
+                    if let (Callee::Function(x), Callee::Function(y)) = pair {
+                        *votes.entry((*x, *y)).or_default() += 1;
+                    }
+                }
+            }
+            let vote = |x: usize, y: usize| votes.get(&(x, y)).copied().unwrap_or(0);
+
+            let pair_of_before: HashMap<usize, usize> =
+                self.matched.iter().enumerate().map(|(index, pair)| (pair.before, index)).collect();
+            let pair_of_after: HashMap<usize, usize> =
+                self.matched.iter().enumerate().map(|(index, pair)| (pair.after, index)).collect();
+            let is_weak = |pair: &Match| {
+                matches!(pair.confidence, Confidence::Similar | Confidence::TwinInOrder)
+            };
+
+            let mut touched = BTreeSet::new();
+            let mut swaps = Vec::new();
+            for (&(x, y), &for_swap) in &votes {
+                let (Some(&first), Some(&second)) = (pair_of_before.get(&x), pair_of_after.get(&y))
+                else {
+                    continue;
+                };
+                if first == second || touched.contains(&first) || touched.contains(&second) {
+                    continue;
+                }
+                let (y_other, x_other) = (self.matched[first].after, self.matched[second].before);
+                let wins = for_swap + vote(x_other, y_other) > vote(x, y_other) + vote(x_other, y);
+                if wins && is_weak(&self.matched[first]) && is_weak(&self.matched[second]) {
+                    touched.extend([first, second]);
+                    swaps.push((first, second));
+                }
+            }
+            if swaps.is_empty() {
+                break;
+            }
+
+            for (first, second) in swaps {
+                let (x, y_other) = (self.matched[first].before, self.matched[first].after);
+                let (x_other, y) = (self.matched[second].before, self.matched[second].after);
+                for (index, (left, right)) in [(first, (x, y)), (second, (x_other, y_other))] {
+                    let score =
+                        similarity_of_symbols(&self.left[left].symbols, &self.right[right].symbols);
+                    self.matched[index] = self.assess(left, right, Confidence::SameCallers, score);
+                }
+            }
+        }
+    }
+
+    /// Mark each pair whose code agrees but whose calls reach different
+    /// functions.
+    ///
+    /// Run once every function has paired, because a callee is the same
+    /// function on both sides exactly when the two pair. A pair whose code
+    /// already differs keeps its verdict: its calls cannot be lined up one
+    /// for one.
+    fn compare_callees(&mut self, before: &Binary, after: &Binary) {
+        let partner_of_before: HashMap<usize, usize> =
+            self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
+        let partner_of_after: HashMap<usize, usize> =
+            self.matched.iter().map(|pair| (pair.after, pair.before)).collect();
+
+        // A callee pair is different only when the matching says so: both
+        // paired, and not with each other. A callee the code or the linker
+        // does not name says nothing, and nor does one that paired with
+        // nothing, because a scan can cut a function short and leave a piece
+        // that no stage pairs. A call to code that normalizes the same is the
+        // same call, whichever twin the matching picked, if its constants
+        // agree too.
+        let (left_side, right_side) = (&self.left, &self.right);
+        let same_code = |left: usize, right: usize| {
+            let (left, right) = (&left_side[left], &right_side[right]);
+            left.function.code == right.function.code
+                || (left.ordered == right.ordered && same_detail(&left.body(), &right.body()))
+        };
+        let differ = |left: &Callee, right: &Callee| match (left, right) {
+            (Callee::Named(left), Callee::Named(right)) => left != right,
+            (Callee::Function(left), Callee::Function(right)) => {
+                let crossed = match (partner_of_before.get(left), partner_of_after.get(right)) {
+                    (Some(partner), Some(_)) => partner != right,
+                    _ => false,
+                };
+                crossed && !same_code(*left, *right)
+            }
+            _ => false,
+        };
+
+        for pair in &mut self.matched {
+            if !matches!(pair.changed, Changed::No | Changed::InDetail) {
+                continue;
+            }
+            let [left, right] =
+                [(before, pair.before), (after, pair.after)].map(|(binary, index)| {
+                    callees(
+                        binary.isa.arch(),
+                        &binary.links,
+                        &binary.functions,
+                        &binary.functions[index],
+                    )
+                });
+            if left.len() != right.len() {
+                continue;
+            }
+            let changed =
+                left.iter().zip(&right).filter(|(left, right)| differ(left, right)).count();
+            if changed > 0 {
+                pair.changed = Changed::Yes;
+                pair.kinds.callees += changed;
+            }
+        }
     }
 
     /// Sort the pairs and collect what stayed unmatched.
@@ -2215,6 +2398,7 @@ mod tests {
             isa: Isa::Arm32,
             found_by: crate::obj::FoundBy::Symbols,
             addresses: crate::address::AddressSpace::none(),
+            links: crate::callee::Links::default(),
             functions: functions
                 .iter()
                 .enumerate()
@@ -2239,6 +2423,7 @@ mod tests {
             isa: Isa::Mips32Be,
             found_by: crate::obj::FoundBy::Scanning,
             addresses: AddressSpace::of_raw_image(0x8000_0000, 0x10_0000),
+            links: crate::callee::Links::default(),
             functions: vec![Function {
                 name: String::new(),
                 address: 0x8000_0000,
@@ -2254,6 +2439,64 @@ mod tests {
             name: String::new(),
             address: 0x8000_2000,
             code: words.iter().flat_map(|word| word.to_be_bytes()).collect(),
+        }
+    }
+
+    /// `bl target` from `from`, little endian.
+    fn bl(from: u64, target: u64) -> [u8; 4] {
+        let offset = (target.wrapping_sub(from).wrapping_sub(8) as u32 >> 2) & 0x00ff_ffff;
+        (0xeb00_0000 | offset).to_le_bytes()
+    }
+
+    /// `mov r0, value; bx lr`, little endian.
+    fn returns(value: u8) -> Vec<u8> {
+        [[value, 0x00, 0xa0, 0xe3], [0x1e, 0xff, 0x2f, 0xe1]].concat()
+    }
+
+    /// A caller at 0x0 that calls the function at `callee`, then returns.
+    fn caller_of(callee: u64) -> Vec<u8> {
+        [bl(0, callee).as_slice(), &[0x1e, 0xff, 0x2f, 0xe1]].concat()
+    }
+
+    /// Code that calls a different function changed, though normalizing
+    /// alone reads it as the same, with or without names.
+    #[test]
+    fn a_call_to_a_different_function_is_a_change() {
+        for names in [["caller", "one", "two"], ["", "", ""]] {
+            let before = binary_of(&[
+                (names[0], &caller_of(0x100)),
+                (names[1], &returns(1)),
+                (names[2], &returns(2)),
+            ]);
+            let after = binary_of(&[
+                (names[0], &caller_of(0x200)),
+                (names[1], &returns(1)),
+                (names[2], &returns(2)),
+            ]);
+            let diff = diff_with(&before, &after, Options { threshold: 0.0, ..Options::default() });
+
+            let caller = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+            assert_eq!(caller.changed, Changed::Yes, "names {names:?}");
+            assert_eq!(caller.kinds.callees, 1, "names {names:?}");
+            assert!(caller.kinds.touches_control_flow());
+        }
+    }
+
+    /// A callee that only moved is the same callee.
+    #[test]
+    fn a_call_to_a_moved_function_is_no_change() {
+        for names in [["caller", "pad", "one"], ["", "", ""]] {
+            let before = binary_of(&[(names[0], &caller_of(0x100)), (names[2], &returns(1))]);
+            let after = binary_of(&[
+                (names[0], &caller_of(0x200)),
+                (names[1], &returns(7)),
+                (names[2], &returns(1)),
+            ]);
+            let diff = diff_with(&before, &after, Options { threshold: 0.0, ..Options::default() });
+
+            let caller = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+            assert_eq!(caller.changed, Changed::No, "names {names:?}");
+            assert_eq!(caller.kinds.callees, 0, "names {names:?}");
         }
     }
 
