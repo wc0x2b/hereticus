@@ -11,7 +11,7 @@ use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg};
 
-use super::{Arch, DecodeError, Insn, InsnKind};
+use super::{Arch, DecodeError, Insn, InsnKind, JumpTable};
 use crate::address::{AddressSpace, ConstantKind};
 
 /// Every A32 instruction is 4 bytes wide.
@@ -396,6 +396,23 @@ impl Arch for Arm32 {
         words
     }
 
+    /// The table GCC emits for a `switch` in PIC code:
+    ///
+    /// ```text
+    /// adr  r1, table             ; r1 = the address of the table
+    /// ldr  r0, [r1, r0, lsl 2]   ; an offset from the table to one case
+    /// add  pc, r1, r0
+    /// ```
+    ///
+    /// The cases follow the table, so it ends where the first case starts.
+    fn jump_tables(&self, code: &[u8], base: u64, insns: &[Insn]) -> Vec<JumpTable> {
+        insns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, jump)| read_jump_table(code, base, &insns[..index], jump))
+            .collect()
+    }
+
     fn unwind_section(&self) -> Option<&'static str> {
         Some(UNWIND_SECTION)
     }
@@ -407,6 +424,83 @@ impl Arch for Arm32 {
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
         u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
+}
+
+/// Read the table behind `add pc, rB, rX`, where `earlier` holds the
+/// instructions before the jump.
+fn read_jump_table(code: &[u8], base: u64, earlier: &[Insn], jump: &Insn) -> Option<JumpTable> {
+    /// How far back the load of the table and its address may be. GCC puts
+    /// them right before the jump, but can move other work between.
+    const LOOK_BACK: usize = 16;
+    /// More cases than any `switch` a compiler turns into one table.
+    const MOST_CASES: usize = 1024;
+
+    if jump.mnemonic != "add" || jump.kind != (InsnKind::Jump { target: None }) {
+        return None;
+    }
+    let mut operands = jump.operands.split(',').map(str::trim);
+    let (Some("pc"), Some(table_register), Some(offset_register), None) =
+        (operands.next(), operands.next(), operands.next(), operands.next())
+    else {
+        return None;
+    };
+
+    // The last instruction to write a register, or `None` past the window.
+    let last_write = |register: &str| {
+        earlier
+            .iter()
+            .rev()
+            .take(LOOK_BACK)
+            .find(|insn| insn.operands.split(',').next().map(str::trim) == Some(register))
+    };
+
+    // `ldr rX, [rB, rI, lsl 2]`: one word of the table.
+    let load = last_write(offset_register)?;
+    let expected = format!("{offset_register}, [{table_register}, ");
+    if load.mnemonic != "ldr"
+        || !load.operands.starts_with(&expected)
+        || !load.operands.ends_with(", lsl 2]")
+    {
+        return None;
+    }
+
+    // `adr rB, pc, imm`: the address of the table.
+    let address = last_write(table_register)?;
+    let immediate = address.operands.strip_prefix(&format!("{table_register}, pc, "))?;
+    if address.mnemonic != "adr" {
+        return None;
+    }
+    let table = address.address.checked_add(8)?.checked_add(parse_hex(immediate)?)?;
+
+    let end = base.checked_add(code.len() as u64)?;
+    let mut targets = Vec::new();
+    let mut first_case = end;
+    let mut word = table;
+    while word < first_case && targets.len() < MOST_CASES {
+        let offset = usize::try_from(word.checked_sub(base)?).ok()?;
+        let bytes = code.get(offset..offset + INSN_WIDTH)?;
+        let delta = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let target = table.checked_add_signed(i64::from(delta))?;
+        // A case lies inside the code, on a whole word, and outside the
+        // table. It can lie before the table: GCC sends a case with no code
+        // of its own back to the shared exit before the jump.
+        let in_table = (table..word + INSN_WIDTH as u64).contains(&target);
+        if in_table || target < base || target >= end || !target.is_multiple_of(INSN_WIDTH as u64) {
+            break;
+        }
+        if target > word {
+            first_case = first_case.min(target);
+        }
+        targets.push(target);
+        word += INSN_WIDTH as u64;
+    }
+
+    (!targets.is_empty()).then_some(JumpTable { jump: jump.address, words: table..word, targets })
+}
+
+/// Read a hexadecimal immediate as the decoder prints it, such as `0x4`.
+fn parse_hex(text: &str) -> Option<u64> {
+    u64::from_str_radix(text.strip_prefix("0x")?, 16).ok()
 }
 
 /// The offset in a memory reference.
@@ -673,6 +767,64 @@ mod tests {
             InsnKind::Jump { target: None },
             "mov pc, r3"
         );
+    }
+
+    /// Code with a `switch` table as GCC emits it, at address 0: `adr`,
+    /// `ldr`, `add pc`, then the table, then the cases.
+    fn switch_code(entries: &[i32]) -> Vec<u8> {
+        let mut words = vec![
+            0xe28f_1004_u32, // 0x00 adr r1, pc, 0x4: the table is at 0x0c
+            0xe791_0100,     // 0x04 ldr r0, [r1, r0, lsl 2]
+            0xe081_f000,     // 0x08 add pc, r1, r0
+        ];
+        words.extend(entries.iter().map(|&entry| entry as u32));
+        words.extend([0xe3a0_0001, 0xe12f_ff1e, 0xe3a0_0002, 0xe12f_ff1e]); // mov r0, n; bx lr
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    fn tables_of(code: &[u8]) -> Vec<JumpTable> {
+        let (insns, _) = crate::arch::decode_all(&Arm32, code, 0);
+        Arm32.jump_tables(code, 0, &insns)
+    }
+
+    /// Each entry is an offset from the table, and the cases follow it.
+    #[test]
+    fn reads_a_switch_table() {
+        // Two entries end at 0x14, where the first case starts.
+        let code = switch_code(&[0x08, 0x10]);
+        assert_eq!(
+            tables_of(&code),
+            [JumpTable { jump: 0x08, words: 0x0c..0x14, targets: vec![0x14, 0x1c] }]
+        );
+    }
+
+    /// A case can lead back before the table, to a shared exit.
+    #[test]
+    fn a_case_can_lie_before_the_table() {
+        // Three entries end at 0x18, and the second leads back to 0x00.
+        let code = switch_code(&[0x0c, -0x0c, 0x10]);
+        assert_eq!(tables_of(&code)[0].targets, [0x18, 0x00, 0x1c]);
+    }
+
+    /// An entry that points into the table, or past the code, ends it.
+    #[test]
+    fn an_entry_that_is_no_case_ends_the_table() {
+        assert_eq!(tables_of(&switch_code(&[0x10, 0x04]))[0].targets, [0x1c]);
+        assert_eq!(tables_of(&switch_code(&[0x10, 0x1000]))[0].targets, [0x1c]);
+        assert_eq!(tables_of(&switch_code(&[0x11]))[..], [], "not on a whole word");
+    }
+
+    /// Without the `adr` and the scaled `ldr`, the jump is not through a
+    /// table this can read.
+    #[test]
+    fn a_computed_jump_without_its_table_is_left_alone() {
+        let mut code = switch_code(&[0x08, 0x10]);
+        code[..4].copy_from_slice(&0xe1a0_1000_u32.to_le_bytes()); // mov r1, r0
+        assert!(tables_of(&code).is_empty());
+
+        let mut code = switch_code(&[0x08, 0x10]);
+        code[4..8].copy_from_slice(&0xe591_0000_u32.to_le_bytes()); // ldr r0, [r1]
+        assert!(tables_of(&code).is_empty());
     }
 
     /// `ldm sp!, {r4, pc}` returns, as `pop` does.

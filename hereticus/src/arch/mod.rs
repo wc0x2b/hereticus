@@ -124,6 +124,16 @@ pub trait Arch {
         Vec::new()
     }
 
+    /// The jumps through a table of cases in `insns`, which were decoded
+    /// from `code` at `base`.
+    ///
+    /// Such a jump names no target, so without the table a scan cannot see
+    /// that the cases after it are more of the same function, and the words
+    /// of the table decode as nonsense instructions. Defaults to none.
+    fn jump_tables(&self, _code: &[u8], _base: u64, _insns: &[Insn]) -> Vec<JumpTable> {
+        Vec::new()
+    }
+
     /// Say whether a recovered function holds code or data.
     ///
     /// A scan cannot see where code ends and data begins, so it reads a
@@ -231,6 +241,17 @@ pub trait Arch {
     fn absolute_call(&self, _word: &[u8]) -> Option<AbsoluteCall> {
         None
     }
+}
+
+/// A jump through a table of cases.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JumpTable {
+    /// The address of the jump.
+    pub jump: u64,
+    /// The addresses of the words of the table, which are data.
+    pub words: core::ops::Range<u64>,
+    /// Where each case starts, in table order.
+    pub targets: Vec<u64>,
 }
 
 /// A call that holds the low bits of its target, and takes the high bits from

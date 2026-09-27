@@ -352,7 +352,7 @@ fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     let end = base + code.len() as u64;
 
     // A pool word that decodes as a call names a target made of data bits.
-    let pool: BTreeSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
+    let pool = data_words(arch, code, base, &insns);
 
     // A string decodes as instructions too, and on ARM it often reads as a
     // conditional call: `blvs` is `k` in its top byte. Measured on Lua for
@@ -401,33 +401,39 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
 
     // Pool words are data. Read as code they are a random return or branch,
     // which moves with their values from one release to the next.
-    let pool: BTreeSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
+    let pool = data_words(arch, code, base, &insns);
     let is_code = |insn: &&Insn| !pool.contains(&insn.address);
 
-    // Branches that stay inside this region, as (from, to). A function can
-    // return from several places — an early exit, a guard clause — and each
-    // of those returns is followed by more of the same function.
-    let branches: Vec<(u64, u64)> = insns
+    // Every branch, as (from, to, how). A jump through a table picks one
+    // case by a value, as a conditional branch picks one of two ways, and
+    // it never reaches another function either.
+    let direct = insns.iter().filter(is_code).filter_map(|insn| match insn.kind {
+        InsnKind::Branch { target: Some(target) } => {
+            Some((insn.address, target, Transfer::Conditional))
+        }
+        InsnKind::Jump { target: Some(target) } => Some((insn.address, target, Transfer::Always)),
+        _ => None,
+    });
+    let through_tables = arch.jump_tables(code, base, &insns).into_iter().flat_map(|table| {
+        table.targets.into_iter().map(move |target| (table.jump, target, Transfer::Conditional))
+    });
+    let mut all_branches: Vec<(u64, u64, Transfer)> = direct.chain(through_tables).collect();
+    all_branches.sort_unstable_by_key(|&(from, to, _)| (from, to));
+
+    // Branches that stay inside this region, as (from, to), in order of
+    // `from`. A function can return from several places — an early exit, a
+    // guard clause — and each of those returns is followed by more of the
+    // same function.
+    let branches: Vec<(u64, u64)> = all_branches
         .iter()
-        .filter(is_code)
-        .filter_map(|insn| match insn.kind {
-            InsnKind::Branch { target: Some(target) } | InsnKind::Jump { target: Some(target) } => {
-                Some((insn.address, target))
-            }
-            _ => None,
-        })
-        .filter(|(_, target)| *target >= base && *target < end)
+        .filter(|&&(_, target, _)| target >= base && target < end)
+        .map(|&(from, to, _)| (from, to))
         .collect();
 
     // Where each branch lands, and every place it comes from.
     let mut sources_of: BTreeMap<u64, Vec<(u64, Transfer)>> = BTreeMap::new();
-    for insn in insns.iter().filter(is_code) {
-        let (target, transfer) = match insn.kind {
-            InsnKind::Branch { target: Some(target) } => (target, Transfer::Conditional),
-            InsnKind::Jump { target: Some(target) } => (target, Transfer::Always),
-            _ => continue,
-        };
-        sources_of.entry(target).or_default().push((insn.address, transfer));
+    for &(from, to, transfer) in &all_branches {
+        sources_of.entry(to).or_default().push((from, transfer));
     }
 
     // Addresses sure to start a function: what is called, and what opens a
@@ -546,6 +552,15 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     }
 
     out
+}
+
+/// The words of a region that are data among the code: literal pools, and
+/// the tables that jumps go through.
+fn data_words(arch: &dyn Arch, code: &[u8], base: u64, insns: &[Insn]) -> BTreeSet<u64> {
+    let tables = arch.jump_tables(code, base, insns);
+    let table_words =
+        tables.iter().flat_map(|table| table.words.clone().step_by(arch.instruction_width()));
+    arch.literal_pool_words(insns).into_iter().chain(table_words).collect()
 }
 
 /// Whether a branch always moves control, or only on a condition.
@@ -955,6 +970,25 @@ mod tests {
         assert_eq!(starts_after_returns(&Mips32::LITTLE, &with_third(0x27bd_fff8), 0), vec![0x18]);
         // addiu v0, zero, 2: the branch can be of this function.
         assert!(starts_after_returns(&Mips32::LITTLE, &with_third(0x2402_0002), 0).is_empty());
+    }
+
+    /// The cases of a `switch` table each end with a return, and only the
+    /// table reaches them. They are more of the function with the table.
+    #[test]
+    fn the_cases_of_a_jump_table_do_not_start_functions() {
+        let code = arm_code(&[
+            0xe92d_4010, // 0x00 push {r4, lr}
+            0xe28f_1004, // 0x04 adr r1, pc, 0x4: the table is at 0x10
+            0xe791_0100, // 0x08 ldr r0, [r1, r0, lsl 2]
+            0xe081_f000, // 0x0c add pc, r1, r0
+            0x0000_0008, // 0x10 case 0 at 0x18
+            0x0000_0010, // 0x14 case 1 at 0x20
+            0xe3a0_0001, // 0x18 mov r0, 1
+            0xe8bd_8010, // 0x1c pop {r4, pc}
+            0xe3a0_0002, // 0x20 mov r0, 2
+            0xe8bd_8010, // 0x24 pop {r4, pc}
+        ]);
+        assert!(starts_after_returns(&Arm32, &code, 0).is_empty());
     }
 
     /// A branch from before the last return is not of this function. In a
