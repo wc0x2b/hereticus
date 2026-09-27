@@ -1,4 +1,6 @@
-//! Compare two real OpenWrt releases, 22.03.2 and 22.03.5, on three boards.
+//! Compare real OpenWrt releases on six boards: 22.03.2 against 22.03.5 on
+//! all of them, and 21.02.7, 22.03 and 23.05.5 across two kernel upgrades on
+//! the first three.
 //!
 //! The fixtures are the code a vendor ships, with no symbols: the stub that
 //! decompresses each kernel, and the kernel itself. `just firmware` downloads
@@ -135,8 +137,12 @@ fn compare(board: Board, part: Part) -> Comparison {
 }
 
 fn compare_at(board: Board, part: Part, base: u64) -> Comparison {
-    let before_bytes = read(board, part, BEFORE);
-    let after_bytes = read(board, part, AFTER);
+    compare_releases(board, part, base, BEFORE, AFTER)
+}
+
+fn compare_releases(board: Board, part: Part, base: u64, older: &str, newer: &str) -> Comparison {
+    let before_bytes = read(board, part, older);
+    let after_bytes = read(board, part, newer);
     let before = Binary::parse_raw(&before_bytes, base, board.isa).expect("the image must read");
     let after = Binary::parse_raw(&after_bytes, base, board.isa).expect("the image must read");
     let diff = diff_with(&before, &after, blind());
@@ -397,6 +403,23 @@ fn a_mips_stub_reads_alike_in_either_byte_order() {
 /// top rows show where to look when it does.
 fn check_kernel(board: Board, unreported: usize, base_fit: [BaseFit; 2]) {
     let comparison = compare(board, Part::Kernel);
+    insta::assert_snapshot!(format!("kernel_{}", board.name), kernel_digest(&comparison));
+
+    assert_eq!(unreported_byte_changes(&comparison), unreported, "{}", board.name);
+    assert_eq!(
+        [
+            check_base(&comparison.before_bytes, board.kernel_base, board.isa.arch()),
+            check_base(&comparison.after_bytes, board.kernel_base, board.isa.arch()),
+        ],
+        base_fit,
+        "{}",
+        board.name
+    );
+}
+
+/// A kernel comparison as a summary, the strongest real changes, and a
+/// fingerprint of the whole report.
+fn kernel_digest(comparison: &Comparison) -> String {
     let report = render(&comparison.diff, &comparison.before, &comparison.after);
 
     let mut strongest: Vec<_> =
@@ -419,26 +442,12 @@ fn check_kernel(board: Board, unreported: usize, base_fit: [BaseFit; 2]) {
         })
         .collect();
 
-    insta::assert_snapshot!(
-        format!("kernel_{}", board.name),
-        format!(
-            "{}fingerprint {:#018x}\n\nstrongest changes:\n{}\n",
-            summary(&comparison),
-            fingerprint(&report),
-            top.join("\n")
-        )
-    );
-
-    assert_eq!(unreported_byte_changes(&comparison), unreported, "{}", board.name);
-    assert_eq!(
-        [
-            check_base(&comparison.before_bytes, board.kernel_base, board.isa.arch()),
-            check_base(&comparison.after_bytes, board.kernel_base, board.isa.arch()),
-        ],
-        base_fit,
-        "{}",
-        board.name
-    );
+    format!(
+        "{}fingerprint {:#018x}\n\nstrongest changes:\n{}\n",
+        summary(comparison),
+        fingerprint(&report),
+        top.join("\n")
+    )
 }
 
 /// The ARM kernel.
@@ -544,4 +553,69 @@ fn every_firmware_file_is_present() {
             assert!(!read(board, Part::Kernel, release).is_empty());
         }
     }
+}
+
+/// Two releases a major version apart: 21.02 to 22.03 moves the kernel from
+/// 5.4 to 5.10, and 22.03 to 23.05 from 5.10 to 5.15.
+///
+/// Thousands of functions change, so no answer can be stated. These tests
+/// record the reports and check what must hold however much changed.
+const GAPS: [(&str, &str); 2] = [("21.02.7", "22.03.2"), ("22.03.5", "23.05.5")];
+
+/// Check what must hold of any comparison: each function of each side is
+/// matched, gone or new exactly once.
+fn check_accounting(comparison: &Comparison) {
+    let diff = &comparison.diff;
+    let mut before: Vec<usize> =
+        diff.matched.iter().map(|pair| pair.before).chain(diff.removed.iter().copied()).collect();
+    let mut after: Vec<usize> =
+        diff.matched.iter().map(|pair| pair.after).chain(diff.added.iter().copied()).collect();
+    before.sort_unstable();
+    after.sort_unstable();
+
+    let every = |count: usize| (0..count).collect::<Vec<_>>();
+    assert_eq!(before, every(comparison.before.functions.len()), "each older function once");
+    assert_eq!(after, every(comparison.after.functions.len()), "each newer function once");
+}
+
+/// A stub across a major version: the whole report, and the accounting.
+#[rstest]
+#[case::arm_ex6100v2(EX6100V2)]
+#[case::mipsbe_eap245v3(EAP245V3)]
+#[case::mipsel_r6220(R6220)]
+fn a_stub_across_a_major_version(#[case] board: Board, #[values(0, 1)] gap: usize) {
+    let (older, newer) = GAPS[gap];
+    let comparison = compare_releases(board, Part::Stub, board.stub_base, older, newer);
+    check_accounting(&comparison);
+
+    let report = render(&comparison.diff, &comparison.before, &comparison.after);
+    let again = compare_releases(board, Part::Stub, board.stub_base, older, newer);
+    assert_eq!(render(&again.diff, &again.before, &again.after), report, "the report is stable");
+
+    insta::assert_snapshot!(format!("stub_{}_{older}_{newer}", board.name), report);
+}
+
+/// A kernel across a major version: the digest, and the accounting.
+#[rstest]
+#[case::arm_ex6100v2(EX6100V2)]
+#[case::mipsbe_eap245v3(EAP245V3)]
+#[case::mipsel_r6220(R6220)]
+fn slow_a_kernel_across_a_major_version(#[case] board: Board, #[values(0, 1)] gap: usize) {
+    let (older, newer) = GAPS[gap];
+    let comparison = compare_releases(board, Part::Kernel, board.kernel_base, older, newer);
+    check_accounting(&comparison);
+    insta::assert_snapshot!(
+        format!("kernel_{}_{older}_{newer}", board.name),
+        kernel_digest(&comparison)
+    );
+}
+
+/// The accounting holds for the point releases too.
+#[rstest]
+#[case::arm_ex6100v2(EX6100V2)]
+#[case::mipsbe_eap245v3(EAP245V3)]
+#[case::mipsel_r6220(R6220)]
+#[case::arm_a385dbap(A385DBAP)]
+fn every_stub_function_is_accounted_for(#[case] board: Board) {
+    check_accounting(&compare(board, Part::Stub));
 }
