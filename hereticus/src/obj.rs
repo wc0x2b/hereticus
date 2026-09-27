@@ -141,7 +141,7 @@ impl Binary {
 
             let Some(code) = symbol_code(&file, &symbol) else { continue };
             functions.push(Function {
-                name: symbol.name().unwrap_or_default().to_string(),
+                name: stable_name(symbol.name().unwrap_or_default()).to_string(),
                 address: symbol.address(),
                 code,
             });
@@ -229,6 +229,25 @@ impl Binary {
 }
 
 /// Copy out the bytes a symbol covers.
+/// A symbol name without the part that changes when unrelated code does.
+///
+/// LLVM gives a local function it makes visible across a module a suffix
+/// `.llvm.` and a hash of the module, so any edit to the module renames all
+/// of them. Measured on smallvec built by Rust for ARM at `-Os`, the fix
+/// renamed `SmallVec::reserve`, and each unedited caller of it read as calling
+/// a different function. GCC's `.constprop.0` and `.isra.0` count clones in
+/// order, so they stay.
+pub(crate) fn stable_name(name: &str) -> &str {
+    match name.rsplit_once(".llvm.") {
+        Some((stem, hash))
+            if !hash.is_empty() && hash.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            stem
+        }
+        _ => name,
+    }
+}
+
 fn symbol_code(file: &object::File<'_>, symbol: &object::Symbol<'_, '_>) -> Option<Vec<u8>> {
     let section = file.section_by_index(symbol.section_index()?).ok()?;
     let data = section.data().ok()?;
@@ -273,5 +292,15 @@ mod tests {
     #[test]
     fn rejects_empty_input() {
         assert!(Binary::parse(&[]).is_err());
+    }
+
+    #[test]
+    fn a_name_loses_the_hash_of_its_module() {
+        assert_eq!(stable_name("_RNvMs_reserve.llvm.17076722752549331491"), "_RNvMs_reserve");
+        assert_eq!(stable_name("inflate"), "inflate");
+        assert_eq!(stable_name("deflate.constprop.0"), "deflate.constprop.0");
+        assert_eq!(stable_name("odd.llvm."), "odd.llvm.", "no hash");
+        assert_eq!(stable_name("odd.llvm.12a"), "odd.llvm.12a", "not a hash");
+        assert_eq!(stable_name(""), "");
     }
 }
