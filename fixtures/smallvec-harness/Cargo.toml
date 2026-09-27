@@ -1,0 +1,20 @@
+# The Rust backport: a C library over smallvec, which fixtures/backports.sh
+# builds against smallvec 1.6.0 before and after the fix to `insert_many`.
+[package]
+name = "harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# backports.sh unpacks the release here, and patches it in place.
+smallvec = { path = "../build/backports/src/smallvec" }
+
+[profile.release]
+panic = "abort"
+debug = false
+
+[workspace]

@@ -4,7 +4,8 @@
 #
 # A vendor ships a fix as a backport: the old release with one patch on top.
 # Each pair here is that, so the functions the patch touches are the answer
-# the comparison must give. For each project, target and level this writes:
+# the comparison must give. zlib and Lua are C, tinyxml2 is C++, and
+# smallvec is Rust. For each project, target and level this writes:
 #
 #   lib.so           unstripped, whose symbol table is the answer
 #   lib-stripped.so  what the tool reads, with no symbols
@@ -107,6 +108,49 @@ finish() {
     rm -rf "$dest/obj"
 }
 
+# Build the Rust harness in fixtures/smallvec-harness against the smallvec
+# tree as it is now, at each clang level, into $out/smallvec-<variant>.
+#
+# Both variants build from the same tree, patched in place between them,
+# because a Rust symbol holds a hash of where its crate came from. Each
+# target and level keeps its own cargo target directory, so the second
+# variant builds only smallvec and the harness again.
+build_rust() {
+    local variant="$1"
+    local rust_targets=(arm:armv7-unknown-linux-gnueabi:arm-linux-gnueabi
+        mips:mips-unknown-linux-gnu:mips-linux-gnu
+        mipsel:mipsel-unknown-linux-gnu:mipsel-linux-gnu)
+
+    # Only the toolchain is in the image; the crates the standard library
+    # needs are downloaded once, into the build directory.
+    export CARGO_HOME="$here/build/cargo-home"
+    # Build scripts run on the host, which has clang but no `cc`.
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
+
+    for target in "${rust_targets[@]}"; do
+        local arch="${target%%:*}" rest="${target#*:}"
+        local rust_triple="${rest%%:*}" triple="${rest##*:}"
+        for level in "${levels[@]}"; do
+            local target_dir="$here/build/cargo-target/$arch-$level"
+            local opt_level="${level#O}"
+            opt_level="${opt_level,,}"
+            # rustup picks the toolchain the harness pins from the
+            # directory cargo runs in.
+            (cd "$here/smallvec-harness" &&
+                RUSTFLAGS="--cap-lints allow -C opt-level=$opt_level -C linker=clang \
+                    -C link-arg=--target=$triple -C link-arg=-fuse-ld=lld \
+                    -C link-arg=-nostdlib" \
+                    cargo build --quiet --release --locked \
+                    -Zbuild-std=core,alloc --target "$rust_triple" \
+                    --target-dir "$target_dir")
+            local dest="$out/smallvec-$variant/$arch-$level"
+            mkdir -p "$dest"
+            cp "$target_dir/$rust_triple/release/libharness.so" "$dest/lib.so"
+            finish "$dest"
+        done
+    done
+}
+
 unpack zlib-1.2.12.tar.gz zlib before
 unpack zlib-1.2.12.tar.gz zlib after zlib-1.2.12-cve-2022-37434.patch
 unpack lua-5.1.5.tar.gz lua before
@@ -129,5 +173,15 @@ for variant in before after; do
     gcc_standard=()
     suffix=c
 done
+
+# A crate unpacks with the dates of its release. Cargo takes a source older
+# than its last build for unchanged, so every file is given the time now.
+unpack smallvec-1.6.0.crate smallvec before
+find "$out/src/smallvec-before" -exec touch {} +
+rm -rf "$out/src/smallvec"
+mv "$out/src/smallvec-before" "$out/src/smallvec"
+build_rust before
+patch --quiet -p1 -d "$out/src/smallvec" < "$patches/smallvec-1.6.0-cve-2021-25900.patch"
+build_rust after
 
 echo "backports: built $(find "$out" -name lib.so | wc -l) libraries in $out"

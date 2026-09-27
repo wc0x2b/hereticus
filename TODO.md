@@ -1,19 +1,5 @@
 # TODO
 
-## Test C++ and Rust code
-
-Every fixture and backport is C. C++ and Rust compilers emit code C does not:
-long mangled names, templates and generics instantiated once per type,
-inlining across whole crates, vtables and trait objects, unwind tables for
-every function, and panic and exception paths. A small source edit can move
-far more code than it does in C.
-
-Add backport pairs in both languages, as `fixtures/backports.sh` builds zlib
-and Lua: a real upstream fix to a C++ library and to a Rust crate, built for
-ARM and both MIPS byte orders, with the functions the fix edits as the
-answer. Check what a generic function changed in one instance does to the
-others, and whether the matcher pairs monomorphized copies correctly.
-
 ## Read Thumb-2
 
 The ARM decoder reads A32 only, and `--arch arm32` says Thumb is not

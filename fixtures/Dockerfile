@@ -36,3 +36,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/lib/llvm-22/bin:${PATH}"
+
+# Rust, for the Rust backport. MIPS is a tier 3 target with no prebuilt
+# `core`, so a pinned nightly builds it from `rust-src` with `-Zbuild-std`.
+# The toolchain is read only; a build keeps its crates under
+# `fixtures/build`.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --no-modify-path \
+            --default-toolchain nightly-2026-09-20 --component rust-src \
+    && chmod -R a+rX /opt/rustup /opt/cargo
+ENV PATH="/opt/cargo/bin:${PATH}"

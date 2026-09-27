@@ -1,17 +1,25 @@
 //! Check the comparison against the functions a real fix touched.
 //!
-//! `just backports` builds zlib and Lua twice each, from the pristine release
-//! and with one upstream fix on top, as a vendor ships a backport. Unlike the
+//! `just backports` builds each project twice, from the pristine release and
+//! with one upstream fix on top, as a vendor ships a backport. Unlike the
 //! OpenWrt tests, these know the right answer: the functions the fix edits.
 //!
 //! | Project | Fix | Must change | May change |
 //! |---|---|---|---|
 //! | zlib 1.2.12 | CVE-2022-37434 | `inflate` | none |
 //! | Lua 5.1.5 | bug 2 | `luaZ_fill`, `luaZ_init` | `lua_load`, `luaZ_read`, `luaZ_lookahead` |
+//! | tinyxml2 9.0.0 | `ParseDeep` frees a node by its document | `XMLNode::ParseDeep` | none |
+//! | smallvec 1.6.0 | CVE-2021-25900 | every `insert_many` | a new `insert` |
 //!
 //! Lua's fix adds a field to `ZIO`, which `lua_load` holds on its stack, and
 //! at `-O2` the compiler inlines `luaZ_fill` into `luaZ_read` and
 //! `luaZ_lookahead`, so those may change without being edited.
+//!
+//! smallvec is a generic Rust library, so the harness in
+//! `fixtures/smallvec-harness` uses it with three element types and two
+//! iterators, and the fix edits six copies of `insert_many`. The fix calls
+//! `insert`, which `-Os` does not inline, so there it is a new function. Rust
+//! is built by clang's backend alone, so it has no GCC levels.
 //!
 //! Each build is read three ways: with its symbols, stripped, and as the raw
 //! image a flash dump holds. Every reading must name every function that must
@@ -38,6 +46,36 @@ enum Project {
     Zlib,
     Lua,
     Tinyxml2,
+    Smallvec,
+}
+
+/// Which symbols a name in a list stands for.
+#[derive(Clone, Copy, Debug)]
+enum Name {
+    /// The symbol with this name.
+    Exact(&'static str),
+    /// Every symbol whose name holds this. A Rust symbol holds a hash of its
+    /// crate, which differs for each target.
+    Containing(&'static str),
+}
+
+impl Name {
+    fn matches(self, symbol: &str) -> bool {
+        match self {
+            Self::Exact(name) => symbol == name,
+            Self::Containing(part) => symbol.contains(part),
+        }
+    }
+}
+
+/// Every symbol of `binary` that one of `names` stands for.
+fn named(binary: &Binary, names: &[Name]) -> BTreeSet<String> {
+    binary
+        .functions
+        .iter()
+        .filter(|function| names.iter().any(|name| name.matches(&function.name)))
+        .map(|function| function.name.clone())
+        .collect()
 }
 
 impl Project {
@@ -46,24 +84,28 @@ impl Project {
             Self::Zlib => "zlib",
             Self::Lua => "lua",
             Self::Tinyxml2 => "tinyxml2",
+            Self::Smallvec => "smallvec",
         }
     }
 
     /// The functions the fix edits.
-    fn must_change(self) -> &'static [&'static str] {
+    fn must_change(self) -> &'static [Name] {
         match self {
-            Self::Zlib => &["inflate"],
-            Self::Lua => &["luaZ_fill", "luaZ_init"],
-            Self::Tinyxml2 => &["_ZN8tinyxml27XMLNode9ParseDeepEPcPNS_7StrPairEPi"],
+            Self::Zlib => &[Name::Exact("inflate")],
+            Self::Lua => &[Name::Exact("luaZ_fill"), Name::Exact("luaZ_init")],
+            Self::Tinyxml2 => &[Name::Exact("_ZN8tinyxml27XMLNode9ParseDeepEPcPNS_7StrPairEPi")],
+            Self::Smallvec => &[Name::Containing("E11insert_many")],
         }
     }
 
-    /// The functions that may change without being edited.
-    fn may_change(self) -> &'static [&'static str] {
+    /// The functions that may change without being edited, or be new.
+    fn may_change(self) -> &'static [Name] {
         match self {
-            Self::Zlib => &[],
-            Self::Lua => &["lua_load", "luaZ_read", "luaZ_lookahead"],
-            Self::Tinyxml2 => &[],
+            Self::Zlib | Self::Tinyxml2 => &[],
+            Self::Lua => {
+                &[Name::Exact("lua_load"), Name::Exact("luaZ_read"), Name::Exact("luaZ_lookahead")]
+            }
+            Self::Smallvec => &[Name::Containing("E6insert")],
         }
     }
 }
@@ -188,8 +230,16 @@ fn regions(build: Build, diff: &Diff, before: &Binary, after: &Binary) -> Vec<Re
 /// else but the known extras.
 fn check_regions(build: Build, reading: Reading, regions: &[Region]) {
     let project = build.project;
-    let allowed: BTreeSet<&str> =
-        project.must_change().iter().chain(project.may_change()).copied().collect();
+    let symbols = [parse(build, "before", "lib.so"), parse(build, "after", "lib.so")];
+    let must = named(&symbols[0], project.must_change());
+    let allowed: BTreeSet<String> = symbols
+        .iter()
+        .flat_map(|binary| {
+            named(binary, project.must_change())
+                .into_iter()
+                .chain(named(binary, project.may_change()))
+        })
+        .collect();
     let extras: BTreeSet<&str> = KNOWN_EXTRAS
         .iter()
         .filter(|(how, name, arch, level, _)| {
@@ -205,7 +255,7 @@ fn check_regions(build: Build, reading: Reading, regions: &[Region]) {
 
     let mut extras_seen = BTreeSet::new();
     for region in &code {
-        if region.names.iter().any(|name| allowed.contains(name.as_str())) {
+        if region.names.iter().any(|name| allowed.contains(name)) {
             continue;
         }
         assert!(
@@ -218,9 +268,9 @@ fn check_regions(build: Build, reading: Reading, regions: &[Region]) {
 
     // Data does not count here: a changed function hidden inside a region
     // classed as data would be a change the reader never sees.
-    for must in project.must_change() {
+    for must in &must {
         assert!(
-            code.iter().any(|region| region.names.contains(*must)),
+            code.iter().any(|region| region.names.contains(must)),
             "{build:?} {reading:?}: {must} changed, but no reported code covers it"
         );
     }
@@ -243,21 +293,40 @@ fn with_symbols_the_fix_is_named_exactly(
     #[values("arm", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
-    let build = build(project, arch, level);
+    check_with_symbols(build(project, arch, level));
+}
+
+/// The same for the Rust project, which has no GCC levels.
+#[rstest]
+fn with_symbols_the_rust_fix_is_named_exactly(
+    #[values("arm", "mips", "mipsel")] arch: &'static str,
+    #[values("O1", "O2", "O3", "Os")] level: &'static str,
+) {
+    check_with_symbols(build(Project::Smallvec, arch, level));
+}
+
+fn check_with_symbols(build: Build) {
+    let project = build.project;
     let before = parse(build, "before", "lib.so");
     let after = parse(build, "after", "lib.so");
     let diff = diff_with(&before, &after, Options::default());
 
-    let changed: BTreeSet<&str> =
-        diff.changed().map(|pair| before.functions[pair.before].name.as_str()).collect();
-    let allowed: BTreeSet<&str> =
-        project.must_change().iter().chain(project.may_change()).copied().collect();
+    let changed: BTreeSet<String> =
+        diff.changed().map(|pair| before.functions[pair.before].name.clone()).collect();
+    let must = named(&before, project.must_change());
+    let allowed: BTreeSet<String> =
+        named(&before, project.may_change()).union(&must).cloned().collect();
+    let new: BTreeSet<String> =
+        diff.added.iter().map(|&index| after.functions[index].name.clone()).collect();
 
-    for must in project.must_change() {
-        assert!(changed.contains(must), "{build:?}: {must} must be reported, got {changed:?}");
-    }
+    assert!(!must.is_empty(), "{build:?}: no symbol is named as the fix");
+    assert!(must.is_subset(&changed), "{build:?}: {must:?} must be reported, got {changed:?}");
     assert!(changed.is_subset(&allowed), "{build:?}: {changed:?} reaches past {allowed:?}");
-    assert!(diff.removed.is_empty() && diff.added.is_empty(), "{build:?}: nothing is gone or new");
+    assert!(diff.removed.is_empty(), "{build:?}: nothing is gone");
+    assert!(
+        new.is_subset(&named(&after, project.may_change())),
+        "{build:?}: {new:?} is new, which the fix did not add"
+    );
 }
 
 /// Stripped, the report covers the fix and strays nowhere else.
@@ -267,7 +336,19 @@ fn stripped_the_fix_is_covered_and_nothing_else(
     #[values("arm", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
-    let build = build(project, arch, level);
+    check_stripped(build(project, arch, level));
+}
+
+/// The same for the Rust project.
+#[rstest]
+fn stripped_the_rust_fix_is_covered_and_nothing_else(
+    #[values("arm", "mips", "mipsel")] arch: &'static str,
+    #[values("O1", "O2", "O3", "Os")] level: &'static str,
+) {
+    check_stripped(build(Project::Smallvec, arch, level));
+}
+
+fn check_stripped(build: Build) {
     let before = parse(build, "before", "lib-stripped.so");
     let after = parse(build, "after", "lib-stripped.so");
     let diff =
@@ -283,7 +364,19 @@ fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
     #[values("arm", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
-    let build = build(project, arch, level);
+    check_raw(build(project, arch, level));
+}
+
+/// The same for the Rust project.
+#[rstest]
+fn as_a_raw_image_the_rust_fix_is_covered_and_nothing_else(
+    #[values("arm", "mips", "mipsel")] arch: &'static str,
+    #[values("O1", "O2", "O3", "Os")] level: &'static str,
+) {
+    check_raw(build(Project::Smallvec, arch, level));
+}
+
+fn check_raw(build: Build) {
     let before = parse_raw(build, "before");
     let after = parse_raw(build, "after");
     let diff =
@@ -295,7 +388,7 @@ fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
 /// Each build compared with itself reports nothing, in every reading.
 #[rstest]
 fn a_build_compared_with_itself_reports_nothing(
-    #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
+    #[values(Project::Zlib, Project::Lua, Project::Tinyxml2, Project::Smallvec)] project: Project,
     #[values("arm", "mips", "mipsel")] arch: &'static str,
     #[values("before", "after")] variant: &str,
 ) {
