@@ -19,7 +19,7 @@ use rabbitizer::{
     Instruction, InstructionDisplayFlags, InstructionFlags, IsaVersion, Vram, opcodes::Opcode,
 };
 
-use super::{AbsoluteCall, Arch, DecodeError, Insn, InsnKind};
+use super::{AbsoluteCall, Arch, DecodeError, Insn, InsnKind, JumpTable};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 
 /// Every MIPS32 instruction is 4 bytes wide.
@@ -520,6 +520,35 @@ impl Arch for Mips32 {
         &bytes[..end]
     }
 
+    /// A `switch` compiles to a load from a table and a `jr`, in one of two
+    /// shapes. Code that is not PIC holds the address of each case:
+    ///
+    /// ```text
+    /// lui   v0, %hi(table)
+    /// addiu v0, v0, %lo(table)
+    /// addu  v0, v0, s1          ; s1 = the case number times four
+    /// lw    v0, 0(v0)
+    /// jr    v0
+    /// ```
+    ///
+    /// PIC code finds the table through the global offset table, and holds
+    /// the distance from the global pointer to each case:
+    ///
+    /// ```text
+    /// lw    v0, %got(table)(gp)
+    /// addu  at, at, v0          ; at = the case number times four
+    /// lw    at, %lo(table)(at)
+    /// addu  at, gp, at
+    /// jr    at
+    /// ```
+    ///
+    /// Only a raw image holds the global offset table among its code, so only
+    /// there is the second shape read.
+    fn jump_tables(&self, code: &[u8], base: u64, insns: &[Insn]) -> Vec<JumpTable> {
+        let image = Image { code, base, order: self.order };
+        (0..insns.len()).filter_map(|index| read_jump_table(&image, insns, index)).collect()
+    }
+
     /// MIPS runs the instruction after a branch whether or not the branch is
     /// taken, so that instruction belongs to the branch. An exception return
     /// is the exception: it leaves at once.
@@ -671,6 +700,209 @@ fn is_gp_disp_preamble(body: &[Insn]) -> bool {
         }
     }
     false
+}
+
+/// Code and where it lies, to read the words a table holds.
+struct Image<'a> {
+    code: &'a [u8],
+    base: u64,
+    order: ByteOrder,
+}
+
+impl Image<'_> {
+    /// The word at `address`, or `None` outside the code.
+    fn word(&self, address: u64) -> Option<u32> {
+        let offset = usize::try_from(address.checked_sub(self.base)?).ok()?;
+        let bytes = self.code.get(offset..offset.checked_add(INSN_WIDTH)?)?;
+        Some(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    /// Report whether a case can start at `address`.
+    fn holds_code_at(&self, address: u64) -> bool {
+        address.is_multiple_of(INSN_WIDTH as u64)
+            && address >= self.base
+            && address < self.base + self.code.len() as u64
+    }
+}
+
+/// What the words of a jump table hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Entries {
+    /// The address of each case.
+    Addresses,
+    /// The distance from the global pointer to each case.
+    FromGlobalPointer { global_pointer: u64 },
+}
+
+/// How far back the parts of a table jump may lie. GCC puts them together
+/// before the `jr`, but can move other work between them.
+const TABLE_LOOK_BACK: usize = 16;
+
+/// More cases than any `switch` a compiler turns into one table.
+const MOST_CASES: usize = 1024;
+
+/// How far from its jump a case may lie when no bound gives the number of
+/// cases. A table is followed by other data, which this keeps from reading
+/// as more cases.
+const MOST_CASE_DISTANCE: u64 = 0x1_0000;
+
+/// Read the table behind the `jr` at `insns[index]`.
+fn read_jump_table(image: &Image<'_>, insns: &[Insn], index: usize) -> Option<JumpTable> {
+    let jump = &insns[index];
+    if jump.mnemonic != "jr" || jump.kind != (InsnKind::Jump { target: None }) {
+        return None;
+    }
+    let target_register = jump.operands.trim();
+
+    // The PIC shape adds the global pointer after the load.
+    let (load_at, entries) = match last_write(insns, index, target_register)? {
+        (at, insn) if insn.mnemonic == "lw" => (at, Entries::Addresses),
+        (at, insn) if insn.mnemonic == "addu" => {
+            let (global_pointer, pointer_register) = global_pointer_before(insns, index)?;
+            let (_, left, right) = three_operands(insn)?;
+            let entry_register = match (left, right) {
+                (left, entry) if left == pointer_register => entry,
+                (entry, right) if right == pointer_register => entry,
+                _ => return None,
+            };
+            let (load_at, load) = last_write(insns, at, entry_register)?;
+            (load.mnemonic == "lw").then_some(())?;
+            (load_at, Entries::FromGlobalPointer { global_pointer })
+        }
+        _ => return None,
+    };
+
+    // `lw rX, lo(rA)`, where `rA` is the table plus the case number.
+    let (offset, indexed) = load_operands(&insns[load_at])?;
+    let (sum_at, sum) = last_write(insns, load_at, indexed)?;
+    if sum.mnemonic != "addu" {
+        return None;
+    }
+    let (_, left, right) = three_operands(sum)?;
+    let table_base = table_address(image, insns, sum_at, left, entries)
+        .or_else(|| table_address(image, insns, sum_at, right, entries))?;
+    let table = u64::from((table_base as u32).wrapping_add(offset as u32));
+
+    let bound = case_count(insns, index);
+    let mut targets = Vec::new();
+    let mut word = table;
+    for _ in 0..bound.unwrap_or(MOST_CASES) {
+        let value = image.word(word)?;
+        let target = match entries {
+            Entries::Addresses => u64::from(value),
+            Entries::FromGlobalPointer { global_pointer } => {
+                u64::from((global_pointer as u32).wrapping_add(value))
+            }
+        };
+        let near = target.abs_diff(jump.address) < MOST_CASE_DISTANCE;
+        if !image.holds_code_at(target) || (bound.is_none() && !near) {
+            break;
+        }
+        targets.push(target);
+        word += INSN_WIDTH as u64;
+    }
+
+    (!targets.is_empty()).then_some(JumpTable { jump: jump.address, words: table..word, targets })
+}
+
+/// The address a register holds at `insns[before]`, when it is the base of
+/// a table: a `lui` and `addiu` pair, a `lui` alone, or, in PIC code, a word
+/// of the global offset table.
+fn table_address(
+    image: &Image<'_>,
+    insns: &[Insn],
+    before: usize,
+    register: &str,
+    entries: Entries,
+) -> Option<u64> {
+    let (at, insn) = last_write(insns, before, register)?;
+    if let Some((_, high)) = upper_half(insn) {
+        return Some(high);
+    }
+    match (insn.mnemonic.as_str(), entries) {
+        ("addiu", _) => {
+            let (_, source, immediate) = three_operands(insn)?;
+            let (_, upper) = last_write(insns, at, source)?;
+            let (_, high) = upper_half(upper)?;
+            Some(join_halves("addiu", high, Mips32::LITTLE.constant_value(immediate)?))
+        }
+        ("lw", Entries::FromGlobalPointer { global_pointer }) => {
+            let (offset, _) = load_operands(insn)?;
+            let slot = u64::from((global_pointer as u32).wrapping_add(offset as u32));
+            image.word(slot).map(u64::from)
+        }
+        _ => None,
+    }
+}
+
+/// The last instruction before `insns[before]` that writes `register`, with
+/// its index, within [`TABLE_LOOK_BACK`] instructions.
+///
+/// A branch names a register it only reads, so it is stepped over.
+fn last_write<'a>(insns: &'a [Insn], before: usize, register: &str) -> Option<(usize, &'a Insn)> {
+    let from = before.saturating_sub(TABLE_LOOK_BACK);
+    (from..before).rev().map(|at| (at, &insns[at])).find(|(_, insn)| {
+        insn.kind == InsnKind::Normal
+            && !is_store(&insn.mnemonic)
+            && insn.operands.split(',').next().map(str::trim) == Some(register)
+    })
+}
+
+/// Read `op rD, rS, x` as its three operands.
+fn three_operands(insn: &Insn) -> Option<(&str, &str, &str)> {
+    let mut operands = insn.operands.split(',').map(str::trim);
+    let (Some(first), Some(second), Some(third), None) =
+        (operands.next(), operands.next(), operands.next(), operands.next())
+    else {
+        return None;
+    };
+    Some((first, second, third))
+}
+
+/// Read `lw rX, offset(rA)` as the offset and `rA`.
+fn load_operands(insn: &Insn) -> Option<(u64, &str)> {
+    let (_, reference) = insn.operands.split_once(',')?;
+    let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
+    Some((Mips32::LITTLE.constant_value(offset)?, base.trim()))
+}
+
+/// The number of cases, from the `sltiu rT, rX, n` that guards the table.
+fn case_count(insns: &[Insn], index: usize) -> Option<usize> {
+    insns[index.saturating_sub(TABLE_LOOK_BACK)..index].iter().rev().find_map(|insn| {
+        let (_, _, bound) = (insn.mnemonic == "sltiu").then(|| three_operands(insn))??;
+        usize::try_from(Mips32::LITTLE.constant_value(bound)?).ok().filter(|&n| n <= MOST_CASES)
+    })
+}
+
+/// The global pointer of the function that holds `insns[index]`, and the
+/// register it is in, from the `_gp_disp` preamble at its start.
+///
+/// The preamble adds the distance to the global pointer to `t9`, which holds
+/// the address of the function, and that is the address of its `lui`.
+fn global_pointer_before(insns: &[Insn], index: usize) -> Option<(u64, &str)> {
+    /// How far back the start of a function may lie. A `switch` sits deep in
+    /// a long function more often than not.
+    const MOST_WORDS_TO_START: usize = 4096;
+
+    let from = index.saturating_sub(MOST_WORDS_TO_START);
+    (from..index).rev().find_map(|at| {
+        if !is_gp_disp_preamble(&insns[at..]) {
+            return None;
+        }
+        let (high, low) = (&insns[at], &insns[at + 1]);
+        let loaded = constant_pair_register(high, low)?;
+        let (_, upper) = upper_half(high)?;
+        let (_, _, immediate) = three_operands(low)?;
+        let distance = join_halves("addiu", upper, Mips32::LITTLE.constant_value(immediate)?);
+        let global_pointer = u64::from((high.address as u32).wrapping_add(distance as u32));
+        let register = insns[at + 2..]
+            .iter()
+            .take(TABLE_LOOK_BACK)
+            .find(|insn| joins_to_callee_address(insn, loaded))
+            .and_then(|insn| insn.operands.split(',').next())?
+            .trim();
+        Some((global_pointer, register))
+    })
 }
 
 /// What an instruction does to control flow once its delay slot has run.
@@ -1158,6 +1390,109 @@ mod tests {
     #[test]
     fn jalr_is_a_call() {
         assert!(matches!(decode_one(0x0320_f809).kind, InsnKind::Call { .. }));
+    }
+
+    /// Read the jump tables of big-endian code at `base`.
+    fn tables_in(words: &[u32], base: u64) -> Vec<JumpTable> {
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, base);
+        Mips32::BIG.jump_tables(&code, base, &insns)
+    }
+
+    /// Code that is not PIC holds the address of each case. The `sltiu`
+    /// bound says how many there are.
+    fn absolute_switch(bound: u32) -> Vec<u32> {
+        vec![
+            0x2c83_0000 | bound, // 0x00 sltiu v1, a0, bound
+            0x1060_000a,         // 0x04 beqz v1, 0x30
+            0x0004_1880,         // 0x08 sll v1, a0, 2
+            0x3c02_8000,         // 0x0c lui v0, 0x8000
+            0x2442_0040,         // 0x10 addiu v0, v0, 0x40
+            0x0043_1021,         // 0x14 addu v0, v0, v1
+            0x8c42_0000,         // 0x18 lw v0, 0(v0)
+            0x0040_0008,         // 0x1c jr v0
+            0,                   // 0x20 nop
+            0x03e0_0008,         // 0x24 case 0: jr ra
+            0,                   // 0x28 nop
+            0x03e0_0008,         // 0x2c case 1: jr ra
+            0,                   // 0x30 nop
+            0x03e0_0008,         // 0x34 jr ra
+            0,                   // 0x38 nop
+            0,                   // 0x3c nop
+            0x8000_0024,         // 0x40 the table
+            0x8000_002c,         // 0x44
+            0x8000_0030,         // 0x48
+            0x8000_0024,         // 0x4c past the bound
+        ]
+    }
+
+    #[test]
+    fn reads_a_table_of_case_addresses() {
+        assert_eq!(
+            tables_in(&absolute_switch(3), 0x8000_0000),
+            [JumpTable {
+                jump: 0x8000_001c,
+                words: 0x8000_0040..0x8000_004c,
+                targets: vec![0x8000_0024, 0x8000_002c, 0x8000_0030],
+            }]
+        );
+    }
+
+    /// A word that is no address of code ends the table early.
+    #[test]
+    fn a_word_that_is_no_case_ends_the_table() {
+        let mut words = absolute_switch(4);
+        words[17] = 0x1234_5678;
+        assert_eq!(tables_in(&words, 0x8000_0000)[0].targets, [0x8000_0024]);
+    }
+
+    /// A `jr` whose register is not loaded from a table is left alone.
+    #[test]
+    fn a_jump_through_a_pointer_is_no_table() {
+        let mut words = absolute_switch(3);
+        words[6] = 0x0080_1021; // addu v0, a0, zero
+        assert!(tables_in(&words, 0x8000_0000).is_empty());
+        let mut words = absolute_switch(3);
+        words[7] = 0x03e0_0008; // jr ra
+        assert!(tables_in(&words, 0x8000_0000).is_empty());
+    }
+
+    /// PIC code finds the table through the global offset table, and holds
+    /// the distance from the global pointer to each case. With no bound, the
+    /// table ends at the first word that is not a case.
+    #[test]
+    fn reads_a_table_of_distances_from_the_global_pointer() {
+        let words = [
+            0x3c02_0000, // 0x00 lui v0, 0
+            0x2442_7ff0, // 0x04 addiu v0, v0, 0x7ff0: gp is 0x7ff0
+            0x0059_0821, // 0x08 addu at, v0, t9
+            0x0004_1880, // 0x0c sll v1, a0, 2
+            0x8c22_8050, // 0x10 lw v0, -0x7fb0(at): the slot at 0x40
+            0x0062_1821, // 0x14 addu v1, v1, v0
+            0x8c63_0010, // 0x18 lw v1, 0x10(v1)
+            0x0023_1821, // 0x1c addu v1, at, v1
+            0x0060_0008, // 0x20 jr v1
+            0,           // 0x24 nop
+            0x03e0_0008, // 0x28 case 0: jr ra
+            0,           // 0x2c nop
+            0x03e0_0008, // 0x30 case 1: jr ra
+            0,           // 0x34 nop
+            0,           // 0x38
+            0,           // 0x3c
+            0x0000_0048, // 0x40 the slot: the table's page
+            0,           // 0x44
+            0,           // 0x48
+            0,           // 0x4c
+            0,           // 0x50
+            0,           // 0x54
+            0xffff_8038, // 0x58 the table: 0x28 - gp
+            0xffff_8040, // 0x5c 0x30 - gp
+            0x1000_0000, // 0x60 no case
+        ];
+        assert_eq!(
+            tables_in(&words, 0),
+            [JumpTable { jump: 0x20, words: 0x58..0x60, targets: vec![0x28, 0x30] }]
+        );
     }
 
     /// `bal` calls its target. `bltzal t0` calls only on a condition, which
