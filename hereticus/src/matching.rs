@@ -380,6 +380,15 @@ impl Diff {
 /// or near 1.00 there, and the closest unrelated pair scores 0.50.
 const DEFAULT_THRESHOLD: f64 = 0.65;
 
+/// The lowest score at which a caller alone pairs two unpaired functions.
+///
+/// A fix can rewrite a function past [`DEFAULT_THRESHOLD`], and a caller
+/// whose code agrees then shows the two are one. Measured on smallvec built
+/// by Rust for ARM at `-O1`, the edited `insert_many` for `u64` scored 0.54
+/// against itself. This floor keeps a caller from pairing two functions that
+/// share nothing.
+const LOWEST_JOINED_SIMILARITY: f64 = 0.5;
+
 /// Settings for a comparison.
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -816,7 +825,7 @@ impl Cascade<'_> {
         }
     }
 
-    /// Swap two weak pairings where the calls say they are crossed.
+    /// Pair, or pair again, the functions the calls say are one.
     ///
     /// A small function has many twins, and similarity pairs them by chance:
     /// on the VR200 kernel, an eight-byte function paired by similarity with
@@ -827,11 +836,16 @@ impl Cascade<'_> {
     ///
     /// Only pairings by similarity or by twin order swap, because a stronger
     /// reason outweighs a vote. A swap never leaves a function unpaired.
+    /// Where one callee is unpaired, the weak pairing of the other moves to
+    /// it, and where both are, they pair if they score at least
+    /// [`LOWEST_JOINED_SIMILARITY`].
     ///
     /// A caller votes once for each pair of callees, however often it calls
     /// them, and a swap needs [`FEWEST_VOTERS`] callers for it. Otherwise one
     /// edited caller outvotes the rest and hides its own edit: the tinyxml2
     /// fix makes three calls to a new PLT stub, whose twins pair by order.
+    /// Where similarity cannot choose, one caller is enough; see
+    /// [`Self::is_near_tie`].
     fn pair_by_callers(&mut self, before: &Binary, after: &Binary) {
         /// Each round moves a pairing that is off by one along a run of
         /// twins by one place: a new PLT stub puts every stub after it one
@@ -870,7 +884,29 @@ impl Cascade<'_> {
             let mut touched = BTreeSet::new();
             let mut swaps = Vec::new();
             let mut moves = Vec::new();
+            let mut joins = Vec::new();
+            let (mut joined_before, mut joined_after) = (BTreeSet::new(), BTreeSet::new());
             for (&(x, y), &for_swap) in &votes {
+                // Both unpaired: a caller whose code agrees says they are
+                // one function, which the fix rewrote past the threshold.
+                // Measured on smallvec for ARM, the edited `insert_many`
+                // for `u8` scored 0.62 against itself.
+                let both_free = !pair_of_before.contains_key(&x)
+                    && !pair_of_after.contains_key(&y)
+                    && self.left_free[x]
+                    && self.right_free[y];
+                if both_free {
+                    let score =
+                        similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols);
+                    if score >= LOWEST_JOINED_SIMILARITY
+                        && joined_before.insert(x)
+                        && joined_after.insert(y)
+                    {
+                        joins.push((x, y, score));
+                    }
+                    continue;
+                }
+
                 // One side unpaired: move the weak pairing of the other to
                 // it, and free its old partner. Similarity pairs a template
                 // instance with the wrong twin this way, as
@@ -886,7 +922,8 @@ impl Cascade<'_> {
                 };
                 if paired != usize::MAX
                     && !touched.contains(&paired)
-                    && for_swap >= FEWEST_VOTERS
+                    && (for_swap >= FEWEST_VOTERS
+                        || (for_swap > 0 && self.is_near_tie(&[&self.matched[paired]], &[(x, y)])))
                     && for_swap > moved
                     && is_weak(&self.matched[paired])
                 {
@@ -903,15 +940,25 @@ impl Cascade<'_> {
                     continue;
                 }
                 let (y_other, x_other) = (self.matched[first].after, self.matched[second].before);
-                let wins = for_swap >= FEWEST_VOTERS
+                let enough_voters = for_swap >= FEWEST_VOTERS
+                    || (for_swap > 0
+                        && self.is_near_tie(
+                            &[&self.matched[first], &self.matched[second]],
+                            &[(x, y), (x_other, y_other)],
+                        ));
+                let wins = enough_voters
                     && for_swap + vote(x_other, y_other) > vote(x, y_other) + vote(x_other, y);
                 if wins && is_weak(&self.matched[first]) && is_weak(&self.matched[second]) {
                     touched.extend([first, second]);
                     swaps.push((first, second));
                 }
             }
-            if swaps.is_empty() && moves.is_empty() {
+            if swaps.is_empty() && moves.is_empty() && joins.is_empty() {
                 break;
+            }
+
+            for (x, y, score) in joins {
+                self.take_pair(x, y, Confidence::SameCallers, score);
             }
 
             for (index, x, y) in moves {
@@ -935,6 +982,34 @@ impl Cascade<'_> {
                 }
             }
         }
+    }
+
+    /// Report whether similarity cannot choose between the `current`
+    /// pairings and the `proposed` ones, so that one caller may.
+    ///
+    /// Every current pairing must be by similarity, and the proposed ones
+    /// must score within [`NEAR_TIE`] of them on average. Measured on
+    /// smallvec built by Rust for MIPS at `-O2`, the edited `insert_many` for
+    /// `u32` paired with the one for `u64` at 0.82 and 0.82, against 0.82 and
+    /// 0.81 the right way, and one caller each called them. A pairing by
+    /// twin order is left to `FEWEST_VOTERS`: twins score the same, so any
+    /// one caller would win.
+    fn is_near_tie(&self, current: &[&Match], proposed: &[(usize, usize)]) -> bool {
+        /// How far below the current pairings the proposed ones may score,
+        /// on average, and still count as a tie.
+        const NEAR_TIE: f64 = 0.02;
+
+        if !current.iter().all(|pair| pair.confidence == Confidence::Similar) {
+            return false;
+        }
+        let current_score: f64 = current.iter().map(|pair| pair.score).sum();
+        let proposed_score: f64 = proposed
+            .iter()
+            .map(|&(before, after)| {
+                similarity_of_symbols(&self.left[before].symbols, &self.right[after].symbols)
+            })
+            .sum();
+        proposed_score >= current_score - NEAR_TIE * current.len() as f64
     }
 
     /// Mark each pair whose code agrees but whose calls reach different

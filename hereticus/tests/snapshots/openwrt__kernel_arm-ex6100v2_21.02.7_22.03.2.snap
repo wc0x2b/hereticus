@@ -4,11 +4,11 @@ assertion_line: 641
 expression: kernel_digest(&comparison)
 ---
 functions 22703 -> 23226
-matched 16452
-{No: 1382, Reordered: 2653, Data: 11, InDetail: 1366, Unreadable: 54, Yes: 10986}
-gone 6251
-new 6774
-fingerprint 0xee283b885b5fc121
+matched 16581
+{No: 1409, Reordered: 2653, Data: 11, InDetail: 1389, Unreadable: 54, Yes: 11065}
+gone 6122
+new 6645
+fingerprint 0x1ccb3f61c43c1800
 
 strongest changes:
 0xc030f7d4 -> 0xc034af58 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
@@ -39,7 +39,7 @@ strongest changes:
 0xc03a7080 -> 0xc03ac1dc score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 2, callees: 1 }
 0xc03a70c4 -> 0xc06c2afc score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 2, callees: 1 }
 0xc03a8118 -> 0xc054eddc score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 2, callees: 1 }
-0xc03a844c -> 0xc03ad43c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 4, callees: 4 }
+0xc03a844c -> 0xc03ad43c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 4, callees: 2 }
 0xc03ab460 -> 0xc05931ec score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
 0xc03b6b50 -> 0xc03bbba4 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
 0xc03b6c40 -> 0xc03bbc84 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }
