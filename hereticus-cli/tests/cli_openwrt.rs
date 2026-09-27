@@ -124,3 +124,38 @@ fn slow_hides_the_data_regions_of_a_mips_kernel() {
     assert_eq!(shown.matches("changed data").count(), 12, "every hidden region is listed");
     assert!(!shown.contains("data regions changed, hidden"));
 }
+
+/// Without `--base`, the tool says where a MIPS kernel loads, from its calls,
+/// and still refuses to guess.
+#[test]
+fn slow_suggests_a_base_for_a_mips_kernel() {
+    let output = hereticus()
+        .args(["--progress", "never", "--raw", "--arch", "mips32-be"])
+        .args(["fixtures/build/openwrt/mipsbe-vr200-kernel-22.03.2.bin"; 2])
+        .output()
+        .expect("the tool runs");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("the error is text");
+    assert!(
+        stderr.contains(
+            "--raw needs --base, because a raw image does not say where it loads. Its calls \
+             show that it loads at --base 0x80002000"
+        ),
+        "got {stderr}"
+    );
+}
+
+/// A base a page off draws a warning that names the right one.
+#[test]
+fn slow_warns_about_a_mips_kernel_base_a_page_off() {
+    let output = hereticus()
+        .args(["--progress", "never", "--raw", "--base", "0x80003000", "--arch", "mips32-be"])
+        .args(["fixtures/build/openwrt/mipsbe-vr200-kernel-22.03.2.bin"; 2])
+        .output()
+        .expect("the tool runs");
+
+    let stderr = String::from_utf8(output.stderr).expect("the warning is text");
+    assert!(stderr.contains("may not load at 0x80003000"), "got {stderr}");
+    assert!(stderr.contains("58113 do at 0x80002000"), "got {stderr}");
+}

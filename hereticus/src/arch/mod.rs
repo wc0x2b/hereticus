@@ -216,6 +216,32 @@ pub trait Arch {
     ///
     /// `bytes` is at least [`Arch::pointer_width`] long.
     fn read_pointer(&self, bytes: &[u8]) -> u64;
+
+    /// Read a call that names its target by an absolute address.
+    ///
+    /// Such a target does not move with the base an image is read at, unlike
+    /// a relative branch, so it can judge that base. `word` is
+    /// [`Arch::instruction_width`] bytes long.
+    ///
+    /// Defaults to `None`, for the architectures whose calls are all
+    /// relative.
+    fn absolute_call(&self, _word: &[u8]) -> Option<AbsoluteCall> {
+        None
+    }
+}
+
+/// A call that holds the low bits of its target, and takes the high bits from
+/// where it runs.
+///
+/// MIPS `jal` is the case: it holds 28 bits of the target, and the top 4 come
+/// from the address of its delay slot. So a target is known only within one
+/// aligned region, and the region is where the image loads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AbsoluteCall {
+    /// The target, as an offset into its region.
+    pub offset: u64,
+    /// The size of the region, a power of two.
+    pub region: u64,
 }
 
 /// Report whether an operand is a branch target.

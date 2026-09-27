@@ -19,7 +19,7 @@ use rabbitizer::{
     Instruction, InstructionDisplayFlags, InstructionFlags, IsaVersion, Vram, opcodes::Opcode,
 };
 
-use super::{Arch, DecodeError, Insn, InsnKind};
+use super::{AbsoluteCall, Arch, DecodeError, Insn, InsnKind};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 
 /// Every MIPS32 instruction is 4 bytes wide.
@@ -529,6 +529,17 @@ impl Arch for Mips32 {
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
         u64::from(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn absolute_call(&self, word: &[u8]) -> Option<AbsoluteCall> {
+        /// The primary opcode of `jal`, in the top 6 bits.
+        const JAL: u32 = 0b00_0011;
+        /// `jal` holds a word index, so the region is 2^26 words.
+        const JAL_REGION: u64 = 1 << 28;
+
+        let raw = self.order.read_word([word[0], word[1], word[2], word[3]]);
+        (raw >> 26 == JAL)
+            .then(|| AbsoluteCall { offset: u64::from(raw & 0x03ff_ffff) << 2, region: JAL_REGION })
     }
 }
 
@@ -1134,6 +1145,24 @@ mod tests {
     #[test]
     fn jalr_is_a_call() {
         assert!(matches!(decode_one(0x0320_f809).kind, InsnKind::Call { .. }));
+    }
+
+    /// `jal` holds the target's word index, which the region completes.
+    #[test]
+    fn jal_is_an_absolute_call_in_either_order() {
+        let jal = 0x0c00_0800u32; // jal 0x2000
+        let expected = Some(AbsoluteCall { offset: 0x2000, region: 1 << 28 });
+        assert_eq!(Mips32::LITTLE.absolute_call(&jal.to_le_bytes()), expected);
+        assert_eq!(Mips32::BIG.absolute_call(&jal.to_be_bytes()), expected);
+    }
+
+    /// Only `jal` names an absolute target of a call. `j` jumps, and `jalr`
+    /// and `bal` do not hold one.
+    #[test]
+    fn other_words_are_not_absolute_calls() {
+        for word in [0x0800_0800u32, 0x0320_f809, 0x0411_0004, 0x27bd_ffe8, 0] {
+            assert_eq!(Mips32::LITTLE.absolute_call(&word.to_le_bytes()), None, "{word:#010x}");
+        }
     }
 
     /// The J-type target is an address inside the region, not a distance from

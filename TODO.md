@@ -1,16 +1,5 @@
 # TODO
 
-## Check a MIPS load address with `jal` targets
-
-`jal` holds an absolute target, so at the right base most targets land on a
-function prologue (`addiu sp, sp, -N`). On the TP-Link VR200 kernel (Lantiq
-xRX200), 58113 of 95023 targets land on a prologue at `0x80002000`, and
-about 2000 at the neighbouring pages. The pointer count of `check_base`
-cannot tell those bases apart on an image this large.
-
-Use this as a second test in `raw::check_base` for MIPS, and to suggest a
-base when none is given.
-
 ## Read the MIPS DSP ASE
 
 Between 106 and 252 words of real code in each OpenWrt MIPS kernel still do
