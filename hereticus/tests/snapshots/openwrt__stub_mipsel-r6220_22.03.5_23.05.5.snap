@@ -1,12 +1,13 @@
 ---
 source: hereticus/tests/openwrt.rs
+assertion_line: 629
 expression: report
 ---
 0x80001000 -> 0x80001000 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
 0x80001044 -> 0x80001044 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 12 } confidence=IdenticalShape
 0x80001128 -> 0x80001128 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 2 } confidence=IdenticalShape
-0x8000115c -> 0x8000115c Yes score=0.850 edits=Edits { added: 20, removed: 17, edited: 13 } kinds=EditKinds { branches: 10, calls: 0, jumps: 6, memory: 0, other: 34, opaque: 0, constants: 3 } confidence=Similar
-0x800012d4 -> 0x800012e0 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0 } confidence=IdenticalCode
+0x8000115c -> 0x8000115c Yes score=0.817 edits=Edits { added: 16, removed: 26, edited: 14 } kinds=EditKinds { branches: 10, calls: 2, jumps: 5, memory: 0, other: 39, opaque: 0, constants: 3 } confidence=Similar
 0x80001318 -> 0x80001324 Yes score=0.980 edits=Edits { added: 4, removed: 5, edited: 1 } kinds=EditKinds { branches: 0, calls: 1, jumps: 1, memory: 0, other: 8, opaque: 0, constants: 11 } confidence=Similar
 0x800018ec -> 0x800018f4 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1 } confidence=IdenticalShape
 0x80001920 -> 0x80001928 Yes score=0.930 edits=Edits { added: 109, removed: 90, edited: 37 } kinds=EditKinds { branches: 19, calls: 6, jumps: 12, memory: 0, other: 199, opaque: 0, constants: 26 } confidence=Similar
+new  0x800012e0

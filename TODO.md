@@ -36,14 +36,16 @@ is gone or new. In a raw image of a shared library the headers and
 `.rodata` show as removed and added functions. Judge those with
 `Arch::contents` too, and hide them the same way.
 
-## Split raw ARM images less
-
-Without an exception index, a raw ARM scan still starts a function after a
-return inside one: about 18 false starts in each backport library. The
-`luaopen_base` extra in `KNOWN_EXTRAS` comes from one of them.
-
 ## Cache the fixtures in CI
 
 The tests now download about 150 MB of OpenWrt images and build libraries
 in a container. Cache `fixtures/build` in CI, keyed on the pinned SHA-256
 values and on `fixtures/`, so a run fetches and builds only what changed.
+
+## Ignore calls that data makes in a raw image
+
+A raw image holds `.rodata` too, and some of its words decode as calls.
+In Lua for ARM, one reads as `blvs` into the middle of `luaopen_base` and
+splits it, the last entry in `KNOWN_EXTRAS`. A filter on the word before
+the target does not work: a real function often follows a zero word or a
+pool word that `literal_pool_words` does not find.

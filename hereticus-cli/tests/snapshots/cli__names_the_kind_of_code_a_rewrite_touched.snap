@@ -14,7 +14,7 @@ exit_code: 0
 │ FUNCTION     │ CHANGE    │ SCORE │ +/-/~  │ TOUCHED                              │ MATCHED BY │
 ├──────────────┼───────────┼───────┼────────┼──────────────────────────────────────┼────────────┤
 │ switch_dense │ reordered │  1.00 │ 1/1/0  │ -                                    │ same name  │
-│ factorial    │ changed   │  0.12 │ 35/2/2 │ 1 branch, 6 jump, 1 const, 17 unread │ same name  │
+│ factorial    │ changed   │  0.12 │ 35/2/2 │ 1 branch, 4 jump, 1 const, 17 unread │ same name  │
 ╰──────────────┴───────────┴───────┴────────┴──────────────────────────────────────┴────────────╯
 
 8 matched (6 unchanged, 2 changed), 0 gone, 0 new

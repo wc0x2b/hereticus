@@ -52,7 +52,7 @@ fn lists_the_retouched_arm_stub_functions() {
 #[test]
 fn diffs_one_arm_stub_function() {
     assert_cmd_snapshot!(
-        compare_stubs("arm-ex6100v2", "arm32", "0x80208000").args(["--diff", "sub_802082bc"])
+        compare_stubs("arm-ex6100v2", "arm32", "0x80208000").args(["--diff", "sub_80208af8"])
     );
 }
 
