@@ -24,7 +24,11 @@ common_flags=(-fPIC -fno-stack-protector -w)
 
 # name:triple, one per architecture the tool reads.
 targets=(arm:arm-linux-gnueabi mips:mips-linux-gnu mipsel:mipsel-linux-gnu)
-levels=(O2 Os)
+# clang at every level that ships, and GCC with GNU ld at the two most
+# firmware uses. A GCC build lands in `<arch>-gcc-<level>`.
+levels=(O1 O2 O3 Os)
+gcc_levels=(O2 Os)
+gcc_version=14
 
 # Sources that make up each library, relative to the unpacked tree.
 zlib_sources=(adler32 compress crc32 deflate gzclose gzlib gzread gzwrite
@@ -39,6 +43,7 @@ tinyxml2_sources=(tinyxml2)
 # C++ does.
 compiler=(clang)
 suffix=c
+gcc_standard=()
 
 # Unpack a tarball into $out/src/<name>-<variant>, patched when asked.
 unpack() {
@@ -73,11 +78,33 @@ build() {
                     -c "$source_dir/$source.$suffix" -o "$objects/$source.o"
             done
             ld.lld -shared -o "$dest/lib.so" "$objects"/*.o
-            llvm-strip -o "$dest/lib-stripped.so" "$dest/lib.so"
-            llvm-objcopy -O binary "$dest/lib.so" "$dest/lib.bin"
-            rm -rf "$objects"
+            finish "$dest"
+        done
+
+        # GCC builds the same sources and GNU ld links them, as a vendor's
+        # toolchain does.
+        local gcc_compiler="$triple-gcc-$gcc_version"
+        [ "$suffix" = cpp ] && gcc_compiler="$triple-g++-$gcc_version"
+        for level in "${gcc_levels[@]}"; do
+            local dest="$out/$name-$variant/$arch-gcc-$level"
+            local objects="$dest/obj"
+            mkdir -p "$objects"
+            for source in "${sources[@]}"; do
+                "$gcc_compiler" "${flags[@]}" "${gcc_standard[@]}" "-$level" \
+                    -c "$source_dir/$source.$suffix" -o "$objects/$source.o"
+            done
+            "$gcc_compiler" -shared -nostdlib -o "$dest/lib.so" "$objects"/*.o
+            finish "$dest"
         done
     done
+}
+
+# Write the stripped library and the raw image of a linked `lib.so`.
+finish() {
+    local dest="$1"
+    llvm-strip -o "$dest/lib-stripped.so" "$dest/lib.so"
+    llvm-objcopy -O binary "$dest/lib.so" "$dest/lib.bin"
+    rm -rf "$dest/obj"
 }
 
 unpack zlib-1.2.12.tar.gz zlib before
@@ -95,9 +122,11 @@ for variant in before after; do
     build lua "$variant" "$out/src/lua-$variant/src" "${lua_sources[@]}"
 
     compiler=(clang++ -std=c++17)
+    gcc_standard=(-std=c++17)
     suffix=cpp
     build tinyxml2 "$variant" "$out/src/tinyxml2-$variant" "${tinyxml2_sources[@]}"
     compiler=(clang)
+    gcc_standard=()
     suffix=c
 done
 

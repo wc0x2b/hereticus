@@ -698,6 +698,10 @@ fn track_addresses<'a>(
     let mut at_target: Vec<(u64, HeldAddresses<'_>)> = Vec::new();
     let mut unreached_arrivals = 0;
     let mut saved = SavedRegisters::default();
+    // What each stack slot holds, where a register that held an address was
+    // stored there. GCC stores the global pointer after its preamble, as
+    // `.cprestore` asks, and loads it back after every call.
+    let mut slots: Vec<(u64, Held)> = Vec::new();
 
     for (index, insn) in body.iter().enumerate() {
         let branched = take_state(&mut at_target, insn.address);
@@ -739,6 +743,19 @@ fn track_addresses<'a>(
                     kinds[index] = ConstantKind::Address;
                     upper.set(destination, Held::Somewhere);
                 }
+            }
+        } else if let Some((register, slot, access)) = stack_slot(insn) {
+            match access {
+                SlotAccess::Store => {
+                    slots.retain(|&(held_slot, _)| held_slot != slot);
+                    if let Some(held) = upper.get(register) {
+                        slots.push((slot, held));
+                    }
+                }
+                SlotAccess::Load => match slots.iter().find(|&&(held_slot, _)| held_slot == slot) {
+                    Some(&(_, held)) => upper.set(register, held),
+                    None => upper.forget(register),
+                },
             }
         } else if let Some((written, base, offset)) = memory_reference(insn, &upper) {
             let loaded = match base {
@@ -969,11 +986,14 @@ fn table_address(
         return Some(high);
     }
     match (insn.mnemonic.as_str(), entries) {
+        // The upper half from `lui`, or, as GCC writes PIC code, the page
+        // from a slot of the global offset table.
         ("addiu", _) => {
             let (_, source, immediate) = three_operands(insn)?;
-            let (_, upper) = last_write(insns, at, source)?;
-            let (_, high) = upper_half(upper)?;
-            Some(join_halves("addiu", high, Mips32::LITTLE.constant_value(immediate)?))
+            let low = Mips32::LITTLE.constant_value(immediate)?;
+            let (source_at, _) = last_write(insns, at, source)?;
+            let high = table_address(image, insns, source_at + 1, source, entries)?;
+            Some(join_halves("addiu", high, low))
         }
         ("lw", Entries::FromGlobalPointer { global_pointer }) => {
             let (offset, _) = load_operands(insn)?;
@@ -1282,6 +1302,28 @@ fn memory_reference<'a>(
 
     let written = (!is_store(&insn.mnemonic)).then(|| first.trim());
     Some((written, held, offset))
+}
+
+/// Whether an instruction saves a register to the stack or loads one back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotAccess {
+    Store,
+    Load,
+}
+
+/// Read `sw rX, off(sp)` or `lw rX, off(sp)` as the register, the offset of
+/// the slot, and which way the word moves.
+fn stack_slot(insn: &Insn) -> Option<(&str, u64, SlotAccess)> {
+    let access = match insn.mnemonic.as_str() {
+        "sw" => SlotAccess::Store,
+        "lw" => SlotAccess::Load,
+        _ => return None,
+    };
+    let (register, reference) = insn.operands.split_once(',')?;
+    let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
+    (base.trim() == "sp")
+        .then(|| Some((register.trim(), Mips32::LITTLE.constant_value(offset)?, access)))
+        .flatten()
 }
 
 /// Read `addu rD, rX, rY`, where one source holds an address and the other
@@ -1633,6 +1675,41 @@ mod tests {
         assert_eq!(
             tables_in(&words[..19], 0x8000_0000)[0].targets,
             [0x8000_0024, 0x8000_002c, 0x8000_0030]
+        );
+    }
+
+    /// GCC's PIC table: the page from a GOT slot, plus a low half.
+    #[test]
+    fn reads_a_table_on_a_page_from_the_global_offset_table() {
+        let words = [
+            0x3c1c_0000_u32, // 0x00 lui gp, 0
+            0x279c_7ff0,     // 0x04 addiu gp, gp, 0x7ff0: gp is 0x7ff0
+            0x0399_e021,     // 0x08 addu gp, gp, t9
+            0x2c62_0002,     // 0x0c sltiu v0, v1, 2
+            0x0003_2080,     // 0x10 sll a0, v1, 2
+            0x8f82_8050,     // 0x14 lw v0, -0x7fb0(gp): the slot at 0x40
+            0x2442_0010,     // 0x18 addiu v0, v0, 0x10: the table at 0x58
+            0x0044_1021,     // 0x1c addu v0, v0, a0
+            0x8c42_0000,     // 0x20 lw v0, 0(v0)
+            0x005c_1021,     // 0x24 addu v0, v0, gp
+            0x0040_0008,     // 0x28 jr v0
+            0,               // 0x2c nop
+            0x03e0_0008,     // 0x30 case 0: jr ra
+            0,               // 0x34 nop
+            0x03e0_0008,     // 0x38 case 1: jr ra
+            0,               // 0x3c nop
+            0x0000_0048,     // 0x40 the slot: the page is 0x48
+            0,               // 0x44
+            0,               // 0x48
+            0,               // 0x4c
+            0,               // 0x50
+            0,               // 0x54
+            0xffff_8040,     // 0x58 the table: 0x30 - gp
+            0xffff_8048,     // 0x5c 0x38 - gp
+        ];
+        assert_eq!(
+            tables_in(&words, 0),
+            [JumpTable { jump: 0x28, words: 0x58..0x60, targets: vec![0x30, 0x38] }]
         );
     }
 
@@ -2063,6 +2140,26 @@ mod tests {
             // Nor do two addresses.
             let words = [lui(V0, 0x8001), lui(S1, 0x8002), addu(V0, V0, S1), lw(V0, 0x10, V0)];
             assert_eq!(kinds(&words)[3], Value);
+        }
+
+        /// GCC stores the global pointer in a stack slot and loads it back
+        /// after each call, as `.cprestore` asks. A slot of the global offset
+        /// table read through the reloaded pointer is still an address.
+        #[test]
+        fn a_register_loaded_back_from_the_stack_holds_what_was_stored() {
+            const GP: u32 = 28;
+            let words = [
+                sw(GP, 0x10, SP),
+                jal(0x8000_4000),
+                NOP,
+                lw(GP, 0x10, SP), // the pointer comes back
+                lw(A0, 0x8010, GP),
+            ];
+            assert_eq!(kinds(&words)[4], Address);
+
+            // A slot that held no address gives none back.
+            let words = [sw(A1, 0x10, SP), lw(GP, 0x10, SP), lw(A0, 0x8010, GP)];
+            assert_eq!(kinds(&words)[2], Value);
         }
 
         /// A saved register the function sets once, and restores in its

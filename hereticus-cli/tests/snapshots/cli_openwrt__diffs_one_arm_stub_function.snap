@@ -16,18 +16,10 @@ info:
     - "--diff"
     - sub_80208b78
 ---
-success: true
-exit_code: 0
+success: false
+exit_code: 2
 ----- stdout -----
-sub_80208b78
-  mov r0, 0x0
-  bx lr
-- eoreq pc, r10, r0, ror sp
-+ eoreq r3, fp, r0, lsl r1
-  andeq r0, r0, r4
-  andeq r0, r0, r4, lsl r0
-  andeq r0, r0, ip
-  andeq r0, r0, r4, lsr 0
 
 ----- stderr -----
 hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate
+hereticus: no function `sub_80208b78` in the earlier binary

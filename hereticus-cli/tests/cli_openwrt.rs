@@ -181,10 +181,10 @@ fn slow_hides_the_data_regions_that_go_or_come() {
 
     let hidden = run(&[]);
     assert!(!hidden.contains("gone data") && !hidden.contains("new data"));
-    assert!(hidden.contains("8 data regions changed, hidden. Use --show-data to list them."));
+    assert!(hidden.contains("7 data regions changed, hidden. Use --show-data to list them."));
 
     let shown = run(&["--show-data"]);
     let listed =
         ["changed data", ": gone data", ": new data"].map(|word| shown.matches(word).count());
-    assert_eq!(listed, [3, 3, 2], "changed, gone and new data regions");
+    assert_eq!(listed, [4, 2, 1], "changed, gone and new data regions");
 }

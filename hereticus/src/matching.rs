@@ -869,7 +869,32 @@ impl Cascade<'_> {
 
             let mut touched = BTreeSet::new();
             let mut swaps = Vec::new();
+            let mut moves = Vec::new();
             for (&(x, y), &for_swap) in &votes {
+                // One side unpaired: move the weak pairing of the other to
+                // it, and free its old partner. Similarity pairs a template
+                // instance with the wrong twin this way, as
+                // `CreateUnlinkedNode<XMLElement, 60>` in tinyxml2 at -O3.
+                let (paired, moved) = match (pair_of_before.get(&x), pair_of_after.get(&y)) {
+                    (Some(&first), None) if self.right_free[y] => {
+                        (first, vote(x, self.matched[first].after))
+                    }
+                    (None, Some(&second)) if self.left_free[x] => {
+                        (second, vote(self.matched[second].before, y))
+                    }
+                    _ => (usize::MAX, usize::MAX),
+                };
+                if paired != usize::MAX
+                    && !touched.contains(&paired)
+                    && for_swap >= FEWEST_VOTERS
+                    && for_swap > moved
+                    && is_weak(&self.matched[paired])
+                {
+                    touched.insert(paired);
+                    moves.push((paired, x, y));
+                    continue;
+                }
+
                 let (Some(&first), Some(&second)) = (pair_of_before.get(&x), pair_of_after.get(&y))
                 else {
                     continue;
@@ -885,8 +910,19 @@ impl Cascade<'_> {
                     swaps.push((first, second));
                 }
             }
-            if swaps.is_empty() {
+            if swaps.is_empty() && moves.is_empty() {
                 break;
+            }
+
+            for (index, x, y) in moves {
+                let (old_before, old_after) =
+                    (self.matched[index].before, self.matched[index].after);
+                self.left_free[old_before] = true;
+                self.right_free[old_after] = true;
+                self.left_free[x] = false;
+                self.right_free[y] = false;
+                let score = similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols);
+                self.matched[index] = self.assess(x, y, Confidence::SameCallers, score);
             }
 
             for (first, second) in swaps {
@@ -1085,40 +1121,60 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
     let after_arch = after.isa.arch();
     let (before_insns, _) = decode_all(before_arch, &before.function.code, before.function.address);
     let (after_insns, _) = decode_all(after_arch, &after.function.code, after.function.address);
-    if before_insns.len() != after_insns.len() {
-        return false;
-    }
     let before_kinds =
         before_arch.constant_kinds(&before.function.code, &before_insns, before.addresses);
     let after_kinds =
         after_arch.constant_kinds(&after.function.code, &after_insns, after.addresses);
 
-    before_insns.iter().zip(&after_insns).zip(before_kinds.iter().zip(&after_kinds)).all(
-        |((left, right), kinds)| {
-            // A stored address on both sides is data the linker chose, so it
-            // may hold anything and decode as anything.
-            if kinds == (&ConstantKind::StoredAddress, &ConstantKind::StoredAddress) {
-                return true;
-            }
-            // Compare the operation the way the normalizer does, so a condition
-            // code the compiler chose differently — `movwlt` against `movwlo` —
-            // stays the free choice it is rather than reading as an edit.
-            before_arch.normalize_operation(&left.mnemonic)
-                == after_arch.normalize_operation(&right.mnemonic)
-                && operands_are_interchangeable(
-                    before_arch,
-                    &left.operands,
-                    &right.operands,
-                    // A `$...` operand is a free choice only on an instruction
-                    // that truly branches. Both sides agree on the operation by
-                    // now, so either one answers.
-                    TargetMoves::from(
-                        transfers_control(left.kind) && transfers_control(right.kind),
-                    ),
-                    AddressMoves::from(kinds),
-                )
-        },
-    )
+    // Padding does nothing, and alignment puts it where it likes: GCC pads
+    // a pool of doubles to eight bytes, so one more `nop` came before it.
+    let work =
+        |arch: &dyn Arch, insns: &[Insn], kinds: &[ConstantKind]| -> Vec<(Insn, ConstantKind)> {
+            insns
+                .iter()
+                .zip(kinds)
+                .filter(|(insn, _)| !arch.is_padding(insn))
+                .map(|(insn, kind)| (insn.clone(), *kind))
+                .collect()
+        };
+    let before_work = work(before_arch, &before_insns, &before_kinds);
+    let after_work = work(after_arch, &after_insns, &after_kinds);
+    if before_work.len() != after_work.len() {
+        return false;
+    }
+
+    before_work.iter().zip(&after_work).all(|((left, left_kind), (right, right_kind))| {
+        let kinds = (left_kind, right_kind);
+        // A stored address on both sides is data the linker chose, so it may
+        // hold anything and decode as anything.
+        if kinds == (&ConstantKind::StoredAddress, &ConstantKind::StoredAddress) {
+            return true;
+        }
+        // Compare the operation the way the normalizer does, so a condition
+        // code the compiler chose differently — `movwlt` against `movwlo` —
+        // stays the free choice it is rather than reading as an edit.
+        // A load from a pool reads at a distance that says only where the
+        // pool sits, so what comes before the reference is all to compare.
+        let (left_operands, right_operands) = match (
+            before_arch.before_pc_reference(&left.operands),
+            after_arch.before_pc_reference(&right.operands),
+        ) {
+            (Some(left), Some(right)) => (left, right),
+            _ => (left.operands.as_str(), right.operands.as_str()),
+        };
+        before_arch.normalize_operation(&left.mnemonic)
+            == after_arch.normalize_operation(&right.mnemonic)
+            && operands_are_interchangeable(
+                before_arch,
+                left_operands,
+                right_operands,
+                // A `$...` operand is a free choice only on an instruction
+                // that truly branches. Both sides agree on the operation by
+                // now, so either one answers.
+                TargetMoves::from(transfers_control(left.kind) && transfers_control(right.kind)),
+                AddressMoves::from(kinds),
+            )
+    })
 }
 
 /// Whether a differing constant counts as a free choice.
