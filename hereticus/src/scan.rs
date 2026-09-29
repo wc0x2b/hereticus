@@ -576,11 +576,25 @@ fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
             .is_some_and(crate::raw::is_text)
     };
 
+    // A tail call jumps to a PLT stub that nothing may call, and a stub is
+    // plain to see: measured on zlib 1.2.12 built by GCC for ARM as a raw
+    // image, `crc32_combine_gen64@plt` was reached only by `b`, and joined the
+    // stub before it.
+    let is_stub = |target: u64| {
+        usize::try_from(target.wrapping_sub(base))
+            .ok()
+            .and_then(|offset| code.get(offset..))
+            .is_some_and(|stub| arch.stub_slot(stub, target).is_some())
+    };
+
     insns
         .iter()
         .filter(|insn| !pool.contains(&insn.address) && !is_text(insn))
         .filter_map(|insn| match insn.kind {
             InsnKind::Call { target } => target.map(|target| (insn.address, target)),
+            InsnKind::Jump { target: Some(target) } if is_stub(target) => {
+                Some((insn.address, target))
+            }
             _ => None,
         })
         .filter(|(address, target)| target != address)

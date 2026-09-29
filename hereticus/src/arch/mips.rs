@@ -497,6 +497,13 @@ impl Arch for Mips32 {
                     Some((index, through_slot(index).map(CallTarget::Slot)))
                 }
                 InsnKind::Call { target: None } => Some((index, None)),
+                // A tail call jumps through `t9` as a call does.
+                InsnKind::Jump { target: None } if insn.operands == CALLEE_ADDRESS => {
+                    Some((index, through_slot(index).map(CallTarget::Slot)))
+                }
+                InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
+                    Some((index, Some(CallTarget::Address(target))))
+                }
                 _ => None,
             })
             .collect()

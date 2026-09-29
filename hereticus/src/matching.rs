@@ -698,6 +698,9 @@ pub fn diff_reporting(
         cascade.match_by_name(progress);
     }
     cascade.match_twins_in_order();
+    // The stubs first too, so the similarity stage knows which import each
+    // call reaches.
+    cascade.align_stubs(before, after);
     // The close pairs first, so their callees tell the rest apart.
     let threshold = cascade.options.threshold;
     cascade.options.threshold = threshold.max(CLOSE_SIMILARITY);
@@ -706,9 +709,19 @@ pub fn diff_reporting(
     cascade.match_by_similarity(progress);
 
     cascade.align_stubs(before, after);
+    cascade.uncross_by_callees();
     cascade.pair_by_callers(before, after);
     cascade.compare_callees(before, after);
     cascade.finish(progress)
+}
+
+/// Which functions a question covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Only {
+    /// The functions still unpaired.
+    Free,
+    /// Every function.
+    Any,
 }
 
 /// Which binary of a comparison.
@@ -747,13 +760,22 @@ impl Cascade<'_> {
     /// A callee counts where the linker names it, or where it is a function
     /// already paired. Others say nothing yet.
     fn callee_keys(&self) -> (Vec<Vec<CalleeKey>>, Vec<Vec<CalleeKey>>) {
+        self.callee_keys_where(Only::Free)
+    }
+
+    /// [`Self::callee_keys`], for every function.
+    fn callee_keys_of_all(&self) -> (Vec<Vec<CalleeKey>>, Vec<Vec<CalleeKey>>) {
+        self.callee_keys_where(Only::Any)
+    }
+
+    fn callee_keys_where(&self, only: Only) -> (Vec<Vec<CalleeKey>>, Vec<Vec<CalleeKey>>) {
         let partner: HashMap<usize, usize> =
             self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
         let keys = |side: &[Prepared<'_>], free: &[bool], which: Side| -> Vec<Vec<CalleeKey>> {
             side.iter()
                 .enumerate()
                 .map(|(index, prepared)| {
-                    if !free[index] {
+                    if only == Only::Free && !free[index] {
                         return Vec::new();
                     }
                     let mut keys: Vec<CalleeKey> = prepared
@@ -901,12 +923,13 @@ impl Cascade<'_> {
         let is_stub_pair = |pair: &Match| {
             left.binary_search(&pair.before).is_ok() || right.binary_search(&pair.after).is_ok()
         };
-        self.matched.retain(|pair| !is_stub_pair(pair));
-        for &index in &left {
-            self.left_free[index] = true;
-        }
-        for &index in &right {
-            self.right_free[index] = true;
+        // A pair can hold a stub on one side only, so free both sides of it.
+        let (dropped, kept) =
+            core::mem::take(&mut self.matched).into_iter().partition(is_stub_pair);
+        self.matched = kept;
+        for pair in dropped {
+            self.left_free[pair.before] = true;
+            self.right_free[pair.after] = true;
         }
         for (x, y) in aligned.into_iter().rev() {
             if !self.left_free[x] || !self.right_free[y] {
@@ -977,7 +1000,9 @@ impl Cascade<'_> {
             let mut swaps = Vec::new();
             let mut moves = Vec::new();
             let mut joins = Vec::new();
-            let (mut joined_before, mut joined_after) = (BTreeSet::new(), BTreeSet::new());
+            // The free functions a join or a move takes this round, so that
+            // no two take the same one.
+            let (mut claimed_before, mut claimed_after) = (BTreeSet::new(), BTreeSet::new());
             for (&(x, y), &for_swap) in &votes {
                 // Both unpaired: a caller whose code agrees says they are
                 // one function, which the fix rewrote past the threshold.
@@ -991,9 +1016,11 @@ impl Cascade<'_> {
                     let score =
                         similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols);
                     if score >= LOWEST_JOINED_SIMILARITY
-                        && joined_before.insert(x)
-                        && joined_after.insert(y)
+                        && !claimed_before.contains(&x)
+                        && !claimed_after.contains(&y)
                     {
+                        claimed_before.insert(x);
+                        claimed_after.insert(y);
                         joins.push((x, y, score));
                     }
                     continue;
@@ -1004,10 +1031,10 @@ impl Cascade<'_> {
                 // instance with the wrong twin this way, as
                 // `CreateUnlinkedNode<XMLElement, 60>` in tinyxml2 at -O3.
                 let (paired, moved) = match (pair_of_before.get(&x), pair_of_after.get(&y)) {
-                    (Some(&first), None) if self.right_free[y] => {
+                    (Some(&first), None) if self.right_free[y] && !claimed_after.contains(&y) => {
                         (first, vote(x, self.matched[first].after))
                     }
-                    (None, Some(&second)) if self.left_free[x] => {
+                    (None, Some(&second)) if self.left_free[x] && !claimed_before.contains(&x) => {
                         (second, vote(self.matched[second].before, y))
                     }
                     _ => (usize::MAX, usize::MAX),
@@ -1020,6 +1047,8 @@ impl Cascade<'_> {
                     && is_weak(&self.matched[paired])
                 {
                     touched.insert(paired);
+                    claimed_before.insert(x);
+                    claimed_after.insert(y);
                     moves.push((paired, x, y));
                     continue;
                 }
@@ -1842,6 +1871,95 @@ impl Cascade<'_> {
     }
 }
 
+impl Cascade<'_> {
+    /// Swap two pairings by similarity where each function calls exactly
+    /// what the other's partner calls, and the code cannot choose. Where the
+    /// function that calls the same is unpaired, the pairing moves to it.
+    ///
+    /// A wrapper that only calls another function has the shape of every
+    /// such wrapper. The similarity stage ranks candidates by their callees,
+    /// but a callee pairs in that same stage, often after its caller. Once
+    /// every stage has run, the callees are known. Measured on zlib 1.2.12
+    /// built by GCC for MIPS as a raw image, `gzgetc_` and `crc32_combine`,
+    /// one tail call each, had paired crossed.
+    fn uncross_by_callees(&mut self) {
+        /// A swap moves the callees of its callers, so a chain of wrappers
+        /// settles in a few rounds.
+        const MOST_ROUNDS: usize = 4;
+
+        for _ in 0..MOST_ROUNDS {
+            let (left_calls, right_calls) = self.callee_keys_of_all();
+            let mut by_calls: HashMap<&[CalleeKey], Vec<usize>> = HashMap::new();
+            for (index, keys) in right_calls.iter().enumerate() {
+                if !keys.is_empty() {
+                    by_calls.entry(keys.as_slice()).or_default().push(index);
+                }
+            }
+            let pair_of_after: HashMap<usize, usize> =
+                self.matched.iter().enumerate().map(|(index, pair)| (pair.after, index)).collect();
+
+            let mut touched = BTreeSet::new();
+            let mut swaps = Vec::new();
+            let mut moves = Vec::new();
+            let mut moved_to = BTreeSet::new();
+            for (first, pair) in self.matched.iter().enumerate() {
+                let (x, y_other) = (pair.before, pair.after);
+                let wanted = left_calls[x].as_slice();
+                if pair.confidence != Confidence::Similar
+                    || wanted.is_empty()
+                    || wanted == right_calls[y_other].as_slice()
+                    || touched.contains(&first)
+                {
+                    continue;
+                }
+                // A free function that calls what `x` calls takes its place.
+                let free = by_calls.get(wanted).into_iter().flatten().copied().find(|&y| {
+                    self.right_free[y] && self.is_near_tie(&[&self.matched[first]], &[(x, y)])
+                });
+                if let Some(y) = free.filter(|y| moved_to.insert(*y)) {
+                    touched.insert(first);
+                    moves.push((first, y));
+                    continue;
+                }
+                let crossed = by_calls.get(wanted).into_iter().flatten().find_map(|&y| {
+                    let second = *pair_of_after.get(&y)?;
+                    let x_other = self.matched[second].before;
+                    let fits = left_calls[x_other] == right_calls[y_other]
+                        && !touched.contains(&second)
+                        && self.is_near_tie(
+                            &[&self.matched[first], &self.matched[second]],
+                            &[(x, y), (x_other, y_other)],
+                        );
+                    fits.then_some(second)
+                });
+                if let Some(second) = crossed {
+                    touched.extend([first, second]);
+                    swaps.push((first, second));
+                }
+            }
+            if swaps.is_empty() && moves.is_empty() {
+                break;
+            }
+            for (index, y) in moves {
+                let (x, old) = (self.matched[index].before, self.matched[index].after);
+                self.right_free[old] = true;
+                self.right_free[y] = false;
+                let score = similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols);
+                self.matched[index] = self.assess(x, y, Confidence::Similar, score);
+            }
+            for (first, second) in swaps {
+                let (x, y_other) = (self.matched[first].before, self.matched[first].after);
+                let (x_other, y) = (self.matched[second].before, self.matched[second].after);
+                for (index, (left, right)) in [(first, (x, y)), (second, (x_other, y_other))] {
+                    let score =
+                        similarity_of_symbols(&self.left[left].symbols, &self.right[right].symbols);
+                    self.matched[index] = self.assess(left, right, Confidence::Similar, score);
+                }
+            }
+        }
+    }
+}
+
 /// How much the callees of two functions weigh in the order the similarity
 /// stage takes pairs in, against their code.
 ///
@@ -1862,7 +1980,7 @@ const CALLEE_WEIGHT: f64 = 0.1;
 const CLOSE_SIMILARITY: f64 = 0.85;
 
 /// A callee as both sides can name it.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum CalleeKey {
     /// A symbol the linker or the function names.
     Named(String),
