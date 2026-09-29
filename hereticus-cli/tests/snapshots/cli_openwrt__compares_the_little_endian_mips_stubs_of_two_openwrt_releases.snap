@@ -25,7 +25,7 @@ exit_code: 0
 │ sub_80001920 │ changed values │  1.00 │ -     │ -       │ identical shape │
 ╰──────────────┴────────────────┴───────┴───────┴─────────┴─────────────────╯
 
-7 matched (5 unchanged, 2 changed), 0 gone, 0 new
+8 matched (6 unchanged, 2 changed), 0 gone, 0 new
 
 ----- stderr -----
 hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate

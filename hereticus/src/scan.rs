@@ -651,10 +651,11 @@ fn starts_after_returns_in(
         InsnKind::Jump { target: Some(target) } => Some((insn.address, target, Transfer::Always)),
         _ => None,
     });
-    let through_tables =
-        arch.jump_tables(memory, base..end, &insns).into_iter().flat_map(|table| {
-            table.targets.into_iter().map(move |target| (table.jump, target, Transfer::Conditional))
-        });
+    let tables = arch.jump_tables(memory, base..end, &insns);
+    let table_jumps: BTreeSet<u64> = tables.iter().map(|table| table.jump).collect();
+    let through_tables = tables.into_iter().flat_map(|table| {
+        table.targets.into_iter().map(move |target| (table.jump, target, Transfer::Conditional))
+    });
     let mut all_branches: Vec<(u64, u64, Transfer)> = direct.chain(through_tables).collect();
     all_branches.sort_unstable_by_key(|&(from, to, _)| (from, to));
 
@@ -772,7 +773,34 @@ fn starts_after_returns_in(
             continue;
         }
         let since = previous_return;
-        if insn.kind == InsnKind::Return {
+        let function_start = anchors.range(..=insn.address).next_back().copied();
+        // A tail call ends a function as a return does: a jump to the start
+        // of another function, or through a register the ABI calls through.
+        // Measured on the releases built for the tests, where
+        // `XMLText::Accept` for ARM ends with `bx r3` and `XMLUtil::ToStr`
+        // with `b` to `snprintf`, this found 125 more function starts of
+        // 27500 and invented 16.
+        let ends = match insn.kind {
+            InsnKind::Return => true,
+            InsnKind::Jump { target: None } => {
+                arch.is_tail_call(insn) && !table_jumps.contains(&insn.address)
+            }
+            // A jump out of the region leaves too, where it lands in what the
+            // binary loads, as a jump to a PLT stub does. Data and bytes read
+            // in the wrong order decode as jumps that land anywhere, mostly
+            // where nothing is loaded.
+            InsnKind::Jump { target: Some(target) } if target < base || target >= end => {
+                memory.bytes(target, arch.instruction_width()).is_some()
+            }
+            // Inside it, only a jump to the start of another function is a
+            // tail call. The kernel's exception fixups jump back into the
+            // middle of the function they serve.
+            InsnKind::Jump { target: Some(target) } => {
+                anchors.contains(&target) && Some(target) != function_start
+            }
+            _ => false,
+        };
+        if ends {
             previous_return = Some(insn.address);
         }
 
@@ -786,7 +814,6 @@ fn starts_after_returns_in(
         // start before here, or after the last return where no sure start is
         // known. A function can return more than once, so the last return
         // alone would miss a branch from before an early one.
-        let function_start = anchors.range(..=insn.address).next_back().copied();
         let reached_by = |address: u64, accepted: &[Transfer]| {
             sources_of.get(&address).is_some_and(|sources| {
                 sources.iter().any(|&(from, transfer)| {
@@ -868,7 +895,7 @@ fn starts_after_returns_in(
         // function. A jump without a prologue after it is a tail call or a
         // loop, which stays inside.
         let opens = may_open(following.address);
-        if insn.kind == InsnKind::Return && !is_internal(insn.address) && opens {
+        if ends && !is_internal(insn.address) && opens {
             out.push(following.address);
         }
     }
@@ -1292,6 +1319,45 @@ mod tests {
         // bx lr, nop, add
         let code = [0x1e, 0xff, 0x2f, 0xe1, 0x00, 0xf0, 0x20, 0xe3, 0x00, 0x00, 0x81, 0xe0];
         assert_eq!(starts_after_returns(&Arm32, &code, 0), vec![0x8], "the nop is padding");
+    }
+
+    /// `bx` through a register other than `lr` is a tail call, so a leaf
+    /// with no prologue after it starts a function.
+    #[test]
+    fn an_indirect_tail_call_ends_a_function() {
+        let code = arm_code(&[
+            0xe1a0_3001, // 0x0 mov r3, r1
+            0xe12f_ff13, // 0x4 bx r3
+            0xe3a0_0001, // 0x8 mov r0, 1
+            0xe12f_ff1e, // 0xc bx lr
+        ]);
+        assert_eq!(starts_after_returns(&Arm32, &code, 0), vec![0x8]);
+    }
+
+    /// A jump to the start of another function is a tail call. A jump into
+    /// the middle of one is not, as an exception fixup of the kernel jumps
+    /// back into the function it serves.
+    #[test]
+    fn only_a_jump_to_a_start_is_a_tail_call() {
+        let with_jump = |jump: u32| {
+            arm_code(&[
+                0xe92d_4010, // 0x00 push {r4, lr}
+                0xe3a0_0001, // 0x04 mov r0, 1
+                0xe8bd_8010, // 0x08 pop {r4, pc}
+                0xe3a0_0003, // 0x0c mov r0, 3
+                0xe12f_ff1e, // 0x10 bx lr
+                0xe92d_4010, // 0x14 push {r4, lr}
+                0xe8bd_8010, // 0x18 pop {r4, pc}
+                0xe3e0_000d, // 0x1c mvn r0, 13
+                jump,        // 0x20 b
+                0xe3a0_0002, // 0x24 mov r0, 2
+                0xe12f_ff1e, // 0x28 bx lr
+            ])
+        };
+        let to_a_start = starts_after_returns(&Arm32, &with_jump(0xeaff_fff6), 0); // b 0x0
+        assert!(to_a_start.contains(&0x24), "{to_a_start:x?}");
+        let to_a_middle = starts_after_returns(&Arm32, &with_jump(0xeaff_fff7), 0); // b 0x4
+        assert!(!to_a_middle.contains(&0x24), "{to_a_middle:x?}");
     }
 
     /// Little-endian MIPS code from words.

@@ -13,7 +13,7 @@
 //! function changed: two matched functions can still differ, and
 //! [`Match::changed`] reports that.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use rayon::prelude::*;
 
@@ -741,6 +741,9 @@ pub fn diff_reporting(
     // The stubs first too, so the similarity stage knows which import each
     // call reaches.
     cascade.align_stubs(before, after);
+    // Twins that differ in a constant, before similarity pairs them in the
+    // order it finds them, and again once their callees are known.
+    cascade.pair_leftover_twins();
     // The close pairs first, so their callees tell the rest apart.
     let threshold = cascade.options.threshold;
     cascade.options.threshold = threshold.max(CLOSE_SIMILARITY);
@@ -751,6 +754,7 @@ pub fn diff_reporting(
     cascade.align_stubs(before, after);
     cascade.uncross_by_callees();
     cascade.pair_by_callers(before, after);
+    cascade.pair_leftover_twins();
     cascade.compare_callees(before, after);
     cascade.compare_texts();
     cascade.finish(progress)
@@ -1757,6 +1761,16 @@ impl Cascade<'_> {
     /// normalizing removes, so what remains agrees exactly.
     fn match_identical_shape(&mut self, progress: &dyn Progress) {
         progress.start(Phase::IdenticalShape, self.left.len());
+        // Where names are known, a function named on both sides is its own
+        // partner's, so no other function takes it by shape. Measured on
+        // zlib for ARM, `crc32_combine`, one tail jump, took `gzseek`, which
+        // is one too.
+        let left_names: HashSet<&str> = match self.options.use_names {
+            UseNames::Yes => {
+                self.left.iter().map(|prepared| prepared.function.name.as_str()).collect()
+            }
+            UseNames::No => HashSet::new(),
+        };
         for index in 0..self.left.len() {
             progress.advance(1);
             // An empty body carries no evidence, so pairing on it would be a
@@ -1771,6 +1785,11 @@ impl Cascade<'_> {
                         && self.left[index].ordered == self.right[*other].ordered
                 })
                 .collect();
+            let name = self.left[index].function.name.as_str();
+            candidates.retain(|&other| {
+                let other_name = self.right[other].function.name.as_str();
+                other_name == name || other_name.is_empty() || !left_names.contains(other_name)
+            });
             // Where names are known, the twin of the same name is the one.
             // Measured on expat for ARM, `big2_charRefNumber` otherwise
             // paired with `little2_charRefNumber` at 1.00.
@@ -1974,6 +1993,59 @@ impl Cascade<'_> {
 }
 
 impl Cascade<'_> {
+    /// Pair the twins still free where their constants and what they reach
+    /// tell them apart.
+    ///
+    /// A wrapper that passes a constant on to another function, as
+    /// `j target` with `addiu a1, zero, 0x71` in its delay slot, has the
+    /// shape of every such wrapper, and the stages before cannot choose. The
+    /// constant can, and so can the callee once it has paired: a free
+    /// function pairs with the one free twin that agrees on both, where that
+    /// twin agrees with no other. Measured on the OpenWrt MIPS kernels, once
+    /// tail calls end functions, hundreds of such wrappers were left free,
+    /// because each keeps only [`CANDIDATES_PER_FUNCTION`] candidates by
+    /// similarity, and those went to its twins.
+    fn pair_leftover_twins(&mut self) {
+        let (left_keys, right_keys) = self.reference_keys();
+        let group = |side: &[Prepared<'_>], free: &[bool]| {
+            let mut groups: HashMap<Vec<Symbol>, Vec<usize>> = HashMap::new();
+            for (index, prepared) in side.iter().enumerate() {
+                if free[index] && !prepared.is_empty() {
+                    groups.entry(prepared.ordered.clone()).or_default().push(index);
+                }
+            }
+            groups
+        };
+        let left_groups = group(&self.left, &self.left_free);
+        let right_groups = group(&self.right, &self.right_free);
+
+        let mut pairs = Vec::new();
+        for (shape, lefts) in &left_groups {
+            let Some(rights) = right_groups.get(shape) else { continue };
+            let left_bodies: Vec<Vec<NormInsn>> =
+                lefts.iter().map(|&index| self.left[index].body()).collect();
+            let right_bodies: Vec<Vec<NormInsn>> =
+                rights.iter().map(|&index| self.right[index].body()).collect();
+            let agree = |l: usize, r: usize| {
+                left_keys[lefts[l]] == right_keys[rights[r]]
+                    && same_detail(&left_bodies[l], &right_bodies[r])
+            };
+            for l in 0..lefts.len() {
+                let mut agreeing = (0..rights.len()).filter(|&r| agree(l, r));
+                let (Some(r), None) = (agreeing.next(), agreeing.next()) else { continue };
+                if (0..lefts.len()).filter(|&other| agree(other, r)).count() == 1 {
+                    pairs.push((lefts[l], rights[r]));
+                }
+            }
+        }
+        // Pairing in a fixed order keeps the result independent of the order
+        // the maps yield their groups in.
+        pairs.sort_unstable();
+        for (before, after) in pairs {
+            self.take_pair(before, after, Confidence::IdenticalShape, 1.0);
+        }
+    }
+
     /// Swap two pairings by similarity where each function calls and points
     /// at exactly what the other's partner does, and the code cannot choose. Where the
     /// function that calls the same is unpaired, the pairing moves to it.
@@ -3161,6 +3233,32 @@ mod tests {
         assert_eq!(by_shape, 0);
     }
 
+    /// Twins that differ only in a constant pair by it, even where there
+    /// are more twins than similarity keeps candidates for, and one side has
+    /// one more.
+    #[test]
+    fn twins_pair_by_their_constants() {
+        let returns = |value: u32| -> Vec<u8> {
+            [0xe3a0_0000 | value, 0xe12f_ff1e].iter().flat_map(|word| word.to_le_bytes()).collect()
+        };
+        let before: Vec<Vec<u8>> = (1..=12).map(returns).collect();
+        let after: Vec<Vec<u8>> = (1..=13).rev().map(returns).collect();
+        let unnamed_before: Vec<(&str, &[u8])> =
+            before.iter().map(|code| ("", code.as_slice())).collect();
+        let unnamed_after: Vec<(&str, &[u8])> =
+            after.iter().map(|code| ("", code.as_slice())).collect();
+        let diff = diff_with(
+            &binary_of(&unnamed_before),
+            &binary_of(&unnamed_after),
+            Options { use_names: UseNames::No, ..Default::default() },
+        );
+        for index in 0..12 {
+            let partner = diff.matched.iter().find(|pair| pair.before == index).map(|p| p.after);
+            assert_eq!(partner, Some(12 - index), "the function that returns {}", index + 1);
+        }
+        assert_eq!(diff.added, [0], "the one that returns 13");
+    }
+
     #[test]
     fn texts_differ_by_what_they_do_not_share() {
         assert_eq!(texts_that_differ(&[], &[]), 0);
@@ -3185,7 +3283,7 @@ mod tests {
         crate::obj::Binary {
             isa: Isa::Arm32,
             found_by: crate::obj::FoundBy::Symbols,
-            addresses: crate::address::AddressSpace::from_ranges([0x8000..0x9100]),
+            addresses: crate::address::AddressSpace::of_raw_image(0x8000, 0x880),
             links: crate::callee::Links::of_parts(
                 vec![(0x8000, code.clone()), (0x9000, data)],
                 BTreeMap::new(),
@@ -3219,9 +3317,10 @@ mod tests {
         let key = |name: &str| ReferenceKey::Named(name.to_string());
         let (exp, log) = (key("exp"), key("log10"));
         assert_eq!(reference_agreement(&[], &[]), 0.0, "nothing to say");
-        assert_eq!(reference_agreement(&[exp.clone()], &[exp.clone()]), 1.0);
-        assert_eq!(reference_agreement(&[exp.clone()], &[log.clone()]), -1.0);
-        assert_eq!(reference_agreement(&[exp.clone()], &[]), -1.0, "one calls, one does not");
+        let (only_exp, only_log) = (core::slice::from_ref(&exp), core::slice::from_ref(&log));
+        assert_eq!(reference_agreement(only_exp, only_exp), 1.0);
+        assert_eq!(reference_agreement(only_exp, only_log), -1.0);
+        assert_eq!(reference_agreement(only_exp, &[]), -1.0, "one calls, one does not");
         let (mut both, one) = (vec![exp.clone(), log], vec![exp]);
         both.sort();
         assert_eq!(reference_agreement(&both, &one), 0.0, "half shared");

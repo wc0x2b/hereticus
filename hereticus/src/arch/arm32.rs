@@ -296,6 +296,12 @@ impl Arch for Arm32 {
         track_pool_words(code, body, space).addresses
     }
 
+    /// `bx` through a register other than `lr`. A `switch` jumps with `add pc`
+    /// or `ldr pc` instead.
+    fn is_tail_call(&self, insn: &Insn) -> bool {
+        insn.mnemonic == "bx" && insn.kind == (InsnKind::Jump { target: None })
+    }
+
     /// A variadic function reserves room for its register arguments before it
     /// saves anything, so `sub sp, sp, #N` opens it one word before the
     /// `push`. Measured on Lua built as an ARM shared library: without this,
@@ -1086,6 +1092,15 @@ mod tests {
             InsnKind::Normal,
             "push lr and pc"
         );
+    }
+
+    /// `bx` through a register other than `lr` is a tail call. A write of the
+    /// pc through a table is not.
+    #[test]
+    fn only_bx_is_a_tail_call() {
+        assert!(Arm32.is_tail_call(&decode_one(0xe12f_ff13_u32.to_le_bytes())), "bx r3");
+        assert!(!Arm32.is_tail_call(&decode_one(0xe12f_ff1e_u32.to_le_bytes())), "bx lr");
+        assert!(!Arm32.is_tail_call(&decode_one(0xe08f_f100_u32.to_le_bytes())), "add pc");
     }
 
     /// `add pc, pc, r0, lsl 2` and `ldr pc, [r1, r0, lsl 2]` jump through a
