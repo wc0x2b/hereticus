@@ -590,9 +590,12 @@ fn read_offset_table(
     let offset_register = jump.operands.strip_prefix("pc, pc, ")?.strip_suffix(", lsl 2")?;
 
     let window = || earlier.iter().rev().take(LOOK_BACK);
-    let last_write = |register: &str| {
-        window().find(|insn| insn.operands.split(',').next().map(str::trim) == Some(register))
+    // A compare names `r0` first but writes nothing, so it is no write.
+    let writes = |insn: &Insn, register: &str| {
+        writes_first_operand(&Arm32.normalize_operation(&insn.mnemonic))
+            && insn.operands.split(',').next().map(str::trim) == Some(register)
     };
+    let last_write = |register: &str| window().find(|insn| writes(insn, register));
 
     // `ldrb rX, [rB, rI]`: one entry of the table.
     let load = last_write(offset_register)?;
@@ -615,7 +618,7 @@ fn read_offset_table(
         .rev()
         .skip_while(|insn| insn.address >= load.address)
         .take(TABLE_LOOK_BACK)
-        .find(|insn| insn.operands.split(',').next().map(str::trim) == Some(table_register))?;
+        .find(|insn| writes(insn, table_register))?;
     let expected = format!("{table_register}, pc, {table_register}");
     if Arm32.normalize_operation(&add.mnemonic) != "add" || add.operands != expected {
         return None;
@@ -625,7 +628,7 @@ fn read_offset_table(
         .rev()
         .skip_while(|insn| insn.address >= add.address)
         .take(LOOK_BACK)
-        .find(|insn| insn.operands.split(',').next().map(str::trim) == Some(table_register))?;
+        .find(|insn| writes(insn, table_register))?;
     let (_, pool_reference) = pool_load.operands.split_once(',')?;
     let ("pc", Offset::Immediate(pool_offset)) = parse_reference(pool_reference.trim())? else {
         return None;
@@ -1369,6 +1372,37 @@ mod tests {
                 jump: 0x1064,
                 words: 0x2000..0x2003,
                 targets: vec![0x106c, 0x1070, 0x1074]
+            }]
+        );
+    }
+
+    /// A compare prints `r0` first but writes nothing, so it does not hide
+    /// where a table in `r0` was made.
+    #[test]
+    fn a_compare_does_not_hide_a_table_in_r0() {
+        let words = [
+            0xe59f_0020_u32, // 0x1000 ldr r0, [pc, 0x20]: the word at 0x1028
+            0xe08f_0000,     // 0x1004 add r0, pc, r0: the table at 0x2000
+            0xe351_0002,     // 0x1008 cmp r1, 2
+            0x8a00_0004,     // 0x100c bhi 0x1024
+            0xe7d0_1001,     // 0x1010 ldrb r1, [r0, r1]
+            0xe08f_f101,     // 0x1014 add pc, pc, r1, lsl 2
+            0xe1a0_0000,     // 0x1018 nop
+            0xe12f_ff1e,     // 0x101c case 0: bx lr
+            0xe12f_ff1e,     // 0x1020 case 1: bx lr
+            0xe12f_ff1e,     // 0x1024 case 2: bx lr
+            0x0000_0ff4,     // 0x1028 the distance from 0x100c to the table
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0x1000);
+        let table = [0_u8, 1, 2];
+        let regions = [(0x1000, code.as_slice()), (0x2000, table.as_slice())];
+        assert_eq!(
+            Arm32.jump_tables(&Memory::new(&regions), 0x1000..0x102c, &insns),
+            [JumpTable {
+                jump: 0x1014,
+                words: 0x2000..0x2003,
+                targets: vec![0x101c, 0x1020, 0x1024]
             }]
         );
     }
