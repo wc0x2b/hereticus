@@ -1755,10 +1755,36 @@ impl Cascade<'_> {
                         && self.left[index].ordered == self.right[*other].ordered
                 })
                 .collect();
-            // Twins that refer to different things are told apart.
+            // Where names are known, the twin of the same name is the one.
+            // Measured on expat for ARM, `big2_charRefNumber` otherwise
+            // paired with `little2_charRefNumber` at 1.00.
+            if candidates.len() > 1 && self.options.use_names == UseNames::Yes {
+                let name = &self.left[index].function.name;
+                let named: Vec<usize> = candidates
+                    .iter()
+                    .copied()
+                    .filter(|&other| !name.is_empty() && self.right[other].function.name == *name)
+                    .collect();
+                if named.len() == 1 {
+                    candidates = named;
+                }
+            }
+            // Twins that refer to different things are told apart, but only
+            // where no twin on this side refers to the same. Otherwise what
+            // they refer to cannot tell them apart, and a text read by chance
+            // on the other side would decide: expat for ARM points into a
+            // table of short strings at an offset that changes each release.
             if candidates.len() > 1 {
                 let referents = self.left[index].referents();
-                candidates.retain(|&other| self.right[other].referents() == referents);
+                let shared = (0..self.left.len()).any(|other| {
+                    other != index
+                        && self.left_free[other]
+                        && self.left[other].ordered == self.left[index].ordered
+                        && self.left[other].referents() == referents
+                });
+                if !shared {
+                    candidates.retain(|&other| self.right[other].referents() == referents);
+                }
             }
 
             if let [only] = candidates[..] {
@@ -3039,6 +3065,40 @@ mod tests {
         assert_eq!(partner(0), Some(1), "exp");
         assert_eq!(partner(1), Some(0), "log10");
         assert_eq!(diff.changed().count(), 0);
+    }
+
+    /// Where names are known, twins of one shape pair by name, however
+    /// the other side orders them.
+    #[test]
+    fn twins_pair_by_name_where_names_are_known() {
+        let returns = |value: u32| -> Vec<u8> {
+            [0xe3a0_0000 | value, 0xe12f_ff1e].iter().flat_map(|word| word.to_le_bytes()).collect()
+        };
+        let before = binary_of(&[("first", &returns(1)), ("second", &returns(2))]);
+        let after = binary_of(&[("second", &returns(4)), ("first", &returns(3))]);
+        let diff = diff_with(&before, &after, Options::default());
+        let partner = |index: usize| {
+            diff.matched.iter().find(|pair| pair.before == index).map(|pair| pair.after)
+        };
+        assert_eq!(partner(0), Some(1), "first");
+        assert_eq!(partner(1), Some(0), "second");
+    }
+
+    /// Twins that call the same import cannot be told apart by it, so the
+    /// shape stage does not pair one of them with the only twin on the other
+    /// side that calls it.
+    #[test]
+    fn a_callee_twins_share_does_not_pair_them() {
+        let before = twins_calling(["exp", "exp"]);
+        let after = twins_calling(["log10", "exp"]);
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let by_shape = diff
+            .matched
+            .iter()
+            .filter(|pair| pair.before < 2 && pair.confidence == Confidence::IdenticalShape)
+            .count();
+        assert_eq!(by_shape, 0);
     }
 
     #[test]
