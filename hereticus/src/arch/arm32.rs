@@ -576,6 +576,10 @@ fn read_offset_table(
     jump: &Insn,
 ) -> Option<JumpTable> {
     const LOOK_BACK: usize = 16;
+    /// How far back the table's address may be made. A `switch` in a loop
+    /// has it made once, before the loop: Lua's `sweeplist` for ARM makes it
+    /// 24 instructions before the jump.
+    const TABLE_LOOK_BACK: usize = 128;
     const PC_AHEAD: u64 = 8;
 
     let is_jump =
@@ -604,7 +608,14 @@ fn read_offset_table(
     };
 
     // The table's address: `ldr rB, [pc, imm]` then `add rB, pc, rB`.
-    let add = last_write(table_register)?;
+    // It is made before the load, which can write the same register, as
+    // `ldrb lr, [lr, r1]` in Lua's `intarith` for ARM does.
+    let add = earlier
+        .iter()
+        .rev()
+        .skip_while(|insn| insn.address >= load.address)
+        .take(TABLE_LOOK_BACK)
+        .find(|insn| insn.operands.split(',').next().map(str::trim) == Some(table_register))?;
     let expected = format!("{table_register}, pc, {table_register}");
     if Arm32.normalize_operation(&add.mnemonic) != "add" || add.operands != expected {
         return None;
@@ -1325,6 +1336,41 @@ mod tests {
         let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0x8000);
         let space = AddressSpace::of_raw_image(0x8000, 0x100);
         assert!(Arm32.data_addresses(&code, &insns, &space, &Memory::new(&[])).is_empty());
+    }
+
+    /// GCC for PIC reads a byte table in `.rodata` and adds it to `pc`. The
+    /// table's address can be made long before the jump, before a loop, and
+    /// the load can write the register that held it.
+    #[test]
+    fn reads_a_byte_table_whose_address_was_made_long_before() {
+        let mut words = vec![
+            0xe59f_e070_u32, // 0x1000 ldr lr, [pc, 0x70]: the word at 0x1078
+            0xe08f_e00e,     // 0x1004 add lr, pc, lr: the table at 0x2000
+        ];
+        words.extend([0xe1a0_0000; 20]); // 0x1008 mov r0, r0, twenty times
+        words.extend([
+            0xe351_0002, // 0x1058 cmp r1, 2
+            0x8a00_0003, // 0x105c bhi 0x1070
+            0xe7de_e001, // 0x1060 ldrb lr, [lr, r1]
+            0xe08f_f10e, // 0x1064 add pc, pc, lr, lsl 2
+            0xe1a0_0000, // 0x1068 nop
+            0xe12f_ff1e, // 0x106c case 0: bx lr
+            0xe12f_ff1e, // 0x1070 case 1: bx lr
+            0xe12f_ff1e, // 0x1074 case 2: bx lr
+            0x0000_0ff4, // 0x1078 the distance from 0x100c to the table
+        ]);
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0x1000);
+        let table = [0_u8, 1, 2];
+        let regions = [(0x1000, code.as_slice()), (0x2000, table.as_slice())];
+        assert_eq!(
+            Arm32.jump_tables(&Memory::new(&regions), 0x1000..0x107c, &insns),
+            [JumpTable {
+                jump: 0x1064,
+                words: 0x2000..0x2003,
+                targets: vec![0x106c, 0x1070, 0x1074]
+            }]
+        );
     }
 
     /// Code runs always; text and tables do not.

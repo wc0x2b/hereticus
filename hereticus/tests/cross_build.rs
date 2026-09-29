@@ -124,7 +124,7 @@ fn tally_all(first: &str, second: &str) -> Tally {
 }
 
 #[rstest]
-#[case::o1_o2("O1", "O2", Tally { right: 2563, wrong: 58, gone: 233, new: 184 })]
+#[case::o1_o2("O1", "O2", Tally { right: 2563, wrong: 58, gone: 231, new: 184 })]
 #[case::o2_o3("O2", "O3", Tally { right: 2663, wrong: 23, gone: 119, new: 107 })]
 #[case::o2_os("O2", "Os", Tally { right: 1823, wrong: 154, gone: 828, new: 1219 })]
 #[case::o3_os("O3", "Os", Tally { right: 1708, wrong: 154, gone: 932, new: 1335 })]
