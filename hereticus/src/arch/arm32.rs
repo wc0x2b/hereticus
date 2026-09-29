@@ -280,110 +280,19 @@ impl Arch for Arm32 {
         body: &[Insn],
         space: &AddressSpace,
     ) -> Vec<ConstantKind> {
-        /// `pc` reads two instructions ahead of the one that uses it.
-        const PC_AHEAD: u64 = 8;
+        track_pool_words(code, body, space).kinds
+    }
 
-        let mut kinds = vec![ConstantKind::Value; body.len()];
-        let Some(start) = body.first().map(|insn| insn.address) else { return kinds };
-
-        // Registers holding a pool word: where the word sits, and its value.
-        let mut literal: Vec<(&str, u64, u32)> = Vec::new();
-        // Registers holding an address built from `pc` and a pool word.
-        let mut relative: Vec<(&str, u64)> = Vec::new();
-
-        let word_at = |pool: u64| -> Option<u32> {
-            let offset = usize::try_from(pool.checked_sub(start)?).ok()?;
-            let bytes = code.get(offset..offset.checked_add(INSN_WIDTH)?)?;
-            Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        };
-
-        for insn in body {
-            let operation = self.normalize_operation(&insn.mnemonic);
-            let Some((destination, rest)) = insn.operands.split_once(',') else { continue };
-            let (destination, rest) = (destination.trim(), rest.trim());
-            let pc = insn.address.wrapping_add(PC_AHEAD);
-            let literal_of = |register: &str| {
-                literal
-                    .iter()
-                    .find(|(held, ..)| *held == register)
-                    .map(|&(_, pool, value)| (pool, value))
-            };
-            let base_of = |register: &str| match register {
-                "pc" => Some(pc),
-                _ => relative.iter().find(|(held, _)| *held == register).map(|&(_, at)| at),
-            };
-            // The address a base and a pool word form, when it lies in the
-            // image, marks the word as a stored address.
-            let mut formed = |base: u64, (pool, value): (u64, u32)| {
-                let address = base.wrapping_add(i64::from(value as i32) as u64);
-                if space.contains_formed(address)
-                    && let Ok(index) = body.binary_search_by_key(&pool, |insn| insn.address)
-                {
-                    kinds[index] = ConstantKind::StoredAddress;
-                }
-                address
-            };
-
-            match (operation.as_str(), parse_reference(rest), parse_three(rest)) {
-                // `ldr rX, [pc, imm]`: load a pool word.
-                ("ldr", Some(("pc", Offset::Immediate(offset))), _) => {
-                    let pool = pc.wrapping_add(offset as u64);
-                    forget(&mut literal, &mut relative, destination);
-                    if let Some(value) = word_at(pool) {
-                        literal.push((destination, pool, value));
-                    }
-                    continue;
-                }
-                // `mov rY, rX`: a copy holds what its source holds. GCC
-                // copies the address of the global offset table so before it
-                // reads a slot through it.
-                ("mov", _, _) if !rest.contains(',') => {
-                    let copied_address = base_of(rest).filter(|_| rest != "pc");
-                    let copied_word = literal_of(rest);
-                    forget(&mut literal, &mut relative, destination);
-                    if let Some(address) = copied_address {
-                        relative.push((destination, address));
-                    }
-                    if let Some((pool, value)) = copied_word {
-                        literal.push((destination, pool, value));
-                    }
-                    continue;
-                }
-                // `ldr rY, [base, rX]`: read at a distance from a base.
-                ("ldr", Some((base, Offset::Register(index))), _) => {
-                    if let (Some(base), Some(word)) = (base_of(base), literal_of(index)) {
-                        formed(base, word);
-                    }
-                }
-                // `add rY, base, rX`, either order: build an address.
-                ("add", _, Some((left, right))) => {
-                    let joined = match (
-                        base_of(left),
-                        literal_of(right),
-                        base_of(right),
-                        literal_of(left),
-                    ) {
-                        (Some(base), Some(word), ..) | (.., Some(base), Some(word)) => {
-                            Some((base, word))
-                        }
-                        _ => None,
-                    };
-                    if let Some((base, word)) = joined {
-                        let address = formed(base, word);
-                        forget(&mut literal, &mut relative, destination);
-                        relative.push((destination, address));
-                        continue;
-                    }
-                }
-                _ => {}
-            }
-
-            if writes_first_operand(&operation) {
-                forget(&mut literal, &mut relative, destination);
-            }
-        }
-
-        kinds
+    /// The addresses [`Arch::constant_kinds`] finds formed, and the pool
+    /// words that hold an address whole, as non-PIC code keeps them.
+    fn data_addresses(
+        &self,
+        code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        _memory: &Memory<'_>,
+    ) -> Vec<u64> {
+        track_pool_words(code, body, space).addresses
     }
 
     /// A variadic function reserves room for its register arguments before it
@@ -833,6 +742,126 @@ fn parse_three(text: &str) -> Option<(&str, &str)> {
     (!right.contains(',')).then(|| (left.trim(), right))
 }
 
+/// What reading a function for its pool words found.
+struct PoolWords {
+    /// See [`Arch::constant_kinds`].
+    kinds: Vec<ConstantKind>,
+    /// The addresses inside the image the function forms or loads whole.
+    addresses: Vec<u64>,
+}
+
+/// Read `body` for the pool words that make addresses. See
+/// [`Arm32::constant_kinds`].
+fn track_pool_words(code: &[u8], body: &[Insn], space: &AddressSpace) -> PoolWords {
+    /// `pc` reads two instructions ahead of the one that uses it.
+    const PC_AHEAD: u64 = 8;
+
+    let mut kinds = vec![ConstantKind::Value; body.len()];
+    let mut addresses = Vec::new();
+    let Some(start) = body.first().map(|insn| insn.address) else {
+        return PoolWords { kinds, addresses };
+    };
+
+    // Registers holding a pool word: where the word sits, and its value.
+    let mut literal: Vec<(&str, u64, u32)> = Vec::new();
+    // Registers holding an address built from `pc` and a pool word.
+    let mut relative: Vec<(&str, u64)> = Vec::new();
+
+    let word_at = |pool: u64| -> Option<u32> {
+        let offset = usize::try_from(pool.checked_sub(start)?).ok()?;
+        let bytes = code.get(offset..offset.checked_add(INSN_WIDTH)?)?;
+        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+
+    for insn in body {
+        let operation = Arm32.normalize_operation(&insn.mnemonic);
+        let Some((destination, rest)) = insn.operands.split_once(',') else { continue };
+        let (destination, rest) = (destination.trim(), rest.trim());
+        let pc = insn.address.wrapping_add(PC_AHEAD);
+        let literal_of = |register: &str| {
+            literal
+                .iter()
+                .find(|(held, ..)| *held == register)
+                .map(|&(_, pool, value)| (pool, value))
+        };
+        let base_of = |register: &str| match register {
+            "pc" => Some(pc),
+            _ => relative.iter().find(|(held, _)| *held == register).map(|&(_, at)| at),
+        };
+        // The address a base and a pool word form, when it lies in the
+        // image, marks the word as a stored address.
+        let mut formed = |base: u64, (pool, value): (u64, u32)| {
+            let address = base.wrapping_add(i64::from(value as i32) as u64);
+            if space.contains_formed(address) {
+                addresses.push(address);
+                if let Ok(index) = body.binary_search_by_key(&pool, |insn| insn.address) {
+                    kinds[index] = ConstantKind::StoredAddress;
+                }
+            }
+            address
+        };
+
+        match (operation.as_str(), parse_reference(rest), parse_three(rest)) {
+            // `ldr rX, [pc, imm]`: load a pool word.
+            ("ldr", Some(("pc", Offset::Immediate(offset))), _) => {
+                let pool = pc.wrapping_add(offset as u64);
+                forget(&mut literal, &mut relative, destination);
+                if let Some(value) = word_at(pool) {
+                    if space.contains(u64::from(value)) {
+                        addresses.push(u64::from(value));
+                    }
+                    literal.push((destination, pool, value));
+                }
+                continue;
+            }
+            // `mov rY, rX`: a copy holds what its source holds. GCC
+            // copies the address of the global offset table so before it
+            // reads a slot through it.
+            ("mov", _, _) if !rest.contains(',') => {
+                let copied_address = base_of(rest).filter(|_| rest != "pc");
+                let copied_word = literal_of(rest);
+                forget(&mut literal, &mut relative, destination);
+                if let Some(address) = copied_address {
+                    relative.push((destination, address));
+                }
+                if let Some((pool, value)) = copied_word {
+                    literal.push((destination, pool, value));
+                }
+                continue;
+            }
+            // `ldr rY, [base, rX]`: read at a distance from a base.
+            ("ldr", Some((base, Offset::Register(index))), _) => {
+                if let (Some(base), Some(word)) = (base_of(base), literal_of(index)) {
+                    formed(base, word);
+                }
+            }
+            // `add rY, base, rX`, either order: build an address.
+            ("add", _, Some((left, right))) => {
+                let joined =
+                    match (base_of(left), literal_of(right), base_of(right), literal_of(left)) {
+                        (Some(base), Some(word), ..) | (.., Some(base), Some(word)) => {
+                            Some((base, word))
+                        }
+                        _ => None,
+                    };
+                if let Some((base, word)) = joined {
+                    let address = formed(base, word);
+                    forget(&mut literal, &mut relative, destination);
+                    relative.push((destination, address));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+
+        if writes_first_operand(&operation) {
+            forget(&mut literal, &mut relative, destination);
+        }
+    }
+
+    PoolWords { kinds, addresses }
+}
+
 /// Stop following a register the instruction writes.
 fn forget(literal: &mut Vec<(&str, u64, u32)>, relative: &mut Vec<(&str, u64)>, register: &str) {
     literal.retain(|(held, ..)| *held != register);
@@ -1227,6 +1256,26 @@ mod tests {
         let space = AddressSpace::from_ranges([0x870..0xd40, 0x1_0000..0x1_0100]);
         let kinds = Arm32.constant_kinds(&code, &insns, &space);
         assert_eq!(kinds[2], ConstantKind::StoredAddress);
+    }
+
+    /// PIC code adds a pool word to `pc`, and other code keeps the whole
+    /// address in the pool. Both are data the function points at.
+    #[test]
+    fn data_addresses_are_formed_or_loaded_whole() {
+        let words = [
+            0xe59f_0004_u32, // 0x8000 ldr r0, [pc, 0x4]: the word at 0x800c
+            0xe08f_0000,     // 0x8004 add r0, pc, r0: 0x800c + 0x40
+            0xe59f_1000,     // 0x8008 ldr r1, [pc]: the word at 0x8010
+            0x0000_0040,     // 0x800c a distance
+            0x0000_8080,     // 0x8010 an address
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0x8000);
+        let space = AddressSpace::of_raw_image(0x8000, 0x100);
+        let memory = Memory::new(&[]);
+        assert_eq!(Arm32.data_addresses(&code, &insns, &space, &memory), [0x804c, 0x8080]);
+        let outside = AddressSpace::of_raw_image(0x9000, 0x100);
+        assert!(Arm32.data_addresses(&code, &insns, &outside, &memory).is_empty());
     }
 
     /// Code runs always; text and tables do not.

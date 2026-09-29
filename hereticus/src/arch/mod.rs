@@ -113,6 +113,25 @@ pub trait Arch {
         vec![ConstantKind::Value; body.len()]
     }
 
+    /// The addresses inside `space` that `body` forms, in order, to read the
+    /// data there.
+    ///
+    /// Two functions can differ only in the data they point at, as a call to
+    /// `sscanf` with `"%d"` and one with `"%f"` do. Normalizing drops the
+    /// addresses, which move on every release, so only the data tells such
+    /// functions apart. `code` is as for [`Arch::constant_kinds`], and
+    /// `memory` holds the global offset table for code that reads an address
+    /// from it. Defaults to none.
+    fn data_addresses(
+        &self,
+        _code: &[u8],
+        _body: &[Insn],
+        _space: &AddressSpace,
+        _memory: &Memory<'_>,
+    ) -> Vec<u64> {
+        Vec::new()
+    }
+
     /// The addresses of the words `insns` load from a literal pool.
     ///
     /// A pool word is data among the instructions. It decodes as whatever its

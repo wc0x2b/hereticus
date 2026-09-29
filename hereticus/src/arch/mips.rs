@@ -524,6 +524,59 @@ impl Arch for Mips32 {
         u64::from(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    /// A lower half joined to what its source register holds, where that
+    /// is an upper half, or an address PIC code read from the global offset
+    /// table:
+    ///
+    /// ```text
+    /// lui   a1, %hi(text)          lw    a1, %got(text)(gp)
+    /// addiu a1, a1, %lo(text)      addiu a1, a1, %lo(text)
+    /// ```
+    ///
+    /// Only these two shapes are read. Unlike [`Arch::constant_kinds`], this
+    /// asks for the data, and a pair far apart is rare where a function
+    /// passes a string on.
+    fn data_addresses(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        memory: &Memory<'_>,
+    ) -> Vec<u64> {
+        let slot_value = |load_index: usize, load: &Insn| {
+            let (offset, base) = load_operands(load)?;
+            let (global_pointer, register) = global_pointer_before(body, load_index)?;
+            if base != register && base != "gp" {
+                return None;
+            }
+            let slot = u64::from((global_pointer as u32).wrapping_add(offset as u32));
+            Some(self.read_pointer(memory.bytes(slot, INSN_WIDTH)?))
+        };
+
+        body.iter()
+            .enumerate()
+            .filter(|(_, insn)| insn.mnemonic == "addiu" || insn.mnemonic == "ori")
+            .filter_map(|(index, insn)| {
+                let (destination, source, low) = three_operands(insn)?;
+                // `t9` receives a callee, not data.
+                if destination == "t9" {
+                    return None;
+                }
+                let low = Mips32::LITTLE.constant_value(low)?;
+                let (at, written) = last_write(body, index, source)?;
+                let high = match written.mnemonic.as_str() {
+                    // The `_gp_disp` halves are a distance, not an address.
+                    "lui" if is_gp_disp_preamble(&body[at..]) => return None,
+                    "lui" => upper_half(written)?.1,
+                    "lw" => slot_value(at, written)?,
+                    _ => return None,
+                };
+                Some(join_halves(&insn.mnemonic, high, low))
+            })
+            .filter(|&address| space.contains_formed(address))
+            .collect()
+    }
+
     fn absolute_call(&self, word: &[u8]) -> Option<AbsoluteCall> {
         /// The primary opcode of `jal`, in the top 6 bits.
         const JAL: u32 = 0b00_0011;
@@ -1875,6 +1928,37 @@ mod tests {
                 (6, Some(CallTarget::Address(0x40))),
                 (8, Some(CallTarget::Slot(0))),
             ]
+        );
+    }
+
+    /// PIC code reads a local address from the global offset table and adds
+    /// its lower half. Other code joins two halves. The `_gp_disp` pair and
+    /// an address bound for `t9` are no data.
+    #[test]
+    fn data_addresses_come_from_the_table_or_from_two_halves() {
+        let words = [
+            0x3c02_0000_u32, // 0x00 lui v0, 0
+            0x2442_7ff0,     // 0x04 addiu v0, v0, 0x7ff0: gp is 0x7ff0
+            0x0059_8821,     // 0x08 addu s1, v0, t9
+            0x8e25_9000,     // 0x0c lw a1, -0x7000(s1): the slot at 0xff0
+            0x24a5_0010,     // 0x10 addiu a1, a1, 0x10
+            0x3c04_8000,     // 0x14 lui a0, 0x8000
+            0x2484_0040,     // 0x18 addiu a0, a0, 0x40
+            0x2499_0008,     // 0x1c addiu t9, a0, 0x8
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0);
+        let table = 0x2000_u32.to_be_bytes();
+        let regions = [(0xff0, table.as_slice())];
+        let space = AddressSpace::from_ranges([0x0..0x1_0000, 0x8000_0000..0x8000_1000]);
+        assert_eq!(
+            Mips32::BIG.data_addresses(&code, &insns, &space, &Memory::new(&regions)),
+            [0x2010, 0x8000_0040]
+        );
+        assert_eq!(
+            Mips32::BIG.data_addresses(&code, &insns, &space, &Memory::new(&[])),
+            [0x8000_0040],
+            "an unread slot gives no address"
         );
     }
 
