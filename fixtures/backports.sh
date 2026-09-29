@@ -208,6 +208,13 @@ for version in 5.3.5 5.3.6; do
     unpack "lua-$version.tar.gz" lua "$version"
     build lua "$version" "$out/src/lua-$version/src" "${lua53_sources[@]}"
 done
+# expat: 2.4.5 fixes five CVEs, and 2.4.9 fixes CVE-2022-40674.
+project_flags=(-I"$here/expat")
+for version in 2.4.4 2.4.5 2.4.8 2.4.9; do
+    unpack "expat-$version.tar.gz" expat "$version"
+    build expat "$version" "$out/src/expat-$version/lib" xmlparse xmlrole xmltok
+done
+project_flags=()
 compiler=(clang++ -std=c++17)
 gcc_standard=(-std=c++17)
 suffix=cpp

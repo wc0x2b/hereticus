@@ -65,6 +65,22 @@ TARBALLS = {
         "https://github.com/leethomason/tinyxml2/archive/refs/tags/10.0.0.tar.gz",
         "3bdf15128ba16686e69bce256cc468e76c7b94ff2c7f391cc5ec09e40bff3839",
     ),
+    "expat-2.4.4.tar.gz": (
+        "https://github.com/libexpat/libexpat/releases/download/R_2_4_4/expat-2.4.4.tar.gz",
+        "5963005ff8720735beb2d2db669afc681adcbcb43dd1eb397d5c2dd7adbc631f",
+    ),
+    "expat-2.4.5.tar.gz": (
+        "https://github.com/libexpat/libexpat/releases/download/R_2_4_5/expat-2.4.5.tar.gz",
+        "9e88fb86a0220ab5c1fcf42c187857c2151534b7a4d88741c9405df5be449a3d",
+    ),
+    "expat-2.4.8.tar.gz": (
+        "https://github.com/libexpat/libexpat/releases/download/R_2_4_8/expat-2.4.8.tar.gz",
+        "398f6d95bf808d3108e27547b372cb4ac8dc2298a3c4251eb7aa3d4c6d4bb3e2",
+    ),
+    "expat-2.4.9.tar.gz": (
+        "https://github.com/libexpat/libexpat/releases/download/R_2_4_9/expat-2.4.9.tar.gz",
+        "4415710268555b32c4e5ab06a583bea9fec8ff89333b218b70b43d4ca10e38fa",
+    ),
 }
 
 
