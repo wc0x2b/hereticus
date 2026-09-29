@@ -796,42 +796,46 @@ impl Cascade<'_> {
         self.matched.push(pair);
     }
 
-    /// The callees of each free function, as keys both sides share, sorted.
+    /// What each free function calls and points at, as keys both sides
+    /// share, sorted.
     ///
     /// A callee counts where the linker names it, or where it is a function
-    /// already paired. Others say nothing yet.
-    fn callee_keys(&self) -> (Vec<Vec<CalleeKey>>, Vec<Vec<CalleeKey>>) {
-        self.callee_keys_where(Only::Free)
+    /// already paired. Others say nothing yet. Every text counts.
+    fn reference_keys(&self) -> (Vec<Vec<ReferenceKey>>, Vec<Vec<ReferenceKey>>) {
+        self.reference_keys_where(Only::Free)
     }
 
-    /// [`Self::callee_keys`], for every function.
-    fn callee_keys_of_all(&self) -> (Vec<Vec<CalleeKey>>, Vec<Vec<CalleeKey>>) {
-        self.callee_keys_where(Only::Any)
+    /// [`Self::reference_keys`], for every function.
+    fn reference_keys_of_all(&self) -> (Vec<Vec<ReferenceKey>>, Vec<Vec<ReferenceKey>>) {
+        self.reference_keys_where(Only::Any)
     }
 
-    fn callee_keys_where(&self, only: Only) -> (Vec<Vec<CalleeKey>>, Vec<Vec<CalleeKey>>) {
+    fn reference_keys_where(&self, only: Only) -> (Vec<Vec<ReferenceKey>>, Vec<Vec<ReferenceKey>>) {
         let partner: HashMap<usize, usize> =
             self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
-        let keys = |side: &[Prepared<'_>], free: &[bool], which: Side| -> Vec<Vec<CalleeKey>> {
+        let keys = |side: &[Prepared<'_>], free: &[bool], which: Side| -> Vec<Vec<ReferenceKey>> {
             side.iter()
                 .enumerate()
                 .map(|(index, prepared)| {
                     if only == Only::Free && !free[index] {
                         return Vec::new();
                     }
-                    let mut keys: Vec<CalleeKey> = prepared
+                    let mut keys: Vec<ReferenceKey> = prepared
                         .calls
                         .iter()
                         .filter_map(|callee| match callee {
-                            Callee::Named(name) => Some(CalleeKey::Named(name.clone())),
+                            Callee::Named(name) => Some(ReferenceKey::Named(name.clone())),
                             Callee::Function(callee) => match which {
                                 Side::Before => partner.get(callee).copied(),
                                 Side::After => (!self.right_free[*callee]).then_some(*callee),
                             }
-                            .map(CalleeKey::Paired),
+                            .map(ReferenceKey::Paired),
                             Callee::Unknown => None,
                         })
                         .collect();
+                    keys.extend(
+                        prepared.texts.iter().map(|text| ReferenceKey::Text((*text).to_string())),
+                    );
                     keys.sort_unstable();
                     keys
                 })
@@ -1917,7 +1921,7 @@ impl Cascade<'_> {
         // own results, and the sort below decides the order, so the answer does
         // not depend on the order the rows finished in.
         let threshold = self.options.threshold;
-        let (left_calls, right_calls) = self.callee_keys();
+        let (left_calls, right_calls) = self.reference_keys();
         let candidates: Vec<(f64, usize, usize)> = (0..self.left.len())
             .into_par_iter()
             .filter(|index| self.left_free[*index])
@@ -1949,7 +1953,7 @@ impl Cascade<'_> {
         // Best first. Ties break on index so the answer does not depend on
         // the order two equal scores happened to be found in.
         let rank = |&(score, index, other): &(f64, usize, usize)| {
-            score + CALLEE_WEIGHT * callee_agreement(&left_calls[index], &right_calls[other])
+            score + REFERENCE_WEIGHT * reference_agreement(&left_calls[index], &right_calls[other])
         };
         let mut ranked: Vec<(f64, (f64, usize, usize))> =
             candidates.into_iter().map(|candidate| (rank(&candidate), candidate)).collect();
@@ -1970,8 +1974,8 @@ impl Cascade<'_> {
 }
 
 impl Cascade<'_> {
-    /// Swap two pairings by similarity where each function calls exactly
-    /// what the other's partner calls, and the code cannot choose. Where the
+    /// Swap two pairings by similarity where each function calls and points
+    /// at exactly what the other's partner does, and the code cannot choose. Where the
     /// function that calls the same is unpaired, the pairing moves to it.
     ///
     /// A wrapper that only calls another function has the shape of every
@@ -1986,8 +1990,8 @@ impl Cascade<'_> {
         const MOST_ROUNDS: usize = 4;
 
         for _ in 0..MOST_ROUNDS {
-            let (left_calls, right_calls) = self.callee_keys_of_all();
-            let mut by_calls: HashMap<&[CalleeKey], Vec<usize>> = HashMap::new();
+            let (left_calls, right_calls) = self.reference_keys_of_all();
+            let mut by_calls: HashMap<&[ReferenceKey], Vec<usize>> = HashMap::new();
             for (index, keys) in right_calls.iter().enumerate() {
                 if !keys.is_empty() {
                     by_calls.entry(keys.as_slice()).or_default().push(index);
@@ -2091,8 +2095,8 @@ fn texts_that_differ(left: &[&str], right: &[&str]) -> usize {
     left.len().max(right.len()) - shared
 }
 
-/// How much the callees of two functions weigh in the order the similarity
-/// stage takes pairs in, against their code.
+/// How much what two functions call and point at weighs in the order the
+/// similarity stage takes pairs in, against their code.
 ///
 /// Two builds made another way, at `-Os` or by the other compiler, inline
 /// and schedule differently, and the code alone then prefers the wrong
@@ -2100,29 +2104,32 @@ fn texts_that_differ(left: &[&str], right: &[&str]) -> usize {
 /// full agreement against none, the callees outweigh a difference of 0.2 in
 /// the code. Measured on the backports built at other levels and by the
 /// other compiler, stripped, this cut the wrong pairs by a quarter to a half,
-/// and 0.05 or 0.2 did no better.
-const CALLEE_WEIGHT: f64 = 0.1;
+/// and 0.05 or 0.2 did no better. The texts each function points at, added
+/// later, cut them by a tenth more, with no comparison worse.
+const REFERENCE_WEIGHT: f64 = 0.1;
 
 /// The similarity at which the first pass of the similarity stage pairs.
 ///
 /// The pairs it makes are the callees that tell the second pass's
-/// candidates apart. Measured as for [`CALLEE_WEIGHT`], 0.85 did best of
+/// candidates apart. Measured as for [`REFERENCE_WEIGHT`], 0.85 did best of
 /// 0.75, 0.85 and 0.95.
 const CLOSE_SIMILARITY: f64 = 0.85;
 
-/// A callee as both sides can name it.
+/// A callee or a text, as both sides can name it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum CalleeKey {
+enum ReferenceKey {
     /// A symbol the linker or the function names.
     Named(String),
     /// A function of the second binary, which a function of the first
     /// already paired with.
     Paired(usize),
+    /// A text the function points at.
+    Text(String),
 }
 
-/// How well two sorted callee lists agree, from -1.0 to 1.0, or 0.0 where
-/// neither names any callee.
-fn callee_agreement(left: &[CalleeKey], right: &[CalleeKey]) -> f64 {
+/// How well two sorted lists of references agree, from -1.0 to 1.0, or 0.0
+/// where neither names any.
+fn reference_agreement(left: &[ReferenceKey], right: &[ReferenceKey]) -> f64 {
     if left.is_empty() && right.is_empty() {
         return 0.0;
     }
@@ -3208,17 +3215,23 @@ mod tests {
     }
 
     #[test]
-    fn callees_agree_by_what_they_share() {
-        let key = |name: &str| CalleeKey::Named(name.to_string());
+    fn references_agree_by_what_they_share() {
+        let key = |name: &str| ReferenceKey::Named(name.to_string());
         let (exp, log) = (key("exp"), key("log10"));
-        assert_eq!(callee_agreement(&[], &[]), 0.0, "nothing to say");
-        assert_eq!(callee_agreement(&[exp.clone()], &[exp.clone()]), 1.0);
-        assert_eq!(callee_agreement(&[exp.clone()], &[log.clone()]), -1.0);
-        assert_eq!(callee_agreement(&[exp.clone()], &[]), -1.0, "one calls, one does not");
+        assert_eq!(reference_agreement(&[], &[]), 0.0, "nothing to say");
+        assert_eq!(reference_agreement(&[exp.clone()], &[exp.clone()]), 1.0);
+        assert_eq!(reference_agreement(&[exp.clone()], &[log.clone()]), -1.0);
+        assert_eq!(reference_agreement(&[exp.clone()], &[]), -1.0, "one calls, one does not");
         let (mut both, one) = (vec![exp.clone(), log], vec![exp]);
         both.sort();
-        assert_eq!(callee_agreement(&both, &one), 0.0, "half shared");
-        assert_eq!(callee_agreement(&[CalleeKey::Paired(3)], &[CalleeKey::Paired(3)]), 1.0);
+        assert_eq!(reference_agreement(&both, &one), 0.0, "half shared");
+        assert_eq!(
+            reference_agreement(&[ReferenceKey::Paired(3)], &[ReferenceKey::Paired(3)]),
+            1.0
+        );
+        let text = |text: &str| ReferenceKey::Text(text.to_string());
+        assert_eq!(reference_agreement(&[text("<!--")], &[text("<!--")]), 1.0);
+        assert_eq!(reference_agreement(&[text("<!--")], &[text("=\"")]), -1.0);
     }
 
     /// A MIPS table of pointers into its own image, after a `jr ra`.
