@@ -909,6 +909,22 @@ fn starts_after_returns_in(
     // the function the current instruction is in, or the start of it.
     let mut previous_return = None;
     for (index, insn) in insns.iter().enumerate() {
+        // A call that does not return, as to `exit`, is followed by the next
+        // function, where its prologue comes next and no branch reaches it.
+        // A call that returns is followed by more of its own function, which
+        // does not open a frame. Measured on the releases built for the tests,
+        // as Lua's `os_getenv` after `os_exit`, this found 8 more function
+        // starts and invented none.
+        if matches!(insn.kind, InsnKind::Call { .. }) && is_code(&insn) {
+            let next = index + 1 + arch.delay_slots(insn);
+            if let Some(following) = insns.get(next)
+                && arch.is_prologue(following)
+                && !sources_of.contains_key(&following.address)
+                && !is_inside_a_function(next)
+            {
+                out.push(start_of(&insns, next, arch));
+            }
+        }
         // Only code that does not fall through can be followed by a new
         // function. Everything else continues the one it is in.
         if !matches!(insn.kind, InsnKind::Return | InsnKind::Jump { .. }) || !is_code(&insn) {
@@ -1518,6 +1534,19 @@ mod tests {
         };
         assert_eq!(starts(&[(0, code.as_slice()), (0xff0, slot.as_slice())]), [0x0, 0x20]);
         assert_eq!(starts(&[(0, code.as_slice())]), [0x0], "the slot is not loaded");
+    }
+
+    /// A call that does not return, as to `exit`, ends its function where a
+    /// prologue follows it.
+    #[test]
+    fn a_prologue_after_a_call_starts_a_function() {
+        let code = arm_code(&[
+            0xe92d_4010, // 0x00 push {r4, lr}
+            0xebff_fffe, // 0x04 bl 0x4: exit, which does not return
+            0xe92d_4010, // 0x08 push {r4, lr}
+            0xe8bd_8010, // 0x0c pop {r4, pc}
+        ]);
+        assert!(starts_after_returns(&Arm32, &code, 0).contains(&0x8));
     }
 
     /// `bx` through a register other than `lr` is a tail call, so a leaf
