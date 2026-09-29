@@ -198,14 +198,19 @@ fn resolve(arch: &dyn Arch, links: &Links, functions: &[Function], target: CallT
     }
 }
 
+/// The address a slot of the global offset table holds.
+fn slot_value(arch: &dyn Arch, links: &Links, slot: u64) -> Option<u64> {
+    let bytes = links.bytes_at(slot)?;
+    (bytes.len() >= arch.pointer_width()).then(|| arch.read_pointer(bytes))
+}
+
 /// The callee a slot of the global offset table holds.
 fn resolve_slot(arch: &dyn Arch, links: &Links, functions: &[Function], slot: u64) -> Callee {
     if let Some(name) = links.slots.get(&slot) {
         return Callee::Named(name.clone());
     }
-    let width = arch.pointer_width();
-    match links.bytes_at(slot).filter(|bytes| bytes.len() >= width) {
-        Some(bytes) => function_at(functions, arch.read_pointer(bytes)),
+    match slot_value(arch, links, slot) {
+        Some(address) => function_at(functions, address),
         None => Callee::Unknown,
     }
 }
