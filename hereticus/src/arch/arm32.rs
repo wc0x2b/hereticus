@@ -12,6 +12,7 @@ use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg};
 
 use core::ops::Range;
+use std::collections::BTreeSet;
 
 use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};
@@ -758,6 +759,10 @@ fn track_pool_words(code: &[u8], body: &[Insn], space: &AddressSpace) -> PoolWor
 
     let mut kinds = vec![ConstantKind::Value; body.len()];
     let mut addresses = Vec::new();
+    // Pool words whose value lies in the image, by where they sit. PIC code
+    // adds such a word to `pc`, and then the value is only a distance.
+    let mut whole: Vec<(u64, u64)> = Vec::new();
+    let mut distances: BTreeSet<u64> = BTreeSet::new();
     let Some(start) = body.first().map(|insn| insn.address) else {
         return PoolWords { kinds, addresses };
     };
@@ -792,6 +797,7 @@ fn track_pool_words(code: &[u8], body: &[Insn], space: &AddressSpace) -> PoolWor
         // image, marks the word as a stored address.
         let mut formed = |base: u64, (pool, value): (u64, u32)| {
             let address = base.wrapping_add(i64::from(value as i32) as u64);
+            distances.insert(pool);
             if space.contains_formed(address) {
                 addresses.push(address);
                 if let Ok(index) = body.binary_search_by_key(&pool, |insn| insn.address) {
@@ -808,7 +814,7 @@ fn track_pool_words(code: &[u8], body: &[Insn], space: &AddressSpace) -> PoolWor
                 forget(&mut literal, &mut relative, destination);
                 if let Some(value) = word_at(pool) {
                     if space.contains(u64::from(value)) {
-                        addresses.push(u64::from(value));
+                        whole.push((pool, u64::from(value)));
                     }
                     literal.push((destination, pool, value));
                 }
@@ -859,6 +865,9 @@ fn track_pool_words(code: &[u8], body: &[Insn], space: &AddressSpace) -> PoolWor
         }
     }
 
+    addresses.extend(
+        whole.into_iter().filter(|(pool, _)| !distances.contains(pool)).map(|(_, value)| value),
+    );
     PoolWords { kinds, addresses }
 }
 
@@ -1286,6 +1295,21 @@ mod tests {
         assert_eq!(Arm32.data_addresses(&code, &insns, &space, &memory), [0x804c, 0x8080]);
         let outside = AddressSpace::of_raw_image(0x9000, 0x100);
         assert!(Arm32.data_addresses(&code, &insns, &outside, &memory).is_empty());
+    }
+
+    /// A pool word that `pc` is added to is a distance, even where its
+    /// value happens to lie in the image as well.
+    #[test]
+    fn a_distance_is_no_whole_address() {
+        let words = [
+            0xe59f_0000_u32, // 0x8000 ldr r0, [pc]: the word at 0x8008
+            0xe08f_0000,     // 0x8004 add r0, pc, r0: 0x8008 + 0x8040, outside
+            0x0000_8040,     // 0x8008 a distance that reads as an address
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0x8000);
+        let space = AddressSpace::of_raw_image(0x8000, 0x100);
+        assert!(Arm32.data_addresses(&code, &insns, &space, &Memory::new(&[])).is_empty());
     }
 
     /// Code runs always; text and tables do not.

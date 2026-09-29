@@ -27,7 +27,8 @@
 use std::collections::BTreeMap;
 
 use object::{
-    Object, ObjectKind, ObjectSection, ObjectSymbol, ObjectSymbolTable, RelocationTarget,
+    Object, ObjectKind, ObjectSection, ObjectSegment, ObjectSymbol, ObjectSymbolTable,
+    RelocationTarget,
 };
 
 use crate::arch::{Arch, CallTarget, Insn, decode_all};
@@ -67,12 +68,21 @@ impl Links {
             return Self { sites: call_site_names(file), ..Self::default() };
         }
 
-        let memory = file
-            .sections()
-            .filter(|section| section.address() != 0)
-            .filter_map(|section| Some((section.address(), section.data().ok()?.to_vec())))
+        // The segments, as the loader maps them, so that the bytes around a
+        // section are there as in a raw image of the same file.
+        let mut memory: Vec<(u64, Vec<u8>)> = file
+            .segments()
+            .filter_map(|segment| Some((segment.address(), segment.data().ok()?.to_vec())))
             .filter(|(_, data)| !data.is_empty())
             .collect();
+        if memory.is_empty() {
+            memory = file
+                .sections()
+                .filter(|section| section.address() != 0)
+                .filter_map(|section| Some((section.address(), section.data().ok()?.to_vec())))
+                .filter(|(_, data)| !data.is_empty())
+                .collect();
+        }
 
         let mut slots = jump_slot_names(file);
         slots.extend(mips_global_slot_names(file));
@@ -93,10 +103,16 @@ impl Links {
         self.memory.iter().map(|(start, data)| (*start, data.as_slice())).collect()
     }
 
-    /// The text that starts at `address`: printable ASCII up to a NUL.
+    /// The text that starts at `address`: printable ASCII up to a NUL, just
+    /// after the NUL of the text before it.
     ///
     /// Anything else is not text as far as this can tell, such as a table,
-    /// a word of code, or a string too long to be a message or a format.
+    /// a word of code, or a string too long to be a message or a format. A
+    /// compiler packs C strings end to end, so a string starts after a NUL
+    /// or zero fill. A table of pointers, where the pointer bytes can spell
+    /// `"!e"` by chance, and Rust strings, which have no NUL, do not. Nor
+    /// does the first byte of a section: tinyxml2 for MIPS points at the
+    /// start of `.data.rel.ro`, a table, and loses no text to this rule.
     pub fn text_at(&self, address: u64) -> Option<&str> {
         /// Fewer bytes than this are as likely a small number as text: the
         /// word 0x41 reads `"A"` in little-endian order.
@@ -105,6 +121,13 @@ impl Links {
         /// into a large table cheap.
         const LONGEST: usize = 256;
 
+        let after_a_nul = address
+            .checked_sub(1)
+            .and_then(|before| self.bytes_at(before))
+            .is_some_and(|before| before[0] == 0);
+        if !after_a_nul {
+            return None;
+        }
         let rest = self.bytes_at(address)?;
         let rest = &rest[..rest.len().min(LONGEST + 1)];
         let end = rest.iter().position(|&byte| byte == 0)?;
@@ -302,14 +325,19 @@ mod tests {
 
     #[test]
     fn text_is_printable_up_to_a_nul() {
-        let data = b"%d\0x\0\x01\x02\0no end\0".to_vec();
-        let links =
-            Links::of_parts(vec![(0x100, data), (0x1000, vec![b'a'; 300])], BTreeMap::new());
+        // 0x100 "%d", 0x103 "x", 0x105 two unprintable bytes, 0x108 "no end",
+        // each after a NUL.
+        let data = b"\0%d\0x\0\x01\x02\0no end\0".to_vec();
+        let links = Links::of_parts(
+            vec![(0xff, data), (0x1000, vec![b'a'; 300]), (0x2000, b"at start\0".to_vec())],
+            BTreeMap::new(),
+        );
         assert_eq!(links.text_at(0x100), Some("%d"));
-        assert_eq!(links.text_at(0x101), None, "one byte is no text");
         assert_eq!(links.text_at(0x103), None, "one byte is no text");
         assert_eq!(links.text_at(0x105), None, "not printable");
         assert_eq!(links.text_at(0x108), Some("no end"));
+        assert_eq!(links.text_at(0x109), None, "not after a NUL");
+        assert_eq!(links.text_at(0x2000), None, "nothing before it says it starts");
         assert_eq!(links.text_at(0x1000), None, "no NUL near enough");
         assert_eq!(links.text_at(0x50), None, "not loaded");
     }
