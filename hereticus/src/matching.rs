@@ -12,6 +12,7 @@
 //! Matching says *which* function became which. It does not say whether the
 //! function changed: two matched functions can still differ, and
 //! [`Match::changed`] reports that.
+use core::ops::Range;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -569,7 +570,10 @@ fn prepare<'a>(
             .map(|(index, function)| (function.name.as_str(), index))
             .collect(),
     };
-    binary
+    // The data each function points at, read once every function is judged
+    // code or data.
+    let mut pointed_at: Vec<Vec<u64>> = Vec::with_capacity(binary.functions.len());
+    let mut prepared: Vec<Prepared<'a>> = binary
         .functions
         .iter()
         .map(|function| {
@@ -591,12 +595,12 @@ fn prepare<'a>(
                 })
                 .collect();
 
-            let mut texts: Vec<&str> = arch
-                .data_addresses(&function.code, &insns, &binary.addresses, &memory)
-                .into_iter()
-                .filter_map(|address| binary.links.text_at(address))
-                .collect();
-            texts.sort_unstable();
+            pointed_at.push(arch.data_addresses(
+                &function.code,
+                &insns,
+                &binary.addresses,
+                &memory,
+            ));
 
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
@@ -610,10 +614,35 @@ fn prepare<'a>(
                 addresses: &binary.addresses,
                 contents,
                 calls,
-                texts,
+                texts: Vec::new(),
             }
         })
-        .collect()
+        .collect();
+
+    // Code can read as text by chance, as a word of `bl` followed by a zero
+    // does. A raw image holds its read-only data in what the scan took for
+    // functions, so only those that hold code are left out.
+    let code: Vec<Range<u64>> = prepared
+        .iter()
+        .filter(|prepared| prepared.contents == Contents::Code)
+        .map(|prepared| {
+            let start = prepared.function.address;
+            start..start + prepared.function.code.len() as u64
+        })
+        .collect();
+    let is_code = |address: u64| {
+        let after = code.partition_point(|range| range.start <= address);
+        after.checked_sub(1).is_some_and(|index| code[index].contains(&address))
+    };
+    for (prepared, addresses) in prepared.iter_mut().zip(pointed_at) {
+        prepared.texts = addresses
+            .into_iter()
+            .filter(|&address| !is_code(address))
+            .filter_map(|address| binary.links.text_at(address))
+            .collect();
+        prepared.texts.sort_unstable();
+    }
+    prepared
 }
 
 /// The steps of a comparison, in the order they run.

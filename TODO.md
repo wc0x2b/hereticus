@@ -20,3 +20,22 @@ containers directly, and add the formats still missing, such as AVM EVA.
 The tests now download about 150 MB of OpenWrt images and build libraries
 in a container. Cache `fixtures/build` in CI, keyed on the pinned SHA-256
 values and on `fixtures/`, so a run fetches and builds only what changed.
+
+## Report a changed text
+
+A function whose only change is a string, such as a format that goes from
+`"%s"` to `"%.*s"`, reads as unchanged, because normalizing drops the
+address of the string. The texts each function points at are now known
+(`Prepared::texts`), and they split twins. Reporting a changed text as a
+change was tried, and it reported many functions that the backport fixes
+did not touch. Three causes:
+
+- GCC for ARM loads one section anchor for all the strings of a file and
+  adds an offset later. The text at the anchor is the first string of the
+  file, so when a fix adds a string, every function of the file seems to
+  change. Follow the `add rX, anchor, #offset` to the real string.
+- Rust keeps a string as a pointer and a length, with no NUL, so reading
+  to a NUL runs into the strings after it. Read the length, or skip text
+  that no NUL comes before.
+- Some MIPS functions at `-O3` in tinyxml2, such as `StrPair::GetStr`, not
+  yet examined.
