@@ -158,13 +158,17 @@ pub trait Arch {
     /// A call that names its target gives the address. PIC code on some
     /// architectures calls through a slot of the global offset table
     /// instead, and an architecture that can see which slot says so.
-    /// Defaults to the targets the decoder resolved.
+    /// A jump out of the function is a tail call, and counts too. Defaults to
+    /// the targets the decoder resolved.
     fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
         insns
             .iter()
             .enumerate()
             .filter_map(|(index, insn)| match insn.kind {
                 InsnKind::Call { target } => Some((index, target.map(CallTarget::Address))),
+                InsnKind::Jump { target: Some(target) } if leaves(insns, target) => {
+                    Some((index, Some(CallTarget::Address(target))))
+                }
                 _ => None,
             })
             .collect()
@@ -471,6 +475,22 @@ impl fmt::Display for DecodeError {
 
 impl core::error::Error for DecodeError {}
 
+/// Report whether `target` lies outside the function `insns` make up, so a
+/// jump there is a tail call.
+///
+/// A wrapper that only jumps to another function has the same shape as every
+/// other such wrapper, and only the target tells them apart. Measured on zlib
+/// 1.2.12 built by GCC, `crc32_combine_gen` paired with `gztell` that way,
+/// and the new function went unreported.
+pub fn leaves(insns: &[Insn], target: u64) -> bool {
+    match (insns.first(), insns.last()) {
+        (Some(first), Some(last)) => {
+            target < first.address || target >= last.address + last.bytes_len as u64
+        }
+        _ => false,
+    }
+}
+
 /// Decode `code` from start to end, stopping at the first error.
 ///
 /// Returns what it decoded and the error that stopped it, if any. Callers keep
@@ -497,4 +517,50 @@ pub fn decode_all(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Opt
     }
 
     (out, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    /// `count` four-byte instructions from `start` on.
+    fn nops(start: u64, count: u64) -> Vec<Insn> {
+        (0..count)
+            .map(|index| Insn {
+                address: start + 4 * index,
+                bytes_len: 4,
+                mnemonic: "nop".into(),
+                operands: String::new(),
+                kind: InsnKind::Normal,
+            })
+            .collect()
+    }
+
+    #[rstest]
+    #[case::before_the_first(0xfc, true)]
+    #[case::at_the_first(0x100, false)]
+    #[case::inside(0x106, false)]
+    #[case::at_the_last(0x108, false)]
+    #[case::inside_the_last(0x10b, false)]
+    #[case::just_past_the_end(0x10c, true)]
+    #[case::far_away(0xdead_0000, true)]
+    fn a_jump_leaves_only_past_the_ends(#[case] target: u64, #[case] expected: bool) {
+        assert_eq!(leaves(&nops(0x100, 3), target), expected);
+    }
+
+    #[test]
+    fn a_jump_leaves_no_empty_function() {
+        assert!(!leaves(&[], 0x100));
+    }
+
+    #[test]
+    fn a_jump_leaves_where_the_range_says() {
+        bolero::check!().with_type::<(u32, u8, u64)>().for_each(|&(start, count, target)| {
+            let insns = nops(u64::from(start), u64::from(count) + 1);
+            let end = u64::from(start) + 4 * (u64::from(count) + 1);
+            let outside = target < u64::from(start) || target >= end;
+            assert_eq!(leaves(&insns, target), outside);
+        });
+    }
 }
