@@ -1047,6 +1047,19 @@ fn starts_after_returns_in(
         if reached_by(following.address, &[Transfer::Conditional]) {
             continue;
         }
+        // So is what a conditional branch from later in it reaches, as a
+        // loop at the end of a function reaches back past an early return.
+        // Later in it is before the next sure start.
+        let next_start =
+            sure_starts.range(following.address + 1..).next().copied().unwrap_or(u64::MAX);
+        let reached_from_later = sources_of.get(&following.address).is_some_and(|sources| {
+            sources.iter().any(|&(from, transfer)| {
+                transfer == Transfer::Conditional && from > following.address && from < next_start
+            })
+        });
+        if reached_from_later {
+            continue;
+        }
 
         // Otherwise a prologue is a function start whatever precedes it. This
         // is the stronger signal, so it is not subject to the spanning test:
@@ -1577,6 +1590,21 @@ mod tests {
         };
         assert_eq!(starts(&[(0, code.as_slice()), (0xff0, slot.as_slice())]), [0x0, 0x20]);
         assert_eq!(starts(&[(0, code.as_slice())]), [0x0], "the slot is not loaded");
+    }
+
+    /// Code after a return that a conditional branch from later in the
+    /// function reaches is more of it, as a loop at its end reaches back.
+    #[test]
+    fn a_branch_back_past_a_return_keeps_the_function_whole() {
+        let code = arm_code(&[
+            0xe92d_4010, // 0x00 push {r4, lr}
+            0xe8bd_8010, // 0x04 pop {r4, pc}
+            0xe3a0_0001, // 0x08 mov r0, 1
+            0xe251_1001, // 0x0c subs r1, r1, 1
+            0x1aff_fffc, // 0x10 bne 0x08
+            0xe8bd_8010, // 0x14 pop {r4, pc}
+        ]);
+        assert!(!starts_after_returns(&Arm32, &code, 0).contains(&0x8));
     }
 
     /// A call that does not return, as to `exit`, ends its function where a

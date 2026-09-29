@@ -1060,7 +1060,12 @@ fn table_address(
     register: &str,
     entries: Entries,
 ) -> Option<u64> {
-    let (at, insn) = last_write(insns, before, register)?;
+    /// How far back the table's address may be made. A `switch` in a loop
+    /// has it made once, before the loop: expat's `big2_attributeValueTok`
+    /// for MIPS makes it 27 instructions before the jump.
+    const BASE_LOOK_BACK: usize = 128;
+
+    let (at, insn) = last_write_within(insns, before, register, BASE_LOOK_BACK)?;
     if let Some((_, high)) = upper_half(insn) {
         return Some(high);
     }
@@ -1088,7 +1093,17 @@ fn table_address(
 ///
 /// A branch names a register it only reads, so it is stepped over.
 fn last_write<'a>(insns: &'a [Insn], before: usize, register: &str) -> Option<(usize, &'a Insn)> {
-    let from = before.saturating_sub(TABLE_LOOK_BACK);
+    last_write_within(insns, before, register, TABLE_LOOK_BACK)
+}
+
+/// [`last_write`], within `distance` instructions.
+fn last_write_within<'a>(
+    insns: &'a [Insn],
+    before: usize,
+    register: &str,
+    distance: usize,
+) -> Option<(usize, &'a Insn)> {
+    let from = before.saturating_sub(distance);
     (from..before).rev().map(|at| (at, &insns[at])).find(|(_, insn)| {
         insn.kind == InsnKind::Normal
             && !is_store(&insn.mnemonic)
@@ -1877,6 +1892,40 @@ mod tests {
         let mut words = absolute_switch(3);
         words[7] = 0x03e0_0008; // jr ra
         assert!(tables_in(&words, 0x8000_0000).is_empty());
+    }
+
+    /// A `switch` in a loop has its table's page loaded once, before the
+    /// loop, far from the jump.
+    #[test]
+    fn reads_a_table_whose_page_was_loaded_long_before() {
+        let mut words = vec![
+            0x3c02_0000_u32, // 0x00 lui v0, 0
+            0x2442_7ff0,     // 0x04 addiu v0, v0, 0x7ff0: gp is 0x7ff0
+            0x0059_0821,     // 0x08 addu at, v0, t9
+            0x8c22_8098,     // 0x0c lw v0, -0x7f68(at): the slot at 0x88
+        ];
+        words.extend([0x0100_4025; 20]); // 0x10 or t0, t0, zero, twenty times
+        words.extend([
+            0x0004_1880, // 0x60 sll v1, a0, 2
+            0x0062_1821, // 0x64 addu v1, v1, v0
+            0x8c63_0010, // 0x68 lw v1, 0x10(v1)
+            0x0023_1821, // 0x6c addu v1, at, v1
+            0x0060_0008, // 0x70 jr v1
+            0,           // 0x74 nop
+            0x03e0_0008, // 0x78 case 0: jr ra
+            0,           // 0x7c nop
+            0x03e0_0008, // 0x80 case 1: jr ra
+            0,           // 0x84 nop
+            0x0000_0080, // 0x88 the slot: the table's page
+            0,           // 0x8c
+            0xffff_8088, // 0x90 the table: 0x78 - gp
+            0xffff_8090, // 0x94 0x80 - gp
+            0x1000_0000, // 0x98 no case
+        ]);
+        assert_eq!(
+            tables_in(&words, 0),
+            [JumpTable { jump: 0x70, words: 0x90..0x98, targets: vec![0x78, 0x80] }]
+        );
     }
 
     /// PIC code finds the table through the global offset table, and holds
