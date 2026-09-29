@@ -82,7 +82,7 @@ fn stripped_functions_are_recovered() {
         });
     assert_eq!(
         total,
-        Recovery { functions: 27500, exact: 26938, invented: 244, missed: 213 },
+        Recovery { functions: 27500, exact: 27242, invented: 244, missed: 47 },
         "over {} builds",
         builds.len()
     );
@@ -110,4 +110,28 @@ fn exported_functions_keep_their_names() {
         assert!(span_of(&symbols).is_some(), "{name} is in the symbol table");
         assert_eq!(span_of(&stripped), span_of(&symbols), "{name}");
     }
+}
+
+/// A static function that only a table of callbacks points at is found
+/// through the relocation that the table's word holds.
+#[test]
+fn a_function_only_a_table_points_at_is_found() {
+    let build = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/build/versions/lua-5.1.4/arm-gcc-O2");
+    let read = |file: &str| {
+        let data = std::fs::read(build.join(file)).expect("run `just backports` first");
+        Binary::parse(&data).expect("the build parses")
+    };
+    let (symbols, stripped) = (read("lib.so"), read("lib-stripped.so"));
+    let str_find = symbols
+        .functions
+        .iter()
+        .find(|function| function.name == "str_find")
+        .expect("str_find is in the symbol table");
+    let found = stripped
+        .functions
+        .iter()
+        .find(|function| function.address == str_find.address)
+        .expect("str_find is found");
+    assert_eq!(found.code.len(), str_find.code.len());
 }

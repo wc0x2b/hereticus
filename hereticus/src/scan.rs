@@ -19,7 +19,8 @@
 //!    where a call goes through it. This finds what is called but misses
 //!    what is not. In an
 //!    object file, whose code sections hold only code, so does an address
-//!    the code takes, as it takes the address of a callback.
+//!    the code takes, as it takes the address of a callback, and one that a
+//!    relocated word of data holds, as a table of callbacks does.
 //! 4. **What follows a return or a tail call, and what looks like a
 //!    prologue.** Code after a function ends usually starts a new one, and
 //!    the architecture says which instruction opens one. This is the weakest
@@ -48,7 +49,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
+use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind, SymbolKind};
 
 use crate::address::AddressSpace;
 use crate::arch::{Arch, CallTarget, DataAmongCode, Insn, InsnKind, Memory, decode_all};
@@ -155,14 +156,36 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
         .filter_map(|section| section.data().ok().map(|data| (section.address(), data)))
         .collect();
 
-    recover_in_memory(
-        &code_sections,
-        &index,
-        &exported_functions(&file),
-        Regions::CodeOnly,
-        arch,
-        &Memory::new(&loaded),
-    )
+    let memory = Memory::new(&loaded);
+    let linked = Linked {
+        exported: exported_functions(&file),
+        pointers: relocated_pointers(&file, arch, &memory),
+    };
+    recover_in_memory(&code_sections, &index, &linked, Regions::CodeOnly, arch, &memory)
+}
+
+/// What a linked object file says about its functions, beyond its code.
+#[derive(Clone, Debug, Default)]
+pub struct Linked {
+    /// Where each function the dynamic symbol table exports lies.
+    pub exported: Vec<core::ops::Range<u64>>,
+    /// The addresses the data holds, which the loader moves with the code.
+    pub pointers: Vec<u64>,
+}
+
+/// The addresses the words that relative relocations name hold.
+///
+/// A shared library moves where it loads, so the loader adds the load address
+/// to each word of data that holds an address: a relocation with no symbol.
+/// Where such a word holds an address in the code, it points at a function,
+/// as a table of callbacks does: Lua keeps `str_find` in one.
+fn relocated_pointers(file: &object::File<'_>, arch: &dyn Arch, memory: &Memory<'_>) -> Vec<u64> {
+    let Some(relocations) = file.dynamic_relocations() else { return Vec::new() };
+    relocations
+        .filter(|(_, relocation)| relocation.target() == RelocationTarget::Absolute)
+        .filter_map(|(offset, _)| memory.bytes(offset, arch.pointer_width()))
+        .map(|bytes| arch.read_pointer(bytes))
+        .collect()
 }
 
 /// Where each function the dynamic symbol table exports lies.
@@ -214,10 +237,11 @@ pub fn recover_from_regions(
     exception_index: &[IndexEntry],
     arch: &dyn Arch,
 ) -> Vec<Recovered> {
+    let linked = Linked::default();
     recover_in_memory(
         regions,
         exception_index,
-        &[],
+        &linked,
         Regions::CodeAndData,
         arch,
         &Memory::new(regions),
@@ -235,11 +259,11 @@ pub enum Regions {
 
 /// Find the functions in code that is already located, where `memory` holds
 /// everything else the binary loads, for the tables the code reads, and
-/// `exported` the functions a dynamic symbol table names.
+/// `linked` what an object file says about its functions.
 pub fn recover_in_memory(
     regions: &[(u64, &[u8])],
     exception_index: &[IndexEntry],
-    exported: &[core::ops::Range<u64>],
+    linked: &Linked,
     contents: Regions,
     arch: &dyn Arch,
     memory: &Memory<'_>,
@@ -251,7 +275,7 @@ pub fn recover_in_memory(
     let mut starts: BTreeSet<(u64, Source)> = BTreeSet::new();
     // An exported function is exact at both ends, and what follows it starts
     // another function, or padding that is trimmed away.
-    for range in exported {
+    for range in &linked.exported {
         starts.insert((range.start, Source::Symbol));
         starts.insert((range.end, Source::AfterReturn));
     }
@@ -290,7 +314,8 @@ pub fn recover_in_memory(
             // unwind index lists only starts, so it proves no such thing.
             // Measured on tinyxml2 for MIPS at -O3 as a raw image, one cut a
             // template function short, and its caller then read as changed.
-            let taken = taken_addresses(arch, regions, contents, code, *base, memory);
+            let taken =
+                taken_addresses(arch, regions, contents, &linked.pointers, code, *base, memory);
             let local = slot_call_targets(arch, code, *base, memory);
             for address in call_targets(arch, code, *base).into_iter().chain(taken).chain(local) {
                 if !described.iter().any(|range| range.start < address && range.contains(&address))
@@ -308,7 +333,7 @@ pub fn recover_in_memory(
     }
 
     for (base, code) in regions {
-        let taken = taken_addresses(arch, regions, contents, code, *base, memory);
+        let taken = taken_addresses(arch, regions, contents, &linked.pointers, code, *base, memory);
         let local = slot_call_targets(arch, code, *base, memory);
         for address in call_targets(arch, code, *base).into_iter().chain(taken).chain(local) {
             starts.insert((address, Source::CallTarget));
@@ -366,6 +391,7 @@ fn taken_addresses(
     arch: &dyn Arch,
     regions: &[(u64, &[u8])],
     contents: Regions,
+    pointers: &[u64],
     code: &[u8],
     base: u64,
     memory: &Memory<'_>,
@@ -399,8 +425,11 @@ fn taken_addresses(
         };
         before == 0 || before < index || ends_at(before - 1) || (before >= 2 && ends_at(before - 2))
     };
+    let end = base + code.len() as u64;
+    let pointed_at = pointers.iter().copied().filter(|address| (base..end).contains(address));
     arch.data_addresses(code, &insns, &in_code, memory)
         .into_iter()
+        .chain(pointed_at)
         .filter(|address| address % width == 0 && ends_before(*address))
         .collect()
 }
@@ -1493,10 +1522,17 @@ mod tests {
         ]);
         let regions = [(0, code.as_slice())];
         let starts = |contents: Regions| -> Vec<u64> {
-            recover_in_memory(&regions, &[], &[], contents, &Arm32, &Memory::new(&regions))
-                .iter()
-                .map(|found| found.function.address)
-                .collect()
+            recover_in_memory(
+                &regions,
+                &[],
+                &Linked::default(),
+                contents,
+                &Arm32,
+                &Memory::new(&regions),
+            )
+            .iter()
+            .map(|found| found.function.address)
+            .collect()
         };
         assert_eq!(starts(Regions::CodeOnly), [0x0, 0x10]);
         assert_eq!(starts(Regions::CodeAndData), [0x0], "an address in a raw image can be data");
@@ -1527,10 +1563,17 @@ mod tests {
         let regions = [(0, code.as_slice())];
         let starts = |memory: &[(u64, &[u8])]| -> Vec<u64> {
             let memory = Memory::new(memory);
-            recover_in_memory(&regions, &[], &[], Regions::CodeAndData, &Mips32::BIG, &memory)
-                .iter()
-                .map(|found| found.function.address)
-                .collect()
+            recover_in_memory(
+                &regions,
+                &[],
+                &Linked::default(),
+                Regions::CodeAndData,
+                &Mips32::BIG,
+                &memory,
+            )
+            .iter()
+            .map(|found| found.function.address)
+            .collect()
         };
         assert_eq!(starts(&[(0, code.as_slice()), (0xff0, slot.as_slice())]), [0x0, 0x20]);
         assert_eq!(starts(&[(0, code.as_slice())]), [0x0], "the slot is not loaded");
