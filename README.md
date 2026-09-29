@@ -53,10 +53,14 @@ $ hereticus --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
 
 The `+/-/~` column counts the instructions the edit added, removed and rewrote.
 A score of 1.00 with no instruction touched means only a constant changed, so
-those are hidden by default.
+those are hidden by default. A changed text is the exception: a fix can change
+only a format string, as `"%s"` to `"%.*s"`, so such a row stays visible.
 
 The `TOUCHED` column names what kind of code the edit changed: branches, calls,
-jumps, memory accesses, changed constants and bytes the decoder cannot read.
+jumps, memory accesses, changed constants, changed texts the code points at,
+and bytes the decoder cannot read. A text counts when it holds four or more
+printable bytes after a NUL, because a shorter one can be a pointer or a
+number by chance.
 Plain data instructions are left out, because they are the bulk of any rewrite
 and name nothing to act on. The column also stays quiet where it would only
 repeat the `CHANGE` word beside it, so a row of `changed values` shows a dash

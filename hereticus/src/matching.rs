@@ -12,7 +12,6 @@
 //! Matching says *which* function became which. It does not say whether the
 //! function changed: two matched functions can still differ, and
 //! [`Match::changed`] reports that.
-use core::ops::Range;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -139,6 +138,12 @@ pub enum EditKind {
     /// every instruction in place, so it never reaches the counts in
     /// [`Edits`]. See [`EditKinds::constants`].
     Constant,
+    /// A text the function points at, such as a format or a message.
+    ///
+    /// Reported on its own axis, as [`EditKind::Constant`] is: normalizing
+    /// hides the address of the text, so no instruction changes. See
+    /// [`EditKinds::texts`].
+    Text,
     /// Anything the decoder could read that fits no other kind.
     Other,
     /// Bytes the decoder cannot read, which may be data rather than code.
@@ -173,6 +178,10 @@ pub struct EditKinds {
     ///
     /// Outside the sum above, for the same reason as `constants`.
     pub callees: usize,
+    /// Texts the function points at that differ.
+    ///
+    /// Outside the sum above, for the same reason as `constants`.
+    pub texts: usize,
 }
 
 impl EditKinds {
@@ -185,6 +194,7 @@ impl EditKinds {
             EditKind::Jump => &mut self.jumps,
             EditKind::Memory => &mut self.memory,
             EditKind::Constant => &mut self.constants,
+            EditKind::Text => &mut self.texts,
             EditKind::Other => &mut self.other,
             EditKind::Opaque => &mut self.opaque,
         };
@@ -203,6 +213,7 @@ impl EditKinds {
             (EditKind::Jump, self.jumps),
             (EditKind::Memory, self.memory),
             (EditKind::Constant, self.constants),
+            (EditKind::Text, self.texts),
             (EditKind::Other, self.other),
             (EditKind::Opaque, self.opaque),
         ]
@@ -494,6 +505,11 @@ struct Referents<'a> {
 impl Prepared<'_> {
     /// See [`Referents`].
     fn referents(&self) -> Referents<'_> {
+        Referents { calls: self.named_calls(), texts: &self.texts }
+    }
+
+    /// The callees the linker or a symbol names, sorted.
+    fn named_calls(&self) -> Vec<&str> {
         let mut calls: Vec<&str> = self
             .calls
             .iter()
@@ -503,7 +519,7 @@ impl Prepared<'_> {
             })
             .collect();
         calls.sort_unstable();
-        Referents { calls, texts: &self.texts }
+        calls
     }
 
     /// Normalize this function again.
@@ -570,10 +586,7 @@ fn prepare<'a>(
             .map(|(index, function)| (function.name.as_str(), index))
             .collect(),
     };
-    // The data each function points at, read once every function is judged
-    // code or data.
-    let mut pointed_at: Vec<Vec<u64>> = Vec::with_capacity(binary.functions.len());
-    let mut prepared: Vec<Prepared<'a>> = binary
+    binary
         .functions
         .iter()
         .map(|function| {
@@ -595,12 +608,12 @@ fn prepare<'a>(
                 })
                 .collect();
 
-            pointed_at.push(arch.data_addresses(
-                &function.code,
-                &insns,
-                &binary.addresses,
-                &memory,
-            ));
+            let mut texts: Vec<&str> = arch
+                .data_addresses(&function.code, &insns, &binary.addresses, &memory)
+                .into_iter()
+                .filter_map(|address| binary.links.text_at(address))
+                .collect();
+            texts.sort_unstable();
 
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
@@ -614,35 +627,10 @@ fn prepare<'a>(
                 addresses: &binary.addresses,
                 contents,
                 calls,
-                texts: Vec::new(),
+                texts,
             }
         })
-        .collect();
-
-    // Code can read as text by chance, as a word of `bl` followed by a zero
-    // does. A raw image holds its read-only data in what the scan took for
-    // functions, so only those that hold code are left out.
-    let code: Vec<Range<u64>> = prepared
-        .iter()
-        .filter(|prepared| prepared.contents == Contents::Code)
-        .map(|prepared| {
-            let start = prepared.function.address;
-            start..start + prepared.function.code.len() as u64
-        })
-        .collect();
-    let is_code = |address: u64| {
-        let after = code.partition_point(|range| range.start <= address);
-        after.checked_sub(1).is_some_and(|index| code[index].contains(&address))
-    };
-    for (prepared, addresses) in prepared.iter_mut().zip(pointed_at) {
-        prepared.texts = addresses
-            .into_iter()
-            .filter(|&address| !is_code(address))
-            .filter_map(|address| binary.links.text_at(address))
-            .collect();
-        prepared.texts.sort_unstable();
-    }
-    prepared
+        .collect()
 }
 
 /// The steps of a comparison, in the order they run.
@@ -764,6 +752,7 @@ pub fn diff_reporting(
     cascade.uncross_by_callees();
     cascade.pair_by_callers(before, after);
     cascade.compare_callees(before, after);
+    cascade.compare_texts();
     cascade.finish(progress)
 }
 
@@ -1253,6 +1242,29 @@ impl Cascade<'_> {
             if changed > 0 {
                 pair.changed = Changed::Yes;
                 pair.kinds.callees += changed;
+            }
+        }
+    }
+
+    /// Mark each pair whose code agrees but whose texts differ.
+    ///
+    /// A fix can change only a format, as `"%s"` to `"%.*s"`, and leave the
+    /// code around it as it was. A changed text counts as a changed value.
+    ///
+    /// Only texts of [`SHORTEST_REPORTED_TEXT`] bytes or more count, because a
+    /// shorter one can be a word of data by chance.
+    fn compare_texts(&mut self) {
+        for pair in &mut self.matched {
+            if !matches!(pair.changed, Changed::No | Changed::Reordered | Changed::InDetail) {
+                continue;
+            }
+            let differ = texts_that_differ(
+                &reported_texts(&self.left[pair.before].texts),
+                &reported_texts(&self.right[pair.after].texts),
+            );
+            if differ > 0 {
+                pair.changed = Changed::InDetail;
+                pair.kinds.texts += differ;
             }
         }
     }
@@ -1782,8 +1794,15 @@ impl Cascade<'_> {
                         && self.left[other].ordered == self.left[index].ordered
                         && self.left[other].referents() == referents
                 });
-                if !shared {
-                    candidates.retain(|&other| self.right[other].referents() == referents);
+                // A twin whose texts were edited agrees with none, and then
+                // they say nothing.
+                let agreeing: Vec<usize> = candidates
+                    .iter()
+                    .copied()
+                    .filter(|&other| self.right[other].referents() == referents)
+                    .collect();
+                if !shared && !agreeing.is_empty() {
+                    candidates = agreeing;
                 }
             }
 
@@ -1807,21 +1826,22 @@ impl Cascade<'_> {
     /// first pairs with the first, and so on. A group of unequal size is left
     /// alone, because then an order is no evidence of which pairs with which.
     fn match_twins_in_order(&mut self) {
-        // A group holds one shape that refers to the same things: order is
-        // no evidence across compilers, and GCC places functions in another
-        // order than clang does.
-        type Group<'a> = (&'a [Symbol], Referents<'a>);
+        // A group holds one shape that calls the same named functions: order
+        // is no evidence across compilers, and GCC places functions in
+        // another order than clang does. Texts do not split a group, because
+        // a release edits messages, and a group of unequal sides pairs none.
+        type Group<'a> = (&'a [Symbol], Vec<&'a str>);
         let mut groups: HashMap<Group<'_>, (Vec<usize>, Vec<usize>)> = HashMap::new();
         for (index, prepared) in self.left.iter().enumerate() {
             if self.left_free[index] && !prepared.is_empty() {
-                let key = (prepared.ordered.as_slice(), prepared.referents());
+                let key = (prepared.ordered.as_slice(), prepared.named_calls());
                 groups.entry(key).or_default().0.push(index);
             }
         }
         for (index, prepared) in self.right.iter().enumerate() {
             if self.right_free[index]
                 && let Some((_, right)) =
-                    groups.get_mut(&(prepared.ordered.as_slice(), prepared.referents()))
+                    groups.get_mut(&(prepared.ordered.as_slice(), prepared.named_calls()))
             {
                 right.push(index);
             }
@@ -2036,6 +2056,39 @@ impl Cascade<'_> {
             }
         }
     }
+}
+
+/// The fewest bytes a text must hold before a change to it is reported.
+///
+/// A little-endian word that holds a small pointer or number reads as up to
+/// three printable bytes and a NUL. Measured on the backports, a panic
+/// location in Rust for ARM read as `"!\t"` and a table of tinyxml2 for MIPS
+/// as `"!e"`, and both changed with the pointers they hold. So a change from
+/// `"%d"` to `"%u"` goes unreported, though such texts still tell twins
+/// apart.
+const SHORTEST_REPORTED_TEXT: usize = 4;
+
+/// The texts long enough that a change to them is reported, in order.
+fn reported_texts<'t>(texts: &[&'t str]) -> Vec<&'t str> {
+    texts.iter().copied().filter(|text| text.len() >= SHORTEST_REPORTED_TEXT).collect()
+}
+
+/// How many texts of one sorted list have no equal in the other, counted from
+/// the side with more, so a text changed in place counts once.
+fn texts_that_differ(left: &[&str], right: &[&str]) -> usize {
+    let (mut shared, mut l, mut r) = (0, 0, 0);
+    while l < left.len() && r < right.len() {
+        match left[l].cmp(right[r]) {
+            core::cmp::Ordering::Less => l += 1,
+            core::cmp::Ordering::Greater => r += 1,
+            core::cmp::Ordering::Equal => {
+                shared += 1;
+                l += 1;
+                r += 1;
+            }
+        }
+    }
+    left.len().max(right.len()) - shared
 }
 
 /// How much the callees of two functions weigh in the order the similarity
@@ -3099,6 +3152,59 @@ mod tests {
             .filter(|pair| pair.before < 2 && pair.confidence == Confidence::IdenticalShape)
             .count();
         assert_eq!(by_shape, 0);
+    }
+
+    #[test]
+    fn texts_differ_by_what_they_do_not_share() {
+        assert_eq!(texts_that_differ(&[], &[]), 0);
+        assert_eq!(texts_that_differ(&["a", "b"], &["a", "b"]), 0);
+        assert_eq!(texts_that_differ(&["a", "b"], &["a", "c"]), 1, "one changed in place");
+        assert_eq!(texts_that_differ(&["a"], &["a", "b"]), 1, "one added");
+        assert_eq!(texts_that_differ(&["a", "a"], &["a"]), 1, "a repeat counts");
+        assert_eq!(texts_that_differ(&["a", "b"], &["c"]), 2);
+    }
+
+    /// One ARM function at 0x8000 that passes the text at 0x9001 on, with
+    /// that text after a NUL.
+    fn passes_text(text: &str) -> crate::obj::Binary {
+        let words = [
+            0xe59f_0004_u32, // 0x8000 ldr r0, [pc, 0x4]: the word at 0x800c
+            0xe08f_0000,     // 0x8004 add r0, pc, r0
+            0xe12f_ff1e,     // 0x8008 bx lr
+            0x9001 - 0x800c, // 0x800c the distance to the text
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let data = [&[0], text.as_bytes(), &[0]].concat();
+        crate::obj::Binary {
+            isa: Isa::Arm32,
+            found_by: crate::obj::FoundBy::Symbols,
+            addresses: crate::address::AddressSpace::from_ranges([0x8000..0x9100]),
+            links: crate::callee::Links::of_parts(
+                vec![(0x8000, code.clone()), (0x9000, data)],
+                BTreeMap::new(),
+            ),
+            functions: vec![Function { name: "f".to_string(), address: 0x8000, code }],
+        }
+    }
+
+    /// Code that stayed the same around a changed text changed in detail.
+    #[test]
+    fn a_changed_text_is_a_change() {
+        let diff = diff_with(&passes_text("hello"), &passes_text("howdy"), Options::default());
+        let pair = &diff.matched[0];
+        assert_eq!(pair.changed, Changed::InDetail);
+        assert_eq!(pair.kinds.texts, 1);
+
+        let same = diff_with(&passes_text("hello"), &passes_text("hello"), Options::default());
+        assert_eq!(same.matched[0].changed, Changed::No);
+    }
+
+    /// A text shorter than a word can be a pointer or a number by chance.
+    #[test]
+    fn a_changed_short_text_is_no_change() {
+        let diff = diff_with(&passes_text("ab"), &passes_text("cd"), Options::default());
+        assert_eq!(diff.matched[0].changed, Changed::No);
+        assert_eq!(diff.matched[0].kinds.texts, 0);
     }
 
     #[test]
