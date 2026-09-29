@@ -289,6 +289,15 @@ pub trait Arch {
         0
     }
 
+    /// Report whether a jump through a register is a tail call.
+    ///
+    /// Such a jump can also dispatch a `switch` through a table, which stays
+    /// inside the function. Only an architecture knows the forms a compiler
+    /// keeps for a tail call. Defaults to `false`.
+    fn is_tail_call(&self, _insn: &Insn) -> bool {
+        false
+    }
+
     /// Report whether an instruction is alignment padding rather than work.
     fn is_padding(&self, insn: &Insn) -> bool;
 

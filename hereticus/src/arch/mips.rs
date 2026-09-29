@@ -318,6 +318,12 @@ impl Arch for Mips32 {
         }
     }
 
+    /// `jr t9`: the ABI calls through `t9`, and a `switch` jumps through
+    /// another register.
+    fn is_tail_call(&self, insn: &Insn) -> bool {
+        insn.mnemonic == "jr" && insn.operands == "t9"
+    }
+
     /// A function that needs a frame opens by making room for it, so
     /// `addiu sp, sp, -N` is the first instruction of almost every one.
     ///
@@ -1746,6 +1752,15 @@ mod tests {
     #[test]
     fn jr_through_another_register_is_an_indirect_jump() {
         assert_eq!(decode_one(0x0320_0008).kind, InsnKind::Jump { target: None });
+    }
+
+    /// The ABI calls through `t9`, so `jr t9` is a tail call, and `jr` through
+    /// another register dispatches a `switch`.
+    #[test]
+    fn only_jr_t9_is_a_tail_call() {
+        assert!(Mips32::LITTLE.is_tail_call(&decode_one(0x0320_0008)), "jr t9");
+        assert!(!Mips32::LITTLE.is_tail_call(&decode_one(0x0040_0008)), "jr v0");
+        assert!(!Mips32::LITTLE.is_tail_call(&decode_one(0x03e0_0008)), "jr ra");
     }
 
     #[test]

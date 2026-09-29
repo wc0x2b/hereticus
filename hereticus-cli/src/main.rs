@@ -338,9 +338,14 @@ fn run(args: &Args) -> Result<bool, String> {
 
     match args.format {
         Format::Text => {
-            let hidden = Hidden::from_args(args);
-            let paint = Paint::resolve(args.color);
-            print_text(&diff, &before, &after, args.all, args.near_miss, hidden, paint, args.sort)
+            let view = TextView {
+                show_all: args.all,
+                near_miss_floor: args.near_miss,
+                hidden: Hidden::from_args(args),
+                paint: Paint::resolve(args.color),
+                sort: args.sort,
+            };
+            print_text(&diff, &before, &after, view)
         }
         Format::Compact => {
             print_compact(&diff, &before, &after, args.all, Hidden::from_args(args), args.sort)
@@ -782,16 +787,21 @@ fn sort_shown(shown: &mut [&Match], sort: Sort) {
     });
 }
 
-fn print_text(
-    diff: &Diff,
-    before: &Binary,
-    after: &Binary,
+/// How the text report shows a comparison.
+#[derive(Copy, Clone, Debug)]
+struct TextView {
+    /// Show every pair, not only the changed ones.
     show_all: bool,
+    /// The lowest score at which an unpaired function names its nearest
+    /// neighbour.
     near_miss_floor: f64,
     hidden: Hidden,
     paint: Paint,
     sort: Sort,
-) {
+}
+
+fn print_text(diff: &Diff, before: &Binary, after: &Binary, view: TextView) {
+    let TextView { show_all, near_miss_floor, hidden, paint, sort } = view;
     let mut shown: Vec<&Match> =
         diff.matched.iter().filter(|pair| show_all || is_interesting(pair, hidden)).collect();
     sort_shown(&mut shown, sort);
