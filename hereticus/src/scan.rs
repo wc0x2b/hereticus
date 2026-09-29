@@ -15,7 +15,9 @@
 //!    exact. Not every architecture defines one, and a compiler can leave it
 //!    out.
 //! 3. **Call targets.** Anything a call instruction jumps to is the start of a
-//!    function. This finds what is called but misses what is not.
+//!    function. This finds what is called but misses what is not. In an
+//!    object file, whose code sections hold only code, so does an address
+//!    the code takes, as it takes the address of a callback.
 //! 4. **What follows a return or a tail call, and what looks like a
 //!    prologue.** Code after a function ends usually starts a new one, and
 //!    the architecture says which instruction opens one. This is the weakest
@@ -46,6 +48,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 
+use crate::address::AddressSpace;
 use crate::arch::{Arch, DataAmongCode, Insn, InsnKind, Memory, decode_all};
 use crate::obj::Function;
 
@@ -154,6 +157,7 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
         &code_sections,
         &index,
         &exported_functions(&file),
+        Regions::CodeOnly,
         arch,
         &Memory::new(&loaded),
     )
@@ -208,7 +212,23 @@ pub fn recover_from_regions(
     exception_index: &[IndexEntry],
     arch: &dyn Arch,
 ) -> Vec<Recovered> {
-    recover_in_memory(regions, exception_index, &[], arch, &Memory::new(regions))
+    recover_in_memory(
+        regions,
+        exception_index,
+        &[],
+        Regions::CodeAndData,
+        arch,
+        &Memory::new(regions),
+    )
+}
+
+/// What the regions given to the scan hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Regions {
+    /// Only code, as the sections of an object file that it marks as code.
+    CodeOnly,
+    /// Code and data together, as a raw image holds them.
+    CodeAndData,
 }
 
 /// Find the functions in code that is already located, where `memory` holds
@@ -218,6 +238,7 @@ pub fn recover_in_memory(
     regions: &[(u64, &[u8])],
     exception_index: &[IndexEntry],
     exported: &[core::ops::Range<u64>],
+    contents: Regions,
     arch: &dyn Arch,
     memory: &Memory<'_>,
 ) -> Vec<Recovered> {
@@ -267,7 +288,8 @@ pub fn recover_in_memory(
             // unwind index lists only starts, so it proves no such thing.
             // Measured on tinyxml2 for MIPS at -O3 as a raw image, one cut a
             // template function short, and its caller then read as changed.
-            for address in call_targets(arch, code, *base) {
+            let taken = taken_addresses(arch, regions, contents, code, *base, memory);
+            for address in call_targets(arch, code, *base).into_iter().chain(taken) {
                 if !described.iter().any(|range| range.start < address && range.contains(&address))
                 {
                     starts.insert((address, Source::CallTarget));
@@ -283,7 +305,8 @@ pub fn recover_in_memory(
     }
 
     for (base, code) in regions {
-        for address in call_targets(arch, code, *base) {
+        let taken = taken_addresses(arch, regions, contents, code, *base, memory);
+        for address in call_targets(arch, code, *base).into_iter().chain(taken) {
             starts.insert((address, Source::CallTarget));
         }
         for address in function_entries(arch, code, *base) {
@@ -297,6 +320,61 @@ pub fn recover_in_memory(
     }
 
     build_functions(&starts, regions, arch)
+}
+
+/// The addresses in code that `code` forms, as a function pointer is.
+///
+/// Code passes a function it does not call by its address: a callback, or a
+/// handler it stores for later. Nothing calls such a function directly, so
+/// no call names its start, but the code that takes its address does.
+/// Measured on the releases built for the tests, as Lua's `str_find` and
+/// expat's `element4` are, this found 40 more function starts and invented
+/// none.
+///
+/// Only where the regions hold nothing but code: in a raw image, the address
+/// of a variable lands in the regions too. Measured on the OpenWrt MIPS
+/// kernels, it cut hundreds of pieces out of their data.
+fn taken_addresses(
+    arch: &dyn Arch,
+    regions: &[(u64, &[u8])],
+    contents: Regions,
+    code: &[u8],
+    base: u64,
+    memory: &Memory<'_>,
+) -> Vec<u64> {
+    if contents == Regions::CodeAndData {
+        return Vec::new();
+    }
+    let (insns, _) = decode_all(arch, code, base);
+    let in_code = AddressSpace::from_ranges(
+        regions.iter().map(|(start, bytes)| *start..*start + bytes.len() as u64),
+    );
+    let width = arch.instruction_width() as u64;
+    let pool = data_words(arch, memory, base..base + code.len() as u64, &insns);
+    // A function starts where the one before it ended. A label inside a
+    // function, or a constant that happens to fall in the code, follows code
+    // that runs on into it.
+    let ends_before = |address: u64| {
+        let Ok(index) = insns.binary_search_by_key(&address, |insn| insn.address) else {
+            return false;
+        };
+        let mut before = index;
+        while before > 0
+            && (arch.is_padding(&insns[before - 1]) || pool.contains(&insns[before - 1].address))
+        {
+            before -= 1;
+        }
+        // What ends a function ends it after its delay slots.
+        let ends_at = |at: usize| {
+            matches!(insns[at].kind, InsnKind::Return | InsnKind::Jump { .. })
+                && at + 1 + arch.delay_slots(&insns[at]) == before
+        };
+        before == 0 || before < index || ends_at(before - 1) || (before >= 2 && ends_at(before - 2))
+    };
+    arch.data_addresses(code, &insns, &in_code, memory)
+        .into_iter()
+        .filter(|address| address % width == 0 && ends_before(*address))
+        .collect()
 }
 
 /// Turn a set of start addresses into functions that reach the next start.
@@ -1355,6 +1433,29 @@ mod tests {
         // bx lr, nop, add
         let code = [0x1e, 0xff, 0x2f, 0xe1, 0x00, 0xf0, 0x20, 0xe3, 0x00, 0x00, 0x81, 0xe0];
         assert_eq!(starts_after_returns(&Arm32, &code, 0), vec![0x8], "the nop is padding");
+    }
+
+    /// A function that nothing calls, whose address the code takes, starts
+    /// where that address points, when the regions hold only code.
+    #[test]
+    fn a_function_whose_address_is_taken_starts_there() {
+        let code = arm_code(&[
+            0xe59f_0004, // 0x00 ldr r0, [pc, 0x4]: the word at 0x0c
+            0xe08f_0000, // 0x04 add r0, pc, r0: 0x0c + 0x4
+            0xeaff_fffc, // 0x08 b 0x0
+            0x0000_0004, // 0x0c the distance to 0x10
+            0xe3a0_0001, // 0x10 mov r0, 1
+            0xe12f_ff1e, // 0x14 bx lr
+        ]);
+        let regions = [(0, code.as_slice())];
+        let starts = |contents: Regions| -> Vec<u64> {
+            recover_in_memory(&regions, &[], &[], contents, &Arm32, &Memory::new(&regions))
+                .iter()
+                .map(|found| found.function.address)
+                .collect()
+        };
+        assert_eq!(starts(Regions::CodeOnly), [0x0, 0x10]);
+        assert_eq!(starts(Regions::CodeAndData), [0x0], "an address in a raw image can be data");
     }
 
     /// `bx` through a register other than `lr` is a tail call, so a leaf
