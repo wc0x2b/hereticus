@@ -367,7 +367,7 @@ impl Arch for Arm32 {
                 continue;
             };
             let pool = insn.address.wrapping_add(PC_AHEAD).wrapping_add(offset as u64);
-            words.extend((0..count).map(|word| pool + word * INSN_WIDTH as u64));
+            words.extend((0..count).map(|word| pool.wrapping_add(word * INSN_WIDTH as u64)));
         }
         words
     }
@@ -1216,6 +1216,16 @@ mod tests {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
         let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0);
         assert_eq!(Arm32.literal_pool_words(&insns), [0x08, 0x0c, 0x0c]);
+    }
+
+    /// A double load just after address 0 reaches back past it, as
+    /// random bytes read at base 0 can. The pool address wraps and does not
+    /// overflow.
+    #[test]
+    fn a_pool_before_address_zero_wraps() {
+        let code = 0xed5f_0b03_u32.to_le_bytes(); // vldr d16, [pc, -0xc]
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0);
+        assert_eq!(Arm32.literal_pool_words(&insns), [u64::MAX - 3, 0]);
     }
 
     /// GCC copies the address of the global offset table with `mov` before
