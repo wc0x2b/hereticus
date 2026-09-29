@@ -4,25 +4,28 @@
 //! [`crate::obj`] reads is not there. This module recovers the function
 //! boundaries from the code and from what the linker left behind.
 //!
-//! Three sources, strongest first:
+//! Four sources, strongest first:
 //!
-//! 1. **The unwind index.** Where the ABI has one — ARM keeps it in
+//! 1. **The dynamic symbol table.** A shared library keeps it after
+//!    stripping, because the loader links through it. It names each
+//!    exported function, with its start and its end. A raw image has none.
+//! 2. **The unwind index.** Where the ABI has one — ARM keeps it in
 //!    `.ARM.exidx` — it holds one entry per function, each pointing at where
 //!    that function starts. It survives stripping, and when it is there it is
 //!    exact. Not every architecture defines one, and a compiler can leave it
 //!    out.
-//! 2. **Call targets.** Anything a call instruction jumps to is the start of a
+//! 3. **Call targets.** Anything a call instruction jumps to is the start of a
 //!    function. This finds what is called but misses what is not.
-//! 3. **What follows a return, and what looks like a prologue.** Code after a
-//!    function ends usually starts a new one, and the architecture says which
-//!    instruction opens one. This is the weakest source, so it only fills gaps
-//!    the other two left.
+//! 4. **What follows a return or a tail call, and what looks like a
+//!    prologue.** Code after a function ends usually starts a new one, and
+//!    the architecture says which instruction opens one. This is the weakest
+//!    source, so it only fills gaps the others left.
 //!
 //! Which section holds the unwind index, which instruction is a prologue and
 //! which word is padding are all architecture specific, so this module asks
 //! [`Arch`] rather than deciding for itself.
 //!
-//! Recovery is a guess wherever the first source is missing. [`Recovered`]
+//! Recovery is a guess wherever the first two sources are missing. [`Recovered`]
 //! records which source found each function so a caller can tell an exact
 //! answer from an inferred one.
 //!
@@ -41,7 +44,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use object::{Object, ObjectSection, SectionKind};
+use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 
 use crate::arch::{Arch, DataAmongCode, Insn, InsnKind, Memory, decode_all};
 use crate::obj::Function;
@@ -147,7 +150,32 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
         .filter_map(|section| section.data().ok().map(|data| (section.address(), data)))
         .collect();
 
-    recover_in_memory(&code_sections, &index, arch, &Memory::new(&loaded))
+    recover_in_memory(
+        &code_sections,
+        &index,
+        &exported_functions(&file),
+        arch,
+        &Memory::new(&loaded),
+    )
+}
+
+/// Where each function the dynamic symbol table exports lies.
+///
+/// Stripping removes the symbol table but keeps the dynamic one, because the
+/// loader needs it to link a shared library. So every exported function of a
+/// stripped library is known, start and end. Measured on the releases built
+/// for the tests, the scan alone missed the start of 843 of 27500 functions,
+/// such as zlib's `crc32` after `crc32_z`, which ends with a jump back.
+fn exported_functions(file: &object::File<'_>) -> Vec<core::ops::Range<u64>> {
+    file.dynamic_symbols()
+        .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
+        .filter(|symbol| symbol.section_index().is_some())
+        .map(|symbol| {
+            // ARM marks a Thumb function by setting bit 0 of its address.
+            let start = symbol.address() & !1;
+            start..start + symbol.size()
+        })
+        .collect()
 }
 
 /// Turn the function ranges of call frame information into index entries.
@@ -180,14 +208,16 @@ pub fn recover_from_regions(
     exception_index: &[IndexEntry],
     arch: &dyn Arch,
 ) -> Vec<Recovered> {
-    recover_in_memory(regions, exception_index, arch, &Memory::new(regions))
+    recover_in_memory(regions, exception_index, &[], arch, &Memory::new(regions))
 }
 
 /// Find the functions in code that is already located, where `memory` holds
-/// everything else the binary loads, for the tables the code reads.
+/// everything else the binary loads, for the tables the code reads, and
+/// `exported` the functions a dynamic symbol table names.
 pub fn recover_in_memory(
     regions: &[(u64, &[u8])],
     exception_index: &[IndexEntry],
+    exported: &[core::ops::Range<u64>],
     arch: &dyn Arch,
     memory: &Memory<'_>,
 ) -> Vec<Recovered> {
@@ -196,6 +226,12 @@ pub fn recover_in_memory(
     }
 
     let mut starts: BTreeSet<(u64, Source)> = BTreeSet::new();
+    // An exported function is exact at both ends, and what follows it starts
+    // another function, or padding that is trimmed away.
+    for range in exported {
+        starts.insert((range.start, Source::Symbol));
+        starts.insert((range.end, Source::AfterReturn));
+    }
     for entry in exception_index {
         starts.insert((entry.address, Source::ExceptionIndex));
     }

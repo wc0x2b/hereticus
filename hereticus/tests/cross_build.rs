@@ -124,12 +124,12 @@ fn tally_all(first: &str, second: &str) -> Tally {
 }
 
 #[rstest]
-#[case::o1_o2("O1", "O2", Tally { right: 2537, wrong: 56, gone: 233, new: 190 })]
-#[case::o2_o3("O2", "O3", Tally { right: 2635, wrong: 23, gone: 123, new: 110 })]
-#[case::o2_os("O2", "Os", Tally { right: 1806, wrong: 153, gone: 822, new: 1209 })]
-#[case::o3_os("O3", "Os", Tally { right: 1690, wrong: 154, gone: 925, new: 1325 })]
-#[case::gcc_o2_gcc_os("gcc-O2", "gcc-Os", Tally { right: 1862, wrong: 71, gone: 628, new: 888 })]
-#[case::clang_gcc("O2", "gcc-O2", Tally { right: 1110, wrong: 211, gone: 1248, new: 1247 })]
+#[case::o1_o2("O1", "O2", Tally { right: 2557, wrong: 59, gone: 232, new: 186 })]
+#[case::o2_o3("O2", "O3", Tally { right: 2658, wrong: 23, gone: 119, new: 110 })]
+#[case::o2_os("O2", "Os", Tally { right: 1815, wrong: 155, gone: 830, new: 1222 })]
+#[case::o3_os("O3", "Os", Tally { right: 1704, wrong: 155, gone: 933, new: 1334 })]
+#[case::gcc_o2_gcc_os("gcc-O2", "gcc-Os", Tally { right: 1998, wrong: 68, gone: 617, new: 877 })]
+#[case::clang_gcc("O2", "gcc-O2", Tally { right: 1158, wrong: 214, gone: 1213, new: 1318 })]
 fn pairs_across_builds_are_locked(
     #[case] first: &str,
     #[case] second: &str,
