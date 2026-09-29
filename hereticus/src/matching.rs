@@ -21,7 +21,7 @@ use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::arch::{Arch, Insn, InsnKind, Memory, decode_all, is_branch_target};
 use crate::callee::{Callee, callees, callees_in};
 use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body_in};
-use crate::obj::{Binary, Function, Isa};
+use crate::obj::{Binary, FoundBy, Function, Isa};
 
 /// How confident a pairing is, and what justified it.
 ///
@@ -576,9 +576,10 @@ fn prepare<'a>(
     let memory = Memory::new(&regions);
     // Without names, a callee the symbol table names is known only as the
     // function it is, as in a stripped binary. What the linker names stays.
-    let own_names: HashMap<&str, usize> = match use_names {
-        UseNames::Yes => HashMap::new(),
-        UseNames::No => binary
+    // A stripped binary keeps the names of what it exports, and those stay.
+    let own_names: HashMap<&str, usize> = match (use_names, binary.found_by) {
+        (UseNames::Yes, _) | (UseNames::No, FoundBy::Scanning) => HashMap::new(),
+        (UseNames::No, FoundBy::Symbols) => binary
             .functions
             .iter()
             .enumerate()
@@ -604,6 +605,14 @@ fn prepare<'a>(
                         Some(&index) => Callee::Function(index),
                         None => Callee::Named(name),
                     },
+                    // A direct call to an exported function of a stripped
+                    // binary names it, as a call through its PLT stub does.
+                    Callee::Function(index)
+                        if binary.found_by == FoundBy::Scanning
+                            && !binary.functions[index].name.is_empty() =>
+                    {
+                        Callee::Named(binary.functions[index].name.clone())
+                    }
                     other => other,
                 })
                 .collect();

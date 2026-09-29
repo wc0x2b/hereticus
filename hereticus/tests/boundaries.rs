@@ -82,8 +82,32 @@ fn stripped_functions_are_recovered() {
         });
     assert_eq!(
         total,
-        Recovery { functions: 27500, exact: 25864, invented: 242, missed: 843 },
+        Recovery { functions: 27500, exact: 26827, invented: 247, missed: 273 },
         "over {} builds",
         builds.len()
     );
+}
+
+/// A stripped library keeps its dynamic symbol table, so each function it
+/// exports keeps its name, its start and its end.
+#[test]
+fn exported_functions_keep_their_names() {
+    let build =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/versions/zlib-1.2.13/arm-O2");
+    let read = |file: &str| {
+        let data = std::fs::read(build.join(file)).expect("run `just backports` first");
+        Binary::parse(&data).expect("the build parses")
+    };
+    let (symbols, stripped) = (read("lib.so"), read("lib-stripped.so"));
+    for name in ["crc32", "crc32_z", "inflateEnd", "gzseek"] {
+        let span_of = |binary: &Binary| {
+            binary
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+                .map(|function| (function.address, function.code.len()))
+        };
+        assert!(span_of(&symbols).is_some(), "{name} is in the symbol table");
+        assert_eq!(span_of(&stripped), span_of(&symbols), "{name}");
+    }
 }

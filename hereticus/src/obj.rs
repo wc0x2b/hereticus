@@ -1,5 +1,7 @@
 //! Read binaries and find the functions in them.
 
+use std::collections::BTreeMap;
+
 use object::{Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
 
 use crate::address::AddressSpace;
@@ -160,9 +162,28 @@ impl Binary {
             return Err(ObjError::NoCode);
         }
 
+        // Stripping keeps the dynamic symbol table, which names what the
+        // library exports, so those functions keep their names.
+        let mut exported: BTreeMap<u64, &str> = BTreeMap::new();
+        for symbol in file.dynamic_symbols() {
+            if symbol.kind() == SymbolKind::Text
+                && symbol.size() > 0
+                && let Ok(name) = symbol.name()
+            {
+                // ARM marks a Thumb function by setting bit 0 of its address.
+                let name_of = exported.entry(symbol.address() & !1).or_insert(name);
+                // Aliases share an address. The first by name keeps the
+                // result the same whatever order the table lists them in.
+                *name_of = (*name_of).min(name);
+            }
+        }
         let scanned: Vec<Function> = crate::scan::recover_functions(data, isa.arch())
             .into_iter()
             .map(|found| found.function)
+            .map(|function| match exported.get(&function.address) {
+                Some(name) => Function { name: stable_name(name).to_string(), ..function },
+                None => function,
+            })
             .collect();
 
         // Code that yields no functions means the scan failed, not that the
