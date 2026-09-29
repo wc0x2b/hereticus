@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use rayon::prelude::*;
 
 use crate::address::{AddressSpace, ConstantKind, Contents};
-use crate::arch::{Arch, Insn, InsnKind, decode_all, is_branch_target};
+use crate::arch::{Arch, Insn, InsnKind, Memory, decode_all, is_branch_target};
 use crate::callee::{Callee, callees, callees_in};
 use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body_in};
 use crate::obj::{Binary, Function, Isa};
@@ -473,14 +473,27 @@ struct Prepared<'a> {
     contents: Contents,
     /// The callee of each call, in order.
     calls: Vec<Callee>,
+    /// The texts the function points at, sorted.
+    texts: Vec<&'a str>,
+}
+
+/// What a function refers to that its normalized code does not show.
+///
+/// Twins of one shape that differ here are different functions: `ToInt` and
+/// `ToFloat` in tinyxml2 differ only in the format they pass to `sscanf`, and
+/// Lua's `math_exp` and `math_log10` only in the import they call.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Referents<'a> {
+    /// The callees the linker or a symbol names, sorted.
+    calls: Vec<&'a str>,
+    /// See [`Prepared::texts`].
+    texts: &'a [&'a str],
 }
 
 impl Prepared<'_> {
-    /// The callees the linker or a symbol names, sorted. Unlike the code,
-    /// these tell apart twins that call different imports, as `math_exp`
-    /// and `math_log10` in Lua.
-    fn named_calls(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = self
+    /// See [`Referents`].
+    fn referents(&self) -> Referents<'_> {
+        let mut calls: Vec<&str> = self
             .calls
             .iter()
             .filter_map(|callee| match callee {
@@ -488,8 +501,8 @@ impl Prepared<'_> {
                 _ => None,
             })
             .collect();
-        names.sort_unstable();
-        names
+        calls.sort_unstable();
+        Referents { calls, texts: &self.texts }
     }
 
     /// Normalize this function again.
@@ -542,6 +555,8 @@ fn prepare<'a>(
     progress: &dyn Progress,
 ) -> Vec<Prepared<'a>> {
     let arch = binary.isa.arch();
+    let regions = binary.links.regions();
+    let memory = Memory::new(&regions);
     // Without names, a callee the symbol table names is known only as the
     // function it is, as in a stripped binary. What the linker names stays.
     let own_names: HashMap<&str, usize> = match use_names {
@@ -576,6 +591,13 @@ fn prepare<'a>(
                 })
                 .collect();
 
+            let mut texts: Vec<&str> = arch
+                .data_addresses(&function.code, &insns, &binary.addresses, &memory)
+                .into_iter()
+                .filter_map(|address| binary.links.text_at(address))
+                .collect();
+            texts.sort_unstable();
+
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
             symbols.sort_unstable();
@@ -588,6 +610,7 @@ fn prepare<'a>(
                 addresses: &binary.addresses,
                 contents,
                 calls,
+                texts,
             }
         })
         .collect()
@@ -1703,10 +1726,10 @@ impl Cascade<'_> {
                         && self.left[index].ordered == self.right[*other].ordered
                 })
                 .collect();
-            // Twins that call different named functions are told apart.
+            // Twins that refer to different things are told apart.
             if candidates.len() > 1 {
-                let named = self.left[index].named_calls();
-                candidates.retain(|&other| self.right[other].named_calls() == named);
+                let referents = self.left[index].referents();
+                candidates.retain(|&other| self.right[other].referents() == referents);
             }
 
             if let [only] = candidates[..] {
@@ -1729,21 +1752,21 @@ impl Cascade<'_> {
     /// first pairs with the first, and so on. A group of unequal size is left
     /// alone, because then an order is no evidence of which pairs with which.
     fn match_twins_in_order(&mut self) {
-        // A group holds one shape that calls the same named functions: order
-        // is no evidence across compilers, and GCC places functions in
-        // another order than clang does.
-        type Group<'a> = (&'a [Symbol], Vec<&'a str>);
+        // A group holds one shape that refers to the same things: order is
+        // no evidence across compilers, and GCC places functions in another
+        // order than clang does.
+        type Group<'a> = (&'a [Symbol], Referents<'a>);
         let mut groups: HashMap<Group<'_>, (Vec<usize>, Vec<usize>)> = HashMap::new();
         for (index, prepared) in self.left.iter().enumerate() {
             if self.left_free[index] && !prepared.is_empty() {
-                let key = (prepared.ordered.as_slice(), prepared.named_calls());
+                let key = (prepared.ordered.as_slice(), prepared.referents());
                 groups.entry(key).or_default().0.push(index);
             }
         }
         for (index, prepared) in self.right.iter().enumerate() {
             if self.right_free[index]
                 && let Some((_, right)) =
-                    groups.get_mut(&(prepared.ordered.as_slice(), prepared.named_calls()))
+                    groups.get_mut(&(prepared.ordered.as_slice(), prepared.referents()))
             {
                 right.push(index);
             }

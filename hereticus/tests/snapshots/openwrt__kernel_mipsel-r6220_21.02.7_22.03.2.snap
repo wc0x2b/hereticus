@@ -4,11 +4,11 @@ assertion_line: 641
 expression: kernel_digest(&comparison)
 ---
 functions 20235 -> 21645
-matched 17195
-{No: 2806, Reordered: 1302, Data: 6, InDetail: 2184, Unreadable: 1, Yes: 10896}
-gone 3040
-new 4450
-fingerprint 0x239000a929df188e
+matched 17211
+{No: 2820, Reordered: 1303, Data: 6, InDetail: 2182, Unreadable: 1, Yes: 10899}
+gone 3024
+new 4434
+fingerprint 0xec0beae116338a6c
 
 strongest changes:
 0x80008aa0 -> 0x80045f7c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1 }

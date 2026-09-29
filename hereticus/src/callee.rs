@@ -85,6 +85,38 @@ impl Links {
         Self { memory, slots, sites: BTreeMap::new() }
     }
 
+    /// The loaded bytes, each section at its address, as [`Memory`] reads
+    /// them.
+    ///
+    /// [`Memory`]: crate::arch::Memory
+    pub fn regions(&self) -> Vec<(u64, &[u8])> {
+        self.memory.iter().map(|(start, data)| (*start, data.as_slice())).collect()
+    }
+
+    /// The text that starts at `address`: printable ASCII up to a NUL.
+    ///
+    /// Anything else is not text as far as this can tell, such as a table,
+    /// a word of code, or a string too long to be a message or a format.
+    pub fn text_at(&self, address: u64) -> Option<&str> {
+        /// Fewer bytes than this are as likely a small number as text: the
+        /// word 0x41 reads `"A"` in little-endian order.
+        const SHORTEST: usize = 2;
+        /// Longer than any format or message, and it keeps a stray pointer
+        /// into a large table cheap.
+        const LONGEST: usize = 256;
+
+        let rest = self.bytes_at(address)?;
+        let rest = &rest[..rest.len().min(LONGEST + 1)];
+        let end = rest.iter().position(|&byte| byte == 0)?;
+        let text = &rest[..end];
+        let printable =
+            text.iter().all(|&byte| byte.is_ascii_graphic() || b" \t\n\r".contains(&byte));
+        if text.len() < SHORTEST || !printable {
+            return None;
+        }
+        core::str::from_utf8(text).ok()
+    }
+
     /// The loaded bytes from `address` to the end of their section.
     fn bytes_at(&self, address: u64) -> Option<&[u8]> {
         self.memory.iter().find_map(|(start, data)| {
@@ -267,6 +299,20 @@ fn call_site_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_is_printable_up_to_a_nul() {
+        let data = b"%d\0x\0\x01\x02\0no end\0".to_vec();
+        let links =
+            Links::of_parts(vec![(0x100, data), (0x1000, vec![b'a'; 300])], BTreeMap::new());
+        assert_eq!(links.text_at(0x100), Some("%d"));
+        assert_eq!(links.text_at(0x101), None, "one byte is no text");
+        assert_eq!(links.text_at(0x103), None, "one byte is no text");
+        assert_eq!(links.text_at(0x105), None, "not printable");
+        assert_eq!(links.text_at(0x108), Some("no end"));
+        assert_eq!(links.text_at(0x1000), None, "no NUL near enough");
+        assert_eq!(links.text_at(0x50), None, "not loaded");
+    }
     use crate::arch::arm32::Arm32;
 
     fn function(name: &str, address: u64) -> Function {
