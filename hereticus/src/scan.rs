@@ -15,7 +15,9 @@
 //!    exact. Not every architecture defines one, and a compiler can leave it
 //!    out.
 //! 3. **Call targets.** Anything a call instruction jumps to is the start of a
-//!    function. This finds what is called but misses what is not. In an
+//!    function, and so is the address a slot of the global offset table holds
+//!    where a call goes through it. This finds what is called but misses
+//!    what is not. In an
 //!    object file, whose code sections hold only code, so does an address
 //!    the code takes, as it takes the address of a callback.
 //! 4. **What follows a return or a tail call, and what looks like a
@@ -49,7 +51,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 
 use crate::address::AddressSpace;
-use crate::arch::{Arch, DataAmongCode, Insn, InsnKind, Memory, decode_all};
+use crate::arch::{Arch, CallTarget, DataAmongCode, Insn, InsnKind, Memory, decode_all};
 use crate::obj::Function;
 
 /// Bytes in one ARM EHABI unwind entry: a function address and one word
@@ -289,7 +291,8 @@ pub fn recover_in_memory(
             // Measured on tinyxml2 for MIPS at -O3 as a raw image, one cut a
             // template function short, and its caller then read as changed.
             let taken = taken_addresses(arch, regions, contents, code, *base, memory);
-            for address in call_targets(arch, code, *base).into_iter().chain(taken) {
+            let local = slot_call_targets(arch, code, *base, memory);
+            for address in call_targets(arch, code, *base).into_iter().chain(taken).chain(local) {
                 if !described.iter().any(|range| range.start < address && range.contains(&address))
                 {
                     starts.insert((address, Source::CallTarget));
@@ -306,7 +309,8 @@ pub fn recover_in_memory(
 
     for (base, code) in regions {
         let taken = taken_addresses(arch, regions, contents, code, *base, memory);
-        for address in call_targets(arch, code, *base).into_iter().chain(taken) {
+        let local = slot_call_targets(arch, code, *base, memory);
+        for address in call_targets(arch, code, *base).into_iter().chain(taken).chain(local) {
             starts.insert((address, Source::CallTarget));
         }
         for address in function_entries(arch, code, *base) {
@@ -320,6 +324,30 @@ pub fn recover_in_memory(
     }
 
     build_functions(&starts, regions, arch)
+}
+
+/// The functions `code` calls through a slot of the global offset table
+/// that holds an address in its own code.
+///
+/// MIPS PIC calls a function of its own this way, as it calls an import,
+/// so no call names its target in its own bits and [`call_targets`] cannot
+/// see it. The slot of an import holds no address in the code. Measured on
+/// the releases built for the tests, Lua's `luaZ_init` is called only so,
+/// after a function that ends with a jump back, and this found 12 more
+/// function starts and invented none.
+fn slot_call_targets(arch: &dyn Arch, code: &[u8], base: u64, memory: &Memory<'_>) -> Vec<u64> {
+    let (insns, _) = decode_all(arch, code, base);
+    let end = base + code.len() as u64;
+    arch.call_targets(&insns)
+        .into_iter()
+        .filter_map(|(_, target)| match target? {
+            CallTarget::Slot(slot) => {
+                memory.bytes(slot, arch.pointer_width()).map(|bytes| arch.read_pointer(bytes))
+            }
+            CallTarget::Address(_) => None,
+        })
+        .filter(|target| (base..end).contains(target))
+        .collect()
 }
 
 /// The addresses in code that `code` forms, as a function pointer is.
@@ -1456,6 +1484,40 @@ mod tests {
         };
         assert_eq!(starts(Regions::CodeOnly), [0x0, 0x10]);
         assert_eq!(starts(Regions::CodeAndData), [0x0], "an address in a raw image can be data");
+    }
+
+    /// MIPS PIC calls a function of its own through a slot of the global
+    /// offset table, and the slot holds its address.
+    #[test]
+    fn a_function_called_through_a_slot_starts_there() {
+        use crate::arch::mips::Mips32;
+
+        let code: Vec<u8> = [
+            0x3c02_0000_u32, // 0x00 lui v0, 0
+            0x2442_7ff0,     // 0x04 addiu v0, v0, 0x7ff0: gp is 0x7ff0
+            0x0059_8821,     // 0x08 addu s1, v0, t9
+            0x8e39_9000,     // 0x0c lw t9, -0x7000(s1): the slot at 0xff0
+            0x0320_f809,     // 0x10 jalr t9
+            0x0000_0000,     // 0x14 nop
+            0x1000_fff9,     // 0x18 b 0x0
+            0x0000_0000,     // 0x1c nop
+            0x03e0_0008,     // 0x20 jr ra: the callee
+            0x0000_0000,     // 0x24 nop
+        ]
+        .iter()
+        .flat_map(|word| word.to_be_bytes())
+        .collect();
+        let slot = 0x20_u32.to_be_bytes();
+        let regions = [(0, code.as_slice())];
+        let starts = |memory: &[(u64, &[u8])]| -> Vec<u64> {
+            let memory = Memory::new(memory);
+            recover_in_memory(&regions, &[], &[], Regions::CodeAndData, &Mips32::BIG, &memory)
+                .iter()
+                .map(|found| found.function.address)
+                .collect()
+        };
+        assert_eq!(starts(&[(0, code.as_slice()), (0xff0, slot.as_slice())]), [0x0, 0x20]);
+        assert_eq!(starts(&[(0, code.as_slice())]), [0x0], "the slot is not loaded");
     }
 
     /// `bx` through a register other than `lr` is a tail call, so a leaf
