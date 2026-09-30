@@ -13,7 +13,7 @@ use bolero::check;
 
 use hereticus::address::AddressSpace;
 use hereticus::arch::{Arch, DecodeError, InsnKind, arm32::Arm32, decode_all, mips::Mips32};
-use hereticus::norm::{normalize, normalize_body, normalize_body_in};
+use hereticus::norm::{OperandShape, normalize, normalize_body, normalize_body_in};
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};
 
@@ -531,8 +531,9 @@ fn mips_constant_kinds_cover_every_instruction() {
     });
 }
 
-/// Placing a body in a space only removes constants: it keeps every
-/// instruction and every operand shape, and adds nothing.
+/// Placing a body in a space only removes the constants of addresses: it
+/// keeps every instruction, every operation and every operand shape, but for
+/// an immediate that is an address, which reads as one.
 #[test]
 fn a_space_only_removes_constants() {
     check!().with_type::<(Vec<u8>, u32)>().for_each(|(code, length)| {
@@ -543,7 +544,19 @@ fn a_space_only_removes_constants() {
             let plain = normalize_body(arch, &insns);
             let placed = normalize_body_in(arch, code, &insns, &space);
 
-            assert_eq!(plain, placed, "the space changed an operation or a shape");
+            assert_eq!(plain.len(), placed.len(), "the space added or removed an instruction");
+            for (without, with) in plain.iter().zip(&placed) {
+                assert_eq!(without.operation, with.operation, "the space changed an operation");
+                assert_eq!(without.operands.len(), with.operands.len());
+                for (was, is) in without.operands.iter().zip(&with.operands) {
+                    let as_address =
+                        matches!((was, is), (OperandShape::Immediate(_), OperandShape::Target));
+                    assert!(
+                        was == is || as_address,
+                        "the space changed a shape: {was:?} to {is:?}"
+                    );
+                }
+            }
             for (without, with) in plain.iter().zip(&placed) {
                 assert!(
                     with.constants.is_empty() || with.constants == without.constants,

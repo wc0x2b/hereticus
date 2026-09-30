@@ -258,7 +258,7 @@ fn decoder_agrees_with_objdump() {
             // Each architecture folds spellings its own way. Using ARM's
             // rules on MIPS would strip real mnemonics down to nothing.
             let canonical: fn(&str) -> String = match binary.isa {
-                Isa::Arm32 | Isa::Thumb2 => canonical_mnemonic,
+                Isa::Arm32 | Isa::Thumb2 | Isa::Aarch64 => canonical_mnemonic,
                 Isa::Mips32 | Isa::Mips32Be => canonical_mips_mnemonic,
             };
 

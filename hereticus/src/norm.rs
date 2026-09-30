@@ -265,9 +265,17 @@ pub fn normalize_body_in(
             // A `nop` does nothing, and a compiler puts one where alignment
             // asks, as before a pool of doubles.
             _ if arch.is_padding(&insns[index]) => {}
+            // The address moves, so its size says nothing either: an A64
+            // offset in a page went from 0xf8 to 0x108 when data before it
+            // grew, and crossed from one size to the next.
             Some(ConstantKind::Address) => {
                 let mut normalized = normalize(arch, &insns[index]);
                 normalized.constants.clear();
+                for shape in &mut normalized.operands {
+                    if matches!(shape, OperandShape::Immediate(_)) {
+                        *shape = OperandShape::Target;
+                    }
+                }
                 out.push(normalized);
             }
             Some(ConstantKind::Value) | None => out.push(normalize(arch, &insns[index])),

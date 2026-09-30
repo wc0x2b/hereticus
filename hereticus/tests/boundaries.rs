@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use hereticus::obj::Binary;
+use object::{Object, ObjectSection};
 
 /// What recovery found, summed over every build.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,7 +55,18 @@ fn recovery_of(build: &Path) -> Recovery {
         let data = std::fs::read(build.join(file)).expect("the build exists");
         Binary::parse(&data).expect("the build parses")
     };
+    // The PLT is code no symbol names, so the stubs the scan finds there are
+    // no error, and are left out.
+    let library = std::fs::read(build.join("lib.so")).expect("the build exists");
+    let file = object::File::parse(library.as_slice()).expect("the build parses");
+    let plt: Vec<core::ops::Range<u64>> = file
+        .sections()
+        .filter(|section| section.name().is_ok_and(|name| name.starts_with(".plt")))
+        .map(|section| section.address()..section.address() + section.size())
+        .collect();
+    let outside_plt = |&(start, _): &(u64, u64)| !plt.iter().any(|range| range.contains(&start));
     let (truth, found) = (spans(&read("lib.so")), spans(&read("lib-stripped.so")));
+    let found: BTreeSet<(u64, u64)> = found.into_iter().filter(outside_plt).collect();
     let starts = |spans: &BTreeSet<(u64, u64)>| -> BTreeSet<u64> {
         spans.iter().map(|&(start, _)| start).collect()
     };
@@ -82,7 +94,7 @@ fn stripped_functions_are_recovered() {
         });
     assert_eq!(
         total,
-        Recovery { functions: 36842, exact: 36415, invented: 145, missed: 195 },
+        Recovery { functions: 46006, exact: 45579, invented: 85, missed: 195 },
         "over {} builds",
         builds.len()
     );

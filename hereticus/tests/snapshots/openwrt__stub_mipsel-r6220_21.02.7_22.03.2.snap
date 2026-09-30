@@ -7,7 +7,7 @@ expression: report
 0x80001240 -> 0x80001128 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 0x800012f4 -> 0x80001318 Yes score=0.924 edits=Edits { added: 61, removed: 67, edited: 11 } kinds=EditKinds { branches: 24, calls: 6, jumps: 5, memory: 0, other: 104, opaque: 0, constants: 32, callees: 0, texts: 0 } confidence=Similar
 0x800018dc -> 0x800018ec InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1, callees: 0, texts: 0 } confidence=IdenticalShape
-0x80001910 -> 0x80001920 Yes score=0.955 edits=Edits { added: 49, removed: 53, edited: 12 } kinds=EditKinds { branches: 11, calls: 0, jumps: 2, memory: 0, other: 101, opaque: 0, constants: 35, callees: 0, texts: 0 } confidence=Similar
+0x80001910 -> 0x80001920 Yes score=0.946 edits=Edits { added: 49, removed: 53, edited: 15 } kinds=EditKinds { branches: 11, calls: 0, jumps: 2, memory: 0, other: 104, opaque: 0, constants: 31, callees: 0, texts: 0 } confidence=Similar
 0x800024e4 -> 0x80002504 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 gone 0x80001044
 gone 0x80001274

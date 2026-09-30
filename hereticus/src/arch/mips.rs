@@ -2610,7 +2610,13 @@ mod tests {
             let plain = normalize_body(&Mips32::BIG, &body);
             let placed = normalize_body_in(&Mips32::BIG, &code, &body, &space());
 
-            assert_eq!(plain, placed, "the operations and shapes agree");
+            assert_eq!(plain[2], placed[2], "a real constant keeps its shape");
+            let immediate = |insn: &crate::norm::NormInsn| {
+                insn.operands
+                    .iter()
+                    .any(|shape| matches!(shape, crate::norm::OperandShape::Immediate(_)))
+            };
+            assert!(!immediate(&placed[0]) && !immediate(&placed[1]), "an address is no immediate");
             assert_eq!(plain[0].constants.as_slice(), [0x8001]);
             assert!(placed[0].constants.is_empty() && placed[1].constants.is_empty());
             assert_eq!(placed[2].constants.as_slice(), [0x25], "a real constant stays");

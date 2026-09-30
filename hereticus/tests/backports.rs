@@ -121,7 +121,11 @@ enum Reading {
 /// line with the reason. A test fails if any other appears, and also if one
 /// of these stops appearing, so the list stays true.
 ///
-/// All are raw images of Thumb-2 builds. A raw image holds no relocations,
+/// All are raw images. In the AArch64 ones, a new PLT stub in the middle of
+/// the others shifts those after it once more, and the stubs, which a raw
+/// image does not name, align one place off there, so the callers of those
+/// stubs read as calling another function. The rest are Thumb-2 builds. A
+/// raw image holds no relocations,
 /// so a function that only a vtable or a table of callbacks points at, as
 /// most of tinyxml2's are, has no start the scan can see when no prologue
 /// opens it. It joins the tail of the function before, with that function's
@@ -129,6 +133,24 @@ enum Reading {
 /// thunks of LLD that reach the same distance pair crossed, as nothing names
 /// the PLT stubs they reach. See `TODO.md`.
 const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
+    (Reading::Raw, "lua", "aarch64", "Os", "addfield"),
+    (Reading::Raw, "lua", "aarch64", "Os", "auxsort"),
+    (Reading::Raw, "lua", "aarch64", "Os", "foreachi"),
+    (Reading::Raw, "lua", "aarch64", "Os", "g_iofile"),
+    (Reading::Raw, "lua", "aarch64", "Os", "getiofile"),
+    (Reading::Raw, "lua", "aarch64", "Os", "io_close"),
+    (Reading::Raw, "lua", "aarch64", "Os", "io_lines"),
+    (Reading::Raw, "lua", "aarch64", "Os", "ipairsaux"),
+    (Reading::Raw, "lua", "aarch64", "Os", "ll_loadfunc"),
+    (Reading::Raw, "lua", "aarch64", "Os", "ll_require"),
+    (Reading::Raw, "lua", "aarch64", "Os", "luaB_unpack"),
+    (Reading::Raw, "lua", "aarch64", "Os", "luaL_findtable"),
+    (Reading::Raw, "lua", "aarch64", "Os", "luaL_ref"),
+    (Reading::Raw, "lua", "aarch64", "Os", "luaL_unref"),
+    (Reading::Raw, "lua", "aarch64", "Os", "tinsert"),
+    (Reading::Raw, "lua", "aarch64", "Os", "tremove"),
+    (Reading::Raw, "lua", "aarch64", "gcc-O2", "lua_replace"),
+    (Reading::Raw, "lua", "aarch64", "gcc-Os", "lua_replace"),
     (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_pushinteger"),
     (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_pushlstring"),
     (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_rawgeti"),
@@ -161,6 +183,7 @@ const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
     (Reading::Raw, "lua", "thumb", "gcc-O2", "lua_replace"),
     (Reading::Raw, "lua", "thumb", "gcc-O2", "lua_type"),
     (Reading::Raw, "lua", "thumb", "gcc-O2", "lua_typename"),
+    (Reading::Raw, "tinyxml2", "aarch64", "gcc-Os", "_ZN8tinyxml210XMLPrinter10PrintSpaceEi"),
     (
         Reading::Raw,
         "tinyxml2",
@@ -397,6 +420,7 @@ fn parse_raw(build: Build, variant: &str) -> Binary {
     let isa = match build.arch {
         "arm" => Isa::Arm32,
         "thumb" => Isa::Thumb2,
+        "aarch64" => Isa::Aarch64,
         "mips" => Isa::Mips32Be,
         _ => Isa::Mips32,
     };
@@ -524,7 +548,7 @@ fn build(project: Project, arch: &'static str, level: &'static str) -> Build {
 #[rstest]
 fn with_symbols_the_fix_is_named_exactly(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "thumb", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     check_with_symbols(build(project, arch, level));
@@ -567,7 +591,7 @@ fn check_with_symbols(build: Build) {
 #[rstest]
 fn stripped_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "thumb", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     check_stripped(build(project, arch, level));
@@ -595,7 +619,7 @@ fn check_stripped(build: Build) {
 #[rstest]
 fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "thumb", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     check_raw(build(project, arch, level));
@@ -623,11 +647,11 @@ fn check_raw(build: Build) {
 #[rstest]
 fn a_build_compared_with_itself_reports_nothing(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2, Project::Smallvec)] project: Project,
-    #[values("arm", "thumb", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("before", "after")] variant: &str,
 ) {
-    // The Rust harness is built for A32 only.
-    if project == Project::Smallvec && arch == "thumb" {
+    // The Rust harness is built for 32-bit ARM and MIPS only.
+    if project == Project::Smallvec && matches!(arch, "thumb" | "aarch64") {
         return;
     }
     let build = build(project, arch, "O2");
