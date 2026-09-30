@@ -46,18 +46,10 @@ that opens with no prologue, has no start the scan can see. It joins the
 tail of the function before, pool and all. And LLD's range extension
 thunks, whose bytes hold a distance, pair crossed where two reach the same
 distance, since a raw image names no PLT stub they reach. `KNOWN_EXTRAS` in
-`tests/backports.rs` lists the 96 false reports these make. Reading the
+`tests/backports.rs` lists the 92 false reports these make. Reading the
 words of the data that hold an address with bit 0 set, in the code, as
 starts could find the functions, where the data can be told from the code.
 Pairing thunks by the stub they reach, once stubs pair, could pair them.
-
-## Read a text at the start of .rodata in a raw image
-
-A raw image has no sections, so a string at the first byte of `.rodata`,
-right after the code, follows no NUL and is not read as text. A change to
-it goes unreported: zlib 1.3 changes `zlibVersion` so, and the raw
-readings of the releases miss it. The end of the code, as the scan finds
-it, could stand for the start of the section.
 
 ## Read a binary that mixes A32 and Thumb-2
 
@@ -72,17 +64,6 @@ decoder could be chosen per function.
 The smallvec harness is built for A32 only, and the tests skip Thumb-2 for
 it. Build it for `thumbv7neon-unknown-linux-gnueabihf` or a soft-float
 Thumb-2 target, so Rust code is measured in Thumb-2 too.
-
-## Align the PLT stubs of a raw AArch64 image
-
-A raw image names no PLT stub, so the stubs of two builds align by their
-order and by the callers that call them. Where a new import adds a stub
-in the middle of the others, the stubs after it shift once more, and the
-alignment keeps the old shift one stub too long: the callers of that stub
-then read as calling another function. `KNOWN_EXTRAS` in
-`tests/backports.rs` lists 19 such false reports in Lua and tinyxml2 for
-AArch64. The slot each stub jumps through, in the order of the global
-offset table, could anchor the alignment.
 
 ## Measure older ARM cores
 

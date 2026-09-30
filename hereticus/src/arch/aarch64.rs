@@ -229,8 +229,13 @@ impl Arch for Aarch64 {
         let (insns, _) = super::decode_all(self, code.get(..4 * INSN_WIDTH)?, address);
         let [adrp, load, add, jump] = insns.as_slice() else { return None };
         let page = page_of(adrp)?;
-        let low =
-            self.constant_value(load.operands.strip_prefix("x17, [x16, ")?.strip_suffix(']')?)?;
+        // An offset of 0 prints as `[x16]`, with none.
+        let reference = load.operands.strip_prefix("x17, [x16")?.strip_suffix(']')?;
+        let low = match reference.strip_prefix(", ") {
+            Some(offset) => self.constant_value(offset)?,
+            None if reference.is_empty() => 0,
+            None => return None,
+        };
         let shape = load.mnemonic == "ldr"
             && add.operands.starts_with("x16, x16, ")
             && jump.mnemonic == "br"
@@ -538,6 +543,10 @@ mod tests {
         let stub = code(&[0x9000_0110, 0xf942_3e11, 0x9111_e210, 0xd61f_0220]);
         assert_eq!(Aarch64.stub_slot(&stub, 0x1a210), Some(0x3a478));
         assert_eq!(Aarch64.stub_slot(&stub[..8], 0x1a210), None, "too short");
+        // The stub of `lua_settable` in Lua for AArch64 at `-Os`, whose slot
+        // starts its page: `ldr x17, [x16]`.
+        let at_page = code(&[0xd000_0110, 0xf940_0211, 0x9100_0210, 0xd61f_0220]);
+        assert_eq!(Aarch64.stub_slot(&at_page, 0x36710), Some(0x58000));
     }
 
     #[test]
