@@ -620,7 +620,7 @@ fn prepare<'a>(
             let mut texts: Vec<&str> = arch
                 .data_addresses(&function.code, &insns, &binary.addresses, &memory)
                 .into_iter()
-                .filter_map(|address| binary.links.text_at(address))
+                .filter_map(|address| binary.links.text_after_code(arch, address))
                 .collect();
             texts.sort_unstable();
 

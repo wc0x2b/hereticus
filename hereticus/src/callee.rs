@@ -31,7 +31,7 @@ use object::{
     RelocationTarget, SectionKind,
 };
 
-use crate::arch::{Arch, CallTarget, Insn, decode_all};
+use crate::arch::{Arch, CallTarget, Insn, InsnKind, decode_all};
 use crate::obj::{Function, stable_name};
 
 /// What the linker left that names the callees of a binary.
@@ -127,13 +127,6 @@ impl Links {
     /// read-only data can start with a string right after code, as GCC puts
     /// `.rodata` after `.text` in Lua for Thumb-2.
     pub fn text_at(&self, address: u64) -> Option<&str> {
-        /// Fewer bytes than this are as likely a small number as text: the
-        /// word 0x41 reads `"A"` in little-endian order.
-        const SHORTEST: usize = 2;
-        /// Longer than any format or message, and it keeps a stray pointer
-        /// into a large table cheap.
-        const LONGEST: usize = 256;
-
         let after_a_nul = address
             .checked_sub(1)
             .and_then(|before| self.bytes_at(before))
@@ -141,6 +134,38 @@ impl Links {
         if !after_a_nul && !self.read_only_starts.contains(&address) {
             return None;
         }
+        self.printable_at(address)
+    }
+
+    /// [`Self::text_at`], or the text right after an instruction of `arch`
+    /// that ends a function, a return or a jump, or after padding.
+    ///
+    /// That is where `.rodata` starts when a linker puts it right after
+    /// `.text`, as GNU `ld` does, and a raw image has no section to say so.
+    /// Measured on Lua built by GCC for AArch64 as a raw image, the first
+    /// string of `.rodata` otherwise read as text in one release and not in
+    /// the next, and `lua_replace` read as changed.
+    pub fn text_after_code(&self, arch: &dyn Arch, address: u64) -> Option<&str> {
+        self.text_at(address).or_else(|| {
+            let width = arch.instruction_width();
+            let start = address.checked_sub(width as u64)?;
+            let word = self.bytes_at(start)?.get(..width)?;
+            let before = arch.decode(word, 0, start).ok()?;
+            let ends = matches!(before.kind, InsnKind::Return | InsnKind::Jump { .. })
+                || arch.is_padding(&before);
+            ends.then(|| self.printable_at(address)).flatten()
+        })
+    }
+
+    /// Printable ASCII from `address` up to a NUL.
+    fn printable_at(&self, address: u64) -> Option<&str> {
+        /// Fewer bytes than this are as likely a small number as text: the
+        /// word 0x41 reads `"A"` in little-endian order.
+        const SHORTEST: usize = 2;
+        /// Longer than any format or message, and it keeps a stray pointer
+        /// into a large table cheap.
+        const LONGEST: usize = 256;
+
         let rest = self.bytes_at(address)?;
         let rest = &rest[..rest.len().min(LONGEST + 1)];
         let end = rest.iter().position(|&byte| byte == 0)?;
@@ -360,6 +385,24 @@ mod tests {
         assert_eq!(read_only.text_at(0x2000), Some("at start"), "read-only data starts there");
         assert_eq!(links.text_at(0x1000), None, "no NUL near enough");
         assert_eq!(links.text_at(0x50), None, "not loaded");
+    }
+
+    /// A raw image has no section to say where `.rodata` starts, so a text
+    /// right after the last instruction of a function reads as a text.
+    #[test]
+    fn text_after_code_follows_an_end_of_function() {
+        use crate::arch::aarch64::Aarch64;
+        let after = |word: u32| {
+            let mut data = word.to_le_bytes().to_vec();
+            data.extend_from_slice(b"text\0");
+            Links::of_parts(vec![(0x1000, data)], BTreeMap::new())
+        };
+        let (ret, nop, add) = (0xd65f_03c0, 0xd503_201f, 0x9100_0400);
+        assert_eq!(after(ret).text_after_code(&Aarch64, 0x1004), Some("text"), "after a return");
+        assert_eq!(after(nop).text_after_code(&Aarch64, 0x1004), Some("text"), "after padding");
+        assert_eq!(after(add).text_after_code(&Aarch64, 0x1004), None, "inside a function");
+        assert_eq!(after(ret).text_after_code(&Aarch64, 0x1005), None, "not after a NUL");
+        assert_eq!(after(ret).text_after_code(&Aarch64, 0x1002), None, "no whole word before");
     }
     use crate::arch::arm32::Arm32;
 
