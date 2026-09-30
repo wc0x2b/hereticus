@@ -21,10 +21,12 @@ patches="$here/patches"
 # The flags that change the code are stated, as in build.sh, so the result
 # does not depend on the defaults a distribution patches into clang.
 arm_flags=(-march=armv7-a -marm -mfloat-abi=softfp -mfpu=neon)
+thumb_flags=(-march=armv7-a -mthumb -mfloat-abi=softfp -mfpu=neon)
 common_flags=(-fPIC -fno-stack-protector -w)
 
 # name:triple, one per architecture the tool reads.
-targets=(arm:arm-linux-gnueabi mips:mips-linux-gnu mipsel:mipsel-linux-gnu)
+targets=(arm:arm-linux-gnueabi thumb:arm-linux-gnueabi mips:mips-linux-gnu
+    mipsel:mipsel-linux-gnu)
 # clang at every level that ships, and GCC with GNU ld at the two most
 # firmware uses. A GCC build lands in `<arch>-gcc-<level>`.
 levels=(O1 O2 O3 Os)
@@ -69,6 +71,7 @@ build() {
         local arch="${target%%:*}" triple="${target##*:}"
         local flags=("${common_flags[@]}" "${project_flags[@]}")
         [ "$arch" = arm ] && flags+=("${arm_flags[@]}")
+        [ "$arch" = thumb ] && flags+=("${thumb_flags[@]}")
 
         for level in "${levels[@]}"; do
             local dest="$out/$name-$variant/$arch-$level"

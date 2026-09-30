@@ -24,8 +24,8 @@ use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
 use super::arm32::{
-    Arm32, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION, classify, parse_hex, pool_words_loaded,
-    split_mnemonic, track_pool_words,
+    Arm32, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION, classify, decode_fallback, parse_hex,
+    pool_words_loaded, split_mnemonic, track_pool_words,
 };
 use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind};
@@ -36,15 +36,23 @@ const HALFWORD: usize = 2;
 /// The wide T32 instruction.
 const WORD: usize = 4;
 
+/// `bx pc` and `b.n` back, little endian: the T32 words GNU `ld` puts before
+/// an A32 PLT stub that T32 code calls.
+const THUMB_STUB_PREFIX: [u8; 4] = [0x78, 0x47, 0xfd, 0xe7];
+
 /// More cases than any `switch` a compiler turns into one table.
 const MOST_CASES: usize = 1024;
 
 /// How far back the bound of a table may lie.
 const TABLE_LOOK_BACK: usize = 16;
 
-/// The halfwords a linker pads T32 code with: `nop`, the older `mov r8, r8`,
-/// and zeros, little endian.
-const PADDING: [[u8; 2]; 3] = [[0x00, 0xbf], [0xc0, 0x46], [0x00, 0x00]];
+/// The halfwords a linker pads T32 code with, little endian: `nop`, the
+/// older `mov r8, r8`, and the `0xd4d4` that LLD fills gaps with.
+///
+/// Not zeros: a function that ends with a pool can end with the upper half
+/// of a small word. Measured on Lua built by GCC for Thumb-2, trimming zeros
+/// cut 170 functions two bytes short.
+const PADDING: [[u8; 2]; 3] = [[0x00, 0xbf], [0xc0, 0x46], [0xd4, 0xd4]];
 
 /// ARM32 in T32 (Thumb-2) mode.
 #[derive(Clone, Copy, Debug, Default)]
@@ -62,6 +70,25 @@ impl Arch for Thumb2 {
         let mut inst = Instruction::default();
         let failed = InstDecoder::default_thumb().decode_into(&mut inst, &mut reader).is_err();
         if failed || inst.opcode == Opcode::Invalid {
+            // `yaxpeax-arm` 0.4 reads no VFP in T32 either. A wide T32 `vldr`
+            // is the A32 word with the condition that means always, so the
+            // A32 reading serves: without it, the doubles a `vldr` loads
+            // after a return read as code, as in Lua's `os_clock`.
+            let fallback = match *bytes {
+                [low, high, second_low, second_high] => {
+                    decode_fallback(u32::from_le_bytes([second_low, second_high, low, high]))
+                }
+                _ => None,
+            };
+            if let Some((mnemonic, operands)) = fallback {
+                return Ok(Insn {
+                    address: insn_address,
+                    bytes_len: width,
+                    mnemonic,
+                    operands,
+                    kind: InsnKind::Normal,
+                });
+            }
             // The width comes from the first halfword, so stepping over an
             // unreadable instruction keeps the rest aligned. Its bytes go in
             // the operands, so that an edit to it still shows.
@@ -79,11 +106,9 @@ impl Arch for Thumb2 {
         let (mnemonic, operands) = split_mnemonic(&text);
         // `.w` only says the encoding is wide, which the length already
         // does. Without it, the narrow and the wide form of one operation
-        // compare alike, as A32 names them.
-        let mnemonic = match mnemonic.strip_suffix(".w").or_else(|| mnemonic.strip_suffix(".n")) {
-            Some(stem) => stem.to_string(),
-            None => mnemonic,
-        };
+        // compare alike, as A32 names them. A condition can follow it, as in
+        // `b.wne`.
+        let mnemonic = mnemonic.replace(".w", "").replace(".n", "");
         let target = branch_target(&inst, insn_address, width);
         let kind = match inst.opcode {
             Opcode::CBZ | Opcode::CBNZ => InsnKind::Branch { target },
@@ -178,18 +203,51 @@ impl Arch for Thumb2 {
                 InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
                     Some((index, Some(super::CallTarget::Address(target))))
                 }
+                // A range extension thunk jumps to where it formed.
+                InsnKind::Jump { target: None } if index >= 3 => thunk_target(&insns[index - 3..])
+                    .map(|target| (index, Some(super::CallTarget::Address(target)))),
                 _ => None,
             })
             .collect()
     }
 
-    /// A T32 library calls through A32 stubs, as an A32 one does.
+    /// A T32 library calls through A32 stubs, as an A32 one does. GNU `ld`
+    /// opens each stub a T32 call reaches with `bx pc; b.n` to switch to A32
+    /// first.
     fn stub_slot(&self, code: &[u8], address: u64) -> Option<u64> {
-        Arm32.stub_slot(code, address)
+        match code.split_at_checked(THUMB_STUB_PREFIX.len()) {
+            Some((prefix, stub)) if prefix == THUMB_STUB_PREFIX => {
+                Arm32.stub_slot(stub, address + THUMB_STUB_PREFIX.len() as u64)
+            }
+            _ => Arm32.stub_slot(code, address),
+        }
     }
 
     fn is_prologue(&self, insn: &Insn) -> bool {
         Arm32.is_prologue(insn)
+    }
+
+    /// LLD's range extension thunk is a function by itself:
+    ///
+    /// ```text
+    /// movw ip, lo
+    /// movt ip, hi
+    /// add  ip, pc
+    /// bx   ip
+    /// ```
+    ///
+    /// A thunk that nothing in this build calls still starts there, and a
+    /// run of them otherwise reads as one function.
+    fn is_function_entry(&self, body: &[Insn]) -> bool {
+        let [movw, movt, add, bx, ..] = body else { return false };
+        movw.mnemonic == "mov"
+            && movw.operands.starts_with("ip, 0x")
+            && movt.mnemonic == "movt"
+            && movt.operands.starts_with("ip, ")
+            && add.mnemonic == "add"
+            && add.operands == "ip, pc"
+            && bx.mnemonic == "bx"
+            && bx.operands == "ip"
     }
 
     fn before_pc_reference<'a>(&self, operands: &'a str) -> Option<&'a str> {
@@ -223,9 +281,15 @@ impl Arch for Thumb2 {
         }
     }
 
+    /// A zero halfword reads as `lsls r0, r0, 0`, which changes nothing but
+    /// the flags, and fills the gap before a word-aligned pool.
     fn is_padding(&self, insn: &Insn) -> bool {
         insn.mnemonic == "nop"
             || (insn.mnemonic == "mov" && insn.operands == "r8, r8")
+            || (insn.mnemonic == "lsls" && insn.operands == "r0, r0, 0x0")
+            // LLD's fill, `0xd4d4`, reads as this branch back. No compiler
+            // branches back into the middle of the fill before a function.
+            || (insn.mnemonic == "bmi" && insn.operands == "$-0x56")
             || (insn.kind == InsnKind::Unknown && insn.operands == "0000")
     }
 
@@ -251,9 +315,26 @@ impl Arch for Thumb2 {
         u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    fn stub_arch(&self) -> Option<&'static dyn Arch> {
+        Some(&Arm32)
+    }
+
     fn function_address(&self, pointer: u64) -> u64 {
         pointer & !1
     }
+}
+
+/// Where the range extension thunk that `body` opens with jumps: the value
+/// `movw` and `movt` build, plus `pc` at the `add`, without the T32 bit.
+fn thunk_target(body: &[Insn]) -> Option<u64> {
+    if !Thumb2.is_function_entry(body) {
+        return None;
+    }
+    let low = parse_hex(body[0].operands.strip_prefix("ip, ")?)?;
+    let high = parse_hex(body[1].operands.strip_prefix("ip, ")?)?;
+    let distance = (high << 16 | low) as u32;
+    let pc = PcModel::T32.of(body[2].address) as u32;
+    Some(u64::from(pc.wrapping_add(distance) & !1))
 }
 
 /// Report whether the halfword `first` opens a 32-bit instruction.
@@ -448,10 +529,46 @@ mod tests {
 
     #[test]
     fn padding_is_trimmed_by_halfwords() {
-        let code = halfwords(&[0x4770, 0xbf00, 0x0000]);
+        let code = halfwords(&[0x4770, 0xbf00, 0xd4d4]);
         assert_eq!(Thumb2.trim_padding(&code), &code[..2]);
+        let pool = halfwords(&[0x4770, 0xbf00, 0x0040, 0x0000]);
+        assert_eq!(Thumb2.trim_padding(&pool), &pool[..], "a pool word ends with zeros");
         assert!(Thumb2.is_padding(&decode_one(&[0xbf00])));
         assert!(Thumb2.is_padding(&decode_one(&[0x46c0])));
+        assert!(Thumb2.is_padding(&decode_one(&[0x0000])), "lsls r0, r0, 0");
+        assert!(!Thumb2.is_padding(&decode_one(&[0x0048])), "lsls r0, r1, 1");
+    }
+
+    /// The PLT stub of `malloc` in zlib for Thumb-2, as GNU `ld` wrote it:
+    /// `bx pc; b.n`, then the A32 stub.
+    #[test]
+    fn reads_the_slot_of_a_stub_behind_the_thumb_prefix() {
+        let stub: Vec<u8> = [0xe7fd_4778_u32, 0xe28f_c600, 0xe28c_ca1e, 0xe5bc_fb6c]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let slot = Arm32.stub_slot(&stub[4..], 0x14a0);
+        assert!(slot.is_some());
+        assert_eq!(Thumb2.stub_slot(&stub, 0x149c), slot);
+        assert_eq!(Thumb2.stub_slot(&stub[4..], 0x14a0), slot, "a stub with no prefix");
+    }
+
+    #[test]
+    fn a_range_extension_thunk_is_a_function_entry() {
+        let code = halfwords(&[
+            0xf240, 0x0cc4, // mov.w ip, 0xc4
+            0xf2c0, 0x0c00, // movt ip, 0x0
+            0x44fc, // add ip, pc
+            0x4760, // bx ip
+        ]);
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        assert!(Thumb2.is_function_entry(&insns));
+        assert!(!Thumb2.is_function_entry(&insns[1..]));
+        // `add ip, pc` at 0x1008 reads 0x100c, and 0x100c + 0xc4 = 0x10d0.
+        assert_eq!(
+            Thumb2.call_targets(&insns),
+            [(3, Some(crate::arch::CallTarget::Address(0x10d0)))]
+        );
     }
 
     #[test]

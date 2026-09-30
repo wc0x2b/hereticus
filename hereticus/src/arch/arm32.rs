@@ -699,7 +699,7 @@ fn parse_number(text: &str) -> Option<i64> {
 /// know the pool is data. Measured on tinyxml2 built by GCC for ARM,
 /// `vldr d16, [pc, 0x90]` did not decode, its offset changed whenever an
 /// alignment `nop` moved the pool, and that read as an edit.
-fn decode_fallback(word: u32) -> Option<(String, String)> {
+pub(super) fn decode_fallback(word: u32) -> Option<(String, String)> {
     const CONDITIONS: [&str; 15] =
         ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", ""];
     const REGISTERS: [&str; 16] = [
@@ -834,6 +834,10 @@ pub(super) fn track_pool_words(
     let mut literal: Vec<(&str, u64, u32)> = Vec::new();
     // Registers holding an address built from `pc` and a pool word.
     let mut relative: Vec<(&str, u64)> = Vec::new();
+    // Registers holding a value built by `movw` and `movt`, with where the
+    // two are. LLD's range extension thunks for T32 add such a value to `pc`:
+    // `movw ip, lo; movt ip, hi; add ip, pc; bx ip`.
+    let mut halves: Vec<(&str, [usize; 2], u32)> = Vec::new();
 
     let word_at = |pool: u64| -> Option<u32> {
         let offset = usize::try_from(pool.checked_sub(start)?).ok()?;
@@ -841,11 +845,57 @@ pub(super) fn track_pool_words(
         Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     };
 
-    for insn in body {
+    for (index, insn) in body.iter().enumerate() {
         let operation = Arm32.normalize_operation(&insn.mnemonic);
         let Some((destination, rest)) = insn.operands.split_once(',') else { continue };
         let (destination, rest) = (destination.trim(), rest.trim());
         let pc = pc_model.of(insn.address);
+
+        // `movw rX, lo` then `movt rX, hi`: a 32-bit value in two halves.
+        // Any other write ends it, but for the `add rX, pc` that uses it.
+        let builds_halves = matches!(operation.as_str(), "mov" | "movw" | "movt");
+        let uses_halves = operation == "add" && rest == "pc";
+        if writes_first_operand(&operation) && !builds_halves && !uses_halves {
+            halves.retain(|(held, ..)| *held != destination);
+        }
+        match operation.as_str() {
+            "mov" | "movw" if !rest.contains(',') => {
+                halves.retain(|(held, ..)| *held != destination);
+                if let Some(low) = parse_hex(rest).filter(|&low| low <= 0xffff) {
+                    halves.push((destination, [index, index], low as u32));
+                }
+            }
+            "movt" => {
+                let high = parse_hex(rest).filter(|&high| high <= 0xffff);
+                match (high, halves.iter_mut().find(|(held, ..)| *held == destination)) {
+                    (Some(high), Some((_, at, value))) => {
+                        at[1] = index;
+                        *value = (*value & 0xffff) | ((high as u32) << 16);
+                    }
+                    _ => halves.retain(|(held, ..)| *held != destination),
+                }
+                continue;
+            }
+            // `add rX, pc` of a value in both halves forms an address.
+            "add" if rest == "pc" => {
+                let whole =
+                    halves.iter().find(|(held, at, _)| *held == destination && at[0] != at[1]);
+                if let Some(&(_, at, value)) = whole {
+                    let address = pc.wrapping_add(i64::from(value as i32) as u64) & 0xffff_ffff;
+                    if space.contains_formed(address) {
+                        addresses.push(address);
+                        for at in at {
+                            kinds[at] = ConstantKind::Address;
+                        }
+                    }
+                    halves.retain(|(held, ..)| *held != destination);
+                    forget(&mut literal, &mut relative, destination);
+                    relative.push((destination, address));
+                    continue;
+                }
+            }
+            _ => {}
+        }
         let literal_of = |register: &str| {
             literal
                 .iter()

@@ -299,6 +299,16 @@ pub trait Arch {
         false
     }
 
+    /// The architecture the PLT stubs of a binary are in, where it is not
+    /// this one.
+    ///
+    /// A Thumb-2 library calls through A32 stubs, and read as T32 their
+    /// words split into pieces. Defaults to `None`: the stubs are in this
+    /// architecture.
+    fn stub_arch(&self) -> Option<&'static dyn Arch> {
+        None
+    }
+
     /// The address of the function a pointer to it holds.
     ///
     /// A pointer to a T32 function has bit 0 set, which only says the
@@ -541,7 +551,38 @@ pub fn leaves(insns: &[Insn], target: u64) -> bool {
 /// Returns what it decoded and the error that stopped it, if any. Callers keep
 /// the partial result because a function can end with data the decoder cannot
 /// read.
+///
+/// Where instructions are narrower than the words of a literal pool, as in
+/// T32, the code is read twice: once to find the pool words, and again with
+/// each kept whole. See [`decode_all_but`].
 pub fn decode_all(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Option<DecodeError>) {
+    let decoded = decode_linear(arch, code, address);
+    if arch.data_among_code() == DataAmongCode::Never
+        || arch.instruction_width() >= arch.pointer_width()
+    {
+        return decoded;
+    }
+    // Each pass reads the pool words from instructions in better step than
+    // the pass before: a load read out of step names a word that is code.
+    // Measured on Lua built by GCC for Thumb-2, one such word hid a `cbnz`
+    // and split `setnodevector`. Two passes settle what is measured.
+    const MOST_PASSES: usize = 3;
+    let mut decoded = decoded;
+    let mut pool = std::collections::BTreeSet::new();
+    for _ in 0..MOST_PASSES {
+        let named: std::collections::BTreeSet<u64> =
+            arch.literal_pool_words(&decoded.0).into_iter().collect();
+        if named == pool {
+            break;
+        }
+        pool = named;
+        decoded = decode_all_but(arch, code, address, &pool);
+    }
+    decoded
+}
+
+/// Decode `code` one instruction after the next.
+fn decode_linear(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Option<DecodeError>) {
     let mut out = Vec::new();
     let mut offset = 0;
 
@@ -566,6 +607,60 @@ pub fn decode_all(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Opt
 
     arch.after_decoding(&mut out);
     (out, None)
+}
+
+/// [`decode_all`], where each address in `data` holds a word of data rather
+/// than an instruction.
+///
+/// T32 decodes by halfwords, so a literal pool word decoded as code can read
+/// as a 32-bit instruction that runs into what follows, and every
+/// instruction after it is then out of step. Measured on zlib for Thumb-2,
+/// the upper half of a pool word joined the first halfword of the next
+/// function. Such a word here is one [`InsnKind::Unknown`] as wide as a
+/// pointer.
+pub fn decode_all_but(
+    arch: &dyn Arch,
+    code: &[u8],
+    address: u64,
+    data: &std::collections::BTreeSet<u64>,
+) -> (Vec<Insn>, Option<DecodeError>) {
+    let width = arch.pointer_width();
+    let mut out = Vec::new();
+    let mut offset = 0;
+    let mut error = None;
+    while offset < code.len() {
+        let at = address + offset as u64;
+        if data.contains(&at)
+            && let Some(bytes) = code.get(offset..offset + width)
+        {
+            let operands = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
+            out.push(Insn {
+                address: at,
+                bytes_len: width,
+                mnemonic: ".word".to_string(),
+                operands,
+                kind: InsnKind::Unknown,
+            });
+            offset += width;
+            continue;
+        }
+        match arch.decode(code, offset, address) {
+            Ok(insn) if insn.bytes_len > 0 => {
+                offset += insn.bytes_len;
+                out.push(insn);
+            }
+            Ok(_) => {
+                error = Some(DecodeError::Invalid);
+                break;
+            }
+            Err(err) => {
+                error = Some(err);
+                break;
+            }
+        }
+    }
+    arch.after_decoding(&mut out);
+    (out, error)
 }
 
 #[cfg(test)]

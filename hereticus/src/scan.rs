@@ -126,12 +126,19 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
     let Ok(file) = object::File::parse(data) else { return Vec::new() };
 
     // Only executable sections hold functions. A binary can hold several, as
-    // `.text.hot` and `.text.unlikely` show, so take them all.
-    let code_sections: Vec<(u64, &[u8])> = file
-        .sections()
-        .filter(|section| section.kind() == SectionKind::Text && section.size() > 0)
-        .filter_map(|section| section.data().ok().map(|data| (section.address(), data)))
-        .collect();
+    // `.text.hot` and `.text.unlikely` show, so take them all. The PLT is
+    // read apart where its stubs are in another architecture.
+    let stub_arch = arch.stub_arch();
+    let mut stubs: Vec<(u64, &[u8])> = Vec::new();
+    let mut code_sections: Vec<(u64, &[u8])> = Vec::new();
+    for section in file.sections() {
+        if section.kind() != SectionKind::Text || section.size() == 0 {
+            continue;
+        }
+        let Ok(data) = section.data() else { continue };
+        let is_plt = stub_arch.is_some() && section.name() == Ok(".plt");
+        if is_plt { &mut stubs } else { &mut code_sections }.push((section.address(), data));
+    }
 
     // Where the ABI has no index of its own, as on MIPS, the call frame
     // information of C++ and of C built with unwind tables serves as one.
@@ -161,7 +168,16 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
         exported: exported_functions(&file),
         pointers: relocated_pointers(&file, arch, &memory),
     };
-    recover_in_memory(&code_sections, &index, &linked, Regions::CodeOnly, arch, &memory)
+    let mut found =
+        recover_in_memory(&code_sections, &index, &linked, Regions::CodeOnly, arch, &memory);
+    if let Some(stub_arch) = stub_arch
+        && !stubs.is_empty()
+    {
+        let none = Linked::default();
+        found.extend(recover_in_memory(&stubs, &[], &none, Regions::CodeOnly, stub_arch, &memory));
+        found.sort_by_key(|recovered| recovered.function.address);
+    }
+    found
 }
 
 /// What a linked object file says about its functions, beyond its code.
@@ -329,7 +345,7 @@ pub fn recover_in_memory(
                 }
             }
         }
-        return build_functions(&starts, regions, arch);
+        return build_functions(&within_exports(starts, &linked.exported), regions, arch);
     }
 
     for (base, code) in regions {
@@ -348,7 +364,27 @@ pub fn recover_in_memory(
         starts.insert((*base, Source::AfterReturn));
     }
 
-    build_functions(&starts, regions, arch)
+    build_functions(&within_exports(starts, &linked.exported), regions, arch)
+}
+
+/// Drop the starts that fall inside an exported function.
+///
+/// The dynamic symbol table gives such a function exactly, so what the scan
+/// guessed inside it is wrong. Measured on Lua for Thumb-2, the doubles a
+/// `vldr` loads after the return of `luaopen_math` started a function.
+fn within_exports(
+    starts: BTreeSet<(u64, Source)>,
+    exported: &[core::ops::Range<u64>],
+) -> BTreeSet<(u64, Source)> {
+    if std::env::var("HNOEXP").is_ok() {
+        return starts;
+    }
+    starts
+        .into_iter()
+        .filter(|&(address, _)| {
+            !exported.iter().any(|range| range.start < address && range.contains(&address))
+        })
+        .collect()
 }
 
 /// The functions `code` calls through a slot of the global offset table

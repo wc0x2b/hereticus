@@ -24,11 +24,11 @@
 //! A raw image has no relocations, so only the first source and the address a
 //! slot holds are left there.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use object::{
     Object, ObjectKind, ObjectSection, ObjectSegment, ObjectSymbol, ObjectSymbolTable,
-    RelocationTarget,
+    RelocationTarget, SectionKind,
 };
 
 use crate::arch::{Arch, CallTarget, Insn, decode_all};
@@ -43,6 +43,9 @@ pub struct Links {
     slots: BTreeMap<u64, String>,
     /// The symbol a relocation at a call names, by the address of the call.
     sites: BTreeMap<u64, String>,
+    /// Where each section of read-only data starts, whose first string
+    /// follows whatever the section before it ends with.
+    read_only_starts: BTreeSet<u64>,
 }
 
 /// The function a call reaches.
@@ -86,13 +89,21 @@ impl Links {
 
         let mut slots = jump_slot_names(file);
         slots.extend(mips_global_slot_names(file));
-        Self { memory, slots, sites: BTreeMap::new() }
+        let read_only_starts = file
+            .sections()
+            .filter(|section| {
+                matches!(section.kind(), SectionKind::ReadOnlyData | SectionKind::ReadOnlyString)
+            })
+            .map(|section| section.address())
+            .filter(|&address| address != 0)
+            .collect();
+        Self { memory, slots, sites: BTreeMap::new(), read_only_starts }
     }
 
     /// Links from loaded bytes and named slots, for a test to build.
     #[cfg(test)]
     pub(crate) fn of_parts(memory: Vec<(u64, Vec<u8>)>, slots: BTreeMap<u64, String>) -> Self {
-        Self { memory, slots, sites: BTreeMap::new() }
+        Self { memory, slots, sites: BTreeMap::new(), read_only_starts: BTreeSet::new() }
     }
 
     /// The loaded bytes, each section at its address, as [`Memory`] reads
@@ -111,8 +122,10 @@ impl Links {
     /// compiler packs C strings end to end, so a string starts after a NUL
     /// or zero fill. A table of pointers, where the pointer bytes can spell
     /// `"!e"` by chance, and Rust strings, which have no NUL, do not. Nor
-    /// does the first byte of a section: tinyxml2 for MIPS points at the
-    /// start of `.data.rel.ro`, a table, and loses no text to this rule.
+    /// does the first byte of a section that can be written: tinyxml2 for
+    /// MIPS points at the start of `.data.rel.ro`, a table. A section of
+    /// read-only data can start with a string right after code, as GCC puts
+    /// `.rodata` after `.text` in Lua for Thumb-2.
     pub fn text_at(&self, address: u64) -> Option<&str> {
         /// Fewer bytes than this are as likely a small number as text: the
         /// word 0x41 reads `"A"` in little-endian order.
@@ -125,7 +138,7 @@ impl Links {
             .checked_sub(1)
             .and_then(|before| self.bytes_at(before))
             .is_some_and(|before| before[0] == 0);
-        if !after_a_nul {
+        if !after_a_nul && !self.read_only_starts.contains(&address) {
             return None;
         }
         let rest = self.bytes_at(address)?;
@@ -343,6 +356,8 @@ mod tests {
         assert_eq!(links.text_at(0x108), Some("no end"));
         assert_eq!(links.text_at(0x109), None, "not after a NUL");
         assert_eq!(links.text_at(0x2000), None, "nothing before it says it starts");
+        let read_only = Links { read_only_starts: BTreeSet::from([0x2000]), ..links.clone() };
+        assert_eq!(read_only.text_at(0x2000), Some("at start"), "read-only data starts there");
         assert_eq!(links.text_at(0x1000), None, "no NUL near enough");
         assert_eq!(links.text_at(0x50), None, "not loaded");
     }
@@ -375,6 +390,7 @@ mod tests {
             memory: vec![(0x1dd60, stub), (0x3ea38, 0x20_u32.to_le_bytes().to_vec())],
             slots: BTreeMap::from([(0x3ea34, "_ZN8tinyxml27StrPair5ResetEv".to_string())]),
             sites: BTreeMap::new(),
+            read_only_starts: BTreeSet::new(),
         };
         let functions = [function("", 0x20)];
 

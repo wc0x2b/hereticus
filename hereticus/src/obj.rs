@@ -7,8 +7,8 @@ use object::{Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
 use crate::address::AddressSpace;
 use crate::arch::Arch;
 use crate::arch::arm32::Arm32;
-use crate::arch::thumb::Thumb2;
 use crate::arch::mips::Mips32;
+use crate::arch::thumb::Thumb2;
 use crate::callee::Links;
 
 /// Why a binary could not be read.
@@ -300,10 +300,11 @@ fn symbol_code(
 /// table where it was stripped.
 fn holds_thumb(file: &object::File<'_>) -> bool {
     let count = |symbols: &mut dyn Iterator<Item = object::Symbol<'_, '_>>| {
-        symbols.filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0).fold(
-            (0usize, 0usize),
-            |(thumb, all), symbol| (thumb + (symbol.address() & 1) as usize, all + 1),
-        )
+        symbols
+            .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
+            .fold((0usize, 0usize), |(thumb, all), symbol| {
+                (thumb + (symbol.address() & 1) as usize, all + 1)
+            })
     };
     let (thumb, all) = match count(&mut file.symbols()) {
         (_, 0) => count(&mut file.dynamic_symbols()),

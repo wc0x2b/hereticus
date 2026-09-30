@@ -1741,15 +1741,54 @@ impl Cascade<'_> {
         for (index, prepared) in self.right.iter().enumerate() {
             by_code.entry(prepared.function.code.as_slice()).or_default().push(index);
         }
+        let mut twins_of: HashMap<&[u8], Vec<usize>> = HashMap::new();
+        for (index, prepared) in self.left.iter().enumerate() {
+            twins_of.entry(prepared.function.code.as_slice()).or_default().push(index);
+        }
+
+        // Where names are known, a function named on both sides is its own
+        // partner's, as in the shape stage.
+        let left_names: HashSet<&str> = match self.options.use_names {
+            UseNames::Yes => {
+                self.left.iter().map(|prepared| prepared.function.name.as_str()).collect()
+            }
+            UseNames::No => HashSet::new(),
+        };
 
         let mut pairs = Vec::new();
         for (index, prepared) in self.left.iter().enumerate() {
             progress.advance(1);
             let Some(candidates) = by_code.get(prepared.function.code.as_slice()) else { continue };
+            // Code that holds a distance, as a T32 range extension thunk
+            // does, reaches another target from another address. So bytes
+            // alike are one function only where what they reach is alike
+            // too: LLD's thunks for `gzclose_r` and `gzclose_w` in zlib were
+            // byte for byte the same across two builds.
+            let name = prepared.function.name.as_str();
+            let referents = prepared.referents();
+            let free: Vec<usize> = candidates
+                .iter()
+                .copied()
+                .filter(|&other| self.right_free[other])
+                .filter(|&other| {
+                    let other_name = self.right[other].function.name.as_str();
+                    other_name == name || other_name.is_empty() || !left_names.contains(other_name)
+                })
+                .collect();
+            // What the twins refer to decides only where no twin on this side
+            // refers to the same, as in the shape stage.
+            let shared = twins_of[prepared.function.code.as_slice()].iter().any(|&other| {
+                other != index && self.left_free[other] && self.left[other].referents() == referents
+            });
+            let free: Vec<usize> = match shared {
+                true => free,
+                false => free
+                    .into_iter()
+                    .filter(|&other| self.right[other].referents() == referents)
+                    .collect(),
+            };
             // Only pair when the answer is unambiguous. Several functions can
             // share a body, and guessing between them helps nobody.
-            let free: Vec<usize> =
-                candidates.iter().copied().filter(|other| self.right_free[*other]).collect();
             if let [only] = free[..] {
                 pairs.push((index, only));
             }
