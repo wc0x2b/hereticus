@@ -17,16 +17,21 @@ RUN apt-get update \
         clang-22 \
         lld-22 \
         llvm-22 \
+        libc6-dev-arm64-cross \
         libc6-dev-armel-cross \
         libc6-dev-mipsel-cross \
         libc6-dev-mips-cross \
+        libgcc-14-dev-arm64-cross \
         libgcc-14-dev-armel-cross \
         libgcc-14-dev-mipsel-cross \
         libgcc-14-dev-mips-cross \
+        libstdc++-14-dev-arm64-cross \
         libstdc++-14-dev-armel-cross \
         libstdc++-14-dev-mipsel-cross \
         libstdc++-14-dev-mips-cross \
         patch \
+        gcc-14-aarch64-linux-gnu \
+        g++-14-aarch64-linux-gnu \
         gcc-14-arm-linux-gnueabi \
         g++-14-arm-linux-gnueabi \
         gcc-14-mips-linux-gnu \

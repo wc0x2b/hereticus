@@ -150,6 +150,8 @@ enum ArchName {
     Arm32,
     /// ARM32, little endian, Thumb-2 instructions, as Cortex-M firmware is.
     Thumb2,
+    /// ARMv8-A, 64-bit, little endian.
+    Aarch64,
     /// MIPS32, little endian.
     Mips32,
     /// MIPS32, big endian, as most shipped firmware is.
@@ -161,6 +163,7 @@ impl From<ArchName> for Isa {
         match name {
             ArchName::Arm32 => Self::Arm32,
             ArchName::Thumb2 => Self::Thumb2,
+            ArchName::Aarch64 => Self::Aarch64,
             ArchName::Mips32 => Self::Mips32,
             ArchName::Mips32Be => Self::Mips32Be,
         }

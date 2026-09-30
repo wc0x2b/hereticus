@@ -1480,6 +1480,19 @@ fn is_moved_address(arch: &dyn Arch, left: &str, right: &str) -> bool {
     if arch.constant_value(left).is_some() && arch.constant_value(right).is_some() {
         return true;
     }
+    // A distance from `pc` to data, as A64 `adr` and `adrp` print it.
+    if is_branch_target(left) && is_branch_target(right) {
+        return true;
+    }
+    // The offset that ends a memory reference, as A64 prints the part of an
+    // address in a page: `[x22, #0x608]`.
+    let offset = |operand: &str| {
+        let inner = operand.strip_suffix('!').unwrap_or(operand).strip_suffix(']')?;
+        arch.constant_value(inner)
+    };
+    if offset(left).is_some() && offset(right).is_some() {
+        return true;
+    }
     match (left.split_once('('), right.split_once('(')) {
         (Some((_, left_base)), Some((_, right_base))) => left_base == right_base,
         _ => false,

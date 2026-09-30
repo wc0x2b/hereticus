@@ -197,10 +197,16 @@ pub struct Linked {
 /// as a table of callbacks does: Lua keeps `str_find` in one.
 fn relocated_pointers(file: &object::File<'_>, arch: &dyn Arch, memory: &Memory<'_>) -> Vec<u64> {
     let Some(relocations) = file.dynamic_relocations() else { return Vec::new() };
+    // A REL relocation keeps the address in the word, as ARM and MIPS do,
+    // and a RELA one in the relocation, as AArch64 does.
     relocations
         .filter(|(_, relocation)| relocation.target() == RelocationTarget::Absolute)
-        .filter_map(|(offset, _)| memory.bytes(offset, arch.pointer_width()))
-        .map(|bytes| arch.read_pointer(bytes))
+        .filter_map(|(offset, relocation)| match relocation.has_implicit_addend() {
+            true => {
+                memory.bytes(offset, arch.pointer_width()).map(|bytes| arch.read_pointer(bytes))
+            }
+            false => u64::try_from(relocation.addend()).ok(),
+        })
         .collect()
 }
 

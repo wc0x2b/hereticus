@@ -24,8 +24,9 @@ none.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 27344 of 27500 exact, 47 starts missed and 102 invented.
-What is left, by cause:
+stripped releases: 45579 of 46006 exact, 195 starts missed and 85 invented,
+over ARM, Thumb-2, AArch64 and MIPS, with the PLT left out. Most of what is
+left is Thumb-2. By cause:
 
 - Missed after a jump back, where nothing calls the next function and no
   table points at it, as some static functions of Lua for ARM with GCC.
@@ -34,9 +35,8 @@ What is left, by cause:
 - Invented inside a function after an internal return on ARM, as in the
   two `scanLt` functions of expat, and inside the MIPS `prologTok` and
   Lua's `math_ceil` and `math_floor`, where the cause is not yet known.
-- About 40 of the invented starts are no fault: PLT headers and the lazy
-  binding stubs of MIPS are code that no symbol names. The test could
-  count them apart.
+- Some invented starts are no fault: the lazy binding stubs of MIPS are
+  code that no symbol names. The test leaves out only the PLT.
 
 ## Find the functions of a raw Thumb-2 image that only pointers reach
 
@@ -73,14 +73,16 @@ The smallvec harness is built for A32 only, and the tests skip Thumb-2 for
 it. Build it for `thumbv7neon-unknown-linux-gnueabihf` or a soft-float
 Thumb-2 target, so Rust code is measured in Thumb-2 too.
 
-## Read AArch64
+## Align the PLT stubs of a raw AArch64 image
 
-Many newer routers and gateways are 64-bit ARM (ARMv8-A), and the tool
-reads no AArch64. `yaxpeax-arm` decodes it (`armv8::a64`). It needs an
-architecture of its own: fixed 4-byte instructions, `adrp` and `add` or
-`ldr` in pairs to form an address instead of literal pools, `ret` and
-`br x16` tail calls through the PLT, and 8-byte pointers. Build the
-fixtures for `aarch64-linux-gnu` too.
+A raw image names no PLT stub, so the stubs of two builds align by their
+order and by the callers that call them. Where a new import adds a stub
+in the middle of the others, the stubs after it shift once more, and the
+alignment keeps the old shift one stub too long: the callers of that stub
+then read as calling another function. `KNOWN_EXTRAS` in
+`tests/backports.rs` lists 19 such false reports in Lua and tinyxml2 for
+AArch64. The slot each stub jumps through, in the order of the global
+offset table, could anchor the alignment.
 
 ## Measure older ARM cores
 

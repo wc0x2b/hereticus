@@ -6,6 +6,7 @@ use object::{Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
 
 use crate::address::AddressSpace;
 use crate::arch::Arch;
+use crate::arch::aarch64::Aarch64;
 use crate::arch::arm32::Arm32;
 use crate::arch::mips::Mips32;
 use crate::arch::thumb::Thumb2;
@@ -59,6 +60,8 @@ pub enum Isa {
     /// ARM32 in Thumb-2 mode, as most Cortex-M firmware and much ARM user
     /// space is built.
     Thumb2,
+    /// ARMv8-A in AArch64 mode, 64-bit.
+    Aarch64,
     /// MIPS32, little endian, as a desktop-built object usually is.
     Mips32,
     /// MIPS32, big endian, as most shipped firmware is.
@@ -75,6 +78,7 @@ impl Isa {
         match self {
             Self::Arm32 => &Arm32,
             Self::Thumb2 => &Thumb2,
+            Self::Aarch64 => &Aarch64,
             Self::Mips32 => &Mips32::LITTLE,
             Self::Mips32Be => &Mips32::BIG,
         }
@@ -87,6 +91,7 @@ impl Isa {
     fn from_object(arch: object::Architecture, little_endian: bool) -> Result<Self, ObjError> {
         match arch {
             object::Architecture::Arm => Ok(Self::Arm32),
+            object::Architecture::Aarch64 => Ok(Self::Aarch64),
             object::Architecture::Mips if little_endian => Ok(Self::Mips32),
             object::Architecture::Mips => Ok(Self::Mips32Be),
             _ => Err(ObjError::UnsupportedArch(arch)),
@@ -237,7 +242,9 @@ impl Binary {
         if index.is_empty() {
             let order = match isa {
                 Isa::Mips32Be => crate::unwind::ByteOrder::Big,
-                Isa::Arm32 | Isa::Thumb2 | Isa::Mips32 => crate::unwind::ByteOrder::Little,
+                Isa::Arm32 | Isa::Thumb2 | Isa::Aarch64 | Isa::Mips32 => {
+                    crate::unwind::ByteOrder::Little
+                }
             };
             let ranges = crate::unwind::find_function_ranges(data, base, order);
             index = crate::scan::index_from_ranges(&ranges);

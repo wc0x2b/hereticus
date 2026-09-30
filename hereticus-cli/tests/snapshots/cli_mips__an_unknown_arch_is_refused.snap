@@ -18,7 +18,7 @@ exit_code: 2
 
 ----- stderr -----
 error: invalid value 'mips64' for '--arch <ARCH>'
-  [possible values: arm32, thumb2, mips32, mips32-be]
+  [possible values: arm32, thumb2, aarch64, mips32, mips32-be]
 
   tip: a similar value exists: 'mips32'
 

@@ -20,6 +20,7 @@
 //! cost decides whether the comparison runs at all. The text stays until a
 //! second decoder shows what a shared operand type would have to be.
 
+pub mod aarch64;
 pub mod arm32;
 pub mod mips;
 mod mips32;
