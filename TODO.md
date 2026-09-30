@@ -1,13 +1,5 @@
 # TODO
 
-## Read Thumb-2
-
-The ARM decoder reads A32 only, and `--arch arm32` says Thumb is not
-supported. Most Cortex-M firmware, and much ARM user space, is Thumb-2, so
-a large share of real ARM firmware cannot be read. Thumb mixes 16-bit and
-32-bit instructions, so the scanner, the literal pool rules and the base
-check must all handle a width that is not fixed.
-
 ## Unpack firmware containers
 
 `fixtures/firmware.py` unpacks FIT images, uImages, zImages, the TP-Link v1
@@ -45,3 +37,16 @@ What is left, by cause:
 - About 40 of the invented starts are no fault: PLT headers and the lazy
   binding stubs of MIPS are code that no symbol names. The test could
   count them apart.
+
+## Find the functions of a raw Thumb-2 image that only pointers reach
+
+A raw image holds no relocations and no dynamic symbol table, so a
+Thumb-2 function that only a vtable or a table of callbacks points at, and
+that opens with no prologue, has no start the scan can see. It joins the
+tail of the function before, pool and all. And LLD's range extension
+thunks, whose bytes hold a distance, pair crossed where two reach the same
+distance, since a raw image names no PLT stub they reach. `KNOWN_EXTRAS` in
+`tests/backports.rs` lists the 96 false reports these make. Reading the
+words of the data that hold an address with bit 0 set, in the code, as
+starts could find the functions, where the data can be told from the code.
+Pairing thunks by the stub they reach, once stubs pair, could pair them.
