@@ -50,3 +50,25 @@ distance, since a raw image names no PLT stub they reach. `KNOWN_EXTRAS` in
 words of the data that hold an address with bit 0 set, in the code, as
 starts could find the functions, where the data can be told from the code.
 Pairing thunks by the stub they reach, once stubs pair, could pair them.
+
+## Read a text at the start of .rodata in a raw image
+
+A raw image has no sections, so a string at the first byte of `.rodata`,
+right after the code, follows no NUL and is not read as text. A change to
+it goes unreported: zlib 1.3 changes `zlibVersion` so, and the raw
+readings of the releases miss it. The end of the code, as the scan finds
+it, could stand for the start of the section.
+
+## Read a binary that mixes A32 and Thumb-2
+
+An ARM binary is read as A32 or as Thumb-2 as a whole, by what most of its
+function symbols say. A binary that holds both, as much ARM user space
+does, has its minority read in the wrong set. Bit 0 of each symbol, or of
+each pointer to a function, says which set that function is in, so the
+decoder could be chosen per function.
+
+## Build the Rust fixture for Thumb-2
+
+The smallvec harness is built for A32 only, and the tests skip Thumb-2 for
+it. Build it for `thumbv7neon-unknown-linux-gnueabihf` or a soft-float
+Thumb-2 target, so Rust code is measured in Thumb-2 too.
