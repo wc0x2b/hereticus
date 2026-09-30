@@ -72,3 +72,66 @@ decoder could be chosen per function.
 The smallvec harness is built for A32 only, and the tests skip Thumb-2 for
 it. Build it for `thumbv7neon-unknown-linux-gnueabihf` or a soft-float
 Thumb-2 target, so Rust code is measured in Thumb-2 too.
+
+## Read AArch64
+
+Many newer routers and gateways are 64-bit ARM (ARMv8-A), and the tool
+reads no AArch64. `yaxpeax-arm` decodes it (`armv8::a64`). It needs an
+architecture of its own: fixed 4-byte instructions, `adrp` and `add` or
+`ldr` in pairs to form an address instead of literal pools, `ret` and
+`br x16` tail calls through the PLT, and 8-byte pointers. Build the
+fixtures for `aarch64-linux-gnu` too.
+
+## Measure older ARM cores
+
+The fixtures are built for ARMv7-A only. Much firmware still runs on
+ARMv5TE and ARMv6 (Kirkwood, older Broadcom), where there is no `movw` or
+`movt`, a return can be `ldm sp!, {..., pc}` or `mov pc, lr`, and
+interworking goes through `bx`. Build the fixtures with `-march=armv5te`
+and `-march=armv6` and lock their tallies.
+
+## Read big-endian ARM
+
+Some networking parts run ARM big endian (BE8, or BE32 on older cores).
+The A32 and T32 decoders read little endian only: BE8 keeps instructions
+little endian but data big endian, and BE32 swaps both. Add the byte
+order to the ARM architectures, and a fixture built with `-mbig-endian`.
+
+## Measure Cortex-M firmware
+
+Cortex-M firmware is Thumb only (ARMv6-M, ARMv7-M, ARMv8-M), bare metal,
+and shipped as a raw image that opens with a vector table. The Thumb-2
+decoder reads its instructions, but nothing measures it: no fixture is
+built for `thumbv6m` or `thumbv7m`, ARMv6-M lacks most 32-bit forms, and
+the vector table names every handler's start, which the scan could read.
+
+## Read the ARM hard-float ABI and NEON
+
+The fixtures use `-mfloat-abi=softfp`. Most ARMv7 Linux distributions use
+`hard`, which passes floats in VFP registers, and `yaxpeax-arm` 0.4 reads
+no NEON (see the README), so vectorized code stays opaque. Build a
+hard-float fixture, and decode NEON, with a newer `yaxpeax-arm` or a
+decoder of its own.
+
+## Read MIPS64
+
+Cavium Octeon and some newer MIPS routers run MIPS64 (n64 or n32 ABI).
+The decoder reads MIPS32 only: no `ld`, `sd`, `daddiu`, or 64-bit
+pointers, and the global offset table and `%hi`/`%lo` pairs differ (n64
+builds addresses with `lui`, `daddiu` and `dsll`). Add an architecture and
+fixtures for `mips64-linux-gnuabi64`.
+
+## Read MIPS16e and microMIPS
+
+Some MIPS firmware is built compressed, as MIPS16e or microMIPS, with 16
+and 32-bit instructions mixed and bit 0 of a function's address marking
+the mode, as on Thumb-2. The decoder reads only standard MIPS32, so such
+code reads as garbage. Measure how often OpenWrt targets use it before
+building it.
+
+## Read MIPS32 release 6
+
+MIPS32r6 re-encodes branches, removes `lwl` and `lwr` and the branch
+likely forms, and adds compact branches with no delay slot. The decoder
+assumes release 2. Few shipped parts use r6, so first confirm a target
+worth reading.
