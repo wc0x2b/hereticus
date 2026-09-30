@@ -133,7 +133,7 @@ Options:
       --near-miss <NEAR_MISS>  Lowest score at which an unmatched function names its closest candidate, from 0.0 to 1.0 [default: 0.25]
       --raw                    Read the inputs as raw code with no container format
       --base <BASE>            Address a raw image loads at, for example `0x08000000`
-      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, mips32, mips32-be]
+      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, mips32, mips32-be]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact]
       --sort <SORT>            How to order the changed functions. [default: confidence] [possible values: confidence, added, removed, modified]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]

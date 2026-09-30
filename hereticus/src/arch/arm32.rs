@@ -20,11 +20,14 @@ use crate::address::{AddressSpace, ConstantKind, Contents};
 /// Every A32 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
 
+/// A pool word, or a pointer, is 4 bytes wide.
+const WORD_WIDTH: usize = 4;
+
 /// The section holding the ARM exception index.
 ///
 /// One entry a function, each naming where that function starts. It survives
 /// stripping, so it is the strongest source of function boundaries there is.
-const UNWIND_SECTION: &str = ".ARM.exidx";
+pub(super) const UNWIND_SECTION: &str = ".ARM.exidx";
 
 /// The A32 `nop` encoding, little endian.
 const NOP_BYTES: [u8; 4] = [0x00, 0xf0, 0x20, 0xe3];
@@ -37,7 +40,7 @@ const ZERO_BYTES: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 /// `yaxpeax-arm` 0.4 has no NEON or SIMD support and answers "incomplete
 /// decoder" for those encodings. `clang` vectorizes automatically at `-O2`,
 /// so real code reaches this path.
-const UNKNOWN_MNEMONIC: &str = "(unknown)";
+pub(super) const UNKNOWN_MNEMONIC: &str = "(unknown)";
 
 /// Register number of the program counter.
 const REG_PC: u16 = 15;
@@ -109,7 +112,7 @@ impl Arch for Arm32 {
             bytes_len: INSN_WIDTH,
             mnemonic,
             operands,
-            kind: classify(&inst, insn_address),
+            kind: classify(&inst, branch_target(&inst, insn_address)),
         })
     }
 
@@ -281,7 +284,7 @@ impl Arch for Arm32 {
         body: &[Insn],
         space: &AddressSpace,
     ) -> Vec<ConstantKind> {
-        track_pool_words(code, body, space).kinds
+        track_pool_words(code, body, space, PcModel::A32).kinds
     }
 
     /// The addresses [`Arch::constant_kinds`] finds formed, and the pool
@@ -293,7 +296,7 @@ impl Arch for Arm32 {
         space: &AddressSpace,
         _memory: &Memory<'_>,
     ) -> Vec<u64> {
-        track_pool_words(code, body, space).addresses
+        track_pool_words(code, body, space, PcModel::A32).addresses
     }
 
     /// `bx` through a register other than `lr`. A `switch` jumps with `add pc`
@@ -356,29 +359,8 @@ impl Arch for Arm32 {
 
     /// `ldr rX, [pc, imm]` loads one pool word, and `ldrd` and `vldr` two.
     fn literal_pool_words(&self, insns: &[Insn]) -> Vec<u64> {
-        /// `pc` reads two instructions ahead of the one that uses it.
-        const PC_AHEAD: u64 = 8;
-
-        let mut words = Vec::new();
-        for insn in insns {
-            let operation = self.normalize_operation(&insn.mnemonic);
-            let count = match operation.as_str() {
-                "ldr" => 1,
-                "vldr" if insn.operands.starts_with('s') => 1,
-                "ldrd" | "vldr" => 2,
-                _ => continue,
-            };
-            let Some((_, reference)) = insn.operands.rsplit_once('[') else { continue };
-            let Some(("pc", Offset::Immediate(offset))) = parse_reference(&format!("[{reference}"))
-            else {
-                continue;
-            };
-            let pool = insn.address.wrapping_add(PC_AHEAD).wrapping_add(offset as u64);
-            words.extend((0..count).map(|word| pool.wrapping_add(word * INSN_WIDTH as u64)));
-        }
-        words
+        pool_words_loaded(insns, PcModel::A32)
     }
-
     /// The table GCC emits for a `switch` in PIC code:
     ///
     /// ```text
@@ -674,19 +656,19 @@ fn read_offset_table(
 }
 
 /// Read a hexadecimal immediate as the decoder prints it, such as `0x4`.
-fn parse_hex(text: &str) -> Option<u64> {
+pub(super) fn parse_hex(text: &str) -> Option<u64> {
     u64::from_str_radix(text.strip_prefix("0x")?, 16).ok()
 }
 
 /// The offset in a memory reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Offset<'a> {
+pub(super) enum Offset<'a> {
     Immediate(i64),
     Register(&'a str),
 }
 
 /// Read `[base, offset]` as the base register and the offset.
-fn parse_reference(text: &str) -> Option<(&str, Offset<'_>)> {
+pub(super) fn parse_reference(text: &str) -> Option<(&str, Offset<'_>)> {
     let inner = text.strip_prefix('[')?.strip_suffix(']')?;
     // `[rX]` is an offset of zero.
     let Some((base, offset)) = inner.split_once(',') else {
@@ -763,20 +745,81 @@ fn parse_three(text: &str) -> Option<(&str, &str)> {
     (!right.contains(',')).then(|| (left.trim(), right))
 }
 
+/// How `pc` reads in one instruction set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PcModel {
+    /// How far past an instruction `pc` reads.
+    ahead: u64,
+    /// Whether a load from `[pc, imm]` rounds `pc` down to a word first.
+    aligns_literal_loads: Alignment,
+}
+
+/// Whether an address rounds down to a word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Alignment {
+    AsIs,
+    ToWord,
+}
+
+impl PcModel {
+    /// A32: `pc` reads two instructions, 8 bytes, ahead.
+    pub(super) const A32: Self = Self { ahead: 8, aligns_literal_loads: Alignment::AsIs };
+    /// T32: `pc` reads 4 bytes ahead, and a literal load rounds it down to a
+    /// word.
+    pub(super) const T32: Self = Self { ahead: 4, aligns_literal_loads: Alignment::ToWord };
+
+    /// What `pc` reads in the instruction at `address`.
+    pub(super) fn of(self, address: u64) -> u64 {
+        address.wrapping_add(self.ahead)
+    }
+
+    /// What `pc` reads in a load from `[pc, imm]` at `address`.
+    pub(super) fn of_literal_load(self, address: u64) -> u64 {
+        match self.aligns_literal_loads {
+            Alignment::AsIs => self.of(address),
+            Alignment::ToWord => self.of(address) & !3,
+        }
+    }
+}
+
+/// The addresses of the pool words `insns` load, where `pc` reads as `pc` says.
+pub(super) fn pool_words_loaded(insns: &[Insn], pc: PcModel) -> Vec<u64> {
+    let mut words = Vec::new();
+    for insn in insns {
+        let operation = Arm32.normalize_operation(&insn.mnemonic);
+        let count = match operation.as_str() {
+            "ldr" => 1,
+            "vldr" if insn.operands.starts_with('s') => 1,
+            "ldrd" | "vldr" => 2,
+            _ => continue,
+        };
+        let Some((_, reference)) = insn.operands.rsplit_once('[') else { continue };
+        let Some(("pc", Offset::Immediate(offset))) = parse_reference(&format!("[{reference}"))
+        else {
+            continue;
+        };
+        let pool = pc.of_literal_load(insn.address).wrapping_add(offset as u64);
+        words.extend((0..count).map(|word| pool.wrapping_add(word * WORD_WIDTH as u64)));
+    }
+    words
+}
+
 /// What reading a function for its pool words found.
-struct PoolWords {
+pub(super) struct PoolWords {
     /// See [`Arch::constant_kinds`].
-    kinds: Vec<ConstantKind>,
+    pub(super) kinds: Vec<ConstantKind>,
     /// The addresses inside the image the function forms or loads whole.
-    addresses: Vec<u64>,
+    pub(super) addresses: Vec<u64>,
 }
 
 /// Read `body` for the pool words that make addresses. See
 /// [`Arm32::constant_kinds`].
-fn track_pool_words(code: &[u8], body: &[Insn], space: &AddressSpace) -> PoolWords {
-    /// `pc` reads two instructions ahead of the one that uses it.
-    const PC_AHEAD: u64 = 8;
-
+pub(super) fn track_pool_words(
+    code: &[u8],
+    body: &[Insn],
+    space: &AddressSpace,
+    pc_model: PcModel,
+) -> PoolWords {
     let mut kinds = vec![ConstantKind::Value; body.len()];
     let mut addresses = Vec::new();
     // Pool words whose value lies in the image, by where they sit. PIC code
@@ -794,7 +837,7 @@ fn track_pool_words(code: &[u8], body: &[Insn], space: &AddressSpace) -> PoolWor
 
     let word_at = |pool: u64| -> Option<u32> {
         let offset = usize::try_from(pool.checked_sub(start)?).ok()?;
-        let bytes = code.get(offset..offset.checked_add(INSN_WIDTH)?)?;
+        let bytes = code.get(offset..offset.checked_add(WORD_WIDTH)?)?;
         Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     };
 
@@ -802,7 +845,7 @@ fn track_pool_words(code: &[u8], body: &[Insn], space: &AddressSpace) -> PoolWor
         let operation = Arm32.normalize_operation(&insn.mnemonic);
         let Some((destination, rest)) = insn.operands.split_once(',') else { continue };
         let (destination, rest) = (destination.trim(), rest.trim());
-        let pc = insn.address.wrapping_add(PC_AHEAD);
+        let pc = pc_model.of(insn.address);
         let literal_of = |register: &str| {
             literal
                 .iter()
@@ -827,10 +870,15 @@ fn track_pool_words(code: &[u8], body: &[Insn], space: &AddressSpace) -> PoolWor
             address
         };
 
-        match (operation.as_str(), parse_reference(rest), parse_three(rest)) {
+        // T32 writes `add rX, pc` for `add rX, rX, pc`.
+        let two_operand_add = format!("{destination}, {rest}");
+        let three = parse_three(rest).or_else(|| {
+            (operation == "add" && !rest.contains(',')).then(|| parse_three(&two_operand_add))?
+        });
+        match (operation.as_str(), parse_reference(rest), three) {
             // `ldr rX, [pc, imm]`: load a pool word.
             ("ldr", Some(("pc", Offset::Immediate(offset))), _) => {
-                let pool = pc.wrapping_add(offset as u64);
+                let pool = pc_model.of_literal_load(insn.address).wrapping_add(offset as u64);
                 forget(&mut literal, &mut relative, destination);
                 if let Some(value) = word_at(pool) {
                     if space.contains(u64::from(value)) {
@@ -921,7 +969,7 @@ fn writes_first_operand(operation: &str) -> bool {
 }
 
 /// Split rendered instruction text into the mnemonic and the rest.
-fn split_mnemonic(text: &str) -> (String, String) {
+pub(super) fn split_mnemonic(text: &str) -> (String, String) {
     match text.split_once(char::is_whitespace) {
         Some((head, tail)) => (head.to_string(), tail.trim().to_string()),
         None => (text.to_string(), String::new()),
@@ -933,11 +981,12 @@ fn split_mnemonic(text: &str) -> (String, String) {
 /// ARM has no single "return" opcode. A return is any write to the program
 /// counter, so `pop {pc}` decodes as `LDR` and `mov pc, lr` as `MOV`. Reading
 /// the opcode alone would miss both, so check the destination register too.
-fn classify(inst: &Instruction, address: u64) -> InsnKind {
+/// How `inst` moves control, where `target` is where a branch in it goes.
+pub(super) fn classify(inst: &Instruction, target: Option<u64>) -> InsnKind {
     let unconditional = inst.condition == ConditionCode::AL;
 
     match inst.opcode {
-        Opcode::BL | Opcode::BLX => InsnKind::Call { target: branch_target(inst, address) },
+        Opcode::BL | Opcode::BLX => InsnKind::Call { target },
 
         // `bx lr` returns; `bx <other>` is an indirect jump. A conditional
         // one falls through when its condition fails, as `bxeq lr` does in
@@ -949,8 +998,11 @@ fn classify(inst: &Instruction, address: u64) -> InsnKind {
         },
 
         Opcode::B => {
-            let target = branch_target(inst, address);
-            if unconditional { InsnKind::Jump { target } } else { InsnKind::Branch { target } }
+            if unconditional {
+                InsnKind::Jump { target }
+            } else {
+                InsnKind::Branch { target }
+            }
         }
 
         // Anything that writes the PC leaves the current block.
