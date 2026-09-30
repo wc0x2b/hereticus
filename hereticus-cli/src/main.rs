@@ -146,8 +146,10 @@ enum When {
 /// The architectures a raw image can be read as.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum ArchName {
-    /// ARM32, little endian, A32 instructions. Thumb is not supported.
+    /// ARM32, little endian, A32 instructions.
     Arm32,
+    /// ARM32, little endian, Thumb-2 instructions, as Cortex-M firmware is.
+    Thumb2,
     /// MIPS32, little endian.
     Mips32,
     /// MIPS32, big endian, as most shipped firmware is.
@@ -158,6 +160,7 @@ impl From<ArchName> for Isa {
     fn from(name: ArchName) -> Self {
         match name {
             ArchName::Arm32 => Self::Arm32,
+            ArchName::Thumb2 => Self::Thumb2,
             ArchName::Mips32 => Self::Mips32,
             ArchName::Mips32Be => Self::Mips32Be,
         }

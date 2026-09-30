@@ -7,6 +7,7 @@ use object::{Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
 use crate::address::AddressSpace;
 use crate::arch::Arch;
 use crate::arch::arm32::Arm32;
+use crate::arch::thumb::Thumb2;
 use crate::arch::mips::Mips32;
 use crate::callee::Links;
 
@@ -55,6 +56,9 @@ impl From<object::Error> for ObjError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Isa {
     Arm32,
+    /// ARM32 in Thumb-2 mode, as most Cortex-M firmware and much ARM user
+    /// space is built.
+    Thumb2,
     /// MIPS32, little endian, as a desktop-built object usually is.
     Mips32,
     /// MIPS32, big endian, as most shipped firmware is.
@@ -70,6 +74,7 @@ impl Isa {
     pub fn arch(self) -> &'static dyn Arch {
         match self {
             Self::Arm32 => &Arm32,
+            Self::Thumb2 => &Thumb2,
             Self::Mips32 => &Mips32::LITTLE,
             Self::Mips32Be => &Mips32::BIG,
         }
@@ -133,7 +138,10 @@ impl Binary {
     /// See [`crate::scan`] for how, and for what that costs in accuracy.
     pub fn parse(data: &[u8]) -> Result<Self, ObjError> {
         let file = object::File::parse(data)?;
-        let isa = Isa::from_object(file.architecture(), file.is_little_endian())?;
+        let isa = match Isa::from_object(file.architecture(), file.is_little_endian())? {
+            Isa::Arm32 if holds_thumb(&file) => Isa::Thumb2,
+            isa => isa,
+        };
 
         let mut functions = Vec::new();
         for symbol in file.symbols() {
@@ -141,10 +149,11 @@ impl Binary {
                 continue;
             }
 
-            let Some(code) = symbol_code(&file, &symbol) else { continue };
+            let address = isa.arch().function_address(symbol.address());
+            let Some(code) = symbol_code(&file, &symbol, address) else { continue };
             functions.push(Function {
                 name: stable_name(symbol.name().unwrap_or_default()).to_string(),
-                address: symbol.address(),
+                address,
                 code,
             });
         }
@@ -228,7 +237,7 @@ impl Binary {
         if index.is_empty() {
             let order = match isa {
                 Isa::Mips32Be => crate::unwind::ByteOrder::Big,
-                Isa::Arm32 | Isa::Mips32 => crate::unwind::ByteOrder::Little,
+                Isa::Arm32 | Isa::Thumb2 | Isa::Mips32 => crate::unwind::ByteOrder::Little,
             };
             let ranges = crate::unwind::find_function_ranges(data, base, order);
             index = crate::scan::index_from_ranges(&ranges);
@@ -269,15 +278,38 @@ pub(crate) fn stable_name(name: &str) -> &str {
     }
 }
 
-fn symbol_code(file: &object::File<'_>, symbol: &object::Symbol<'_, '_>) -> Option<Vec<u8>> {
+fn symbol_code(
+    file: &object::File<'_>,
+    symbol: &object::Symbol<'_, '_>,
+    address: u64,
+) -> Option<Vec<u8>> {
     let section = file.section_by_index(symbol.section_index()?).ok()?;
     let data = section.data().ok()?;
 
     // Symbol addresses are absolute; section data starts at the section
     // address, so rebase before slicing.
-    let start = symbol.address().checked_sub(section.address())? as usize;
+    let start = address.checked_sub(section.address())? as usize;
     let end = start.checked_add(symbol.size() as usize)?;
     data.get(start..end).map(<[u8]>::to_vec)
+}
+
+/// Report whether most functions of an ARM file are Thumb-2, as bit 0 of
+/// their symbols says.
+///
+/// The symbol table says it where there is one, and the dynamic symbol
+/// table where it was stripped.
+fn holds_thumb(file: &object::File<'_>) -> bool {
+    let count = |symbols: &mut dyn Iterator<Item = object::Symbol<'_, '_>>| {
+        symbols.filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0).fold(
+            (0usize, 0usize),
+            |(thumb, all), symbol| (thumb + (symbol.address() & 1) as usize, all + 1),
+        )
+    };
+    let (thumb, all) = match count(&mut file.symbols()) {
+        (_, 0) => count(&mut file.dynamic_symbols()),
+        counted => counted,
+    };
+    thumb * 2 > all
 }
 
 /// The addresses a linked file occupies: each section it loads, `.bss`

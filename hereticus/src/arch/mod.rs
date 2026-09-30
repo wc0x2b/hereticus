@@ -23,6 +23,7 @@
 pub mod arm32;
 pub mod mips;
 mod mips32;
+pub mod thumb;
 
 use core::fmt;
 
@@ -298,6 +299,22 @@ pub trait Arch {
         false
     }
 
+    /// The address of the function a pointer to it holds.
+    ///
+    /// A pointer to a T32 function has bit 0 set, which only says the
+    /// instruction set. Defaults to the pointer itself.
+    fn function_address(&self, pointer: u64) -> u64 {
+        pointer
+    }
+
+    /// Adjust instructions that only their neighbours explain, once a run of
+    /// them is decoded.
+    ///
+    /// T32 `it` makes up to four instructions after it conditional, and
+    /// each of them, decoded alone, reads as if it ran always. Defaults to
+    /// changing nothing.
+    fn after_decoding(&self, _insns: &mut [Insn]) {}
+
     /// Report whether an instruction is alignment padding rather than work.
     fn is_padding(&self, insn: &Insn) -> bool;
 
@@ -540,10 +557,14 @@ pub fn decode_all(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Opt
                 offset += insn.bytes_len;
                 out.push(insn);
             }
-            Err(err) => return (out, Some(err)),
+            Err(err) => {
+                arch.after_decoding(&mut out);
+                return (out, Some(err));
+            }
         }
     }
 
+    arch.after_decoding(&mut out);
     (out, None)
 }
 

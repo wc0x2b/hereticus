@@ -1,5 +1,6 @@
 ---
 source: hereticus-cli/tests/cli_mips.rs
+assertion_line: 178
 info:
   program: hereticus
   args:
@@ -17,7 +18,7 @@ exit_code: 2
 
 ----- stderr -----
 error: invalid value 'mips64' for '--arch <ARCH>'
-  [possible values: arm32, mips32, mips32-be]
+  [possible values: arm32, thumb2, mips32, mips32-be]
 
   tip: a similar value exists: 'mips32'
 
