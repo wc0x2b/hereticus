@@ -28,3 +28,20 @@ reported, because a word that holds a small pointer or number reads as such a
 text by chance. Telling the two apart needs to know which data is read-only:
 the ELF segment flags give that for a shared library, but a raw image has
 none.
+
+## Recover the last functions of a stripped library
+
+`tests/boundaries.rs` locks how well the scan recovers the functions of the
+stripped releases: 27344 of 27500 exact, 47 starts missed and 102 invented.
+What is left, by cause:
+
+- Missed after a jump back, where nothing calls the next function and no
+  table points at it, as some static functions of Lua for ARM with GCC.
+- Missed after a call that does not return, where the next function has no
+  prologue, or after a pool whose last word decodes as `cdp2` or `mrc2`.
+- Invented inside a function after an internal return on ARM, as in the
+  two `scanLt` functions of expat, and inside the MIPS `prologTok` and
+  Lua's `math_ceil` and `math_floor`, where the cause is not yet known.
+- About 40 of the invented starts are no fault: PLT headers and the lazy
+  binding stubs of MIPS are code that no symbol names. The test could
+  count them apart.
