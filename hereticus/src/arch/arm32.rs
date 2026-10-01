@@ -1067,6 +1067,15 @@ pub(super) fn track_pool_words(
                     (Some(high), Some((_, at, value))) => {
                         at[1] = index;
                         *value = (*value & 0xffff) | ((high as u32) << 16);
+                        // Code that is not PIC builds an address whole, as
+                        // Cortex-M firmware does for its globals. A value in
+                        // the image is one, as a word in a pool is.
+                        if at[0] != at[1] && space.contains(u64::from(*value)) {
+                            addresses.push(u64::from(*value));
+                            for at in *at {
+                                kinds[at] = ConstantKind::Address;
+                            }
+                        }
                     }
                     _ => halves.retain(|(held, ..)| *held != destination),
                 }
@@ -1179,9 +1188,19 @@ pub(super) fn track_pool_words(
         }
     }
 
-    addresses.extend(
-        whole.into_iter().filter(|(pool, _)| !distances.contains(pool)).map(|(_, value)| value),
-    );
+    let stored: Vec<(u64, u64)> =
+        whole.into_iter().filter(|(pool, _)| !distances.contains(pool)).collect();
+    // In an image linked high, a pool word that holds an address in it is
+    // that address, as Cortex-M firmware loads its globals. In a PIC library
+    // linked at zero, such a word is more likely a number.
+    if space.starts_high() {
+        for &(pool, _) in &stored {
+            if let Ok(index) = body.binary_search_by_key(&pool, |insn| insn.address) {
+                kinds[index] = ConstantKind::StoredAddress;
+            }
+        }
+    }
+    addresses.extend(stored.into_iter().map(|(_, value)| value));
     PoolWords { kinds, addresses, distances }
 }
 
@@ -1621,6 +1640,37 @@ mod tests {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
         let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0);
         assert_eq!(Arm32.literal_pool_words(&insns), [0x08, 0x0c, 0x0c]);
+    }
+
+    /// Code that is not PIC builds an address whole with `movw` and `movt`.
+    #[test]
+    fn a_whole_address_built_in_two_halves_is_an_address() {
+        // movw r2, 0x9de8; movt r2, 0x800
+        let words = [0xe309_2de8_u32, 0xe340_2800];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0x0800_0000);
+        let space = AddressSpace::of_raw_image(0x0800_0000, 0x1_0000);
+        let kinds = Arm32.constant_kinds(&code, &insns, &space);
+        assert_eq!(kinds, [ConstantKind::Address, ConstantKind::Address]);
+        let number = AddressSpace::of_raw_image(0x0900_0000, 0x1_0000);
+        assert_eq!(Arm32.constant_kinds(&code, &insns, &number)[0], ConstantKind::Value);
+    }
+
+    /// In an image linked high, a pool word that holds an address in it is
+    /// that address; in one linked at zero, it may be a number.
+    #[test]
+    fn a_pool_word_holds_an_address_only_in_an_image_linked_high() {
+        let pool_word_at = |base: u64| {
+            // ldr r0, [pc, -0x4]: the word right after it, which holds an
+            // address 0x100 into the image.
+            let words = [0xe51f_0004_u32, (base + 0x100) as u32];
+            let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+            let (insns, _) = crate::arch::decode_all(&Arm32, &code, base);
+            let space = AddressSpace::of_raw_image(base, 0x2000);
+            Arm32.constant_kinds(&code, &insns, &space)[1]
+        };
+        assert_eq!(pool_word_at(0x0800_0000), ConstantKind::StoredAddress);
+        assert_eq!(pool_word_at(0), ConstantKind::Value);
     }
 
     /// A double load just after address 0 reaches back past it, as

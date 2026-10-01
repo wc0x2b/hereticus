@@ -104,6 +104,8 @@ pub enum Source {
     Entry,
     /// It follows the end of another function. A guess.
     AfterReturn,
+    /// A vector table names it. Exact.
+    Vector,
 }
 
 impl Source {
@@ -297,6 +299,24 @@ pub fn recover_in_memory(
     }
 
     let mut starts: BTreeSet<(u64, Source)> = BTreeSet::new();
+    // A vector table is data, and the code after it is read on its own, so
+    // its words cannot put the decoder out of step. Each handler it names
+    // starts a function.
+    let mut split = Vec::with_capacity(regions.len());
+    for &(base, code) in regions {
+        let table =
+            (contents == Regions::CodeAndData).then(|| arch.vector_table(code, base)).flatten();
+        match table {
+            Some(table) => {
+                let length = (table.words.end - base) as usize;
+                split.push((base, &code[..length]));
+                split.push((table.words.end, &code[length..]));
+                starts.extend(table.handlers.into_iter().map(|address| (address, Source::Vector)));
+            }
+            None => split.push((base, code)),
+        }
+    }
+    let regions = split.as_slice();
     // An exported function is exact at both ends, and what follows it starts
     // another function, or padding that is trimmed away.
     for range in &linked.exported {
@@ -542,7 +562,19 @@ fn taken_addresses(
     };
     let end = base + code.len() as u64;
     let formed = match contents {
-        Regions::CodeOnly => arch.data_addresses(code, &insns, &in_code, memory),
+        Regions::CodeOnly => {
+            let formed = arch.data_addresses(code, &insns, &in_code, memory);
+            // Where a pointer to code says that it is one, as on Thumb, an
+            // address without the tag is a label inside a function: clang for
+            // ARMv6-M, which has no `tbb`, loads the cases of a `switch` from
+            // a pool. Measured on zlib for Cortex-M0, these cut `deflate`.
+            match arch.tagged_function(1) {
+                Some(_) => {
+                    formed.into_iter().filter_map(|address| arch.tagged_function(address)).collect()
+                }
+                None => formed,
+            }
+        }
         Regions::CodeAndData => Vec::new(),
     };
     let tagged = match contents {
@@ -985,7 +1017,36 @@ fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         .map(|(_, target)| target)
         // A call out of this section goes somewhere this pass cannot see.
         .filter(|target| *target >= base && *target < end)
+        .filter(|&target| !pops_a_frame_it_did_not_make(arch, &insns, target))
         .collect()
+}
+
+/// Whether the code at `target` reaches a return that pops `pc` before it
+/// makes a frame of its own.
+///
+/// No function pops a frame it did not push, so such code is the epilogue
+/// of the function around it. A `b` of ARMv6-M reaches only 2 KiB, so clang
+/// jumps farther inside a function with `bl`, as to the shared epilogue of
+/// `deflate` in zlib for Cortex-M0.
+fn pops_a_frame_it_did_not_make(arch: &dyn Arch, insns: &[Insn], target: u64) -> bool {
+    /// Longer than any epilogue.
+    const MOST_INSTRUCTIONS: usize = 16;
+    let Ok(start) = insns.binary_search_by_key(&target, |insn| insn.address) else {
+        return false;
+    };
+    for insn in insns[start..].iter().take(MOST_INSTRUCTIONS) {
+        if arch.is_prologue(insn) {
+            return false;
+        }
+        match insn.kind {
+            InsnKind::Return => {
+                return insn.mnemonic.starts_with("pop") && insn.operands.contains("pc");
+            }
+            InsnKind::Normal | InsnKind::Unknown => {}
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Guess that code following a return starts a new function.
@@ -1776,6 +1837,23 @@ mod tests {
         for case in [0x1018, 0x101c, 0x1028, 0x1030] {
             assert!(!starts.contains(&case), "{case:x} in {starts:x?}");
         }
+    }
+
+    /// `bl` to a label inside a function, as ARMv6-M jumps far, calls
+    /// nothing: the code there pops a frame it did not push.
+    #[test]
+    fn a_bl_to_an_epilogue_calls_nothing() {
+        let halfwords = |words: &[u16]| -> Vec<u8> {
+            words.iter().flat_map(|word| word.to_le_bytes()).collect()
+        };
+        // push {r4, lr}; bl 0x100c; bl 0x1010; movs r0, 0;
+        // 0x100c: add sp, 8; pop {r4, pc};
+        // 0x1010: push {r4, lr}; pop {r4, pc}
+        let code = halfwords(&[
+            0xb510, 0xf000, 0xf803, 0xf000, 0xf803, 0x2000, 0xb002, 0xbd10, 0xb510, 0xbd10,
+        ]);
+        let targets = call_targets(&crate::arch::thumb::Thumb2, &code, 0x1000);
+        assert_eq!(targets, [0x1010], "the epilogue at 0x100c is no function");
     }
 
     #[test]

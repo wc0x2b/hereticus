@@ -169,7 +169,7 @@ fn parse_raw(build: Build, variant: &str) -> Binary {
         .expect("a library loads something");
     let isa = match build.arch {
         "arm" | "armv5" | "armv6" => Isa::Arm32,
-        "thumb" => Isa::Thumb2,
+        "thumb" | "cortex-m0" | "cortex-m3" => Isa::Thumb2,
         "aarch64" => Isa::Aarch64,
         "mips" => Isa::Mips32Be,
         _ => Isa::Mips32,
@@ -392,6 +392,35 @@ fn check_raw(build: Build) {
         diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
 
     check_regions(build, Reading::Raw, &regions(build, &diff, &before, &after));
+}
+
+/// Cortex-M firmware, bare metal behind a vector table, read every way:
+/// zlib only, built by clang only, as `fixtures/backports.sh` says.
+#[rstest]
+fn cortex_m_firmware_shows_the_fix_and_nothing_else(
+    #[values("cortex-m0", "cortex-m3")] arch: &'static str,
+    #[values("O1", "O2", "O3", "Os")] level: &'static str,
+) {
+    let build = build(Project::Zlib, arch, level);
+    check_with_symbols(build);
+    check_stripped(build);
+    check_raw(build);
+}
+
+/// The vector table names the reset handler, which a raw image shows.
+#[rstest]
+fn a_cortex_m_image_starts_its_reset_handler_where_the_table_says(
+    #[values("cortex-m0", "cortex-m3")] arch: &'static str,
+) {
+    let build = build(Project::Zlib, arch, "O2");
+    let image = read(build, "before", "lib.bin");
+    let reset = u32::from_le_bytes([image[4], image[5], image[6], image[7]]);
+    assert_eq!(reset & 1, 1, "a Cortex-M handler is Thumb code");
+    let raw = parse_raw(build, "before");
+    assert!(
+        raw.functions.iter().any(|function| function.address == u64::from(reset & !1)),
+        "{build:?}: the reset handler at {reset:#x} starts a function"
+    );
 }
 
 /// A library that mixes A32 and Thumb-2 reads each function in the set bit 0

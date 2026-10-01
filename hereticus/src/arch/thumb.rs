@@ -27,9 +27,11 @@ use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operan
 use super::arm32::{
     Arm32, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION,
     call_targets_through_thunks, classify, decode_fallback, is_long_thunk, parse_hex, pool_loads,
-    pool_words_loaded, split_mnemonic, track_pool_words,
+    split_mnemonic, track_pool_words,
 };
-use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps};
+use super::{
+    Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps, VectorTable,
+};
 use crate::address::{AddressSpace, ConstantKind};
 
 /// The narrow T32 instruction, and the alignment of every one.
@@ -217,11 +219,11 @@ impl Arch for Thumb2 {
     }
 
     fn literal_pool_words(&self, insns: &[Insn]) -> Vec<u64> {
-        pool_words_loaded(insns, PcModel::T32)
+        loads_outside_tables(insns).into_iter().map(|(_, word)| word).collect()
     }
 
     fn literal_pool_loads(&self, insns: &[Insn]) -> Vec<(u64, u64)> {
-        pool_loads(insns, PcModel::T32)
+        loads_outside_tables(insns)
     }
 
     fn data_among_code(&self) -> DataAmongCode {
@@ -239,6 +241,35 @@ impl Arch for Thumb2 {
         (0..insns.len())
             .filter_map(|index| read_branch_table(memory, &code, insns, index))
             .collect()
+    }
+
+    /// A Cortex-M image opens with its vector table: the stack it starts
+    /// with, which is no address in the image, then the address of each
+    /// handler with bit 0 set, or zero for one left out.
+    fn vector_table(&self, code: &[u8], base: u64) -> Option<VectorTable> {
+        /// The 16 system exceptions and 240 interrupts ARMv7-M allows.
+        const MOST_ENTRIES: usize = 256;
+        let end = base + code.len() as u64;
+        let inside = |address: u64| (base..end).contains(&address);
+        let mut words = code
+            .chunks_exact(WORD)
+            .map(|word| u64::from(u32::from_le_bytes([word[0], word[1], word[2], word[3]])));
+        let stack = words.next()?;
+        if inside(stack) || !stack.is_multiple_of(WORD as u64) {
+            return None;
+        }
+        let entries: Vec<u64> = words
+            .take(MOST_ENTRIES - 1)
+            .take_while(|&word| word == 0 || (word & 1 == 1 && inside(word & !1)))
+            .collect();
+        let handlers: BTreeSet<u64> =
+            entries.iter().filter(|&&word| word != 0).map(|word| word & !1).collect();
+        // Reset, and at least one more: a lone odd word is no table.
+        let resets = entries.first().is_some_and(|&reset| reset != 0);
+        (resets && handlers.len() >= 2).then(|| VectorTable {
+            words: base..base + ((entries.len() + 1) * WORD) as u64,
+            handlers: handlers.into_iter().collect(),
+        })
     }
 
     /// T32 jumps through a table with `tbb` and `tbh`.
@@ -481,13 +512,9 @@ fn it_block_length(mnemonic: &str) -> Option<usize> {
         .then_some(pattern.len() + 1)
 }
 
-/// Read the table a `tbb` or `tbh` at `insns[index]` jumps through.
-fn read_branch_table(
-    memory: &Memory<'_>,
-    code: &Range<u64>,
-    insns: &[Insn],
-    index: usize,
-) -> Option<JumpTable> {
+/// The bytes of the table a `tbb` or `tbh` at `insns[index]` jumps
+/// through, and the width of an entry, from the instructions alone.
+fn table_extent(insns: &[Insn], index: usize) -> Option<(Range<u64>, usize)> {
     let jump = &insns[index];
     let width = match jump.mnemonic.as_str() {
         "tbb" => 1,
@@ -507,8 +534,38 @@ fn read_branch_table(
             }
         })?;
     let cases = usize::try_from(bound).ok()?.checked_add(1).filter(|&cases| cases <= MOST_CASES)?;
-
     let table = jump.address + WORD as u64;
+    Some((table..table + (cases * width) as u64, width))
+}
+
+/// The loads from a literal pool in `insns`, but for those that are the
+/// bytes of a `tbb` or `tbh` table read as code.
+///
+/// An entry of such a table can read as `ldr rX, [pc, imm]`, which names a
+/// word of code as a pool word. Measured on zlib built by clang at `-O1` for
+/// Cortex-M3, one such load put `deflateResetKeep` out of step.
+fn loads_outside_tables(insns: &[Insn]) -> Vec<(u64, u64)> {
+    let tables: Vec<Range<u64>> = (0..insns.len())
+        .filter_map(|index| table_extent(insns, index))
+        .map(|(bytes, _)| bytes)
+        .collect();
+    pool_loads(insns, PcModel::T32)
+        .into_iter()
+        .filter(|(load, _)| !tables.iter().any(|table| table.contains(load)))
+        .collect()
+}
+
+/// Read the table a `tbb` or `tbh` at `insns[index]` jumps through.
+fn read_branch_table(
+    memory: &Memory<'_>,
+    code: &Range<u64>,
+    insns: &[Insn],
+    index: usize,
+) -> Option<JumpTable> {
+    let jump = &insns[index];
+    let (table_bytes, width) = table_extent(insns, index)?;
+    let table = table_bytes.start;
+    let cases = (table_bytes.end - table_bytes.start) as usize / width;
     let mut targets = Vec::with_capacity(cases);
     for case in 0..cases {
         let entry = memory.bytes(table + (case * width) as u64, width)?;
@@ -538,6 +595,50 @@ mod tests {
 
     fn decode_one(values: &[u16]) -> Insn {
         Thumb2.decode(&halfwords(values), 0, 0x1000).expect("bytes must decode")
+    }
+
+    /// A Cortex-M image, loaded at 0x08000000, that opens with `entries`
+    /// after the stack it starts with, then 0x40 bytes of `bx lr`.
+    fn image_with_vectors(stack: u32, entries: &[u32]) -> Vec<u8> {
+        let mut image: Vec<u8> = std::iter::once(stack)
+            .chain(entries.iter().copied())
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        image.extend(halfwords(&[0x4770; 32]));
+        image
+    }
+
+    #[test]
+    fn a_vector_table_names_each_handler() {
+        let image = image_with_vectors(0x2002_0000, &[0x0800_0011, 0x0800_0015, 0, 0x0800_0015]);
+        let table = Thumb2.vector_table(&image, 0x0800_0000).expect("a table");
+        assert_eq!(table.words, 0x0800_0000..0x0800_0014);
+        assert_eq!(table.handlers, [0x0800_0010, 0x0800_0014]);
+    }
+
+    #[test]
+    fn what_is_no_vector_table_is_none() {
+        let base = 0x0800_0000;
+        // The stack lies inside the image.
+        let inside = image_with_vectors(0x0800_0020, &[0x0800_0011, 0x0800_0015]);
+        assert_eq!(Thumb2.vector_table(&inside, base), None);
+        // Only one handler.
+        let lone = image_with_vectors(0x2002_0000, &[0x0800_0011, 0x1234]);
+        assert_eq!(Thumb2.vector_table(&lone, base), None);
+        // The reset entry is empty.
+        let no_reset = image_with_vectors(0x2002_0000, &[0, 0x0800_0011, 0x0800_0015]);
+        assert_eq!(Thumb2.vector_table(&no_reset, base), None);
+    }
+
+    /// The entries of a `tbb` table can read as loads from a pool, and name
+    /// words of code. They name no pool words.
+    #[test]
+    fn the_bytes_of_a_table_load_no_pool_words() {
+        // cmp r3, 3; tbb [pc, r3]; then 4 entries that read as
+        // `ldr r1, [pc, 0x74]` twice.
+        let code = halfwords(&[0x2b03, 0xe8df, 0xf003, 0x491d, 0x491d, 0x4770]);
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        assert!(Thumb2.literal_pool_words(&insns).is_empty());
     }
 
     #[test]

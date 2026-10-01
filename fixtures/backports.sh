@@ -135,6 +135,40 @@ set_flags() {
     fi
 }
 
+# Cortex-M firmware: zlib's core, bare metal, behind a vector table at
+# 0x08000000, for Cortex-M0 (ARMv6-M, which lacks most 32-bit forms) and
+# Cortex-M3 (ARMv7-M). Z_SOLO leaves out what needs a C library. `lib.so` is
+# the linked image, as for the libraries, so the same tests read it.
+firmware_targets=(cortex-m0:thumbv6m-none-eabi:cortex-m0 cortex-m3:thumbv7m-none-eabi:cortex-m3)
+firmware_sources=(adler32 crc32 deflate inflate inftrees inffast trees zutil compress uncompr)
+build_firmware() {
+    local name="$1" variant="$2" source_dir="$3"
+    local harness="$here/cortex-m"
+    for target in "${firmware_targets[@]}"; do
+        local arch="${target%%:*}" rest="${target#*:}"
+        local triple="${rest%%:*}" cpu="${rest##*:}"
+        if [ -n "${BACKPORTS_TARGETS:-}" ] && [[ " $BACKPORTS_TARGETS " != *" $arch "* ]]; then
+            continue
+        fi
+        local flags=(--target="$triple" -mcpu="$cpu" -ffreestanding -fno-stack-protector -w)
+        for level in "${levels[@]}"; do
+            local dest="$out/$name-$variant/$arch-$level"
+            local objects="$dest/obj"
+            mkdir -p "$objects"
+            for source in "${firmware_sources[@]}"; do
+                clang "${flags[@]}" -DZ_SOLO "-$level" \
+                    -c "$source_dir/$source.c" -o "$objects/$source.o"
+            done
+            clang "${flags[@]}" -DZ_SOLO -I"$source_dir" "-$level" \
+                -c "$harness/vectors.c" -o "$objects/vectors.o"
+            clang "${flags[@]}" -fno-builtin "-$level" \
+                -c "$harness/runtime.c" -o "$objects/runtime.o"
+            ld.lld -T "$harness/link.ld" -o "$dest/lib.so" "$objects"/*.o
+            finish "$dest"
+        done
+    done
+}
+
 # Write the stripped library and the raw image of a linked `lib.so`.
 finish() {
     local dest="$1"
@@ -201,6 +235,7 @@ for variant in before after; do
     project_flags=(-DHAVE_UNISTD_H)
     build zlib "$variant" "$out/src/zlib-$variant" "${zlib_sources[@]}"
     project_flags=()
+    build_firmware zlib "$variant" "$out/src/zlib-$variant"
     build lua "$variant" "$out/src/lua-$variant/src" "${lua_sources[@]}"
 
     compiler=(clang++ -std=c++17)
