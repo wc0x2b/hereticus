@@ -20,8 +20,8 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-changed values	sub_80000000	sub_80000000	1.00	0	0	0
 changed	sub_800000dc	sub_8000016c	0.83	7	2	0
+changed values	sub_80000000	sub_80000000	1.00	0	0	0
 gone	sub_80000010	sub_80000010	0.31			
 gone	sub_80000058	sub_80000090	0.47			
 new	sub_80000010	sub_80000010	0.31			
