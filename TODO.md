@@ -38,13 +38,15 @@ left is Thumb-2. By cause:
 - Some invented starts are no fault: the lazy binding stubs of MIPS are
   code that no symbol names. The test leaves out only the PLT.
 
-## Read a binary that mixes A32 and Thumb-2
+## Scan a stripped or raw binary that mixes A32 and Thumb-2
 
-An ARM binary is read as A32 or as Thumb-2 as a whole, by what most of its
-function symbols say. A binary that holds both, as much ARM user space
-does, has its minority read in the wrong set. Bit 0 of each symbol, or of
-each pointer to a function, says which set that function is in, so the
-decoder could be chosen per function.
+With symbols, each function of an ARM library is read in the set bit 0 of
+its symbol names, and the `mixed` backports, half A32 and half Thumb-2,
+name exactly the functions each fix touched. A stripped library keeps that
+bit only for what it exports, and a raw image has none, so the scan still
+reads the whole image in one set. A call says which set its target is in
+(`bl` keeps the set, `blx` switches), and so do bit 0 of a pointer and the
+unwind index, so a scan could follow them per function.
 
 ## Build the Rust fixture for Thumb-2
 

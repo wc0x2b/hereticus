@@ -571,7 +571,6 @@ fn prepare<'a>(
     interner: &mut Interner,
     progress: &dyn Progress,
 ) -> Vec<Prepared<'a>> {
-    let arch = binary.isa.arch();
     let regions = binary.links.regions();
     let memory = Memory::new(&regions);
     // Without names, a callee the symbol table names is known only as the
@@ -592,6 +591,8 @@ fn prepare<'a>(
         .iter()
         .map(|function| {
             progress.advance(1);
+            let isa = binary.isa_of(function);
+            let arch = isa.arch();
             let (insns, _) = decode_all(arch, &function.code, function.address);
             // The body is interned and then dropped. Matching reads only the
             // symbols, and the few pairs that need the instructions back
@@ -632,7 +633,7 @@ fn prepare<'a>(
                 function,
                 symbols,
                 ordered,
-                isa: binary.isa,
+                isa,
                 addresses: &binary.addresses,
                 contents,
                 calls,
@@ -893,11 +894,12 @@ impl Cascade<'_> {
             .filter_map(|(index, pair)| {
                 let [left, right] =
                     [(before, pair.before), (after, pair.after)].map(|(binary, function)| {
+                        let function = &binary.functions[function];
                         callees(
-                            binary.isa.arch(),
+                            binary.isa_of(function).arch(),
                             &binary.links,
                             &binary.functions,
-                            &binary.functions[function],
+                            function,
                         )
                     });
                 (left.len() == right.len()).then_some((index, left, right))
@@ -1245,11 +1247,12 @@ impl Cascade<'_> {
             }
             let [left, right] =
                 [(before, pair.before), (after, pair.after)].map(|(binary, index)| {
+                    let function = &binary.functions[index];
                     callees(
-                        binary.isa.arch(),
+                        binary.isa_of(function).arch(),
                         &binary.links,
                         &binary.functions,
-                        &binary.functions[index],
+                        function,
                     )
                 });
             if left.len() != right.len() {
@@ -3348,6 +3351,7 @@ mod tests {
             found_by: crate::obj::FoundBy::Symbols,
             addresses: crate::address::AddressSpace::none(),
             links: crate::callee::Links::default(),
+            other_set: std::collections::BTreeSet::new(),
             functions: functions
                 .iter()
                 .enumerate()
@@ -3493,6 +3497,7 @@ mod tests {
             isa: Isa::Arm32,
             found_by: crate::obj::FoundBy::Symbols,
             addresses: crate::address::AddressSpace::of_raw_image(0x8000, 0x880),
+            other_set: std::collections::BTreeSet::new(),
             links: crate::callee::Links::of_parts(
                 vec![(0x8000, code.clone()), (0x9000, data)],
                 BTreeMap::new(),
@@ -3555,6 +3560,7 @@ mod tests {
             found_by: crate::obj::FoundBy::Scanning,
             addresses: AddressSpace::of_raw_image(0x8000_0000, 0x10_0000),
             links: crate::callee::Links::default(),
+            other_set: std::collections::BTreeSet::new(),
             functions: vec![Function {
                 name: String::new(),
                 address: 0x8000_0000,

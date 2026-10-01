@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 
 use hereticus::matching::{Changed, Diff, Options, UseNames, diff_with};
 use hereticus::obj::{Binary, Isa};
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 use rstest::rstest;
 
 /// One fixed build: which project, and how it was built.
@@ -291,7 +291,7 @@ fn build(project: Project, arch: &'static str, level: &'static str) -> Build {
 #[rstest]
 fn with_symbols_the_fix_is_named_exactly(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "mixed", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     check_with_symbols(build(project, arch, level));
@@ -384,6 +384,39 @@ fn check_raw(build: Build) {
         diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
 
     check_regions(build, Reading::Raw, &regions(build, &diff, &before, &after));
+}
+
+/// A library that mixes A32 and Thumb-2 reads each function in the set bit 0
+/// of its symbol names, and compared with itself reports nothing.
+#[rstest]
+fn a_mixed_library_reads_each_function_in_its_own_set(
+    #[values(Project::Zlib, Project::Lua)] project: Project,
+    #[values("O2", "gcc-O2")] level: &'static str,
+) {
+    let build = build(project, "mixed", level);
+    let library = read(build, "before", "lib.so");
+    let file = object::File::parse(library.as_slice()).expect("a fixture library must parse");
+    let binary = parse(build, "before", "lib.so");
+
+    let mut sets = BTreeSet::new();
+    for symbol in file.symbols() {
+        if symbol.kind() != SymbolKind::Text || symbol.size() == 0 {
+            continue;
+        }
+        let address = symbol.address() & !1;
+        let expected = if symbol.address() & 1 == 1 { Isa::Thumb2 } else { Isa::Arm32 };
+        let function = binary
+            .functions
+            .iter()
+            .find(|function| function.address == address)
+            .expect("each symbol is a function");
+        assert_eq!(binary.isa_of(function), expected, "{build:?} {}", function.name);
+        sets.insert(format!("{expected:?}"));
+    }
+    assert_eq!(sets.len(), 2, "{build:?} mixes both sets");
+
+    let diff = diff_with(&binary, &binary, Options::default());
+    assert_eq!(diff.changed().count(), 0, "{build:?}");
 }
 
 /// Each build compared with itself reports nothing, in every reading.
