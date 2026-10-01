@@ -351,7 +351,9 @@ pub fn recover_in_memory(
                 }
             }
         }
-        return build_functions(&within_exports(starts, &linked.exported), regions, arch);
+        let starts =
+            outside_pool_spans(within_exports(starts, &linked.exported), arch, regions, memory);
+        return build_functions(&starts, regions, arch);
     }
 
     for (base, code) in regions {
@@ -370,7 +372,77 @@ pub fn recover_in_memory(
         starts.insert((*base, Source::AfterReturn));
     }
 
-    build_functions(&within_exports(starts, &linked.exported), regions, arch)
+    let starts =
+        outside_pool_spans(within_exports(starts, &linked.exported), arch, regions, memory);
+    build_functions(&starts, regions, arch)
+}
+
+/// The width of a word of a literal pool or of a jump table, the widest
+/// data [`data_words`] lists.
+const WORD_WIDTH: u64 = 4;
+
+/// Drop the guessed starts that fall between a load from a literal pool and
+/// the word it loads.
+///
+/// A compiler puts a function's pool after its code, so all between is the
+/// same function. A guess there splits it, as at an exception landing pad
+/// after the return: only the unwind tables reach it. The pool then goes with
+/// the second piece, apart from the code that tells its words are distances,
+/// and each release reads as a changed constant. Measured on tinyxml2 read
+/// as a raw Thumb-2 image, `XMLElement::~XMLElement` split so at each level.
+fn outside_pool_spans(
+    starts: BTreeSet<(u64, Source)>,
+    arch: &dyn Arch,
+    regions: &[(u64, &[u8])],
+    memory: &Memory<'_>,
+) -> BTreeSet<(u64, Source)> {
+    let mut spans: Vec<(u64, u64)> = regions
+        .iter()
+        .flat_map(|&(base, code)| {
+            let (insns, _) = decode_all(arch, code, base);
+            // A pool word or a jump table can decode as a load from a pool,
+            // which reaches nothing.
+            let data = data_words(arch, memory, base..base + code.len() as u64, &insns);
+            let is_data = |address: u64| {
+                data.range(address.saturating_sub(WORD_WIDTH - 1)..=address).next().is_some()
+            };
+            // So can data outside the code, but there a word that does not
+            // decode soon follows. Code up to its pool reads whole.
+            let unreadable: Vec<u64> = insns
+                .iter()
+                .filter(|insn| insn.kind == InsnKind::Unknown && !is_data(insn.address))
+                .map(|insn| insn.address)
+                .collect();
+            let reads_whole = |from: u64, to: u64| {
+                let first = unreadable.partition_point(|&address| address <= from);
+                unreadable.get(first).is_none_or(|&address| address >= to)
+            };
+            arch.literal_pool_loads(&insns)
+                .into_iter()
+                .filter(|&(load, word)| load < word && !is_data(load) && reads_whole(load, word))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if spans.is_empty() {
+        return starts;
+    }
+    spans.sort_unstable();
+    // The farthest word that any load at or before each one reaches.
+    let reach: Vec<u64> = spans
+        .iter()
+        .scan(0, |farthest, &(_, word)| {
+            *farthest = (*farthest).max(word);
+            Some(*farthest)
+        })
+        .collect();
+    let inside_a_span = |address: u64| {
+        let loads_before = spans.partition_point(|&(load, _)| load < address);
+        loads_before > 0 && reach[loads_before - 1] >= address
+    };
+    starts
+        .into_iter()
+        .filter(|&(address, source)| source.is_exact() || !inside_a_span(address))
+        .collect()
 }
 
 /// Drop the starts that fall inside an exported function.
@@ -382,9 +454,6 @@ fn within_exports(
     starts: BTreeSet<(u64, Source)>,
     exported: &[core::ops::Range<u64>],
 ) -> BTreeSet<(u64, Source)> {
-    if std::env::var("HNOEXP").is_ok() {
-        return starts;
-    }
     starts
         .into_iter()
         .filter(|&(address, _)| {
@@ -1498,6 +1567,71 @@ mod tests {
         let regions = [(0x100, &bytes[..])];
         let tagged = tagged_functions(&crate::arch::thumb::Thumb2, &regions, &BTreeSet::new());
         assert!(tagged.is_empty());
+    }
+
+    /// Thumb code at 0x1000 that loads the pool word at 0x100c, returns,
+    /// holds `between` up to the pool, then a second function at 0x1010.
+    fn loads_over(between: &[u8]) -> Vec<u8> {
+        let halfwords = |words: &[u16]| -> Vec<u8> {
+            words.iter().flat_map(|word| word.to_le_bytes()).collect()
+        };
+        // ldr r0, [pc, 8]; bx lr
+        let mut code = halfwords(&[0x4802, 0x4770]);
+        code.extend_from_slice(between);
+        assert_eq!(code.len(), 0xc, "the pool sits at 0x100c");
+        code.extend_from_slice(&0x1234_5678u32.to_le_bytes());
+        // movs r0, 1; bx lr
+        code.extend(halfwords(&[0x2001, 0x4770]));
+        code
+    }
+
+    fn pool_span_survivors(code: &[u8], starts: &[(u64, Source)]) -> Vec<u64> {
+        let regions = [(0x1000, code)];
+        let kept = outside_pool_spans(
+            starts.iter().copied().collect(),
+            &crate::arch::thumb::Thumb2,
+            &regions,
+            &Memory::new(&regions),
+        );
+        kept.into_iter().map(|(address, _)| address).collect()
+    }
+
+    /// movs r0, 0; bx lr; nop; nop
+    const LANDING: [u8; 8] = [0x00, 0x20, 0x70, 0x47, 0x00, 0xbf, 0x00, 0xbf];
+
+    #[test]
+    fn a_guess_between_a_load_and_its_pool_is_dropped() {
+        let code = loads_over(&LANDING);
+        let starts = [
+            (0x1000, Source::AfterReturn),
+            (0x1004, Source::AfterReturn),
+            (0x1010, Source::AfterReturn),
+        ];
+        assert_eq!(pool_span_survivors(&code, &starts), [0x1000, 0x1010]);
+    }
+
+    #[test]
+    fn an_exact_start_between_a_load_and_its_pool_stays() {
+        let code = loads_over(&LANDING);
+        let starts = [(0x1004, Source::CallTarget)];
+        assert_eq!(pool_span_survivors(&code, &starts), [0x1004]);
+    }
+
+    #[test]
+    fn a_span_with_a_word_that_does_not_decode_drops_nothing() {
+        // movs r0, 0; bx lr; then a NEON `vst1` the decoder does not read.
+        let code = loads_over(&[0x00, 0x20, 0x70, 0x47, 0x41, 0xf9, 0x8d, 0x0a]);
+        let starts = [(0x1004, Source::AfterReturn)];
+        assert_eq!(pool_span_survivors(&code, &starts), [0x1004]);
+    }
+
+    #[test]
+    fn an_architecture_without_pool_loads_drops_nothing() {
+        let code = loads_over(&LANDING);
+        let regions = [(0x1000, code.as_slice())];
+        let starts: BTreeSet<(u64, Source)> = [(0x1004, Source::AfterReturn)].into();
+        let kept = outside_pool_spans(starts.clone(), &Arm32, &regions, &Memory::new(&regions));
+        assert_eq!(kept, starts);
     }
 
     #[test]

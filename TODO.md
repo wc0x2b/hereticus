@@ -38,14 +38,18 @@ left is Thumb-2. By cause:
 - Some invented starts are no fault: the lazy binding stubs of MIPS are
   code that no symbol names. The test leaves out only the PLT.
 
-## Cut raw Thumb-2 functions of tinyxml2 at their starts
+## Decode NEON in Thumb-2
 
-`KNOWN_EXTRAS` in `tests/backports.rs` lists 25 false reports, all in
-tinyxml2 read as a raw Thumb-2 image. Each is a piece that starts inside a
-function, as `0x1a036` inside `XMLElement::~XMLElement` at `0x19fb4` when
-built at `-O2`, and that holds the tail and the pool after it. The pool
-reads as a changed constant. Words in the image point at each of these
-functions, so the cause is not a start the scan cannot see.
+`KNOWN_EXTRAS` in `tests/backports.rs` lists 4 false reports, all
+`XMLDocument::~XMLDocument` of tinyxml2 read as a raw Thumb-2 image at
+`-O1` and `-O3`. The scan cuts it at an exception landing pad after its
+return. A guessed start between a load from a literal pool and its word is
+dropped, but only where every word between decodes: data read as code
+fails to decode, and that keeps the rule out of the data. This destructor
+holds NEON `vld1` and `vst1`, which the decoder does not read, so the rule
+does not apply. Decoding NEON would remove the last 4. A rule that allows
+one unreadable word in 32 bytes removed them too, but it merged pieces of
+data in raw zlib, and 4 tail-call wrappers then paired wrong.
 
 ## Read a binary that mixes A32 and Thumb-2
 

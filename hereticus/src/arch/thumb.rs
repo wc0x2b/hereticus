@@ -26,7 +26,7 @@ use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operan
 
 use super::arm32::{
     Arm32, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION, classify, decode_fallback, parse_hex,
-    pool_words_loaded, split_mnemonic, track_pool_words,
+    pool_loads, pool_words_loaded, split_mnemonic, track_pool_words,
 };
 use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind};
@@ -180,6 +180,10 @@ impl Arch for Thumb2 {
 
     fn literal_pool_words(&self, insns: &[Insn]) -> Vec<u64> {
         pool_words_loaded(insns, PcModel::T32)
+    }
+
+    fn literal_pool_loads(&self, insns: &[Insn]) -> Vec<(u64, u64)> {
+        pool_loads(insns, PcModel::T32)
     }
 
     fn data_among_code(&self) -> DataAmongCode {

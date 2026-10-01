@@ -146,6 +146,18 @@ pub trait Arch {
         Vec::new()
     }
 
+    /// Each instruction of `insns` that loads from a literal pool, as its
+    /// address and the address of a word it loads, where a compiler wrote
+    /// the pool for the one function that loads it.
+    ///
+    /// Defaults to none. Hand-written A32, as the ARM kernel and its
+    /// decompressor hold, shares one pool among many routines, so A32 keeps
+    /// the default: measured on the OpenWrt ARM decompressors, a pool span
+    /// merged 21 routines.
+    fn literal_pool_loads(&self, _insns: &[Insn]) -> Vec<(u64, u64)> {
+        Vec::new()
+    }
+
     /// Whether this architecture keeps data among its instructions.
     ///
     /// Where it does not, every word between the end of one function and the
