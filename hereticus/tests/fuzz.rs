@@ -541,7 +541,7 @@ fn a_space_only_removes_constants() {
         let space = AddressSpace::of_raw_image(base, u64::from(*length));
         for arch in [&Mips32::LITTLE, &Mips32::BIG] {
             let (insns, _) = decode_all(arch, code, base);
-            let plain = normalize_body(arch, &insns);
+            let plain = normalize_body_in(arch, code, &insns, &AddressSpace::none());
             let placed = normalize_body_in(arch, code, &insns, &space);
 
             assert_eq!(plain.len(), placed.len(), "the space added or removed an instruction");
@@ -572,9 +572,11 @@ fn a_space_only_removes_constants() {
 fn an_empty_space_changes_nothing() {
     check!().with_type::<Vec<u8>>().for_each(|code| {
         for arch in [&Mips32::LITTLE, &Mips32::BIG] {
-            let (insns, _) = decode_all(arch, code, 0x8000_0000);
-            let plain = normalize_body(arch, &insns);
-            let placed = normalize_body_in(arch, code, &insns, &AddressSpace::none());
+            let base = 0x8000_0000;
+            let (insns, _) = decode_all(arch, code, base);
+            let plain = normalize_body_in(arch, code, &insns, &AddressSpace::none());
+            let placed =
+                normalize_body_in(arch, code, &insns, &AddressSpace::of_raw_image(base, 0));
             for (without, with) in plain.iter().zip(&placed) {
                 assert_eq!(without.constants, with.constants);
             }

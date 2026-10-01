@@ -25,7 +25,7 @@ use super::arm32::split_mnemonic;
 use super::{Arch, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind};
 use crate::il::{
-    AccessKind, Comparison, Cond, Guard, Lifted, MemoryAccess, Reg, RegSet, Test, Value, Width,
+    AccessKind, Comparison, Cond, Guard, Lifted, MemoryAccess, Op, Reg, RegSet, Test, Value, Width,
 };
 
 /// Every A64 instruction is 4 bytes wide.
@@ -360,11 +360,82 @@ fn lift(inst: &Instruction, mnemonic: &str) -> Lifted {
         _ => {}
     }
 
+    lifted.op = op_of(inst.opcode, mnemonic, role, &operands);
     lifted.memory = memory_access(mnemonic, role, &operands);
     lifted.test = test_of(inst, mnemonic, &operands);
     lifted.reads = reads;
     lifted.writes = writes;
     lifted
+}
+
+/// What an A64 instruction computes. `mnemonic` has its aliases resolved,
+/// so `mov`, `cmp` and `lsl` arrive as such.
+fn op_of(opcode: Opcode, mnemonic: &str, role: Role, operands: &[Operand]) -> Op {
+    match role {
+        Role::Load { .. } if mnemonic.starts_with("prf") => return Op::System,
+        Role::Load { .. } => return Op::Load,
+        Role::Atomic => return Op::Atomic,
+        Role::StoreExclusive => return Op::Store,
+        Role::ReadOnly if mnemonic.starts_with("st") => return Op::Store,
+        Role::ReadOnly | Role::Compute => {}
+    }
+    match opcode {
+        Opcode::B => return Op::Jump,
+        Opcode::Bcc(_) | Opcode::CBZ | Opcode::CBNZ | Opcode::TBZ | Opcode::TBNZ => {
+            return Op::Branch;
+        }
+        Opcode::BL => return Op::Call,
+        _ => {}
+    }
+    let is_vector = operands.iter().any(|operand| {
+        matches!(
+            operand,
+            Operand::SIMDRegisterElements(..)
+                | Operand::SIMDRegisterElementsLane(..)
+                | Operand::SIMDRegisterElementsMultipleLane(..)
+                | Operand::SIMDRegisterGroup(..)
+        )
+    });
+    let stem = mnemonic.trim_end_matches(|c: char| c.is_ascii_digit());
+    match stem {
+        _ if mnemonic.starts_with("blr") => Op::Call,
+        _ if mnemonic.starts_with("br") => Op::Jump,
+        _ if mnemonic.starts_with("ret") => Op::Return,
+        _ if is_vector => Op::Vector,
+        "mov" | "movz" | "movn" | "movk" | "fmov" => Op::Move,
+        "adr" | "adrp" => Op::Address,
+        "add" | "adds" | "adc" | "adcs" => Op::Add,
+        "sub" | "subs" | "sbc" | "sbcs" => Op::Subtract,
+        "neg" | "negs" | "ngc" | "ngcs" => Op::Negate,
+        "mul" | "umulh" | "smulh" | "umull" | "smull" | "mneg" => Op::Multiply,
+        "madd" | "msub" | "umaddl" | "smaddl" | "umsubl" | "smsubl" => Op::MultiplyAdd,
+        "udiv" | "sdiv" => Op::Divide,
+        "and" | "ands" => Op::And,
+        "orr" => Op::Or,
+        "eor" | "eon" => Op::Xor,
+        "bic" | "bics" => Op::AndNot,
+        "orn" => Op::OrNot,
+        "mvn" => Op::Not,
+        "lsl" | "lslv" => Op::ShiftLeft,
+        "lsr" | "lsrv" => Op::ShiftRight,
+        "asr" | "asrv" => Op::ShiftRightArithmetic,
+        "ror" | "rorv" | "extr" => Op::Rotate,
+        "sxtb" | "sxth" | "sxtw" | "uxtb" | "uxth" | "uxtw" => Op::Extend,
+        "ubfx" | "sbfx" | "ubfiz" | "sbfiz" | "bfi" | "bfxil" | "bfm" | "ubfm" | "sbfm" | "bfc" => {
+            Op::BitField
+        }
+        "clz" | "cls" | "rbit" | "rev" | "cnt" => Op::Bits,
+        "csel" | "csinc" | "csinv" | "csneg" | "cset" | "csetm" | "cinc" | "cinv" | "cneg"
+        | "fcsel" => Op::Select,
+        "cmp" | "cmn" | "tst" | "ccmp" | "ccmn" | "fcmp" | "fcmpe" | "fccmp" | "fccmpe" => {
+            Op::Compare
+        }
+        _ if mnemonic.starts_with('f') || mnemonic.ends_with("cvtf") => Op::Float,
+        "nop" | "hint" | "dmb" | "dsb" | "isb" | "msr" | "mrs" | "svc" | "hvc" | "smc" | "brk"
+        | "hlt" | "udf" | "sys" | "sysl" | "yield" | "wfe" | "wfi" | "sev" | "sevl" | "clrex"
+        | "bti" | "paciasp" | "pacibsp" | "autiasp" | "autibsp" | "prfm" | "prfum" => Op::System,
+        _ => Op::Other,
+    }
 }
 
 fn role_of(mnemonic: &str) -> Role {

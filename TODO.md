@@ -34,16 +34,17 @@ extract the kexts with `ipsw` first. Read each `LC_FILESET_ENTRY`.
 seconds on a whole kernelcache. To find a fix, a user reads many. Add
 `--diff-all`, which prints the diff of each changed pair in one run.
 
-## Add a thin layer of meaning to each instruction
+## Lift more of what a guard can be
 
-An instruction is a mnemonic, operands as text and a kind of control
-flow. Nothing says which registers and memory it reads and writes. So
-`cbnz x8` and `cmp x8, #0` with `b.ne` read as different, and a report can
-say "2 branch" but not "a new check on a value before an error path". Add
-the registers read and written and the memory accessed to each
-instruction, and read a compare and its conditional branch as one guard.
-Keep it only if the fixes rise or the noise falls on the `versions.rs`
-tallies, the OpenWrt pairs and the CVE fixes.
+`il` reads a compare and the branch on it as one guard on AArch64, A32,
+Thumb-2 and MIPS32. Measured against the symbols, that paired 231 more
+functions right and 61 more wrong over the cross builds, mostly twins
+such as `math_max` and `math_min`. Still read as plain work:
+
+- A compare whose result a `cset`, a `csel` or a conditional instruction
+  of A32 uses, in place of a branch.
+- A chain of `ccmp`, which tests two conditions with one branch.
+- The MIPS32 release 2 words that `mips32` reads, which lift to nothing.
 
 ## Make function recovery a library
 

@@ -21,6 +21,8 @@ use rabbitizer::{
 
 use super::{AbsoluteCall, Arch, CallTarget, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};
+use crate::il;
+use rabbitizer::registers_meta::Register as _;
 
 /// Every MIPS32 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
@@ -528,6 +530,18 @@ impl Arch for Mips32 {
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
         u64::from(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    /// Only what `rabbitizer` reads is lifted. The MIPS32 words that
+    /// [`super::mips32`] reads in its place lift to nothing.
+    fn lift(&self, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
+        if insn.kind == InsnKind::Unknown {
+            return None;
+        }
+        let raw = self.order.read_word(word.try_into().ok()?);
+        let flags = InstructionFlags::new(ISA);
+        let inst = Instruction::new_checked(raw, Vram::new(insn.address as u32), flags)?;
+        Some(lift(&inst, &insn.mnemonic))
     }
 
     /// A lower half joined to what its source register holds, where that
@@ -1738,6 +1752,186 @@ fn branch_target(inst: &Instruction) -> Option<u64> {
     u64::try_from(address + i64::from(offset.inner())).ok()
 }
 
+/// Where the IL keeps `hi` and `lo`, after the 32 general registers.
+const HI: il::Reg = il::Reg::General(32);
+const LO: il::Reg = il::Reg::General(33);
+
+/// The return address register, which a call writes.
+const RA: u8 = 31;
+
+/// Every MIPS32 general register is 32 bits wide.
+const WIDTH: il::Width = il::Width::Bits32;
+
+/// Lift one instruction `rabbitizer` decoded, from what its opcode says it
+/// reads, writes and accesses. `mnemonic` is the one it printed.
+fn lift(inst: &Instruction, mnemonic: &str) -> il::Lifted {
+    let opcode = inst.opcode();
+    let field = inst.field();
+    let general = |reg: Option<rabbitizer::registers::Gpr>| {
+        reg.map(|reg| reg.as_index())
+            .filter(|&index| index != 0)
+            .map(|index| il::Reg::General(index as u8))
+    };
+    let float = |reg: Option<rabbitizer::registers::Cop1>| {
+        reg.map(|reg| il::Reg::Vector(reg.as_index() as u8))
+    };
+
+    let mut reads = il::RegSet::EMPTY;
+    let mut writes = il::RegSet::EMPTY;
+    let note = |set: &mut il::RegSet, wanted: bool, reg: Option<il::Reg>| {
+        if let (true, Some(reg)) = (wanted, reg) {
+            set.insert(reg);
+        }
+    };
+    note(&mut reads, opcode.reads_rs(), general(field.rs()));
+    note(&mut reads, opcode.reads_rt(), general(field.rt()));
+    note(&mut reads, opcode.reads_rd(), general(field.rd()));
+    note(&mut reads, opcode.reads_fs(), float(field.fs()));
+    note(&mut reads, opcode.reads_ft(), float(field.ft()));
+    note(&mut reads, opcode.reads_fd(), float(field.fd()));
+    note(&mut reads, opcode.reads_hi(), Some(HI));
+    note(&mut reads, opcode.reads_lo(), Some(LO));
+    note(&mut writes, opcode.modifies_rs(), general(field.rs()));
+    note(&mut writes, opcode.modifies_rt(), general(field.rt()));
+    note(&mut writes, opcode.modifies_rd(), general(field.rd()));
+    note(&mut writes, opcode.modifies_fs(), float(field.fs()));
+    note(&mut writes, opcode.modifies_ft(), float(field.ft()));
+    note(&mut writes, opcode.modifies_fd(), float(field.fd()));
+    note(&mut writes, opcode.modifies_hi(), Some(HI));
+    note(&mut writes, opcode.modifies_lo(), Some(LO));
+    note(&mut writes, opcode.does_link(), Some(il::Reg::General(RA)));
+
+    let kind = match (opcode.does_load(), opcode.does_store()) {
+        (true, true) => Some(il::AccessKind::LoadStore),
+        (true, false) => Some(il::AccessKind::Load),
+        (false, true) => Some(il::AccessKind::Store),
+        (false, false) => None,
+    };
+    let memory =
+        kind.map(|kind| il::MemoryAccess { kind, width: access_width(opcode.access_type()) });
+
+    let op = op_of(inst, mnemonic, kind);
+    il::Lifted { op, reads, writes, memory, test: test_of(inst) }
+}
+
+/// What a MIPS instruction computes. `mnemonic` is as `rabbitizer` prints
+/// it, with pseudo-instructions such as `move` and `beqz` resolved.
+fn op_of(inst: &Instruction, mnemonic: &str, access: Option<il::AccessKind>) -> il::Op {
+    use il::Op;
+    match access {
+        Some(il::AccessKind::Load) => return Op::Load,
+        Some(il::AccessKind::Store) => return Op::Store,
+        Some(il::AccessKind::LoadStore) => return Op::Atomic,
+        None => {}
+    }
+    if inst.is_return() {
+        return Op::Return;
+    }
+    if inst.is_function_call() {
+        return Op::Call;
+    }
+    if inst.opcode().is_branch() || inst.opcode().is_branch_likely() {
+        return if inst.is_unconditional_branch() { Op::Jump } else { Op::Branch };
+    }
+    match mnemonic {
+        "j" | "jr" => Op::Jump,
+        "move" | "li" | "mfhi" | "mflo" | "mthi" | "mtlo" | "mfc1" | "mtc1" => Op::Move,
+        "lui" => Op::Address,
+        "add" | "addi" | "addu" | "addiu" => Op::Add,
+        "sub" | "subu" => Op::Subtract,
+        "neg" | "negu" => Op::Negate,
+        "mult" | "multu" | "mul" => Op::Multiply,
+        "madd" | "maddu" | "msub" | "msubu" => Op::MultiplyAdd,
+        "div" | "divu" => Op::Divide,
+        "and" | "andi" => Op::And,
+        "or" | "ori" => Op::Or,
+        "xor" | "xori" => Op::Xor,
+        "nor" | "not" => Op::Not,
+        "sll" | "sllv" => Op::ShiftLeft,
+        "srl" | "srlv" => Op::ShiftRight,
+        "sra" | "srav" => Op::ShiftRightArithmetic,
+        "rotr" | "rotrv" => Op::Rotate,
+        "seb" | "seh" => Op::Extend,
+        "ext" | "ins" => Op::BitField,
+        "clz" | "clo" | "wsbh" => Op::Bits,
+        "movn" | "movz" => Op::Select,
+        "slt" | "sltu" | "slti" | "sltiu" => Op::Compare,
+        "nop" | "syscall" | "break" | "sync" | "cache" | "pref" | "mfc0" | "mtc0" | "eret"
+        | "wait" | "sdbbp" | "teq" | "tne" | "tge" | "tgeu" | "tlt" | "tltu" | "ssnop" | "ehb" => {
+            Op::System
+        }
+        _ if mnemonic.ends_with(".s") || mnemonic.ends_with(".d") || mnemonic.ends_with(".w") => {
+            Op::Float
+        }
+        _ => Op::Other,
+    }
+}
+
+fn access_width(access: Option<rabbitizer::access_type::AccessType>) -> Option<il::Width> {
+    use rabbitizer::access_type::AccessType;
+    match access? {
+        AccessType::BYTE => Some(il::Width::Bits8),
+        AccessType::SHORT => Some(il::Width::Bits16),
+        AccessType::WORD
+        | AccessType::FLOAT
+        | AccessType::WORD_COP2
+        | AccessType::UNALIGNED_WORD_LEFT
+        | AccessType::UNALIGNED_WORD_RIGHT => Some(il::Width::Bits32),
+        AccessType::DOUBLEFLOAT | AccessType::DOUBLEWORD_COP2 => Some(il::Width::Bits64),
+        _ => None,
+    }
+}
+
+/// What a general register operand gives as a value: the zero register
+/// gives 0.
+fn register_value(reg: Option<rabbitizer::registers::Gpr>) -> il::Value {
+    match reg.map(|reg| reg.as_index()) {
+        Some(0) => il::Value::Const(0),
+        Some(index) => il::Value::Reg(il::Reg::General(index as u8)),
+        None => il::Value::Other,
+    }
+}
+
+fn test_of(inst: &Instruction) -> Option<il::Test> {
+    let field = inst.field();
+    let (rs, rt) = (register_value(field.rs()), register_value(field.rt()));
+    let zero = il::Value::Const(0);
+    let guard =
+        |cond, left, right| Some(il::Test::Guard(il::Guard { cond, left, right, width: WIDTH }));
+    // `slti` and `sltiu` both extend the sign of their constant; `sltiu`
+    // then compares without sign.
+    let immediate =
+        field.imm_i16().map(|value| il::Value::Const(i64::from(value) as u64 & WIDTH.mask()));
+    let set = |cond, right| {
+        let dest =
+            field.rd().or(field.rt()).map(|reg| reg.as_index()).filter(|&index| index != 0)?;
+        Some(il::Test::SetOnCompare {
+            dest: il::Reg::General(dest as u8),
+            cond,
+            left: rs,
+            right,
+            width: WIDTH,
+        })
+    };
+    match inst.opcode() {
+        // `b` is `beq zero, zero`, which always branches.
+        Opcode::core_beq | Opcode::core_beql if rs == zero && rt == zero => None,
+        Opcode::core_beq | Opcode::core_beql => guard(il::Cond::Equal, rs, rt),
+        Opcode::core_bne | Opcode::core_bnel => guard(il::Cond::NotEqual, rs, rt),
+        Opcode::core_beqz => guard(il::Cond::Equal, rs, zero),
+        Opcode::core_bnez => guard(il::Cond::NotEqual, rs, zero),
+        Opcode::core_blez | Opcode::core_blezl => guard(il::Cond::SignedLessOrEqual, rs, zero),
+        Opcode::core_bgtz | Opcode::core_bgtzl => guard(il::Cond::SignedGreater, rs, zero),
+        Opcode::core_bltz | Opcode::core_bltzl => guard(il::Cond::SignedLess, rs, zero),
+        Opcode::core_bgez | Opcode::core_bgezl => guard(il::Cond::SignedGreaterOrEqual, rs, zero),
+        Opcode::core_slt => set(il::Cond::SignedLess, rt),
+        Opcode::core_sltu => set(il::Cond::UnsignedLess, rt),
+        Opcode::core_slti => set(il::Cond::SignedLess, immediate?),
+        Opcode::core_sltiu => set(il::Cond::UnsignedLess, immediate?),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1746,6 +1940,129 @@ mod tests {
     /// Decode one instruction from a little-endian word at address 0.
     fn decode_one(word: u32) -> Insn {
         Mips32::LITTLE.decode(&word.to_le_bytes(), 0, 0).expect("bytes must decode")
+    }
+
+    /// Encodings from `llvm-mc --triple=mips --show-encoding`, as words.
+    mod words {
+        pub const BEQ_A0_A1: u32 = 0x1085_0002;
+        pub const BEQZ_A0: u32 = 0x1080_0002;
+        pub const BNEZ_A0: u32 = 0x1480_0002;
+        pub const BLEZ_A0: u32 = 0x1880_0002;
+        pub const BGTZ_A0: u32 = 0x1c80_0002;
+        pub const BLTZ_A0: u32 = 0x0480_0002;
+        pub const BGEZ_A0: u32 = 0x0481_0002;
+        pub const SLT_T0_A0_A1: u32 = 0x0085_402a;
+        pub const SLTI_T0_A0_5: u32 = 0x2888_0005;
+        pub const SLTIU_T0_A0_MINUS_1: u32 = 0x2c88_ffff;
+        pub const BNEZ_T0: u32 = 0x1500_0002;
+        pub const BEQZ_T0: u32 = 0x1100_0002;
+        pub const LW_T0_SP_4: u32 = 0x8fa8_0004;
+        pub const SB_T1_A0: u32 = 0xa089_0000;
+        pub const JAL: u32 = 0x0c00_0040;
+        pub const ADDU_V0_A0_A1: u32 = 0x0085_1021;
+        pub const MULT_A0_A1: u32 = 0x0085_0018;
+        pub const MFLO_V0: u32 = 0x0000_1012;
+        pub const B: u32 = 0x1000_0002;
+    }
+
+    /// Lift a word in both byte orders, and check that they agree.
+    fn lift_one(word: u32) -> il::Lifted {
+        let big = Mips32::BIG
+            .lift(&Mips32::BIG.decode(&word.to_be_bytes(), 0, 0).unwrap(), &word.to_be_bytes());
+        let little = Mips32::LITTLE.lift(&decode_one(word), &word.to_le_bytes());
+        assert_eq!(big, little, "{word:#010x}: both byte orders lift alike");
+        big.expect("the word must lift")
+    }
+
+    fn guards(words: &[u32]) -> Vec<il::FoundGuard> {
+        let lifted: Vec<_> = words.iter().map(|&word| Some(lift_one(word))).collect();
+        il::find_guards(&lifted)
+    }
+
+    fn reg(number: u8) -> il::Value {
+        il::Value::Reg(il::Reg::General(number))
+    }
+
+    fn regs(numbers: &[u8]) -> il::RegSet {
+        numbers.iter().map(|&number| il::Reg::General(number)).collect()
+    }
+
+    #[test]
+    fn each_compare_and_branch_is_a_guard() {
+        use il::Cond;
+        for (word, cond, right) in [
+            (words::BEQ_A0_A1, Cond::Equal, reg(5)),
+            (words::BEQZ_A0, Cond::Equal, il::Value::Const(0)),
+            (words::BNEZ_A0, Cond::NotEqual, il::Value::Const(0)),
+            (words::BLEZ_A0, Cond::SignedLessOrEqual, il::Value::Const(0)),
+            (words::BGTZ_A0, Cond::SignedGreater, il::Value::Const(0)),
+            (words::BLTZ_A0, Cond::SignedLess, il::Value::Const(0)),
+            (words::BGEZ_A0, Cond::SignedGreaterOrEqual, il::Value::Const(0)),
+        ] {
+            let found = guards(&[word]);
+            assert_eq!(found.len(), 1, "{word:#010x}");
+            assert_eq!(
+                (found[0].guard.cond, found[0].guard.left, found[0].guard.right),
+                (cond, reg(4), right)
+            );
+        }
+        assert_eq!(guards(&[words::B]), [], "`b` always branches");
+    }
+
+    /// `slt t0, a0, a1` with `bnez t0` branches where `a0 < a1`.
+    #[test]
+    fn a_set_on_less_and_its_branch_are_one_guard() {
+        let found = guards(&[words::SLT_T0_A0_A1, words::ADDU_V0_A0_A1, words::BNEZ_T0]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].compare, found[0].branch), (Some(0), 2));
+        let guard = found[0].guard;
+        assert_eq!((guard.cond, guard.left, guard.right), (il::Cond::SignedLess, reg(4), reg(5)));
+
+        let found = guards(&[words::SLTI_T0_A0_5, words::BEQZ_T0]);
+        assert_eq!(found[0].guard.cond, il::Cond::SignedGreaterOrEqual);
+        assert_eq!(found[0].guard.right, il::Value::Const(5));
+    }
+
+    #[test]
+    fn sltiu_extends_the_sign_of_its_constant() {
+        let found = guards(&[words::SLTIU_T0_A0_MINUS_1, words::BNEZ_T0]);
+        assert_eq!(found[0].guard.cond, il::Cond::UnsignedLess);
+        assert_eq!(found[0].guard.right, il::Value::Const(0xffff_ffff));
+    }
+
+    #[test]
+    fn registers_and_memory_are_named() {
+        let load = lift_one(words::LW_T0_SP_4);
+        assert_eq!((load.reads, load.writes), (regs(&[29]), regs(&[8])));
+        assert_eq!(
+            load.memory,
+            Some(il::MemoryAccess { kind: il::AccessKind::Load, width: Some(il::Width::Bits32) })
+        );
+        let store = lift_one(words::SB_T1_A0);
+        assert_eq!((store.reads, store.writes), (regs(&[4, 9]), il::RegSet::EMPTY));
+        assert_eq!(store.memory.and_then(|access| access.width), Some(il::Width::Bits8));
+        assert_eq!(lift_one(words::JAL).writes, regs(&[31]));
+        let add = lift_one(words::ADDU_V0_A0_A1);
+        assert_eq!((add.reads, add.writes), (regs(&[4, 5]), regs(&[2])));
+        let multiply = lift_one(words::MULT_A0_A1);
+        assert_eq!(
+            (multiply.reads, multiply.writes),
+            (regs(&[4, 5]), [HI, LO].into_iter().collect())
+        );
+        assert_eq!(lift_one(words::MFLO_V0).reads, [LO].into_iter().collect());
+    }
+
+    #[test]
+    fn lifting_any_word_never_panics() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            let bytes = word.to_be_bytes();
+            let Ok(insn) = Mips32::BIG.decode(&bytes, 0, 0) else { return };
+            if let Some(lifted) = Mips32::BIG.lift(&insn, &bytes)
+                && let Some(il::Test::Guard(_)) = lifted.test
+            {
+                assert!(matches!(insn.kind, InsnKind::Branch { .. }), "{insn}: a guard branches");
+            }
+        });
     }
 
     #[test]

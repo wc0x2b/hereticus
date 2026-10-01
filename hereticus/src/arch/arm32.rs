@@ -9,13 +9,16 @@
 
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
-use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg};
+use yaxpeax_arm::armv7::{
+    ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg, RegShiftStyle, ShiftStyle,
+};
 
 use core::ops::Range;
 use std::collections::BTreeSet;
 
 use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};
+use crate::il;
 
 /// Every A32 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
@@ -430,6 +433,462 @@ impl Arch for Arm32 {
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
         u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
+
+    fn lift(&self, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
+        lift_with(InstDecoder::default(), insn, word)
+    }
+}
+
+/// Decode `word` again with `decoder` and lift it. A word the decoder
+/// refuses, or reads only through the fallback, lifts to nothing.
+pub(super) fn lift_with(decoder: InstDecoder, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
+    if insn.kind == InsnKind::Unknown {
+        return None;
+    }
+    let mut inst = Instruction::default();
+    decoder.decode_into(&mut inst, &mut U8Reader::new(word)).ok()?;
+    (inst.opcode != Opcode::Invalid).then(|| lift(&inst))
+}
+
+/// What an ARM instruction does with its first operands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// Writes its first `count` operands from the others, as `add` writes
+    /// one and `umull` two.
+    Compute { count: usize },
+    /// Reads every operand and writes none, as `str`, `cmp` and `b` do.
+    ReadOnly,
+    /// Loads its first `count` operands, or the registers of its list.
+    Load { count: usize },
+    /// An exclusive store, which writes its status to the first operand.
+    StoreExclusive,
+}
+
+/// Lift one decoded A32 or T32 instruction.
+fn lift(inst: &Instruction) -> il::Lifted {
+    let mut operands: Vec<Operand> =
+        inst.operands.iter().copied().take_while(|operand| *operand != Operand::Nothing).collect();
+    // `yaxpeax` gives an A32 compare the unused destination field first, as
+    // in `cmps r0, r0, 0x1`. T32 gives only the two values.
+    if is_compare(inst.opcode) && operands.len() == 3 {
+        operands.remove(0);
+    }
+    let mut reads = il::RegSet::EMPTY;
+    let mut writes = il::RegSet::EMPTY;
+    for operand in &operands {
+        address_registers(*operand, &mut reads, &mut writes);
+    }
+
+    let role = role_of(inst.opcode);
+    for (index, operand) in operands.iter().enumerate() {
+        let regs = value_registers(*operand);
+        let written = match role {
+            Role::Compute { count } | Role::Load { count } => index < count,
+            Role::StoreExclusive => index == 0,
+            Role::ReadOnly => false,
+        };
+        let list_loaded =
+            matches!(role, Role::Load { .. }) && matches!(operand, Operand::RegList(_));
+        if written || list_loaded {
+            regs.iter().for_each(|reg| writes.insert(reg));
+            if reads_destination(inst.opcode) {
+                regs.iter().for_each(|reg| reads.insert(reg));
+            }
+        } else {
+            regs.iter().for_each(|reg| reads.insert(reg));
+        }
+    }
+
+    match inst.opcode {
+        Opcode::BL | Opcode::BLX => writes.insert(il::Reg::General(REG_LR as u8)),
+        Opcode::PUSH | Opcode::POP => {
+            reads.insert(il::Reg::Stack);
+            writes.insert(il::Reg::Stack);
+        }
+        _ => {}
+    }
+    if inst.condition != ConditionCode::AL || matches!(inst.opcode, Opcode::IT) {
+        reads.insert(il::Reg::Flags);
+    }
+    if inst.s() || is_compare(inst.opcode) {
+        writes.insert(il::Reg::Flags);
+    }
+
+    il::Lifted {
+        op: op_of(inst, &operands),
+        reads,
+        writes,
+        memory: memory_access(inst.opcode, &operands),
+        test: test_of(inst, &operands),
+    }
+}
+
+/// What an A32 or T32 instruction computes.
+fn op_of(inst: &Instruction, operands: &[Operand]) -> il::Op {
+    use il::Op;
+    let unconditional = inst.condition == ConditionCode::AL;
+    let loads_pc = operands.iter().any(|operand| {
+        matches!(operand, Operand::RegList(list) if list & (1 << REG_PC) != 0)
+            || matches!(operand, Operand::Reg(reg) if u16::from(reg.number()) == REG_PC)
+    });
+    match inst.opcode {
+        Opcode::B if unconditional => Op::Jump,
+        Opcode::B | Opcode::CBZ | Opcode::CBNZ => Op::Branch,
+        Opcode::BL | Opcode::BLX => Op::Call,
+        Opcode::BX | Opcode::BXJ => match operands.first() {
+            Some(Operand::Reg(reg)) if u16::from(reg.number()) == REG_LR => Op::Return,
+            _ => Op::Jump,
+        },
+        Opcode::TBB | Opcode::TBH => Op::Jump,
+        // `pop {r4, pc}` loads the return address into the program counter.
+        Opcode::POP | Opcode::LDM(..) if loads_pc => Op::Return,
+        Opcode::MOV => Op::Move,
+        Opcode::MVN => Op::Not,
+        Opcode::MOVT | Opcode::UBFX | Opcode::SBFX | Opcode::BFI | Opcode::BFC => Op::BitField,
+        Opcode::ADR => Op::Address,
+        Opcode::ADD | Opcode::ADC => Op::Add,
+        Opcode::SUB | Opcode::SBC | Opcode::RSB | Opcode::RSC => Op::Subtract,
+        Opcode::MUL
+        | Opcode::UMULL
+        | Opcode::SMULL
+        | Opcode::SMUL(..)
+        | Opcode::SMULW(_)
+        | Opcode::SMMUL
+        | Opcode::SMUAD
+        | Opcode::SMUSD => Op::Multiply,
+        Opcode::MLA
+        | Opcode::MLS
+        | Opcode::UMLAL
+        | Opcode::SMLAL
+        | Opcode::SMLAL_halfword(..)
+        | Opcode::UMAAL
+        | Opcode::SMLA(..)
+        | Opcode::SMLAW(_)
+        | Opcode::SMLALD(_)
+        | Opcode::SMLSLD(_)
+        | Opcode::SMLAD
+        | Opcode::SMLSD
+        | Opcode::SMMLA
+        | Opcode::SMMLS
+        | Opcode::SMAL(..)
+        | Opcode::USADA8 => Op::MultiplyAdd,
+        Opcode::SDIV | Opcode::UDIV => Op::Divide,
+        Opcode::AND => Op::And,
+        Opcode::ORR => Op::Or,
+        Opcode::EOR => Op::Xor,
+        Opcode::BIC => Op::AndNot,
+        Opcode::ORN => Op::OrNot,
+        Opcode::LSL => Op::ShiftLeft,
+        Opcode::LSR => Op::ShiftRight,
+        Opcode::ASR => Op::ShiftRightArithmetic,
+        Opcode::ROR | Opcode::RRX => Op::Rotate,
+        Opcode::SXTB
+        | Opcode::SXTH
+        | Opcode::UXTB
+        | Opcode::UXTH
+        | Opcode::SXTAB
+        | Opcode::SXTAH
+        | Opcode::UXTAB
+        | Opcode::UXTAH
+        | Opcode::SXTB16
+        | Opcode::UXTB16
+        | Opcode::SXTAB16
+        | Opcode::UXTAB16 => Op::Extend,
+        Opcode::CLZ | Opcode::RBIT | Opcode::REV | Opcode::REV16 | Opcode::REVSH => Op::Bits,
+        Opcode::SEL => Op::Select,
+        Opcode::CMP | Opcode::CMN | Opcode::TST | Opcode::TEQ => Op::Compare,
+        Opcode::SWP | Opcode::SWPB => Op::Atomic,
+        Opcode::IT
+        | Opcode::NOP
+        | Opcode::HINT
+        | Opcode::YIELD
+        | Opcode::WFE
+        | Opcode::WFI
+        | Opcode::SEV
+        | Opcode::CSDB
+        | Opcode::DMB
+        | Opcode::DSB
+        | Opcode::ISB
+        | Opcode::SVC
+        | Opcode::BKPT
+        | Opcode::MSR
+        | Opcode::MRS
+        | Opcode::CPS(_)
+        | Opcode::CPS_modeonly
+        | Opcode::SETEND
+        | Opcode::CLREX
+        | Opcode::UDF
+        | Opcode::DBG
+        | Opcode::PLD
+        | Opcode::PLI
+        | Opcode::HVC
+        | Opcode::SMC
+        | Opcode::ERET
+        | Opcode::LDC(_)
+        | Opcode::LDCL(_)
+        | Opcode::LDC2(_)
+        | Opcode::LDC2L(_)
+        | Opcode::STC(_)
+        | Opcode::STCL(_)
+        | Opcode::STC2(_)
+        | Opcode::STC2L(_)
+        | Opcode::MCR2(..)
+        | Opcode::MCRR2(..)
+        | Opcode::MRC2(..)
+        | Opcode::MRRC2(..)
+        | Opcode::MCRR(..)
+        | Opcode::MRRC(..)
+        | Opcode::CDP2(..) => Op::System,
+        opcode => match role_of(opcode) {
+            Role::Load { .. } => Op::Load,
+            Role::StoreExclusive => Op::Store,
+            Role::ReadOnly if matches!(opcode, Opcode::STM(..) | Opcode::PUSH) => Op::Store,
+            Role::ReadOnly if memory_access(opcode, operands).is_some() => Op::Store,
+            Role::ReadOnly | Role::Compute { .. } => Op::Other,
+        },
+    }
+}
+
+fn is_compare(opcode: Opcode) -> bool {
+    matches!(opcode, Opcode::CMP | Opcode::CMN | Opcode::TST | Opcode::TEQ)
+}
+
+/// Instructions that keep part of their destination, so read it too.
+fn reads_destination(opcode: Opcode) -> bool {
+    matches!(
+        opcode,
+        Opcode::MOVT | Opcode::BFI | Opcode::BFC | Opcode::UMLAL | Opcode::SMLAL | Opcode::UMAAL
+    )
+}
+
+fn role_of(opcode: Opcode) -> Role {
+    match opcode {
+        Opcode::LDR
+        | Opcode::LDRB
+        | Opcode::LDRH
+        | Opcode::LDRSB
+        | Opcode::LDRSH
+        | Opcode::LDRT
+        | Opcode::LDRBT
+        | Opcode::LDRHT
+        | Opcode::LDRSBT
+        | Opcode::LDRSHT
+        | Opcode::LDREX
+        | Opcode::LDREXB
+        | Opcode::LDREXH
+        | Opcode::SWP
+        | Opcode::SWPB => Role::Load { count: 1 },
+        Opcode::LDRD | Opcode::LDREXD => Role::Load { count: 2 },
+        Opcode::LDM(..) | Opcode::POP => Role::Load { count: 0 },
+        Opcode::STREX | Opcode::STREXB | Opcode::STREXH | Opcode::STREXD => Role::StoreExclusive,
+        Opcode::STR
+        | Opcode::STRB
+        | Opcode::STRH
+        | Opcode::STRD
+        | Opcode::STRT
+        | Opcode::STRBT
+        | Opcode::STRHT
+        | Opcode::STM(..)
+        | Opcode::PUSH
+        | Opcode::CMP
+        | Opcode::CMN
+        | Opcode::TST
+        | Opcode::TEQ
+        | Opcode::B
+        | Opcode::BL
+        | Opcode::BLX
+        | Opcode::BX
+        | Opcode::BXJ
+        | Opcode::CBZ
+        | Opcode::CBNZ
+        | Opcode::TBB
+        | Opcode::TBH
+        | Opcode::IT
+        | Opcode::MSR
+        | Opcode::PLD
+        | Opcode::PLI
+        | Opcode::SVC
+        | Opcode::BKPT
+        | Opcode::NOP
+        | Opcode::HINT
+        | Opcode::DMB
+        | Opcode::DSB
+        | Opcode::ISB => Role::ReadOnly,
+        Opcode::UMULL | Opcode::SMULL | Opcode::UMLAL | Opcode::SMLAL | Opcode::UMAAL => {
+            Role::Compute { count: 2 }
+        }
+        _ => Role::Compute { count: 1 },
+    }
+}
+
+/// The register `reg` names, where it is one the IL tracks: the program
+/// counter is not.
+fn il_reg(reg: Reg) -> Option<il::Reg> {
+    match u16::from(reg.number()) {
+        REG_PC => None,
+        REG_SP => Some(il::Reg::Stack),
+        number => Some(il::Reg::General(number as u8)),
+    }
+}
+
+/// The registers an operand that is a value names.
+fn value_registers(operand: Operand) -> il::RegSet {
+    match operand {
+        Operand::Reg(reg) | Operand::RegWBack(reg, _) => il_reg(reg).into_iter().collect(),
+        Operand::RegShift(shift) => match shift.into_shift() {
+            RegShiftStyle::RegImm(shift) => il_reg(shift.shiftee()).into_iter().collect(),
+            RegShiftStyle::RegReg(shift) => {
+                [il_reg(shift.shiftee()), il_reg(shift.shifter())].into_iter().flatten().collect()
+            }
+        },
+        Operand::RegList(list) => (0..16_u8)
+            .filter(|bit| list & (1 << bit) != 0)
+            .filter_map(|bit| il_reg(Reg::from_u8(bit)))
+            .collect(),
+        _ => il::RegSet::EMPTY,
+    }
+}
+
+/// The registers a memory operand reads to form its address, and the base
+/// it writes back. A base in the list of `ldm` or `stm` is a value, and its
+/// write back is read from the operand.
+fn address_registers(operand: Operand, reads: &mut il::RegSet, writes: &mut il::RegSet) {
+    let mut base = |reg: Reg, write_back: bool| {
+        if let Some(reg) = il_reg(reg) {
+            reads.insert(reg);
+            if write_back {
+                writes.insert(reg);
+            }
+        }
+    };
+    match operand {
+        Operand::RegDeref(reg) => base(reg, false),
+        Operand::RegWBack(reg, true) => base(reg, true),
+        Operand::RegDerefPreindexOffset(reg, _, _, write_back) => base(reg, write_back),
+        Operand::RegDerefPostindexOffset(reg, ..) => base(reg, true),
+        Operand::RegDerefPreindexReg(reg, index, _, write_back) => {
+            base(reg, write_back);
+            il_reg(index).into_iter().for_each(|reg| reads.insert(reg));
+        }
+        Operand::RegDerefPostindexReg(reg, index, ..) => {
+            base(reg, true);
+            il_reg(index).into_iter().for_each(|reg| reads.insert(reg));
+        }
+        Operand::RegDerefPreindexRegShift(reg, shift, _, write_back) => {
+            base(reg, write_back);
+            value_registers(Operand::RegShift(shift)).iter().for_each(|reg| reads.insert(reg));
+        }
+        Operand::RegDerefPostindexRegShift(reg, shift, ..) => {
+            base(reg, true);
+            value_registers(Operand::RegShift(shift)).iter().for_each(|reg| reads.insert(reg));
+        }
+        _ => {}
+    }
+}
+
+fn memory_access(opcode: Opcode, operands: &[Operand]) -> Option<il::MemoryAccess> {
+    let kind = match role_of(opcode) {
+        Role::Load { .. } if matches!(opcode, Opcode::SWP | Opcode::SWPB) => {
+            il::AccessKind::LoadStore
+        }
+        Role::Load { .. } => il::AccessKind::Load,
+        Role::StoreExclusive => il::AccessKind::Store,
+        Role::ReadOnly if matches!(opcode, Opcode::STM(..) | Opcode::PUSH) => il::AccessKind::Store,
+        Role::ReadOnly
+            if operands.iter().any(|operand| {
+                matches!(
+                    operand,
+                    Operand::RegDeref(_)
+                        | Operand::RegDerefPreindexOffset(..)
+                        | Operand::RegDerefPostindexOffset(..)
+                        | Operand::RegDerefPreindexReg(..)
+                        | Operand::RegDerefPostindexReg(..)
+                        | Operand::RegDerefPreindexRegShift(..)
+                        | Operand::RegDerefPostindexRegShift(..)
+                )
+            }) && !matches!(opcode, Opcode::PLD | Opcode::PLI | Opcode::TBB | Opcode::TBH) =>
+        {
+            il::AccessKind::Store
+        }
+        _ => return None,
+    };
+    let width = match opcode {
+        Opcode::LDRB
+        | Opcode::STRB
+        | Opcode::LDRSB
+        | Opcode::LDRBT
+        | Opcode::STRBT
+        | Opcode::LDRSBT
+        | Opcode::LDREXB
+        | Opcode::STREXB
+        | Opcode::SWPB => Some(il::Width::Bits8),
+        Opcode::LDRH
+        | Opcode::STRH
+        | Opcode::LDRSH
+        | Opcode::LDRHT
+        | Opcode::STRHT
+        | Opcode::LDRSHT
+        | Opcode::LDREXH
+        | Opcode::STREXH => Some(il::Width::Bits16),
+        Opcode::LDM(..) | Opcode::STM(..) | Opcode::PUSH | Opcode::POP => None,
+        _ => Some(il::Width::Bits32),
+    };
+    Some(il::MemoryAccess { kind, width })
+}
+
+/// What an operand gives as a value. The program counter, and a register
+/// shifted by something, are no one value.
+fn value_of(operand: Operand) -> il::Value {
+    match operand {
+        Operand::Reg(reg) => il_reg(reg).map_or(il::Value::Other, il::Value::Reg),
+        Operand::Imm32(value) => il::Value::Const(u64::from(value)),
+        Operand::Imm12(value) => il::Value::Const(u64::from(value)),
+        Operand::RegShift(shift) => match shift.into_shift() {
+            RegShiftStyle::RegImm(shift)
+                if shift.imm() == 0 && shift.stype() == ShiftStyle::LSL =>
+            {
+                il_reg(shift.shiftee()).map_or(il::Value::Other, il::Value::Reg)
+            }
+            _ => il::Value::Other,
+        },
+        _ => il::Value::Other,
+    }
+}
+
+fn test_of(inst: &Instruction, operands: &[Operand]) -> Option<il::Test> {
+    /// Every ARM general register is 32 bits wide.
+    const WIDTH: il::Width = il::Width::Bits32;
+    let value = |index: usize| operands.get(index).map_or(il::Value::Other, |op| value_of(*op));
+    let guard = |cond| {
+        Some(il::Test::Guard(il::Guard {
+            cond,
+            left: value(0),
+            right: il::Value::Const(0),
+            width: WIDTH,
+        }))
+    };
+    let (left, right) = (value(0), value(1));
+    let comparison = match inst.opcode {
+        Opcode::B if inst.condition != ConditionCode::AL => {
+            return Some(il::Test::OnFlags(il::Cond::from_arm(inst.condition as u8)));
+        }
+        Opcode::CBZ => return guard(il::Cond::Equal),
+        Opcode::CBNZ => return guard(il::Cond::NotEqual),
+        // A compare that only runs on a condition tests nothing on its own.
+        _ if inst.condition != ConditionCode::AL => return None,
+        Opcode::CMP => il::Comparison::Subtract { left, right },
+        Opcode::TST => il::Comparison::And { left, right },
+        // `cmn r, #k` sets the flags as `cmp r, #-k` does, for any `k` but zero.
+        Opcode::CMN => match right {
+            il::Value::Const(constant) if constant != 0 => il::Comparison::Subtract {
+                left,
+                right: il::Value::Const(constant.wrapping_neg() & WIDTH.mask()),
+            },
+            _ => il::Comparison::Add { left, right },
+        },
+        _ => return None,
+    };
+    Some(il::Test::Compare { comparison, width: WIDTH })
 }
 
 /// Read the table behind `add pc, rB, rX`, where `earlier` holds the
@@ -1371,6 +1830,126 @@ mod tests {
     /// Decode one instruction from raw bytes at address 0.
     fn decode_one(bytes: [u8; 4]) -> Insn {
         Arm32.decode(&bytes, 0, 0).expect("bytes must decode")
+    }
+
+    /// Encodings from `llvm-mc --triple=armv7a --show-encoding`.
+    mod words {
+        pub const CMP_R0_1: [u8; 4] = [0x01, 0x00, 0x50, 0xe3];
+        pub const BLT: [u8; 4] = [0x02, 0x00, 0x00, 0xba];
+        pub const CMP_R0_0: [u8; 4] = [0x00, 0x00, 0x50, 0xe3];
+        pub const BLE: [u8; 4] = [0x02, 0x00, 0x00, 0xda];
+        pub const CMN_R1_1: [u8; 4] = [0x01, 0x00, 0x71, 0xe3];
+        pub const BNE: [u8; 4] = [0x02, 0x00, 0x00, 0x1a];
+        pub const TST_R2_4: [u8; 4] = [0x04, 0x00, 0x12, 0xe3];
+        pub const BEQ: [u8; 4] = [0x02, 0x00, 0x00, 0x0a];
+        pub const ADD_R0_R1_R2: [u8; 4] = [0x02, 0x00, 0x81, 0xe0];
+        pub const LDR_R1_R2_8: [u8; 4] = [0x08, 0x10, 0x92, 0xe5];
+        pub const LDR_R1_R2_POST: [u8; 4] = [0x04, 0x10, 0x92, 0xe4];
+        pub const STR_R3_R4_R5: [u8; 4] = [0x05, 0x30, 0x84, 0xe7];
+        pub const PUSH_R4_LR: [u8; 4] = [0x10, 0x40, 0x2d, 0xe9];
+        pub const POP_R4_PC: [u8; 4] = [0x10, 0x80, 0xbd, 0xe8];
+        pub const BL: [u8; 4] = [0x40, 0x00, 0x00, 0xeb];
+        pub const STREX_R1_R2_R3: [u8; 4] = [0x92, 0x1f, 0x83, 0xe1];
+        pub const UMULL: [u8; 4] = [0x92, 0x03, 0x81, 0xe0];
+        pub const MOVT_R4: [u8; 4] = [0x34, 0x42, 0x41, 0xe3];
+        pub const ADDEQ_R0: [u8; 4] = [0x01, 0x00, 0x80, 0x02];
+        pub const LDRD_R2_R3_SP: [u8; 4] = [0xd8, 0x20, 0xcd, 0xe1];
+    }
+
+    fn lift_one(bytes: [u8; 4]) -> il::Lifted {
+        Arm32.lift(&decode_one(bytes), &bytes).expect("the word must lift")
+    }
+
+    fn regs(numbers: &[u8]) -> il::RegSet {
+        numbers
+            .iter()
+            .map(|&number| match number {
+                13 => il::Reg::Stack,
+                number => il::Reg::General(number),
+            })
+            .collect()
+    }
+
+    fn guard_of(words: &[[u8; 4]]) -> Option<il::Guard> {
+        let lifted: Vec<Option<il::Lifted>> =
+            words.iter().map(|&word| Some(lift_one(word))).collect();
+        il::find_guards(&lifted).first().map(|found| found.guard)
+    }
+
+    /// Clang tests `x < 1` where GCC tests `x <= 0`, and both are one test.
+    #[test]
+    fn a_compare_and_its_branch_are_one_guard() {
+        let clang = guard_of(&[words::CMP_R0_1, words::BLT]).unwrap();
+        let gcc = guard_of(&[words::CMP_R0_0, words::BLE]).unwrap();
+        assert_eq!(clang.cond, il::Cond::SignedLess);
+        assert_eq!(clang.width, il::Width::Bits32);
+        assert_eq!(clang.canonical(), gcc.canonical());
+    }
+
+    #[test]
+    fn cmn_with_one_compares_with_minus_one() {
+        let guard = guard_of(&[words::CMN_R1_1, words::BNE]).unwrap();
+        assert_eq!(guard.right, il::Value::Const(0xffff_ffff));
+    }
+
+    #[test]
+    fn tst_with_beq_tests_bits() {
+        let guard = guard_of(&[words::TST_R2_4, words::BEQ]).unwrap();
+        assert_eq!((guard.cond, guard.right), (il::Cond::BitsClear, il::Value::Const(4)));
+    }
+
+    #[test]
+    fn a_conditional_instruction_reads_the_flags() {
+        let lifted = lift_one(words::ADDEQ_R0);
+        assert!(lifted.reads.contains(il::Reg::Flags));
+        assert_eq!(lifted.test, None);
+        assert_eq!(guard_of(&[words::CMP_R0_0, words::ADDEQ_R0, words::BEQ]), None);
+    }
+
+    #[test]
+    fn registers_and_memory_are_named() {
+        let add = lift_one(words::ADD_R0_R1_R2);
+        assert_eq!((add.reads, add.writes), (regs(&[1, 2]), regs(&[0])));
+
+        let load = lift_one(words::LDR_R1_R2_8);
+        assert_eq!((load.reads, load.writes), (regs(&[2]), regs(&[1])));
+        assert_eq!(load.memory.map(|access| access.kind), Some(il::AccessKind::Load));
+        assert_eq!(lift_one(words::LDR_R1_R2_POST).writes, regs(&[1, 2]), "written back");
+
+        let store = lift_one(words::STR_R3_R4_R5);
+        assert_eq!((store.reads, store.writes), (regs(&[3, 4, 5]), il::RegSet::EMPTY));
+        assert_eq!(store.memory.map(|access| access.kind), Some(il::AccessKind::Store));
+
+        let push = lift_one(words::PUSH_R4_LR);
+        assert_eq!((push.reads, push.writes), (regs(&[4, 13, 14]), regs(&[13])));
+        let pop = lift_one(words::POP_R4_PC);
+        assert_eq!((pop.reads, pop.writes), (regs(&[13]), regs(&[4, 13])), "the pc is no register");
+
+        assert_eq!(lift_one(words::BL).writes, regs(&[14]));
+        let exclusive = lift_one(words::STREX_R1_R2_R3);
+        assert_eq!((exclusive.reads, exclusive.writes), (regs(&[2, 3]), regs(&[1])));
+        let long = lift_one(words::UMULL);
+        assert_eq!((long.reads, long.writes), (regs(&[2, 3]), regs(&[0, 1])));
+        let movt = lift_one(words::MOVT_R4);
+        assert_eq!((movt.reads, movt.writes), (regs(&[4]), regs(&[4])));
+        let pair = lift_one(words::LDRD_R2_R3_SP);
+        assert_eq!((pair.reads, pair.writes), (regs(&[13]), regs(&[2, 3])));
+    }
+
+    #[test]
+    fn lifting_any_word_never_panics() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            let bytes = word.to_le_bytes();
+            let insn = Arm32.decode(&bytes, 0, 0).expect("every word decodes or is unknown");
+            if let Some(lifted) = Arm32.lift(&insn, &bytes)
+                && let Some(il::Test::Guard(_) | il::Test::OnFlags(_)) = lifted.test
+            {
+                assert!(
+                    matches!(insn.kind, InsnKind::Branch { .. }),
+                    "{insn}: a test that branches"
+                );
+            }
+        });
     }
 
     /// The text of the A32 instruction `word`.

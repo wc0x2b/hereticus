@@ -26,7 +26,7 @@ use smallvec::SmallVec;
 
 use crate::address::{AddressSpace, ConstantKind};
 use crate::arch::{Arch, Insn, InsnKind, is_branch_target};
-use crate::il::{CondFamily, Guard, Lifted, Reg, Value, find_guards};
+use crate::il::{self, Comparison, Cond, Guard, Lifted, Reg, Value, find_guards};
 
 /// Operands held without a heap allocation.
 ///
@@ -244,7 +244,11 @@ pub fn normalize_body_in(
     space: &AddressSpace,
 ) -> Vec<NormInsn> {
     let kinds = arch.constant_kinds(code, insns, space);
-    let guards = find_guards(&lift_all(arch, code, insns));
+    let lifted = lift_all(arch, code, insns);
+    let guards = find_guards(&lifted);
+    let is_address = |at: usize| {
+        matches!(kinds.get(at), Some(ConstantKind::Address | ConstantKind::StoredAddress))
+    };
     let mut out = Vec::with_capacity(insns.len());
     let mut index = 0;
 
@@ -265,18 +269,28 @@ pub fn normalize_body_in(
         if let Some(found) =
             guards.iter().find(|found| found.compare.unwrap_or(found.branch) == index)
         {
-            let address = [found.compare, Some(found.branch)].into_iter().flatten().any(|at| {
-                matches!(kinds.get(at), Some(ConstantKind::Address | ConstantKind::StoredAddress))
-            });
-            out.push(normalize_guard(&found.guard, address));
+            let address = [found.compare, Some(found.branch)].into_iter().flatten().any(is_address);
+            let guard = found.guard.canonical();
+            out.push(normalize_test(&Test::of_guard(guard), address));
             if found.compare.is_none() {
-                out.push(plain_branch());
+                out.push(guard_branch(guard.cond));
             }
             index += 1;
             continue;
         }
-        if guards.iter().any(|found| found.compare.is_some() && found.branch == index) {
-            out.push(plain_branch());
+        if let Some(found) =
+            guards.iter().find(|found| found.compare.is_some() && found.branch == index)
+        {
+            out.push(guard_branch(found.guard.canonical().cond));
+            index += 1;
+            continue;
+        }
+        // A compare that no branch reads, as before a conditional move,
+        // reads as the test of a guard does, so the two still match.
+        if let Some(Some(Lifted { test: Some(il::Test::Compare { comparison, .. }), .. })) =
+            lifted.get(index)
+        {
+            out.push(normalize_test(&Test::of_comparison(*comparison), is_address(index)));
             index += 1;
             continue;
         }
@@ -411,35 +425,65 @@ fn lift_all(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<Option<Lifted>>
         .collect()
 }
 
-/// The branch of a guard, which says only that control may leave here.
-fn plain_branch() -> NormInsn {
+/// The branch of a guard, with its condition either way: a compiler can
+/// branch on the opposite condition and swap the code after it.
+fn guard_branch(cond: Cond) -> NormInsn {
+    let operation = match cond.either_way() {
+        Cond::Equal => "b.eq",
+        Cond::UnsignedGreaterOrEqual => "b.hs",
+        Cond::Negative => "b.mi",
+        Cond::Overflow => "b.vs",
+        Cond::UnsignedGreater => "b.hi",
+        Cond::SignedGreaterOrEqual => "b.ge",
+        Cond::SignedGreater => "b.gt",
+        Cond::BitsClear => "b.bits",
+        _ => "b",
+    };
     NormInsn {
-        operation: "branch".into(),
+        operation: operation.into(),
         operands: [OperandShape::Target].into_iter().collect(),
         flow: FlowShape::Branch,
         constants: Constants::new(),
     }
 }
 
-/// The test of a guard, whatever the spelling, so that `cbnz x8` and
-/// `cmp x8, #0` with `b.ne` compare equal.
+/// What a compare computes, named as the ARM compares are, whatever the
+/// architecture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Test {
+    operation: &'static str,
+    left: Value,
+    right: Value,
+}
+
+impl Test {
+    fn of_comparison(comparison: Comparison) -> Self {
+        match comparison {
+            Comparison::Subtract { left, right } => Self { operation: "cmp", left, right },
+            Comparison::And { left, right } => Self { operation: "tst", left, right },
+            Comparison::Add { left, right } => Self { operation: "cmn", left, right },
+        }
+    }
+
+    /// The test of a guard. Its condition is not kept: a compare that no
+    /// branch reads has none, and a compiler can branch on the opposite
+    /// condition and swap the code after it.
+    fn of_guard(guard: Guard) -> Self {
+        let operation = match guard.cond {
+            Cond::BitsClear | Cond::BitsSet => "tst",
+            _ => "cmp",
+        };
+        Self { operation, left: guard.left, right: guard.right }
+    }
+}
+
+/// The test of a guard, or a lone compare, whatever the spelling, so that
+/// `cbnz x8` and `cmp x8, #0` with `b.ne` compare equal.
 ///
-/// The condition keeps only its family: a compiler can branch on the
-/// opposite condition and swap the code after it. The bound is canonical,
-/// so `x < 1` and `x <= 0` read alike. The constant compared
-/// with stays, to report a changed bound. Where it is an address, it moves
-/// with unrelated edits, so it is a target, as in [`normalize_body_in`].
-fn normalize_guard(guard: &Guard, address: bool) -> NormInsn {
-    let guard = guard.canonical();
-    let family = match guard.cond.family() {
-        CondFamily::Equality => "guard.eq",
-        CondFamily::Unsigned => "guard.unsigned",
-        CondFamily::Signed => "guard.signed",
-        CondFamily::Sign => "guard.sign",
-        CondFamily::Overflow => "guard.overflow",
-        CondFamily::Bits => "guard.bits",
-        CondFamily::Always => "guard.always",
-    };
+/// The constant compared with stays, to report a changed bound. Where it
+/// is an address, it moves with unrelated edits, so it is a target, as in
+/// [`normalize_body_in`].
+fn normalize_test(test: &Test, address: bool) -> NormInsn {
     let shape = |value: Value| match value {
         Value::Reg(Reg::Stack) => OperandShape::StackPointer,
         Value::Reg(_) => OperandShape::Register,
@@ -447,7 +491,7 @@ fn normalize_guard(guard: &Guard, address: bool) -> NormInsn {
         Value::Const(constant) => OperandShape::Immediate(Magnitude::of(constant)),
         Value::Other => OperandShape::Other,
     };
-    let constants = [guard.left, guard.right]
+    let constants = [test.left, test.right]
         .into_iter()
         .filter_map(|value| match value {
             Value::Const(constant) if !address => Some(constant),
@@ -455,8 +499,8 @@ fn normalize_guard(guard: &Guard, address: bool) -> NormInsn {
         })
         .collect();
     NormInsn {
-        operation: family.into(),
-        operands: [shape(guard.left), shape(guard.right)].into_iter().collect(),
+        operation: test.operation.into(),
+        operands: [shape(test.left), shape(test.right)].into_iter().collect(),
         flow: FlowShape::Linear,
         constants,
     }

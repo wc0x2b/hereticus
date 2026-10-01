@@ -21,13 +21,13 @@ exit_code: 0
 ╭──────────────────────────────┬────────────────┬───────┬───────┬───────────────────────────┬─────────────────╮
 │ FUNCTION                     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED                   │ MATCHED BY      │
 ├──────────────────────────────┼────────────────┼───────┼───────┼───────────────────────────┼─────────────────┤
-│ sub_800000dc -> sub_8000016c │ changed        │  0.83 │ 7/2/0 │ 1 branch, 3 call, 1 const │ similar         │
+│ sub_800000dc -> sub_8000016c │ changed        │  0.82 │ 8/2/0 │ 1 branch, 3 call, 1 const │ similar         │
 │ sub_80000000                 │ changed values │  1.00 │ -     │ -                         │ identical shape │
 ╰──────────────────────────────┴────────────────┴───────┴───────┴───────────────────────────┴─────────────────╯
-sub_80000010: gone, closest sub_80000010 at 0.31
-sub_80000058: gone, closest sub_80000090 at 0.47
-sub_80000010: new, closest sub_80000010 at 0.31
-sub_80000090: new, closest sub_80000058 at 0.47
+sub_80000010: gone, closest sub_80000010 at 0.29
+sub_80000058: gone, closest sub_80000090 at 0.48
+sub_80000010: new, closest sub_80000010 at 0.29
+sub_80000090: new, closest sub_80000058 at 0.48
 
 3 matched (1 unchanged, 2 changed), 2 gone, 2 new
 
