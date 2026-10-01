@@ -438,9 +438,6 @@ fn taken_addresses(
     base: u64,
     memory: &Memory<'_>,
 ) -> Vec<u64> {
-    if contents == Regions::CodeAndData {
-        return Vec::new();
-    }
     let (insns, _) = decode_all(arch, code, base);
     let in_code = AddressSpace::from_ranges(
         regions.iter().map(|(start, bytes)| *start..*start + bytes.len() as u64),
@@ -468,12 +465,110 @@ fn taken_addresses(
         before == 0 || before < index || ends_at(before - 1) || (before >= 2 && ends_at(before - 2))
     };
     let end = base + code.len() as u64;
-    let pointed_at = pointers.iter().copied().filter(|address| (base..end).contains(address));
-    arch.data_addresses(code, &insns, &in_code, memory)
+    let formed = match contents {
+        Regions::CodeOnly => arch.data_addresses(code, &insns, &in_code, memory),
+        Regions::CodeAndData => Vec::new(),
+    };
+    let tagged = match contents {
+        Regions::CodeOnly => Vec::new(),
+        Regions::CodeAndData => tagged_functions(arch, regions, &arch.distance_words(code, &insns))
+            .into_iter()
+            .filter(|&address| {
+                let opens_with_work = insns
+                    .binary_search_by_key(&address, |insn| insn.address)
+                    .is_ok_and(|index| !arch.is_padding(&insns[index]));
+                opens_with_work
+                    && !points_at_text(memory, address + 1)
+                    && !lies_inside_a_body(&insns, address)
+            })
+            .collect(),
+    };
+    formed
         .into_iter()
-        .chain(pointed_at)
+        .chain(pointers.iter().copied())
+        .chain(tagged)
+        .filter(|address| (base..end).contains(address))
         .filter(|address| address % width == 0 && ends_before(*address))
         .collect()
+}
+
+/// The functions that the aligned words of `regions` point at, where a
+/// word says that it points at code.
+///
+/// The words of `distances` are left out, as bit 0 of a distance says
+/// nothing. So are the words that go on with a text: in an image loaded near
+/// address 0, the tail `"ue"` of `"true"` reads as the address 0x6575.
+fn tagged_functions(
+    arch: &dyn Arch,
+    regions: &[(u64, &[u8])],
+    distances: &BTreeSet<u64>,
+) -> Vec<u64> {
+    let width = arch.pointer_width();
+    regions
+        .iter()
+        .flat_map(|&(start, bytes)| {
+            let skip = (start.next_multiple_of(width as u64) - start) as usize;
+            let words = bytes.get(skip..).unwrap_or_default().chunks_exact(width);
+            let before = (skip..)
+                .step_by(width)
+                .map(|offset| offset.checked_sub(1).and_then(|at| bytes.get(at)).copied());
+            words.zip(before).zip((start + skip as u64..).step_by(width))
+        })
+        .filter(|&((word, before), address)| {
+            let goes_on_with_text = before.is_some_and(is_printable) && is_printable(word[0]);
+            !distances.contains(&address) && !goes_on_with_text
+        })
+        .filter_map(|((word, _), _)| arch.tagged_function(arch.read_pointer(word)))
+        .collect()
+}
+
+/// Whether local branches cross `address` both ways, as they cross a label
+/// inside a loop or between the arms of an `if`.
+///
+/// A tail call is a jump, so the branch that crosses forward must be one that
+/// can fall through. Then a short tail call between two small functions does
+/// not count, and a start that a word in a byte table seems to point at, such
+/// as the tail of Lua's `luaP_opmodes`, still does.
+fn lies_inside_a_body(insns: &[Insn], address: u64) -> bool {
+    /// Longer than this, a branch is likely a tail call, not a local one.
+    const REACH: u64 = 256;
+    let first = insns.partition_point(|insn| insn.address < address.saturating_sub(REACH));
+    let last = insns.partition_point(|insn| insn.address <= address.saturating_add(REACH));
+    let (mut forward, mut backward) = (false, false);
+    for insn in &insns[first..last] {
+        let source = insn.address;
+        match insn.kind {
+            InsnKind::Branch { target: Some(target) } if target.abs_diff(source) <= REACH => {
+                forward |= source < address && address < target;
+                backward |= target < address && address < source;
+            }
+            InsnKind::Jump { target: Some(target) } if target.abs_diff(source) <= REACH => {
+                backward |= target < address && address < source;
+            }
+            _ => {}
+        }
+    }
+    forward && backward
+}
+
+/// Whether `address` holds a text of two or more printable bytes up to a
+/// NUL.
+///
+/// A pointer to a text at an odd address has bit 0 set too, as a pointer
+/// to a T32 function has.
+fn points_at_text(memory: &Memory<'_>, address: u64) -> bool {
+    /// Longer than any format or message.
+    const LONGEST: u64 = 256;
+    let length = (0..=LONGEST)
+        .map_while(|offset| memory.bytes(address + offset, 1).map(|byte| byte[0]))
+        .take_while(|&byte| byte != 0 && (is_printable(byte) || b"\t\n\r".contains(&byte)))
+        .count() as u64;
+    (2..LONGEST).contains(&length)
+        && memory.bytes(address + length, 1).is_some_and(|byte| byte[0] == 0)
+}
+
+fn is_printable(byte: u8) -> bool {
+    byte.is_ascii_graphic() || byte == b' '
 }
 
 /// Turn a set of start addresses into functions that reach the next start.
@@ -1292,6 +1387,127 @@ fn prologue_past_pool(
 mod tests {
     use super::*;
     use crate::arch::arm32::Arm32;
+
+    /// A two-byte Thumb instruction at `address` that moves control as `kind`.
+    fn thumb_insn(address: u64, kind: InsnKind) -> Insn {
+        Insn { address, bytes_len: 2, mnemonic: String::new(), operands: String::new(), kind }
+    }
+
+    /// Instructions from 0x1000 up to 0x1100, all but `branches` plain.
+    fn body_with(branches: &[(u64, InsnKind)]) -> Vec<Insn> {
+        (0x1000..0x1100)
+            .step_by(2)
+            .map(|address| {
+                let kind = branches
+                    .iter()
+                    .find(|(at, _)| *at == address)
+                    .map_or(InsnKind::Normal, |(_, kind)| kind.clone());
+                thumb_insn(address, kind)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_label_that_branches_cross_both_ways_lies_inside_a_body() {
+        let insns = body_with(&[
+            (0x1010, InsnKind::Branch { target: Some(0x1060) }),
+            (0x1080, InsnKind::Jump { target: Some(0x1020) }),
+        ]);
+        assert!(lies_inside_a_body(&insns, 0x1050));
+    }
+
+    #[test]
+    fn a_start_that_branches_cross_one_way_does_not_lie_inside_a_body() {
+        let forward = body_with(&[(0x1010, InsnKind::Branch { target: Some(0x1060) })]);
+        assert!(!lies_inside_a_body(&forward, 0x1050));
+        let backward = body_with(&[(0x1080, InsnKind::Jump { target: Some(0x1020) })]);
+        assert!(!lies_inside_a_body(&backward, 0x1050));
+    }
+
+    #[test]
+    fn short_tail_calls_both_ways_do_not_make_a_body() {
+        // Small functions that tail call their neighbours, as zlib's
+        // `crc32_combine` and `crc32_combine64` do.
+        let insns = body_with(&[
+            (0x1010, InsnKind::Jump { target: Some(0x1060) }),
+            (0x1080, InsnKind::Jump { target: Some(0x1020) }),
+        ]);
+        assert!(!lies_inside_a_body(&insns, 0x1050));
+    }
+
+    #[test]
+    fn long_branches_do_not_make_a_body() {
+        let mut insns = body_with(&[(0x1080, InsnKind::Jump { target: Some(0x1020) })]);
+        insns.insert(0, thumb_insn(0x0e00, InsnKind::Branch { target: Some(0x1400) }));
+        assert!(!lies_inside_a_body(&insns, 0x1050));
+    }
+
+    #[test]
+    fn no_instructions_make_no_body() {
+        assert!(!lies_inside_a_body(&[], 0x1050));
+    }
+
+    #[test]
+    fn a_text_up_to_a_nul_is_text() {
+        let bytes = b"xhello\0";
+        let regions = [(0x100, &bytes[..])];
+        assert!(points_at_text(&Memory::new(&regions), 0x101));
+    }
+
+    #[test]
+    fn what_is_not_a_text_is_not_text() {
+        let regions: [(u64, &[u8]); 4] =
+            [(0x100, b"a\0"), (0x200, b"\x01\x02\0"), (0x300, b"no end"), (0x400, b"\0")];
+        let memory = Memory::new(&regions);
+        assert!(!points_at_text(&memory, 0x100), "one byte is too short");
+        assert!(!points_at_text(&memory, 0x200), "control bytes are not printable");
+        assert!(!points_at_text(&memory, 0x300), "a text ends with a NUL");
+        assert!(!points_at_text(&memory, 0x400), "an empty text is not one");
+        assert!(!points_at_text(&memory, 0x500), "nothing is loaded there");
+    }
+
+    #[test]
+    fn a_text_too_long_for_a_message_is_not_text() {
+        let mut bytes = vec![b'a'; 300];
+        bytes.push(0);
+        let regions = [(0x100, bytes.as_slice())];
+        assert!(!points_at_text(&Memory::new(&regions), 0x100));
+    }
+
+    #[test]
+    fn a_word_with_bit_0_set_tags_a_thumb_function() {
+        let bytes = [0x01, 0x10, 0, 0, 0x00, 0x20, 0, 0];
+        let regions = [(0x100, &bytes[..])];
+        let tagged = tagged_functions(&crate::arch::thumb::Thumb2, &regions, &BTreeSet::new());
+        assert_eq!(tagged, [0x1000]);
+    }
+
+    #[test]
+    fn a_distance_word_tags_no_function() {
+        let bytes = [0x01, 0x10, 0, 0];
+        let regions = [(0x100, &bytes[..])];
+        let distances = BTreeSet::from([0x100]);
+        let tagged = tagged_functions(&crate::arch::thumb::Thumb2, &regions, &distances);
+        assert!(tagged.is_empty());
+    }
+
+    #[test]
+    fn the_tail_of_a_text_tags_no_function() {
+        // `"ue"` of `"true"` reads as 0x6575, which has bit 0 set.
+        let bytes = *b"\0\0tr\x75\x65\0\0";
+        let regions = [(0x100, &bytes[..])];
+        let tagged = tagged_functions(&crate::arch::thumb::Thumb2, &regions, &BTreeSet::new());
+        assert!(tagged.is_empty());
+    }
+
+    #[test]
+    fn words_follow_the_alignment_of_the_address_not_of_the_region() {
+        // The region starts two bytes before a word boundary.
+        let bytes = [0xff, 0xff, 0x01, 0x10, 0, 0];
+        let regions = [(0x102, &bytes[..])];
+        let tagged = tagged_functions(&crate::arch::thumb::Thumb2, &regions, &BTreeSet::new());
+        assert_eq!(tagged, [0x1000]);
+    }
 
     #[test]
     fn sign_extension_keeps_small_offsets() {

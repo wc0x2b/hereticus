@@ -810,6 +810,9 @@ pub(super) struct PoolWords {
     pub(super) kinds: Vec<ConstantKind>,
     /// The addresses inside the image the function forms or loads whole.
     pub(super) addresses: Vec<u64>,
+    /// The pool words the function adds to a base, as PIC code adds one to
+    /// `pc`: each holds a distance, not an address.
+    pub(super) distances: BTreeSet<u64>,
 }
 
 /// Read `body` for the pool words that make addresses. See
@@ -827,7 +830,7 @@ pub(super) fn track_pool_words(
     let mut whole: Vec<(u64, u64)> = Vec::new();
     let mut distances: BTreeSet<u64> = BTreeSet::new();
     let Some(start) = body.first().map(|insn| insn.address) else {
-        return PoolWords { kinds, addresses };
+        return PoolWords { kinds, addresses, distances };
     };
 
     // Registers holding a pool word: where the word sits, and its value.
@@ -986,7 +989,7 @@ pub(super) fn track_pool_words(
     addresses.extend(
         whole.into_iter().filter(|(pool, _)| !distances.contains(pool)).map(|(_, value)| value),
     );
-    PoolWords { kinds, addresses }
+    PoolWords { kinds, addresses, distances }
 }
 
 /// Stop following a register the instruction writes.

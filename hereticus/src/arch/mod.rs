@@ -27,6 +27,7 @@ mod mips32;
 pub mod thumb;
 
 use core::fmt;
+use std::collections::BTreeSet;
 
 use compact_str::CompactString;
 
@@ -316,6 +317,24 @@ pub trait Arch {
     /// instruction set. Defaults to the pointer itself.
     fn function_address(&self, pointer: u64) -> u64 {
         pointer
+    }
+
+    /// The function a word of data points at, where the word itself says
+    /// that it points at code.
+    ///
+    /// A pointer to a T32 function has bit 0 set, and no pointer to data or
+    /// to an instruction of T32 has it. Defaults to `None`: a word does not
+    /// say what it points at.
+    fn tagged_function(&self, _word: u64) -> Option<u64> {
+        None
+    }
+
+    /// The words among `insns` that hold a distance, not an address.
+    ///
+    /// PIC code on ARM loads a pool word and adds it to `pc`. Defaults to
+    /// none.
+    fn distance_words(&self, _code: &[u8], _insns: &[Insn]) -> BTreeSet<u64> {
+        BTreeSet::new()
     }
 
     /// Adjust instructions that only their neighbours explain, once a run of

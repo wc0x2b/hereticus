@@ -18,6 +18,7 @@
 //! A binary that mixes A32 and T32 functions is read as one or the other.
 
 use core::ops::Range;
+use std::collections::BTreeSet;
 
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, U8Reader};
@@ -321,6 +322,14 @@ impl Arch for Thumb2 {
 
     fn function_address(&self, pointer: u64) -> u64 {
         pointer & !1
+    }
+
+    fn tagged_function(&self, word: u64) -> Option<u64> {
+        (word & 1 == 1).then_some(word & !1)
+    }
+
+    fn distance_words(&self, code: &[u8], insns: &[Insn]) -> BTreeSet<u64> {
+        track_pool_words(code, insns, &AddressSpace::default(), PcModel::T32).distances
     }
 }
 
