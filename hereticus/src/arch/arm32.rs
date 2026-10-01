@@ -236,7 +236,8 @@ impl Arch for Arm32 {
 
     /// `yaxpeax-arm` 0.4 does not decode the usual ARM `nop` encoding
     /// `0xe320f000` and reports it as unreadable, so the raw word is checked
-    /// as well as the name.
+    /// as well as the name. A core before ARMv6K has no such hint, so GCC
+    /// pads with `mov r0, r0` there.
     fn is_padding(&self, insn: &Insn) -> bool {
         /// The A32 hint encoding that means "no operation", as printed.
         const NOP: &str = "0xe320f000";
@@ -244,6 +245,7 @@ impl Arch for Arm32 {
         const ZERO: &str = "0x00000000";
 
         insn.mnemonic.starts_with("nop")
+            || (insn.mnemonic == "mov" && insn.operands == "r0, r0")
             || (insn.kind == InsnKind::Unknown && (insn.operands == NOP || insn.operands == ZERO))
     }
 
@@ -1356,6 +1358,15 @@ mod tests {
     fn text_of(word: u32) -> (String, String) {
         let insn = decode_one(word.to_le_bytes());
         (insn.mnemonic, insn.operands)
+    }
+
+    #[test]
+    fn mov_r0_r0_is_padding_as_a_core_before_armv6k_pads() {
+        let filler = decode_one(0xe1a0_0000u32.to_le_bytes());
+        assert_eq!((filler.mnemonic.as_str(), filler.operands.as_str()), ("mov", "r0, r0"));
+        assert!(Arm32.is_padding(&filler));
+        let copy = decode_one(0xe1a0_0001u32.to_le_bytes());
+        assert!(!Arm32.is_padding(&copy), "mov r0, r1 does work");
     }
 
     #[test]

@@ -121,9 +121,16 @@ enum Reading {
 /// line with the reason. A test fails if any other appears, and also if one
 /// of these stops appearing, so the list stays true.
 ///
-/// The list is empty: every false report it held is fixed. It stays, so a
-/// new one names itself.
-const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[];
+/// Both are Lua built by GCC for ARMv5TE, read as a raw image. A raw image
+/// holds `.rodata` right after `.text`, so its first words join the last
+/// function, `luaZ_openspace`. One build pads `.rodata` with a zero word and
+/// the other does not, and a zero word reads as `andeq r0, r0, r0`, which
+/// cannot count as padding, since a literal pool word can hold zero. See
+/// `TODO.md`.
+const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
+    (Reading::Raw, "lua", "armv5", "gcc-O2", "luaZ_openspace"),
+    (Reading::Raw, "lua", "armv5", "gcc-Os", "luaZ_openspace"),
+];
 
 fn backports() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/backports")
@@ -161,7 +168,7 @@ fn parse_raw(build: Build, variant: &str) -> Binary {
         .min()
         .expect("a library loads something");
     let isa = match build.arch {
-        "arm" => Isa::Arm32,
+        "arm" | "armv5" | "armv6" => Isa::Arm32,
         "thumb" => Isa::Thumb2,
         "aarch64" => Isa::Aarch64,
         "mips" => Isa::Mips32Be,
@@ -291,7 +298,8 @@ fn build(project: Project, arch: &'static str, level: &'static str) -> Build {
 #[rstest]
 fn with_symbols_the_fix_is_named_exactly(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "thumb", "mixed", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "armv5", "armv6", "thumb", "mixed", "aarch64", "mips", "mipsel")]
+    arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     check_with_symbols(build(project, arch, level));
@@ -334,7 +342,7 @@ fn check_with_symbols(build: Build) {
 #[rstest]
 fn stripped_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "armv5", "armv6", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     check_stripped(build(project, arch, level));
@@ -362,7 +370,7 @@ fn check_stripped(build: Build) {
 #[rstest]
 fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "armv5", "armv6", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     check_raw(build(project, arch, level));
@@ -423,11 +431,11 @@ fn a_mixed_library_reads_each_function_in_its_own_set(
 #[rstest]
 fn a_build_compared_with_itself_reports_nothing(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2, Project::Smallvec)] project: Project,
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "armv5", "armv6", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("before", "after")] variant: &str,
 ) {
-    // The Rust harness is built for 32-bit ARM and MIPS only.
-    if project == Project::Smallvec && matches!(arch, "thumb" | "aarch64") {
+    // The Rust harness is built for 32-bit ARM and MIPS only, on ARMv7.
+    if project == Project::Smallvec && matches!(arch, "thumb" | "aarch64" | "armv5" | "armv6") {
         return;
     }
     let build = build(project, arch, "O2");
