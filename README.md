@@ -39,14 +39,14 @@ $ hereticus --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
 ╭──────────────┬────────────────┬───────┬───────┬─────────┬────────────╮
 │ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED │ MATCHED BY │
 ├──────────────┼────────────────┼───────┼───────┼─────────┼────────────┤
-│ sub_8020a3bc │ changed        │  1.00 │ 0/0/1 │ -       │ similar    │
 │ sub_80208000 │ changed        │  0.98 │ 1/1/1 │ -       │ similar    │
-│ sub_80208e08 │ changed unread │  0.98 │ 0/0/1 │ -       │ similar    │
-│ sub_8020b1f8 │ changed        │  0.98 │ 0/0/1 │ -       │ similar    │
+│ sub_8020a338 │ changed        │  0.94 │ 0/0/1 │ -       │ similar    │
+│ sub_80208af8 │ changed        │  0.95 │ 0/0/1 │ -       │ similar    │
 │ sub_80208a18 │ changed        │  0.96 │ 0/0/1 │ -       │ similar    │
 │ sub_80209154 │ changed        │  0.96 │ 0/0/1 │ 1 mem   │ similar    │
-│ sub_80208af8 │ changed        │  0.95 │ 0/0/1 │ -       │ similar    │
-│ sub_8020a338 │ changed        │  0.94 │ 0/0/1 │ -       │ similar    │
+│ sub_8020b1f8 │ changed        │  0.98 │ 0/0/1 │ -       │ similar    │
+│ sub_80208e08 │ changed unread │  0.98 │ 0/0/1 │ -       │ similar    │
+│ sub_8020a3bc │ changed        │  1.00 │ 0/0/1 │ -       │ similar    │
 ╰──────────────┴────────────────┴───────┴───────┴─────────┴────────────╯
 
 67 matched (57 unchanged, 10 changed), 0 gone, 0 new
@@ -144,7 +144,7 @@ Options:
       --base <BASE>            Address a raw image loads at, for example `0x08000000`
       --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, aarch64, mips32, mips32-be]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact]
-      --sort <SORT>            How to order the changed functions. [default: confidence] [possible values: confidence, added, removed, modified]
+      --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]
       --color <COLOR>          When to color the report. [default: auto] [possible values: auto, always, never]
   -h, --help                   Print help (see more with '--help')

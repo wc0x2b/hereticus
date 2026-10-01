@@ -21,15 +21,15 @@ exit_code: 0
 ╭──────────────┬────────────────┬───────┬───────┬─────────┬─────────────────╮
 │ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED │ MATCHED BY      │
 ├──────────────┼────────────────┼───────┼───────┼─────────┼─────────────────┤
-│ sub_80208950 │ changed values │  1.00 │ -     │ -       │ identical shape │
-│ sub_8020a3bc │ changed        │  1.00 │ 0/0/1 │ -       │ similar         │
 │ sub_80208000 │ changed        │  0.98 │ 1/1/1 │ -       │ similar         │
-│ sub_80208e08 │ changed unread │  0.98 │ 0/0/1 │ -       │ similar         │
-│ sub_8020b1f8 │ changed        │  0.98 │ 0/0/1 │ -       │ similar         │
+│ sub_8020a338 │ changed        │  0.94 │ 0/0/1 │ -       │ similar         │
+│ sub_80208af8 │ changed        │  0.95 │ 0/0/1 │ -       │ similar         │
 │ sub_80208a18 │ changed        │  0.96 │ 0/0/1 │ -       │ similar         │
 │ sub_80209154 │ changed        │  0.96 │ 0/0/1 │ 1 mem   │ similar         │
-│ sub_80208af8 │ changed        │  0.95 │ 0/0/1 │ -       │ similar         │
-│ sub_8020a338 │ changed        │  0.94 │ 0/0/1 │ -       │ similar         │
+│ sub_8020b1f8 │ changed        │  0.98 │ 0/0/1 │ -       │ similar         │
+│ sub_80208e08 │ changed unread │  0.98 │ 0/0/1 │ -       │ similar         │
+│ sub_8020a3bc │ changed        │  1.00 │ 0/0/1 │ -       │ similar         │
+│ sub_80208950 │ changed values │  1.00 │ -     │ -       │ identical shape │
 ╰──────────────┴────────────────┴───────┴───────┴─────────┴─────────────────╯
 
 67 matched (57 unchanged, 10 changed), 0 gone, 0 new

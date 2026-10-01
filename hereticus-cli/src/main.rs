@@ -110,11 +110,11 @@ struct Args {
 
     /// How to order the changed functions.
     ///
-    /// The default puts the strongest match first. On a whole kernel the real
-    /// edits hide among thousands of small changes, so `--sort modified` (or
-    /// `added` / `removed`) brings the functions that changed the most to the
-    /// top.
-    #[arg(long, value_enum, default_value_t = Sort::Confidence, verbatim_doc_comment)]
+    /// The default puts the most instructions added first. A security fix
+    /// adds a check, so it rises above the many functions that changed only
+    /// a value or a text. Measured on four Apple CVE fixes, this put each fix
+    /// in the top 19 rows, where `confidence` put each near the bottom.
+    #[arg(long, value_enum, default_value_t = Sort::Added, verbatim_doc_comment)]
     sort: Sort,
 
     /// When to show a progress bar.
@@ -191,9 +191,9 @@ enum Format {
 /// How to order the changed functions in the report.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Sort {
-    /// Strongest match first, then closest score. The default.
+    /// Strongest match first, then closest score.
     Confidence,
-    /// Most instructions added first.
+    /// Most instructions added first. The default.
     Added,
     /// Most instructions removed first.
     Removed,
