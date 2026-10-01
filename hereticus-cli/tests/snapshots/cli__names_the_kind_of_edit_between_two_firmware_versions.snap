@@ -1,6 +1,5 @@
 ---
 source: hereticus-cli/tests/cli.rs
-assertion_line: 74
 info:
   program: hereticus
   args:
@@ -15,7 +14,7 @@ exit_code: 0
 │ FUNCTION        │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                            │ MATCHED BY      │
 ├─────────────────┼────────────────┼───────┼─────────┼────────────────────────────────────────────────────┼─────────────────┤
 │ validate_length │ changed values │  1.00 │ -       │ -                                                  │ identical shape │
-│ handle          │ changed        │  0.70 │ 8/4/6   │ 1 branch, 1 call, 2 jump, 1 mem, 1 const, 3 unread │ same name       │
+│ handle          │ changed        │  0.73 │ 8/4/5   │ 1 branch, 1 call, 2 jump, 1 mem, 1 const, 2 unread │ same name       │
 │ dispatch        │ changed        │  0.60 │ 21/11/5 │ 4 branch, 1 call, 6 jump, 5 mem, 1 const           │ same name       │
 │ check_header    │ changed        │  0.31 │ 8/1/0   │ 1 branch, 1 call, 1 mem                            │ same name       │
 ╰─────────────────┴────────────────┴───────┴─────────┴────────────────────────────────────────────────────┴─────────────────╯

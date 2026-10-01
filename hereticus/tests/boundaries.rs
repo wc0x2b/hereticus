@@ -94,7 +94,7 @@ fn stripped_functions_are_recovered() {
         });
     assert_eq!(
         total,
-        Recovery { functions: 46006, exact: 45579, invented: 85, missed: 195 },
+        Recovery { functions: 46006, exact: 45581, invented: 83, missed: 195 },
         "over {} builds",
         builds.len()
     );

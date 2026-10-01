@@ -25,8 +25,8 @@ use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
 use super::arm32::{
-    Arm32, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION, classify, decode_fallback, parse_hex,
-    pool_loads, pool_words_loaded, split_mnemonic, track_pool_words,
+    Arm32, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION, classify,
+    decode_fallback, parse_hex, pool_loads, pool_words_loaded, split_mnemonic, track_pool_words,
 };
 use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind};
@@ -75,12 +75,13 @@ impl Arch for Thumb2 {
             // is the A32 word with the condition that means always, so the
             // A32 reading serves: without it, the doubles a `vldr` loads
             // after a return read as code, as in Lua's `os_clock`.
-            let fallback = match *bytes {
+            let word = match *bytes {
                 [low, high, second_low, second_high] => {
-                    decode_fallback(u32::from_le_bytes([second_low, second_high, low, high]))
+                    Some(u32::from_le_bytes([second_low, second_high, low, high]))
                 }
                 _ => None,
             };
+            let fallback = word.and_then(|word| decode_fallback(as_a32(word)));
             if let Some((mnemonic, operands)) = fallback {
                 return Ok(Insn {
                     address: insn_address,
@@ -94,10 +95,12 @@ impl Arch for Thumb2 {
             // unreadable instruction keeps the rest aligned. Its bytes go in
             // the operands, so that an edit to it still shows.
             let operands = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
+            let is_neon = word.is_some_and(|word| matches!(word >> 24, 0xef | 0xff));
+            let mnemonic = if is_neon { NEON_MNEMONIC } else { UNKNOWN_MNEMONIC };
             return Ok(Insn {
                 address: insn_address,
                 bytes_len: width,
-                mnemonic: UNKNOWN_MNEMONIC.to_string(),
+                mnemonic: mnemonic.to_string(),
                 operands,
                 kind: InsnKind::Unknown,
             });
@@ -188,6 +191,10 @@ impl Arch for Thumb2 {
 
     fn data_among_code(&self) -> DataAmongCode {
         DataAmongCode::LiteralPools
+    }
+
+    fn is_unread_extension(&self, insn: &Insn) -> bool {
+        insn.mnemonic == NEON_MNEMONIC
     }
 
     /// `tbb [pc, rI]` and `tbh [pc, rI, lsl 1]` read a table of distances
@@ -350,6 +357,23 @@ fn thunk_target(body: &[Insn]) -> Option<u64> {
     Some(u64::from(pc.wrapping_add(distance) & !1))
 }
 
+/// The A32 word for the wide T32 `word`, first halfword high, where the two
+/// sets encode one instruction alike but for the top bits.
+///
+/// NEON data processing is `111U 1111` in T32 and `1111 001U` in A32, and a
+/// NEON element or structure load or store is `1111 1001` in T32 and
+/// `1111 0100` in A32. VFP is the same word in both, with the A32 condition
+/// that means always.
+fn as_a32(word: u32) -> u32 {
+    const LOW: u32 = 0x00ff_ffff;
+    match word >> 24 {
+        0xef => 0xf200_0000 | word & LOW,
+        0xff => 0xf300_0000 | word & LOW,
+        0xf9 => NEON_LOAD_STORE << 24 | word & LOW,
+        _ => word,
+    }
+}
+
 /// Report whether the halfword `first` opens a 32-bit instruction.
 fn is_wide(first: u16) -> bool {
     matches!(first >> 11, 0b11101..=0b11111)
@@ -441,6 +465,30 @@ mod tests {
 
     fn decode_one(values: &[u16]) -> Insn {
         Thumb2.decode(&halfwords(values), 0, 0x1000).expect("bytes must decode")
+    }
+
+    #[test]
+    fn a_t32_neon_store_reads_as_its_a32_twin() {
+        let insn = decode_one(&[0xf941, 0x0a8d]);
+        assert_eq!(insn.mnemonic, "vst1.32");
+        assert_eq!(insn.operands, "{d16, d17}, [r1]!");
+        assert_eq!((insn.bytes_len, insn.kind), (4, InsnKind::Normal));
+    }
+
+    #[test]
+    fn t32_neon_data_processing_is_unread_code() {
+        let insn = decode_one(&[0xefc0, 0x0050]);
+        assert_eq!((insn.mnemonic.as_str(), insn.kind), (NEON_MNEMONIC, InsnKind::Unknown));
+        assert!(Thumb2.is_unread_extension(&insn));
+    }
+
+    #[test]
+    fn a_t32_word_that_reads_as_a32_neon_is_not_neon() {
+        // `f3f0 8000` is no instruction, though `0xf3f08000` would be A32
+        // NEON data processing.
+        let insn = decode_one(&[0xf3f0, 0x8000]);
+        assert_eq!(insn.mnemonic, UNKNOWN_MNEMONIC);
+        assert!(!Thumb2.is_unread_extension(&insn));
     }
 
     #[test]

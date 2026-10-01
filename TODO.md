@@ -24,7 +24,7 @@ none.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 45579 of 46006 exact, 195 starts missed and 85 invented,
+stripped releases: 45581 of 46006 exact, 195 starts missed and 83 invented,
 over ARM, Thumb-2, AArch64 and MIPS, with the PLT left out. Most of what is
 left is Thumb-2. By cause:
 
@@ -37,19 +37,6 @@ left is Thumb-2. By cause:
   Lua's `math_ceil` and `math_floor`, where the cause is not yet known.
 - Some invented starts are no fault: the lazy binding stubs of MIPS are
   code that no symbol names. The test leaves out only the PLT.
-
-## Decode NEON in Thumb-2
-
-`KNOWN_EXTRAS` in `tests/backports.rs` lists 4 false reports, all
-`XMLDocument::~XMLDocument` of tinyxml2 read as a raw Thumb-2 image at
-`-O1` and `-O3`. The scan cuts it at an exception landing pad after its
-return. A guessed start between a load from a literal pool and its word is
-dropped, but only where every word between decodes: data read as code
-fails to decode, and that keeps the rule out of the data. This destructor
-holds NEON `vld1` and `vst1`, which the decoder does not read, so the rule
-does not apply. Decoding NEON would remove the last 4. A rule that allows
-one unreadable word in 32 bytes removed them too, but it merged pieces of
-data in raw zlib, and 4 tail-call wrappers then paired wrong.
 
 ## Read a binary that mixes A32 and Thumb-2
 
@@ -91,10 +78,11 @@ the vector table names every handler's start, which the scan could read.
 ## Read the ARM hard-float ABI and NEON
 
 The fixtures use `-mfloat-abi=softfp`. Most ARMv7 Linux distributions use
-`hard`, which passes floats in VFP registers, and `yaxpeax-arm` 0.4 reads
-no NEON (see the README), so vectorized code stays opaque. Build a
-hard-float fixture, and decode NEON, with a newer `yaxpeax-arm` or a
-decoder of its own.
+`hard`, which passes floats in VFP registers. `yaxpeax-arm` 0.4 reads no
+NEON. The tool reads NEON loads and stores itself, but NEON data
+processing stays opaque, named `(neon)`. Build a hard-float fixture, and
+decode the rest of NEON, with a newer `yaxpeax-arm` or a decoder of its
+own.
 
 ## Read MIPS64
 

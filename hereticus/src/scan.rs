@@ -407,10 +407,15 @@ fn outside_pool_spans(
                 data.range(address.saturating_sub(WORD_WIDTH - 1)..=address).next().is_some()
             };
             // So can data outside the code, but there a word that does not
-            // decode soon follows. Code up to its pool reads whole.
+            // decode soon follows. Code up to its pool reads whole, but for
+            // an extension the decoder does not read, as NEON.
             let unreadable: Vec<u64> = insns
                 .iter()
-                .filter(|insn| insn.kind == InsnKind::Unknown && !is_data(insn.address))
+                .filter(|insn| {
+                    insn.kind == InsnKind::Unknown
+                        && !arch.is_unread_extension(insn)
+                        && !is_data(insn.address)
+                })
                 .map(|insn| insn.address)
                 .collect();
             let reads_whole = |from: u64, to: u64| {
@@ -1619,10 +1624,18 @@ mod tests {
 
     #[test]
     fn a_span_with_a_word_that_does_not_decode_drops_nothing() {
-        // movs r0, 0; bx lr; then a NEON `vst1` the decoder does not read.
-        let code = loads_over(&[0x00, 0x20, 0x70, 0x47, 0x41, 0xf9, 0x8d, 0x0a]);
+        // movs r0, 0; bx lr; then a word that is no T32 instruction.
+        let code = loads_over(&[0x00, 0x20, 0x70, 0x47, 0xf0, 0xf7, 0x00, 0xa0]);
         let starts = [(0x1004, Source::AfterReturn)];
         assert_eq!(pool_span_survivors(&code, &starts), [0x1004]);
+    }
+
+    #[test]
+    fn neon_between_a_load_and_its_pool_still_drops_the_guess() {
+        // movs r0, 0; bx lr; then NEON `vmov.i32 q8, 0`, which stays opaque.
+        let code = loads_over(&[0x00, 0x20, 0x70, 0x47, 0xc0, 0xef, 0x50, 0x00]);
+        let starts = [(0x1004, Source::AfterReturn)];
+        assert!(pool_span_survivors(&code, &starts).is_empty());
     }
 
     #[test]

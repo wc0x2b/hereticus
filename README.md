@@ -104,10 +104,12 @@ Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
 and 2 when the input could not be read.
 
 ## Limits
-* **ARM32 little-endian A32, and MIPS32 in either byte order.** Thumb is not
-  decoded, and a Thumb image reads as nonsense with no warning.
-* **NEON is not decoded.** Those words stay opaque, so decoding continues but
-  their content is not compared.
+* **Little-endian A32, Thumb-2 and AArch64, and MIPS32 in either byte
+  order.** A raw image is read in the one set `--arch` names, so a binary
+  that mixes A32 and Thumb-2 has its minority read as nonsense.
+* **NEON data processing is not decoded.** NEON loads and stores are read.
+  The other NEON words stay opaque, named `(neon)`: decoding continues, and
+  an edit to one shows, but not what it changed.
 * **Unoptimized against optimized is out of scope.** At `-O2` the compiler
   changes the algorithm, which normalizing cannot bridge. Shipped firmware is
   built optimized.
