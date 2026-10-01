@@ -190,15 +190,15 @@ fn tally_all(project: &str, versions: [&str; 2], reading: Reading) -> Tally {
 
 #[rstest]
 #[case::zlib_1_2_11("zlib", ["1.2.11", "1.2.12"], Tally { right: 1199, wrong: 5, gone: 47, new: 68, missed: 3 },
-        Tally { right: 1173, wrong: 5, gone: 108, new: 123, missed: 2 })]
-#[case::zlib_1_2_12("zlib", ["1.2.12", "1.2.13"], Tally { right: 1266, wrong: 0, gone: 3, new: 2, missed: 0 }, Tally { right: 1237, wrong: 4, gone: 9, new: 10, missed: 0 })]
+        Tally { right: 1171, wrong: 5, gone: 110, new: 125, missed: 1 })]
+#[case::zlib_1_2_12("zlib", ["1.2.12", "1.2.13"], Tally { right: 1266, wrong: 0, gone: 3, new: 2, missed: 0 }, Tally { right: 1238, wrong: 3, gone: 9, new: 10, missed: 0 })]
 #[case::zlib_1_2_13("zlib", ["1.2.13", "1.3"], Tally { right: 1268, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 1242, wrong: 0, gone: 7, new: 8, missed: 0 })]
 #[case::lua_5_1("lua", ["5.1.4", "5.1.5"], Tally { right: 4908, wrong: 0, gone: 11, new: 11, missed: 0 }, Tally { right: 4878, wrong: 0, gone: 16, new: 15, missed: 0 })]
 #[case::lua_5_3("lua", ["5.3.5", "5.3.6"], Tally { right: 5688, wrong: 0, gone: 22, new: 23, missed: 0 },
-        Tally { right: 5649, wrong: 5, gone: 75, new: 97, missed: 1 })]
+        Tally { right: 5652, wrong: 2, gone: 75, new: 97, missed: 0 })]
 #[case::tinyxml2_8("tinyxml2", ["8.0.0", "9.0.0"], Tally { right: 2295, wrong: 8, gone: 307, new: 345, missed: 0 },
         Tally { right: 2233, wrong: 6, gone: 396, new: 451, missed: 1 })]
-#[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 1, new: 26, missed: 0 }, Tally { right: 2536, wrong: 42, gone: 92, new: 112, missed: 0 })]
+#[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 1, new: 26, missed: 0 }, Tally { right: 2539, wrong: 39, gone: 92, new: 112, missed: 0 })]
 #[case::expat_2_4_4("expat", ["2.4.4", "2.4.5"], Tally { right: 2901, wrong: 0, gone: 14, new: 3, missed: 0 },
         Tally { right: 2851, wrong: 0, gone: 44, new: 39, missed: 0 })]
 #[case::expat_2_4_8("expat", ["2.4.8", "2.4.9"], Tally { right: 2902, wrong: 2, gone: 0, new: 0, missed: 0 },

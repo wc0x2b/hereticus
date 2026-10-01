@@ -761,6 +761,7 @@ pub fn diff_reporting(
     cascade.match_by_similarity(progress);
 
     cascade.align_stubs(before, after);
+    cascade.repair_twins_by_callees();
     cascade.uncross_by_callees();
     cascade.pair_by_callers(before, after);
     cascade.pair_leftover_twins();
@@ -2107,6 +2108,119 @@ impl Cascade<'_> {
         }
     }
 
+    /// Pair again, by what they reach, the twins that paired by code but
+    /// reach different functions.
+    ///
+    /// The bytes of a T32 range extension thunk hold only a distance, so all
+    /// thunks have one shape, and in a raw image nothing names what they
+    /// reach. The code stages pair them before the PLT stubs they reach have
+    /// paired, and one thunk more on one side shifts every pair after it.
+    /// Measured on Lua built for Thumb-2 by clang at `-O1`, eight thunks had
+    /// paired with the next one's partner. A swap of two pairs cannot undo
+    /// such a shift, so each such pair is undone, and its function pairs with
+    /// the one function of its shape that reaches what it reaches, where no
+    /// other function of that shape reaches the same.
+    ///
+    /// A pair waits while what it reaches is itself crossed: Tinyxml2's
+    /// `XMLComment::ShallowClone` and `XMLUnknown::ShallowClone` differ only
+    /// in the thunk they call, so they can be told apart only once the
+    /// thunks have paired again.
+    fn repair_twins_by_callees(&mut self) {
+        /// Each round settles one more level of callers.
+        const MOST_ROUNDS: usize = 4;
+
+        for _ in 0..MOST_ROUNDS {
+            if self.repair_settled_twins() == Repaired::Nothing {
+                break;
+            }
+        }
+    }
+
+    /// One round of [`Self::repair_twins_by_callees`].
+    fn repair_settled_twins(&mut self) -> Repaired {
+        let (left_keys, right_keys) = self.reference_keys_of_all();
+        let all_crossed: Vec<usize> = self
+            .matched
+            .iter()
+            .enumerate()
+            .filter(|(_, pair)| {
+                matches!(
+                    pair.confidence,
+                    Confidence::IdenticalCode
+                        | Confidence::IdenticalShape
+                        | Confidence::TwinInOrder
+                ) && left_keys[pair.before] != right_keys[pair.after]
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let crossed_rights: HashSet<usize> =
+            all_crossed.iter().map(|&index| self.matched[index].after).collect();
+        let reaches_crossed = |keys: &[ReferenceKey]| {
+            keys.iter().any(
+                |key| matches!(key, ReferenceKey::Paired(after) if crossed_rights.contains(after)),
+            )
+        };
+        let crossed: Vec<usize> = all_crossed
+            .into_iter()
+            .filter(|&index| {
+                let pair = &self.matched[index];
+                !reaches_crossed(&left_keys[pair.before])
+                    && !reaches_crossed(&right_keys[pair.after])
+            })
+            .collect();
+        if crossed.is_empty() {
+            return Repaired::Nothing;
+        }
+
+        // Only the functions of the crossed pairs take part. A free function
+        // of the same shape that reaches the same is no evidence: in a
+        // kernel, many wrappers stay free for good reason.
+        let lefts = crossed.iter().map(|&index| self.matched[index].before);
+        let rights = crossed.iter().map(|&index| self.matched[index].after);
+        let left_groups = group_by_shape_and_references(&self.left, &left_keys, lefts);
+        let right_groups = group_by_shape_and_references(&self.right, &right_keys, rights);
+
+        let mut pairs: Vec<(usize, usize)> = left_groups
+            .iter()
+            .filter_map(|(key, lefts)| {
+                match (lefts.as_slice(), right_groups.get(key)?.as_slice()) {
+                    (&[before], &[after]) => Some((before, after)),
+                    _ => None,
+                }
+            })
+            .collect();
+        // Pairing in a fixed order keeps the result independent of the order
+        // the maps yield their groups in.
+        pairs.sort_unstable();
+
+        let (new_lefts, new_rights): (HashSet<usize>, HashSet<usize>) =
+            pairs.iter().copied().unzip();
+        let undone: HashSet<usize> = crossed
+            .into_iter()
+            .filter(|&index| {
+                let pair = &self.matched[index];
+                new_lefts.contains(&pair.before) || new_rights.contains(&pair.after)
+            })
+            .collect();
+        let mut index = 0;
+        self.matched.retain(|pair| {
+            let keep = !undone.contains(&index);
+            index += 1;
+            if !keep {
+                self.left_free[pair.before] = true;
+                self.right_free[pair.after] = true;
+            }
+            keep
+        });
+        if pairs.is_empty() {
+            return Repaired::Nothing;
+        }
+        for (before, after) in pairs {
+            self.take_pair(before, after, Confidence::IdenticalShape, 1.0);
+        }
+        Repaired::Some
+    }
+
     /// Swap two pairings by similarity where each function calls and points
     /// at exactly what the other's partner does, and the code cannot choose. Where the
     /// function that calls the same is unpaired, the pairing moves to it.
@@ -2193,6 +2307,40 @@ impl Cascade<'_> {
             }
         }
     }
+}
+
+/// Whether a round of [`Cascade::repair_twins_by_callees`] paired anything
+/// again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Repaired {
+    Nothing,
+    Some,
+}
+
+/// The `members` of one side that reach something, grouped by their shape and
+/// by what they reach.
+///
+/// A member with a callee that is unknown or unpaired is left out: what it
+/// reaches is only in part known, and the part can match a twin that
+/// reaches less. Tinyxml2's `SetAttribute` for `int64_t` and for
+/// `uint64_t` share one callee, and each has one of its own.
+fn group_by_shape_and_references<'a>(
+    side: &'a [Prepared<'_>],
+    keys: &'a [Vec<ReferenceKey>],
+    members: impl Iterator<Item = usize>,
+) -> HashMap<(&'a [Symbol], &'a [ReferenceKey]), Vec<usize>> {
+    let reaches_all_known = |index: usize| {
+        let prepared = &side[index];
+        keys[index].len() == prepared.calls.len() + prepared.texts.len()
+    };
+    let mut groups: HashMap<_, Vec<usize>> = HashMap::new();
+    for index in members.filter(|&index| !keys[index].is_empty() && reaches_all_known(index)) {
+        groups
+            .entry((side[index].ordered.as_slice(), keys[index].as_slice()))
+            .or_default()
+            .push(index);
+    }
+    groups
 }
 
 /// The fewest bytes a text must hold before a change to it is reported.
@@ -3481,6 +3629,36 @@ mod tests {
             assert_eq!(caller.changed, Changed::No, "names {names:?}");
             assert_eq!(caller.kinds.callees, 0, "names {names:?}");
         }
+    }
+
+    /// Twins that paired in order, each with the next one's partner, pair
+    /// again by what they call, however long the chain.
+    #[test]
+    fn twins_paired_crossed_in_a_chain_pair_by_what_they_call() {
+        let calls = |from: u64, callee: u64| -> Vec<u8> {
+            [bl(from, callee).as_slice(), &[0x1e, 0xff, 0x2f, 0xe1]].concat()
+        };
+        let callees = [returns(1), returns(2), returns(3)];
+        let image = |targets: [u64; 3]| {
+            let wrappers: Vec<Vec<u8>> = targets
+                .iter()
+                .enumerate()
+                .map(|(index, &target)| calls(index as u64 * 0x100, target))
+                .collect();
+            let functions: Vec<(&str, &[u8])> =
+                wrappers.iter().chain(&callees).map(|code| ("", code.as_slice())).collect();
+            binary_of(&functions)
+        };
+        let before = image([0x300, 0x400, 0x500]);
+        let after = image([0x500, 0x300, 0x400]);
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+
+        let partner = |index: usize| {
+            diff.matched.iter().find(|pair| pair.before == index).map(|pair| pair.after)
+        };
+        assert_eq!([partner(0), partner(1), partner(2)], [Some(1), Some(2), Some(0)]);
+        assert_eq!(diff.changed().count(), 0);
     }
 
     /// A table that went or came says it is data, and code says it is code.

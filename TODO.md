@@ -38,20 +38,14 @@ left is Thumb-2. By cause:
 - Some invented starts are no fault: the lazy binding stubs of MIPS are
   code that no symbol names. The test leaves out only the PLT.
 
-## Find the functions of a raw Thumb-2 image that only pointers reach
+## Cut raw Thumb-2 functions of tinyxml2 at their starts
 
-A raw image holds no relocations and no dynamic symbol table, so a
-Thumb-2 function that only a vtable or a table of callbacks points at, and
-that opens with no prologue, has no start the scan can see. It joins the
-tail of the function before, pool and all. And LLD's range extension
-thunks, whose bytes hold a distance, pair crossed where two reach the same
-distance, since a raw image names no PLT stub they reach. `KNOWN_EXTRAS` in
-`tests/backports.rs` lists the 65 false reports these make. The scan now
-reads each aligned word with bit 0 set as a start, which found most such
-functions and removed 27 false reports. What is left are functions that no
-word points at, as a destructor that only a vtable of another library
-reaches. Pairing thunks by the stub they reach, once stubs pair, could pair
-them.
+`KNOWN_EXTRAS` in `tests/backports.rs` lists 25 false reports, all in
+tinyxml2 read as a raw Thumb-2 image. Each is a piece that starts inside a
+function, as `0x1a036` inside `XMLElement::~XMLElement` at `0x19fb4` when
+built at `-O2`, and that holds the tail and the pool after it. The pool
+reads as a changed constant. Words in the image point at each of these
+functions, so the cause is not a start the scan cannot see.
 
 ## Read a binary that mixes A32 and Thumb-2
 
