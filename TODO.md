@@ -46,10 +46,12 @@ that opens with no prologue, has no start the scan can see. It joins the
 tail of the function before, pool and all. And LLD's range extension
 thunks, whose bytes hold a distance, pair crossed where two reach the same
 distance, since a raw image names no PLT stub they reach. `KNOWN_EXTRAS` in
-`tests/backports.rs` lists the 92 false reports these make. Reading the
-words of the data that hold an address with bit 0 set, in the code, as
-starts could find the functions, where the data can be told from the code.
-Pairing thunks by the stub they reach, once stubs pair, could pair them.
+`tests/backports.rs` lists the 65 false reports these make. The scan now
+reads each aligned word with bit 0 set as a start, which found most such
+functions and removed 27 false reports. What is left are functions that no
+word points at, as a destructor that only a vtable of another library
+reaches. Pairing thunks by the stub they reach, once stubs pair, could pair
+them.
 
 ## Read a binary that mixes A32 and Thumb-2
 
