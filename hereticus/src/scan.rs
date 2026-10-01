@@ -1475,7 +1475,7 @@ mod tests {
                 let kind = branches
                     .iter()
                     .find(|(at, _)| *at == address)
-                    .map_or(InsnKind::Normal, |(_, kind)| kind.clone());
+                    .map_or(InsnKind::Normal, |&(_, kind)| kind);
                 thumb_insn(address, kind)
             })
             .collect()
