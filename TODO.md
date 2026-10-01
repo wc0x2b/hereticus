@@ -1,5 +1,58 @@
 # TODO
 
+## Check fixes on ARM32, Thumb-2 and MIPS
+
+Four Apple CVE fixes, all AArch64, put each fix in the top 19 rows with
+`--sort added`. Find published patch diffs of OpenWrt or router firmware
+CVEs, compare the two releases, and add a report to `real-life-reports/`
+for each. This tells if the default sort holds on the other sets.
+
+## Write the reports of the other Apple CVE fixes
+
+CVE-2026-28825 (smbfs), CVE-2025-24257 (IOGPUFamily) and CVE-2021-30883
+(AppleCLCD, iPhone 11) are confirmed, but have no report in
+`real-life-reports/`. The A14 and later iPhones run the display driver on
+the DCP, so CVE-2021-30883 needs a device without one.
+
+## Hide a text that changes only by its build path
+
+Apple puts the `__FILE__` path of each assert in its kexts, and the path
+holds a random build directory. In iOS 27.0.1 all 28 changed kexts
+differ only in these texts, and AppleHIDTransport shows 844 changed
+functions. Do not report a text change where only a build directory
+differs.
+
+## Read a fileset kernelcache directly
+
+A kernelcache of iOS 15 and later is an `MH_FILESET` that holds each kext
+as its own Mach-O. Read whole, it gives 648 functions, so a user must
+extract the kexts with `ipsw` first. Read each `LC_FILESET_ENTRY`.
+
+## Show the diff of every changed function
+
+`--diff` shows one function and reads both binaries again each time: 70
+seconds on a whole kernelcache. To find a fix, a user reads many. Add
+`--diff-all`, which prints the diff of each changed pair in one run.
+
+## Add a thin layer of meaning to each instruction
+
+An instruction is a mnemonic, operands as text and a kind of control
+flow. Nothing says which registers and memory it reads and writes. So
+`cbnz x8` and `cmp x8, #0` with `b.ne` read as different, and a report can
+say "2 branch" but not "a new check on a value before an error path". Add
+the registers read and written and the memory accessed to each
+instruction, and read a compare and its conditional branch as one guard.
+Keep it only if the fixes rise or the noise falls on the `versions.rs`
+tallies, the OpenWrt pairs and the CVE fixes.
+
+## Make function recovery a library
+
+`scan.rs` and `arch/` find 45795 of 46006 functions exactly in stripped
+libraries, over ARM, Thumb-2, AArch64 and MIPS, and few Rust crates do
+that. They depend only on `address.rs` and `obj::Function`. But the `Arch`
+trait mixes decoding with the rules of `hereticus`, about 30 methods, and
+reads operands back from text. Split a stable API out of it first.
+
 ## Unpack firmware containers
 
 `fixtures/firmware.py` unpacks FIT images, uImages, zImages, the TP-Link v1
