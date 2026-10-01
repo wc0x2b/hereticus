@@ -26,6 +26,7 @@ use smallvec::SmallVec;
 
 use crate::address::{AddressSpace, ConstantKind};
 use crate::arch::{Arch, Insn, InsnKind, is_branch_target};
+use crate::il::{CondFamily, Guard, Lifted, Reg, Value, find_guards};
 
 /// Operands held without a heap allocation.
 ///
@@ -243,6 +244,7 @@ pub fn normalize_body_in(
     space: &AddressSpace,
 ) -> Vec<NormInsn> {
     let kinds = arch.constant_kinds(code, insns, space);
+    let guards = find_guards(&lift_all(arch, code, insns));
     let mut out = Vec::with_capacity(insns.len());
     let mut index = 0;
 
@@ -254,6 +256,28 @@ pub fn normalize_body_in(
         let idiom = arch.idiom_length(&insns[index..]).min(insns.len() - index);
         if idiom > 0 {
             index += idiom;
+            continue;
+        }
+
+        // A guard reads as two: the test, where the compare is, and a plain
+        // branch. `cbz` thus reads as `cmp` with `b.eq` does, and a guard
+        // weighs as much in a score as the two instructions it most often is.
+        if let Some(found) =
+            guards.iter().find(|found| found.compare.unwrap_or(found.branch) == index)
+        {
+            let address = [found.compare, Some(found.branch)].into_iter().flatten().any(|at| {
+                matches!(kinds.get(at), Some(ConstantKind::Address | ConstantKind::StoredAddress))
+            });
+            out.push(normalize_guard(&found.guard, address));
+            if found.compare.is_none() {
+                out.push(plain_branch());
+            }
+            index += 1;
+            continue;
+        }
+        if guards.iter().any(|found| found.compare.is_some() && found.branch == index) {
+            out.push(plain_branch());
+            index += 1;
             continue;
         }
 
@@ -371,6 +395,71 @@ fn shape_of(arch: &dyn Arch, operand: &str) -> Option<OperandShape> {
     } else {
         OperandShape::Other
     })
+}
+
+/// Lift each instruction of `insns`, which `code` holds from its first
+/// byte. Without the code, nothing is lifted.
+fn lift_all(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<Option<Lifted>> {
+    let Some(first) = insns.first() else { return Vec::new() };
+    insns
+        .iter()
+        .map(|insn| {
+            let offset = usize::try_from(insn.address.checked_sub(first.address)?).ok()?;
+            let word = code.get(offset..offset.checked_add(insn.bytes_len)?)?;
+            arch.lift(insn, word)
+        })
+        .collect()
+}
+
+/// The branch of a guard, which says only that control may leave here.
+fn plain_branch() -> NormInsn {
+    NormInsn {
+        operation: "branch".into(),
+        operands: [OperandShape::Target].into_iter().collect(),
+        flow: FlowShape::Branch,
+        constants: Constants::new(),
+    }
+}
+
+/// The test of a guard, whatever the spelling, so that `cbnz x8` and
+/// `cmp x8, #0` with `b.ne` compare equal.
+///
+/// The condition keeps only its family: a compiler can branch on the
+/// opposite condition and swap the code after it. The bound is canonical,
+/// so `x < 1` and `x <= 0` read alike. The constant compared
+/// with stays, to report a changed bound. Where it is an address, it moves
+/// with unrelated edits, so it is a target, as in [`normalize_body_in`].
+fn normalize_guard(guard: &Guard, address: bool) -> NormInsn {
+    let guard = guard.canonical();
+    let family = match guard.cond.family() {
+        CondFamily::Equality => "guard.eq",
+        CondFamily::Unsigned => "guard.unsigned",
+        CondFamily::Signed => "guard.signed",
+        CondFamily::Sign => "guard.sign",
+        CondFamily::Overflow => "guard.overflow",
+        CondFamily::Bits => "guard.bits",
+        CondFamily::Always => "guard.always",
+    };
+    let shape = |value: Value| match value {
+        Value::Reg(Reg::Stack) => OperandShape::StackPointer,
+        Value::Reg(_) => OperandShape::Register,
+        Value::Const(_) if address => OperandShape::Target,
+        Value::Const(constant) => OperandShape::Immediate(Magnitude::of(constant)),
+        Value::Other => OperandShape::Other,
+    };
+    let constants = [guard.left, guard.right]
+        .into_iter()
+        .filter_map(|value| match value {
+            Value::Const(constant) if !address => Some(constant),
+            _ => None,
+        })
+        .collect();
+    NormInsn {
+        operation: family.into(),
+        operands: [shape(guard.left), shape(guard.right)].into_iter().collect(),
+        flow: FlowShape::Linear,
+        constants,
+    }
 }
 
 #[cfg(test)]

@@ -343,6 +343,15 @@ pub trait Arch {
         false
     }
 
+    /// Lift `insn` to the intermediate language of [`crate::il`]. `word`
+    /// holds its bytes.
+    ///
+    /// Defaults to `None`, for the architectures with no lifter yet. A
+    /// caller treats `None` as "nothing known", never as "does nothing".
+    fn lift(&self, _insn: &Insn, _word: &[u8]) -> Option<crate::il::Lifted> {
+        None
+    }
+
     /// The architecture the PLT stubs of a binary are in, where it is not
     /// this one.
     ///
