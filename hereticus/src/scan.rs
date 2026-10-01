@@ -52,7 +52,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind, SymbolKind};
 
 use crate::address::AddressSpace;
-use crate::arch::{Arch, CallTarget, DataAmongCode, Insn, InsnKind, Memory, decode_all};
+use crate::arch::{
+    Arch, CallTarget, DataAmongCode, Insn, InsnKind, Memory, TableJumps, decode_all,
+};
 use crate::obj::Function;
 
 /// Bytes in one ARM EHABI unwind entry: a function address and one word
@@ -1144,6 +1146,25 @@ fn starts_after_returns_in(
             .any(|&(_, to)| to > address && to < next_start)
     };
 
+    // The jumps through a register that are neither a table the scan read
+    // nor a tail call: what they reach is unknown.
+    let unread_jumps: Vec<u64> = insns
+        .iter()
+        .filter(|insn| {
+            is_code(insn)
+                && insn.kind == (InsnKind::Jump { target: None })
+                && !table_jumps.contains(&insn.address)
+                && !arch.is_tail_call(insn)
+        })
+        .map(|insn| insn.address)
+        .collect();
+    let all_jumps_read = |start: Option<u64>, end: u64| {
+        let Some(start) = start else { return false };
+        let first = unread_jumps.partition_point(|&address| address < start);
+        arch.table_jumps() == TableJumps::Distinct
+            && unread_jumps.get(first).is_none_or(|&address| address >= end)
+    };
+
     let mut out = Vec::new();
     // The last return before the current instruction. The code after it is
     // the function the current instruction is in, or the start of it.
@@ -1196,20 +1217,23 @@ fn starts_after_returns_in(
             //
             // A jump back into this function, after its start, closes a loop,
             // and nothing falls through it either. Where padding follows, the
-            // function ends there: a compiler pads between functions, and
-            // what follows a loop inside one is often reached only through a
-            // table the scan cannot read, as on MIPS. Measured on the
-            // stripped releases, where the cases of a GCC `tbb` table for
-            // Thumb-2 each end with `b` back to the loop, as in expat, this
-            // found 67 more function starts and invented 2 fewer.
+            // function ends there: a compiler pads between functions. Where
+            // a jump through a table is an instruction of its own, and the
+            // scan read each in the function so far, it ends there too, as
+            // the checks below ask whether a branch reaches what follows.
+            // Else what follows may be reached only through an unread table,
+            // as on MIPS. Measured on the stripped releases, where the cases
+            // of a GCC `tbb` table for Thumb-2 each end with `b` back to the
+            // loop, as in expat, this found 117 more function starts and
+            // invented 1 more.
             InsnKind::Jump { target: Some(target) } => {
-                let closes_a_loop = function_start
-                    .is_some_and(|start| start <= target && target < insn.address);
+                let closes_a_loop =
+                    function_start.is_some_and(|start| start <= target && target < insn.address);
                 let padded = insns
                     .get(index + 1 + arch.delay_slots(insn))
                     .is_some_and(|next| arch.is_padding(next));
                 (anchors.contains(&target) && Some(target) != function_start)
-                    || (closes_a_loop && padded)
+                    || (closes_a_loop && (padded || all_jumps_read(function_start, insn.address)))
             }
             _ => false,
         };
@@ -1681,10 +1705,40 @@ mod tests {
     }
 
     #[test]
-    fn a_loop_back_with_no_padding_after_ends_nothing() {
+    fn where_no_jump_goes_unread_a_loop_back_ends_the_function() {
         let code = loop_then(&[]);
         let starts = starts_after_returns(&crate::arch::thumb::Thumb2, &code, 0x1000);
-        assert!(!starts.contains(&0x1008), "{starts:x?}");
+        assert!(starts.contains(&0x1008), "{starts:x?}");
+    }
+
+    /// An A32 function at 0x1000 that ends with a loop, `b` back to
+    /// 0x1008, then `between`, then a second function.
+    fn a32_loop_then(between: &[u32]) -> Vec<u8> {
+        // push {r4, lr}; mov r0, 0; add r0, r0, 1; b 0x1008
+        let mut words = vec![0xe92d_4010, 0xe3a0_0000, 0xe280_0001, 0xeaff_fffd];
+        words.extend_from_slice(between);
+        // mov r0, 1; bx lr
+        words.extend([0xe3a0_0001, 0xe12f_ff1e]);
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn where_a_table_jump_looks_like_others_only_padding_ends_a_loop() {
+        let bare = starts_after_returns(&Arm32, &a32_loop_then(&[]), 0x1000);
+        assert!(!bare.contains(&0x1010), "{bare:x?}");
+        let padded = starts_after_returns(&Arm32, &a32_loop_then(&[0xe320_f000]), 0x1000);
+        assert!(padded.contains(&0x1014), "{padded:x?}");
+    }
+
+    #[test]
+    fn after_an_unread_table_only_padding_ends_a_loop() {
+        // push {r4, lr}; tbb [pc, r0] with no bound before it, then a loop.
+        let code: Vec<u8> = [0xb510u16, 0xe8df, 0xf000, 0x2000, 0x3001, 0xe7fd, 0x2001, 0x4770]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let starts = starts_after_returns(&crate::arch::thumb::Thumb2, &code, 0x1000);
+        assert!(!starts.contains(&0x100c), "{starts:x?}");
     }
 
     #[test]

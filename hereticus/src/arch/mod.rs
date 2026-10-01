@@ -187,6 +187,12 @@ pub trait Arch {
         DataAmongCode::Never
     }
 
+    /// Whether a jump through a table of cases is an instruction of its own.
+    /// Defaults to [`TableJumps::LikeOthers`].
+    fn table_jumps(&self) -> TableJumps {
+        TableJumps::LikeOthers
+    }
+
     /// The jumps through a table of cases in `insns`, which were decoded
     /// from the code at `code` in `memory`.
     ///
@@ -448,6 +454,17 @@ impl<'a> Memory<'a> {
             data.get(offset..offset.checked_add(length)?)
         })
     }
+}
+
+/// How a jump through a table of cases looks among other jumps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableJumps {
+    /// It is an instruction of its own, as T32 `tbb` and `tbh` are. A table
+    /// the scan cannot read still shows as such a jump.
+    Distinct,
+    /// It is a jump through a register, as a tail call can be, so a table
+    /// the scan cannot read may go unseen.
+    LikeOthers,
 }
 
 /// Whether an architecture keeps data among its instructions.
