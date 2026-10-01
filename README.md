@@ -27,6 +27,9 @@ $ hereticus --ignore-names before.elf after.elf     # match from the code alone
 $ hereticus --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF header
 ```
 
+For real fixes found with `hereticus`, such as the iOS kernel fix for
+CVE-2024-23265, see [real-life-reports](real-life-reports).
+
 Two OpenWrt releases for the same device, 22.03.2 and 22.03.5 for the Netgear
 EX6100v2. The ARM decompressor stub is 15 KB of shipped code with no symbols,
 and 43 of its 15,351 bytes changed:
