@@ -4,9 +4,11 @@
 //! The decoders in [`crate::arch`] give an instruction as text and a kind of
 //! control flow. That is enough to compare shapes, but not to see that two
 //! spellings do one thing: `cbnz x8, L` and `cmp x8, #0` with `b.ne L` both
-//! branch where `x8` is not zero. A lifter turns one instruction into a
-//! [`Lifted`], and [`find_guards`] turns a compare and the branch that reads
-//! it into one [`Guard`], whatever the spelling.
+//! branch where `x8` is not zero, and MIPS `slt t0, a0, a1` with `bnez t0`
+//! tests `a0 < a1` as `cmp a0, a1` with `b.lt` does. A lifter turns one
+//! instruction into a [`Lifted`], and [`find_guards`] turns a compare and
+//! the branch that reads it into one [`Guard`], whatever the spelling.
+//! AArch64, A32, Thumb-2 and MIPS32 each have a lifter: see `Arch::lift`.
 //!
 //! This is no full semantics. It says which registers an instruction reads
 //! and writes, whether it touches memory, and what it compares, which is what
@@ -16,7 +18,8 @@
 /// A register, named the same way on every architecture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Reg {
-    /// A general register, by its number on its architecture.
+    /// A general register, by its number on its architecture. MIPS keeps
+    /// `hi` and `lo` at 32 and 33.
     General(u8),
     /// A floating point or vector register, by its number.
     Vector(u8),
@@ -204,6 +207,48 @@ impl Cond {
         }
     }
 
+    /// The condition that holds where this one does not.
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Equal => Self::NotEqual,
+            Self::NotEqual => Self::Equal,
+            Self::UnsignedGreaterOrEqual => Self::UnsignedLess,
+            Self::UnsignedLess => Self::UnsignedGreaterOrEqual,
+            Self::Negative => Self::NotNegative,
+            Self::NotNegative => Self::Negative,
+            Self::Overflow => Self::NoOverflow,
+            Self::NoOverflow => Self::Overflow,
+            Self::UnsignedGreater => Self::UnsignedLessOrEqual,
+            Self::UnsignedLessOrEqual => Self::UnsignedGreater,
+            Self::SignedGreaterOrEqual => Self::SignedLess,
+            Self::SignedLess => Self::SignedGreaterOrEqual,
+            Self::SignedGreater => Self::SignedLessOrEqual,
+            Self::SignedLessOrEqual => Self::SignedGreater,
+            Self::BitsClear => Self::BitsSet,
+            Self::BitsSet => Self::BitsClear,
+            Self::Always => Self::Always,
+        }
+    }
+
+    /// One of this condition and its opposite, the same for both.
+    ///
+    /// A compiler can branch on a condition or on its opposite and swap the
+    /// code after it, so a branch is compared by this. Unlike
+    /// [`Self::family`], it keeps `a > b` apart from `a < b`.
+    pub fn either_way(self) -> Self {
+        match self {
+            Self::NotEqual
+            | Self::UnsignedLess
+            | Self::NotNegative
+            | Self::NoOverflow
+            | Self::UnsignedLessOrEqual
+            | Self::SignedLess
+            | Self::SignedLessOrEqual
+            | Self::BitsSet => self.opposite(),
+            _ => self,
+        }
+    }
+
     pub fn family(self) -> CondFamily {
         match self {
             Self::Equal | Self::NotEqual => CondFamily::Equality,
@@ -279,11 +324,119 @@ pub enum Test {
     OnFlags(Cond),
     /// Compares and branches in one, as `cbz` and `tbnz`.
     Guard(Guard),
+    /// Writes 1 to `dest` where `left` meets `cond` against `right`, and 0
+    /// where not, as the MIPS `slt` does. A branch on `dest` then makes a
+    /// guard of it.
+    SetOnCompare { dest: Reg, cond: Cond, left: Value, right: Value, width: Width },
+}
+
+/// What an instruction computes, named the same way on every architecture.
+///
+/// Spellings that compute one thing share a variant: `add`, `adds`, `addu`
+/// and `addiu` are all [`Op::Add`], and `ldr` and `lw` are both
+/// [`Op::Load`]. What sets them apart stays elsewhere: the flags an `adds`
+/// writes are in [`Lifted::writes`], and the width of a load is in
+/// [`Lifted::memory`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Op {
+    /// Copies a value, or puts a constant in a register.
+    Move,
+    /// Forms an address from the program counter, as `adrp` and `lui` do.
+    Address,
+    Add,
+    Subtract,
+    Multiply,
+    /// A multiply with an add or subtract, as `madd` and `mla` do.
+    MultiplyAdd,
+    Divide,
+    And,
+    Or,
+    Xor,
+    /// `left & !right`, as `bic` does.
+    AndNot,
+    /// `left | !right`, as `orn` does.
+    OrNot,
+    Not,
+    Negate,
+    ShiftLeft,
+    ShiftRight,
+    ShiftRightArithmetic,
+    Rotate,
+    /// Widens a value with its sign or with zeros, as `sxtb` and `seb` do.
+    Extend,
+    /// Reads or writes a field of bits, as `ubfx`, `bfi` and `ext` do.
+    BitField,
+    /// Counts or reverses bits or bytes, as `clz`, `rbit` and `rev` do.
+    Bits,
+    /// Picks one of two values on a condition, as `csel` and `movn` do.
+    Select,
+    Load,
+    Store,
+    /// Loads and stores in one, as an atomic swap or add does.
+    Atomic,
+    /// Sets the flags from a comparison, or sets a register as `slt` does.
+    Compare,
+    Branch,
+    Jump,
+    Call,
+    Return,
+    /// Floating point arithmetic.
+    Float,
+    /// Vector arithmetic.
+    Vector,
+    /// Talks to the system, as a barrier, a system call or a hint does.
+    System,
+    /// Anything the lifter does not name.
+    #[default]
+    Other,
+}
+
+impl Op {
+    /// The name normalizing gives this operation.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::Address => "address",
+            Self::Add => "add",
+            Self::Subtract => "subtract",
+            Self::Multiply => "multiply",
+            Self::MultiplyAdd => "multiply-add",
+            Self::Divide => "divide",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
+            Self::AndNot => "and-not",
+            Self::OrNot => "or-not",
+            Self::Not => "not",
+            Self::Negate => "negate",
+            Self::ShiftLeft => "shift-left",
+            Self::ShiftRight => "shift-right",
+            Self::ShiftRightArithmetic => "shift-right-arithmetic",
+            Self::Rotate => "rotate",
+            Self::Extend => "extend",
+            Self::BitField => "bit-field",
+            Self::Bits => "bits",
+            Self::Select => "select",
+            Self::Load => "load",
+            Self::Store => "store",
+            Self::Atomic => "atomic",
+            Self::Compare => "compare",
+            Self::Branch => "branch",
+            Self::Jump => "jump",
+            Self::Call => "call",
+            Self::Return => "return",
+            Self::Float => "float",
+            Self::Vector => "vector",
+            Self::System => "system",
+            Self::Other => "other",
+        }
+    }
 }
 
 /// One instruction, lifted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Lifted {
+    pub op: Op,
     pub reads: RegSet,
     pub writes: RegSet,
     pub memory: Option<MemoryAccess>,
@@ -313,26 +466,55 @@ pub struct FoundGuard {
 /// nothing is known of it.
 pub fn find_guards(body: &[Option<Lifted>]) -> Vec<FoundGuard> {
     let mut found = Vec::new();
+    // A branch that a compare before it took is no guard of its own.
+    let mut taken = Vec::new();
     for (index, lifted) in body.iter().enumerate() {
-        match lifted.and_then(|lifted| lifted.test) {
-            Some(Test::Guard(guard)) => {
-                found.push(FoundGuard { compare: None, branch: index, guard })
+        let after = &body[index + 1..];
+        let fused = match lifted.and_then(|lifted| lifted.test) {
+            Some(Test::Guard(guard)) if !taken.contains(&index) => {
+                found.push(FoundGuard { compare: None, branch: index, guard });
+                continue;
             }
-            Some(Test::Compare { comparison, width }) => {
-                if let Some((branch, cond)) = branch_on_flags(&body[index + 1..])
-                    && let Some(guard) = guard_of(comparison, cond, width)
-                {
-                    found.push(FoundGuard {
-                        compare: Some(index),
-                        branch: index + 1 + branch,
-                        guard,
-                    });
-                }
+            Some(Test::Compare { comparison, width }) => branch_on_flags(after)
+                .and_then(|(branch, cond)| Some((branch, guard_of(comparison, cond, width)?))),
+            Some(Test::SetOnCompare { dest, cond, left, right, width }) => {
+                branch_on_register(after, dest).map(|(branch, holds)| {
+                    let cond = if holds { cond } else { cond.opposite() };
+                    (branch, Guard { cond, left, right, width })
+                })
             }
-            Some(Test::OnFlags(_)) | None => {}
+            Some(Test::Guard(_) | Test::OnFlags(_)) | None => None,
+        };
+        if let Some((branch, guard)) = fused {
+            let branch = index + 1 + branch;
+            taken.push(branch);
+            found.push(FoundGuard { compare: Some(index), branch, guard });
         }
     }
     found
+}
+
+/// The first branch in `after` on whether `dest` is zero, by its index and
+/// whether it branches where `dest` holds 1. Only work that leaves `dest`
+/// alone may come before it.
+fn branch_on_register(after: &[Option<Lifted>], dest: Reg) -> Option<(usize, bool)> {
+    for (index, lifted) in after.iter().take(MOST_BETWEEN + 1).enumerate() {
+        let lifted = (*lifted)?;
+        if let Some(Test::Guard(guard)) = lifted.test {
+            if guard.left != Value::Reg(dest) || guard.right != Value::Const(0) {
+                return None;
+            }
+            return match guard.cond {
+                Cond::NotEqual => Some((index, true)),
+                Cond::Equal => Some((index, false)),
+                _ => None,
+            };
+        }
+        if lifted.test.is_some() || lifted.writes.contains(dest) {
+            return None;
+        }
+    }
+    None
 }
 
 /// The first branch on the flags in `after`, by its index and condition,
@@ -440,6 +622,57 @@ mod tests {
         assert_eq!(guards(&body), [(Some(1), 2, Cond::Equal)]);
     }
 
+    fn set_on_less(dest: u8) -> Option<Lifted> {
+        Some(Lifted {
+            writes: [Reg::General(dest)].into_iter().collect(),
+            test: Some(Test::SetOnCompare {
+                dest: Reg::General(dest),
+                cond: Cond::SignedLess,
+                left: Value::Reg(Reg::General(4)),
+                right: Value::Reg(Reg::General(5)),
+                width: Width::Bits32,
+            }),
+            ..Lifted::default()
+        })
+    }
+
+    fn branch_on(reg: u8, cond: Cond) -> Option<Lifted> {
+        Some(Lifted {
+            test: Some(Test::Guard(Guard {
+                cond,
+                left: Value::Reg(Reg::General(reg)),
+                right: Value::Const(0),
+                width: Width::Bits32,
+            })),
+            ..Lifted::default()
+        })
+    }
+
+    /// `slt t0, a0, a1` with `bnez t0` branches where `a0 < a1`, and with
+    /// `beqz t0` where not.
+    #[test]
+    fn a_set_on_less_and_its_branch_are_one_guard() {
+        let found = find_guards(&[set_on_less(8), work(), branch_on(8, Cond::NotEqual)]);
+        assert_eq!(found.len(), 1, "the branch is no guard of its own");
+        assert_eq!((found[0].compare, found[0].branch), (Some(0), 2));
+        assert_eq!(found[0].guard.cond, Cond::SignedLess);
+        assert_eq!(found[0].guard.left, Value::Reg(Reg::General(4)));
+
+        let found = find_guards(&[set_on_less(8), branch_on(8, Cond::Equal)]);
+        assert_eq!(found[0].guard.cond, Cond::SignedGreaterOrEqual);
+    }
+
+    #[test]
+    fn a_branch_on_another_register_or_a_rewrite_is_no_fusion() {
+        let other = find_guards(&[set_on_less(8), branch_on(9, Cond::NotEqual)]);
+        assert_eq!(other.iter().map(|found| found.compare).collect::<Vec<_>>(), [None]);
+
+        let rewrite =
+            Some(Lifted { writes: [Reg::General(8)].into_iter().collect(), ..Lifted::default() });
+        let rewritten = find_guards(&[set_on_less(8), rewrite, branch_on(8, Cond::NotEqual)]);
+        assert_eq!(rewritten.iter().map(|found| found.compare).collect::<Vec<_>>(), [None]);
+    }
+
     /// Clang tests `x < 1` where GCC tests `x <= 0`.
     #[test]
     fn a_bound_off_by_one_reads_the_same() {
@@ -512,6 +745,21 @@ mod tests {
         assert_eq!(guards(&[]), []);
         assert_eq!(guards(&[None, branch(Cond::Equal)]), []);
         assert_eq!(guards(&[branch(Cond::Equal)]), [], "a branch alone");
+    }
+
+    #[test]
+    fn a_condition_and_its_opposite_are_one_either_way() {
+        for code in 0..14_u8 {
+            let cond = Cond::from_arm(code);
+            assert_eq!(cond.opposite(), Cond::from_arm(code ^ 1), "ARM pairs opposites");
+            assert_eq!(cond.opposite().opposite(), cond);
+            assert_eq!(cond.either_way(), cond.opposite().either_way());
+        }
+        assert_ne!(
+            Cond::SignedGreater.either_way(),
+            Cond::SignedLess.either_way(),
+            "max is no min"
+        );
     }
 
     #[test]

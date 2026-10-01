@@ -1,5 +1,6 @@
 ---
 source: hereticus-cli/tests/cli_mips.rs
+assertion_line: 162
 info:
   program: hereticus
   args:
@@ -19,7 +20,7 @@ exit_code: 0
 ╭──────────────┬─────────┬───────┬───────┬─────────┬────────────╮
 │ FUNCTION     │ CHANGE  │ SCORE │ +/-/~ │ TOUCHED │ MATCHED BY │
 ├──────────────┼─────────┼───────┼───────┼─────────┼────────────┤
-│ sub_80000000 │ changed │  0.92 │ 0/0/3 │ 1 const │ similar    │
+│ sub_80000000 │ changed │  0.93 │ 0/0/3 │ 1 const │ similar    │
 ╰──────────────┴─────────┴───────┴───────┴─────────┴────────────╯
 
 1 matched (0 unchanged, 1 changed), 0 gone, 0 new

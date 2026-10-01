@@ -26,8 +26,8 @@ use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operan
 
 use super::arm32::{
     Arm32, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION,
-    call_targets_through_thunks, classify, decode_fallback, is_long_thunk, parse_hex, pool_loads,
-    split_mnemonic, track_pool_words,
+    call_targets_through_thunks, classify, decode_fallback, is_long_thunk, lift_with, parse_hex,
+    pool_loads, split_mnemonic, track_pool_words,
 };
 use super::{
     Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps, VectorTable,
@@ -373,6 +373,10 @@ impl Arch for Thumb2 {
         WORD
     }
 
+    fn lift(&self, insn: &Insn, word: &[u8]) -> Option<crate::il::Lifted> {
+        lift_with(InstDecoder::default_thumb(), insn, word)
+    }
+
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
         u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
@@ -595,6 +599,66 @@ mod tests {
 
     fn decode_one(values: &[u16]) -> Insn {
         Thumb2.decode(&halfwords(values), 0, 0x1000).expect("bytes must decode")
+    }
+
+    fn lift_one(values: &[u16]) -> crate::il::Lifted {
+        let bytes = halfwords(values);
+        Thumb2.lift(&decode_one(values), &bytes).expect("the halfwords must lift")
+    }
+
+    fn guard_of(code: &[&[u16]]) -> Option<crate::il::Guard> {
+        let lifted: Vec<_> = code.iter().map(|values| Some(lift_one(values))).collect();
+        crate::il::find_guards(&lifted).first().map(|found| found.guard)
+    }
+
+    /// Encodings from `llvm-mc --triple=thumbv7m --show-encoding`.
+    #[test]
+    fn cbz_and_cmp_with_beq_are_one_guard() {
+        use crate::il::{Cond, Reg, Value};
+        const CBZ_R0: &[u16] = &[0xb120];
+        const CMP_R0_0: &[u16] = &[0x2800];
+        const BEQ: &[u16] = &[0xd004];
+        const CBNZ_R1: &[u16] = &[0xb921];
+        let cbz = guard_of(&[CBZ_R0]).unwrap();
+        assert_eq!(guard_of(&[CMP_R0_0, BEQ]), Some(cbz));
+        assert_eq!((cbz.cond, cbz.left), (Cond::Equal, Value::Reg(Reg::General(0))));
+        assert_eq!(guard_of(&[CBNZ_R1]).unwrap().cond, Cond::NotEqual);
+    }
+
+    #[test]
+    fn a_wide_compare_and_branch_are_one_guard() {
+        use crate::il::{Cond, Reg, Value};
+        const CMP_W_R8_256: &[u16] = &[0xf5b8, 0x7f80];
+        const BHS_W: &[u16] = &[0xf080, 0x8020];
+        let guard = guard_of(&[CMP_W_R8_256, BHS_W]).unwrap();
+        assert_eq!(guard.cond, Cond::UnsignedGreaterOrEqual);
+        assert_eq!((guard.left, guard.right), (Value::Reg(Reg::General(8)), Value::Const(256)));
+    }
+
+    #[test]
+    fn an_it_block_reads_the_flags_and_ends_a_guard() {
+        const CMP_R0_0: &[u16] = &[0x2800];
+        const IT_EQ: &[u16] = &[0xbf08];
+        const BEQ: &[u16] = &[0xd004];
+        assert!(lift_one(IT_EQ).reads.contains(crate::il::Reg::Flags));
+        assert_eq!(guard_of(&[CMP_R0_0, IT_EQ, BEQ]), None);
+    }
+
+    #[test]
+    fn a_narrow_load_names_its_width() {
+        const LDRB_R0_R1_3: &[u16] = &[0x78c8];
+        let load = lift_one(LDRB_R0_R1_3);
+        assert_eq!(load.memory.and_then(|access| access.width), Some(crate::il::Width::Bits8));
+        assert!(load.writes.contains(crate::il::Reg::General(0)));
+    }
+
+    #[test]
+    fn lifting_any_halfwords_never_panics() {
+        bolero::check!().with_type::<(u16, u16)>().for_each(|&(first, second)| {
+            let bytes = halfwords(&[first, second]);
+            let Ok(insn) = Thumb2.decode(&bytes, 0, 0x1000) else { return };
+            let _ = Thumb2.lift(&insn, &bytes[..insn.bytes_len]);
+        });
     }
 
     /// A Cortex-M image, loaded at 0x08000000, that opens with `entries`
