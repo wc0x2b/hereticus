@@ -17,11 +17,16 @@ use core::ops::Range;
 
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, U8Reader};
-use yaxpeax_arm::armv8::a64::{InstDecoder, Instruction, Opcode, Operand};
+use yaxpeax_arm::armv8::a64::{
+    InstDecoder, Instruction, Opcode, Operand, SIMDSizeCode, ShiftStyle, SizeCode,
+};
 
 use super::arm32::split_mnemonic;
 use super::{Arch, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind};
+use crate::il::{
+    AccessKind, Comparison, Cond, Guard, Lifted, MemoryAccess, Reg, RegSet, Test, Value, Width,
+};
 
 /// Every A64 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
@@ -253,6 +258,15 @@ impl Arch for Aarch64 {
         POINTER_WIDTH
     }
 
+    fn lift(&self, insn: &Insn, word: &[u8]) -> Option<Lifted> {
+        if insn.kind == InsnKind::Unknown {
+            return None;
+        }
+        let mut inst = Instruction::default();
+        InstDecoder::default().decode_into(&mut inst, &mut U8Reader::new(word)).ok()?;
+        Some(lift(&inst, &insn.mnemonic))
+    }
+
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
         u64::from_le_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
@@ -279,6 +293,368 @@ fn classify(inst: &Instruction, mnemonic: &str, address: u64) -> InsnKind {
         _ if mnemonic.starts_with("br") => InsnKind::Jump { target: None },
         _ => InsnKind::Normal,
     }
+}
+
+/// The link register, which a call writes and a return reads.
+const LINK: Reg = Reg::General(30);
+
+/// What an instruction does with its first operand, and with the flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// Writes its first operand from the others, as `add` does.
+    Compute,
+    /// Reads every operand and writes none, as `str` and `br` do.
+    ReadOnly,
+    /// Loads its first operand, or its first two for a pair.
+    Load { registers: usize },
+    /// An exclusive store, which writes its status to the first operand.
+    StoreExclusive,
+    /// Reads its first operand and loads into its second, as `swp` and
+    /// `ldadd` do.
+    Atomic,
+}
+
+/// Lift one decoded A64 instruction. `mnemonic` is the one the decoder
+/// printed, with aliases such as `cmp` and `tst` resolved.
+fn lift(inst: &Instruction, mnemonic: &str) -> Lifted {
+    let operands: Vec<Operand> =
+        inst.operands.iter().copied().take_while(|operand| *operand != Operand::Nothing).collect();
+    let mut lifted = Lifted::default();
+    let mut reads = RegSet::EMPTY;
+    let mut writes = RegSet::EMPTY;
+
+    for operand in &operands {
+        address_registers(*operand, &mut reads, &mut writes);
+    }
+
+    let role = role_of(mnemonic);
+    for (index, operand) in operands.iter().enumerate() {
+        let written = match role {
+            Role::Compute => index == 0 && !is_compare(mnemonic),
+            Role::ReadOnly => false,
+            Role::Load { registers } => index < registers,
+            Role::StoreExclusive => index == 0,
+            Role::Atomic => index == 1,
+        };
+        let regs = value_registers(*operand);
+        if written {
+            regs.iter().for_each(|reg| writes.insert(reg));
+            if reads_destination(mnemonic) {
+                regs.iter().for_each(|reg| reads.insert(reg));
+            }
+        } else {
+            regs.iter().for_each(|reg| reads.insert(reg));
+        }
+    }
+
+    if reads_flags(inst.opcode, mnemonic) {
+        reads.insert(Reg::Flags);
+    }
+    if writes_flags(mnemonic) {
+        writes.insert(Reg::Flags);
+    }
+    match inst.opcode {
+        Opcode::BL => writes.insert(LINK),
+        _ if mnemonic.starts_with("blr") => writes.insert(LINK),
+        _ if mnemonic.starts_with("ret") && operands.is_empty() => reads.insert(LINK),
+        _ => {}
+    }
+
+    lifted.memory = memory_access(mnemonic, role, &operands);
+    lifted.test = test_of(inst, mnemonic, &operands);
+    lifted.reads = reads;
+    lifted.writes = writes;
+    lifted
+}
+
+fn role_of(mnemonic: &str) -> Role {
+    /// Atomic operations that load the old value into their second operand.
+    const ATOMIC: [&str; 10] =
+        ["swp", "ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax", "ldumin", "cas"];
+    if ATOMIC.iter().any(|stem| mnemonic.starts_with(stem)) {
+        return Role::Atomic;
+    }
+    if mnemonic.starts_with("ld") {
+        let pair = mnemonic.starts_with("ldp")
+            || mnemonic.starts_with("ldnp")
+            || mnemonic.starts_with("ldxp")
+            || mnemonic.starts_with("ldaxp");
+        return Role::Load { registers: if pair { 2 } else { 1 } };
+    }
+    if mnemonic.starts_with("stxr")
+        || mnemonic.starts_with("stlxr")
+        || mnemonic.starts_with("stxp")
+        || mnemonic.starts_with("stlxp")
+    {
+        return Role::StoreExclusive;
+    }
+    let reads_only = mnemonic.starts_with("st")
+        || mnemonic.starts_with("prfm")
+        || mnemonic.starts_with("prfum")
+        || mnemonic.starts_with('b')
+        || mnemonic.starts_with("ret")
+        || mnemonic.starts_with("cb")
+        || mnemonic.starts_with("tb")
+        || mnemonic.starts_with("msr")
+        || mnemonic.starts_with("fcmp")
+        || mnemonic.starts_with("fccmp")
+        || matches!(mnemonic, "ccmp" | "ccmn");
+    if reads_only && !mnemonic.starts_with("bic") && !mnemonic.starts_with("bf") {
+        Role::ReadOnly
+    } else {
+        Role::Compute
+    }
+}
+
+/// `cmp`, `cmn` and `tst` write only the flags: their first operand is the
+/// value compared, not a destination.
+fn is_compare(mnemonic: &str) -> bool {
+    matches!(mnemonic, "cmp" | "cmn" | "tst")
+}
+
+/// Instructions that keep part of their destination, so read it too.
+fn reads_destination(mnemonic: &str) -> bool {
+    matches!(mnemonic, "movk" | "bfi" | "bfxil" | "bfm" | "bfc" | "ins")
+}
+
+fn reads_flags(opcode: Opcode, mnemonic: &str) -> bool {
+    matches!(opcode, Opcode::Bcc(_))
+        || matches!(
+            mnemonic,
+            "csel"
+                | "csinc"
+                | "csinv"
+                | "csneg"
+                | "cset"
+                | "csetm"
+                | "cinc"
+                | "cinv"
+                | "cneg"
+                | "fcsel"
+                | "adc"
+                | "adcs"
+                | "sbc"
+                | "sbcs"
+                | "ngc"
+                | "ngcs"
+                | "ccmp"
+                | "ccmn"
+                | "fccmp"
+                | "fccmpe"
+        )
+}
+
+fn writes_flags(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "cmp"
+            | "cmn"
+            | "tst"
+            | "adds"
+            | "subs"
+            | "ands"
+            | "bics"
+            | "adcs"
+            | "sbcs"
+            | "negs"
+            | "ngcs"
+            | "ccmp"
+            | "ccmn"
+            | "fcmp"
+            | "fcmpe"
+            | "fccmp"
+            | "fccmpe"
+    )
+}
+
+/// The registers an operand that is a value names. A memory operand names
+/// none here: see [`address_registers`].
+fn value_registers(operand: Operand) -> RegSet {
+    let general = |number: u16| Reg::General(number as u8);
+    let vectors = |first: u16, count: u8| {
+        (0..u16::from(count)).map(move |n| Reg::Vector(((first + n) % 32) as u8))
+    };
+    match operand {
+        Operand::Register(_, 31) | Operand::RegShift(_, _, _, 31) => RegSet::EMPTY,
+        Operand::Register(_, number) | Operand::RegShift(_, _, _, number) => {
+            [general(number)].into_iter().collect()
+        }
+        Operand::RegisterOrSP(_, 31) => [Reg::Stack].into_iter().collect(),
+        Operand::RegisterOrSP(_, number) => [general(number)].into_iter().collect(),
+        Operand::RegisterPair(_, number) => {
+            [general(number), general(number + 1)].into_iter().filter(|_| number < 31).collect()
+        }
+        Operand::SIMDRegister(_, number)
+        | Operand::SIMDRegisterElements(_, number, _)
+        | Operand::SIMDRegisterElementsLane(_, number, _, _)
+        | Operand::SIMDRegisterElementsMultipleLane(_, number, _, _, _) => {
+            [Reg::Vector((number % 32) as u8)].into_iter().collect()
+        }
+        Operand::SIMDRegisterGroup(_, first, _, count)
+        | Operand::SIMDRegisterGroupLane(first, _, count, _) => vectors(first, count).collect(),
+        _ => RegSet::EMPTY,
+    }
+}
+
+/// The registers a memory operand reads to form its address, and the base
+/// it writes back.
+fn address_registers(operand: Operand, reads: &mut RegSet, writes: &mut RegSet) {
+    let base = |number: u16| if number == 31 { Reg::Stack } else { Reg::General(number as u8) };
+    let index = |number: u16| (number != 31).then_some(Reg::General(number as u8));
+    match operand {
+        Operand::RegPreIndex(number, _, write_back) => {
+            reads.insert(base(number));
+            if write_back {
+                writes.insert(base(number));
+            }
+        }
+        Operand::RegPostIndex(number, _) => {
+            reads.insert(base(number));
+            writes.insert(base(number));
+        }
+        Operand::RegPostIndexReg(number, offset) => {
+            reads.insert(base(number));
+            writes.insert(base(number));
+            index(offset).into_iter().for_each(|reg| reads.insert(reg));
+        }
+        Operand::RegRegOffset(number, offset, ..) => {
+            reads.insert(base(number));
+            index(offset).into_iter().for_each(|reg| reads.insert(reg));
+        }
+        _ => {}
+    }
+}
+
+fn is_memory(operand: &Operand) -> bool {
+    matches!(
+        operand,
+        Operand::RegPreIndex(..)
+            | Operand::RegPostIndex(..)
+            | Operand::RegPostIndexReg(..)
+            | Operand::RegRegOffset(..)
+    )
+}
+
+fn memory_access(mnemonic: &str, role: Role, operands: &[Operand]) -> Option<MemoryAccess> {
+    if !operands.iter().any(is_memory) || mnemonic.starts_with("prf") {
+        return None;
+    }
+    let kind = match role {
+        Role::Load { .. } => AccessKind::Load,
+        Role::Atomic => AccessKind::LoadStore,
+        Role::ReadOnly | Role::StoreExclusive => AccessKind::Store,
+        Role::Compute => return None,
+    };
+    Some(MemoryAccess { kind, width: access_width(mnemonic, operands) })
+}
+
+/// The width of each value an access moves: the suffix of the mnemonic
+/// where it names one, else the width of the register moved.
+fn access_width(mnemonic: &str, operands: &[Operand]) -> Option<Width> {
+    let stem = mnemonic.trim_end_matches(|c: char| c.is_ascii_digit());
+    if stem.ends_with("sw") {
+        return Some(Width::Bits32);
+    }
+    if stem.ends_with('b') {
+        return Some(Width::Bits8);
+    }
+    if stem.ends_with('h') {
+        return Some(Width::Bits16);
+    }
+    let register = match role_of(mnemonic) {
+        Role::Atomic | Role::StoreExclusive => operands.get(1),
+        _ => operands.first(),
+    };
+    match register? {
+        Operand::Register(size, _) | Operand::RegisterOrSP(size, _) => Some(width_of(*size)),
+        Operand::SIMDRegister(size, _) => Some(match size {
+            SIMDSizeCode::B => Width::Bits8,
+            SIMDSizeCode::H => Width::Bits16,
+            SIMDSizeCode::S => Width::Bits32,
+            SIMDSizeCode::D => Width::Bits64,
+            SIMDSizeCode::Q => Width::Bits128,
+        }),
+        _ => None,
+    }
+}
+
+fn width_of(size: SizeCode) -> Width {
+    match size {
+        SizeCode::W => Width::Bits32,
+        SizeCode::X => Width::Bits64,
+    }
+}
+
+/// What an operand gives as a value, at `width`.
+fn value_of(operand: Operand, width: Width) -> Value {
+    let value = match operand {
+        Operand::Register(_, 31) | Operand::RegShift(ShiftStyle::LSL, 0, _, 31) => Value::Const(0),
+        Operand::Register(_, number) | Operand::RegShift(ShiftStyle::LSL, 0, _, number) => {
+            Value::Reg(Reg::General(number as u8))
+        }
+        Operand::RegisterOrSP(_, 31) => Value::Reg(Reg::Stack),
+        Operand::RegisterOrSP(_, number) => Value::Reg(Reg::General(number as u8)),
+        Operand::Immediate(value) => Value::Const(u64::from(value)),
+        Operand::Imm64(value) => Value::Const(value),
+        Operand::Imm16(value) => Value::Const(u64::from(value)),
+        Operand::ImmShift(value, shift) => Value::Const(u64::from(value) << shift),
+        _ => Value::Other,
+    };
+    match value {
+        Value::Const(value) => Value::Const(value & width.mask()),
+        other => other,
+    }
+}
+
+/// The width of the general registers an instruction works on.
+fn operation_width(operands: &[Operand]) -> Width {
+    operands
+        .iter()
+        .find_map(|operand| match operand {
+            Operand::Register(size, _) | Operand::RegisterOrSP(size, _) => Some(width_of(*size)),
+            _ => None,
+        })
+        .unwrap_or(Width::Bits64)
+}
+
+fn test_of(inst: &Instruction, mnemonic: &str, operands: &[Operand]) -> Option<Test> {
+    let width = operation_width(operands);
+    let value = |index: usize| operands.get(index).map_or(Value::Other, |op| value_of(*op, width));
+    let guard = |cond, right| Some(Test::Guard(Guard { cond, left: value(0), right, width }));
+    match inst.opcode {
+        Opcode::Bcc(code) => return Some(Test::OnFlags(Cond::from_arm(code))),
+        Opcode::CBZ => return guard(Cond::Equal, Value::Const(0)),
+        Opcode::CBNZ => return guard(Cond::NotEqual, Value::Const(0)),
+        Opcode::TBZ | Opcode::TBNZ => {
+            let bit = match operands.get(1) {
+                Some(Operand::Imm16(bit)) => u32::from(*bit),
+                Some(Operand::Immediate(bit)) => *bit,
+                _ => return None,
+            };
+            let mask = Value::Const(1_u64.checked_shl(bit)?);
+            let cond = if inst.opcode == Opcode::TBZ { Cond::BitsClear } else { Cond::BitsSet };
+            return guard(cond, mask);
+        }
+        _ => {}
+    }
+
+    // An alias names its operands from 1: the 0th is the zero register.
+    let (left, right) = (value(1), value(2));
+    let comparison = match mnemonic {
+        "cmp" => Comparison::Subtract { left, right },
+        "tst" => Comparison::And { left, right },
+        // `cmn x, #k` sets the flags as `cmp x, #-k` does, for any `k` but
+        // zero: both compare `x` with `-k`.
+        "cmn" => match right {
+            Value::Const(constant) if constant != 0 => Comparison::Subtract {
+                left,
+                right: Value::Const(constant.wrapping_neg() & width.mask()),
+            },
+            _ => Comparison::Add { left, right },
+        },
+        _ => return None,
+    };
+    Some(Test::Compare { comparison, width })
 }
 
 /// The page an `adrp` names, or the address an `adr` does.
@@ -500,6 +876,181 @@ mod tests {
 
     fn decode_one(word: u32) -> Insn {
         Aarch64.decode(&word.to_le_bytes(), 0, 0x1000).expect("the word must decode")
+    }
+
+    /// Encodings from `llvm-mc --triple=aarch64 -mattr=+lse --show-encoding`.
+    mod words {
+        pub const CBNZ_X8: u32 = 0xb500_00e8;
+        pub const CBZ_X8: u32 = 0xb400_0068;
+        pub const CMN_X8_1: u32 = 0xb100_051f;
+        pub const B_NE: u32 = 0x5400_0121;
+        pub const CMP_X8_0: u32 = 0xf100_011f;
+        pub const CMP_W2_63: u32 = 0x7100_fc5f;
+        pub const B_HI: u32 = 0x5400_0208;
+        pub const TST_W0_4: u32 = 0x721e_001f;
+        pub const B_EQ: u32 = 0x5400_0080;
+        pub const TBZ_W0_2: u32 = 0x3610_0080;
+        pub const ADD_X0_X1_X2: u32 = 0x8b02_0020;
+        pub const LDR_X1_X2_8: u32 = 0xf940_0441;
+        pub const LDP_X29_X30_SP_POST: u32 = 0xa8c1_7bfd;
+        pub const STR_W3_X4_X5: u32 = 0xb825_6883;
+        pub const STXR_W1_X2_X3: u32 = 0xc801_7c62;
+        pub const BL: u32 = 0x9400_0040;
+        pub const BLR_X8: u32 = 0xd63f_0100;
+        pub const RET: u32 = 0xd65f_03c0;
+        pub const CSEL_X8_XZR_X8_EQ: u32 = 0x9a88_03e8;
+        pub const MOVK_X23: u32 = 0xf2e3_05d7;
+        pub const SUBS_X0_X0_1: u32 = 0xf100_0400;
+        pub const LDADD_W1_W2_X3: u32 = 0xb821_0062;
+        pub const CMP_X1_X2: u32 = 0xeb02_003f;
+    }
+
+    fn lift_one(word: u32) -> Lifted {
+        Aarch64.lift(&decode_one(word), &word.to_le_bytes()).expect("the word must lift")
+    }
+
+    fn regs(regs: &[Reg]) -> RegSet {
+        regs.iter().copied().collect()
+    }
+
+    fn x(number: u8) -> Reg {
+        Reg::General(number)
+    }
+
+    /// The first guard that `words` make, and how many words it takes.
+    fn guard_of(words: &[u32]) -> Option<(usize, Guard)> {
+        let lifted: Vec<Option<Lifted>> = words.iter().map(|&word| Some(lift_one(word))).collect();
+        let found = *crate::il::find_guards(&lifted).first()?;
+        Some((found.branch + 1 - found.compare.unwrap_or(found.branch), found.guard))
+    }
+
+    #[test]
+    fn cbnz_and_cmp_with_b_ne_are_one_guard() {
+        let (taken, fused) = guard_of(&[words::CMP_X8_0, words::B_NE]).unwrap();
+        assert_eq!(taken, 2);
+        assert_eq!(guard_of(&[words::CBNZ_X8]), Some((1, fused)));
+        assert_eq!(fused.cond, Cond::NotEqual);
+        assert_eq!(fused.left, Value::Reg(x(8)));
+        assert_eq!(fused.right, Value::Const(0));
+    }
+
+    #[test]
+    fn cbz_tests_for_zero() {
+        let (_, guard) = guard_of(&[words::CBZ_X8]).unwrap();
+        assert_eq!(guard.cond, Cond::Equal);
+        assert_eq!(guard.width, Width::Bits64);
+    }
+
+    /// The check of CVE-2024-23265: `x8 != -1`.
+    #[test]
+    fn cmn_with_one_compares_with_minus_one() {
+        let (_, guard) = guard_of(&[words::CMN_X8_1, words::B_NE]).unwrap();
+        assert_eq!(guard.cond, Cond::NotEqual);
+        assert_eq!(guard.right, Value::Const(u64::MAX));
+    }
+
+    /// The check of CVE-2025-24257: a size above 63.
+    #[test]
+    fn a_32_bit_bound_keeps_its_width() {
+        let (_, guard) = guard_of(&[words::CMP_W2_63, words::B_HI]).unwrap();
+        assert_eq!(guard.cond, Cond::UnsignedGreater);
+        assert_eq!(guard.left, Value::Reg(x(2)));
+        assert_eq!(guard.right, Value::Const(63));
+        assert_eq!(guard.width, Width::Bits32);
+    }
+
+    #[test]
+    fn tst_with_b_eq_and_tbz_are_one_guard() {
+        let (_, tst) = guard_of(&[words::TST_W0_4, words::B_EQ]).unwrap();
+        let (_, tbz) = guard_of(&[words::TBZ_W0_2]).unwrap();
+        assert_eq!(tst, tbz);
+        assert_eq!(tbz.cond, Cond::BitsClear);
+        assert_eq!(tbz.right, Value::Const(4));
+    }
+
+    #[test]
+    fn a_compare_of_two_registers_reads_both() {
+        let lifted = lift_one(words::CMP_X1_X2);
+        assert_eq!(lifted.reads, regs(&[x(1), x(2)]));
+        assert_eq!(lifted.writes, regs(&[Reg::Flags]), "the zero register is no destination");
+    }
+
+    #[test]
+    fn arithmetic_that_sets_flags_is_no_compare() {
+        let lifted = lift_one(words::SUBS_X0_X0_1);
+        assert_eq!(lifted.writes, regs(&[x(0), Reg::Flags]));
+        assert_eq!(lifted.test, None, "a loop count is work, not a check");
+    }
+
+    #[test]
+    fn computing_writes_the_first_operand() {
+        let lifted = lift_one(words::ADD_X0_X1_X2);
+        assert_eq!(lifted.writes, regs(&[x(0)]));
+        assert_eq!(lifted.reads, regs(&[x(1), x(2)]));
+        assert_eq!(lifted.memory, None);
+    }
+
+    #[test]
+    fn loads_and_stores_name_their_registers_and_width() {
+        let load = lift_one(words::LDR_X1_X2_8);
+        assert_eq!((load.reads, load.writes), (regs(&[x(2)]), regs(&[x(1)])));
+        assert_eq!(
+            load.memory,
+            Some(MemoryAccess { kind: AccessKind::Load, width: Some(Width::Bits64) })
+        );
+
+        let pair = lift_one(words::LDP_X29_X30_SP_POST);
+        assert_eq!(pair.writes, regs(&[x(29), x(30), Reg::Stack]), "the base is written back");
+        assert_eq!(pair.reads, regs(&[Reg::Stack]));
+
+        let store = lift_one(words::STR_W3_X4_X5);
+        assert_eq!(store.reads, regs(&[x(3), x(4), x(5)]));
+        assert!(store.writes.is_empty());
+        assert_eq!(
+            store.memory,
+            Some(MemoryAccess { kind: AccessKind::Store, width: Some(Width::Bits32) })
+        );
+
+        let exclusive = lift_one(words::STXR_W1_X2_X3);
+        assert_eq!(exclusive.writes, regs(&[x(1)]), "the status");
+        assert_eq!(exclusive.reads, regs(&[x(2), x(3)]));
+
+        let atomic = lift_one(words::LDADD_W1_W2_X3);
+        assert_eq!((atomic.reads, atomic.writes), (regs(&[x(1), x(3)]), regs(&[x(2)])));
+        assert_eq!(atomic.memory.map(|access| access.kind), Some(AccessKind::LoadStore));
+    }
+
+    #[test]
+    fn calls_and_returns_use_the_link_register() {
+        assert_eq!(lift_one(words::BL).writes, regs(&[x(30)]));
+        let indirect = lift_one(words::BLR_X8);
+        assert_eq!((indirect.reads, indirect.writes), (regs(&[x(8)]), regs(&[x(30)])));
+        assert!(lift_one(words::RET).reads.contains(x(30)));
+    }
+
+    #[test]
+    fn a_select_reads_the_flags_and_a_movk_its_destination() {
+        let select = lift_one(words::CSEL_X8_XZR_X8_EQ);
+        assert_eq!(select.reads, regs(&[x(8), Reg::Flags]));
+        assert_eq!(select.writes, regs(&[x(8)]));
+        let movk = lift_one(words::MOVK_X23);
+        assert_eq!((movk.reads, movk.writes), (regs(&[x(23)]), regs(&[x(23)])));
+    }
+
+    #[test]
+    fn lifting_any_word_never_panics() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            let bytes = word.to_le_bytes();
+            let insn = Aarch64.decode(&bytes, 0, 0x1000).expect("every word decodes or is unknown");
+            if let Some(lifted) = Aarch64.lift(&insn, &bytes)
+                && let Some(Test::Guard(_) | Test::OnFlags(_)) = lifted.test
+            {
+                assert!(
+                    matches!(insn.kind, InsnKind::Branch { .. }),
+                    "{insn}: a test that branches"
+                );
+            }
+        });
     }
 
     #[test]
