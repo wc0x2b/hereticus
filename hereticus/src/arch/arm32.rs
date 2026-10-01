@@ -42,6 +42,11 @@ const ZERO_BYTES: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 /// so real code reaches this path.
 pub(super) const UNKNOWN_MNEMONIC: &str = "(unknown)";
 
+/// The mnemonic of a NEON data-processing instruction, which the decoder
+/// cannot read either. It stays opaque, as an unreadable word does, but the
+/// name says that it is code. See [`super::Arch::is_unread_extension`].
+pub(super) const NEON_MNEMONIC: &str = "(neon)";
+
 /// Register number of the program counter.
 const REG_PC: u16 = 15;
 /// Register number of the link register.
@@ -92,7 +97,7 @@ impl Arch for Arm32 {
             return Ok(Insn {
                 address: insn_address,
                 bytes_len: INSN_WIDTH,
-                mnemonic: UNKNOWN_MNEMONIC.to_string(),
+                mnemonic: unread_mnemonic(word).to_string(),
                 operands: format!("{word:#010x}"),
                 kind: InsnKind::Unknown,
             });
@@ -360,6 +365,10 @@ impl Arch for Arm32 {
     /// `ldr rX, [pc, imm]` loads one pool word, and `ldrd` and `vldr` two.
     fn literal_pool_words(&self, insns: &[Insn]) -> Vec<u64> {
         pool_words_loaded(insns, PcModel::A32)
+    }
+
+    fn is_unread_extension(&self, insn: &Insn) -> bool {
+        insn.mnemonic == NEON_MNEMONIC
     }
     /// The table GCC emits for a `switch` in PIC code:
     ///
@@ -702,10 +711,9 @@ fn parse_number(text: &str) -> Option<i64> {
 pub(super) fn decode_fallback(word: u32) -> Option<(String, String)> {
     const CONDITIONS: [&str; 15] =
         ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", ""];
-    const REGISTERS: [&str; 16] = [
-        "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "sl", "fp", "ip", "sp", "lr",
-        "pc",
-    ];
+    if word >> 24 == NEON_LOAD_STORE {
+        return decode_neon_load_store(word);
+    }
 
     let condition = *CONDITIONS.get((word >> 28) as usize)?;
 
@@ -725,7 +733,7 @@ pub(super) fn decode_fallback(word: u32) -> Option<(String, String)> {
         } else {
             format!("s{}", vd << 1 | d)
         };
-        let base = REGISTERS[(word >> 16 & 0xf) as usize];
+        let base = ARM_REGISTERS[(word >> 16 & 0xf) as usize];
         let offset = (word & 0xff) * 4;
         let reference = match (offset, up) {
             (0, _) => format!("[{base}]"),
@@ -736,6 +744,106 @@ pub(super) fn decode_fallback(word: u32) -> Option<(String, String)> {
         return Some((format!("{operation}{condition}"), format!("{register}, {reference}")));
     }
     None
+}
+
+/// The names of the general registers, as the decoder prints them.
+const ARM_REGISTERS: [&str; 16] = [
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "sl", "fp", "ip", "sp", "lr", "pc",
+];
+
+/// The top byte of an A32 NEON element or structure load or store.
+pub(super) const NEON_LOAD_STORE: u32 = 0xf4;
+
+/// The name for an A32 `word` the decoder cannot read: [`NEON_MNEMONIC`]
+/// for NEON data processing, `1111 001U`, else [`UNKNOWN_MNEMONIC`].
+pub(super) fn unread_mnemonic(word: u32) -> &'static str {
+    if word >> 25 == 0b111_1001 { NEON_MNEMONIC } else { UNKNOWN_MNEMONIC }
+}
+
+/// Read an A32 NEON element or structure load or store:
+///
+/// ```text
+/// 1111 0100 A D L 0 Rn Vd type size align Rm
+/// ```
+///
+/// `A` clear moves whole structures, set moves one lane or all lanes. `Rm`
+/// says how the base moves after: 15 not at all, 13 by the size moved, any
+/// other by that register.
+fn decode_neon_load_store(word: u32) -> Option<(String, String)> {
+    let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
+    let first = field(22, 1) << 4 | field(12, 4);
+    let (structures, registers, spacing, size, lanes) = if field(23, 1) == 0 {
+        let (structures, registers, spacing) = match field(8, 4) {
+            0b0111 => (1, 1, 1),
+            0b1010 => (1, 2, 1),
+            0b0110 => (1, 3, 1),
+            0b0010 => (1, 4, 1),
+            0b1000 => (2, 2, 1),
+            0b1001 => (2, 2, 2),
+            0b0011 => (2, 4, 1),
+            0b0100 => (3, 3, 1),
+            0b0101 => (3, 3, 2),
+            0b0000 => (4, 4, 1),
+            0b0001 => (4, 4, 2),
+            _ => return None,
+        };
+        (structures, registers, spacing, field(6, 2), Lanes::Whole)
+    } else {
+        let structures = field(8, 2) + 1;
+        match field(10, 2) {
+            // To all lanes: `T` doubles the count of a `vld1`, and spaces
+            // the others.
+            0b11 => {
+                let doubled = field(5, 1) == 1;
+                let (registers, spacing) = match (structures, doubled) {
+                    (1, true) => (2, 1),
+                    (_, true) => (structures, 2),
+                    (_, false) => (structures, 1),
+                };
+                (structures, registers, spacing, field(6, 2), Lanes::All)
+            }
+            size => {
+                let index_align = field(4, 4);
+                let spacing = match size {
+                    1 if index_align & 0b10 != 0 => 2,
+                    2 if index_align & 0b100 != 0 => 2,
+                    _ => 1,
+                };
+                let lane = index_align >> (size + 1);
+                (structures, structures, spacing, size, Lanes::One(lane))
+            }
+        }
+    };
+
+    let lane = match lanes {
+        Lanes::Whole => String::new(),
+        Lanes::All => "[]".to_string(),
+        Lanes::One(lane) => format!("[{lane}]"),
+    };
+    let list: Vec<String> =
+        (0..registers).map(|index| format!("d{}{lane}", first + index * spacing)).collect();
+    let base = format!("[{}]", ARM_REGISTERS[field(16, 4) as usize]);
+    let address = match field(0, 4) {
+        0b1111 => base,
+        0b1101 => format!("{base}!"),
+        index => format!("{base}, {}", ARM_REGISTERS[index as usize]),
+    };
+    let operation = if field(21, 1) == 1 { "vld" } else { "vst" };
+    Some((
+        format!("{operation}{structures}.{}", 8 << size),
+        format!("{{{}}}, {address}", list.join(", ")),
+    ))
+}
+
+/// Which lanes of its registers a NEON load or store moves.
+#[derive(Clone, Copy)]
+enum Lanes {
+    /// Whole registers.
+    Whole,
+    /// One element, copied to every lane.
+    All,
+    /// The one lane given.
+    One(u32),
 }
 
 /// Read `rA, rB`, the two sources of a three-register operation.
@@ -1167,6 +1275,50 @@ mod tests {
     /// Decode one instruction from raw bytes at address 0.
     fn decode_one(bytes: [u8; 4]) -> Insn {
         Arm32.decode(&bytes, 0, 0).expect("bytes must decode")
+    }
+
+    /// The text of the A32 instruction `word`.
+    fn text_of(word: u32) -> (String, String) {
+        let insn = decode_one(word.to_le_bytes());
+        (insn.mnemonic, insn.operands)
+    }
+
+    #[test]
+    fn neon_loads_and_stores_of_whole_registers_read() {
+        let cases = [
+            (0xf420_070f, "vld1.8", "{d0}, [r0]"),
+            (0xf441_0a8d, "vst1.32", "{d16, d17}, [r1]!"),
+            (0xf422_0142, "vld4.16", "{d0, d2, d4, d6}, [r2], r2"),
+        ];
+        for (word, mnemonic, operands) in cases {
+            assert_eq!(text_of(word), (mnemonic.into(), operands.into()), "{word:#010x}");
+            assert_eq!(decode_one(word.to_le_bytes()).kind, InsnKind::Normal);
+        }
+    }
+
+    #[test]
+    fn neon_loads_of_lanes_read() {
+        assert_eq!(text_of(0xf4a1_0c8f), ("vld1.32".into(), "{d0[]}, [r1]".into()), "all lanes");
+        assert_eq!(
+            text_of(0xf4a0_0762),
+            ("vld4.16".into(), "{d0[1], d2[1], d4[1], d6[1]}, [r0], r2".into()),
+            "one lane, every second register"
+        );
+    }
+
+    #[test]
+    fn an_undefined_neon_load_stays_unknown() {
+        let insn = decode_one(0xf420_0b0fu32.to_le_bytes());
+        assert_eq!((insn.mnemonic.as_str(), insn.kind), (UNKNOWN_MNEMONIC, InsnKind::Unknown));
+        assert!(!Arm32.is_unread_extension(&insn));
+    }
+
+    #[test]
+    fn neon_data_processing_stays_opaque_but_is_code() {
+        let insn = decode_one(0xf260_0680u32.to_le_bytes());
+        assert_eq!((insn.mnemonic.as_str(), insn.kind), (NEON_MNEMONIC, InsnKind::Unknown));
+        assert_eq!(insn.operands, "0xf2600680", "the word keeps an edit visible");
+        assert!(Arm32.is_unread_extension(&insn));
     }
 
     #[test]

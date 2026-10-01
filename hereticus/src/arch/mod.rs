@@ -158,6 +158,15 @@ pub trait Arch {
         Vec::new()
     }
 
+    /// Whether `insn` is code of an extension the decoder does not read, as
+    /// NEON on ARM, rather than bytes that are no instruction at all.
+    ///
+    /// Both stay opaque. Only a scan that tells code from data asks. Defaults
+    /// to `false`.
+    fn is_unread_extension(&self, _insn: &Insn) -> bool {
+        false
+    }
+
     /// Whether this architecture keeps data among its instructions.
     ///
     /// Where it does not, every word between the end of one function and the

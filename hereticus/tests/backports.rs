@@ -121,17 +121,9 @@ enum Reading {
 /// line with the reason. A test fails if any other appears, and also if one
 /// of these stops appearing, so the list stays true.
 ///
-/// All are `XMLDocument::~XMLDocument` of tinyxml2 read as a raw Thumb-2
-/// image. The scan cuts it at an exception landing pad after its return, and
-/// the tail, with the pool after it, reads as a changed constant. Its NEON
-/// words do not decode, so the rule that keeps a pool with its loads does
-/// not apply. See `TODO.md`.
-const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
-    (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml211XMLDocumentD1Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml211XMLDocumentD2Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml211XMLDocumentD1Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml211XMLDocumentD2Ev"),
-];
+/// The list is empty: every false report it held is fixed. It stays, so a
+/// new one names itself.
+const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[];
 
 fn backports() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/backports")
