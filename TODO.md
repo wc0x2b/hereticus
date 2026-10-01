@@ -7,6 +7,20 @@ and v2 headers and the lzma-loader to reach a stub and a kernel. A user has
 to do the same by hand before the tool can read a vendor image. Read these
 containers directly, and add the formats still missing, such as AVM EVA.
 
+## Read the pointers of an arm64e Mach-O
+
+An arm64e binary stores each pointer in its data as a chained fixup, with
+the pointer authentication bits in its top bits. A pointer to a function
+or a text thus does not read as an address, and a changed text that only a
+pointer reaches is not reported. Decode `LC_DYLD_CHAINED_FIXUPS`, which the
+`object` crate parses, and give the loaded memory the bound addresses.
+
+## Read the dyld shared cache
+
+iOS and macOS keep most of their libraries only in the dyld shared cache.
+`object` reads one image of a cache, but its calls to other images go
+through stubs that the cache builder has bound or removed.
+
 ## Cache the fixtures in CI
 
 The tests now download about 150 MB of OpenWrt images and build libraries

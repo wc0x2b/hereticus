@@ -128,7 +128,9 @@ pub struct Function {
 pub enum FoundBy {
     /// The symbol table named every function.
     Symbols,
-    /// The binary is stripped, so the functions were recovered from the code.
+    /// The binary is stripped, so the functions were recovered from the code,
+    /// or from what the linker left, as the `LC_FUNCTION_STARTS` of Mach-O.
+    /// Only the names of what the binary exports are left.
     Scanning,
 }
 
@@ -166,11 +168,25 @@ impl Binary {
     /// binary has none, so the functions are recovered from the code instead.
     /// See [`crate::scan`] for how, and for what that costs in accuracy.
     pub fn parse(data: &[u8]) -> Result<Self, ObjError> {
+        let data = crate::macho::aarch64_slice(data);
         let file = object::File::parse(data)?;
         let isa = match Isa::from_object(file.architecture(), file.is_little_endian())? {
             Isa::Arm32 if holds_thumb(&file) => Isa::Thumb2,
             isa => isa,
         };
+
+        if let object::File::MachO64(macho) = &file
+            && let Some((functions, found_by)) = crate::macho::functions(macho)
+        {
+            return Ok(Self {
+                isa,
+                functions,
+                found_by,
+                addresses: address_space(&file),
+                links: Links::of_object(&file),
+                other_set: BTreeSet::new(),
+            });
+        }
 
         let mut functions = Vec::new();
         let mut other_set = BTreeSet::new();
