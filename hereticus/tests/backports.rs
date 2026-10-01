@@ -121,35 +121,16 @@ enum Reading {
 /// line with the reason. A test fails if any other appears, and also if one
 /// of these stops appearing, so the list stays true.
 ///
-/// All are tinyxml2 read as raw Thumb-2 images. The scan cuts each of these
-/// functions in two, and the tail, with the pool after it, reads as a
-/// changed constant. See `TODO.md`.
+/// All are `XMLDocument::~XMLDocument` of tinyxml2 read as a raw Thumb-2
+/// image. The scan cuts it at an exception landing pad after its return, and
+/// the tail, with the pool after it, reads as a changed constant. Its NEON
+/// words do not decode, so the rule that keeps a pool with its loads does
+/// not apply. See `TODO.md`.
 const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
-    (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml210XMLElementD1Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml210XMLElementD2Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml211XMLDocument8SaveFileEP8_IO_FILEb"),
     (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml211XMLDocumentD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml211XMLDocumentD2Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZNK8tinyxml211XMLDocument5PrintEPNS_10XMLPrinterE"),
-    (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml210XMLElementD1Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml210XMLElementD2Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml211XMLDocument8SaveFileEP8_IO_FILEb"),
-    (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml211XMLDocumentD1Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml211XMLDocumentD2Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZNK8tinyxml211XMLDocument5PrintEPNS_10XMLPrinterE"),
-    (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml210XMLElementD1Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml210XMLElementD2Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml211XMLDocument8SaveFileEP8_IO_FILEb"),
     (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml211XMLDocumentD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml211XMLDocumentD2Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZNK8tinyxml211XMLDocument5PrintEPNS_10XMLPrinterE"),
-    (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml210XMLElementD1Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml210XMLElementD2Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml210XMLPrinterC1EP8_IO_FILEbi"),
-    (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml210XMLPrinterC2EP8_IO_FILEbi"),
-    (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml211XMLDocumentD1Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml211XMLDocumentD2Ev"),
-    (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZNK8tinyxml211XMLDocument5PrintEPNS_10XMLPrinterE"),
 ];
 
 fn backports() -> PathBuf {

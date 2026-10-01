@@ -784,7 +784,13 @@ impl PcModel {
 
 /// The addresses of the pool words `insns` load, where `pc` reads as `pc` says.
 pub(super) fn pool_words_loaded(insns: &[Insn], pc: PcModel) -> Vec<u64> {
-    let mut words = Vec::new();
+    pool_loads(insns, pc).into_iter().map(|(_, word)| word).collect()
+}
+
+/// Each instruction of `insns` that loads from a literal pool, as its
+/// address and the address of a word it loads.
+pub(super) fn pool_loads(insns: &[Insn], pc: PcModel) -> Vec<(u64, u64)> {
+    let mut loads = Vec::new();
     for insn in insns {
         let operation = Arm32.normalize_operation(&insn.mnemonic);
         let count = match operation.as_str() {
@@ -799,9 +805,11 @@ pub(super) fn pool_words_loaded(insns: &[Insn], pc: PcModel) -> Vec<u64> {
             continue;
         };
         let pool = pc.of_literal_load(insn.address).wrapping_add(offset as u64);
-        words.extend((0..count).map(|word| pool.wrapping_add(word * WORD_WIDTH as u64)));
+        loads.extend(
+            (0..count).map(|word| (insn.address, pool.wrapping_add(word * WORD_WIDTH as u64))),
+        );
     }
-    words
+    loads
 }
 
 /// What reading a function for its pool words found.
