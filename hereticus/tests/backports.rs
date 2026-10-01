@@ -121,103 +121,28 @@ enum Reading {
 /// line with the reason. A test fails if any other appears, and also if one
 /// of these stops appearing, so the list stays true.
 ///
-/// All are raw Thumb-2 images. A raw image holds no relocations, so a function that only a vtable or a table of callbacks points at, as
-/// most of tinyxml2's are, has no start the scan can see when no prologue
-/// opens it. It joins the tail of the function before, with that function's
-/// pool, and the pool reads as a changed constant. And two range extension
-/// thunks of LLD that reach the same distance pair crossed, as nothing names
-/// the PLT stubs they reach. See `TODO.md`.
+/// All are tinyxml2 read as raw Thumb-2 images. The scan cuts each of these
+/// functions in two, and the tail, with the pool after it, reads as a
+/// changed constant. See `TODO.md`.
 const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
-    (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_pushinteger"),
-    (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_pushlstring"),
-    (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_rawgeti"),
-    (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_rawset"),
-    (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_rawseti"),
-    (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_settop"),
-    (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_lua_tolstring"),
-    (Reading::Raw, "lua", "thumb", "O1", "__ThumbV7PILongThunk_strcat"),
-    (Reading::Raw, "lua", "thumb", "O3", "__ThumbV7PILongThunk_lua_error"),
-    (Reading::Raw, "lua", "thumb", "O3", "__ThumbV7PILongThunk_lua_lessthan"),
-    (Reading::Raw, "lua", "thumb", "O3", "__ThumbV7PILongThunk_lua_pushinteger"),
-    (Reading::Raw, "lua", "thumb", "O3", "__ThumbV7PILongThunk_lua_pushlstring"),
-    (Reading::Raw, "lua", "thumb", "O3", "__ThumbV7PILongThunk_lua_pushvalue"),
-    (Reading::Raw, "lua", "thumb", "O3", "__ThumbV7PILongThunk_lua_rawgeti"),
-    (Reading::Raw, "lua", "thumb", "O3", "__ThumbV7PILongThunk_lua_rawset"),
-    (Reading::Raw, "lua", "thumb", "O3", "__ThumbV7PILongThunk_lua_settop"),
-    (Reading::Raw, "lua", "thumb", "O3", "__ThumbV7PILongThunk_strcat"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_luaL_addlstring"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_luaL_addvalue"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_luaL_checknumber"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_lua_call"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_lua_pushcclosure"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_lua_pushinteger"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_lua_rawgeti"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_lua_rawset"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_lua_setfield"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_lua_settop"),
-    (Reading::Raw, "lua", "thumb", "Os", "__ThumbV7PILongThunk_strcat"),
     (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml210XMLElementD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml210XMLElementD2Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml211XMLDocument8SaveFileEP8_IO_FILEb"),
     (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml211XMLDocumentD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZN8tinyxml211XMLDocumentD2Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O1", "_ZNK8tinyxml211XMLDocument5PrintEPNS_10XMLPrinterE"),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "O1",
-        "__ThumbV7PILongThunk__ZN8tinyxml211XMLDocument10NewCommentEPKc",
-    ),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "O1",
-        "__ThumbV7PILongThunk__ZN8tinyxml211XMLDocument10NewUnknownEPKc",
-    ),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "O1",
-        "__ThumbV7PILongThunk__ZN8tinyxml211XMLDocument14NewDeclarationEPKc",
-    ),
     (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml210XMLElementD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml210XMLElementD2Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml211XMLDocument8SaveFileEP8_IO_FILEb"),
     (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml211XMLDocumentD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZN8tinyxml211XMLDocumentD2Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O2", "_ZNK8tinyxml211XMLDocument5PrintEPNS_10XMLPrinterE"),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "O2",
-        "__ThumbV7PILongThunk__ZN8tinyxml211XMLDocument10NewCommentEPKc",
-    ),
-    (Reading::Raw, "tinyxml2", "thumb", "O2", "__ThumbV7PILongThunk__ZdlPvj"),
     (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml210XMLElementD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml210XMLElementD2Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml211XMLDocument8SaveFileEP8_IO_FILEb"),
     (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml211XMLDocumentD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZN8tinyxml211XMLDocumentD2Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "O3", "_ZNK8tinyxml211XMLDocument5PrintEPNS_10XMLPrinterE"),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "O3",
-        "__ThumbV7PILongThunk__ZN8tinyxml211XMLDocument10NewCommentEPKc",
-    ),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "O3",
-        "__ThumbV7PILongThunk__ZN8tinyxml211XMLDocument14NewDeclarationEPKc",
-    ),
-    (Reading::Raw, "tinyxml2", "thumb", "O3", "__ThumbV7PILongThunk__ZdlPvj"),
     (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml210XMLElementD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml210XMLElementD2Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml210XMLPrinterC1EP8_IO_FILEbi"),
@@ -225,34 +150,6 @@ const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
     (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml211XMLDocumentD1Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZN8tinyxml211XMLDocumentD2Ev"),
     (Reading::Raw, "tinyxml2", "thumb", "Os", "_ZNK8tinyxml211XMLDocument5PrintEPNS_10XMLPrinterE"),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "Os",
-        "__ThumbV7PILongThunk__ZN8tinyxml211XMLDocument10NewCommentEPKc",
-    ),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "Os",
-        "__ThumbV7PILongThunk__ZN8tinyxml211XMLDocument14NewDeclarationEPKc",
-    ),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "Os",
-        "__ThumbV7PILongThunk__ZN8tinyxml27XMLNode14InsertEndChildEPS0_",
-    ),
-    (
-        Reading::Raw,
-        "tinyxml2",
-        "thumb",
-        "Os",
-        "__ThumbV7PILongThunk__ZN8tinyxml27XMLNode6UnlinkEPS0_",
-    ),
 ];
 
 fn backports() -> PathBuf {
