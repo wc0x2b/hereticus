@@ -182,4 +182,54 @@ else
     echo "fixtures: no ld.lld, skipping the vector table" >&2
 fi
 
+# Mach-O dylibs for AArch64, as macOS and iOS ship them. arm64e is the ABI
+# Apple's own binaries use. Each dylib is also stripped of its local symbols,
+# as a shipped one is, so `LC_FUNCTION_STARTS` and the exported names are
+# all that is left. The imports stay undefined, so each call to one goes
+# through a stub.
+if command -v ld64.lld >/dev/null 2>&1 && command -v llvm-lipo >/dev/null 2>&1; then
+    macho="$build/macho"
+    mkdir -p "$macho"
+    link_dylib() {
+        local arch="$1"
+        shift
+        ld64.lld -dylib -arch "$arch" -platform_version macos 13.0 13.0 \
+            -undefined dynamic_lookup "$@"
+    }
+    build_dylib() {
+        local arch="$1" source="$2"
+        local name="$arch-$(basename "$source" .c)"
+        clang --target="$arch-apple-macos13" "${common_flags[@]}" \
+            -ffreestanding -c -O2 "$source" -o "$macho/$name.o"
+        link_dylib "$arch" "$macho/$name.o" -o "$macho/$name.dylib"
+        llvm-strip -x "$macho/$name.dylib" -o "$macho/$name-stripped.dylib"
+    }
+    for arch in arm64 arm64e; do
+        for source in "$src"/basic.c "$src"/basic_v2.c "$src"/firmware.c \
+            "$src"/firmware_v2.c "$here"/macho/*.c; do
+            build_dylib "$arch" "$source"
+        done
+    done
+
+    # With no function starts, only the symbol table bounds the functions,
+    # and a stripped copy has to be scanned.
+    link_dylib arm64 -no_function_starts "$macho/arm64-callee.o" \
+        -o "$macho/arm64-callee-nostarts.dylib"
+    llvm-strip -x "$macho/arm64-callee-nostarts.dylib" \
+        -o "$macho/arm64-callee-nostarts-stripped.dylib"
+
+    # Universal binaries, as macOS ships most of its own: one with an
+    # AArch64 slice, and one without.
+    build_dylib x86_64 "$src/firmware.c"
+    # No decoder reads x86-64, and the tests read every object they find.
+    rm "$macho/x86_64-firmware.o"
+    llvm-lipo -create "$macho/x86_64-firmware.dylib" "$macho/arm64e-firmware.dylib" \
+        -output "$macho/universal-firmware.dylib"
+    llvm-lipo -create "$macho/x86_64-firmware.dylib" \
+        -output "$macho/universal-x86_64-firmware.dylib"
+    echo "fixtures: Mach-O dylibs built in $macho"
+else
+    echo "fixtures: no ld64.lld or llvm-lipo, skipping the Mach-O dylibs" >&2
+fi
+
 echo "fixtures: built $(find "$build" -name '*.o' -o -name '*.bin' | wc -l) files in $build"

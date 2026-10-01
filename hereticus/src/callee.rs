@@ -15,6 +15,9 @@
 //!   its own library exports, through a stub that jumps through a slot of the
 //!   global offset table. A `R_ARM_JUMP_SLOT` relocation names that slot, and
 //!   it survives stripping.
+//! * **A Mach-O stub.** A call to another image reaches a stub in `__stubs`
+//!   or `__auth_stubs`, and the indirect symbol table names the symbol of
+//!   each stub and of each pointer slot. It survives stripping.
 //! * **A slot of the global offset table.** PIC code on MIPS loads the callee
 //!   from the slot itself. The dynamic symbol table names the global slots in
 //!   order, from `DT_MIPS_GOTSYM`, and a local slot holds the callee's address.
@@ -41,6 +44,8 @@ pub struct Links {
     memory: Vec<(u64, Vec<u8>)>,
     /// The symbol each named slot of the global offset table holds.
     slots: BTreeMap<u64, String>,
+    /// The symbol each Mach-O stub stands for, by the address of the stub.
+    stubs: BTreeMap<u64, String>,
     /// The symbol a relocation at a call names, by the address of the call.
     sites: BTreeMap<u64, String>,
     /// Where each section of read-only data starts, whose first string
@@ -89,6 +94,12 @@ impl Links {
 
         let mut slots = jump_slot_names(file);
         slots.extend(mips_global_slot_names(file));
+        let mut stubs = BTreeMap::new();
+        if let object::File::MachO64(macho) = file {
+            let (macho_stubs, macho_slots) = crate::macho::indirect_names(macho);
+            stubs = macho_stubs;
+            slots.extend(macho_slots);
+        }
         let read_only_starts = file
             .sections()
             .filter(|section| {
@@ -97,13 +108,19 @@ impl Links {
             .map(|section| section.address())
             .filter(|&address| address != 0)
             .collect();
-        Self { memory, slots, sites: BTreeMap::new(), read_only_starts }
+        Self { memory, slots, stubs, sites: BTreeMap::new(), read_only_starts }
     }
 
     /// Links from loaded bytes and named slots, for a test to build.
     #[cfg(test)]
     pub(crate) fn of_parts(memory: Vec<(u64, Vec<u8>)>, slots: BTreeMap<u64, String>) -> Self {
-        Self { memory, slots, sites: BTreeMap::new(), read_only_starts: BTreeSet::new() }
+        Self {
+            memory,
+            slots,
+            stubs: BTreeMap::new(),
+            sites: BTreeMap::new(),
+            read_only_starts: BTreeSet::new(),
+        }
     }
 
     /// The loaded bytes, each section at its address, as [`Memory`] reads
@@ -222,6 +239,9 @@ pub fn callees_in(
 fn resolve(arch: &dyn Arch, links: &Links, functions: &[Function], target: CallTarget) -> Callee {
     match target {
         CallTarget::Address(address) => {
+            if let Some(name) = links.stubs.get(&address) {
+                return Callee::Named(name.clone());
+            }
             let stub = links.bytes_at(address).and_then(|code| arch.stub_slot(code, address));
             // A stub's slot holds the address of the PLT header until the
             // dynamic linker binds it, the same for every callee. So where
@@ -432,6 +452,7 @@ mod tests {
         let links = Links {
             memory: vec![(0x1dd60, stub), (0x3ea38, 0x20_u32.to_le_bytes().to_vec())],
             slots: BTreeMap::from([(0x3ea34, "_ZN8tinyxml27StrPair5ResetEv".to_string())]),
+            stubs: BTreeMap::new(),
             sites: BTreeMap::new(),
             read_only_starts: BTreeSet::new(),
         };

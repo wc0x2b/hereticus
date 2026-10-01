@@ -8,6 +8,7 @@
 pub mod address;
 pub mod arch;
 pub mod callee;
+mod macho;
 pub mod matching;
 pub mod norm;
 pub mod obj;
