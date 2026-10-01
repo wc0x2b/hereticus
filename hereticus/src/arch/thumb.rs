@@ -25,8 +25,9 @@ use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
 use super::arm32::{
-    Arm32, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION, classify,
-    decode_fallback, parse_hex, pool_loads, pool_words_loaded, split_mnemonic, track_pool_words,
+    Arm32, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION,
+    call_targets_through_thunks, classify, decode_fallback, is_long_thunk, parse_hex, pool_loads,
+    pool_words_loaded, split_mnemonic, track_pool_words,
 };
 use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind};
@@ -113,6 +114,14 @@ impl Arch for Thumb2 {
         // compare alike, as A32 names them. A condition can follow it, as in
         // `b.wne`.
         let mnemonic = mnemonic.replace(".w", "").replace(".n", "");
+        let operands = match *bytes {
+            [low, high, second_low, second_high] => wide_move_operands(
+                u16::from_le_bytes([low, high]),
+                u16::from_le_bytes([second_low, second_high]),
+            )
+            .unwrap_or(operands),
+            _ => operands,
+        };
         let target = branch_target(&inst, insn_address, width);
         let kind = match inst.opcode {
             Opcode::CBZ | Opcode::CBNZ => InsnKind::Branch { target },
@@ -168,7 +177,14 @@ impl Arch for Thumb2 {
         body: &[Insn],
         space: &AddressSpace,
     ) -> Vec<ConstantKind> {
-        track_pool_words(code, body, space, PcModel::T32).kinds
+        match split_at_switch(code, body) {
+            Some((offset, index)) => {
+                let mut kinds = track_pool_words(code, &body[..index], space, PcModel::T32).kinds;
+                kinds.extend(Arm32.constant_kinds(&code[offset..], &body[index..], space));
+                kinds
+            }
+            None => track_pool_words(code, body, space, PcModel::T32).kinds,
+        }
     }
 
     fn data_addresses(
@@ -176,9 +192,22 @@ impl Arch for Thumb2 {
         code: &[u8],
         body: &[Insn],
         space: &AddressSpace,
-        _memory: &Memory<'_>,
+        memory: &Memory<'_>,
     ) -> Vec<u64> {
-        track_pool_words(code, body, space, PcModel::T32).addresses
+        match split_at_switch(code, body) {
+            Some((offset, index)) => {
+                let mut addresses =
+                    track_pool_words(code, &body[..index], space, PcModel::T32).addresses;
+                addresses.extend(Arm32.data_addresses(
+                    &code[offset..],
+                    &body[index..],
+                    space,
+                    memory,
+                ));
+                addresses
+            }
+            None => track_pool_words(code, body, space, PcModel::T32).addresses,
+        }
     }
 
     fn literal_pool_words(&self, insns: &[Insn]) -> Vec<u64> {
@@ -207,20 +236,7 @@ impl Arch for Thumb2 {
     }
 
     fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<super::CallTarget>)> {
-        insns
-            .iter()
-            .enumerate()
-            .filter_map(|(index, insn)| match insn.kind {
-                InsnKind::Call { target } => Some((index, target.map(super::CallTarget::Address))),
-                InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
-                    Some((index, Some(super::CallTarget::Address(target))))
-                }
-                // A range extension thunk jumps to where it formed.
-                InsnKind::Jump { target: None } if index >= 3 => thunk_target(&insns[index - 3..])
-                    .map(|target| (index, Some(super::CallTarget::Address(target)))),
-                _ => None,
-            })
-            .collect()
+        call_targets_through_thunks(insns, PcModel::T32)
     }
 
     /// A T32 library calls through A32 stubs, as an A32 one does. GNU `ld`
@@ -239,27 +255,19 @@ impl Arch for Thumb2 {
         Arm32.is_prologue(insn)
     }
 
-    /// LLD's range extension thunk is a function by itself:
-    ///
-    /// ```text
-    /// movw ip, lo
-    /// movt ip, hi
-    /// add  ip, pc
-    /// bx   ip
-    /// ```
-    ///
-    /// A thunk that nothing in this build calls still starts there, and a
-    /// run of them otherwise reads as one function.
+    /// See [`is_long_thunk`].
     fn is_function_entry(&self, body: &[Insn]) -> bool {
-        let [movw, movt, add, bx, ..] = body else { return false };
-        movw.mnemonic == "mov"
-            && movw.operands.starts_with("ip, 0x")
-            && movt.mnemonic == "movt"
-            && movt.operands.starts_with("ip, ")
-            && add.mnemonic == "add"
-            && add.operands == "ip, pc"
-            && bx.mnemonic == "bx"
-            && bx.operands == "ip"
+        is_long_thunk(body)
+    }
+
+    /// GNU `ld` opens a veneer from T32 to A32 with `bx pc`, as
+    /// `__f_from_thumb`. `pc` reads 4 bytes ahead, rounded down to a word,
+    /// and the A32 code goes on from there.
+    fn switch_at_start(&self, code: &[u8], address: u64) -> Option<(&'static dyn Arch, u64)> {
+        (code.get(..HALFWORD)? == BX_PC).then(|| {
+            let lands = PcModel::T32.of_literal_load(address);
+            (&Arm32 as &'static dyn Arch, lands)
+        })
     }
 
     fn before_pc_reference<'a>(&self, operands: &'a str) -> Option<&'a str> {
@@ -344,18 +352,50 @@ impl Arch for Thumb2 {
     }
 }
 
-/// Where the range extension thunk that `body` opens with jumps: the value
-/// `movw` and `movt` build, plus `pc` at the `add`, without the T32 bit.
-fn thunk_target(body: &[Insn]) -> Option<u64> {
-    if !Thumb2.is_function_entry(body) {
+/// The operands of a T32 `movw` or `movt`, read from the encoding:
+///
+/// ```text
+/// 11110 i 10 0 1 0 0 imm4 | 0 imm3 Rd imm8      movw
+/// 11110 i 10 1 1 0 0 imm4 | 0 imm3 Rd imm8      movt
+/// ```
+///
+/// The value is `imm4:i:imm3:imm8`. `yaxpeax-arm` 0.4 puts `imm4` four bits
+/// too high, so `movw ip, 0xfaac` reads as `0xf0aac`. Most values a thunk
+/// builds have `imm4` clear, so only a far jump, as from T32 to an A32
+/// function, showed it.
+fn wide_move_operands(first: u16, second: u16) -> Option<String> {
+    const MOVW: u16 = 0xf240;
+    const MOVT: u16 = 0xf2c0;
+    const OPCODE_MASK: u16 = 0xfbf0;
+    if !matches!(first & OPCODE_MASK, MOVW | MOVT) || second & 0x8000 != 0 {
         return None;
     }
-    let low = parse_hex(body[0].operands.strip_prefix("ip, ")?)?;
-    let high = parse_hex(body[1].operands.strip_prefix("ip, ")?)?;
-    let distance = (high << 16 | low) as u32;
-    let pc = PcModel::T32.of(body[2].address) as u32;
-    Some(u64::from(pc.wrapping_add(distance) & !1))
+    let imm4 = u32::from(first & 0xf);
+    let i = u32::from(first >> 10 & 1);
+    let imm3 = u32::from(second >> 12 & 0b111);
+    let imm8 = u32::from(second & 0xff);
+    let value = imm4 << 12 | i << 11 | imm3 << 8 | imm8;
+    let register = REGISTER_NAMES[usize::from(second >> 8 & 0xf)];
+    Some(format!("{register}, {value:#x}"))
 }
+
+/// The names of the general registers, as `yaxpeax-arm` prints them.
+const REGISTER_NAMES: [&str; 16] = [
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "sl", "fp", "ip", "sp", "lr", "pc",
+];
+
+/// Where a body that opens with a switch to A32 goes on in A32: the offset
+/// into `code`, and the index into `body`. See [`Arch::switch_at_start`].
+fn split_at_switch(code: &[u8], body: &[Insn]) -> Option<(usize, usize)> {
+    let start = body.first()?.address;
+    let (_, lands) = Thumb2.switch_at_start(code, start)?;
+    let offset = usize::try_from(lands.checked_sub(start)?).ok()?;
+    let index = body.partition_point(|insn| insn.address < lands);
+    (offset < code.len() && index < body.len()).then_some((offset, index))
+}
+
+/// `bx pc`, little endian.
+const BX_PC: [u8; 2] = [0x78, 0x47];
 
 /// The A32 word for the wide T32 `word`, first halfword high, where the two
 /// sets encode one instruction alike but for the top bits.
@@ -465,6 +505,59 @@ mod tests {
 
     fn decode_one(values: &[u16]) -> Insn {
         Thumb2.decode(&halfwords(values), 0, 0x1000).expect("bytes must decode")
+    }
+
+    #[test]
+    fn a_wide_move_keeps_every_bit_of_its_value() {
+        // movw ip, 0xfaac; movt ip, 0xfffe: imm4 is set in both.
+        let low = decode_one(&[0xf64f, 0x2cac]);
+        assert_eq!((low.mnemonic.as_str(), low.operands.as_str()), ("mov", "ip, 0xfaac"));
+        let high = decode_one(&[0xf6cf, 0x7cfe]);
+        assert_eq!((high.mnemonic.as_str(), high.operands.as_str()), ("movt", "ip, 0xfffe"));
+    }
+
+    #[test]
+    fn a_thunk_to_a32_names_where_it_jumps() {
+        // movw ip, 0xfaac; movt ip, 0xfffe; add ip, pc; bx ip
+        let code = halfwords(&[0xf64f, 0x2cac, 0xf6cf, 0x7cfe, 0x44fc, 0x4760]);
+        let (insns, _) = decode_all(&Thumb2, &code, 0x2f668);
+        assert!(Thumb2.is_function_entry(&insns));
+        let targets = Thumb2.call_targets(&insns);
+        assert_eq!(targets, [(3, Some(super::super::CallTarget::Address(0x1f120)))]);
+    }
+
+    #[test]
+    fn a_veneer_that_opens_with_bx_pc_goes_on_in_a32() {
+        // bx pc; nop; then A32 `ldr ip, [pc]; add pc, ip, pc` and a distance.
+        let mut code = halfwords(&[0x4778, 0x46c0]);
+        for word in [0xe59f_c000u32, 0xe08c_f00f, 0x0000_1000] {
+            code.extend(word.to_le_bytes());
+        }
+        let (insns, error) = decode_all(&Thumb2, &code, 0x1000);
+        assert_eq!(error, None);
+        let text: Vec<String> = insns.iter().map(|insn| insn.to_string()).collect();
+        assert_eq!(text[..4], ["bx pc", "mov r8, r8", "ldr ip, [pc]", "add pc, ip, pc"]);
+        assert_eq!(insns[2].address, 0x1004);
+    }
+
+    #[test]
+    fn the_distance_a_veneer_adds_to_pc_is_a_stored_address() {
+        let mut code = halfwords(&[0x4778, 0x46c0]);
+        for word in [0xe59f_c000u32, 0xe08c_f00f, 0x0000_1000] {
+            code.extend(word.to_le_bytes());
+        }
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        let space = AddressSpace::of_raw_image(0x1000, 0x2000);
+        let kinds = Thumb2.constant_kinds(&code, &insns, &space);
+        // `pc` at the `add` is 0x1008 + 8, and the word adds 0x1000.
+        assert_eq!(kinds.last(), Some(&ConstantKind::StoredAddress));
+    }
+
+    #[test]
+    fn only_a_body_that_opens_with_bx_pc_switches() {
+        let code = halfwords(&[0x46c0, 0x4778, 0x46c0]);
+        assert!(Thumb2.switch_at_start(&code, 0x1000).is_none());
+        assert_eq!(Thumb2.switch_at_start(&code[2..], 0x1002).map(|(_, at)| at), Some(0x1004));
     }
 
     #[test]

@@ -105,8 +105,9 @@ and 2 when the input could not be read.
 
 ## Limits
 * **Little-endian A32, Thumb-2 and AArch64, and MIPS32 in either byte
-  order.** A raw image is read in the one set `--arch` names, so a binary
-  that mixes A32 and Thumb-2 has its minority read as nonsense.
+  order.** A library that mixes A32 and Thumb-2 is read function by function
+  where its symbols say which set each is in. Stripped or raw, it is read in
+  one set, so its minority reads as nonsense.
 * **NEON data processing is not decoded.** NEON loads and stores are read.
   The other NEON words stay opaque, named `(neon)`: decoding continues, and
   an edit to one shows, but not what it changed.

@@ -24,9 +24,17 @@ arm_flags=(-march=armv7-a -marm -mfloat-abi=softfp -mfpu=neon)
 thumb_flags=(-march=armv7-a -mthumb -mfloat-abi=softfp -mfpu=neon)
 common_flags=(-fPIC -fno-stack-protector -w)
 
-# name:triple, one per architecture the tool reads.
-targets=(arm:arm-linux-gnueabi thumb:arm-linux-gnueabi aarch64:aarch64-linux-gnu
-    mips:mips-linux-gnu mipsel:mipsel-linux-gnu)
+# name:triple, one per architecture the tool reads. `mixed` builds every
+# other source as Thumb-2 and the rest as A32, as much ARM user space mixes
+# them. BACKPORTS_TARGETS, a list of these names, builds only those.
+all_targets=(arm:arm-linux-gnueabi thumb:arm-linux-gnueabi mixed:arm-linux-gnueabi
+    aarch64:aarch64-linux-gnu mips:mips-linux-gnu mipsel:mipsel-linux-gnu)
+targets=()
+for target in "${all_targets[@]}"; do
+    if [ -z "${BACKPORTS_TARGETS:-}" ] || [[ " $BACKPORTS_TARGETS " == *" ${target%%:*} "* ]]; then
+        targets+=("$target")
+    fi
+done
 # clang at every level that ships, and GCC with GNU ld at the two most
 # firmware uses. A GCC build lands in `<arch>-gcc-<level>`.
 levels=(O1 O2 O3 Os)
@@ -77,8 +85,10 @@ build() {
             local dest="$out/$name-$variant/$arch-$level"
             local objects="$dest/obj"
             mkdir -p "$objects"
-            for source in "${sources[@]}"; do
-                "${compiler[@]}" --target="$triple" "${flags[@]}" "-$level" \
+            for index in "${!sources[@]}"; do
+                local source="${sources[$index]}"
+                "${compiler[@]}" --target="$triple" "${flags[@]}" \
+                    $(set_flags "$arch" "$index") "-$level" \
                     -c "$source_dir/$source.$suffix" -o "$objects/$source.o"
             done
             ld.lld -shared -o "$dest/lib.so" "$objects"/*.o
@@ -93,14 +103,29 @@ build() {
             local dest="$out/$name-$variant/$arch-gcc-$level"
             local objects="$dest/obj"
             mkdir -p "$objects"
-            for source in "${sources[@]}"; do
-                "$gcc_compiler" "${flags[@]}" "${gcc_standard[@]}" "-$level" \
+            for index in "${!sources[@]}"; do
+                local source="${sources[$index]}"
+                "$gcc_compiler" "${flags[@]}" $(set_flags "$arch" "$index") \
+                    "${gcc_standard[@]}" "-$level" \
                     -c "$source_dir/$source.$suffix" -o "$objects/$source.o"
             done
             "$gcc_compiler" -shared -nostdlib -o "$dest/lib.so" "$objects"/*.o
             finish "$dest"
         done
     done
+}
+
+# The instruction set flags of source number `index` of a `mixed` build:
+# Thumb-2 for an even number, A32 for an odd one. Other builds need none.
+set_flags() {
+    local arch="$1" index="$2"
+    if [ "$arch" = mixed ]; then
+        if (( index % 2 == 0 )); then
+            echo "${thumb_flags[@]}"
+        else
+            echo "${arm_flags[@]}"
+        fi
+    fi
 }
 
 # Write the stripped library and the raw image of a linked `lib.so`.
@@ -133,6 +158,9 @@ build_rust() {
     for target in "${rust_targets[@]}"; do
         local arch="${target%%:*}" rest="${target#*:}"
         local rust_triple="${rest%%:*}" triple="${rest##*:}"
+        if [ -n "${BACKPORTS_TARGETS:-}" ] && [[ " $BACKPORTS_TARGETS " != *" $arch "* ]]; then
+            continue
+        fi
         for level in "${levels[@]}"; do
             local target_dir="$here/build/cargo-target/$arch-$level"
             local opt_level="${level#O}"
@@ -191,6 +219,12 @@ build_rust after
 # and one way with GCC, for the comparisons across versions. The symbols of
 # each release are the answer there too.
 out="$here/build/versions"
+# The releases are read one set at a time, so a mixed build adds nothing.
+single_set=()
+for target in "${targets[@]}"; do
+    [ "${target%%:*}" = mixed ] || single_set+=("$target")
+done
+targets=("${single_set[@]}")
 levels=(O2)
 gcc_levels=(O2)
 lua53_sources=(lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject

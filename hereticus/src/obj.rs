@@ -1,6 +1,6 @@
 //! Read binaries and find the functions in them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use object::{Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
 
@@ -84,6 +84,16 @@ impl Isa {
         }
     }
 
+    /// The other instruction set of a core that runs two, as ARM runs A32 and
+    /// Thumb-2, or `None`.
+    pub fn other_set(self) -> Option<Self> {
+        match self {
+            Self::Arm32 => Some(Self::Thumb2),
+            Self::Thumb2 => Some(Self::Arm32),
+            Self::Aarch64 | Self::Mips32 | Self::Mips32Be => None,
+        }
+    }
+
     /// Choose a decoder for what an object file says it holds.
     ///
     /// `little_endian` decides nothing for ARM, which is only read in that
@@ -133,9 +143,23 @@ pub struct Binary {
     pub addresses: AddressSpace,
     /// What the linker left that names the callee of each call.
     pub links: Links,
+    /// The addresses of the functions in [`Isa::other_set`] of `isa`.
+    ///
+    /// An ARM library can mix A32 and Thumb-2 functions, and bit 0 of each
+    /// symbol says which a function is. `isa` is the set most of them are
+    /// in. Empty where the binary holds one set, or where nothing says.
+    pub other_set: BTreeSet<u64>,
 }
 
 impl Binary {
+    /// The instruction set `function`, one of this binary's, is in.
+    pub fn isa_of(&self, function: &Function) -> Isa {
+        match self.isa.other_set() {
+            Some(other) if self.other_set.contains(&function.address) => other,
+            _ => self.isa,
+        }
+    }
+
     /// Read a binary and find the functions in it.
     ///
     /// The symbol table comes first, because a name is exact. A stripped
@@ -149,12 +173,17 @@ impl Binary {
         };
 
         let mut functions = Vec::new();
+        let mut other_set = BTreeSet::new();
         for symbol in file.symbols() {
             if symbol.kind() != SymbolKind::Text || symbol.size() == 0 {
                 continue;
             }
 
-            let address = isa.arch().function_address(symbol.address());
+            let own = set_of_symbol(isa, symbol.address());
+            let address = own.arch().function_address(symbol.address());
+            if own != isa {
+                other_set.insert(address);
+            }
             let Some(code) = symbol_code(&file, &symbol, address) else { continue };
             functions.push(Function {
                 name: stable_name(symbol.name().unwrap_or_default()).to_string(),
@@ -169,7 +198,14 @@ impl Binary {
             functions.sort_by_key(|function| (function.address, function.name.clone()));
             let addresses = address_space(&file);
             let links = Links::of_object(&file);
-            return Ok(Self { isa, functions, found_by: FoundBy::Symbols, addresses, links });
+            return Ok(Self {
+                isa,
+                functions,
+                found_by: FoundBy::Symbols,
+                addresses,
+                links,
+                other_set,
+            });
         }
 
         if !has_code_section(&file) {
@@ -212,6 +248,7 @@ impl Binary {
             found_by: FoundBy::Scanning,
             addresses: address_space(&file),
             links: Links::of_object(&file),
+            other_set: BTreeSet::new(),
         })
     }
 
@@ -261,7 +298,14 @@ impl Binary {
 
         let addresses = AddressSpace::of_raw_image(base, data.len() as u64);
         let links = Links::of_raw_image(base, data);
-        Ok(Self { isa, functions, found_by: FoundBy::Scanning, addresses, links })
+        Ok(Self {
+            isa,
+            functions,
+            found_by: FoundBy::Scanning,
+            addresses,
+            links,
+            other_set: BTreeSet::new(),
+        })
     }
 }
 
@@ -298,6 +342,16 @@ fn symbol_code(
     let start = address.checked_sub(section.address())? as usize;
     let end = start.checked_add(symbol.size() as usize)?;
     data.get(start..end).map(<[u8]>::to_vec)
+}
+
+/// The instruction set of the function a symbol at `address` names, in a
+/// binary read as `isa`: on ARM, bit 0 marks a Thumb-2 function.
+fn set_of_symbol(isa: Isa, address: u64) -> Isa {
+    match isa {
+        Isa::Arm32 | Isa::Thumb2 if address & 1 == 1 => Isa::Thumb2,
+        Isa::Arm32 | Isa::Thumb2 => Isa::Arm32,
+        Isa::Aarch64 | Isa::Mips32 | Isa::Mips32Be => isa,
+    }
 }
 
 /// Report whether most functions of an ARM file are Thumb-2, as bit 0 of

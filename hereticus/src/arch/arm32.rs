@@ -370,6 +370,15 @@ impl Arch for Arm32 {
     fn is_unread_extension(&self, insn: &Insn) -> bool {
         insn.mnemonic == NEON_MNEMONIC
     }
+
+    /// See [`is_long_thunk`].
+    fn is_function_entry(&self, body: &[Insn]) -> bool {
+        is_long_thunk(body)
+    }
+
+    fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<super::CallTarget>)> {
+        call_targets_through_thunks(insns, PcModel::A32)
+    }
     /// The table GCC emits for a `switch` in PIC code:
     ///
     /// ```text
@@ -890,6 +899,67 @@ impl PcModel {
     }
 }
 
+/// Whether `body` opens with LLD's range extension thunk, a function by
+/// itself:
+///
+/// ```text
+/// movw ip, lo
+/// movt ip, hi
+/// add  ip, pc         ; A32 writes `add ip, ip, pc`
+/// bx   ip
+/// ```
+///
+/// A thunk that nothing in this build calls still starts there, and a run of
+/// them otherwise reads as one function. A library that mixes A32 and
+/// Thumb-2 holds both kinds.
+pub(super) fn is_long_thunk(body: &[Insn]) -> bool {
+    let [movw, movt, add, bx, ..] = body else { return false };
+    movw.mnemonic == "mov"
+        && movw.operands.starts_with("ip, 0x")
+        && movt.mnemonic == "movt"
+        && movt.operands.starts_with("ip, ")
+        && add.mnemonic == "add"
+        && matches!(add.operands.as_str(), "ip, pc" | "ip, ip, pc")
+        && bx.mnemonic == "bx"
+        && bx.operands == "ip"
+}
+
+/// Where the range extension thunk that `body` opens with jumps: the value
+/// `movw` and `movt` build, plus `pc` at the `add`, without the T32 bit.
+fn long_thunk_target(body: &[Insn], pc: PcModel) -> Option<u64> {
+    if !is_long_thunk(body) {
+        return None;
+    }
+    let low = parse_hex(body[0].operands.strip_prefix("ip, ")?)?;
+    let high = parse_hex(body[1].operands.strip_prefix("ip, ")?)?;
+    let distance = (high << 16 | low) as u32;
+    let pc = pc.of(body[2].address) as u32;
+    Some(u64::from(pc.wrapping_add(distance) & !1))
+}
+
+/// The calls of `insns`, the tail calls, and the jump of a range extension
+/// thunk to where it formed. See [`super::Arch::call_targets`].
+pub(super) fn call_targets_through_thunks(
+    insns: &[Insn],
+    pc: PcModel,
+) -> Vec<(usize, Option<super::CallTarget>)> {
+    insns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, insn)| match insn.kind {
+            InsnKind::Call { target } => Some((index, target.map(super::CallTarget::Address))),
+            InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
+                Some((index, Some(super::CallTarget::Address(target))))
+            }
+            InsnKind::Jump { target: None } if index >= 3 => {
+                long_thunk_target(&insns[index - 3..], pc)
+                    .map(|target| (index, Some(super::CallTarget::Address(target))))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// The addresses of the pool words `insns` load, where `pc` reads as `pc` says.
 pub(super) fn pool_words_loaded(insns: &[Insn], pc: PcModel) -> Vec<u64> {
     pool_loads(insns, pc).into_iter().map(|(_, word)| word).collect()
@@ -973,7 +1043,12 @@ pub(super) fn track_pool_words(
         // `movw rX, lo` then `movt rX, hi`: a 32-bit value in two halves.
         // Any other write ends it, but for the `add rX, pc` that uses it.
         let builds_halves = matches!(operation.as_str(), "mov" | "movw" | "movt");
-        let uses_halves = operation == "add" && rest == "pc";
+        // A32 writes the `add` with three operands.
+        let adds_pc = operation == "add"
+            && (rest == "pc"
+                || rest.strip_prefix(destination).and_then(|rest| rest.strip_prefix(", "))
+                    == Some("pc"));
+        let uses_halves = adds_pc;
         if writes_first_operand(&operation) && !builds_halves && !uses_halves {
             halves.retain(|(held, ..)| *held != destination);
         }
@@ -996,7 +1071,7 @@ pub(super) fn track_pool_words(
                 continue;
             }
             // `add rX, pc` of a value in both halves forms an address.
-            "add" if rest == "pc" => {
+            "add" if adds_pc => {
                 let whole =
                     halves.iter().find(|(held, at, _)| *held == destination && at[0] != at[1]);
                 if let Some(&(_, at, value)) = whole {
@@ -1281,6 +1356,22 @@ mod tests {
     fn text_of(word: u32) -> (String, String) {
         let insn = decode_one(word.to_le_bytes());
         (insn.mnemonic, insn.operands)
+    }
+
+    #[test]
+    fn an_a32_thunk_is_an_entry_and_names_where_it_jumps() {
+        // movw ip, 0xb3b; movt ip, 0xffff; add ip, ip, pc; bx ip
+        let words = [0xe300_cb3bu32, 0xe34f_cfff, 0xe08c_c00f, 0xe12f_ff1c];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x2f6c8);
+        assert!(Arm32.is_function_entry(&insns));
+        // `pc` at the `add` is 0x2f6d0 + 8, and 0xffff_0b3b, without the
+        // T32 bit, takes it back before the thunk.
+        let target = 0x2f6d8u32.wrapping_add(0xffff_0b3b) & !1;
+        assert_eq!(
+            Arm32.call_targets(&insns),
+            [(3, Some(crate::arch::CallTarget::Address(u64::from(target))))]
+        );
     }
 
     #[test]

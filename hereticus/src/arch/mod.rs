@@ -158,6 +158,15 @@ pub trait Arch {
         Vec::new()
     }
 
+    /// The instruction set a body that opens at `address` with `code` goes on
+    /// in, and the address where it does, or `None` where it opens with no
+    /// switch.
+    ///
+    /// Defaults to `None`, for the architectures with one set.
+    fn switch_at_start(&self, _code: &[u8], _address: u64) -> Option<(&'static dyn Arch, u64)> {
+        None
+    }
+
     /// Whether `insn` is code of an extension the decoder does not read, as
     /// NEON on ARM, rather than bytes that are no instruction at all.
     ///
@@ -596,7 +605,32 @@ pub fn leaves(insns: &[Insn], target: u64) -> bool {
 /// Where instructions are narrower than the words of a literal pool, as in
 /// T32, the code is read twice: once to find the pool words, and again with
 /// each kept whole. See [`decode_all_but`].
+///
+/// A body that [`Arch::switch_at_start`] says opens with a switch to another
+/// instruction set is read in that set from where the switch lands.
 pub fn decode_all(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Option<DecodeError>) {
+    let switch = arch.switch_at_start(code, address).and_then(|(other, lands)| {
+        let offset = usize::try_from(lands.checked_sub(address)?).ok()?;
+        (offset > 0 && offset < code.len()).then_some((other, lands, offset))
+    });
+    let Some((other, lands, offset)) = switch else {
+        return decode_in_one_set(arch, code, address);
+    };
+    let (mut insns, error) = decode_in_one_set(arch, &code[..offset], address);
+    if error.is_some() {
+        return (insns, error);
+    }
+    let (rest, error) = decode_all(other, &code[offset..], lands);
+    insns.extend(rest);
+    (insns, error)
+}
+
+/// [`decode_all`], in one instruction set throughout.
+fn decode_in_one_set(
+    arch: &dyn Arch,
+    code: &[u8],
+    address: u64,
+) -> (Vec<Insn>, Option<DecodeError>) {
     let decoded = decode_linear(arch, code, address);
     if arch.data_among_code() == DataAmongCode::Never
         || arch.instruction_width() >= arch.pointer_width()
