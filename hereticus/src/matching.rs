@@ -1228,13 +1228,22 @@ impl Cascade<'_> {
             left.function.code == right.function.code
                 || (left.ordered == right.ordered && same_detail(&left.body(), &right.body()))
         };
-        let differ = |left: &Callee, right: &Callee| match (left, right) {
+        //
+        // A forwarder, whose whole body is one call or jump, is the
+        // exception to the rule for two callees that paired with nothing:
+        // what it reaches is all it does. zlib 1.2.12 turned `crc32_combine`
+        // from a jump to `crc32_combine_` into one to `crc32_combine64`, and
+        // neither callee paired. In larger code, two such callees are most
+        // often one function that changed too much to pair: measured on the
+        // OpenWrt kernels, counting them as a change reported hundreds more
+        // functions.
+        let differ = |left: &Callee, right: &Callee, unpaired: Unpaired| match (left, right) {
             (Callee::Named(left), Callee::Named(right)) => left != right,
             (Callee::Function(left), Callee::Function(right)) => {
                 let crossed = match (partner_of_before.get(left), partner_of_after.get(right)) {
                     (Some(partner), _) => partner != right,
                     (None, Some(partner)) => partner != left,
-                    (None, None) => false,
+                    (None, None) => unpaired == Unpaired::Differ,
                 };
                 crossed && !same_code(*left, *right)
             }
@@ -1245,6 +1254,13 @@ impl Cascade<'_> {
             if !matches!(pair.changed, Changed::No | Changed::InDetail) {
                 continue;
             }
+            let forwards = |side: &Prepared<'_>| side.ordered.len() == 1;
+            let unpaired = if forwards(&left_side[pair.before]) && forwards(&right_side[pair.after])
+            {
+                Unpaired::Differ
+            } else {
+                Unpaired::SayNothing
+            };
             let [left, right] =
                 [(before, pair.before), (after, pair.after)].map(|(binary, index)| {
                     let function = &binary.functions[index];
@@ -1258,8 +1274,11 @@ impl Cascade<'_> {
             if left.len() != right.len() {
                 continue;
             }
-            let changed =
-                left.iter().zip(&right).filter(|(left, right)| differ(left, right)).count();
+            let changed = left
+                .iter()
+                .zip(&right)
+                .filter(|(left, right)| differ(left, right, unpaired))
+                .count();
             if changed > 0 {
                 pair.changed = Changed::Yes;
                 pair.kinds.callees += changed;
@@ -2318,6 +2337,15 @@ impl Cascade<'_> {
 enum Repaired {
     Nothing,
     Some,
+}
+
+/// What two callees that each paired with nothing say about a call.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Unpaired {
+    /// They are different functions.
+    Differ,
+    /// Nothing: they may be one function that changed too much to pair.
+    SayNothing,
 }
 
 /// The `members` of one side that reach something, grouped by their shape and
@@ -3617,6 +3645,50 @@ mod tests {
             assert_eq!(caller.kinds.callees, 1, "names {names:?}");
             assert!(caller.kinds.touches_control_flow());
         }
+    }
+
+    /// `b target` from `from`, little endian.
+    fn b(from: u64, target: u64) -> [u8; 4] {
+        let offset = (target.wrapping_sub(from).wrapping_sub(8) as u32 >> 2) & 0x00ff_ffff;
+        (0xea00_0000 | offset).to_le_bytes()
+    }
+
+    /// Two images where the function at 0x0 is `prefix` and then reaches
+    /// the function at `callee` with `b`, and the callees share no code, so
+    /// neither pairs.
+    fn forwarding_to_unpaired(prefix: &[u8]) -> Diff {
+        let reaching = |callee: u64| [prefix, &b(prefix.len() as u64, callee)].concat();
+        // mov r0, 1; bx lr
+        let one = returns(1);
+        // add r0, r0, r1; mul r0, r1, r0; eor r0, r0, r1; bx lr
+        let other: Vec<u8> = [0xe080_0001u32, 0xe000_0091, 0xe020_0001, 0xe12f_ff1e]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let before = binary_of(&[("", &reaching(0x100)), ("", &one)]);
+        let after = binary_of(&[("", &reaching(0x100)), ("", &other)]);
+        diff_with(&before, &after, Options { threshold: 0.9, use_names: UseNames::No })
+    }
+
+    /// A forwarder that reaches a different function changed, even where
+    /// neither callee pairs: what it reaches is all it does.
+    #[test]
+    fn a_forwarder_to_an_unpaired_callee_changed() {
+        let diff = forwarding_to_unpaired(&[]);
+        assert!(diff.removed.contains(&1) && diff.added.contains(&1), "neither callee pairs");
+        let forwarder = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!(forwarder.changed, Changed::Yes);
+        assert_eq!(forwarder.kinds.callees, 1);
+    }
+
+    /// Larger code that reaches an unpaired callee says nothing about it:
+    /// the callee may be one function that changed too much to pair.
+    #[test]
+    fn more_than_a_forwarder_says_nothing_of_an_unpaired_callee() {
+        // add r2, r2, 1
+        let diff = forwarding_to_unpaired(&0xe282_2001u32.to_le_bytes());
+        let caller = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!(caller.changed, Changed::No);
     }
 
     /// A callee that only moved is the same callee.
