@@ -54,13 +54,15 @@ The smallvec harness is built for A32 only, and the tests skip Thumb-2 for
 it. Build it for `thumbv7neon-unknown-linux-gnueabihf` or a soft-float
 Thumb-2 target, so Rust code is measured in Thumb-2 too.
 
-## Measure older ARM cores
+## End the code of a raw image where its data begins
 
-The fixtures are built for ARMv7-A only. Much firmware still runs on
-ARMv5TE and ARMv6 (Kirkwood, older Broadcom), where there is no `movw` or
-`movt`, a return can be `ldm sp!, {..., pc}` or `mov pc, lr`, and
-interworking goes through `bx`. Build the fixtures with `-march=armv5te`
-and `-march=armv6` and lock their tallies.
+`just backports` builds ARMv5TE and ARMv6 too, and every reading of them
+names exactly the functions each fix touched, but for one. Read as a raw
+image, Lua built by GCC for ARMv5TE joins the first words of `.rodata` to
+`luaZ_openspace`, the last function of `.text`, and one build pads
+`.rodata` with a zero word that the other lacks. A raw image says nothing
+of where its code ends. A run of words that no branch reaches and that
+decodes as no code a compiler emits could end it.
 
 ## Read big-endian ARM
 

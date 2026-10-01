@@ -1102,6 +1102,11 @@ fn starts_after_returns_in(
                 }
             }
         }
+        // A branch lands past the padding that can open a block, as GCC
+        // puts one word after the jump through a table.
+        while start < index && arch.is_padding(&insns[start]) {
+            start += 1;
+        }
         // A conditional branch never comes from another function, and nor
         // does any branch from after the last sure start: a tail call comes
         // from the function before. Clang on MIPS jumps with `b` to the late
@@ -1258,7 +1263,9 @@ fn starts_after_returns_in(
                         Some(start) => from >= start,
                         None => since.is_none_or(|since| from > since),
                     };
-                    from < insn.address && of_this_function && accepted.contains(&transfer)
+                    // The terminator itself counts: a jump through a table
+                    // can land right after itself, on its first case.
+                    from <= insn.address && of_this_function && accepted.contains(&transfer)
                 })
             })
         };
@@ -1739,6 +1746,36 @@ mod tests {
             .collect();
         let starts = starts_after_returns(&crate::arch::thumb::Thumb2, &code, 0x1000);
         assert!(!starts.contains(&0x100c), "{starts:x?}");
+    }
+
+    /// A32 code at 0x1000 that jumps through a table of byte offsets, as
+    /// GCC does for ARMv5TE, whose first case makes a frame late, after a
+    /// `mov r0, r0` filler.
+    #[test]
+    fn a_late_frame_on_the_first_case_of_a_table_starts_nothing() {
+        let words = [
+            0xe59f_2030u32, // ldr r2, [pc, 0x30]: the table, from 0x100c
+            0xe08f_2002,    // add r2, pc, r2
+            0xe353_0001,    // cmp r3, 1
+            0x8a00_0007,    // bhi 0x1030
+            0xe7d2_3003,    // ldrb r3, [r2, r3]
+            0xe08f_f103,    // add pc, pc, r3, lsl 2
+            0xe1a0_0000,    // mov r0, r0
+            0xe92d_4010,    // case 0: push {r4, lr}
+            0xebff_fff6,    // bl 0x1000
+            0xe8bd_8010,    // pop {r4, pc}
+            0xe3a0_0001,    // case 1: mov r0, 1
+            0xe12f_ff1e,    // bx lr
+            0xe3a0_0000,    // default: mov r0, 0
+            0xe12f_ff1e,    // bx lr
+            0x0000_0030,    // the pool word
+            0x0000_0300,    // the table: case 0 at 0, case 1 at 3 words
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let starts = starts_after_returns(&Arm32, &code, 0x1000);
+        for case in [0x1018, 0x101c, 0x1028, 0x1030] {
+            assert!(!starts.contains(&case), "{case:x} in {starts:x?}");
+        }
     }
 
     #[test]

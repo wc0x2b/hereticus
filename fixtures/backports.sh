@@ -22,12 +22,17 @@ patches="$here/patches"
 # does not depend on the defaults a distribution patches into clang.
 arm_flags=(-march=armv7-a -marm -mfloat-abi=softfp -mfpu=neon)
 thumb_flags=(-march=armv7-a -mthumb -mfloat-abi=softfp -mfpu=neon)
+# Older cores much firmware still runs on: ARMv5TE has no `movw`, `movt` or
+# VFP, as Kirkwood, and ARMv6 has VFP but no `movw`, as older Broadcom.
+armv5_flags=(-march=armv5te -marm -mfloat-abi=soft)
+armv6_flags=(-march=armv6 -marm -mfloat-abi=softfp -mfpu=vfp)
 common_flags=(-fPIC -fno-stack-protector -w)
 
 # name:triple, one per architecture the tool reads. `mixed` builds every
 # other source as Thumb-2 and the rest as A32, as much ARM user space mixes
 # them. BACKPORTS_TARGETS, a list of these names, builds only those.
 all_targets=(arm:arm-linux-gnueabi thumb:arm-linux-gnueabi mixed:arm-linux-gnueabi
+    armv5:arm-linux-gnueabi armv6:arm-linux-gnueabi
     aarch64:aarch64-linux-gnu mips:mips-linux-gnu mipsel:mipsel-linux-gnu)
 targets=()
 for target in "${all_targets[@]}"; do
@@ -80,6 +85,8 @@ build() {
         local flags=("${common_flags[@]}" "${project_flags[@]}")
         [ "$arch" = arm ] && flags+=("${arm_flags[@]}")
         [ "$arch" = thumb ] && flags+=("${thumb_flags[@]}")
+        [ "$arch" = armv5 ] && flags+=("${armv5_flags[@]}")
+        [ "$arch" = armv6 ] && flags+=("${armv6_flags[@]}")
 
         for level in "${levels[@]}"; do
             local dest="$out/$name-$variant/$arch-$level"
@@ -219,12 +226,15 @@ build_rust after
 # and one way with GCC, for the comparisons across versions. The symbols of
 # each release are the answer there too.
 out="$here/build/versions"
-# The releases are read one set at a time, so a mixed build adds nothing.
-single_set=()
+# The releases are measured on the current cores, read one set at a time.
+current=()
 for target in "${targets[@]}"; do
-    [ "${target%%:*}" = mixed ] || single_set+=("$target")
+    case "${target%%:*}" in
+        mixed | armv5 | armv6) ;;
+        *) current+=("$target") ;;
+    esac
 done
-targets=("${single_set[@]}")
+targets=("${current[@]}")
 levels=(O2)
 gcc_levels=(O2)
 lua53_sources=(lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject

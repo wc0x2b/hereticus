@@ -1,9 +1,8 @@
 ---
 source: hereticus/tests/openwrt.rs
-assertion_line: 629
 expression: report
 ---
-0x80208000 -> 0x80208000 Yes score=0.805 edits=Edits { added: 20, removed: 2, edited: 12 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 10, other: 24, opaque: 0, constants: 6, callees: 0, texts: 0 } confidence=Similar
+0x80208000 -> 0x80208000 Yes score=0.797 edits=Edits { added: 20, removed: 2, edited: 12 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 10, other: 24, opaque: 0, constants: 6, callees: 0, texts: 0 } confidence=Similar
 0x80208300 -> 0x80208340 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalShape
 0x80208360 -> 0x802083a0 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 0x8020839c -> 0x802083dc No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
