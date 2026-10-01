@@ -29,7 +29,7 @@ use super::arm32::{
     call_targets_through_thunks, classify, decode_fallback, is_long_thunk, parse_hex, pool_loads,
     pool_words_loaded, split_mnemonic, track_pool_words,
 };
-use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory};
+use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps};
 use crate::address::{AddressSpace, ConstantKind};
 
 /// The narrow T32 instruction, and the alignment of every one.
@@ -114,13 +114,19 @@ impl Arch for Thumb2 {
         // compare alike, as A32 names them. A condition can follow it, as in
         // `b.wne`.
         let mnemonic = mnemonic.replace(".w", "").replace(".n", "");
-        let operands = match *bytes {
-            [low, high, second_low, second_high] => wide_move_operands(
-                u16::from_le_bytes([low, high]),
-                u16::from_le_bytes([second_low, second_high]),
-            )
-            .unwrap_or(operands),
-            _ => operands,
+        let (mnemonic, operands) = match *bytes {
+            [low, high, second_low, second_high] => {
+                let (first, second) = (
+                    u16::from_le_bytes([low, high]),
+                    u16::from_le_bytes([second_low, second_high]),
+                );
+                match (table_branch(first, second), wide_move_operands(first, second)) {
+                    (Some((mnemonic, operands)), _) => (mnemonic.to_string(), operands),
+                    (None, Some(operands)) => (mnemonic, operands),
+                    (None, None) => (mnemonic, operands),
+                }
+            }
+            _ => (mnemonic, operands),
         };
         let target = branch_target(&inst, insn_address, width);
         let kind = match inst.opcode {
@@ -233,6 +239,11 @@ impl Arch for Thumb2 {
         (0..insns.len())
             .filter_map(|index| read_branch_table(memory, &code, insns, index))
             .collect()
+    }
+
+    /// T32 jumps through a table with `tbb` and `tbh`.
+    fn table_jumps(&self) -> TableJumps {
+        TableJumps::Distinct
     }
 
     fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<super::CallTarget>)> {
@@ -379,6 +390,28 @@ fn wide_move_operands(first: u16, second: u16) -> Option<String> {
     Some(format!("{register}, {value:#x}"))
 }
 
+/// The T32 `tbb` or `tbh`, read from the encoding:
+///
+/// ```text
+/// 1110 1000 1101 Rn | 1111 0000 000 H Rm
+/// ```
+///
+/// `yaxpeax-arm` 0.4 reads `tbh [pc, r2, lsl 1]` as `tbb [pc, r2, lsl r0]`,
+/// so a table of halfwords read as one of bytes. Measured on Lua built by GCC
+/// at `-Os` for Thumb-2, the `tbh` of `luaV_execute` cut it in 19 pieces.
+fn table_branch(first: u16, second: u16) -> Option<(&'static str, String)> {
+    const TABLE_BRANCH: u16 = 0xe8d0;
+    if first & 0xfff0 != TABLE_BRANCH || second & 0xffe0 != 0xf000 {
+        return None;
+    }
+    let base = REGISTER_NAMES[usize::from(first & 0xf)];
+    let index = REGISTER_NAMES[usize::from(second & 0xf)];
+    Some(match second >> 4 & 1 {
+        0 => ("tbb", format!("[{base}, {index}]")),
+        _ => ("tbh", format!("[{base}, {index}, lsl 0x1]")),
+    })
+}
+
 /// The names of the general registers, as `yaxpeax-arm` prints them.
 const REGISTER_NAMES: [&str; 16] = [
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "sl", "fp", "ip", "sp", "lr", "pc",
@@ -505,6 +538,26 @@ mod tests {
 
     fn decode_one(values: &[u16]) -> Insn {
         Thumb2.decode(&halfwords(values), 0, 0x1000).expect("bytes must decode")
+    }
+
+    #[test]
+    fn tbb_and_tbh_read_as_themselves() {
+        let tbb = decode_one(&[0xe8df, 0xf002]);
+        assert_eq!((tbb.mnemonic.as_str(), tbb.operands.as_str()), ("tbb", "[pc, r2]"));
+        let tbh = decode_one(&[0xe8df, 0xf012]);
+        assert_eq!((tbh.mnemonic.as_str(), tbh.operands.as_str()), ("tbh", "[pc, r2, lsl 0x1]"));
+        assert_eq!(tbh.kind, InsnKind::Jump { target: None });
+    }
+
+    #[test]
+    fn a_tbh_table_holds_halfwords() {
+        // cmp r2, 1; tbh [pc, r2, lsl 1]; then the table, 2 and 3 halfwords.
+        let code = halfwords(&[0x2a01, 0xe8df, 0xf012, 0x0002, 0x0003, 0x4770, 0x4770, 0x4770]);
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        let regions = [(0x1000, code.as_slice())];
+        let tables = Thumb2.jump_tables(&Memory::new(&regions), 0x1000..0x1010, &insns);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].targets, [0x1006 + 4, 0x1006 + 6]);
     }
 
     #[test]

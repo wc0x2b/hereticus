@@ -24,7 +24,7 @@ none.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 45687 of 46006 exact, 128 starts missed and 81 invented,
+stripped releases: 45783 of 46006 exact, 78 starts missed and 79 invented,
 over ARM, Thumb-2, AArch64 and MIPS, with the PLT left out. Most of what is
 left is Thumb-2. By cause:
 
