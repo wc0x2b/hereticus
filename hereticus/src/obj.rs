@@ -358,7 +358,8 @@ fn set_of_symbol(isa: Isa, address: u64) -> Isa {
 /// their symbols says.
 ///
 /// The symbol table says it where there is one, and the dynamic symbol
-/// table where it was stripped.
+/// table where it was stripped. Where neither is left, as in stripped
+/// firmware, bit 0 of the entry point says which set the code runs in.
 fn holds_thumb(file: &object::File<'_>) -> bool {
     let count = |symbols: &mut dyn Iterator<Item = object::Symbol<'_, '_>>| {
         symbols
@@ -371,7 +372,10 @@ fn holds_thumb(file: &object::File<'_>) -> bool {
         (_, 0) => count(&mut file.dynamic_symbols()),
         counted => counted,
     };
-    thumb * 2 > all
+    match all {
+        0 => file.entry() & 1 == 1,
+        _ => thumb * 2 > all,
+    }
 }
 
 /// The addresses a linked file occupies: each section it loads, `.bss`

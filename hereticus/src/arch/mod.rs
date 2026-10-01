@@ -167,6 +167,12 @@ pub trait Arch {
         None
     }
 
+    /// The table of handlers that `code`, loaded at `base`, opens with, as a
+    /// Cortex-M image does, or `None`. Defaults to `None`.
+    fn vector_table(&self, _code: &[u8], _base: u64) -> Option<VectorTable> {
+        None
+    }
+
     /// Whether `insn` is code of an extension the decoder does not read, as
     /// NEON on ARM, rather than bytes that are no instruction at all.
     ///
@@ -454,6 +460,15 @@ impl<'a> Memory<'a> {
             data.get(offset..offset.checked_add(length)?)
         })
     }
+}
+
+/// The table of handlers an image opens with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VectorTable {
+    /// The bytes of the table, which are data.
+    pub words: core::ops::Range<u64>,
+    /// The start of each handler the table names.
+    pub handlers: Vec<u64>,
 }
 
 /// How a jump through a table of cases looks among other jumps.

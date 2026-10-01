@@ -24,7 +24,7 @@ none.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 45783 of 46006 exact, 78 starts missed and 79 invented,
+stripped releases: 45795 of 46006 exact, 72 starts missed and 79 invented,
 over ARM, Thumb-2, AArch64 and MIPS, with the PLT left out. Most of what is
 left is Thumb-2. By cause:
 
@@ -70,14 +70,6 @@ Some networking parts run ARM big endian (BE8, or BE32 on older cores).
 The A32 and T32 decoders read little endian only: BE8 keeps instructions
 little endian but data big endian, and BE32 swaps both. Add the byte
 order to the ARM architectures, and a fixture built with `-mbig-endian`.
-
-## Measure Cortex-M firmware
-
-Cortex-M firmware is Thumb only (ARMv6-M, ARMv7-M, ARMv8-M), bare metal,
-and shipped as a raw image that opens with a vector table. The Thumb-2
-decoder reads its instructions, but nothing measures it: no fixture is
-built for `thumbv6m` or `thumbv7m`, ARMv6-M lacks most 32-bit forms, and
-the vector table names every handler's start, which the scan could read.
 
 ## Read the ARM hard-float ABI and NEON
 

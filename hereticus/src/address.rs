@@ -69,6 +69,16 @@ impl AddressSpace {
         self.ranges.iter().any(|range| range.start < values.end && values.start < range.end)
     }
 
+    /// Report whether the lowest address of this space is above the floor
+    /// below which a value is a small number.
+    ///
+    /// Code linked so is not PIC, as firmware and kernels are, and a word it
+    /// holds can be an address whole. A PIC library is linked at zero and
+    /// holds distances instead.
+    pub fn starts_high(&self) -> bool {
+        self.ranges.first().is_some_and(|range| range.start >= SMALLEST_ADDRESS)
+    }
+
     /// Report whether this space holds no address a value can name.
     pub fn is_empty(&self) -> bool {
         self.ranges.iter().all(|range| range.end <= SMALLEST_ADDRESS)
@@ -100,6 +110,13 @@ pub enum Contents {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_space_linked_high_starts_high() {
+        assert!(AddressSpace::of_raw_image(0x0800_0000, 0x1000).starts_high());
+        assert!(!AddressSpace::of_raw_image(0, 0x1000).starts_high(), "a PIC library");
+        assert!(!AddressSpace::none().starts_high());
+    }
 
     #[test]
     fn a_raw_image_covers_itself_and_the_gap_after_it() {
