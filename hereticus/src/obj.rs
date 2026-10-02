@@ -428,12 +428,13 @@ fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
 /// firmware, bit 0 of the entry point says which set the code runs in.
 fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
     let count = |symbols: &mut dyn Iterator<Item = object::Symbol<'_, '_>>| {
-        symbols
-            .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
-            .fold((0usize, 0usize), |(compact, all), symbol| {
+        symbols.filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0).fold(
+            (0usize, 0usize),
+            |(compact, all), symbol| {
                 let found = usize::from(encoding_of(&symbol) == Encoding::Compact);
                 (compact + found, all + 1)
-            })
+            },
+        )
     };
     let (compact, all) = match count(&mut file.symbols()) {
         (_, 0) => count(&mut file.dynamic_symbols()),
@@ -549,9 +550,8 @@ mod tests {
         );
         let text = object.section_id(object::write::StandardSection::Text);
         // `jr ra` and its delay slot, then MIPS16e `jrc ra`, `nop`, padded.
-        let code = [
-            0x08, 0x00, 0xe0, 0x03, 0, 0, 0, 0, 0xa0, 0xe8, 0x00, 0x65, 0x00, 0x65, 0x00, 0x65,
-        ];
+        let code =
+            [0x08, 0x00, 0xe0, 0x03, 0, 0, 0, 0, 0xa0, 0xe8, 0x00, 0x65, 0x00, 0x65, 0x00, 0x65];
         object.append_section_data(text, &code, 4);
         let mut add = |name: &str, value: u64, size: u64, st_other: u8| {
             object.add_symbol(Symbol {
@@ -563,7 +563,10 @@ mod tests {
                 weak: false,
                 section: SymbolSection::Section(text),
                 flags: object::SymbolFlags::Elf {
-                    st_info: object::elf::SymbolInfo::new(object::elf::STB_GLOBAL, object::elf::STT_FUNC),
+                    st_info: object::elf::SymbolInfo::new(
+                        object::elf::STB_GLOBAL,
+                        object::elf::STT_FUNC,
+                    ),
                     st_other: object::elf::SymbolOther(st_other),
                 },
             });
