@@ -4,13 +4,14 @@ assertion_line: 641
 expression: kernel_digest(&comparison)
 ---
 functions 20635 -> 21055
-matched 18374
-{No: 6928, Reordered: 552, Data: 5, InDetail: 3012, Yes: 7877}
-gone 2261
-new 2681
-fingerprint 0x77edfe86859985bd
+matched 18376
+{No: 6926, Reordered: 576, Data: 5, InDetail: 3055, Yes: 7814}
+gone 2259
+new 2679
+fingerprint 0x3a9ef1a8b85beedf
 
 strongest changes:
+0x80089ec0 -> 0x80201ce4 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1, callees: 1, texts: 0 }
 0x8008cc74 -> 0x8008b484 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x8009e65c -> 0x8009dd70 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x800a17ec -> 0x800a1634 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
@@ -50,4 +51,3 @@ strongest changes:
 0x8014f8f4 -> 0x8019ad7c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x80158224 -> 0x80162fa8 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x8015a690 -> 0x801655b4 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
-0x80165060 -> 0x8017755c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1, callees: 1, texts: 0 }

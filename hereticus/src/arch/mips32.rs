@@ -28,6 +28,7 @@ const REGISTERS: [&str; 32] = [
 ];
 
 use super::InsnKind;
+use crate::il;
 
 /// The major opcodes this module reads under.
 const SPECIAL: u32 = 0x00;
@@ -391,6 +392,70 @@ fn cop0(fields: &Fields) -> Option<(&'static str, String)> {
     None
 }
 
+/// Lift a word [`decode`] reads, where it computes a value: the moves on a
+/// condition, the multiplies, the counts, the rotates and the bit field and
+/// byte operations. The rest, as the barriers and the coprocessor moves,
+/// lift to nothing.
+pub(super) fn lift(word: u32) -> Option<il::Lifted> {
+    use il::Op;
+    let fields = Fields::of(word);
+    let mnemonic = decode(word)?.mnemonic;
+    let general = |number: u32| match number {
+        0 => il::Operand::Zero,
+        number => il::Operand::Reg(il::Reg::General(number as u8)),
+    };
+    let constant = |value: u32| il::Operand::Const(value.into());
+    let (rs, rt, rd) = (general(fields.rs), general(fields.rt), general(fields.rd));
+    let list = |operands: &[il::Operand]| -> il::Operands { operands.iter().copied().collect() };
+    let (op, operands, written) = match mnemonic {
+        "movz" | "movn" => (Op::Select, list(&[rd, rs, rt]), Some(rd)),
+        "rotr" => (Op::Rotate, list(&[rd, rt, constant(fields.sa)]), Some(rd)),
+        "rotrv" => (Op::Rotate, list(&[rd, rt, rs]), Some(rd)),
+        "mul" => (Op::Multiply, list(&[rd, rs, rt]), Some(rd)),
+        "clz" | "clo" => (Op::Bits, list(&[rd, rs]), Some(rd)),
+        "wsbh" => (Op::Bits, list(&[rd, rt]), Some(rd)),
+        "seb" | "seh" => (Op::Extend, list(&[rd, rt]), Some(rd)),
+        "ext" => {
+            let size = constant(fields.rd + 1);
+            (Op::BitField, list(&[rt, rs, constant(fields.sa), size]), Some(rt))
+        }
+        "ins" => {
+            let size = constant(fields.rd - fields.sa + 1);
+            (Op::BitField, list(&[rt, rs, constant(fields.sa), size]), Some(rt))
+        }
+        // Only `ac0`, which is `hi` and `lo`, is a register the IL names.
+        "madd" | "maddu" | "msub" | "msubu" if fields.rd == 0 => {
+            (Op::MultiplyAdd, list(&[rs, rt]), None)
+        }
+        _ => return None,
+    };
+
+    let register = |operand: &il::Operand| match operand {
+        il::Operand::Reg(reg) => Some(*reg),
+        _ => None,
+    };
+    let mut reads: il::RegSet =
+        operands.iter().skip(usize::from(written.is_some())).filter_map(register).collect();
+    let mut writes: il::RegSet = written.iter().filter_map(register).collect();
+    match mnemonic {
+        // A move on a condition keeps the destination where the condition
+        // fails, and an insert keeps the bits around its field.
+        "movz" | "movn" | "ins" => writes.iter().for_each(|reg| reads.insert(reg)),
+        "madd" | "maddu" | "msub" | "msubu" => {
+            for accumulator in [HI, LO] {
+                reads.insert(accumulator);
+                writes.insert(accumulator);
+            }
+        }
+        _ => {}
+    }
+    Some(il::Lifted { op, reads, writes, memory: None, test: None, operands })
+}
+
+/// Where the IL keeps `hi` and `lo`, as [`super::mips`] does.
+const HI: il::Reg = il::Reg::General(32);
+const LO: il::Reg = il::Reg::General(33);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,5 +670,64 @@ mod tests {
     fn other_opcodes_are_refused() {
         assert_eq!(decode(0x2402_0001), None, "addiu");
         assert_eq!(decode(0xec00_0001), None, "a reserved opcode");
+    }
+
+    fn general(number: u8) -> il::Operand {
+        il::Operand::Reg(il::Reg::General(number))
+    }
+
+    fn regs(numbers: &[u8]) -> il::RegSet {
+        numbers.iter().map(|&number| il::Reg::General(number)).collect()
+    }
+
+    /// `movz v0, a1, at` keeps `v0` where `at` is not zero, so it reads it.
+    #[test]
+    fn a_move_on_a_condition_is_a_select() {
+        let lifted = lift(0x00a1_100a).expect("movz lifts");
+        assert_eq!(lifted.op, il::Op::Select);
+        assert_eq!(lifted.operands.as_slice(), [general(2), general(5), general(1)]);
+        assert_eq!((lifted.reads, lifted.writes), (regs(&[1, 2, 5]), regs(&[2])));
+    }
+
+    #[test]
+    fn a_bit_field_names_its_position_and_size() {
+        // `ext t0, a0, 3, 5`
+        let lifted = lift(0x7c88_20c0).expect("ext lifts");
+        assert_eq!(lifted.op, il::Op::BitField);
+        let field = [il::Operand::Const(3), il::Operand::Const(5)];
+        assert_eq!(lifted.operands[2..], field);
+        assert_eq!((lifted.reads, lifted.writes), (regs(&[4]), regs(&[8])));
+    }
+
+    #[test]
+    fn a_byte_extend_and_a_multiply_lift() {
+        // `seb v0, a0`
+        let seb = lift(0x7c04_1420).expect("seb lifts");
+        assert_eq!(
+            (seb.op, seb.operands.as_slice()),
+            (il::Op::Extend, &[general(2), general(4)][..])
+        );
+        // `mul zero, a0, a1` writes nothing the IL keeps.
+        let mul = lift(0x7085_0002).expect("mul lifts");
+        assert_eq!(mul.operands[0], il::Operand::Zero);
+        assert!(mul.writes.is_empty());
+    }
+
+    /// A multiply into `ac1` names an accumulator the IL has no register for.
+    #[test]
+    fn a_dsp_accumulator_lifts_to_nothing() {
+        // `madd ac1, a0, a1`
+        assert!(decode(0x7085_0800).is_some());
+        assert_eq!(lift(0x7085_0800), None);
+    }
+
+    #[test]
+    fn what_lifts_is_what_decodes() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            if let Some(lifted) = lift(word) {
+                assert!(decode(word).is_some(), "{word:#010x}");
+                assert!(lifted.operands.len() <= 4, "{word:#010x}");
+            }
+        });
     }
 }
