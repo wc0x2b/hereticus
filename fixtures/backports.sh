@@ -40,6 +40,26 @@ for target in "${all_targets[@]}"; do
         targets+=("$target")
     fi
 done
+# What decides the output: this script and what it reads, the image it
+# runs in, and the targets asked for. A second run with the same inputs
+# keeps what the first built, as a build here takes ten minutes and the
+# tests run it each time. BACKPORTS_FORCE=1 builds again anyway.
+inputs_hash="$(
+    {
+        cat "$here/backports.sh" "$here/backports.py" "$here/Dockerfile"
+        find "$patches" "$here/expat" "$here/smallvec-harness" -type f -not -path '*/target/*' \
+            -print0 | sort -z | xargs -0 cat
+        echo "${BACKPORTS_TARGETS:-}"
+        clang --version
+    } | sha256sum | cut -d' ' -f1
+)"
+stamp="$out/.inputs"
+if [ -z "${BACKPORTS_FORCE:-}" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$inputs_hash" ]; then
+    echo "backports: up to date in $out"
+    exit 0
+fi
+rm -f "$stamp"
+
 # clang at every level that ships, and GCC with GNU ld at the two most
 # firmware uses. A GCC build lands in `<arch>-gcc-<level>`.
 levels=(O1 O2 O3 Os)
@@ -311,3 +331,4 @@ echo "versions: built $(find "$out" -name lib.so | wc -l) libraries in $out"
 
 out="$here/build/backports"
 echo "backports: built $(find "$out" -name lib.so | wc -l) libraries in $out"
+echo "$inputs_hash" > "$stamp"
