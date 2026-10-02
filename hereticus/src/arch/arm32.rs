@@ -1465,7 +1465,7 @@ impl IntegerWord {
             }
             Self::Halfword { name: mnemonic, rt, rn, offset, index } => {
                 let pair = if mnemonic.ends_with('d') {
-                    format!("{}, ", name(rt + 1 & 15))
+                    format!("{}, ", name((rt + 1) & 15))
                 } else {
                     String::new()
                 };
@@ -1551,7 +1551,7 @@ impl IntegerWord {
                     "ldrh" | "ldrsh" | "strh" => il::Width::Bits16,
                     _ => il::Width::Bits32,
                 };
-                let values: Vec<u32> = if pair { vec![rt, rt + 1 & 15] } else { vec![rt] };
+                let values: Vec<u32> = if pair { vec![rt, (rt + 1) & 15] } else { vec![rt] };
                 let at = match index {
                     Indexing::PostIndex => 0,
                     Indexing::Offset | Indexing::PreIndex => offset,
