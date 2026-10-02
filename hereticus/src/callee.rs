@@ -254,6 +254,13 @@ fn resolve(arch: &dyn Arch, links: &Links, functions: &[Function], target: CallT
             }
         }
         CallTarget::Slot(slot) => resolve_slot(arch, links, functions, slot),
+        CallTarget::PageOffset { slot, offset } => match slot_value(arch, links, slot) {
+            Some(page) => {
+                let address = (page as u32).wrapping_add(offset as u32);
+                function_at(functions, u64::from(address & !1))
+            }
+            None => Callee::Unknown,
+        },
     }
 }
 
@@ -467,5 +474,11 @@ mod tests {
         assert_eq!(via_slot, Callee::Function(0));
         let nowhere = resolve(&Arm32, &links, &functions, CallTarget::Slot(0x9000));
         assert_eq!(nowhere, Callee::Unknown);
+
+        let in_page = CallTarget::PageOffset { slot: 0x3ea38, offset: 0x11 };
+        let functions = [function("", 0x20), function("", 0x30)];
+        assert_eq!(resolve(&Arm32, &links, &functions, in_page), Callee::Function(1));
+        let in_no_page = CallTarget::PageOffset { slot: 0x9000, offset: 0x11 };
+        assert_eq!(resolve(&Arm32, &links, &functions, in_no_page), Callee::Unknown);
     }
 }

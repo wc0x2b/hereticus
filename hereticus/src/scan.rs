@@ -518,6 +518,11 @@ fn slot_call_targets(arch: &dyn Arch, code: &[u8], base: u64, memory: &Memory<'_
             CallTarget::Slot(slot) => memory
                 .bytes(slot, arch.pointer_width())
                 .map(|bytes| arch.function_address(arch.read_pointer(bytes))),
+            CallTarget::PageOffset { slot, offset } => {
+                let page = arch.read_pointer(memory.bytes(slot, arch.pointer_width())?);
+                let address = (page as u32).wrapping_add(offset as u32);
+                Some(arch.function_address(u64::from(address)))
+            }
             CallTarget::Address(_) => None,
         })
         .filter(|target| (base..end).contains(target))
