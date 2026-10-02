@@ -103,6 +103,11 @@ fn tally(project: &str, arch: &str, first: &str, second: &str) -> Tally {
 
 /// Every project and architecture of one comparison, summed.
 fn tally_all(first: &str, second: &str) -> Tally {
+    tally_arches(first, second, &["arm", "thumb", "aarch64", "mips", "mipsel"])
+}
+
+/// Every project of one comparison on `arches`, summed.
+fn tally_arches(first: &str, second: &str, arches: &[&str]) -> Tally {
     // Rust is built by LLVM alone, so it has no GCC builds.
     let built_by_gcc = first.starts_with("gcc") || second.starts_with("gcc");
     let projects: &[&str] = if built_by_gcc {
@@ -112,7 +117,7 @@ fn tally_all(first: &str, second: &str) -> Tally {
     };
     let mut total = Tally::default();
     for project in projects {
-        for arch in ["arm", "thumb", "aarch64", "mips", "mipsel"] {
+        for &arch in arches {
             let one = tally(project, arch, first, second);
             total.right += one.right;
             total.wrong += one.wrong;
@@ -136,4 +141,11 @@ fn pairs_across_builds_are_locked(
     #[case] expected: Tally,
 ) {
     assert_eq!(tally_all(first, second), expected, "{first} against {second}");
+}
+
+/// MIPS16e, which GCC alone builds, so only its two levels compare.
+#[test]
+fn mips16_pairs_across_builds_are_locked() {
+    let found = tally_arches("gcc-O2", "gcc-Os", &["mips16"]);
+    assert_eq!(found, Tally { right: 701, wrong: 47, gone: 159, new: 244 });
 }

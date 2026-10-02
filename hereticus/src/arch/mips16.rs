@@ -18,7 +18,7 @@
 //! encodings of the MIPS16e ASE manual.
 
 use super::mips::Mips32;
-use super::{Arch, DecodeError, Insn, InsnKind, JumpTable, Memory};
+use super::{Arch, CallTarget, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
 use compact_str::CompactString;
@@ -490,9 +490,96 @@ impl Arch for Mips16 {
             Some(self.base.read_halfword([bytes[0], bytes[1]]) as i16)
         };
         (0..insns.len())
-            .filter_map(|index| read_jump_table(insns, index, &code, &entry, |operand| {
-                self.constant_value(operand)
-            }))
+            .filter_map(|index| {
+                read_jump_table(insns, index, &code, &entry, |operand| self.constant_value(operand))
+            })
+            .collect()
+    }
+
+    /// An address taken from the program counter, or a lower half added to
+    /// a page that PIC code read from the global offset table, through a
+    /// copy of the global pointer:
+    ///
+    /// ```text
+    /// la    a1, text               lw    a1, %got(text)(s0)
+    ///                              addiu a1, %lo(text)
+    /// ```
+    fn data_addresses(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        memory: &Memory<'_>,
+    ) -> Vec<u64> {
+        let constant = |operand: &str| self.constant_value(operand);
+        let page = |load_at: usize, load: &Insn| {
+            let [_, reference] = two_operands(load)?;
+            let (offset, base) = reference.strip_suffix(')')?.split_once('(')?;
+            if load.mnemonic != "lw" || !holds_global_pointer(body, load_at, base) {
+                return None;
+            }
+            let global_pointer = global_pointer_before(body, load_at, constant)?;
+            let slot = (global_pointer as u32).wrapping_add(constant(offset)? as u32);
+            let bytes = memory.bytes(u64::from(slot), 4)?;
+            Some(self.read_pointer(bytes) as u32)
+        };
+        body.iter()
+            .enumerate()
+            .filter(|(_, insn)| insn.mnemonic == "addiu")
+            .filter_map(|(index, insn)| match three_operands(insn)? {
+                // `t9` receives a callee, not data.
+                ["t9", ..] => None,
+                // The preamble's is half of `_gp_disp`, a distance.
+                [_, "pc", _] if index > 0 && is_gp_preamble_at(body, index - 1) => None,
+                [_, "pc", address] => constant(address),
+                [_, source, low] => {
+                    let (at, written) = last_write(body, index, source)?;
+                    let address = page(at, written)?.wrapping_add(constant(low)? as u32);
+                    Some(u64::from(address))
+                }
+            })
+            .filter(|&address| space.contains_formed(address))
+            .collect()
+    }
+
+    /// PIC code calls a function it does not reach with `jal` through a
+    /// slot of the global offset table, as MIPS32 does. It reaches the table
+    /// through a copy of the global pointer, as `s0`:
+    ///
+    /// ```text
+    /// lw   v0, %call16(callee)(s0)
+    /// jalr v0
+    /// move t9, v0
+    /// ```
+    fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
+        let through_slot = |index: usize| {
+            let register = insns[index].operands.rsplit(',').next()?.trim();
+            let (load_at, load) = last_write_within(insns, index, register, TABLE_LOOK_BACK)?;
+            let [_, reference] = two_operands(load)?;
+            let (offset, base) = reference.strip_suffix(')')?.split_once('(')?;
+            let offset = self.constant_value(offset)?;
+            if load.mnemonic != "lw" || !holds_global_pointer(insns, load_at, base) {
+                return None;
+            }
+            let global_pointer =
+                global_pointer_before(insns, index, |operand| self.constant_value(operand))?;
+            Some(u64::from((global_pointer as u32).wrapping_add(offset as u32)))
+        };
+        insns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, insn)| match insn.kind {
+                InsnKind::Call { target: Some(target) } => {
+                    Some((index, Some(CallTarget::Address(target))))
+                }
+                InsnKind::Call { target: None } => {
+                    Some((index, through_slot(index).map(CallTarget::Slot)))
+                }
+                InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
+                    Some((index, Some(CallTarget::Address(target))))
+                }
+                _ => None,
+            })
             .collect()
     }
 
@@ -639,7 +726,8 @@ fn read_jump_table(
     constant: impl Fn(&str) -> Option<u64>,
 ) -> Option<JumpTable> {
     let jump = &insns[index];
-    if !matches!(jump.mnemonic.as_str(), "jr" | "jrc") || jump.kind != (InsnKind::Jump { target: None })
+    if !matches!(jump.mnemonic.as_str(), "jr" | "jrc")
+        || jump.kind != (InsnKind::Jump { target: None })
     {
         return None;
     }
@@ -672,9 +760,9 @@ fn read_jump_table(
         .iter()
         .rposition(|insn| insn.kind != InsnKind::Normal)
         .map_or(0, |at| at + 1);
-    let guard = insns.iter().position(|insn| {
-        insn.kind == (InsnKind::Branch { target: Some(insns[block].address) })
-    });
+    let guard = insns
+        .iter()
+        .position(|insn| insn.kind == (InsnKind::Branch { target: Some(insns[block].address) }));
     let bound = bound_before(index).or_else(|| bound_before(guard?))?;
     let targets: Vec<u64> = (0..bound as u64)
         .map_while(|case| {
@@ -690,12 +778,79 @@ fn read_jump_table(
 /// The last instruction before `insns[before]`, and its index, that writes
 /// `register`.
 fn last_write<'a>(insns: &'a [Insn], before: usize, register: &str) -> Option<(usize, &'a Insn)> {
-    let from = before.saturating_sub(TABLE_LOOK_BACK);
+    last_write_within(insns, before, register, TABLE_LOOK_BACK)
+}
+
+/// [`last_write`], within `distance` instructions.
+fn last_write_within<'a>(
+    insns: &'a [Insn],
+    before: usize,
+    register: &str,
+    distance: usize,
+) -> Option<(usize, &'a Insn)> {
+    let from = before.saturating_sub(distance);
     (from..before).rev().map(|at| (at, &insns[at])).find(|(_, insn)| {
         insn.kind == InsnKind::Normal
             && !super::mips::is_store(&insn.mnemonic)
             && insn.operands.split(',').next().map(str::trim) == Some(register)
     })
+}
+
+/// The two operands of `op a, b`.
+fn two_operands(insn: &Insn) -> Option<[&str; 2]> {
+    let operands: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
+    operands.try_into().ok()
+}
+
+/// Report whether a preamble starts at `insns[at]`.
+fn is_gp_preamble_at(insns: &[Insn], at: usize) -> bool {
+    insns.get(at..at + GP_PREAMBLE_LENGTH).is_some_and(is_gp_preamble)
+}
+
+/// The global pointer that the last preamble before `insns[index]` makes:
+/// the upper half it loads, shifted, plus the address it takes from the
+/// program counter.
+fn global_pointer_before(
+    insns: &[Insn],
+    index: usize,
+    constant: impl Fn(&str) -> Option<u64>,
+) -> Option<u64> {
+    let start = (0..index.saturating_sub(GP_PREAMBLE_LENGTH - 1))
+        .rev()
+        .find(|&at| is_gp_preamble(&insns[at..at + GP_PREAMBLE_LENGTH]))?;
+    let preamble = &insns[start..start + GP_PREAMBLE_LENGTH];
+    let [_, _, high] = three_operands(&preamble[0])?;
+    let [_, _, low] = three_operands(&preamble[1])?;
+    let joined = (constant(high)? as u32).wrapping_shl(16).wrapping_add(constant(low)? as u32);
+    Some(u64::from(joined))
+}
+
+/// Report whether `register` holds the global pointer at `insns[before]`:
+/// it is `gp`, a copy of it, or what the preamble made.
+fn holds_global_pointer(insns: &[Insn], before: usize, register: &str) -> bool {
+    /// Copies of copies, as `move gp, v0` then `move s0, gp`.
+    const MOST_COPIES: usize = 4;
+
+    let (mut before, mut register) = (before, register);
+    for _ in 0..=MOST_COPIES {
+        if register == "gp" {
+            return true;
+        }
+        let Some((at, write)) = last_write_within(insns, before, register, before) else {
+            return false;
+        };
+        let preamble_start = (at + 1).checked_sub(GP_PREAMBLE_LENGTH);
+        if preamble_start.is_some_and(|start| is_gp_preamble(&insns[start..=at])) {
+            return true;
+        }
+        match three_operands(write) {
+            Some([_, source, "zero"]) if write.mnemonic == "or" => {
+                (before, register) = (at, source);
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// The three operands of `op a, b, c`.
@@ -798,6 +953,54 @@ mod tests {
         let mut values = switch([0x000b, 0x000d, 0xfff1, 0x0011, 0x0013]);
         values[0] = 0x6500;
         assert!(tables(&values).is_empty());
+    }
+
+    /// The opening of `luaB_assert` in Lua 5.1, by GCC 14 at `-O2`, up to
+    /// its first call, at 0x7de4.
+    const CALL_THROUGH_SLOT: [u16; 18] = [
+        0xf000, 0x6a03, 0xf0e3, 0x0b08, 0xf400, 0x3240, 0xe269, 0x659a, 0x64f5, 0x671c, 0x6d01,
+        0xf450, 0x98ec, 0x6724, 0xd204, 0xef40, 0x653f, 0x6500,
+    ];
+
+    #[test]
+    fn a_call_through_a_copy_of_gp_names_its_slot() {
+        let code: Vec<u8> =
+            CALL_THROUGH_SLOT.iter().flat_map(|value| value.to_be_bytes()).collect();
+        let insns = crate::arch::decode_all(&Mips16::BIG, &code, 0x7de4).0;
+        let global_pointer = 0x3_0000 + 0x96d0;
+        let calls = Mips16::BIG.call_targets(&insns);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].1, Some(CallTarget::Slot(global_pointer - 31668)));
+    }
+
+    #[test]
+    fn an_address_from_the_global_offset_table_is_data() {
+        // `lw a2, -32708(s0)`, `addiu a2, -5188`, `la a3, ...`, after the
+        // preamble of `luaB_assert`.
+        let mut values = CALL_THROUGH_SLOT[..11].to_vec();
+        values.extend([0xf030, 0x98dc, 0xf3bd, 0x4e1c, 0x0f01]);
+        let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
+        let insns = crate::arch::decode_all(&Mips16::BIG, &code, 0x7de4).0;
+        let slot = 0x3_96d0 - 32708;
+        let page = 0x2_0000_u32.to_be_bytes();
+        let regions = [(slot, page.as_slice())];
+        let la = (insns.last().unwrap().address & !3) + 4;
+        let space = AddressSpace::from_ranges([0x7000..0xa000, 0x1_0000..0x4_0000]);
+
+        let found = Mips16::BIG.data_addresses(&code, &insns, &space, &Memory::new(&regions));
+        assert_eq!(found, [0x2_0000 - 5188, la], "the preamble's `la` is not data");
+    }
+
+    #[test]
+    fn a_call_through_a_register_from_elsewhere_names_nothing() {
+        let mut values = CALL_THROUGH_SLOT;
+        // `move s0, a0` in place of `move s0, gp`.
+        values[9] = 0x6704;
+        let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
+        let insns = crate::arch::decode_all(&Mips16::BIG, &code, 0x7de4).0;
+        let calls = Mips16::BIG.call_targets(&insns);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].1, None);
     }
 
     #[test]

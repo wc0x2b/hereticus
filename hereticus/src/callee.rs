@@ -268,8 +268,10 @@ fn resolve_slot(arch: &dyn Arch, links: &Links, functions: &[Function], slot: u6
     if let Some(name) = links.slots.get(&slot) {
         return Callee::Named(name.clone());
     }
+    // A pointer to a Thumb-2 or MIPS16e function has bit 0 set. Code of
+    // every set starts at an even address, so it can be cleared for all.
     match slot_value(arch, links, slot) {
-        Some(address) => function_at(functions, address),
+        Some(address) => function_at(functions, address & !1),
         None => Callee::Unknown,
     }
 }

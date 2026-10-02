@@ -515,9 +515,9 @@ fn slot_call_targets(arch: &dyn Arch, code: &[u8], base: u64, memory: &Memory<'_
     arch.call_targets(&insns)
         .into_iter()
         .filter_map(|(_, target)| match target? {
-            CallTarget::Slot(slot) => {
-                memory.bytes(slot, arch.pointer_width()).map(|bytes| arch.read_pointer(bytes))
-            }
+            CallTarget::Slot(slot) => memory
+                .bytes(slot, arch.pointer_width())
+                .map(|bytes| arch.function_address(arch.read_pointer(bytes))),
             CallTarget::Address(_) => None,
         })
         .filter(|target| (base..end).contains(target))
