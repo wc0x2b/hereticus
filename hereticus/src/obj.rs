@@ -242,15 +242,21 @@ impl Binary {
         }
 
         // Stripping keeps the dynamic symbol table, which names what the
-        // library exports, so those functions keep their names.
+        // library exports, so those functions keep their names, and their
+        // instruction sets.
         let mut exported: BTreeMap<u64, &str> = BTreeMap::new();
+        let mut other_set = BTreeSet::new();
         for symbol in file.dynamic_symbols() {
             if symbol.kind() == SymbolKind::Text
                 && symbol.size() > 0
                 && let Ok(name) = symbol.name()
             {
                 // ARM marks a Thumb function by setting bit 0 of its address.
-                let name_of = exported.entry(symbol.address() & !1).or_insert(name);
+                let address = symbol.address() & !1;
+                if set_of_symbol(isa, encoding_of(&symbol)) != isa {
+                    other_set.insert(address);
+                }
+                let name_of = exported.entry(address).or_insert(name);
                 // Aliases share an address. The first by name keeps the
                 // result the same whatever order the table lists them in.
                 *name_of = (*name_of).min(name);
@@ -277,7 +283,7 @@ impl Binary {
             found_by: FoundBy::Scanning,
             addresses: address_space(&file),
             links: Links::of_object(&file),
-            other_set: BTreeSet::new(),
+            other_set,
         })
     }
 
@@ -313,7 +319,7 @@ impl Binary {
                 }
             };
             let ranges = crate::unwind::find_function_ranges(data, base, order);
-            index = crate::scan::index_from_ranges(&ranges);
+            index = crate::scan::index_from_ranges(&ranges, isa.arch());
         }
         let functions: Vec<Function> =
             crate::scan::recover_from_regions(&regions, &index, isa.arch())
