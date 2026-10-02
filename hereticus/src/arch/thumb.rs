@@ -378,7 +378,13 @@ impl Arch for Thumb2 {
     }
 
     fn lift(&self, insn: &Insn, word: &[u8]) -> Option<crate::il::Lifted> {
-        lift_with(InstDecoder::default_thumb(), insn, word)
+        let a32 = match *word {
+            [low, high, second_low, second_high] => {
+                Some(as_a32(u32::from_le_bytes([second_low, second_high, low, high])))
+            }
+            _ => None,
+        };
+        lift_with(InstDecoder::default_thumb(), insn, word, a32)
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
@@ -950,5 +956,34 @@ mod tests {
     #[test]
     fn a_pointer_to_a_function_drops_the_thumb_bit() {
         assert_eq!(Thumb2.function_address(0x1235), 0x1234);
+    }
+
+    fn reg(number: u8) -> crate::il::Operand {
+        crate::il::Operand::Reg(crate::il::Reg::General(number))
+    }
+
+    /// A 16-bit form names its destination once, and lifts as the 32-bit
+    /// form that names it twice.
+    #[test]
+    fn a_two_address_form_names_its_destination_twice() {
+        use crate::il::{Op, Operand};
+        // `adds r0, #1` and `ands r0, r1`
+        let add = lift_one(&[0x3001]);
+        assert_eq!(
+            (add.op, add.operands.as_slice()),
+            (Op::Add, &[reg(0), reg(0), Operand::Const(1)][..])
+        );
+        let and = lift_one(&[0x4008]);
+        assert_eq!((and.op, and.operands.as_slice()), (Op::And, &[reg(0), reg(0), reg(1)][..]));
+        // `lsls r0, r1, #2` names three already.
+        assert_eq!(lift_one(&[0x0088]).operands.len(), 3);
+    }
+
+    /// `negs r0, r1` is `rsbs r0, r1, #0`, which is `0 - r1`.
+    #[test]
+    fn a_reverse_subtract_from_zero_is_a_negate() {
+        let negate = lift_one(&[0x4248]).canonical();
+        assert_eq!(negate.op, crate::il::Op::Negate);
+        assert_eq!(negate.operands.as_slice(), [reg(0), reg(1)]);
     }
 }
