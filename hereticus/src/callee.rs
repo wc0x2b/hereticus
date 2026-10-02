@@ -119,6 +119,13 @@ impl Links {
         Self { memory, slots, stubs, sites: BTreeMap::new(), read_only_starts }
     }
 
+    /// The name of the function whose PLT stub `function` is, as
+    /// `getpwnam@plt`, where a relocation names the slot it jumps through.
+    pub(crate) fn stub_name(&self, arch: &dyn Arch, function: &Function) -> Option<String> {
+        let slot = arch.stub_slot(&function.code, function.address)?;
+        self.slots.get(&slot).map(|name| format!("{name}@plt"))
+    }
+
     /// Links from loaded bytes and named slots, for a test to build.
     #[cfg(test)]
     pub(crate) fn of_parts(memory: Vec<(u64, Vec<u8>)>, slots: BTreeMap<u64, String>) -> Self {
@@ -481,6 +488,15 @@ mod tests {
         assert_eq!(via_slot, Callee::Function(0));
         let nowhere = resolve(&Arm32, &links, &functions, CallTarget::Slot(0x9000));
         assert_eq!(nowhere, Callee::Unknown);
+
+        let stub = Function {
+            name: String::new(),
+            address: 0x1dd60,
+            code: links.bytes_at(0x1dd60).unwrap()[..12].to_vec(),
+        };
+        let stub_name = links.stub_name(&Arm32, &stub);
+        assert_eq!(stub_name.as_deref(), Some("_ZN8tinyxml27StrPair5ResetEv@plt"));
+        assert_eq!(links.stub_name(&Arm32, &function("", 0x20)), None, "no stub");
 
         let in_page = CallTarget::PageOffset { slot: 0x3ea38, offset: 0x11 };
         let functions = [function("", 0x20), function("", 0x30)];

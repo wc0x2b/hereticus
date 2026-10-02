@@ -265,12 +265,13 @@ impl Binary {
                 *name_of = (*name_of).min(name);
             }
         }
+        let links = Links::of_object(&file);
         let scanned: Vec<Function> = crate::scan::recover_functions(data, isa.arch())
             .into_iter()
             .map(|found| found.function)
             .map(|function| match exported.get(&function.address) {
                 Some(name) => Function { name: stable_name(name).to_string(), ..function },
-                None => function,
+                None => name_stub(function, isa.arch(), &links),
             })
             .collect();
 
@@ -285,7 +286,7 @@ impl Binary {
             functions: scanned,
             found_by: FoundBy::Scanning,
             addresses: address_space(&file),
-            links: Links::of_object(&file),
+            links,
             other_set,
         })
     }
@@ -398,11 +399,12 @@ impl Binary {
             let name_of = exported.entry(address).or_insert(export.name);
             *name_of = (*name_of).min(export.name);
         }
+        let links = Links::of_object(file);
         let functions = functions
             .into_iter()
             .map(|function| match exported.get(&function.address) {
                 Some(name) => Function { name: stable_name(name).to_string(), ..function },
-                None => function,
+                None => name_stub(function, arch, &links),
             })
             .collect();
 
@@ -414,7 +416,7 @@ impl Binary {
                 file.segments()
                     .map(|segment| segment.address()..segment.address() + segment.size()),
             ),
-            links: Links::of_object(file),
+            links,
             other_set,
         })
     }
@@ -601,6 +603,16 @@ fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
     match most {
         true => Encoding::Compact,
         false => Encoding::Full,
+    }
+}
+
+/// `function`, named for its callee where it is a PLT stub whose slot a
+/// relocation names. Every stub is the same code but for its slot, so
+/// without the name, stubs pair by their order, which a new import moves.
+fn name_stub(function: Function, arch: &dyn Arch, links: &Links) -> Function {
+    match links.stub_name(arch, &function) {
+        Some(name) => Function { name, ..function },
+        None => function,
     }
 }
 

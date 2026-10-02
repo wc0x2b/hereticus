@@ -4,10 +4,8 @@
 
 Four Apple CVE fixes, all AArch64, put each fix in the top 19 rows with
 `--sort added`. The `ubusd` fix of CVE-2025-62526 in OpenWrt 24.10.4 shows
-in 8 rows on AArch64 and 9 on MIPS16e. On A32, the same `ubusd` hides 73
-functions that changed only a constant, and reports 9 functions as new,
-7 of them PLT stubs: a file with no section headers does not say where
-`.plt` ends, so its stubs pair as functions. Find
+in 8 rows on AArch64, 9 on MIPS16e and 8 on A32, where the 7 new PLT
+stubs are the 7 functions of the C library that 24.10.4 calls first. Find
 more published fixes of OpenWrt or router firmware, for A32 and Thumb-2
 too, and add a report to `real-life-reports/` for each.
 
