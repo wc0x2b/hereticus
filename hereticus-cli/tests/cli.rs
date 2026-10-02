@@ -225,6 +225,45 @@ fn diffs_one_function_at_instruction_level() {
     ]));
 }
 
+/// Every changed function prints its diff, in the order of the report.
+#[test]
+fn diffs_every_changed_function() {
+    if !fixture("O2", "firmware").exists() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(hereticus().args([
+        "--color",
+        "never",
+        "--diff-all",
+        "fixtures/build/O2/firmware.o",
+        "fixtures/build/O2/firmware_v2.o",
+    ]));
+}
+
+/// One function or all of them, not both.
+#[test]
+fn diff_all_and_one_diff_are_refused_together() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    let output = hereticus()
+        .args([
+            "--diff-all",
+            "--diff",
+            "mul_by_constant",
+            "fixtures/build/O2/basic.o",
+            "fixtures/build/O2/basic_v2.o",
+        ])
+        .output()
+        .expect("the binary runs");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+}
+
 /// A name the earlier binary does not hold is refused with a clear message.
 #[test]
 fn diff_of_an_unknown_function_is_refused() {

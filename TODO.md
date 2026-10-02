@@ -28,12 +28,6 @@ A kernelcache of iOS 15 and later is an `MH_FILESET` that holds each kext
 as its own Mach-O. Read whole, it gives 648 functions, so a user must
 extract the kexts with `ipsw` first. Read each `LC_FILESET_ENTRY`.
 
-## Show the diff of every changed function
-
-`--diff` shows one function and reads both binaries again each time: 70
-seconds on a whole kernelcache. To find a fix, a user reads many. Add
-`--diff-all`, which prints the diff of each changed pair in one run.
-
 ## Lift more of what a guard can be
 
 `il` reads a compare and the branch on it as one guard on AArch64, A32,

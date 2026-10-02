@@ -40,8 +40,17 @@ struct Args {
     /// Give a name, or `sub_<hex>` for a function the binary did not name. The
     /// function is looked up in the earlier binary and diffed against whatever
     /// it was matched to in the later one.
-    #[arg(long, value_name = "FUNCTION")]
+    #[arg(long, value_name = "FUNCTION", conflicts_with = "diff_all")]
     diff: Option<String>,
+
+    /// Show the instruction-level diff of every changed function, then stop.
+    ///
+    /// The functions are the ones the report would list, in its order, and
+    /// `--all`, `--show-retouched`, `--show-data` and `--sort` choose them as
+    /// they do there. Both binaries are read once, which `--diff` for each
+    /// function in turn would repeat.
+    #[arg(long)]
+    diff_all: bool,
 
     /// Ignore symbol names, as though both binaries were stripped.
     ///
@@ -340,6 +349,22 @@ fn run(args: &Args) -> Result<bool, String> {
     if let Some(wanted) = &args.diff {
         let paint = Paint::resolve(args.color);
         return print_one_diff(&diff, &before, &after, wanted, paint).map(|()| false);
+    }
+    if args.diff_all {
+        let mut shown: Vec<&Match> = diff
+            .matched
+            .iter()
+            .filter(|pair| args.all || is_interesting(pair, Hidden::from_args(args)))
+            .collect();
+        sort_shown(&mut shown, args.sort);
+        let paint = Paint::resolve(args.color);
+        for (index, pair) in shown.iter().enumerate() {
+            if index > 0 {
+                println!();
+            }
+            print_pair_diff(pair, &before, &after, paint);
+        }
+        return Ok(!shown.is_empty());
     }
 
     match args.format {
@@ -732,6 +757,12 @@ fn print_one_diff(
         }
     })?;
 
+    print_pair_diff(pair, before, after, paint);
+    Ok(())
+}
+
+/// Print the name of a pair, then its instruction-level diff.
+fn print_pair_diff(pair: &Match, before: &Binary, after: &Binary, paint: Paint) {
     let before_name = name_of(before, pair.before);
     let after_name = name_of(after, pair.after);
     if before_name == after_name {
@@ -749,8 +780,6 @@ fn print_one_diff(
     for line in &lines {
         println!("{}", render_diff_line(line, paint));
     }
-
-    Ok(())
 }
 
 /// Draw one diff line with a leading sign, in the color of its kind.
