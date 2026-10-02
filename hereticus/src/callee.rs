@@ -92,15 +92,7 @@ impl Links {
                 .collect();
         }
 
-        let mut slots = jump_slot_names(file);
-        slots.extend(mips_global_slot_names(file));
-        // A file with no section headers names its slots only through the
-        // dynamic segment.
-        if file.sections().next().is_none()
-            && let Some(dynamic) = crate::dynamic::Dynamic::of(file)
-        {
-            slots.extend(dynamic.slot_names());
-        }
+        let mut slots = slot_names(file);
         let mut stubs = BTreeMap::new();
         if let object::File::MachO64(macho) = file {
             crate::macho::apply_chained_fixups(macho, &mut memory);
@@ -309,6 +301,21 @@ fn function_at(functions: &[Function], address: u64) -> Callee {
         Some(function) => Callee::Named(function.name.clone()),
         None => Callee::Unknown,
     }
+}
+
+/// The symbol each slot of the global offset table holds, where a
+/// relocation or the order of the MIPS global slots names it.
+pub(crate) fn slot_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
+    let mut slots = jump_slot_names(file);
+    slots.extend(mips_global_slot_names(file));
+    // A file with no section headers names its slots only through the
+    // dynamic segment.
+    if file.sections().next().is_none()
+        && let Some(dynamic) = crate::dynamic::Dynamic::of(file)
+    {
+        slots.extend(dynamic.slot_names());
+    }
+    slots
 }
 
 /// The symbol that each `JUMP_SLOT` or `GLOB_DAT` relocation writes into a
