@@ -8,6 +8,7 @@
 pub mod address;
 pub mod arch;
 pub mod callee;
+pub mod dynamic;
 pub mod il;
 mod macho;
 pub mod matching;

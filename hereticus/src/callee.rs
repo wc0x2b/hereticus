@@ -94,6 +94,13 @@ impl Links {
 
         let mut slots = jump_slot_names(file);
         slots.extend(mips_global_slot_names(file));
+        // A file with no section headers names its slots only through the
+        // dynamic segment.
+        if file.sections().next().is_none()
+            && let Some(dynamic) = crate::dynamic::Dynamic::of(file)
+        {
+            slots.extend(dynamic.slot_names());
+        }
         let mut stubs = BTreeMap::new();
         if let object::File::MachO64(macho) = file {
             crate::macho::apply_chained_fixups(macho, &mut memory);
