@@ -480,6 +480,11 @@ fn lift(inst: &Instruction) -> il::Lifted {
     if is_compare(inst.opcode) && operands.len() == 3 {
         operands.remove(0);
     }
+    // It gives an A32 `mvn` of a constant the unused first value field too,
+    // as in `mvn r0, r0, 0x1`.
+    if inst.opcode == Opcode::MVN && operands.len() == 3 {
+        operands.remove(1);
+    }
     let mut reads = il::RegSet::EMPTY;
     let mut writes = il::RegSet::EMPTY;
     for operand in &operands {
@@ -521,14 +526,23 @@ fn lift(inst: &Instruction) -> il::Lifted {
         writes.insert(il::Reg::Flags);
     }
 
-    il::Lifted {
+    let mut lifted = il::Lifted {
         op: op_of(inst, &operands),
         reads,
         writes,
         memory: memory_access(inst.opcode, &operands),
         test: test_of(inst, &operands),
         operands: operands.iter().map(|operand| il_operand(*operand)).collect(),
+    };
+    // `mvn r0, #1` puts the constant `~1` in `r0`, as `mov` would.
+    if let (Opcode::MVN, [dest, il::Operand::Const(constant)]) =
+        (inst.opcode, lifted.operands.as_slice())
+    {
+        let inverted = il::Operand::Const(u64::from(!(*constant as u32)));
+        lifted.operands = [*dest, inverted].into_iter().collect();
+        lifted.op = il::Op::Move;
     }
+    lifted
 }
 
 /// An operand as the IL names it.
@@ -679,9 +693,10 @@ fn op_of(inst: &Instruction, operands: &[Operand]) -> il::Op {
         | Opcode::MCRR(..)
         | Opcode::MRRC(..)
         | Opcode::CDP2(..) => Op::System,
+        Opcode::LDREX | Opcode::LDREXB | Opcode::LDREXH | Opcode::LDREXD => Op::Atomic,
         opcode => match role_of(opcode) {
             Role::Load { .. } => Op::Load,
-            Role::StoreExclusive => Op::Store,
+            Role::StoreExclusive => Op::Atomic,
             Role::ReadOnly if matches!(opcode, Opcode::STM(..) | Opcode::PUSH) => Op::Store,
             Role::ReadOnly if memory_access(opcode, operands).is_some() => Op::Store,
             Role::ReadOnly | Role::Compute { .. } => Op::Other,
@@ -2806,5 +2821,26 @@ mod tests {
         let pop_pc = decode_one([0x00, 0x88, 0xbd, 0xe8]);
         assert_eq!(pop_pc.kind, InsnKind::Return);
         assert!(!Arm32.is_frame_management(&pop_pc));
+    }
+
+    /// `yaxpeax` reads `mvn r0, #1` with an unused field, as
+    /// `mvn r0, r0, 0x1`.
+    #[test]
+    fn a_not_of_a_constant_is_a_move_of_the_inverse() {
+        let lifted = lift_one([0x01, 0x00, 0xe0, 0xe3]);
+        assert_eq!(lifted.op, il::Op::Move);
+        let inverse = il::Operand::Const(0xffff_fffe);
+        assert_eq!(lifted.operands.as_slice(), [il::Operand::Reg(il::Reg::General(0)), inverse]);
+        assert!(lifted.reads.is_empty(), "no register is read");
+        // `mvn r1, r2` stays a not.
+        assert_eq!(lift_one([0x02, 0x10, 0xe0, 0xe1]).op, il::Op::Not);
+    }
+
+    #[test]
+    fn an_exclusive_access_is_atomic() {
+        assert_eq!(lift_one(words::STREX_R1_R2_R3).op, il::Op::Atomic);
+        // `ldrex r1, [r2]`
+        assert_eq!(lift_one([0x9f, 0x1f, 0x92, 0xe1]).op, il::Op::Atomic);
+        assert_eq!(lift_one(words::LDR_R1_R2_8).op, il::Op::Load);
     }
 }

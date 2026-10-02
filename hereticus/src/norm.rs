@@ -469,6 +469,14 @@ fn named_by_op(mut normalized: NormInsn, lifted: Option<&Option<Lifted>>) -> Nor
     }
     let width = lifted.memory.and_then(|access| access.width);
     normalized.operation = match (lifted.op, width) {
+        // A compare and a branch no guard took read as a guard's do: A32
+        // predicates a chain of compares, as `cmp` then `cmpne` then `bne`,
+        // where another build branches after each.
+        (il::Op::Compare, _) => "cmp".into(),
+        (il::Op::Branch, _) => match lifted.test {
+            Some(il::Test::OnFlags(cond)) => guard_branch(cond).operation,
+            _ => lifted.op.name().into(),
+        },
         (il::Op::Load | il::Op::Store | il::Op::Atomic, Some(width)) => {
             format_compact!("{}.{}", lifted.op.name(), width.bits())
         }
@@ -486,9 +494,31 @@ fn lift_all(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<Option<Lifted>>
         .map(|insn| {
             let offset = usize::try_from(insn.address.checked_sub(first.address)?).ok()?;
             let word = code.get(offset..offset.checked_add(insn.bytes_len)?)?;
-            arch.lift(insn, word).map(Lifted::canonical)
+            arch.lift(insn, word).map(|lifted| frame_addressed(arch, lifted.canonical()))
         })
         .collect()
+}
+
+/// `lifted`, with an add or subtract of a constant to the stack or frame
+/// pointer read as the address of a frame slot. Compilers reach one slot
+/// from either register: clang takes `sub x1, x29, #0x4` where GCC takes
+/// `add x1, sp, #0x1c`.
+fn frame_addressed(arch: &dyn Arch, mut lifted: Lifted) -> Lifted {
+    let (il::Op::Add | il::Op::Subtract) = lifted.op else { return lifted };
+    let [dest, il::Operand::Reg(base), il::Operand::Const(offset)] = lifted.operands.as_slice()
+    else {
+        return lifted;
+    };
+    if !arch.is_frame_register(*base) {
+        return lifted;
+    }
+    let offset = *offset as i64;
+    let offset = if lifted.op == il::Op::Subtract { offset.wrapping_neg() } else { offset };
+    lifted.operands = [*dest, il::Operand::Memory { base: Some(*base), offset: Some(offset) }]
+        .into_iter()
+        .collect();
+    lifted.op = il::Op::Address;
+    lifted
 }
 
 /// The branch of a guard, with its condition either way: a compiler can
@@ -947,5 +977,40 @@ mod tests {
             ]
         );
         assert!(near[0].constants.is_empty(), "an offset is no constant");
+    }
+
+    fn body_of(arch: &dyn Arch, code: &[u8]) -> Vec<NormInsn> {
+        let (insns, _) = crate::arch::decode_all(arch, code, 0x1000);
+        normalize_body_in(arch, code, &insns, &AddressSpace::none())
+    }
+
+    /// A32 predicates a chain of compares, where another build branches
+    /// after each. The compare and branch no guard takes read as a guard's.
+    #[test]
+    fn a_predicated_compare_reads_as_a_guard_does() {
+        const CMP_R0_0: [u8; 4] = [0x00, 0x00, 0x50, 0xe3];
+        const CMPNE_R1_0: [u8; 4] = [0x00, 0x00, 0x51, 0x13];
+        const CMP_R1_0: [u8; 4] = [0x00, 0x00, 0x51, 0xe3];
+        const BEQ: [u8; 4] = [0x02, 0x00, 0x00, 0x0a];
+        let chained = body_of(&Arm32, &[CMP_R0_0, CMPNE_R1_0, BEQ].concat());
+        let alone = body_of(&Arm32, &[CMP_R1_0, BEQ].concat());
+        assert_eq!(chained[1..], alone[..], "cmpne and beq read as cmp and beq");
+    }
+
+    /// clang takes a local's address from the frame pointer, and GCC from
+    /// the stack pointer.
+    #[test]
+    fn the_address_of_a_frame_slot_reads_alike_from_either_register() {
+        // `sub x1, x29, #0x4` and `add x1, sp, #0x1c`
+        let from_frame = body_of(&Aarch64, &0xd100_13a1_u32.to_le_bytes());
+        let from_stack = body_of(&Aarch64, &0x9100_73e1_u32.to_le_bytes());
+        assert_eq!(from_frame, from_stack);
+        assert_eq!(from_frame[0].operation, "address");
+        assert_eq!(
+            from_frame[0].operands.as_slice(),
+            [OperandShape::Register, OperandShape::StackSlot]
+        );
+        // `add x1, x2, #0x1c` is no frame slot.
+        assert_eq!(body_of(&Aarch64, &0x9100_7041_u32.to_le_bytes())[0].operation, "add");
     }
 }

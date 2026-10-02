@@ -385,7 +385,9 @@ pub enum Op {
     Select,
     Load,
     Store,
-    /// Loads and stores in one, as an atomic swap or add does.
+    /// One step of an atomic sequence: an access that loads and stores in
+    /// one, as a swap or add does, or an exclusive load or store, as
+    /// `ldxr` and `strex` are.
     Atomic,
     /// Sets the flags from a comparison, or sets a register as `slt` does.
     Compare,

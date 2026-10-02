@@ -8,7 +8,7 @@ matched 19399
 {No: 17468, Reordered: 10, Data: 6, InDetail: 1372, Yes: 543}
 gone 340
 new 435
-fingerprint 0x0509cbb487244b36
+fingerprint 0x165e57b8ec3494b7
 
 strongest changes:
 0x80006f28 -> 0x80006f18 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
@@ -34,7 +34,7 @@ strongest changes:
 0x80101ff0 -> 0x80102e3c score=0.997 edits=Edits { added: 0, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0, texts: 0 }
 0x804ea9dc -> 0x804f2504 score=0.997 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0, texts: 0 }
 0x803fd218 -> 0x80402f04 score=0.997 edits=Edits { added: 4, removed: 2, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 6, opaque: 0, constants: 2, callees: 0, texts: 0 }
-0x80555a98 -> 0x8055da48 score=0.997 edits=Edits { added: 43, removed: 42, edited: 2 } kinds=EditKinds { branches: 10, calls: 4, jumps: 11, memory: 20, other: 42, opaque: 0, constants: 3, callees: 0, texts: 0 }
+0x80555a98 -> 0x8055da48 score=0.997 edits=Edits { added: 43, removed: 42, edited: 2 } kinds=EditKinds { branches: 10, calls: 4, jumps: 11, memory: 22, other: 40, opaque: 0, constants: 3, callees: 0, texts: 0 }
 0x80461c8c -> 0x804695e8 score=0.997 edits=Edits { added: 2, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 1, callees: 0, texts: 0 }
 0x8052e94c -> 0x8053668c score=0.997 edits=Edits { added: 3, removed: 2, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 1, other: 6, opaque: 0, constants: 0, callees: 0, texts: 0 }
 0x804cfc8c -> 0x804d7770 score=0.997 edits=Edits { added: 3, removed: 2, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 2, other: 4, opaque: 0, constants: 0, callees: 0, texts: 0 }

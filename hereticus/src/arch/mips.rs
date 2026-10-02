@@ -537,16 +537,19 @@ impl Arch for Mips32 {
         u64::from(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
-    /// Only what `rabbitizer` reads is lifted. The MIPS32 words that
-    /// [`super::mips32`] reads in its place lift to nothing.
+    /// What `rabbitizer` reads is lifted from its decoded fields, and the
+    /// MIPS32 words that [`super::mips32`] reads in its place by that
+    /// module, where they compute a value.
     fn lift(&self, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
         if insn.kind == InsnKind::Unknown {
             return None;
         }
         let raw = self.order.read_word(word.try_into().ok()?);
         let flags = InstructionFlags::new(ISA);
-        let inst = Instruction::new_checked(raw, Vram::new(insn.address as u32), flags)?;
-        Some(lift(&inst, &insn.mnemonic))
+        match Instruction::new_checked(raw, Vram::new(insn.address as u32), flags) {
+            Some(inst) => Some(lift(&inst, &insn.mnemonic)),
+            None => super::mips32::lift(raw),
+        }
     }
 
     /// A lower half joined to what its source register holds, where that

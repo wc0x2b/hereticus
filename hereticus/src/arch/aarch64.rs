@@ -422,9 +422,9 @@ fn il_operand(operand: Operand) -> il::Operand {
 fn op_of(opcode: Opcode, mnemonic: &str, role: Role, operands: &[Operand]) -> Op {
     match role {
         Role::Load { .. } if mnemonic.starts_with("prf") => return Op::System,
+        Role::Load { .. } if is_exclusive_load(mnemonic) => return Op::Atomic,
         Role::Load { .. } => return Op::Load,
-        Role::Atomic => return Op::Atomic,
-        Role::StoreExclusive => return Op::Store,
+        Role::Atomic | Role::StoreExclusive => return Op::Atomic,
         Role::ReadOnly if mnemonic.starts_with("st") => return Op::Store,
         Role::ReadOnly | Role::Compute => {}
     }
@@ -485,6 +485,11 @@ fn op_of(opcode: Opcode, mnemonic: &str, role: Role, operands: &[Operand]) -> Op
         | "bti" | "paciasp" | "pacibsp" | "autiasp" | "autibsp" | "prfm" | "prfum" => Op::System,
         _ => Op::Other,
     }
+}
+
+/// `ldxr`, `ldaxr`, `ldxp` and `ldaxp`, which open an exclusive access.
+fn is_exclusive_load(mnemonic: &str) -> bool {
+    ["ldxr", "ldaxr", "ldxp", "ldaxp"].iter().any(|stem| mnemonic.starts_with(stem))
 }
 
 fn role_of(mnemonic: &str) -> Role {
@@ -1283,5 +1288,15 @@ mod tests {
         assert_eq!(Aarch64.constant_value("#0x30"), Some(0x30));
         assert_eq!(Aarch64.constant_value("#-0x30"), Some(0x30_u64.wrapping_neg()));
         assert_eq!(Aarch64.constant_value("[sp, #0x10]"), None);
+    }
+
+    /// An exclusive access is one step of an atomic sequence, never a plain
+    /// load or store that a pair could stand for.
+    #[test]
+    fn an_exclusive_access_is_atomic() {
+        assert_eq!(lift_one(words::STXR_W1_X2_X3).op, Op::Atomic);
+        // `ldxp x1, x2, [x0]`
+        assert_eq!(lift_one(0xc87f_0801).op, Op::Atomic);
+        assert_eq!(lift_one(words::LDR_X1_X2_8).op, Op::Load);
     }
 }
