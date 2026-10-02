@@ -25,7 +25,7 @@ use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
 use super::arm32::{
-    Arm32, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION,
+    Arm32, Encoding, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION,
     call_targets_through_thunks, classify, decode_fallback, is_long_thunk, lift_with, parse_hex,
     pool_loads, split_mnemonic, track_pool_words,
 };
@@ -84,7 +84,7 @@ impl Arch for Thumb2 {
                 }
                 _ => None,
             };
-            let fallback = word.and_then(|word| decode_fallback(as_a32(word)));
+            let fallback = word.and_then(|word| decode_fallback(as_a32(word), Encoding::T32));
             if let Some((mnemonic, operands)) = fallback {
                 return Ok(Insn {
                     address: insn_address,
@@ -384,7 +384,7 @@ impl Arch for Thumb2 {
             }
             _ => None,
         };
-        lift_with(InstDecoder::default_thumb(), insn, word, a32)
+        lift_with(InstDecoder::default_thumb(), insn, word, a32.map(|a32| (a32, Encoding::T32)))
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {

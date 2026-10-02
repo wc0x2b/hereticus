@@ -91,7 +91,7 @@ impl Arch for Arm32 {
             // unreadable instruction would look like every other one, and an
             // edit inside a NEON loop would be reported as no change at all.
             let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            if let Some((mnemonic, operands)) = decode_fallback(word) {
+            if let Some((mnemonic, operands)) = decode_fallback(word, Encoding::A32) {
                 return Ok(Insn {
                     address: insn_address,
                     bytes_len: INSN_WIDTH,
@@ -443,27 +443,32 @@ impl Arch for Arm32 {
 
     fn lift(&self, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
         let a32 = word.try_into().ok().map(u32::from_le_bytes);
-        lift_with(InstDecoder::default(), insn, word, a32)
+        lift_with(InstDecoder::default(), insn, word, a32.map(|a32| (a32, Encoding::A32)))
     }
 }
 
 /// Decode `word` again with `decoder` and lift it. A word the decoder
 /// refuses, or reads only through the fallback, lifts to nothing.
 ///
-/// A word the decoder refuses lifts from `a32`, its A32 form, where
-/// [`lift_fallback`] reads it.
+/// A word the decoder refuses lifts from `fallback`, its A32 form and the
+/// encoding it came in, where [`lift_fallback`] reads it.
 pub(super) fn lift_with(
     decoder: InstDecoder,
     insn: &Insn,
     word: &[u8],
-    a32: Option<u32>,
+    fallback: Option<(u32, Encoding)>,
 ) -> Option<il::Lifted> {
     if insn.kind == InsnKind::Unknown {
         return None;
     }
     let mut inst = Instruction::default();
     let decoded = decoder.decode_into(&mut inst, &mut U8Reader::new(word)).is_ok();
-    if decoded && inst.opcode != Opcode::Invalid { Some(lift(&inst)) } else { lift_fallback(a32?) }
+    if decoded && inst.opcode != Opcode::Invalid {
+        Some(lift(&inst))
+    } else {
+        let (a32, encoding) = fallback?;
+        lift_fallback(a32, encoding)
+    }
 }
 
 /// What an ARM instruction does with its first operands.
@@ -1273,7 +1278,7 @@ fn parse_number(text: &str) -> Option<i64> {
 /// know the pool is data. Measured on tinyxml2 built by GCC for ARM,
 /// `vldr d16, [pc, 0x90]` did not decode, its offset changed whenever an
 /// alignment `nop` moved the pool, and that read as an edit.
-pub(super) fn decode_fallback(word: u32) -> Option<(String, String)> {
+pub(super) fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, String)> {
     const CONDITIONS: [&str; 15] =
         ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", ""];
     if word >> 24 == NEON_LOAD_STORE {
@@ -1286,6 +1291,14 @@ pub(super) fn decode_fallback(word: u32) -> Option<(String, String)> {
     if word & 0x0fff_ff00 == 0x0320_f000 {
         let hint = ["nop", "yield", "wfe", "wfi", "sev"].get((word & 0xff) as usize)?;
         return Some((format!("{hint}{condition}"), String::new()));
+    }
+
+    if let Some(word) = IntegerWord::of(word).filter(|_| encoding == Encoding::A32) {
+        return Some((format!("{}{condition}", word.mnemonic()), word.operands()));
+    }
+    if let Some(word) = VfpWord::of(word) {
+        let (mnemonic, operands) = word.text();
+        return Some((format!("{mnemonic}{condition}"), operands));
     }
 
     // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
@@ -1309,6 +1322,583 @@ pub(super) fn decode_fallback(word: u32) -> Option<(String, String)> {
         return Some((format!("{operation}{condition}"), format!("{register}, {reference}")));
     }
     None
+}
+
+/// An A32 integer word `yaxpeax` 0.4 refuses, though ARMv7 defines it.
+///
+/// Measured on the backport fixtures built for A32 by clang and GCC at
+/// `-O2`, these made 520 of the 1,690 words it could not read: the byte and
+/// halfword extends, the bit field operations, `mov` and `mvn` of a register
+/// shifted by a register, and a halfword or signed byte load with no offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IntegerWord {
+    /// `uxtb rd, rm` and kin, which may add `rn` and rotate `rm` first.
+    Extend { name: &'static str, rd: u32, rn: Option<u32>, rm: u32, rotation: u32 },
+    /// `bfi rd, rn, lsb, width`, or `bfc` with no `rn`.
+    Insert { rd: u32, rn: Option<u32>, lsb: u32, width: u32 },
+    /// `ubfx rd, rn, lsb, width` and `sbfx`.
+    Extract { signed: bool, rd: u32, rn: u32, lsb: u32, width: u32 },
+    /// `mov rd, rm, lsl rs` and kin, or `mvn` of the same.
+    ShiftByRegister { not: bool, sets_flags: bool, rd: u32, rm: u32, kind: u32, rs: u32 },
+    /// `ldrsb rt, [rn, imm]` and the other loads and stores of a halfword,
+    /// a signed byte or a pair.
+    Halfword { name: &'static str, rt: u32, rn: u32, offset: i64, index: Indexing },
+}
+
+/// How a load or store forms its address and moves its base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Indexing {
+    /// `[rn, imm]`: the base stays.
+    Offset,
+    /// `[rn, imm]!`: the base moves first.
+    PreIndex,
+    /// `[rn], imm`: the base moves after.
+    PostIndex,
+}
+
+impl IntegerWord {
+    fn of(word: u32) -> Option<Self> {
+        let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
+        let (rn, rd, rm) = (field(16, 4), field(12, 4), field(0, 4));
+        if field(23, 5) == 0b01101 && field(4, 4) == 0b0111 && field(8, 2) == 0 {
+            let name = match field(20, 3) {
+                0b000 => "sxtb16",
+                0b010 => "sxtb",
+                0b011 => "sxth",
+                0b100 => "uxtb16",
+                0b110 => "uxtb",
+                0b111 => "uxth",
+                _ => return None,
+            };
+            let rn = (rn != 15).then_some(rn);
+            return Some(Self::Extend { name, rd, rn, rm, rotation: field(10, 2) * 8 });
+        }
+        if field(21, 7) == 0b011_1110 && field(4, 3) == 0b001 {
+            let (msb, lsb) = (field(16, 5), field(7, 5));
+            let width = msb.checked_sub(lsb)? + 1;
+            return Some(Self::Insert { rd, rn: (rm != 15).then_some(rm), lsb, width });
+        }
+        if field(23, 5) == 0b01111 && field(21, 1) == 1 && field(4, 3) == 0b101 {
+            let (lsb, width) = (field(7, 5), field(16, 5) + 1);
+            return Some(Self::Extract { signed: field(22, 1) == 0, rd, rn: rm, lsb, width });
+        }
+        let move_op = field(21, 4);
+        if field(25, 3) == 0
+            && matches!(move_op, 0b1101 | 0b1111)
+            && field(7, 1) == 0
+            && field(4, 1) == 1
+            && rn == 0
+        {
+            return Some(Self::ShiftByRegister {
+                not: move_op == 0b1111,
+                sets_flags: field(20, 1) == 1,
+                rd,
+                rm,
+                kind: field(5, 2),
+                rs: field(8, 4),
+            });
+        }
+        if field(25, 3) == 0 && field(22, 1) == 1 && field(7, 1) == 1 && field(4, 1) == 1 {
+            let name = match (field(20, 1), field(5, 2)) {
+                (1, 0b01) => "ldrh",
+                (1, 0b10) => "ldrsb",
+                (1, 0b11) => "ldrsh",
+                (0, 0b01) => "strh",
+                (0, 0b10) => "ldrd",
+                (0, 0b11) => "strd",
+                _ => return None,
+            };
+            let magnitude = i64::from(field(8, 4) << 4 | field(0, 4));
+            let offset = if field(23, 1) == 1 { magnitude } else { -magnitude };
+            let index = match (field(24, 1), field(21, 1)) {
+                (1, 0) => Indexing::Offset,
+                (1, 1) => Indexing::PreIndex,
+                (0, 0) => Indexing::PostIndex,
+                _ => return None,
+            };
+            return Some(Self::Halfword { name, rt: rd, rn, offset, index });
+        }
+        None
+    }
+
+    fn mnemonic(self) -> String {
+        match self {
+            Self::Extend { name, rn: None, .. } => name.to_string(),
+            // `uxtab` adds the extended value to `rn`.
+            Self::Extend { name, rn: Some(_), .. } => format!("{}a{}", &name[..3], &name[3..]),
+            Self::Insert { rn: Some(_), .. } => "bfi".into(),
+            Self::Insert { rn: None, .. } => "bfc".into(),
+            Self::Extract { signed: true, .. } => "sbfx".into(),
+            Self::Extract { signed: false, .. } => "ubfx".into(),
+            Self::ShiftByRegister { not, sets_flags, .. } => {
+                format!("{}{}", if not { "mvn" } else { "mov" }, if sets_flags { "s" } else { "" })
+            }
+            Self::Halfword { name, .. } => name.into(),
+        }
+    }
+
+    fn operands(self) -> String {
+        let name = |number: u32| ARM_REGISTERS[number as usize];
+        match self {
+            Self::Extend { rd, rn, rm, rotation, .. } => {
+                let added = rn.map(|rn| format!("{}, ", name(rn))).unwrap_or_default();
+                let rotated =
+                    if rotation == 0 { String::new() } else { format!(", ror {rotation:#x}") };
+                format!("{}, {added}{}{rotated}", name(rd), name(rm))
+            }
+            Self::Insert { rd, rn, lsb, width } => {
+                let source = rn.map(|rn| format!("{}, ", name(rn))).unwrap_or_default();
+                format!("{}, {source}{lsb:#x}, {width:#x}", name(rd))
+            }
+            Self::Extract { rd, rn, lsb, width, .. } => {
+                format!("{}, {}, {lsb:#x}, {width:#x}", name(rd), name(rn))
+            }
+            Self::ShiftByRegister { rd, rm, kind, rs, .. } => {
+                let shift = ["lsl", "lsr", "asr", "ror"][kind as usize];
+                format!("{}, {}, {shift} {}", name(rd), name(rm), name(rs))
+            }
+            Self::Halfword { name: mnemonic, rt, rn, offset, index } => {
+                let pair = if mnemonic.ends_with('d') {
+                    format!("{}, ", name(rt + 1 & 15))
+                } else {
+                    String::new()
+                };
+                let amount = if offset < 0 {
+                    format!("-{:#x}", offset.unsigned_abs())
+                } else {
+                    format!("{offset:#x}")
+                };
+                let base = name(rn);
+                let address = match (index, offset) {
+                    (Indexing::Offset, 0) => format!("[{base}]"),
+                    (Indexing::Offset, _) => format!("[{base}, {amount}]"),
+                    (Indexing::PreIndex, _) => format!("[{base}, {amount}]!"),
+                    (Indexing::PostIndex, _) => format!("[{base}], {amount}"),
+                };
+                format!("{}, {pair}{address}", name(rt))
+            }
+        }
+    }
+
+    /// The IL form of this word, as [`lift`] gives for the words `yaxpeax`
+    /// reads.
+    fn lift(self) -> il::Lifted {
+        use il::Op;
+        let general = |number: u32| il_reg(Reg::from_u8(number as u8));
+        let value = |number: u32| general(number).map_or(il::Operand::Other, il::Operand::Reg);
+        let constant = |value: u32| il::Operand::Const(value.into());
+        let mut lifted = il::Lifted::default();
+        let read = |lifted: &mut il::Lifted, number: u32| {
+            general(number).into_iter().for_each(|reg| lifted.reads.insert(reg));
+        };
+        let write = |lifted: &mut il::Lifted, number: u32| {
+            general(number).into_iter().for_each(|reg| lifted.writes.insert(reg));
+        };
+        match self {
+            Self::Extend { rd, rn, rm, .. } => {
+                lifted.op = Op::Extend;
+                lifted.operands = [Some(value(rd)), rn.map(value), Some(value(rm))]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                rn.into_iter().chain([rm]).for_each(|number| read(&mut lifted, number));
+                write(&mut lifted, rd);
+            }
+            Self::Insert { rd, rn, lsb, width } => {
+                lifted.op = Op::BitField;
+                lifted.operands =
+                    [Some(value(rd)), rn.map(value), Some(constant(lsb)), Some(constant(width))]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                // An insert keeps the bits around its field.
+                rn.into_iter().chain([rd]).for_each(|number| read(&mut lifted, number));
+                write(&mut lifted, rd);
+            }
+            Self::Extract { rd, rn, lsb, width, .. } => {
+                lifted.op = Op::BitField;
+                lifted.operands =
+                    [value(rd), value(rn), constant(lsb), constant(width)].into_iter().collect();
+                read(&mut lifted, rn);
+                write(&mut lifted, rd);
+            }
+            Self::ShiftByRegister { not, sets_flags, rd, rm, kind, rs } => {
+                lifted.op = match (not, kind) {
+                    (true, _) => Op::Not,
+                    (false, 0) => Op::ShiftLeft,
+                    (false, 1) => Op::ShiftRight,
+                    (false, 2) => Op::ShiftRightArithmetic,
+                    (false, _) => Op::Rotate,
+                };
+                lifted.operands = [value(rd), value(rm), value(rs)].into_iter().collect();
+                [rm, rs].into_iter().for_each(|number| read(&mut lifted, number));
+                write(&mut lifted, rd);
+                if sets_flags {
+                    lifted.writes.insert(il::Reg::Flags);
+                }
+            }
+            Self::Halfword { name, rt, rn, offset, index } => {
+                let load = name.starts_with("ld");
+                let pair = name.ends_with('d');
+                let width = match name {
+                    "ldrsb" => il::Width::Bits8,
+                    "ldrh" | "ldrsh" | "strh" => il::Width::Bits16,
+                    _ => il::Width::Bits32,
+                };
+                let values: Vec<u32> = if pair { vec![rt, rt + 1 & 15] } else { vec![rt] };
+                let at = match index {
+                    Indexing::PostIndex => 0,
+                    Indexing::Offset | Indexing::PreIndex => offset,
+                };
+                let memory = il::Operand::Memory { base: general(rn), offset: Some(at) };
+                lifted.op = if load { Op::Load } else { Op::Store };
+                lifted.operands =
+                    values.iter().map(|&number| value(number)).chain([memory]).collect();
+                read(&mut lifted, rn);
+                for &number in &values {
+                    if load { write(&mut lifted, number) } else { read(&mut lifted, number) }
+                }
+                if index != Indexing::Offset {
+                    write(&mut lifted, rn);
+                }
+                let kind = if load { il::AccessKind::Load } else { il::AccessKind::Store };
+                lifted.memory = Some(il::MemoryAccess { kind, width: Some(width) });
+            }
+        }
+        lifted
+    }
+}
+
+/// A VFP word `yaxpeax` 0.4 refuses: the moves between core and VFP
+/// registers, the multiple loads and stores, and the data processing.
+///
+/// Measured on the backport fixtures built for A32 by clang and GCC at
+/// `-O2`, these made 620 of the 1,690 words it could not read. A
+/// `-mfloat-abi=softfp` build moves every double argument and result
+/// through core registers, so `vmov d16, r0, r1` is common.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VfpWord {
+    /// `vmov s0, r1` or `vmov r0, s0`.
+    MoveSingle { to_core: bool, core: u32, single: u32 },
+    /// `vmov d16, r0, r1` or `vmov r0, r1, d16`.
+    MoveDouble { to_core: bool, low: u32, high: u32, double: u32 },
+    /// `vmrs rt, fpscr`. `rt` 15 moves the compare flags to the core flags.
+    StatusToCore { core: u32 },
+    /// `vldmia rn!, {d8, d9}` and kin. `vpush` and `vpop` are the forms
+    /// on `sp` that `push` and `pop` are.
+    Multiple {
+        load: bool,
+        base: u32,
+        write_back: bool,
+        before: bool,
+        first: u32,
+        count: u32,
+        double: bool,
+    },
+    /// The arithmetic, compares and conversions. A conversion names its
+    /// sizes in `name`, as `vcvt.s32.f64`; the rest take `size`.
+    Compute { name: &'static str, size: &'static str, dest: Vector, sources: [Option<Vector>; 2] },
+}
+
+/// A VFP register: `d` where `double`, else `s`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Vector {
+    double: bool,
+    number: u32,
+}
+
+impl Vector {
+    fn text(self) -> String {
+        format!("{}{}", if self.double { 'd' } else { 's' }, self.number)
+    }
+}
+
+impl VfpWord {
+    fn of(word: u32) -> Option<Self> {
+        let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
+        let single = |high: u32, low: u32| high << 1 | low;
+        let double = |high: u32, low: u32| low << 4 | high;
+        let is_double = field(8, 1) == 1;
+        let register =
+            |four: u32, one: u32| if is_double { double(four, one) } else { single(four, one) };
+        if field(21, 7) == 0b111_0000 && field(8, 4) == 0b1010 && field(0, 7) == 0b001_0000 {
+            let to_core = field(20, 1) == 1;
+            return Some(Self::MoveSingle {
+                to_core,
+                core: field(12, 4),
+                single: single(field(16, 4), field(7, 1)),
+            });
+        }
+        if field(21, 7) == 0b110_0010
+            && field(8, 4) == 0b1011
+            && field(6, 2) == 0
+            && field(4, 1) == 1
+        {
+            return Some(Self::MoveDouble {
+                to_core: field(20, 1) == 1,
+                low: field(12, 4),
+                high: field(16, 4),
+                double: double(field(0, 4), field(5, 1)),
+            });
+        }
+        if word & 0x0fff_0fff == 0x0ef1_0a10 {
+            return Some(Self::StatusToCore { core: field(12, 4) });
+        }
+        if field(25, 3) == 0b110 && field(9, 3) == 0b101 {
+            let (before, up, write_back) =
+                (field(24, 1) == 1, field(23, 1) == 1, field(21, 1) == 1);
+            // `before` without write back is `vldr` or `vstr`, and the rest
+            // of the pairs are no access.
+            if before == up || (before && !write_back) {
+                return None;
+            }
+            let count = if is_double { field(1, 7) } else { field(0, 8) };
+            if count == 0 {
+                return None;
+            }
+            return Some(Self::Multiple {
+                load: field(20, 1) == 1,
+                base: field(16, 4),
+                write_back,
+                before,
+                first: register(field(12, 4), field(22, 1)),
+                count,
+                double: is_double,
+            });
+        }
+        if field(24, 4) == 0b1110 && field(4, 1) == 0 && field(9, 3) == 0b101 {
+            let sized = |four: u32, one: u32, double: bool| Vector {
+                double,
+                number: if double { one << 4 | four } else { four << 1 | one },
+            };
+            let (vd, d, vn, n, vm, m) =
+                (field(12, 4), field(22, 1), field(16, 4), field(7, 1), field(0, 4), field(5, 1));
+            let dest = sized(vd, d, is_double);
+            let both = [Some(sized(vn, n, is_double)), Some(sized(vm, m, is_double))];
+            let one = [Some(sized(vm, m, is_double)), None];
+            let size = if is_double { "f64" } else { "f32" };
+            let float =
+                |name: &'static str, sources| Some(Self::Compute { name, size, dest, sources });
+            return match (field(23, 1) << 2 | field(20, 2), field(6, 1)) {
+                (0b000, 0) => float("vmla", both),
+                (0b000, _) => float("vmls", both),
+                (0b001, 0) => float("vnmls", both),
+                (0b001, _) => float("vnmla", both),
+                (0b010, 0) => float("vmul", both),
+                (0b010, _) => float("vnmul", both),
+                (0b011, 0) => float("vadd", both),
+                (0b011, _) => float("vsub", both),
+                (0b100, 0) => float("vdiv", both),
+                // `vmov` of a constant: the constant is in the operands as no
+                // value the IL names.
+                (0b111, 0) => float("vmov", [None, None]),
+                (0b111, _) => match (field(16, 4), field(7, 1)) {
+                    (0b0000, 0) => float("vmov", one),
+                    (0b0000, _) => float("vabs", one),
+                    (0b0001, 0) => float("vneg", one),
+                    (0b0001, _) => float("vsqrt", one),
+                    (0b0100, 0) => float("vcmp", one),
+                    (0b0100, _) => float("vcmpe", one),
+                    (0b0101, 0) => float("vcmp", [None, None]),
+                    (0b0101, _) => float("vcmpe", [None, None]),
+                    // Between `f32` and `f64`: the result is the other size.
+                    (0b0111, 1) => {
+                        let name = if is_double { "vcvt.f32.f64" } else { "vcvt.f64.f32" };
+                        Some(Self::Compute {
+                            name,
+                            size: "",
+                            dest: sized(vd, d, !is_double),
+                            sources: one,
+                        })
+                    }
+                    // From a 32-bit integer in an `s` register.
+                    (0b1000, signed) => {
+                        let name = match (is_double, signed) {
+                            (true, 1) => "vcvt.f64.s32",
+                            (true, _) => "vcvt.f64.u32",
+                            (false, 1) => "vcvt.f32.s32",
+                            (false, _) => "vcvt.f32.u32",
+                        };
+                        let source = [Some(sized(vm, m, false)), None];
+                        Some(Self::Compute { name, size: "", dest, sources: source })
+                    }
+                    // To a 32-bit integer in an `s` register. A clear bit 7
+                    // rounds as the status register says, which `vcvtr` names.
+                    (opc2 @ (0b1100 | 0b1101), toward_zero) => {
+                        let name = match (opc2, toward_zero, is_double) {
+                            (0b1101, 1, true) => "vcvt.s32.f64",
+                            (0b1101, 1, false) => "vcvt.s32.f32",
+                            (0b1101, _, true) => "vcvtr.s32.f64",
+                            (0b1101, _, false) => "vcvtr.s32.f32",
+                            (_, 1, true) => "vcvt.u32.f64",
+                            (_, 1, false) => "vcvt.u32.f32",
+                            (_, _, true) => "vcvtr.u32.f64",
+                            (_, _, false) => "vcvtr.u32.f32",
+                        };
+                        Some(Self::Compute {
+                            name,
+                            size: "",
+                            dest: sized(vd, d, false),
+                            sources: one,
+                        })
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+        }
+        None
+    }
+
+    fn text(self) -> (String, String) {
+        let vector = |double: bool, number: u32| {
+            if double { format!("d{number}") } else { format!("s{number}") }
+        };
+        let core = |number: u32| ARM_REGISTERS[number as usize];
+        match self {
+            Self::MoveSingle { to_core: true, core: rt, single } => {
+                ("vmov".into(), format!("{}, s{single}", core(rt)))
+            }
+            Self::MoveSingle { to_core: false, core: rt, single } => {
+                ("vmov".into(), format!("s{single}, {}", core(rt)))
+            }
+            Self::MoveDouble { to_core: true, low, high, double } => {
+                ("vmov".into(), format!("{}, {}, d{double}", core(low), core(high)))
+            }
+            Self::MoveDouble { to_core: false, low, high, double } => {
+                ("vmov".into(), format!("d{double}, {}, {}", core(low), core(high)))
+            }
+            Self::StatusToCore { core: 15 } => ("vmrs".into(), "APSR_nzcv, fpscr".into()),
+            Self::StatusToCore { core: rt } => ("vmrs".into(), format!("{}, fpscr", core(rt))),
+            Self::Multiple { load, base, write_back, before, first, count, double } => {
+                let list: Vec<String> =
+                    (first..first + count).map(|number| vector(double, number)).collect();
+                let list = format!("{{{}}}", list.join(", "));
+                match (load, base, write_back, before) {
+                    (false, 13, true, true) => ("vpush".into(), list),
+                    (true, 13, true, false) => ("vpop".into(), list),
+                    _ => {
+                        let name = format!(
+                            "v{}m{}",
+                            if load { "ld" } else { "st" },
+                            if before { "db" } else { "ia" }
+                        );
+                        let bang = if write_back { "!" } else { "" };
+                        (name, format!("{}{bang}, {list}", core(base)))
+                    }
+                }
+            }
+            Self::Compute { name, size, dest, sources } => {
+                let mut operands = vec![dest.text()];
+                operands.extend(sources.iter().flatten().map(|source| source.text()));
+                if name.starts_with("vcmp") && sources == [None, None] {
+                    operands.push("0x0".into());
+                }
+                let name =
+                    if size.is_empty() { name.to_string() } else { format!("{name}.{size}") };
+                (name, operands.join(", "))
+            }
+        }
+    }
+
+    /// The IL form of this word. The VFP registers are [`il::Reg::Vector`]
+    /// by number, `s` and `d` alike.
+    fn lift(self) -> il::Lifted {
+        use il::Op;
+        let general = |number: u32| il_reg(Reg::from_u8(number as u8));
+        let core = |number: u32| general(number).map_or(il::Operand::Other, il::Operand::Reg);
+        let vector = |number: u32| il::Reg::Vector(number as u8);
+        let mut lifted = il::Lifted::default();
+        match self {
+            Self::MoveSingle { to_core, core: rt, single } => {
+                lifted.op = Op::Move;
+                let (dest, source) = if to_core {
+                    (core(rt), il::Operand::Reg(vector(single)))
+                } else {
+                    (il::Operand::Reg(vector(single)), core(rt))
+                };
+                lifted.operands = [dest, source].into_iter().collect();
+            }
+            Self::MoveDouble { to_core, low, high, double } => {
+                lifted.op = Op::Move;
+                let pair = [core(low), core(high)];
+                let vector = il::Operand::Reg(vector(double));
+                lifted.operands = if to_core {
+                    pair.into_iter().chain([vector]).collect()
+                } else {
+                    [vector].into_iter().chain(pair).collect()
+                };
+            }
+            Self::StatusToCore { core: rt } => {
+                lifted.op = Op::Move;
+                lifted.operands = [core(rt)].into_iter().collect();
+                if rt == 15 {
+                    lifted.writes.insert(il::Reg::Flags);
+                }
+            }
+            Self::Multiple { load, base, write_back, before, first, count, double } => {
+                lifted.op = if load { Op::Load } else { Op::Store };
+                let offset =
+                    if before { -i64::from(count * if double { 8 } else { 4 }) } else { 0 };
+                let memory = il::Operand::Memory { base: general(base), offset: Some(offset) };
+                lifted.operands = [il::Operand::RegisterList, memory].into_iter().collect();
+                let kind = if load { il::AccessKind::Load } else { il::AccessKind::Store };
+                let width = if double { il::Width::Bits64 } else { il::Width::Bits32 };
+                lifted.memory = Some(il::MemoryAccess { kind, width: Some(width) });
+                let moved = if load { &mut lifted.writes } else { &mut lifted.reads };
+                (first..first + count).for_each(|number| moved.insert(vector(number)));
+                if write_back {
+                    general(base).into_iter().for_each(|reg| lifted.writes.insert(reg));
+                }
+                general(base).into_iter().for_each(|reg| lifted.reads.insert(reg));
+                return lifted;
+            }
+            Self::Compute { dest, sources, name, .. } => {
+                lifted.op = if name == "vmov" { Op::Move } else { Op::Float };
+                let vector = |register: Vector| il::Operand::Reg(vector(register.number));
+                let values = sources.iter().flatten().map(|&source| vector(source));
+                lifted.operands = [vector(dest)].into_iter().chain(values).collect();
+                if name.starts_with("vcmp") {
+                    if sources == [None, None] {
+                        lifted.operands.push(il::Operand::Const(0));
+                    }
+                    // A compare writes only the VFP flags, which `vmrs`
+                    // moves on: it reads every value it names.
+                    for operand in lifted.operands.clone() {
+                        if let il::Operand::Reg(reg) = operand {
+                            lifted.reads.insert(reg);
+                        }
+                    }
+                    return lifted;
+                }
+                // `vmla` and kin add to their destination.
+                if matches!(name, "vmla" | "vmls" | "vnmla" | "vnmls") {
+                    lifted.reads.insert(il::Reg::Vector(dest.number as u8));
+                }
+            }
+        }
+        // A move or computation reads every operand but the first, and
+        // writes the first: two for a move of a double to core registers.
+        let written = match self {
+            Self::MoveDouble { to_core: true, .. } => 2,
+            _ => 1,
+        };
+        for (index, operand) in lifted.operands.clone().iter().enumerate() {
+            if let il::Operand::Reg(reg) = operand {
+                if index < written { lifted.writes.insert(*reg) } else { lifted.reads.insert(*reg) }
+            }
+        }
+        lifted
+    }
+}
+
+/// Which instruction set a word given as A32 came in. A T32 VFP or NEON
+/// word reads as its A32 twin, but no other T32 word does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Encoding {
+    A32,
+    /// A wide T32 word, its halfwords swapped and its NEON prefix made A32.
+    T32,
 }
 
 /// The names of the general registers, as the decoder prints them.
@@ -1359,8 +1949,27 @@ fn decode_neon_load_store(word: u32) -> Option<(String, String)> {
 /// Lift an A32 `word` the decoder refuses but [`decode_fallback`] reads,
 /// where it moves data: the VFP and NEON loads and stores. A T32 caller
 /// gives the A32 form of its word.
-pub(super) fn lift_fallback(word: u32) -> Option<il::Lifted> {
+pub(super) fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted> {
     let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
+    if encoding == Encoding::A32
+        && word >> 28 != 0b1111
+        && let Some(integer) = IntegerWord::of(word)
+    {
+        let mut lifted = integer.lift();
+        if word >> 28 != 0b1110 {
+            lifted.reads.insert(il::Reg::Flags);
+        }
+        return Some(lifted);
+    }
+    if word >> 28 != 0b1111
+        && let Some(vfp) = VfpWord::of(word)
+    {
+        let mut lifted = vfp.lift();
+        if word >> 28 != 0b1110 {
+            lifted.reads.insert(il::Reg::Flags);
+        }
+        return Some(lifted);
+    }
     let general = |number: u32| il_reg(Reg::from_u8(number as u8));
     let mut reads = il::RegSet::EMPTY;
     let mut writes = il::RegSet::EMPTY;
@@ -1396,7 +2005,7 @@ pub(super) fn lift_fallback(word: u32) -> Option<il::Lifted> {
             (access.load, width, il::Operand::RegisterList, memory)
         } else {
             // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
-            let (name, _) = decode_fallback(word)?;
+            let (name, _) = decode_fallback(word, encoding)?;
             if !name.starts_with("vldr") && !name.starts_with("vstr") {
                 return None;
             }
@@ -3014,14 +3623,14 @@ mod tests {
     #[test]
     fn a_vfp_load_and_store_lift() {
         // `vldr d16, [pc, 0x90]`, as GCC loads a double from its pool.
-        let load = lift_fallback(0xeddf_0b24).expect("vldr lifts");
+        let load = lift_fallback(0xeddf_0b24, Encoding::A32).expect("vldr lifts");
         assert_eq!(load.op, il::Op::Load);
         assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits64));
         let pool = il::Operand::Memory { base: None, offset: Some(0x90) };
         assert_eq!(load.operands.as_slice(), [il::Operand::Reg(il::Reg::Vector(16)), pool]);
         assert_eq!(load.writes, [il::Reg::Vector(16)].into_iter().collect());
         // `vstr s0, [sp, -0x4]`
-        let store = lift_fallback(0xed0d_0a01).expect("vstr lifts");
+        let store = lift_fallback(0xed0d_0a01, Encoding::A32).expect("vstr lifts");
         assert_eq!(store.op, il::Op::Store);
         let slot = il::Operand::Memory { base: Some(il::Reg::Stack), offset: Some(-4) };
         assert_eq!(store.operands[1], slot);
@@ -3032,7 +3641,7 @@ mod tests {
     #[test]
     fn a_neon_load_writes_its_list_and_steps_its_base() {
         // `vld1.8 {d16, d17}, [r0]!`
-        let load = lift_fallback(0xf460_0a0d).expect("vld1 lifts");
+        let load = lift_fallback(0xf460_0a0d, Encoding::A32).expect("vld1 lifts");
         assert_eq!(load.op, il::Op::Load);
         assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits8));
         let base = il::Operand::Memory { base: Some(il::Reg::General(0)), offset: Some(0) };
@@ -3044,15 +3653,146 @@ mod tests {
     /// A hint is no access, and lifts to nothing.
     #[test]
     fn a_hint_lifts_to_nothing() {
-        assert_eq!(lift_fallback(0xe320_f000), None, "nop");
+        assert_eq!(lift_fallback(0xe320_f000, Encoding::A32), None, "nop");
     }
 
     #[test]
     fn what_the_fallback_lifts_it_decodes() {
         bolero::check!().with_type::<u32>().for_each(|&word| {
-            if lift_fallback(word).is_some() {
-                assert!(decode_fallback(word).is_some(), "{word:#010x}");
+            if lift_fallback(word, Encoding::A32).is_some() {
+                assert!(decode_fallback(word, Encoding::A32).is_some(), "{word:#010x}");
             }
         });
+    }
+
+    fn fallback_text(word: u32) -> Option<String> {
+        decode_fallback(word, Encoding::A32).map(|(name, operands)| format!("{name} {operands}"))
+    }
+
+    /// Words `yaxpeax` 0.4 refuses, as `llvm-mc` reads them.
+    #[test]
+    fn reads_the_integer_words_the_decoder_refuses() {
+        assert_eq!(fallback_text(0xe6ef_3073).as_deref(), Some("uxtb r3, r3"));
+        assert_eq!(fallback_text(0xe6af_307e).as_deref(), Some("sxtb r3, lr"));
+        assert_eq!(fallback_text(0xe6ff_0070).as_deref(), Some("uxth r0, r0"));
+        assert_eq!(fallback_text(0xe7df_171f).as_deref(), Some("bfc r1, 0xe, 0x12"));
+        assert_eq!(fallback_text(0xe7d6_3712).as_deref(), Some("bfi r3, r2, 0xe, 0x9"));
+        assert_eq!(fallback_text(0xe7e8_0757).as_deref(), Some("ubfx r0, r7, 0xe, 0x9"));
+        assert_eq!(fallback_text(0xe1a0_0011).as_deref(), Some("mov r0, r1, lsl r0"));
+        assert_eq!(fallback_text(0xe1e0_a31c).as_deref(), Some("mvn sl, ip, lsl r3"));
+        assert_eq!(fallback_text(0xe1d2_20d0).as_deref(), Some("ldrsb r2, [r2]"));
+    }
+
+    /// A wide T32 word is no A32 integer word, whatever its bits.
+    #[test]
+    fn a_t32_word_is_not_read_as_an_a32_integer_word() {
+        assert!(decode_fallback(0xe6ef_3073, Encoding::T32).is_none());
+        assert!(lift_fallback(0xe6ef_3073, Encoding::T32).is_none());
+    }
+
+    #[test]
+    fn the_integer_words_lift() {
+        let general = |number| il::Operand::Reg(il::Reg::General(number));
+        let lift = |word| lift_fallback(word, Encoding::A32).expect("the word lifts");
+        let extend = lift(0xe6ef_3073);
+        assert_eq!(
+            (extend.op, extend.operands.as_slice()),
+            (il::Op::Extend, &[general(3), general(3)][..])
+        );
+        let insert = lift(0xe7d6_3712);
+        assert_eq!(insert.op, il::Op::BitField);
+        assert_eq!(insert.reads, [2, 3].map(il::Reg::General).into_iter().collect(), "keeps rd");
+        let extract = lift(0xe7e8_0757);
+        let field = [general(0), general(7), il::Operand::Const(14), il::Operand::Const(9)];
+        assert_eq!(extract.operands.as_slice(), field);
+        let shift = lift(0xe1a0_0011);
+        assert_eq!(
+            (shift.op, shift.operands.as_slice()),
+            (il::Op::ShiftLeft, &[general(0), general(1), general(0)][..])
+        );
+        let load = lift(0xe1d2_20d0);
+        assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits8));
+        let at = il::Operand::Memory { base: Some(il::Reg::General(2)), offset: Some(0) };
+        assert_eq!(load.operands.as_slice(), [general(2), at]);
+    }
+
+    /// A conditional word reads the flags.
+    #[test]
+    fn a_conditional_integer_word_reads_the_flags() {
+        // `uxtbne r3, r3`
+        let lifted = lift_fallback(0x16ef_3073, Encoding::A32).expect("the word lifts");
+        assert!(lifted.reads.contains(il::Reg::Flags));
+        assert_eq!(fallback_text(0x16ef_3073).as_deref(), Some("uxtbne r3, r3"));
+    }
+
+    /// VFP words `yaxpeax` 0.4 refuses, as `llvm-mc` reads them.
+    #[test]
+    fn reads_the_vfp_words_the_decoder_refuses() {
+        let cases = [
+            (0xeebd_0be0, "vcvt.s32.f64 s0, d16"),
+            (0xeef8_0bc0, "vcvt.f64.s32 d16, s0"),
+            (0xeef8_0b40, "vcvt.f64.u32 d16, s0"),
+            (0xeef5_0b40, "vcmp.f64 d16, 0x0"),
+            (0xee40_1ba2, "vmla.f64 d17, d16, d18"),
+            (0xec51_0b30, "vmov r0, r1, d16"),
+            (0xec41_0b30, "vmov d16, r0, r1"),
+            (0xee10_0a10, "vmov r0, s0"),
+            (0xee00_1a10, "vmov s0, r1"),
+            (0xeef1_fa10, "vmrs APSR_nzcv, fpscr"),
+            (0xed2d_8b04, "vpush {d8, d9}"),
+            (0xecbd_8b04, "vpop {d8, d9}"),
+        ];
+        for (word, text) in cases {
+            assert_eq!(fallback_text(word).as_deref(), Some(text), "{word:#010x}");
+        }
+    }
+
+    /// T32 encodes the VFP as A32 does, so a T32 caller reads them too.
+    #[test]
+    fn a_t32_vfp_word_reads_as_its_a32_twin() {
+        assert_eq!(
+            decode_fallback(0xec51_0b30, Encoding::T32),
+            decode_fallback(0xec51_0b30, Encoding::A32)
+        );
+        assert!(lift_fallback(0xec51_0b30, Encoding::T32).is_some());
+    }
+
+    #[test]
+    fn the_vfp_words_lift() {
+        let core = |number| il::Reg::General(number);
+        let vector = il::Reg::Vector;
+        let regs = |regs: &[il::Reg]| -> il::RegSet { regs.iter().copied().collect() };
+        let lift = |word| lift_fallback(word, Encoding::A32).expect("the word lifts");
+        // `vmov d16, r0, r1` writes the double from the pair.
+        let to_double = lift(0xec41_0b30);
+        assert_eq!(to_double.op, il::Op::Move);
+        assert_eq!(
+            (to_double.reads, to_double.writes),
+            (regs(&[core(0), core(1)]), regs(&[vector(16)]))
+        );
+        // `vmov r0, r1, d16` writes the pair.
+        let to_core = lift(0xec51_0b30);
+        assert_eq!(
+            (to_core.reads, to_core.writes),
+            (regs(&[vector(16)]), regs(&[core(0), core(1)]))
+        );
+        // `vcmp.f64 d16, #0` writes only the VFP flags, and `vmrs` moves them.
+        let compare = lift(0xeef5_0b40);
+        assert_eq!(compare.op, il::Op::Float, "never an integer compare");
+        assert_eq!((compare.reads, compare.writes), (regs(&[vector(16)]), il::RegSet::EMPTY));
+        assert!(lift(0xeef1_fa10).writes.contains(il::Reg::Flags));
+        // `vpush {d8, d9}` stores below `sp` and moves it.
+        let push = lift(0xed2d_8b04);
+        assert_eq!(push.op, il::Op::Store);
+        let below = il::Operand::Memory { base: Some(il::Reg::Stack), offset: Some(-16) };
+        assert_eq!(push.operands.as_slice(), [il::Operand::RegisterList, below]);
+        assert_eq!(push.reads, regs(&[il::Reg::Stack, vector(8), vector(9)]));
+        assert_eq!(push.writes, regs(&[il::Reg::Stack]));
+        // `vcvt.s32.f64 s0, d16` converts into the single register.
+        let convert = lift(0xeebd_0be0);
+        assert_eq!(
+            convert.operands.as_slice(),
+            [il::Operand::Reg(vector(0)), il::Operand::Reg(vector(16))]
+        );
     }
 }
