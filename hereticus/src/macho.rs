@@ -212,6 +212,73 @@ fn entry_functions(
     }
 }
 
+/// Write the address each chained fixup of `file` rebases to over the
+/// fixup, in `memory`, the segments as loaded.
+///
+/// An arm64e file, and a kernelcache, stores each pointer of its data as a
+/// link of a chain: the target as an offset, the distance to the next link,
+/// and the bits of pointer authentication. Read as it is stored, no such
+/// pointer is an address, so a text that only a pointer reaches was not
+/// found. A bind, to another image, is left as it is.
+pub(crate) fn apply_chained_fixups(file: &MachO<'_>, memory: &mut [(u64, Vec<u8>)]) {
+    use object::read::macho::{Fixup, Segment as _};
+
+    let endian = file.endian();
+    let data = file.data();
+    let segments: Vec<(u64, &[u8])> = file
+        .segments()
+        .map(|segment| (segment.macho_segment().vmaddr(endian), segment.data().unwrap_or_default()))
+        .collect();
+    let Some(text) = file
+        .segments()
+        .find(|segment| segment.name().ok().flatten() == Some("__TEXT"))
+        .map(|segment| segment.address())
+    else {
+        return;
+    };
+    let Ok(mut commands) = file.macho_load_commands() else { return };
+    while let Ok(Some(command)) = commands.next() {
+        let Ok(Some(linkedit)) = command.dyld_chained_fixups() else { continue };
+        let Ok(fixups) = linkedit.chained_fixups(endian, data) else { continue };
+        let Ok(mut chained) = fixups.segments(endian) else { continue };
+        while let Ok(Some(segment)) = chained.next() {
+            let Some(&(address, bytes)) = segments.get(segment.index() as usize) else { continue };
+            let mut links = segment.fixups(endian, text, bytes);
+            while let Ok(Some((offset, fixup))) = links.next() {
+                let target = match fixup {
+                    Fixup::Rebase(rebase) => text.wrapping_add(rebase.target_offset),
+                    Fixup::KernelCacheRebase(rebase) => text.wrapping_add(rebase.target_offset),
+                    Fixup::SegmentedRebase(rebase) => {
+                        let Some(&(base, _)) =
+                            segments.get(usize::from(rebase.target_segment_index))
+                        else {
+                            continue;
+                        };
+                        base.wrapping_add(rebase.target_segment_offset)
+                    }
+                    Fixup::Bind(_) => continue,
+                };
+                write_pointer(memory, address.wrapping_add(offset), target);
+            }
+        }
+    }
+}
+
+/// Write `value` as a little-endian pointer at `address` of `memory`.
+fn write_pointer(memory: &mut [(u64, Vec<u8>)], address: u64, value: u64) {
+    for (start, bytes) in memory.iter_mut() {
+        let Some(offset) =
+            address.checked_sub(*start).and_then(|offset| usize::try_from(offset).ok())
+        else {
+            continue;
+        };
+        if let Some(slot) = bytes.get_mut(offset..offset.saturating_add(8)) {
+            slot.copy_from_slice(&value.to_le_bytes());
+            return;
+        }
+    }
+}
+
 /// The bytes from `address` up to `next`, or to the end of the section of
 /// code that holds `address`.
 fn code_at(sections: &[(u64, &[u8])], address: u64, next: Option<u64>) -> Option<Vec<u8>> {
@@ -479,5 +546,16 @@ mod tests {
             panic!("a 64-bit Mach-O");
         };
         assert!(fileset_functions(&file).is_none());
+    }
+
+    #[test]
+    fn a_pointer_is_written_where_its_region_holds_it() {
+        let mut memory = vec![(0x1000, vec![0u8; 16]), (0x2000, vec![0u8; 4])];
+        write_pointer(&mut memory, 0x1008, 0x1122_3344_5566_7788);
+        assert_eq!(memory[0].1[8..], 0x1122_3344_5566_7788_u64.to_le_bytes());
+        // A slot that no region holds whole is left alone.
+        write_pointer(&mut memory, 0x2000, 1);
+        write_pointer(&mut memory, 0x3000, 1);
+        assert_eq!(memory[1].1, [0; 4]);
     }
 }
