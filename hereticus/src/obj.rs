@@ -2,7 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use object::{Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
+use object::elf::PF_X;
+use object::{
+    Object, ObjectKind, ObjectSection, ObjectSegment, ObjectSymbol, SegmentFlags, SymbolKind,
+};
 
 use crate::address::AddressSpace;
 use crate::arch::Arch;
@@ -238,7 +241,7 @@ impl Binary {
         }
 
         if !has_code_section(&file) {
-            return Err(ObjError::NoCode);
+            return Self::parse_segments(&file, isa);
         }
 
         // Stripping keeps the dynamic symbol table, which names what the
@@ -283,6 +286,135 @@ impl Binary {
             found_by: FoundBy::Scanning,
             addresses: address_space(&file),
             links: Links::of_object(&file),
+            other_set,
+        })
+    }
+
+    /// Read an ELF file with no section headers through its segments.
+    ///
+    /// `sstrip`, which OpenWrt runs on every binary it ships, removes the
+    /// section headers as well as the symbols. What the loader maps is still
+    /// there, so each executable segment is read as a raw image at the
+    /// address it loads at, with every loaded segment as the memory the code
+    /// reads.
+    ///
+    /// Such a segment holds the headers and the read-only data as well as
+    /// the code. The dynamic segment says where the code lies: `DT_INIT`
+    /// opens it and `DT_FINI` comes last, so only what lies between is
+    /// read. `.fini` is left out, as `crti` and `crtn` of the C library
+    /// make it the same in every program.
+    fn parse_segments(file: &object::File<'_>, isa: Isa) -> Result<Self, ObjError> {
+        /// The tags of the dynamic segment that give where `.init` and
+        /// `.fini` start.
+        const DT_INIT: u64 = 12;
+        const DT_FINI: u64 = 13;
+
+        let arch = isa.arch();
+        let dynamic = crate::dynamic::Dynamic::of(file);
+        let init = dynamic.as_ref().and_then(|dynamic| dynamic.value(DT_INIT));
+        let fini = dynamic.as_ref().and_then(|dynamic| dynamic.value(DT_FINI));
+        let loaded: Vec<(u64, &[u8])> = file
+            .segments()
+            .filter_map(|segment| Some((segment.address(), segment.data().ok()?)))
+            .filter(|(_, data)| !data.is_empty())
+            .collect();
+        let executable: Vec<(u64, &[u8])> = file
+            .segments()
+            .filter(|segment| {
+                matches!(segment.flags(), SegmentFlags::Elf { p_flags, .. } if p_flags.0 & PF_X.0 != 0)
+            })
+            .filter_map(|segment| Some((segment.address(), segment.data().ok()?)))
+            .collect();
+        let code: Vec<(u64, &[u8])> = executable
+            .iter()
+            .map(|&(base, data)| match (init, fini) {
+                (Some(init), Some(fini)) => clip(base, data, init..fini),
+                _ => (base, data),
+            })
+            .filter(|(_, data)| data.len() >= arch.instruction_width())
+            .collect();
+        if code.is_empty() {
+            return Err(ObjError::NoCode);
+        }
+
+        // The index of ARM lies after the code, so the whole segment is
+        // searched for it. The call frame information of the others is
+        // found the same way.
+        let order = match file.is_little_endian() {
+            true => crate::unwind::ByteOrder::Little,
+            false => crate::unwind::ByteOrder::Big,
+        };
+        let index: Vec<crate::scan::IndexEntry> = executable
+            .iter()
+            .flat_map(|&(base, data)| {
+                let index = crate::scan::find_exception_index(data, base, arch);
+                if !index.is_empty() {
+                    return index;
+                }
+                let ranges = crate::unwind::find_function_ranges(data, base, order);
+                crate::scan::index_from_ranges(&ranges, arch)
+            })
+            .collect();
+        let exports = dynamic.as_ref().map(|dynamic| dynamic.exports()).unwrap_or_default();
+        let linked = crate::scan::Linked {
+            exported: exports
+                .iter()
+                .map(|export| {
+                    let start = export.address & !1;
+                    start..(start + export.size) & !1
+                })
+                .collect(),
+            pointers: Vec::new(),
+        };
+        let functions: Vec<Function> = crate::scan::recover_in_memory(
+            &code,
+            &index,
+            &linked,
+            crate::scan::Regions::CodeAndData,
+            arch,
+            &crate::arch::Memory::new(&loaded),
+        )
+        .into_iter()
+        .map(|found| found.function)
+        .collect();
+        if functions.is_empty() {
+            return Err(ObjError::NoFunctions);
+        }
+
+        // The dynamic symbol table names what the file exports, and the set
+        // each export is in, as for a file stripped the usual way.
+        let mut exported: BTreeMap<u64, &str> = BTreeMap::new();
+        let mut other_set = BTreeSet::new();
+        for export in &exports {
+            let encoding = match export.address & 1 == 1 || export.other & STO_MIPS16 == STO_MIPS16
+            {
+                true => Encoding::Compact,
+                false => Encoding::Full,
+            };
+            let address = export.address & !1;
+            if set_of_symbol(isa, encoding) != isa {
+                other_set.insert(address);
+            }
+            let name_of = exported.entry(address).or_insert(export.name);
+            *name_of = (*name_of).min(export.name);
+        }
+        let functions = functions
+            .into_iter()
+            .map(|function| match exported.get(&function.address) {
+                Some(name) => Function { name: stable_name(name).to_string(), ..function },
+                None => function,
+            })
+            .collect();
+
+        Ok(Self {
+            isa,
+            functions,
+            found_by: FoundBy::Scanning,
+            addresses: AddressSpace::from_ranges(
+                file.segments()
+                    .map(|segment| segment.address()..segment.address() + segment.size()),
+            ),
+            links: Links::of_object(file),
             other_set,
         })
     }
@@ -424,29 +556,75 @@ fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
 /// The encoding of most functions of a file, as their symbols say.
 ///
 /// The symbol table says it where there is one, and the dynamic symbol
-/// table where it was stripped. Where neither is left, as in stripped
-/// firmware, bit 0 of the entry point says which set the code runs in.
+/// table where it was stripped, through the dynamic segment where `sstrip`
+/// removed the section headers too. Where neither is left, as in stripped
+/// firmware, a MIPS file says in its header that it holds MIPS16e code,
+/// and on ARM bit 0 of the entry point says which set the code runs in.
+/// The entry of a MIPS16e program is MIPS32 code of the C library.
 fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
+    /// The functions `crti` and `crtn` of the C library make, in the full
+    /// set whatever set the program is built in. An executable exports
+    /// little more, so they would outvote it.
+    const FROM_THE_C_LIBRARY: [&str; 2] = ["_init", "_fini"];
+
     let count = |symbols: &mut dyn Iterator<Item = object::Symbol<'_, '_>>| {
-        symbols.filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0).fold(
-            (0usize, 0usize),
-            |(compact, all), symbol| {
+        symbols
+            .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
+            .filter(|symbol| !symbol.name().is_ok_and(|name| FROM_THE_C_LIBRARY.contains(&name)))
+            .fold((0usize, 0usize), |(compact, all), symbol| {
                 let found = usize::from(encoding_of(&symbol) == Encoding::Compact);
                 (compact + found, all + 1)
-            },
-        )
+            })
+    };
+    // A file with no section headers keeps its dynamic symbols only in the
+    // dynamic segment.
+    let exported = || {
+        let exports = crate::dynamic::Dynamic::of(file).map(|dynamic| dynamic.exports());
+        let exports = exports.unwrap_or_default();
+        let ours = exports.iter().filter(|export| !FROM_THE_C_LIBRARY.contains(&export.name));
+        ours.fold((0usize, 0usize), |(compact, all), export| {
+            let marked = export.address & 1 == 1 || export.other & STO_MIPS16 == STO_MIPS16;
+            (compact + usize::from(marked), all + 1)
+        })
     };
     let (compact, all) = match count(&mut file.symbols()) {
-        (_, 0) => count(&mut file.dynamic_symbols()),
+        (_, 0) => match count(&mut file.dynamic_symbols()) {
+            (_, 0) => exported(),
+            counted => counted,
+        },
         counted => counted,
     };
     let most = match all {
-        0 => file.entry() & 1 == 1,
+        0 => holds_mips16(file) || file.entry() & 1 == 1,
         _ => compact * 2 > all,
     };
     match most {
         true => Encoding::Compact,
         false => Encoding::Full,
+    }
+}
+
+/// The bytes of `data`, at `base`, that lie in `range`, where the two
+/// overlap. Where they do not, all of `data`.
+fn clip(base: u64, data: &[u8], range: core::ops::Range<u64>) -> (u64, &[u8]) {
+    let start = range.start.max(base);
+    let end = range.end.min(base + data.len() as u64);
+    if start >= end {
+        return (base, data);
+    }
+    (start, &data[(start - base) as usize..(end - base) as usize])
+}
+
+/// The flag of the header of a MIPS file that holds MIPS16e code.
+const EF_MIPS_ARCH_ASE_M16: u32 = 0x0400_0000;
+
+/// Report whether the header of a MIPS file says that it holds MIPS16e
+/// code.
+fn holds_mips16(file: &object::File<'_>) -> bool {
+    let is_mips = matches!(file.architecture(), object::Architecture::Mips);
+    match file.flags() {
+        object::FileFlags::Elf { e_flags, .. } => is_mips && e_flags.0 & EF_MIPS_ARCH_ASE_M16 != 0,
+        _ => false,
     }
 }
 
@@ -504,6 +682,16 @@ mod tests {
         Isa::Mips16,
         Isa::Mips16Be,
     ];
+
+    #[test]
+    fn clip_keeps_what_lies_in_the_range() {
+        let data = [0u8, 1, 2, 3, 4, 5, 6, 7];
+        assert_eq!(clip(0x100, &data, 0x102..0x106), (0x102, &data[2..6]));
+        assert_eq!(clip(0x100, &data, 0x0..0x104), (0x100, &data[..4]));
+        assert_eq!(clip(0x100, &data, 0x106..0x200), (0x106, &data[6..]));
+        assert_eq!(clip(0x100, &data, 0x200..0x300), (0x100, &data[..]), "no overlap");
+        assert_eq!(clip(0x100, &data, 0x104..0x104), (0x100, &data[..]), "empty range");
+    }
 
     #[test]
     fn the_other_set_of_the_other_set_is_the_set() {

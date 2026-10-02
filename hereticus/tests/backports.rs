@@ -114,6 +114,8 @@ impl Project {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reading {
     Stripped,
+    /// Stripped of the section headers too, as `sstrip` leaves a file.
+    Sstripped,
     Raw,
 }
 
@@ -375,6 +377,48 @@ fn check_stripped(build: Build) {
         diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
 
     check_regions(build, Reading::Stripped, &regions(build, &diff, &before, &after));
+}
+
+/// The library as `sstrip` leaves it: with no section headers, so only the
+/// segments say what loads where.
+fn parse_sstripped(build: Build, variant: &str) -> Binary {
+    Binary::parse(&sstrip(read(build, variant, "lib-stripped.so")))
+        .expect("an ELF file with no section headers must read")
+}
+
+/// Remove the section headers of an ELF file, as `sstrip` does: the header
+/// no longer says where they are or how many there are.
+fn sstrip(mut elf: Vec<u8>) -> Vec<u8> {
+    const CLASS_64: u8 = 2;
+    let (offset, count) = match elf[4] {
+        CLASS_64 => (0x28..0x30, 0x3c..0x40),
+        _ => (0x20..0x24, 0x30..0x34),
+    };
+    elf[offset].fill(0);
+    // `e_shnum` and `e_shstrndx`.
+    elf[count].fill(0);
+    elf
+}
+
+/// With no section headers, the report covers the fix and strays nowhere
+/// else.
+#[rstest]
+fn sstripped_the_fix_is_covered_and_nothing_else(
+    #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16")] arch: &'static str,
+    #[values("O2", "gcc-O2", "gcc-Os")] level: &'static str,
+) {
+    // GCC alone builds MIPS16e.
+    if arch == "mips16" && !level.starts_with("gcc") {
+        return;
+    }
+    let build = build(project, arch, level);
+    let before = parse_sstripped(build, "before");
+    let after = parse_sstripped(build, "after");
+    let diff =
+        diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+
+    check_regions(build, Reading::Sstripped, &regions(build, &diff, &before, &after));
 }
 
 /// As a raw image, with no container at all, the same holds.

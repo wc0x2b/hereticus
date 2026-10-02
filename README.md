@@ -30,7 +30,8 @@ $ hereticus --raw --arch mips32 --unpack stub a.bin b.bin  # the decompressor in
 ```
 
 For real fixes found with `hereticus`, such as the iOS kernel fix for
-CVE-2024-23265, see [real-life-reports](real-life-reports).
+CVE-2024-23265 and the OpenWrt `ubusd` fix for CVE-2025-62526, see
+[real-life-reports](real-life-reports).
 
 Two OpenWrt releases for the same device, 22.03.2 and 22.03.5 for the Netgear
 EX6100v2. The ARM decompressor stub is 15 KB of shipped code with no symbols,
@@ -114,7 +115,9 @@ and 2 when the input could not be read.
   mixes A32 and Thumb-2, or MIPS32 and MIPS16e, is read function by function
   where its symbols say which set each is in. Stripped or raw, it is read in
   one set, so its minority reads as nonsense.
-* **ELF, raw images, and AArch64 Mach-O.** A Mach-O file is read as macOS
+* **ELF, raw images, and AArch64 Mach-O.** An ELF file that `sstrip` left
+  with no section headers, as OpenWrt ships each binary, is read through
+  its segments. A Mach-O file is read as macOS
   and iOS ship it, arm64 or arm64e, stripped or not, and a universal binary
   as its AArch64 slice. A kernelcache of iOS 15 and later is read kext by
   kext. The dyld shared cache and 32-bit Mach-O are not read.
