@@ -20,6 +20,27 @@
 //! and writes, whether it touches memory, what it compares, and of which
 //! kind each operand is, which is what a check that a fix adds is made of.
 //! It does not say what value an instruction computes.
+//!
+//! # Against the IL of other tools
+//!
+//! Ghidra lifts to p-code, and its BSim compares functions by features of
+//! the SSA form the decompiler builds: each value hashed with the operation
+//! that defines it and that operation's inputs, over three rounds, plus the
+//! shape of the blocks, weighted by how rare each feature is. Binary Ninja
+//! lifts to a stack of ILs; its WARP matches functions exactly, by a hash of
+//! each basic block with the relocatable instructions zeroed, and leaves
+//! fuzzy matching to BinDiff, which compares flow graphs, call graphs and an
+//! order-free product of the mnemonics.
+//!
+//! This IL is smaller than either: no SSA and no blocks, one instruction at
+//! a time, so a whole kernel lifts in seconds. It keeps BSim's core idea in
+//! [`flow_features`], which knows an operation by what feeds it, and the
+//! matching uses those features to take a pair the instructions alone just
+//! miss. Measured against the symbols of the cross builds, what BSim and
+//! BinDiff add beyond that did not help here: a weight by rarity, the count
+//! of blocks, edges and loops, and looking through copies and spills. The
+//! largest gains came from reading what each instruction does one way on
+//! every architecture: the operation, its operands, a guard, an idiom.
 
 use smallvec::SmallVec;
 

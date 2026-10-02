@@ -178,3 +178,15 @@ MIPS32r6 re-encodes branches, removes `lwl` and `lwr` and the branch
 likely forms, and adds compact branches with no delay slot. The decoder
 assumes release 2. Few shipped parts use r6, so first confirm a target
 worth reading.
+
+## Weigh instructions by how rare they are
+
+Ghidra's BSim weighs each feature by how rare it is across a corpus.
+Measured over the cross builds, a Jaccard weighted by the rarity of each
+normalized instruction in the two binaries pairs more right for each
+wrong pair than the plain one at every threshold: at 0.55 weighted, 736
+more right and 256 more wrong, where the plain one at 0.6 paired 624
+more right and 332 more wrong. At the present precision the gain is
+small, 14 more right and 3 fewer wrong at 0.63, and the change would move
+every score a report shows and the meaning of `--threshold`. Revisit it
+with the threshold.
