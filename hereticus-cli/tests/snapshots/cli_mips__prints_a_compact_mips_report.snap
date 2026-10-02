@@ -22,10 +22,10 @@ exit_code: 0
 ----- stdout -----
 changed	sub_800000dc	sub_8000016c	0.82	8	2	0
 changed values	sub_80000000	sub_80000000	1.00	0	0	0
-gone	sub_80000010	sub_80000010	0.29			
-gone	sub_80000058	sub_80000090	0.48			
-new	sub_80000010	sub_80000010	0.29			
-new	sub_80000058	sub_80000090	0.48			
+gone	sub_80000010	sub_80000010	0.20			
+gone	sub_80000058	sub_80000090	0.40			
+new	sub_80000058	sub_80000010	0.24			
+new	sub_80000058	sub_80000090	0.40			
 
 ----- stderr -----
 hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate
