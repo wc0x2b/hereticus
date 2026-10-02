@@ -437,23 +437,42 @@ impl Arch for Mips16 {
         matches!(insn.mnemonic.as_str(), "save" | "restore") || self.base.is_frame_management(insn)
     }
 
+    /// The text of each instruction is that of MIPS32, so MIPS32 follows
+    /// the global pointer through the body. A load or address relative to
+    /// the program counter moves with the code, and so does the upper half
+    /// of `_gp_disp` that the preamble adds to it.
     fn constant_kinds(
         &self,
         _code: &[u8],
         body: &[Insn],
-        _space: &AddressSpace,
+        space: &AddressSpace,
     ) -> Vec<ConstantKind> {
-        // A load or address relative to the program counter moves with the
-        // code; the rest holds values.
-        body.iter()
-            .map(|insn| {
-                if insn.operands.contains("(pc)") || insn.operands.contains(", pc,") {
-                    ConstantKind::Address
-                } else {
-                    ConstantKind::Value
-                }
+        // MIPS32 knows the global pointer as `_gp_disp` added to `t9`, the
+        // address of the function. MIPS16e adds it to the program counter
+        // instead, so its `addu` is given to MIPS32 in the form it knows.
+        let preambles: Vec<usize> = (0..body.len())
+            .filter(|&index| {
+                body.get(index..index + GP_PREAMBLE_LENGTH).is_some_and(is_gp_preamble)
             })
-            .collect()
+            .collect();
+        let mut as_mips32 = body.to_vec();
+        for &index in &preambles {
+            let add = &mut as_mips32[index + GP_PREAMBLE_LENGTH - 1];
+            if let Some((destination, _)) = add.operands.split_once(',') {
+                add.operands = format!("{destination}, {destination}, t9");
+            }
+        }
+
+        let mut kinds = super::mips::constant_kinds_in(self, &as_mips32, space);
+        for &index in &preambles {
+            kinds[index] = ConstantKind::Address;
+        }
+        for (index, insn) in body.iter().enumerate() {
+            if insn.operands.contains("(pc)") || insn.operands.contains(", pc,") {
+                kinds[index] = ConstantKind::Address;
+            }
+        }
+        kinds
     }
 
     fn contents(&self, _code: &[u8], _insns: &[Insn], _space: &AddressSpace) -> Contents {
