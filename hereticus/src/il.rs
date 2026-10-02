@@ -10,10 +10,16 @@
 //! the branch that reads it into one [`Guard`], whatever the spelling.
 //! AArch64, A32, Thumb-2 and MIPS32 each have a lifter: see `Arch::lift`.
 //!
+//! A lifted instruction also names its operation, as an [`Op`], and its
+//! operands, as [`Operand`]s, so that spellings of one operation read
+//! alike: `addu` is `add`, a 16-bit Thumb `adds r0, #1` names `r0` twice as
+//! `add r0, r0, #1` does, and [`Lifted::canonical`] reads an idiom such as
+//! `eor r0, r1, r1` as the move of zero it is.
+//!
 //! This is no full semantics. It says which registers an instruction reads
-//! and writes, whether it touches memory, and what it compares, which is what
-//! a check that a fix adds is made of. It does not say what value an
-//! instruction computes.
+//! and writes, whether it touches memory, what it compares, and of which
+//! kind each operand is, which is what a check that a fix adds is made of.
+//! It does not say what value an instruction computes.
 
 use smallvec::SmallVec;
 

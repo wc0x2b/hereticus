@@ -442,19 +442,28 @@ impl Arch for Arm32 {
     }
 
     fn lift(&self, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
-        lift_with(InstDecoder::default(), insn, word)
+        let a32 = word.try_into().ok().map(u32::from_le_bytes);
+        lift_with(InstDecoder::default(), insn, word, a32)
     }
 }
 
 /// Decode `word` again with `decoder` and lift it. A word the decoder
 /// refuses, or reads only through the fallback, lifts to nothing.
-pub(super) fn lift_with(decoder: InstDecoder, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
+///
+/// A word the decoder refuses lifts from `a32`, its A32 form, where
+/// [`lift_fallback`] reads it.
+pub(super) fn lift_with(
+    decoder: InstDecoder,
+    insn: &Insn,
+    word: &[u8],
+    a32: Option<u32>,
+) -> Option<il::Lifted> {
     if insn.kind == InsnKind::Unknown {
         return None;
     }
     let mut inst = Instruction::default();
-    decoder.decode_into(&mut inst, &mut U8Reader::new(word)).ok()?;
-    (inst.opcode != Opcode::Invalid).then(|| lift(&inst))
+    let decoded = decoder.decode_into(&mut inst, &mut U8Reader::new(word)).is_ok();
+    if decoded && inst.opcode != Opcode::Invalid { Some(lift(&inst)) } else { lift_fallback(a32?) }
 }
 
 /// What an ARM instruction does with its first operands.
@@ -534,6 +543,17 @@ fn lift(inst: &Instruction) -> il::Lifted {
         test: test_of(inst, &operands),
         operands: operands.iter().map(|operand| il_operand(*operand)).collect(),
     };
+    // A 16-bit Thumb form names its destination once, as `adds r0, #1`,
+    // where the 32-bit form names it twice, as `add r0, r0, #1`.
+    if is_binary(lifted.op) && lifted.operands.len() == 2 {
+        let destination = lifted.operands[0];
+        lifted.operands.insert(1, destination);
+    }
+    // `rsb` subtracts the other way round, so its values swap to read as
+    // `sub` does: `rsb r0, r1, #0` is `0 - r1`.
+    if matches!(inst.opcode, Opcode::RSB | Opcode::RSC) && lifted.operands.len() == 3 {
+        lifted.operands.swap(1, 2);
+    }
     // `mvn r0, #1` puts the constant `~1` in `r0`, as `mov` would.
     if let (Opcode::MVN, [dest, il::Operand::Const(constant)]) =
         (inst.opcode, lifted.operands.as_slice())
@@ -543,6 +563,26 @@ fn lift(inst: &Instruction) -> il::Lifted {
         lifted.op = il::Op::Move;
     }
     lifted
+}
+
+/// Report whether `op` computes its result from two values.
+fn is_binary(op: il::Op) -> bool {
+    use il::Op;
+    matches!(
+        op,
+        Op::Add
+            | Op::Subtract
+            | Op::Multiply
+            | Op::And
+            | Op::Or
+            | Op::Xor
+            | Op::AndNot
+            | Op::OrNot
+            | Op::ShiftLeft
+            | Op::ShiftRight
+            | Op::ShiftRightArithmetic
+            | Op::Rotate
+    )
 }
 
 /// An operand as the IL names it.
@@ -1295,69 +1335,185 @@ pub(super) fn unread_mnemonic(word: u32) -> &'static str {
 /// says how the base moves after: 15 not at all, 13 by the size moved, any
 /// other by that register.
 fn decode_neon_load_store(word: u32) -> Option<(String, String)> {
-    let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
-    let first = field(22, 1) << 4 | field(12, 4);
-    let (structures, registers, spacing, size, lanes) = if field(23, 1) == 0 {
-        let (structures, registers, spacing) = match field(8, 4) {
-            0b0111 => (1, 1, 1),
-            0b1010 => (1, 2, 1),
-            0b0110 => (1, 3, 1),
-            0b0010 => (1, 4, 1),
-            0b1000 => (2, 2, 1),
-            0b1001 => (2, 2, 2),
-            0b0011 => (2, 4, 1),
-            0b0100 => (3, 3, 1),
-            0b0101 => (3, 3, 2),
-            0b0000 => (4, 4, 1),
-            0b0001 => (4, 4, 2),
-            _ => return None,
-        };
-        (structures, registers, spacing, field(6, 2), Lanes::Whole)
-    } else {
-        let structures = field(8, 2) + 1;
-        match field(10, 2) {
-            // To all lanes: `T` doubles the count of a `vld1`, and spaces
-            // the others.
-            0b11 => {
-                let doubled = field(5, 1) == 1;
-                let (registers, spacing) = match (structures, doubled) {
-                    (1, true) => (2, 1),
-                    (_, true) => (structures, 2),
-                    (_, false) => (structures, 1),
-                };
-                (structures, registers, spacing, field(6, 2), Lanes::All)
-            }
-            size => {
-                let index_align = field(4, 4);
-                let spacing = match size {
-                    1 if index_align & 0b10 != 0 => 2,
-                    2 if index_align & 0b100 != 0 => 2,
-                    _ => 1,
-                };
-                let lane = index_align >> (size + 1);
-                (structures, structures, spacing, size, Lanes::One(lane))
-            }
-        }
-    };
-
-    let lane = match lanes {
+    let access = NeonAccess::of(word)?;
+    let lane = match access.lanes {
         Lanes::Whole => String::new(),
         Lanes::All => "[]".to_string(),
         Lanes::One(lane) => format!("[{lane}]"),
     };
     let list: Vec<String> =
-        (0..registers).map(|index| format!("d{}{lane}", first + index * spacing)).collect();
-    let base = format!("[{}]", ARM_REGISTERS[field(16, 4) as usize]);
-    let address = match field(0, 4) {
+        access.registers().map(|register| format!("d{register}{lane}")).collect();
+    let base = format!("[{}]", ARM_REGISTERS[access.base as usize]);
+    let address = match access.index {
         0b1111 => base,
         0b1101 => format!("{base}!"),
         index => format!("{base}, {}", ARM_REGISTERS[index as usize]),
     };
-    let operation = if field(21, 1) == 1 { "vld" } else { "vst" };
+    let operation = if access.load { "vld" } else { "vst" };
     Some((
-        format!("{operation}{structures}.{}", 8 << size),
+        format!("{operation}{}.{}", access.structures, 8 << access.size),
         format!("{{{}}}, {address}", list.join(", ")),
     ))
+}
+
+/// Lift an A32 `word` the decoder refuses but [`decode_fallback`] reads,
+/// where it moves data: the VFP and NEON loads and stores. A T32 caller
+/// gives the A32 form of its word.
+pub(super) fn lift_fallback(word: u32) -> Option<il::Lifted> {
+    let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
+    let general = |number: u32| il_reg(Reg::from_u8(number as u8));
+    let mut reads = il::RegSet::EMPTY;
+    let mut writes = il::RegSet::EMPTY;
+
+    let (load, width, values, memory): (bool, il::Width, il::Operand, il::Operand) =
+        if word >> 24 == NEON_LOAD_STORE {
+            let access = NeonAccess::of(word)?;
+            let base = general(access.base);
+            base.into_iter().for_each(|reg| reads.insert(reg));
+            // `Rm` 15 leaves the base, 13 steps it by the size moved, and any
+            // other register steps it by that register.
+            let offset = match access.index {
+                0b1111 => Some(0),
+                0b1101 => {
+                    base.into_iter().for_each(|reg| writes.insert(reg));
+                    Some(0)
+                }
+                index => {
+                    base.into_iter().for_each(|reg| writes.insert(reg));
+                    general(index).into_iter().for_each(|reg| reads.insert(reg));
+                    None
+                }
+            };
+            let moved = if access.load { &mut writes } else { &mut reads };
+            access.registers().for_each(|number| moved.insert(il::Reg::Vector(number as u8)));
+            let width = match access.size {
+                0 => il::Width::Bits8,
+                1 => il::Width::Bits16,
+                2 => il::Width::Bits32,
+                _ => il::Width::Bits64,
+            };
+            let memory = il::Operand::Memory { base, offset };
+            (access.load, width, il::Operand::RegisterList, memory)
+        } else {
+            // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
+            let (name, _) = decode_fallback(word)?;
+            if !name.starts_with("vldr") && !name.starts_with("vstr") {
+                return None;
+            }
+            let double = field(8, 1) == 1;
+            let (d, vd) = (field(22, 1), field(12, 4));
+            let register = il::Reg::Vector(if double { d << 4 | vd } else { vd << 1 | d } as u8);
+            let base = general(field(16, 4));
+            base.into_iter().for_each(|reg| reads.insert(reg));
+            let load = field(20, 1) == 1;
+            if load {
+                writes.insert(register)
+            } else {
+                reads.insert(register)
+            }
+            let offset = i64::from(field(0, 8) * 4);
+            let offset = if field(23, 1) == 1 { offset } else { -offset };
+            let width = if double { il::Width::Bits64 } else { il::Width::Bits32 };
+            let memory = il::Operand::Memory { base, offset: Some(offset) };
+            (load, width, il::Operand::Reg(register), memory)
+        };
+    if word >> 28 != 0b1110 && word >> 24 != NEON_LOAD_STORE {
+        reads.insert(il::Reg::Flags);
+    }
+    let (op, kind) = if load {
+        (il::Op::Load, il::AccessKind::Load)
+    } else {
+        (il::Op::Store, il::AccessKind::Store)
+    };
+    Some(il::Lifted {
+        op,
+        reads,
+        writes,
+        memory: Some(il::MemoryAccess { kind, width: Some(width) }),
+        test: None,
+        operands: [values, memory].into_iter().collect(),
+    })
+}
+
+/// The fields of an A32 NEON element or structure load or store.
+struct NeonAccess {
+    load: bool,
+    structures: u32,
+    /// The first `d` register, and how many follow it, how far apart.
+    first: u32,
+    count: u32,
+    spacing: u32,
+    /// The element size, as a power of two of bytes.
+    size: u32,
+    lanes: Lanes,
+    /// The base register, and `Rm`, which says how the base moves after.
+    base: u32,
+    index: u32,
+}
+
+impl NeonAccess {
+    fn of(word: u32) -> Option<Self> {
+        let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
+        let first = field(22, 1) << 4 | field(12, 4);
+        let (structures, registers, spacing, size, lanes) = if field(23, 1) == 0 {
+            let (structures, registers, spacing) = match field(8, 4) {
+                0b0111 => (1, 1, 1),
+                0b1010 => (1, 2, 1),
+                0b0110 => (1, 3, 1),
+                0b0010 => (1, 4, 1),
+                0b1000 => (2, 2, 1),
+                0b1001 => (2, 2, 2),
+                0b0011 => (2, 4, 1),
+                0b0100 => (3, 3, 1),
+                0b0101 => (3, 3, 2),
+                0b0000 => (4, 4, 1),
+                0b0001 => (4, 4, 2),
+                _ => return None,
+            };
+            (structures, registers, spacing, field(6, 2), Lanes::Whole)
+        } else {
+            let structures = field(8, 2) + 1;
+            match field(10, 2) {
+                // To all lanes: `T` doubles the count of a `vld1`, and spaces
+                // the others.
+                0b11 => {
+                    let doubled = field(5, 1) == 1;
+                    let (registers, spacing) = match (structures, doubled) {
+                        (1, true) => (2, 1),
+                        (_, true) => (structures, 2),
+                        (_, false) => (structures, 1),
+                    };
+                    (structures, registers, spacing, field(6, 2), Lanes::All)
+                }
+                size => {
+                    let index_align = field(4, 4);
+                    let spacing = match size {
+                        1 if index_align & 0b10 != 0 => 2,
+                        2 if index_align & 0b100 != 0 => 2,
+                        _ => 1,
+                    };
+                    let lane = index_align >> (size + 1);
+                    (structures, structures, spacing, size, Lanes::One(lane))
+                }
+            }
+        };
+        Some(Self {
+            load: field(21, 1) == 1,
+            structures,
+            first,
+            count: registers,
+            spacing,
+            size,
+            lanes,
+            base: field(16, 4),
+            index: field(0, 4),
+        })
+    }
+
+    /// The numbers of the `d` registers moved.
+    fn registers(&self) -> impl Iterator<Item = u32> + '_ {
+        (0..self.count).map(|index| self.first + index * self.spacing)
+    }
 }
 
 /// Which lanes of its registers a NEON load or store moves.
@@ -2842,5 +2998,61 @@ mod tests {
         // `ldrex r1, [r2]`
         assert_eq!(lift_one([0x9f, 0x1f, 0x92, 0xe1]).op, il::Op::Atomic);
         assert_eq!(lift_one(words::LDR_R1_R2_8).op, il::Op::Load);
+    }
+
+    /// `rsb` subtracts the other way round: `rsb r0, r1, #1` is `1 - r1`.
+    #[test]
+    fn a_reverse_subtract_names_its_values_in_order() {
+        let general = |number| il::Operand::Reg(il::Reg::General(number));
+        let lifted = lift_one([0x01, 0x00, 0x61, 0xe2]);
+        assert_eq!(lifted.op, il::Op::Subtract);
+        assert_eq!(lifted.operands.as_slice(), [general(0), il::Operand::Const(1), general(1)]);
+    }
+
+    /// `yaxpeax` reads no VFP or NEON load or store, so they lift from the
+    /// fields [`decode_fallback`] reads.
+    #[test]
+    fn a_vfp_load_and_store_lift() {
+        // `vldr d16, [pc, 0x90]`, as GCC loads a double from its pool.
+        let load = lift_fallback(0xeddf_0b24).expect("vldr lifts");
+        assert_eq!(load.op, il::Op::Load);
+        assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits64));
+        let pool = il::Operand::Memory { base: None, offset: Some(0x90) };
+        assert_eq!(load.operands.as_slice(), [il::Operand::Reg(il::Reg::Vector(16)), pool]);
+        assert_eq!(load.writes, [il::Reg::Vector(16)].into_iter().collect());
+        // `vstr s0, [sp, -0x4]`
+        let store = lift_fallback(0xed0d_0a01).expect("vstr lifts");
+        assert_eq!(store.op, il::Op::Store);
+        let slot = il::Operand::Memory { base: Some(il::Reg::Stack), offset: Some(-4) };
+        assert_eq!(store.operands[1], slot);
+        assert_eq!(store.reads, [il::Reg::Stack, il::Reg::Vector(0)].into_iter().collect());
+        assert!(store.writes.is_empty());
+    }
+
+    #[test]
+    fn a_neon_load_writes_its_list_and_steps_its_base() {
+        // `vld1.8 {d16, d17}, [r0]!`
+        let load = lift_fallback(0xf460_0a0d).expect("vld1 lifts");
+        assert_eq!(load.op, il::Op::Load);
+        assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits8));
+        let base = il::Operand::Memory { base: Some(il::Reg::General(0)), offset: Some(0) };
+        assert_eq!(load.operands.as_slice(), [il::Operand::RegisterList, base]);
+        let written = [il::Reg::General(0), il::Reg::Vector(16), il::Reg::Vector(17)];
+        assert_eq!(load.writes, written.into_iter().collect());
+    }
+
+    /// A hint is no access, and lifts to nothing.
+    #[test]
+    fn a_hint_lifts_to_nothing() {
+        assert_eq!(lift_fallback(0xe320_f000), None, "nop");
+    }
+
+    #[test]
+    fn what_the_fallback_lifts_it_decodes() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            if lift_fallback(word).is_some() {
+                assert!(decode_fallback(word).is_some(), "{word:#010x}");
+            }
+        });
     }
 }
