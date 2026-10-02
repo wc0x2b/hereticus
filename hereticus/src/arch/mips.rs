@@ -302,11 +302,7 @@ impl Arch for Mips32 {
         // below or a landing pad the unwinder enters, still holds what the
         // function keeps in a saved register throughout. Which registers
         // those are is known only once the whole function has been read.
-        let first = track_addresses(body, space, &HeldAddresses::default());
-        if first.unreached_arrivals == 0 || first.invariant.is_empty() {
-            return first.kinds;
-        }
-        track_addresses(body, space, &first.invariant).kinds
+        constant_kinds_in(self, body, space)
     }
 
     /// A compiler keeps no data among MIPS instructions: constants are built
@@ -777,7 +773,27 @@ struct Tracked<'a> {
 ///
 /// `invariant` holds what the saved registers keep throughout, to assume
 /// where no known branch arrives.
+/// [`Arch::constant_kinds`] of MIPS32 text, where `arch` says which
+/// transfers have a delay slot. MIPS16e reads as MIPS32 text, but most of
+/// its branches have none.
+pub(super) fn constant_kinds_in(
+    arch: &dyn Arch,
+    body: &[Insn],
+    space: &AddressSpace,
+) -> Vec<ConstantKind> {
+    // Code that no known branch reaches, as a loop body entered from
+    // below or a landing pad the unwinder enters, still holds what the
+    // function keeps in a saved register throughout. Which registers
+    // those are is known only once the whole function has been read.
+    let first = track_addresses(arch, body, space, &HeldAddresses::default());
+    if first.unreached_arrivals == 0 || first.invariant.is_empty() {
+        return first.kinds;
+    }
+    track_addresses(arch, body, space, &first.invariant).kinds
+}
+
 fn track_addresses<'a>(
+    arch: &dyn Arch,
     body: &'a [Insn],
     space: &AddressSpace,
     invariant: &HeldAddresses<'a>,
@@ -911,23 +927,15 @@ fn track_addresses<'a>(
         // The delay slot runs before control moves, and compilers put the
         // lower half of an argument address there, so a transfer takes
         // effect only once its slot has run.
-        match after_slot {
-            AfterSlot::FallThrough => {}
-            AfterSlot::Call => upper.keep_only(is_callee_saved),
-            AfterSlot::Branch(target) => record_state(&mut at_target, target, &upper),
-            AfterSlot::Leave(target) => {
-                if let Some(target) = target {
-                    record_state(&mut at_target, target, &upper);
-                }
-                reachable = Reach::OnlyByBranch;
-            }
-            AfterSlot::Dispatch => {
-                dispatched = Some(upper.clone());
-                reachable = Reach::OnlyByBranch;
-            }
-        }
-        saved.record(insn, &upper);
+        let mut flow = Flow { upper, at_target, reachable, dispatched };
+        flow.transfer(after_slot);
+        saved.record(insn, &flow.upper);
         after_slot = AfterSlot::of(insn);
+        if arch.delay_slots(insn) == 0 {
+            flow.transfer(after_slot);
+            after_slot = AfterSlot::FallThrough;
+        }
+        Flow { upper, at_target, reachable, dispatched } = flow;
     }
 
     Tracked { kinds, unreached_arrivals, invariant: saved.invariant() }
@@ -1244,6 +1252,35 @@ impl AfterSlot {
             InsnKind::Jump { target } => Self::Leave(forward(target)),
             InsnKind::Return => Self::Leave(None),
             InsnKind::Normal | InsnKind::Unknown => Self::FallThrough,
+        }
+    }
+}
+
+/// What [`track_addresses`] knows of control flow at one instruction.
+struct Flow<'a> {
+    upper: HeldAddresses<'a>,
+    at_target: Vec<(u64, HeldAddresses<'a>)>,
+    reachable: Reach,
+    dispatched: Option<HeldAddresses<'a>>,
+}
+
+impl Flow<'_> {
+    /// Move control as `after_slot` says.
+    fn transfer(&mut self, after_slot: AfterSlot) {
+        match after_slot {
+            AfterSlot::FallThrough => {}
+            AfterSlot::Call => self.upper.keep_only(is_callee_saved),
+            AfterSlot::Branch(target) => record_state(&mut self.at_target, target, &self.upper),
+            AfterSlot::Leave(target) => {
+                if let Some(target) = target {
+                    record_state(&mut self.at_target, target, &self.upper);
+                }
+                self.reachable = Reach::OnlyByBranch;
+            }
+            AfterSlot::Dispatch => {
+                self.dispatched = Some(self.upper.clone());
+                self.reachable = Reach::OnlyByBranch;
+            }
         }
     }
 }
