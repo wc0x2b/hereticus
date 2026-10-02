@@ -23,6 +23,7 @@ Or download from [github releases](https://github.com/wc0x2b/hereticus/releases)
 $ hereticus before.elf after.elf                    # what changed
 $ hereticus --all before.elf after.elf              # every function
 $ hereticus --diff array_max before.elf after.elf   # the diff of one function
+$ hereticus --diff-all before.elf after.elf         # the diff of every changed function
 $ hereticus --ignore-names before.elf after.elf     # match from the code alone
 $ hereticus --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF header
 ```
@@ -134,6 +135,7 @@ Arguments:
 Options:
   -a, --all                    Report every function, not only the ones that changed
       --diff <FUNCTION>        Show the instruction-level diff of one function, then stop
+      --diff-all               Show the instruction-level diff of every changed function, then stop
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
       --show-data              List regions that look like data rather than code
