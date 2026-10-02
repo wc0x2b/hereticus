@@ -103,6 +103,8 @@ bit only for what it exports, and a raw image has none, so the scan still
 reads the whole image in one set. A call says which set its target is in
 (`bl` keeps the set, `blx` switches), and so do bit 0 of a pointer and the
 unwind index, so a scan could follow them per function.
+Measured on the OpenWrt 22.03.5 images for the EX6100v2 and the A385
+DB AP, every executable of user space is A32: 41 and 38, none Thumb-2.
 
 ## End the code of a raw image where its data begins
 
@@ -138,13 +140,18 @@ pointers, and the global offset table and `%hi`/`%lo` pairs differ (n64
 builds addresses with `lui`, `daddiu` and `dsll`). Add an architecture and
 fixtures for `mips64-linux-gnuabi64`.
 
-## Read MIPS16e and microMIPS
+## Read MIPS16e
 
-Some MIPS firmware is built compressed, as MIPS16e or microMIPS, with 16
-and 32-bit instructions mixed and bit 0 of a function's address marking
-the mode, as on Thumb-2. The decoder reads only standard MIPS32, so such
-code reads as garbage. Measure how often OpenWrt targets use it before
-building it.
+Some MIPS firmware is built compressed, as MIPS16e, with 16 and 32-bit
+instructions mixed and bit 0 of a function's address marking the mode,
+as on Thumb-2. The decoder reads only standard MIPS32, so such code reads
+as garbage. Measured on the root filesystems of the OpenWrt 22.03.5
+images the tests download, about half of the MIPS binaries hold MIPS16
+code: 77 of 156 on the WNDR3700 v2, 77 of 148 on the EAP245 v3, 94 of 177
+on the VR200 and 76 of 152 on the GL-MT300N v2, by the MIPS16 flag of
+their ELF header. None holds microMIPS. The kernels hold neither, so this
+matters for a diff of user space, as of a daemon a CVE fix touched.
+`rabbitizer` reads no MIPS16, so it needs a decoder of its own.
 
 ## Read MIPS32 release 6
 
