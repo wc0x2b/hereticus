@@ -72,6 +72,27 @@ impl Mips32 {
     pub const LITTLE: Self = Self { order: ByteOrder::Little };
     /// The decoder for a big-endian image, which most firmware is.
     pub const BIG: Self = Self { order: ByteOrder::Big };
+
+    /// The bytes of `word`, stored in this byte order.
+    pub(super) fn word_bytes(self, word: u32) -> [u8; INSN_WIDTH] {
+        match self.order {
+            ByteOrder::Little => word.to_le_bytes(),
+            ByteOrder::Big => word.to_be_bytes(),
+        }
+    }
+
+    /// Assemble one stored halfword, as MIPS16e code is made of.
+    pub(super) fn read_halfword(self, bytes: [u8; 2]) -> u16 {
+        match self.order {
+            ByteOrder::Little => u16::from_le_bytes(bytes),
+            ByteOrder::Big => u16::from_be_bytes(bytes),
+        }
+    }
+
+    /// Report whether this is the big-endian decoder.
+    pub(super) fn is_big(self) -> bool {
+        self.order == ByteOrder::Big
+    }
 }
 
 impl Arch for Mips32 {

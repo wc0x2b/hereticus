@@ -23,6 +23,7 @@
 pub mod aarch64;
 pub mod arm32;
 pub mod mips;
+pub mod mips16;
 mod mips32;
 pub mod thumb;
 
