@@ -156,7 +156,8 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
         } else {
             crate::unwind::ByteOrder::Big
         };
-        index = index_from_ranges(&crate::unwind::function_ranges(bytes, section.address(), order));
+        let ranges = crate::unwind::function_ranges(bytes, section.address(), order);
+        index = index_from_ranges(&ranges, arch);
     }
 
     // Tables that code reads, such as those a `switch` jumps through, can
@@ -226,9 +227,12 @@ fn exported_functions(file: &object::File<'_>) -> Vec<core::ops::Range<u64>> {
         .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
         .filter(|symbol| symbol.section_index().is_some())
         .map(|symbol| {
-            // ARM marks a Thumb function by setting bit 0 of its address.
+            // ARM marks a Thumb function, and MIPS a MIPS16e one, by setting
+            // bit 0 of its address. GCC can count that bit in the size of a
+            // MIPS16e function too, as `XMLPrinter::Print` of tinyxml2 has
+            // 265 bytes of 264.
             let start = symbol.address() & !1;
-            start..start + symbol.size()
+            start..(start + symbol.size()) & !1
         })
         .collect()
 }
@@ -238,7 +242,14 @@ fn exported_functions(file: &object::File<'_>) -> Vec<core::ops::Range<u64>> {
 /// Each range is described exactly. A gap after one holds code the table
 /// does not list, such as hand-written assembly, so it is marked as an entry
 /// that cannot unwind, which the scan searches as it would with no index.
-pub fn index_from_ranges(ranges: &[core::ops::Range<u64>]) -> Vec<IndexEntry> {
+///
+/// A range of MIPS16e code starts at an address with bit 0 set, as a
+/// pointer to such a function has it, so `arch` reads each end as one.
+pub fn index_from_ranges(ranges: &[core::ops::Range<u64>], arch: &dyn Arch) -> Vec<IndexEntry> {
+    let ranges: Vec<core::ops::Range<u64>> = ranges
+        .iter()
+        .map(|range| arch.function_address(range.start)..arch.function_address(range.end))
+        .collect();
     let mut entries = Vec::new();
     for (position, range) in ranges.iter().enumerate() {
         entries.push(IndexEntry { address: range.start, unwinding: Unwinding::Listed });
@@ -1637,6 +1648,27 @@ fn prologue_past_pool(
 mod tests {
     use super::*;
     use crate::arch::arm32::Arm32;
+
+    #[test]
+    fn call_frame_ranges_of_mips16_lose_bit_0() {
+        let ranges = [0x6fd1..0x7095, 0x7095..0x70a1, 0x70b1..0x70c1];
+        let entry = |address, unwinding| IndexEntry { address, unwinding };
+        assert_eq!(
+            index_from_ranges(&ranges, &crate::arch::mips16::Mips16::LITTLE),
+            [
+                entry(0x6fd0, Unwinding::Listed),
+                entry(0x7094, Unwinding::Listed),
+                entry(0x70a0, Unwinding::CannotUnwind),
+                entry(0x70b0, Unwinding::Listed),
+                entry(0x70c0, Unwinding::CannotUnwind),
+            ]
+        );
+        let mips32 = index_from_ranges(&[0x100..0x110], &crate::arch::mips::Mips32::LITTLE);
+        assert_eq!(
+            mips32,
+            [entry(0x100, Unwinding::Listed), entry(0x110, Unwinding::CannotUnwind)]
+        );
+    }
 
     /// A two-byte Thumb instruction at `address` that moves control as `kind`.
     fn thumb_insn(address: u64, kind: InsnKind) -> Insn {

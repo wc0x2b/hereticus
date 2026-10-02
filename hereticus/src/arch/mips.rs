@@ -1608,7 +1608,7 @@ fn register_copy(insn: &Insn) -> Option<(&str, &str)> {
 
 /// Report whether an instruction stores, which reads its first operand
 /// rather than writing it.
-fn is_store(mnemonic: &str) -> bool {
+pub(super) fn is_store(mnemonic: &str) -> bool {
     matches!(
         mnemonic,
         "sb" | "sh"

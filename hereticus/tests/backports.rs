@@ -127,9 +127,23 @@ enum Reading {
 /// the other does not, and a zero word reads as `andeq r0, r0, r0`, which
 /// cannot count as padding, since a literal pool word can hold zero. See
 /// `TODO.md`.
+///
+/// The others are tinyxml2 built as MIPS16e, read as a raw image. GCC
+/// puts a MIPS32 stub before each MIPS16e function that takes a float
+/// argument, as `XMLUtil::ToStr` for `float` and `double`. A raw image is
+/// read in one set, so each stub reads as MIPS16e, and the address of the
+/// function it jumps to, which moves, reads as a value.
 const KNOWN_EXTRAS: &[(Reading, &str, &str, &str, &str)] = &[
     (Reading::Raw, "lua", "armv5", "gcc-O2", "luaZ_openspace"),
     (Reading::Raw, "lua", "armv5", "gcc-Os", "luaZ_openspace"),
+    (Reading::Raw, "tinyxml2", "mips16", "gcc-O2", "_ZN8tinyxml27XMLUtil5ToStrEdPci"),
+    (Reading::Raw, "tinyxml2", "mips16", "gcc-O2", "_ZN8tinyxml27XMLUtil5ToStrEfPci"),
+    (Reading::Raw, "tinyxml2", "mips16", "gcc-O2", "__fn_stub__ZN8tinyxml27XMLUtil5ToStrEdPci"),
+    (Reading::Raw, "tinyxml2", "mips16", "gcc-O2", "__fn_stub__ZN8tinyxml27XMLUtil5ToStrEfPci"),
+    (Reading::Raw, "tinyxml2", "mips16", "gcc-Os", "_ZN8tinyxml27XMLUtil5ToStrEdPci"),
+    (Reading::Raw, "tinyxml2", "mips16", "gcc-Os", "_ZN8tinyxml27XMLUtil5ToStrEfPci"),
+    (Reading::Raw, "tinyxml2", "mips16", "gcc-Os", "__fn_stub__ZN8tinyxml27XMLUtil5ToStrEdPci"),
+    (Reading::Raw, "tinyxml2", "mips16", "gcc-Os", "__fn_stub__ZN8tinyxml27XMLUtil5ToStrEfPci"),
 ];
 
 fn backports() -> PathBuf {

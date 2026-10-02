@@ -481,11 +481,19 @@ impl Arch for Mips16 {
 
     fn jump_tables(
         &self,
-        _memory: &Memory<'_>,
-        _code: core::ops::Range<u64>,
-        _insns: &[Insn],
+        memory: &Memory<'_>,
+        code: core::ops::Range<u64>,
+        insns: &[Insn],
     ) -> Vec<JumpTable> {
-        Vec::new()
+        let entry = |address: u64| {
+            let bytes = memory.bytes(address, HALFWORD)?;
+            Some(self.base.read_halfword([bytes[0], bytes[1]]) as i16)
+        };
+        (0..insns.len())
+            .filter_map(|index| read_jump_table(insns, index, &code, &entry, |operand| {
+                self.constant_value(operand)
+            }))
+            .collect()
     }
 
     fn is_function_entry(&self, body: &[Insn]) -> bool {
@@ -600,6 +608,102 @@ impl Arch for Mips16 {
     }
 }
 
+/// How far back the parts of a table jump may lie.
+const TABLE_LOOK_BACK: usize = 16;
+
+/// More cases than any `switch` a compiler turns into one table.
+const MOST_CASES: usize = 1024;
+
+/// Read the table behind the jump at `insns[index]`, as GCC writes it:
+///
+/// ```text
+/// sltiu v0, 5            ; read as `sltiu t8, v0, 5`: the number of cases
+/// btnez dispatch
+/// ...
+/// sll   v1, v0, 1
+/// la    v0, table        ; read as `addiu v0, pc, table`
+/// addu  v1, v0, v1
+/// lh    v1, 0(v1)
+/// addu  v0, v1           ; read as `addu v0, v0, v1`
+/// jrc   v0
+/// ```
+///
+/// Each halfword of the table is the distance from the table to a case,
+/// with bit 0 set, as an address of MIPS16e code has. `entry` reads one,
+/// and `constant` reads the bound.
+fn read_jump_table(
+    insns: &[Insn],
+    index: usize,
+    code: &core::ops::Range<u64>,
+    entry: &dyn Fn(u64) -> Option<i16>,
+    constant: impl Fn(&str) -> Option<u64>,
+) -> Option<JumpTable> {
+    let jump = &insns[index];
+    if !matches!(jump.mnemonic.as_str(), "jr" | "jrc") || jump.kind != (InsnKind::Jump { target: None })
+    {
+        return None;
+    }
+    let (sum_at, sum) = last_write(insns, index, jump.operands.trim())?;
+    let [_, left, right] = three_operands(sum)?;
+    if sum.mnemonic != "addu" {
+        return None;
+    }
+    let table = [(left, right), (right, left)].into_iter().find_map(|(base, offset)| {
+        let (_, load) = last_write(insns, sum_at, offset)?;
+        if load.mnemonic != "lh" {
+            return None;
+        }
+        let (_, la) = last_write(insns, sum_at, base)?;
+        match three_operands(la)? {
+            [_, "pc", address] if la.mnemonic == "addiu" => constant(address),
+            _ => None,
+        }
+    })?;
+
+    // The bound comes before the jump, or before the branch to the block
+    // that holds it: GCC can put the dispatch after the code of a case.
+    let bound_before = |at: usize| {
+        insns[at.saturating_sub(TABLE_LOOK_BACK)..at].iter().rev().find_map(|insn| {
+            let [_, _, bound] = (insn.mnemonic == "sltiu").then(|| three_operands(insn))??;
+            usize::try_from(constant(bound)?).ok().filter(|&cases| cases <= MOST_CASES)
+        })
+    };
+    let block = insns[..index]
+        .iter()
+        .rposition(|insn| insn.kind != InsnKind::Normal)
+        .map_or(0, |at| at + 1);
+    let guard = insns.iter().position(|insn| {
+        insn.kind == (InsnKind::Branch { target: Some(insns[block].address) })
+    });
+    let bound = bound_before(index).or_else(|| bound_before(guard?))?;
+    let targets: Vec<u64> = (0..bound as u64)
+        .map_while(|case| {
+            let distance = entry(table + case * HALFWORD as u64)?;
+            let target = table.wrapping_add_signed(i64::from(distance)) & !1;
+            code.contains(&target).then_some(target)
+        })
+        .collect();
+    let words = table..table + (targets.len() * HALFWORD) as u64;
+    (targets.len() == bound).then_some(JumpTable { jump: jump.address, words, targets })
+}
+
+/// The last instruction before `insns[before]`, and its index, that writes
+/// `register`.
+fn last_write<'a>(insns: &'a [Insn], before: usize, register: &str) -> Option<(usize, &'a Insn)> {
+    let from = before.saturating_sub(TABLE_LOOK_BACK);
+    (from..before).rev().map(|at| (at, &insns[at])).find(|(_, insn)| {
+        insn.kind == InsnKind::Normal
+            && !super::mips::is_store(&insn.mnemonic)
+            && insn.operands.split(',').next().map(str::trim) == Some(register)
+    })
+}
+
+/// The three operands of `op a, b, c`.
+fn three_operands(insn: &Insn) -> Option<[&str; 3]> {
+    let operands: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
+    operands.try_into().ok()
+}
+
 /// The instructions of [`is_gp_preamble`].
 const GP_PREAMBLE_LENGTH: usize = 4;
 
@@ -654,6 +758,46 @@ mod tests {
     fn decode_all_big(values: &[u16]) -> Vec<Insn> {
         let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
         crate::arch::decode_all(&Mips16::BIG, &code, 0x1540).0
+    }
+
+    /// A `switch` of five cases at 0x100, as GCC writes it, then its table
+    /// at 0x110 with `entries`.
+    fn switch(entries: [u16; 5]) -> Vec<u16> {
+        let dispatch = [0x5a05, 0x3344, 0x0a03, 0xe26d, 0x8b60, 0xe269, 0xea80, 0x6500];
+        dispatch.into_iter().chain(entries).chain([0x6500; 11]).collect()
+    }
+
+    fn tables(values: &[u16]) -> Vec<JumpTable> {
+        let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
+        let insns = crate::arch::decode_all(&Mips16::BIG, &code, 0x100).0;
+        let regions = [(0x100, code.as_slice())];
+        let end = 0x100 + code.len() as u64;
+        Mips16::BIG.jump_tables(&Memory::new(&regions), 0x100..end, &insns)
+    }
+
+    #[test]
+    fn a_switch_reads_each_case_from_its_table() {
+        let found = tables(&switch([0x000b, 0x000d, 0xfff1, 0x0011, 0x0013]));
+        assert_eq!(
+            found,
+            [JumpTable {
+                jump: 0x10c,
+                words: 0x110..0x11a,
+                targets: vec![0x11a, 0x11c, 0x100, 0x120, 0x122],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_table_with_a_case_outside_the_code_is_not_read() {
+        assert!(tables(&switch([0x000b, 0x000d, 0x7ff1, 0x0011, 0x0013])).is_empty());
+    }
+
+    #[test]
+    fn a_table_with_no_bound_is_not_read() {
+        let mut values = switch([0x000b, 0x000d, 0xfff1, 0x0011, 0x0013]);
+        values[0] = 0x6500;
+        assert!(tables(&values).is_empty());
     }
 
     #[test]
