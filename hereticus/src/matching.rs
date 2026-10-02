@@ -2398,12 +2398,22 @@ fn reported_texts<'t>(texts: &[&'t str]) -> Vec<&'t str> {
 
 /// How many texts of one sorted list have no equal in the other, counted from
 /// the side with more, so a text changed in place counts once.
+///
+/// A text that differs from one on the other side only by its build
+/// directory counts as equal: see [`differ_only_by_build_path`].
 fn texts_that_differ(left: &[&str], right: &[&str]) -> usize {
     let (mut shared, mut l, mut r) = (0, 0, 0);
+    let (mut left_only, mut right_only) = (Vec::new(), Vec::new());
     while l < left.len() && r < right.len() {
         match left[l].cmp(right[r]) {
-            core::cmp::Ordering::Less => l += 1,
-            core::cmp::Ordering::Greater => r += 1,
+            core::cmp::Ordering::Less => {
+                left_only.push(left[l]);
+                l += 1;
+            }
+            core::cmp::Ordering::Greater => {
+                right_only.push(right[r]);
+                r += 1;
+            }
             core::cmp::Ordering::Equal => {
                 shared += 1;
                 l += 1;
@@ -2411,7 +2421,52 @@ fn texts_that_differ(left: &[&str], right: &[&str]) -> usize {
             }
         }
     }
+    left_only.extend_from_slice(&left[l..]);
+    right_only.extend_from_slice(&right[r..]);
+    for text in left_only {
+        if let Some(found) =
+            right_only.iter().position(|other| differ_only_by_build_path(text, other))
+        {
+            right_only.swap_remove(found);
+            shared += 1;
+        }
+    }
     left.len().max(right.len()) - shared
+}
+
+/// Report whether two texts are one path whose build directory alone
+/// differs.
+///
+/// A build keeps the `__FILE__` path of each assert, and a build system
+/// puts a random directory in it: Apple's kexts hold
+/// `/AppleInternal/Library/BuildRoots/<random>/...`, and a Debian package
+/// `/build/glibc-SzIz7B/...`. In iOS 27.0.1 all 28 changed kexts differed
+/// in nothing else. Two texts are taken as one path where they hold the
+/// same components but for those that look generated on both sides: the
+/// same length, six or more bytes, no `.`, and digits with both upper and
+/// lower case letters. A changed name of a file or a function is no such
+/// component, so it still shows.
+fn differ_only_by_build_path(left: &str, right: &str) -> bool {
+    let generated = |component: &str| {
+        component.len() >= 6
+            && !component.contains('.')
+            && component.bytes().any(|byte| byte.is_ascii_digit())
+            && component.bytes().any(|byte| byte.is_ascii_uppercase())
+            && component.bytes().any(|byte| byte.is_ascii_lowercase())
+    };
+    if left == right || !left.contains('/') || !right.contains('/') {
+        return false;
+    }
+    let (mut ours, mut theirs) = (left.split('/'), right.split('/'));
+    loop {
+        match (ours.next(), theirs.next()) {
+            (None, None) => return true,
+            (Some(one), Some(other)) if one == other => {}
+            (Some(one), Some(other))
+                if one.len() == other.len() && generated(one) && generated(other) => {}
+            _ => return false,
+        }
+    }
 }
 
 /// How much what two functions call and point at weighs in the order the
@@ -3545,6 +3600,34 @@ mod tests {
         assert_eq!(texts_that_differ(&["a"], &["a", "b"]), 1, "one added");
         assert_eq!(texts_that_differ(&["a", "a"], &["a"]), 1, "a repeat counts");
         assert_eq!(texts_that_differ(&["a", "b"], &["c"]), 2);
+    }
+
+    #[test]
+    fn a_text_that_differs_only_by_its_build_directory_is_no_change() {
+        let apple = |root: &str| {
+            format!(
+                "/AppleInternal/Library/BuildRoots/{root}/Library/Sources/AppleHIDTransport/hid.cpp"
+            )
+        };
+        let (old, new) = (apple("4~Bq7XzA9kLm2"), apple("7~Cv3YwD1nPo8"));
+        assert!(differ_only_by_build_path(&old, &new));
+        assert_eq!(texts_that_differ(&[old.as_str(), "x"], &[new.as_str(), "x"]), 0);
+        assert!(differ_only_by_build_path(
+            "/build/glibc-SzIz7B/malloc/malloc.c",
+            "/build/glibc-Ab1cDe/malloc/malloc.c"
+        ));
+    }
+
+    #[test]
+    fn a_changed_file_or_message_still_shows() {
+        let differ = differ_only_by_build_path;
+        assert!(!differ("/src/file12.c", "/src/file34.c"), "a file name");
+        assert!(!differ("/build/glibc-SzIz7B/a.c", "/build/glibc-Ab1cDe/b.c"), "another file too");
+        assert!(!differ("/build/glibc-SzIz7B/a.c", "/build/glibc-Ab1cD/a.c"), "another length");
+        assert!(!differ("bad length %d", "bad size %d"), "no path");
+        assert!(!differ("/a/b", "/a/b"), "no difference");
+        assert!(!differ("/a/b/c", "/a/b"), "another depth");
+        assert_eq!(texts_that_differ(&["/src/file12.c"], &["/src/file34.c"]), 1);
     }
 
     /// One ARM function at 0x8000 that passes the text at 0x9001 on, with
