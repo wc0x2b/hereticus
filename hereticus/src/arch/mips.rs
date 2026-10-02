@@ -17,6 +17,7 @@
 use compact_str::CompactString;
 use rabbitizer::{
     Instruction, InstructionDisplayFlags, InstructionFlags, IsaVersion, Vram, opcodes::Opcode,
+    operands::ValuedOperand,
 };
 
 use super::{AbsoluteCall, Arch, CallTarget, DecodeError, Insn, InsnKind, JumpTable, Memory};
@@ -160,6 +161,10 @@ impl Arch for Mips32 {
     fn is_stack_register(&self, operand: &str) -> bool {
         // `fp` is the frame pointer, which MIPS also calls `s8`.
         matches!(operand.trim(), "sp" | "fp" | "s8")
+    }
+
+    fn is_frame_register(&self, reg: il::Reg) -> bool {
+        matches!(reg, il::Reg::General(SP | FP))
     }
 
     fn mentions_stack_slot(&self, operands: &str) -> bool {
@@ -1759,6 +1764,10 @@ const LO: il::Reg = il::Reg::General(33);
 /// The return address register, which a call writes.
 const RA: u8 = 31;
 
+/// The stack and frame pointers.
+const SP: u8 = 29;
+const FP: u8 = 30;
+
 /// Every MIPS32 general register is 32 bits wide.
 const WIDTH: il::Width = il::Width::Bits32;
 
@@ -1811,7 +1820,43 @@ fn lift(inst: &Instruction, mnemonic: &str) -> il::Lifted {
         kind.map(|kind| il::MemoryAccess { kind, width: access_width(opcode.access_type()) });
 
     let op = op_of(inst, mnemonic, kind);
-    il::Lifted { op, reads, writes, memory, test: test_of(inst) }
+    let operands = inst.valued_operands_iter().map(il_operand).collect();
+    il::Lifted { op, reads, writes, memory, test: test_of(inst), operands }
+}
+
+/// An operand as the IL names it.
+fn il_operand(operand: ValuedOperand) -> il::Operand {
+    let general = |reg: rabbitizer::registers::Gpr| match reg.as_index() {
+        0 => il::Operand::Zero,
+        index => il::Operand::Reg(il::Reg::General(index as u8)),
+    };
+    let float =
+        |reg: rabbitizer::registers::Cop1| il::Operand::Reg(il::Reg::Vector(reg.as_index() as u8));
+    match operand {
+        ValuedOperand::core_rs(reg) | ValuedOperand::core_rt(reg) | ValuedOperand::core_rd(reg) => {
+            general(reg)
+        }
+        ValuedOperand::core_maybe_rd_rs(_, reg) | ValuedOperand::core_maybe_zero_rs((), reg) => {
+            general(reg)
+        }
+        ValuedOperand::core_zero() => il::Operand::Zero,
+        ValuedOperand::core_fs(reg) | ValuedOperand::core_ft(reg) | ValuedOperand::core_fd(reg) => {
+            float(reg)
+        }
+        ValuedOperand::core_sa(value) => il::Operand::Const(value.into()),
+        ValuedOperand::core_imm_i16(value) => il::Operand::Const(i64::from(value) as u64),
+        ValuedOperand::core_imm_u16(value) => il::Operand::Const(value.into()),
+        ValuedOperand::core_label(_) | ValuedOperand::core_branch_target_label(_) => {
+            il::Operand::Target
+        }
+        ValuedOperand::core_imm_rs(offset, base) => il::Operand::Memory {
+            offset: Some(offset.into()),
+            base: Some(base.as_index())
+                .filter(|&index| index != 0)
+                .map(|index| il::Reg::General(index as u8)),
+        },
+        _ => il::Operand::Other,
+    }
 }
 
 /// What a MIPS instruction computes. `mnemonic` is as `rabbitizer` prints
@@ -1972,6 +2017,36 @@ mod tests {
         let little = Mips32::LITTLE.lift(&decode_one(word), &word.to_le_bytes());
         assert_eq!(big, little, "{word:#010x}: both byte orders lift alike");
         big.expect("the word must lift")
+    }
+
+    #[test]
+    fn operands_come_in_printed_order() {
+        use il::Operand::{Const, Target};
+        let reg = |number| il::Operand::Reg(il::Reg::General(number));
+        let operands = |word| lift_one(word).operands.into_vec();
+        assert_eq!(operands(words::ADDU_V0_A0_A1), [reg(2), reg(4), reg(5)]);
+        assert_eq!(operands(words::SLTIU_T0_A0_MINUS_1), [reg(8), reg(4), Const(u64::MAX)]);
+        assert_eq!(operands(words::BEQZ_A0), [reg(4), Target]);
+    }
+
+    #[test]
+    fn a_memory_operand_names_its_base_and_offset() {
+        use il::Operand::Memory;
+        let general = |number| Some(il::Reg::General(number));
+        let memory = |word| *lift_one(word).operands.last().expect("a memory operand");
+        // `lw t0, -8(a0)`
+        const LW_T0_A0_MINUS_8: u32 = 0x8c88_fff8;
+        assert_eq!(memory(words::LW_T0_SP_4), Memory { base: general(29), offset: Some(4) });
+        assert_eq!(memory(LW_T0_A0_MINUS_8), Memory { base: general(4), offset: Some(-8) });
+        assert_eq!(memory(words::SB_T1_A0), Memory { base: general(4), offset: Some(0) });
+    }
+
+    #[test]
+    fn the_frame_registers_are_sp_and_fp() {
+        assert!(Mips32::BIG.is_frame_register(il::Reg::General(29)));
+        assert!(Mips32::BIG.is_frame_register(il::Reg::General(30)));
+        assert!(!Mips32::BIG.is_frame_register(il::Reg::General(31)));
+        assert!(!Mips32::BIG.is_frame_register(il::Reg::Stack), "MIPS names sp by number");
     }
 
     fn guards(words: &[u32]) -> Vec<il::FoundGuard> {
