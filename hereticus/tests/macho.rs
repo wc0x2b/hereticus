@@ -204,6 +204,13 @@ fn a_kernelcache_reads_every_kext_and_its_update_changes_only_values() {
     let (before, after) = (read(old), read(new));
     // Read whole, the fileset gave 648 functions.
     assert_eq!((before.functions.len(), after.functions.len()), (175_109, 175_109));
+    // A pointer of `__DATA_CONST` is a link of a chain until its fixup is
+    // applied: `ipsw macho info --fixups` reads this one as a rebase to
+    // 0xfffffff00a17b878.
+    let regions = after.links.regions();
+    let memory = hereticus::arch::Memory::new(&regions);
+    let pointer = memory.bytes(0xffff_fff0_07bb_0018, 8).expect("the slot is loaded");
+    assert_eq!(u64::from_le_bytes(pointer.try_into().expect("8 bytes")), 0xffff_fff0_0a17_b878);
     let diff = hereticus::matching::diff(&before, &after);
     assert!(diff.removed.is_empty() && diff.added.is_empty());
     // The update changed constants and the build paths in texts, not code.

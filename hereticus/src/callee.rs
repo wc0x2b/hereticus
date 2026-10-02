@@ -96,6 +96,7 @@ impl Links {
         slots.extend(mips_global_slot_names(file));
         let mut stubs = BTreeMap::new();
         if let object::File::MachO64(macho) = file {
+            crate::macho::apply_chained_fixups(macho, &mut memory);
             let (macho_stubs, macho_slots) = crate::macho::indirect_names(macho);
             stubs = macho_stubs;
             slots.extend(macho_slots);

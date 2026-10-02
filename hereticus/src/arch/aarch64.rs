@@ -202,14 +202,24 @@ impl Arch for Aarch64 {
         track_pages(body, space).kinds
     }
 
+    /// The addresses a function forms from a page, and the pointers it
+    /// loads from one where they point into the image: a text that only a
+    /// table of pointers reaches is a text of the function too. A pointer
+    /// of a Mach-O file reads as an address once its chained fixups are
+    /// applied, as [`crate::callee::Links`] does.
     fn data_addresses(
         &self,
         _code: &[u8],
         body: &[Insn],
         space: &AddressSpace,
-        _memory: &Memory<'_>,
+        memory: &Memory<'_>,
     ) -> Vec<u64> {
-        track_pages(body, space).addresses
+        let pages = track_pages(body, space);
+        let loaded = pages.pointer_loads.iter().filter_map(|&address| {
+            let pointer = u64::from_le_bytes(memory.bytes(address, 8)?.try_into().ok()?);
+            (pointer != address && space.contains_formed(pointer)).then_some(pointer)
+        });
+        pages.addresses.iter().copied().chain(loaded).collect()
     }
 
     /// Clang and GCC jump through a table of distances in `.rodata`:
@@ -829,6 +839,9 @@ fn page_of(insn: &Insn) -> Option<u64> {
 struct Pages {
     kinds: Vec<ConstantKind>,
     addresses: Vec<u64>,
+    /// Where a load of a whole pointer reads, from an address the page
+    /// forms.
+    pointer_loads: Vec<u64>,
 }
 
 /// Follow each register that holds a page from `adrp`, or an address from
@@ -836,6 +849,7 @@ struct Pages {
 fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
     let mut kinds = vec![ConstantKind::Value; body.len()];
     let mut addresses = Vec::new();
+    let mut pointer_loads = Vec::new();
     // Registers holding a page, or an address.
     let mut held: Vec<(&str, u64)> = Vec::new();
     // The page each register last took from `adrp`. An `add` to itself
@@ -913,13 +927,18 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                 let low = low.trim_end_matches(']').trim_end_matches('!');
                 // A page outside the image, as the GOT can be, still moves.
                 let on_a_page = !values_of(&pages, base).is_empty();
-                if on_a_page
-                    || Aarch64
-                        .constant_value(low)
-                        .and_then(|low| formed(&held, &pages, base, low))
-                        .is_some()
-                {
+                let address =
+                    Aarch64.constant_value(low).and_then(|low| formed(&held, &pages, base, low));
+                if on_a_page || address.is_some() {
                     kinds[index] = ConstantKind::Address;
+                }
+                // `ldr x0, [x8, #lo12]` reads a whole pointer, as from a slot
+                // of the GOT or a table of texts.
+                if let Some(address) = address
+                    && insn.mnemonic == "ldr"
+                    && destination.starts_with('x')
+                {
+                    pointer_loads.push(address);
                 }
             }
             _ => {}
@@ -931,7 +950,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
             pages.retain(|(name, _)| *name != destination);
         }
     }
-    Pages { kinds, addresses }
+    Pages { kinds, addresses, pointer_loads }
 }
 
 /// Read the table a `br` at `insns[index]` jumps through.
@@ -1342,5 +1361,27 @@ mod tests {
         for (word, op) in cases {
             assert_eq!(lift_one(word).op, op, "{word:#010x}");
         }
+    }
+
+    /// A function that loads a pointer from a table points at what the
+    /// pointer does, where it lands in the image.
+    #[test]
+    fn a_pointer_loaded_from_a_page_is_an_address_of_the_function() {
+        let words = [
+            0x9000_0088, // 0x1000 adrp x8, 0x11000
+            0xf940_0900, // 0x1004 ldr x0, [x8, #0x10]
+            0xd65f_03c0, // 0x1008 ret
+        ];
+        let (insns, _) = decode_all(&Aarch64, &code(&words), 0x1000);
+        let space = AddressSpace::from_ranges(core::iter::once(0x1000..0x20000));
+        let addresses = |pointer: u64| {
+            let mut data = vec![0u8; 0x20];
+            data[0x10..0x18].copy_from_slice(&pointer.to_le_bytes());
+            let regions = [(0x11000, data.as_slice())];
+            Aarch64.data_addresses(&[], &insns, &space, &Memory::new(&regions))
+        };
+        assert!(addresses(0x12345).contains(&0x12345), "a pointer into the image");
+        assert!(!addresses(0).contains(&0), "an unrelocated slot holds nothing");
+        assert!(!addresses(0x9999_0000).contains(&0x9999_0000), "a pointer out of the image");
     }
 }

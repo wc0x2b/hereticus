@@ -56,14 +56,6 @@ its output to the bytes `fixtures/firmware.py` extracts. Add the formats
 still missing, as AVM EVA, a gzip or zstd kernel, and the other branch
 filters of xz.
 
-## Read the pointers of an arm64e Mach-O
-
-An arm64e binary stores each pointer in its data as a chained fixup, with
-the pointer authentication bits in its top bits. A pointer to a function
-or a text thus does not read as an address, and a changed text that only a
-pointer reaches is not reported. Decode `LC_DYLD_CHAINED_FIXUPS`, which the
-`object` crate parses, and give the loaded memory the bound addresses.
-
 ## Read the dyld shared cache
 
 iOS and macOS keep most of their libraries only in the dyld shared cache.
