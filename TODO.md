@@ -14,14 +14,6 @@ CVE-2026-28825 (smbfs), CVE-2025-24257 (IOGPUFamily) and CVE-2021-30883
 `real-life-reports/`. The A14 and later iPhones run the display driver on
 the DCP, so CVE-2021-30883 needs a device without one.
 
-## Hide a text that changes only by its build path
-
-Apple puts the `__FILE__` path of each assert in its kexts, and the path
-holds a random build directory. In iOS 27.0.1 all 28 changed kexts
-differ only in these texts, and AppleHIDTransport shows 844 changed
-functions. Do not report a text change where only a build directory
-differs.
-
 ## Read a fileset kernelcache directly
 
 A kernelcache of iOS 15 and later is an `MH_FILESET` that holds each kext
