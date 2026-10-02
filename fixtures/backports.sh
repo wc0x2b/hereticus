@@ -206,7 +206,12 @@ finish() {
 # variant builds only smallvec and the harness again.
 build_rust() {
     local variant="$1"
+    # Thumb-2 has no soft-float Linux target, so it takes the hard-float
+    # one: `-Zbuild-std` builds its `core`, and the harness links with no
+    # libc, so the float ABI touches nothing it calls.
     local rust_targets=(arm:armv7-unknown-linux-gnueabi:arm-linux-gnueabi
+        thumb:thumbv7neon-unknown-linux-gnueabihf:arm-linux-gnueabihf
+        aarch64:aarch64-unknown-linux-gnu:aarch64-linux-gnu
         mips:mips-unknown-linux-gnu:mips-linux-gnu
         mipsel:mipsel-unknown-linux-gnu:mipsel-linux-gnu)
 

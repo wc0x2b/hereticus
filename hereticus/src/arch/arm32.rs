@@ -151,6 +151,12 @@ impl Arch for Arm32 {
         matches!(reg, il::Reg::Stack | FRAME)
     }
 
+    /// The first instruction of a function runs always, as almost every
+    /// A32 instruction does: its top four bits are `0xE`.
+    fn can_open_function(&self, bytes: &[u8]) -> bool {
+        bytes.get(..INSN_WIDTH).is_some_and(|word| word[3] >> 4 == 0xe)
+    }
+
     fn mentions_stack_slot(&self, operands: &str) -> bool {
         operands.contains("[sp") || operands.contains("[fp") || operands.contains("[r13")
     }
@@ -3825,5 +3831,12 @@ mod tests {
         assert_eq!(op(0xeebd_0be0), il::Op::FloatRoundTowardZero, "vcvt.s32.f64");
         assert_eq!(op(0xeef8_0bc0), il::Op::FloatConvert, "vcvt.f64.s32");
         assert_eq!(op(0xeef5_0b40), il::Op::Float, "vcmp.f64");
+    }
+
+    #[test]
+    fn a_function_opens_with_a_word_that_runs_always() {
+        assert!(Arm32.can_open_function(&words::PUSH_R4_LR));
+        assert!(!Arm32.can_open_function(&words::ADDEQ_R0), "conditional");
+        assert!(!Arm32.can_open_function(&[0, 0]), "short");
     }
 }
