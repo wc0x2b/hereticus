@@ -183,13 +183,6 @@ impl Links {
 
     /// Printable ASCII from `address` up to a NUL.
     fn printable_at(&self, address: u64) -> Option<&str> {
-        /// Fewer bytes than this are as likely a small number as text: the
-        /// word 0x41 reads `"A"` in little-endian order.
-        const SHORTEST: usize = 2;
-        /// Longer than any format or message, and it keeps a stray pointer
-        /// into a large table cheap.
-        const LONGEST: usize = 256;
-
         let rest = self.bytes_at(address)?;
         let rest = &rest[..rest.len().min(LONGEST + 1)];
         let end = rest.iter().position(|&byte| byte == 0)?;
@@ -202,6 +195,32 @@ impl Links {
         core::str::from_utf8(text).ok()
     }
 
+    /// Report whether a change to `text`, read at `address`, is sure enough
+    /// to report.
+    ///
+    /// A text shorter than [`SURE_LENGTH`] can be a word of data by chance:
+    /// a panic location of Rust for ARM read as `"!\t"`, and a table of
+    /// tinyxml2 for MIPS as `"!e"`, and both changed with the pointers they
+    /// hold. Their section does not settle it, as both are read-only data.
+    /// So a short text is sure only where another text follows it, as in
+    /// the pool a compiler packs C strings into. A text that is not sure
+    /// still tells twins apart.
+    pub fn is_sure_text(&self, address: u64, text: &str) -> bool {
+        text.len() >= SURE_LENGTH || self.text_follows(address + text.len() as u64 + 1)
+    }
+
+    /// Report whether a text of [`SHORTEST`] bytes or more starts at
+    /// `address`, after zero fill a compiler aligns texts with.
+    fn text_follows(&self, address: u64) -> bool {
+        /// More fill than any alignment of a text needs.
+        const MOST_FILL: usize = 7;
+        let Some(rest) = self.bytes_at(address) else { return false };
+        let fill = rest.iter().take(MOST_FILL + 1).take_while(|&&byte| byte == 0).count();
+        let rest = &rest[fill.min(rest.len())..];
+        let length = rest.iter().take_while(|&&byte| is_text_byte(byte)).count();
+        length >= SHORTEST && rest.get(length) == Some(&0)
+    }
+
     /// The loaded bytes from `address` to the end of their section.
     fn bytes_at(&self, address: u64) -> Option<&[u8]> {
         self.memory.iter().find_map(|(start, data)| {
@@ -209,6 +228,21 @@ impl Links {
             data.get(offset..).filter(|rest| !rest.is_empty())
         })
     }
+}
+
+/// Fewer bytes than this are as likely a small number as text: the word
+/// 0x41 reads `"A"` in little-endian order.
+const SHORTEST: usize = 2;
+/// Longer than any format or message, and it keeps a stray pointer into a
+/// large table cheap.
+const LONGEST: usize = 256;
+/// Texts this long or longer are reported wherever they are; see
+/// [`Links::is_sure_text`].
+const SURE_LENGTH: usize = 4;
+
+/// Report whether `byte` can be part of a text.
+fn is_text_byte(byte: u8) -> bool {
+    byte.is_ascii_graphic() || b" \t\n\r".contains(&byte)
 }
 
 /// The callee of every call in `function`, in order, as `binary` names them.
@@ -436,6 +470,24 @@ mod tests {
         assert_eq!(read_only.text_at(0x2000), Some("at start"), "read-only data starts there");
         assert_eq!(links.text_at(0x1000), None, "no NUL near enough");
         assert_eq!(links.text_at(0x50), None, "not loaded");
+    }
+
+    /// A short text is sure where another text follows it, after fill.
+    #[test]
+    fn a_short_text_is_sure_only_in_a_pool() {
+        // 0x100 "%d" then "%u"; 0x103 "%u" then fill and "%ld"; 0x10e "!e"
+        // then a word that is no text; 0x114 "%s" at the end.
+        let data = b"\0%d\0%u\0\0\0\0%ld\0\0!e\0\x01\x02\0%s\0".to_vec();
+        let links = Links::of_parts(vec![(0xff, data)], BTreeMap::new());
+        let sure = |address: u64| {
+            let text = links.text_at(address).expect("a text");
+            links.is_sure_text(address, text)
+        };
+        assert!(sure(0x100), "another text follows");
+        assert!(sure(0x103), "a text follows the fill");
+        assert!(sure(0x109), "long enough");
+        assert!(!sure(0x10e), "a word of data follows");
+        assert!(!sure(0x114), "nothing follows");
     }
 
     /// A raw image has no section to say where `.rodata` starts, so a text

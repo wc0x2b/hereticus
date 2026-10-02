@@ -487,6 +487,9 @@ struct Prepared<'a> {
     calls: Vec<Callee>,
     /// The texts the function points at, sorted.
     texts: Vec<&'a str>,
+    /// Those of [`Self::texts`] sure enough that a change to one is
+    /// reported, sorted.
+    sure_texts: Vec<&'a str>,
     /// The data-flow features of the body, sorted: see
     /// [`crate::il::flow_features`].
     flow: Vec<u64>,
@@ -622,12 +625,18 @@ fn prepare<'a>(
                 })
                 .collect();
 
-            let mut texts: Vec<&str> = arch
+            let mut found: Vec<(&str, bool)> = arch
                 .data_addresses(&function.code, &insns, &binary.addresses, &memory)
                 .into_iter()
-                .filter_map(|address| binary.links.text_after_code(arch, address))
+                .filter_map(|address| {
+                    let text = binary.links.text_after_code(arch, address)?;
+                    Some((text, binary.links.is_sure_text(address, text)))
+                })
                 .collect();
-            texts.sort_unstable();
+            found.sort_unstable();
+            let texts: Vec<&str> = found.iter().map(|&(text, _)| text).collect();
+            let sure_texts: Vec<&str> =
+                found.iter().filter(|&&(_, sure)| sure).map(|&(text, _)| text).collect();
 
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
@@ -642,6 +651,7 @@ fn prepare<'a>(
                 contents,
                 calls,
                 texts,
+                sure_texts,
                 flow,
             }
         })
@@ -1300,17 +1310,18 @@ impl Cascade<'_> {
     /// A fix can change only a format, as `"%s"` to `"%.*s"`, and leave the
     /// code around it as it was. A changed text counts as a changed value.
     ///
-    /// Only texts of [`SHORTEST_REPORTED_TEXT`] bytes or more count, because a
-    /// shorter one can be a word of data by chance.
+    /// A short text counts only as [`short_texts_changed`] says.
     fn compare_texts(&mut self) {
         for pair in &mut self.matched {
             if !matches!(pair.changed, Changed::No | Changed::Reordered | Changed::InDetail) {
                 continue;
             }
-            let differ = texts_that_differ(
-                &reported_texts(&self.left[pair.before].texts),
-                &reported_texts(&self.right[pair.after].texts),
-            );
+            let (left, right) = (&self.left[pair.before], &self.right[pair.after]);
+            let differ = texts_that_differ(&long_texts(&left.texts), &long_texts(&right.texts))
+                + short_texts_changed(
+                    (&left.texts, &left.sure_texts),
+                    (&right.texts, &right.sure_texts),
+                );
             if differ > 0 {
                 pair.changed = Changed::InDetail;
                 pair.kinds.texts += differ;
@@ -2385,19 +2396,32 @@ fn group_by_shape_and_references<'a>(
     groups
 }
 
-/// The fewest bytes a text must hold before a change to it is reported.
-///
-/// A little-endian word that holds a small pointer or number reads as up to
-/// three printable bytes and a NUL. Measured on the backports, a panic
-/// location in Rust for ARM read as `"!\t"` and a table of tinyxml2 for MIPS
-/// as `"!e"`, and both changed with the pointers they hold. So a change from
-/// `"%d"` to `"%u"` goes unreported, though such texts still tell twins
-/// apart.
-const SHORTEST_REPORTED_TEXT: usize = 4;
+/// Texts shorter than this are reported only as [`short_texts_changed`]
+/// says.
+const SHORT_TEXT: usize = 4;
 
-/// The texts long enough that a change to them is reported, in order.
-fn reported_texts<'t>(texts: &[&'t str]) -> Vec<&'t str> {
-    texts.iter().copied().filter(|text| text.len() >= SHORTEST_REPORTED_TEXT).collect()
+/// The texts of [`SHORT_TEXT`] bytes or more, in order.
+fn long_texts<'t>(texts: &[&'t str]) -> Vec<&'t str> {
+    texts.iter().copied().filter(|text| text.len() >= SHORT_TEXT).collect()
+}
+
+/// How many short texts changed in place, as `"%d"` to `"%u"`.
+///
+/// A word of data can read as a short text by chance, so only a sure one
+/// counts: see [`crate::callee::Links::is_sure_text`]. And a short text
+/// can come or go where no change is: a linker merges `"yes"` into the
+/// tail of `"... yes"`, where no NUL comes before it, and measured on the
+/// OpenWrt kernels, a pointer to such a tail read as a text on one side
+/// only. So only as many as both sides lose and gain count.
+///
+/// Each side is its texts and its sure texts, both sorted.
+fn short_texts_changed(left: (&[&str], &[&str]), right: (&[&str], &[&str])) -> usize {
+    let only = |sure: &[&str], other: &[&str]| {
+        sure.iter()
+            .filter(|text| text.len() < SHORT_TEXT && other.binary_search(text).is_err())
+            .count()
+    };
+    only(left.1, right.0).min(only(right.1, left.0))
 }
 
 /// How many texts of one sorted list have no equal in the other, counted from
@@ -3594,6 +3618,19 @@ mod tests {
             assert_eq!(partner, Some(12 - index), "the function that returns {}", index + 1);
         }
         assert_eq!(diff.added, [0], "the one that returns 13");
+    }
+
+    #[test]
+    fn a_short_text_counts_where_it_changed_in_place() {
+        // Sorted, as a function holds them.
+        let changed = short_texts_changed((&["%d", "no"], &["%d", "no"]), (&["%u", "no"], &["%u"]));
+        assert_eq!(changed, 1, "`%d` became `%u`");
+        let came = short_texts_changed((&["no"], &["no"]), (&["no", "yes"], &["no", "yes"]));
+        assert_eq!(came, 0, "a text that came alone can be a merged tail");
+        let unsure = short_texts_changed((&["!e"], &[]), (&["!f"], &[]));
+        assert_eq!(unsure, 0, "neither is sure");
+        let one_sure = short_texts_changed((&["%d"], &["%d"]), (&["!f"], &[]));
+        assert_eq!(one_sure, 0, "the other side's is not sure");
     }
 
     #[test]

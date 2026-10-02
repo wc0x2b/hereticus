@@ -65,17 +65,6 @@ pinned SHA-256 values and on `fixtures/`. `backports.sh` already keeps
 what it built while its inputs stay the same: locally a second run takes
 two seconds where the first takes eight minutes.
 
-## Report a changed short text
-
-A change to a text of fewer than four bytes, such as `"%d"` to `"%u"`, is not
-reported, because a word that holds a small pointer or number reads as such a
-text by chance. Knowing which data is read-only does not settle it: the two
-false texts measured, a panic location of Rust and a table of tinyxml2, are
-read-only too, and a linked library merges its string sections into
-`.rodata`, so their `SHF_STRINGS` flag is gone. What might: a string pool
-holds texts back to back, so a short text with a NUL before it and another
-text after its own NUL is likely real.
-
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
