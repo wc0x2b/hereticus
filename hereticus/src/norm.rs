@@ -486,7 +486,7 @@ fn lift_all(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<Option<Lifted>>
         .map(|insn| {
             let offset = usize::try_from(insn.address.checked_sub(first.address)?).ok()?;
             let word = code.get(offset..offset.checked_add(insn.bytes_len)?)?;
-            arch.lift(insn, word)
+            arch.lift(insn, word).map(Lifted::canonical)
         })
         .collect()
 }

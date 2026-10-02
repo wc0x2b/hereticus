@@ -198,7 +198,7 @@ fn tally_all(project: &str, versions: [&str; 2], reading: Reading) -> Tally {
         Tally { right: 5657, wrong: 2, gone: 68, new: 89, missed: 0 })]
 #[case::tinyxml2_8("tinyxml2", ["8.0.0", "9.0.0"], Tally { right: 2300, wrong: 6, gone: 304, new: 342, missed: 0 },
         Tally { right: 2235, wrong: 4, gone: 418, new: 441, missed: 1 })]
-#[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 1, new: 26, missed: 0 }, Tally { right: 2546, wrong: 26, gone: 89, new: 107, missed: 0 })]
+#[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 1, new: 26, missed: 0 }, Tally { right: 2546, wrong: 26, gone: 90, new: 108, missed: 0 })]
 #[case::expat_2_4_4("expat", ["2.4.4", "2.4.5"], Tally { right: 2926, wrong: 2, gone: 11, new: 1, missed: 0 },
         Tally { right: 2858, wrong: 2, gone: 42, new: 34, missed: 0 })]
 #[case::expat_2_4_8("expat", ["2.4.8", "2.4.9"], Tally { right: 2929, wrong: 0, gone: 0, new: 0, missed: 0 },

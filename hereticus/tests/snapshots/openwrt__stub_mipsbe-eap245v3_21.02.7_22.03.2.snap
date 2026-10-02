@@ -4,11 +4,11 @@ assertion_line: 629
 expression: report
 ---
 0x80060000 -> 0x80060000 Yes score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 } confidence=IdenticalCode
-0x8006005c -> 0x8006017c Yes score=0.727 edits=Edits { added: 32, removed: 46, edited: 2 } kinds=EditKinds { branches: 9, calls: 2, jumps: 8, memory: 8, other: 53, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=Similar
+0x8006005c -> 0x8006017c Yes score=0.701 edits=Edits { added: 32, removed: 46, edited: 2 } kinds=EditKinds { branches: 9, calls: 2, jumps: 8, memory: 8, other: 53, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=Similar
 0x80060260 -> 0x80060148 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
-0x80060314 -> 0x80060338 Yes score=0.927 edits=Edits { added: 64, removed: 71, edited: 13 } kinds=EditKinds { branches: 19, calls: 6, jumps: 6, memory: 17, other: 100, opaque: 0, constants: 32, callees: 0, texts: 0 } confidence=Similar
+0x80060314 -> 0x80060338 Yes score=0.927 edits=Edits { added: 67, removed: 74, edited: 11 } kinds=EditKinds { branches: 19, calls: 6, jumps: 7, memory: 17, other: 103, opaque: 0, constants: 28, callees: 0, texts: 0 } confidence=Similar
 0x800608fc -> 0x8006090c InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1, callees: 0, texts: 0 } confidence=IdenticalShape
-0x80060930 -> 0x80060940 Yes score=0.926 edits=Edits { added: 43, removed: 48, edited: 26 } kinds=EditKinds { branches: 5, calls: 0, jumps: 2, memory: 28, other: 82, opaque: 0, constants: 29, callees: 0, texts: 0 } confidence=Similar
+0x80060930 -> 0x80060940 Yes score=0.924 edits=Edits { added: 42, removed: 47, edited: 27 } kinds=EditKinds { branches: 5, calls: 0, jumps: 2, memory: 28, other: 81, opaque: 0, constants: 27, callees: 0, texts: 0 } confidence=Similar
 0x800614f4 -> 0x80061514 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 gone 0x80060294
 new  0x8006005c

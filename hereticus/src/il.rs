@@ -490,6 +490,40 @@ pub struct Lifted {
     pub operands: Operands,
 }
 
+impl Lifted {
+    /// This instruction, with an idiom read as the plain operation it
+    /// computes. Compilers pick between spellings of one result freely:
+    /// `eor r0, r0, r0` and `mov r0, #0` both clear `r0`, and
+    /// `addu v0, a0, zero` is the MIPS `move`.
+    pub fn canonical(mut self) -> Self {
+        use Operand::{Const, Zero};
+        let is_zero = |operand: &Operand| matches!(operand, Zero | Const(0));
+        let rewritten: Option<(Op, Operands)> = match (self.op, self.operands.as_slice()) {
+            // A register less or exclusive-or itself is zero.
+            (Op::Xor | Op::Subtract, [dest, Operand::Reg(left), Operand::Reg(right)])
+                if left == right =>
+            {
+                Some((Op::Move, [*dest, Const(0)].into_iter().collect()))
+            }
+            (Op::Add | Op::Or | Op::Xor, [dest, value, zero])
+            | (Op::Add | Op::Or | Op::Xor, [dest, zero, value])
+                if is_zero(zero) =>
+            {
+                Some((Op::Move, [*dest, *value].into_iter().collect()))
+            }
+            (Op::Subtract, [dest, zero, value]) if is_zero(zero) => {
+                Some((Op::Negate, [*dest, *value].into_iter().collect()))
+            }
+            _ => None,
+        };
+        if let Some((op, operands)) = rewritten {
+            self.op = op;
+            self.operands = operands;
+        }
+        self
+    }
+}
+
 /// Most instructions a compiler puts between a compare and the branch that
 /// reads it. GCC schedules other work there, where clang mostly does not.
 const MOST_BETWEEN: usize = 4;
@@ -834,5 +868,68 @@ mod tests {
             let reg = if vector { Reg::Vector(number % 32) } else { Reg::General(number % 64) };
             assert_eq!(Reg::of_bit(reg.bit()), reg);
         });
+    }
+
+    fn computes(op: Op, operands: &[Operand]) -> Lifted {
+        Lifted { op, operands: operands.iter().copied().collect(), ..Lifted::default() }
+    }
+
+    fn canonical(op: Op, operands: &[Operand]) -> (Op, Vec<Operand>) {
+        let lifted = computes(op, operands).canonical();
+        (lifted.op, lifted.operands.into_vec())
+    }
+
+    const R0: Operand = Operand::Reg(Reg::General(0));
+    const R1: Operand = Operand::Reg(Reg::General(1));
+    const R2: Operand = Operand::Reg(Reg::General(2));
+
+    #[test]
+    fn a_register_less_or_exclusive_or_itself_is_zero() {
+        let zero = (Op::Move, vec![R0, Operand::Const(0)]);
+        assert_eq!(canonical(Op::Xor, &[R0, R1, R1]), zero, "eor r0, r1, r1");
+        assert_eq!(canonical(Op::Subtract, &[R0, R1, R1]), zero, "subu v0, a1, a1");
+        assert_eq!(canonical(Op::Xor, &[R0, R1, R2]), (Op::Xor, vec![R0, R1, R2]));
+    }
+
+    #[test]
+    fn adding_zero_is_a_copy() {
+        let copy = (Op::Move, vec![R0, R1]);
+        assert_eq!(canonical(Op::Add, &[R0, R1, Operand::Zero]), copy, "addu v0, a1, zero");
+        assert_eq!(canonical(Op::Or, &[R0, Operand::Zero, R1]), copy, "orr x0, xzr, x1");
+        assert_eq!(canonical(Op::Add, &[R0, R1, Operand::Const(0)]), copy, "add x0, x1, #0");
+        assert_eq!(canonical(Op::Add, &[R0, R1, Operand::Const(1)]).0, Op::Add);
+    }
+
+    #[test]
+    fn subtracting_from_zero_is_a_negate() {
+        let negate = (Op::Negate, vec![R0, R1]);
+        assert_eq!(canonical(Op::Subtract, &[R0, Operand::Zero, R1]), negate, "sub x0, xzr, x1");
+        let less_zero = [R0, R1, Operand::Zero];
+        assert_eq!(canonical(Op::Subtract, &less_zero), (Op::Subtract, less_zero.to_vec()));
+    }
+
+    /// Over every operation and every three operands from a small set,
+    /// the rewrite is done in one step and touches only the operation and
+    /// its operands.
+    #[test]
+    fn the_canonical_form_is_reached_in_one_step() {
+        const OPS: [Op; 6] = [Op::Add, Op::Subtract, Op::Or, Op::Xor, Op::And, Op::Move];
+        let choices = [R0, R1, Operand::Zero, Operand::Const(0), Operand::Const(7)];
+        for op in OPS {
+            for a in choices {
+                for b in choices {
+                    for c in choices {
+                        let lifted = Lifted {
+                            writes: [Reg::Flags].into_iter().collect(),
+                            ..computes(op, &[a, b, c])
+                        };
+                        let once = lifted.clone().canonical();
+                        assert_eq!(once.clone().canonical(), once, "{op:?} {a:?} {b:?} {c:?}");
+                        assert_eq!((once.reads, once.writes), (lifted.reads, lifted.writes));
+                        assert_eq!((once.memory, once.test), (lifted.memory, lifted.test));
+                    }
+                }
+            }
+        }
     }
 }
