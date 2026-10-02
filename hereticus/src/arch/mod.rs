@@ -522,6 +522,10 @@ pub enum CallTarget {
     /// The address of a slot of the global offset table that holds the
     /// callee's address.
     Slot(u64),
+    /// The address of a slot of the global offset table that holds a page,
+    /// and the offset of the callee in that page. MIPS PIC reaches a local
+    /// function so.
+    PageOffset { slot: u64, offset: u64 },
 }
 
 /// A jump through a table of cases.

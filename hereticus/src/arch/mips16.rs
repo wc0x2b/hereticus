@@ -532,6 +532,8 @@ impl Arch for Mips16 {
                 // The preamble's is half of `_gp_disp`, a distance.
                 [_, "pc", _] if index > 0 && is_gp_preamble_at(body, index - 1) => None,
                 [_, "pc", address] => constant(address),
+                // An address that is called is code, not data.
+                [destination, ..] if is_called(body, index, destination) => None,
                 [_, source, low] => {
                     let (at, written) = last_write(body, index, source)?;
                     let address = page(at, written)?.wrapping_add(constant(low)? as u32);
@@ -547,14 +549,15 @@ impl Arch for Mips16 {
     /// through a copy of the global pointer, as `s0`:
     ///
     /// ```text
-    /// lw   v0, %call16(callee)(s0)
-    /// jalr v0
-    /// move t9, v0
+    /// lw   v0, %call16(callee)(s0)       lw    v0, %got(local)(s0)
+    /// jalr v0                            addiu v0, %lo(local)
+    /// move t9, v0                        jalr  v0
     /// ```
+    ///
+    /// A local function is reached as on the right: through a page that a
+    /// slot holds, and its offset in that page.
     fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
-        let through_slot = |index: usize| {
-            let register = insns[index].operands.rsplit(',').next()?.trim();
-            let (load_at, load) = last_write_within(insns, index, register, TABLE_LOOK_BACK)?;
+        let slot_of = |load_at: usize, load: &Insn| {
             let [_, reference] = two_operands(load)?;
             let (offset, base) = reference.strip_suffix(')')?.split_once('(')?;
             let offset = self.constant_value(offset)?;
@@ -562,8 +565,21 @@ impl Arch for Mips16 {
                 return None;
             }
             let global_pointer =
-                global_pointer_before(insns, index, |operand| self.constant_value(operand))?;
+                global_pointer_before(insns, load_at, |operand| self.constant_value(operand))?;
             Some(u64::from((global_pointer as u32).wrapping_add(offset as u32)))
+        };
+        let through_slot = |index: usize| {
+            let register = insns[index].operands.rsplit(',').next()?.trim();
+            let (written_at, written) = last_write(insns, index, register)?;
+            match three_operands(written) {
+                Some([_, source, low]) if written.mnemonic == "addiu" => {
+                    let (load_at, load) = last_write(insns, written_at, source)?;
+                    let slot = slot_of(load_at, load)?;
+                    let offset = self.constant_value(low)?;
+                    Some(CallTarget::PageOffset { slot, offset })
+                }
+                _ => slot_of(written_at, written).map(CallTarget::Slot),
+            }
         };
         insns
             .iter()
@@ -572,9 +588,7 @@ impl Arch for Mips16 {
                 InsnKind::Call { target: Some(target) } => {
                     Some((index, Some(CallTarget::Address(target))))
                 }
-                InsnKind::Call { target: None } => {
-                    Some((index, through_slot(index).map(CallTarget::Slot)))
-                }
+                InsnKind::Call { target: None } => Some((index, through_slot(index))),
                 InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
                     Some((index, Some(CallTarget::Address(target))))
                 }
@@ -802,6 +816,18 @@ fn two_operands(insn: &Insn) -> Option<[&str; 2]> {
     operands.try_into().ok()
 }
 
+/// Report whether a call soon after `insns[index]` goes through `register`.
+fn is_called(insns: &[Insn], index: usize, register: &str) -> bool {
+    /// GCC puts the `jalr` right after the address it calls, or one
+    /// instruction later.
+    const MOST_INSTRUCTIONS_TO_CALL: usize = 3;
+
+    insns.iter().skip(index + 1).take(MOST_INSTRUCTIONS_TO_CALL).any(|insn| {
+        matches!(insn.kind, InsnKind::Call { target: None })
+            && insn.operands.rsplit(',').next().map(str::trim) == Some(register)
+    })
+}
+
 /// Report whether a preamble starts at `insns[at]`.
 fn is_gp_preamble_at(insns: &[Insn], at: usize) -> bool {
     insns.get(at..at + GP_PREAMBLE_LENGTH).is_some_and(is_gp_preamble)
@@ -989,6 +1015,26 @@ mod tests {
 
         let found = Mips16::BIG.data_addresses(&code, &insns, &space, &Memory::new(&regions));
         assert_eq!(found, [0x2_0000 - 5188, la], "the preamble's `la` is not data");
+    }
+
+    #[test]
+    fn a_call_to_a_local_function_names_its_page_and_offset() {
+        // `lw v0, -0x7f0c(s0)`, `addiu v0, -0x393f`, `jalr v0`, `move t9, v0`,
+        // after the preamble of `luaB_assert`.
+        let mut values = CALL_THROUGH_SLOT[..11].to_vec();
+        values.extend([0xf0f0, 0x9854, 0xf6d8, 0x4a01, 0xea40, 0x653a]);
+        let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
+        let insns = crate::arch::decode_all(&Mips16::BIG, &code, 0x7de4).0;
+        let offset = (-0x393f_i64) as u64;
+        let calls = Mips16::BIG.call_targets(&insns);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].1, Some(CallTarget::PageOffset { slot: 0x3_96d0 - 0x7f0c, offset }));
+
+        let space = AddressSpace::from_ranges([0x0..0x4_0000]);
+        let page = 0x2_0000_u32.to_be_bytes();
+        let regions = [(0x3_96d0 - 0x7f0c, page.as_slice())];
+        let data = Mips16::BIG.data_addresses(&code, &insns, &space, &Memory::new(&regions));
+        assert!(data.is_empty(), "a callee is not data: {data:#x?}");
     }
 
     #[test]
