@@ -14,12 +14,6 @@ CVE-2026-28825 (smbfs), CVE-2025-24257 (IOGPUFamily) and CVE-2021-30883
 `real-life-reports/`. The A14 and later iPhones run the display driver on
 the DCP, so CVE-2021-30883 needs a device without one.
 
-## Read a fileset kernelcache directly
-
-A kernelcache of iOS 15 and later is an `MH_FILESET` that holds each kext
-as its own Mach-O. Read whole, it gives 648 functions, so a user must
-extract the kexts with `ipsw` first. Read each `LC_FILESET_ENTRY`.
-
 ## Lift more of what a guard can be
 
 `il` reads a compare and the branch on it as one guard on AArch64, A32,

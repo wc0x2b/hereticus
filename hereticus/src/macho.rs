@@ -99,6 +99,119 @@ pub(crate) fn functions(file: &MachO<'_>) -> Option<(Vec<Function>, FoundBy)> {
     (!functions.is_empty()).then_some((functions, found_by))
 }
 
+/// The functions of a fileset, as the kernelcache of iOS 15 and later is,
+/// or `None` where `file` is no fileset.
+///
+/// A fileset holds each kext as a Mach-O of its own, which an
+/// `LC_FILESET_ENTRY` names, and each records its own function starts and
+/// symbols. Read whole, the file gives only the starts the fileset records
+/// for itself: 648 functions of an iOS 27 kernelcache. The code of every
+/// entry lies in the executable segments of the fileset, which carry no
+/// sections, so the functions are cut from those.
+pub(crate) fn fileset_functions(file: &MachO<'_>) -> Option<(Vec<Function>, FoundBy)> {
+    use object::read::macho::{MachHeader as _, Segment as _};
+
+    let endian = file.endian();
+    let data = file.data();
+    if file.macho_header().filetype(endian) != macho::MH_FILESET {
+        return None;
+    }
+    let mut starts = BTreeSet::new();
+    let mut names: BTreeMap<u64, String> = BTreeMap::new();
+    let mut commands = file.macho_load_commands().ok()?;
+    while let Ok(Some(command)) = commands.next() {
+        let Ok(LoadCommandVariant::FilesetEntry(entry)) = command.variant() else { continue };
+        let Ok(offset) = usize::try_from(entry.fileoff.get(endian)) else { continue };
+        let Ok(header) = macho::MachHeader64::<Endianness>::parse(data, offset as u64) else {
+            continue;
+        };
+        entry_functions(header, endian, data, offset as u64, &mut starts, &mut names);
+    }
+
+    let code: Vec<(u64, &[u8])> = file
+        .segments()
+        .filter(|segment| {
+            segment.macho_segment().initprot(endian).0 & macho::VM_PROT_EXECUTE.0 != 0
+        })
+        .filter_map(|segment| Some((segment.address(), segment.data().ok()?)))
+        .collect();
+    let ends = starts.iter().skip(1).map(Some).chain(core::iter::once(None));
+    let functions: Vec<Function> = starts
+        .iter()
+        .zip(ends)
+        .filter_map(|(&address, next)| {
+            let code = code_at(&code, address, next.copied())?;
+            let name = names.get(&address).map(|name| stable_name(name).to_string());
+            Some(Function { name: name.unwrap_or_default(), address, code })
+        })
+        .collect();
+    let found_by = if functions.iter().all(|function| !function.name.is_empty()) {
+        FoundBy::Symbols
+    } else {
+        FoundBy::Scanning
+    };
+    (!functions.is_empty()).then_some((functions, found_by))
+}
+
+/// Add the function starts and the names of code of one fileset entry,
+/// whose header is at `offset` of the fileset.
+fn entry_functions(
+    header: &macho::MachHeader64<Endianness>,
+    endian: Endianness,
+    data: &[u8],
+    offset: u64,
+    starts: &mut BTreeSet<u64>,
+    names: &mut BTreeMap<u64, String>,
+) {
+    use object::read::macho::{MachHeader as _, Segment as _};
+
+    let Ok(mut commands) = header.load_commands(endian, data, offset) else { return };
+    let mut text = None;
+    let mut function_starts = None;
+    let mut symtab = None;
+    while let Ok(Some(command)) = commands.next() {
+        match command.variant() {
+            Ok(LoadCommandVariant::Segment64(segment, _)) if segment.name() == b"__TEXT" => {
+                text = Some(segment.vmaddr(endian));
+            }
+            Ok(LoadCommandVariant::LinkeditData(linkedit))
+                if command.cmd() == macho::LC_FUNCTION_STARTS =>
+            {
+                function_starts = Some(linkedit);
+            }
+            Ok(LoadCommandVariant::Symtab(table)) => symtab = Some(table),
+            _ => {}
+        }
+    }
+    if let (Some(text), Some(linkedit)) = (text, function_starts)
+        && let Ok(mut iter) = linkedit.function_starts(endian, data, text)
+    {
+        // A bad entry ends the list; the starts before it still hold.
+        while let Ok(Some(start)) = iter.next() {
+            starts.insert(start);
+        }
+    }
+    let Some(symtab) = symtab else { return };
+    let Ok(symbols) = symtab.symbols::<macho::MachHeader64<Endianness>, _>(endian, data) else {
+        return;
+    };
+    for symbol in symbols.iter() {
+        if !symbol.is_definition() {
+            continue;
+        }
+        let Ok(name) = symbol.name(endian, symbols.strings()) else { continue };
+        let Ok(name) = core::str::from_utf8(name) else { continue };
+        let address = symbol.n_value(endian);
+        if name.is_empty() || is_assembler_private(name) || !starts.contains(&address) {
+            continue;
+        }
+        let name_of = names.entry(address).or_insert_with(|| name.to_string());
+        if name < name_of.as_str() {
+            *name_of = name.to_string();
+        }
+    }
+}
+
 /// The bytes from `address` up to `next`, or to the end of the section of
 /// code that holds `address`.
 fn code_at(sections: &[(u64, &[u8])], address: u64, next: Option<u64>) -> Option<Vec<u8>> {
@@ -282,5 +395,89 @@ mod tests {
         assert!(is_assembler_private("LBB0_1"));
         assert!(!is_assembler_private("_main"));
         assert!(!is_assembler_private("__ZN4core3fmt5write17h"));
+    }
+
+    /// A fileset of one kext, as a kernelcache is built: the outer header
+    /// maps the code in one executable segment with no sections, and the
+    /// kext's own header records where its two functions start.
+    fn fileset() -> Vec<u8> {
+        let word = |data: &mut Vec<u8>, value: u32| data.extend(value.to_le_bytes());
+        let quad = |data: &mut Vec<u8>, value: u64| data.extend(value.to_le_bytes());
+        let name = |data: &mut Vec<u8>, name: &str| {
+            let mut field = [0u8; 16];
+            field[..name.len()].copy_from_slice(name.as_bytes());
+            data.extend(field);
+        };
+        let segment = |data: &mut Vec<u8>, segname: &str, address: u64, offset: u64, size: u64| {
+            word(data, macho::LC_SEGMENT_64.0);
+            word(data, 72);
+            name(data, segname);
+            for value in [address, size, offset, size] {
+                quad(data, value);
+            }
+            for value in [5, 5, 0, 0] {
+                word(data, value); // r-x, r-x, no section, no flag
+            }
+        };
+        let header = |data: &mut Vec<u8>, filetype: u32, commands: u32, size: u32| {
+            for value in
+                [macho::MH_MAGIC_64, macho::CPU_TYPE_ARM64.0, 0, filetype, commands, size, 0, 0]
+            {
+                word(data, value);
+            }
+        };
+
+        let id = b"com.example.kext\0\0\0\0\0\0\0";
+        let mut data = Vec::new();
+        header(&mut data, macho::MH_FILESET.0, 2, 72 + 32 + id.len() as u32);
+        segment(&mut data, "__TEXT_EXEC", 0x1000, 0x400, 0x100);
+        word(&mut data, macho::LC_FILESET_ENTRY.0);
+        word(&mut data, 32 + id.len() as u32);
+        quad(&mut data, 0x1000);
+        quad(&mut data, 0x200);
+        word(&mut data, 32);
+        word(&mut data, 0);
+        data.extend(id);
+        data.resize(0x200, 0);
+
+        header(&mut data, macho::MH_KEXT_BUNDLE.0, 2, 72 + 16);
+        segment(&mut data, "__TEXT", 0xf00, 0, 0);
+        word(&mut data, macho::LC_FUNCTION_STARTS.0);
+        word(&mut data, 16);
+        word(&mut data, 0x300);
+        word(&mut data, 8);
+        data.resize(0x300, 0);
+        // From `__TEXT` at 0xf00: 0x100 to the first, 0x40 to the second.
+        data.extend([0x80, 0x02, 0x40, 0x00]);
+        data.resize(0x400, 0);
+        for _ in 0..0x40 {
+            word(&mut data, 0xd65f_03c0); // ret
+        }
+        data
+    }
+
+    /// Each kext of a fileset records its own function starts, which the
+    /// fileset as a whole does not.
+    #[test]
+    fn a_fileset_reads_the_functions_of_each_entry() {
+        let binary = crate::obj::Binary::parse(&fileset()).expect("the fileset parses");
+        let spans: Vec<(u64, usize)> = binary
+            .functions
+            .iter()
+            .map(|function| (function.address, function.code.len()))
+            .collect();
+        assert_eq!(spans, [(0x1000, 0x40), (0x1040, 0xc0)]);
+    }
+
+    #[test]
+    fn a_file_that_is_no_fileset_reads_as_before() {
+        let data = fileset();
+        let mut plain = data.clone();
+        plain[12..16].copy_from_slice(&macho::MH_EXECUTE.0.to_le_bytes());
+        let object::File::MachO64(file) = object::File::parse(plain.as_slice()).expect("parses")
+        else {
+            panic!("a 64-bit Mach-O");
+        };
+        assert!(fileset_functions(&file).is_none());
     }
 }
