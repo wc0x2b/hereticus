@@ -933,11 +933,15 @@ impl Cascade<'_> {
         /// What one caller weighs against one pair kept in order.
         const CALLER_WEIGHT: usize = 2;
 
+        // A stub named for its callee pairs by that name, and one with no
+        // partner of its name went or came, as a new import does.
+        let use_names = self.options.use_names;
         let stubs = |side: &[Prepared<'_>]| -> Vec<usize> {
             (0..side.len())
                 .filter(|&index| {
                     let function = side[index].function;
                     side[index].isa.arch().stub_slot(&function.code, function.address).is_some()
+                        && (use_names == UseNames::No || function.name.is_empty())
                 })
                 .collect()
         };
