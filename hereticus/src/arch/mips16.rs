@@ -1030,7 +1030,7 @@ mod tests {
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(calls[0].1, Some(CallTarget::PageOffset { slot: 0x3_96d0 - 0x7f0c, offset }));
 
-        let space = AddressSpace::from_ranges([0x0..0x4_0000]);
+        let space = AddressSpace::from_ranges(core::iter::once(0x0..0x4_0000));
         let page = 0x2_0000_u32.to_be_bytes();
         let regions = [(0x3_96d0 - 0x7f0c, page.as_slice())];
         let data = Mips16::BIG.data_addresses(&code, &insns, &space, &Memory::new(&regions));

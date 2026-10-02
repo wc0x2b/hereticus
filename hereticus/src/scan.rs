@@ -1668,7 +1668,10 @@ mod tests {
                 entry(0x70c0, Unwinding::CannotUnwind),
             ]
         );
-        let mips32 = index_from_ranges(&[0x100..0x110], &crate::arch::mips::Mips32::LITTLE);
+        let mips32 = index_from_ranges(
+            core::slice::from_ref(&(0x100..0x110)),
+            &crate::arch::mips::Mips32::LITTLE,
+        );
         assert_eq!(
             mips32,
             [entry(0x100, Unwinding::Listed), entry(0x110, Unwinding::CannotUnwind)]
