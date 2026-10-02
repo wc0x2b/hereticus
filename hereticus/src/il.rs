@@ -401,7 +401,29 @@ pub enum Op {
     Jump,
     Call,
     Return,
-    /// Floating point arithmetic.
+    FloatAdd,
+    FloatSubtract,
+    FloatMultiply,
+    /// A multiply with an add or subtract, as `fmadd` and `vmla` do.
+    FloatMultiplyAdd,
+    FloatDivide,
+    /// Negates or takes the magnitude, as `fneg` and `fabs` do.
+    FloatSign,
+    FloatSquareRoot,
+    /// Converts between sizes, or to or from an integer, with the rounding
+    /// the conversion implies.
+    FloatConvert,
+    /// Rounds down, as `floor` does: `frintm` and `floor.w.d`.
+    FloatRoundDown,
+    /// Rounds up, as `ceil` does: `frintp` and `ceil.w.d`.
+    FloatRoundUp,
+    /// Rounds to the nearest, or as the status register says.
+    FloatRoundNearest,
+    /// Rounds toward zero, as `trunc` does.
+    FloatRoundTowardZero,
+    /// The lesser or greater of two values.
+    FloatMinMax,
+    /// Other floating point work, as a compare.
     Float,
     /// Vector arithmetic.
     Vector,
@@ -446,6 +468,19 @@ impl Op {
             Self::Jump => "jump",
             Self::Call => "call",
             Self::Return => "return",
+            Self::FloatAdd => "float-add",
+            Self::FloatSubtract => "float-subtract",
+            Self::FloatMultiply => "float-multiply",
+            Self::FloatMultiplyAdd => "float-multiply-add",
+            Self::FloatDivide => "float-divide",
+            Self::FloatSign => "float-sign",
+            Self::FloatSquareRoot => "float-square-root",
+            Self::FloatConvert => "float-convert",
+            Self::FloatRoundDown => "float-round-down",
+            Self::FloatRoundUp => "float-round-up",
+            Self::FloatRoundNearest => "float-round-nearest",
+            Self::FloatRoundTowardZero => "float-round-toward-zero",
+            Self::FloatMinMax => "float-min-max",
             Self::Float => "float",
             Self::Vector => "vector",
             Self::System => "system",
