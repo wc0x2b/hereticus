@@ -31,14 +31,15 @@ such as `math_max` and `math_min`. Still read as plain work:
   of A32 uses, in place of a branch.
 - A chain of `ccmp`, which tests two conditions with one branch.
 
-## Tell twins apart by the library function they call
+## Tell twins apart that no instruction separates
 
-Most wrong pairs over the cross builds are twins that differ only in the
-function they call. Lua's `math_ceil` and `math_floor`, and `math_deg`
-and `math_rad`, pair the wrong way round at a score of 1.00 between clang
-and GCC, as each calls a different `libm` function through the PLT. A
-stripped library keeps the names of its PLT entries, so the matching can
-compare them before it pairs two functions that read the same.
+The twins this entry named, Lua's `math_ceil` and `math_floor` and
+`math_deg` and `math_rad`, paired the wrong way round because every float
+operation lifted alike; they pair right now. Of the wrong pairs left
+between clang and GCC, 73 score 1.00, and most are byte-identical twins,
+as tinyxml2's `XMLNode::ToComment` and `XMLNode::ToText`, which both
+return null, and `MemPool<52>::Free` and `MemPool<60>::Free`. Nothing in
+their code tells them apart; only names or callers could.
 
 ## Make function recovery a library
 
@@ -71,17 +72,22 @@ through stubs that the cache builder has bound or removed.
 
 ## Cache the fixtures in CI
 
-The tests now download about 150 MB of OpenWrt images and build libraries
-in a container. Cache `fixtures/build` in CI, keyed on the pinned SHA-256
-values and on `fixtures/`, so a run fetches and builds only what changed.
+The README shows a build badge, but the repository holds no workflow. Add
+one that runs `just test`, and cache `fixtures/build` in it, keyed on the
+pinned SHA-256 values and on `fixtures/`. `backports.sh` already keeps
+what it built while its inputs stay the same: locally a second run takes
+two seconds where the first takes eight minutes.
 
 ## Report a changed short text
 
 A change to a text of fewer than four bytes, such as `"%d"` to `"%u"`, is not
 reported, because a word that holds a small pointer or number reads as such a
-text by chance. Telling the two apart needs to know which data is read-only:
-the ELF segment flags give that for a shared library, but a raw image has
-none.
+text by chance. Knowing which data is read-only does not settle it: the two
+false texts measured, a panic location of Rust and a table of tinyxml2, are
+read-only too, and a linked library merges its string sections into
+`.rodata`, so their `SHF_STRINGS` flag is gone. What might: a string pool
+holds texts back to back, so a short text with a NUL before it and another
+text after its own NUL is likely real.
 
 ## Recover the last functions of a stripped library
 
