@@ -20,7 +20,7 @@ use rayon::prelude::*;
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::arch::{Arch, Insn, InsnKind, Memory, decode_all, is_branch_target};
 use crate::callee::{Callee, callees, callees_in};
-use crate::norm::{FlowShape, NormInsn, OperandShape, normalize_body_in};
+use crate::norm::{FlowShape, NormInsn, OperandShape, flow_features_in, normalize_body_in};
 use crate::obj::{Binary, FoundBy, Function, Isa};
 
 /// How confident a pairing is, and what justified it.
@@ -487,6 +487,9 @@ struct Prepared<'a> {
     calls: Vec<Callee>,
     /// The texts the function points at, sorted.
     texts: Vec<&'a str>,
+    /// The data-flow features of the body, sorted: see
+    /// [`crate::il::flow_features`].
+    flow: Vec<u64>,
 }
 
 /// What a function refers to that its normalized code does not show.
@@ -598,6 +601,7 @@ fn prepare<'a>(
             // symbols, and the few pairs that need the instructions back
             // normalize again on demand.
             let body = normalize_body_in(arch, &function.code, &insns, &binary.addresses);
+            let flow = flow_features_in(arch, &function.code, &insns, FLOW_DEPTH);
             let contents = arch.contents(&function.code, &insns, &binary.addresses);
             let calls = callees_in(arch, &binary.links, &binary.functions, &insns)
                 .into_iter()
@@ -638,6 +642,7 @@ fn prepare<'a>(
                 contents,
                 calls,
                 texts,
+                flow,
             }
         })
         .collect()
@@ -2039,11 +2044,13 @@ impl Cascade<'_> {
                     if !self.right_free[other] || self.right[other].is_empty() {
                         continue;
                     }
-                    let score = similarity_of_symbols(
-                        &self.left[index].symbols,
-                        &self.right[other].symbols,
-                    );
-                    if score >= threshold {
+                    let (left, right) = (&self.left[index], &self.right[other]);
+                    let score = similarity_of_symbols(&left.symbols, &right.symbols);
+                    let flows_alike = || {
+                        score >= FLOW_RESCUE.code
+                            && similarity_of_symbols(&left.flow, &right.flow) >= FLOW_RESCUE.flow
+                    };
+                    if score >= threshold || flows_alike() {
                         best.push((score, index, other));
                         keep_best_candidates(&mut best);
                     }
@@ -2420,6 +2427,36 @@ fn texts_that_differ(left: &[&str], right: &[&str]) -> usize {
 /// later, cut them by a tenth more, with no comparison worse.
 const REFERENCE_WEIGHT: f64 = 0.1;
 
+/// How deep the data-flow features go: an operation with what defines its
+/// inputs, and what defines theirs. Measured over the cross builds, one
+/// round paired 15 fewer right and 34 more wrong than two.
+const FLOW_DEPTH: usize = 2;
+
+/// The floors at which data flow takes a pair the code alone would not.
+struct FlowRescue {
+    /// The least similarity of the normalized instructions.
+    code: f64,
+    /// The least similarity of the data-flow features.
+    flow: f64,
+}
+
+/// A true pair whose builds spell the work in other instructions scores
+/// under the threshold, but its data flow can still agree, as data flow
+/// knows an instruction by what feeds it. Measured over the cross builds,
+/// 685 true pairs that clang and GCC built were missed with their partner
+/// as the best candidate at 0.4 to 0.65. Taking those whose data flow
+/// agrees at 0.7 or more paired 65 more right and 4 fewer wrong, and 7
+/// more right and 2 more wrong across the releases. At 0.65 it paired 67
+/// more right but 54 more wrong, and at 0.75, 17 more right and 4 more
+/// wrong. The code floor matters little: 0.45 and 0.5 gave the same.
+///
+/// Data flow does not otherwise score a pair. Blended into the score, it
+/// ran lower than the code alone and lost true pairs at the threshold: a
+/// quarter of it paired 479 fewer right. As a part of the ranking, at 0.2,
+/// it paired 21 more right and 18 fewer wrong over the cross builds, but 7
+/// fewer right and 7 more wrong across the releases, all in tinyxml2.
+const FLOW_RESCUE: FlowRescue = FlowRescue { code: 0.5, flow: 0.7 };
+
 /// The similarity at which the first pass of the similarity stage pairs.
 ///
 /// The pairs it makes are the callees that tell the second pass's
@@ -2505,7 +2542,7 @@ fn keep_best_candidates(candidates: &mut Vec<(f64, usize, usize)>) {
 /// The same Jaccard similarity that [`similarity`] computes, over the same
 /// multiset, but by walking two sorted lists rather than building a map. This
 /// runs once per candidate pair in the scoring stage, so it allocates nothing.
-fn similarity_of_symbols(left: &[Symbol], right: &[Symbol]) -> f64 {
+fn similarity_of_symbols<T: Ord>(left: &[T], right: &[T]) -> f64 {
     if left.is_empty() && right.is_empty() {
         return 1.0;
     }

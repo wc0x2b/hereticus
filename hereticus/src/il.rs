@@ -532,6 +532,137 @@ impl Lifted {
     }
 }
 
+/// The data-flow features of `body`, one an instruction, sorted.
+///
+/// Ghidra's BSim knows an operation by what feeds it, not by its spelling:
+/// it hashes each value with the operation that defines it and the values
+/// that operation reads. This does the same over a straight walk of the
+/// lifted body, to `depth` rounds: at 1, a feature is an operation with the
+/// operations that wrote its inputs; at 2, with their features in turn.
+/// The register a value sits in never counts, so a change of register
+/// allocation changes no feature. The inputs of a commutative operation
+/// hash in no order, and a constant counts by its size, never its value.
+/// A value read before anything in the body writes it is an argument, and
+/// one read after a call is the call's result.
+///
+/// BSim also looks through copies and spills. Measured over the cross
+/// builds, neither helped here: the copies and spills a compiler adds are
+/// already frame work that normalizing drops, or show in both builds.
+pub fn flow_features(body: &[Option<Lifted>], depth: usize) -> Vec<u64> {
+    let mut flow = Flow::default();
+    let mut features: Vec<u64> =
+        body.iter().flatten().map(|lifted| flow.step(lifted, depth)).collect();
+    features.sort_unstable();
+    features
+}
+
+/// What a walk for [`flow_features`] knows at one point.
+#[derive(Default)]
+struct Flow {
+    /// For each register, the labels of the value it holds, by round: the
+    /// first, the defining operation alone.
+    values: Vec<(Reg, [u64; FLOW_ROUNDS])>,
+    /// The label of a value nothing in the body wrote.
+    unknown: Option<[u64; FLOW_ROUNDS]>,
+}
+
+/// The most rounds [`flow_features`] runs.
+const FLOW_ROUNDS: usize = 3;
+
+/// Labels for the leaves of the data flow.
+const ARGUMENT: u64 = 0x4152_4755_4d45_4e54;
+const CALL_RESULT: u64 = 0x4341_4c4c_5245_5355;
+const ZERO: u64 = 0x5a45_524f;
+const MEMORY: u64 = 0x4d45_4d4f_5259;
+
+impl Flow {
+    fn label_of(&self, reg: Reg) -> [u64; FLOW_ROUNDS] {
+        self.values
+            .iter()
+            .find(|(held, _)| *held == reg)
+            .map(|(_, label)| *label)
+            .unwrap_or(self.unknown.unwrap_or([ARGUMENT; FLOW_ROUNDS]))
+    }
+
+    fn set(&mut self, reg: Reg, label: [u64; FLOW_ROUNDS]) {
+        match self.values.iter_mut().find(|(held, _)| *held == reg) {
+            Some((_, held)) => *held = label,
+            None => self.values.push((reg, label)),
+        }
+    }
+
+    /// Walk one instruction, and give its feature.
+    fn step(&mut self, lifted: &Lifted, depth: usize) -> u64 {
+        let depth = depth.clamp(1, FLOW_ROUNDS - 1);
+        let width = lifted.memory.and_then(|access| access.width).map_or(0, Width::bits);
+        let tag = mix(lifted.op as u64 + 1, u64::from(width));
+
+        let mut inputs: Vec<[u64; FLOW_ROUNDS]> = Vec::new();
+        for (index, operand) in lifted.operands.iter().enumerate() {
+            let input = match *operand {
+                // The first operand of an operation that writes it, and does
+                // not read it, is its result, not an input.
+                Operand::Reg(reg)
+                    if index == 0 && lifted.writes.contains(reg) && !lifted.reads.contains(reg) =>
+                {
+                    continue;
+                }
+                Operand::Reg(reg) => self.label_of(reg),
+                Operand::Zero => [ZERO; FLOW_ROUNDS],
+                Operand::Const(value) => [constant_label(value); FLOW_ROUNDS],
+                Operand::Memory { base, .. } => base
+                    .map_or([MEMORY; FLOW_ROUNDS], |base| self.label_of(base))
+                    .map(|label| mix(MEMORY, label)),
+                Operand::Target | Operand::RegisterList | Operand::Other => continue,
+            };
+            inputs.push(input);
+        }
+        // The flags a compare wrote feed the branch that reads them.
+        if lifted.reads.contains(Reg::Flags) {
+            inputs.push(self.label_of(Reg::Flags));
+        }
+
+        let commutative = matches!(lifted.op, Op::Add | Op::Multiply | Op::And | Op::Or | Op::Xor);
+        // Round `n` of this instruction reads round `n - 1` of its inputs.
+        let mut label = [tag; FLOW_ROUNDS];
+        for round in 1..FLOW_ROUNDS {
+            let mut previous: Vec<u64> = inputs.iter().map(|input| input[round - 1]).collect();
+            if commutative {
+                previous.sort_unstable();
+            }
+            label[round] = previous.into_iter().fold(tag, mix);
+        }
+
+        if lifted.op == Op::Call {
+            // A call may change any register; what it leaves is its result.
+            // Measured, this paired 9 more right over the cross builds.
+            self.values.clear();
+            self.unknown = Some([CALL_RESULT; FLOW_ROUNDS]);
+        }
+        for reg in lifted.writes.iter() {
+            self.set(reg, label);
+        }
+        label[depth]
+    }
+}
+
+/// The label of a constant, by its size.
+fn constant_label(value: u64) -> u64 {
+    match value {
+        0 => ZERO,
+        1..=0xff => 0x534d_414c_4c,
+        _ => 0x4c41_5247_45,
+    }
+}
+
+/// Mix two hashes into one, as `splitmix64` finishes a value.
+fn mix(left: u64, right: u64) -> u64 {
+    let mut value = left.rotate_left(5) ^ right.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
 /// Most instructions a compiler puts between a compare and the branch that
 /// reads it. GCC schedules other work there, where clang mostly does not.
 const MOST_BETWEEN: usize = 4;
@@ -939,5 +1070,109 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An instruction that writes `dest` from `sources` by `op`.
+    fn computes_into(op: Op, dest: u8, sources: &[Operand]) -> Option<Lifted> {
+        let reads = sources
+            .iter()
+            .filter_map(|source| match source {
+                Operand::Reg(reg) => Some(*reg),
+                _ => None,
+            })
+            .collect();
+        Some(Lifted {
+            op,
+            reads,
+            writes: [Reg::General(dest)].into_iter().collect(),
+            operands: [Operand::Reg(Reg::General(dest))]
+                .into_iter()
+                .chain(sources.iter().copied())
+                .collect(),
+            ..Lifted::default()
+        })
+    }
+
+    fn r(number: u8) -> Operand {
+        Operand::Reg(Reg::General(number))
+    }
+
+    /// `r2 = load; r3 = r2 + 1; r4 = r3 * r2`, in registers `base` up.
+    fn sample(base: u8) -> Vec<Option<Lifted>> {
+        let load = Some(Lifted {
+            op: Op::Load,
+            reads: [Reg::General(base)].into_iter().collect(),
+            writes: [Reg::General(base + 2)].into_iter().collect(),
+            memory: Some(MemoryAccess { kind: AccessKind::Load, width: Some(Width::Bits32) }),
+            operands: [
+                r(base + 2),
+                Operand::Memory { base: Some(Reg::General(base)), offset: Some(8) },
+            ]
+            .into_iter()
+            .collect(),
+            ..Lifted::default()
+        });
+        vec![
+            load,
+            computes_into(Op::Add, base + 3, &[r(base + 2), Operand::Const(1)]),
+            computes_into(Op::Multiply, base + 4, &[r(base + 3), r(base + 2)]),
+        ]
+    }
+
+    #[test]
+    fn the_registers_chosen_change_no_flow_feature() {
+        for depth in [1, 2] {
+            assert_eq!(flow_features(&sample(0), depth), flow_features(&sample(10), depth));
+        }
+    }
+
+    #[test]
+    fn a_commutative_operation_reads_its_inputs_in_no_order() {
+        let mut swapped = sample(0);
+        swapped[2] = computes_into(Op::Multiply, 4, &[r(2), r(3)]);
+        assert_eq!(flow_features(&sample(0), 2), flow_features(&swapped, 2));
+        // A subtract keeps its order.
+        let mut less = sample(0);
+        less[2] = computes_into(Op::Subtract, 4, &[r(3), r(2)]);
+        let mut reversed = sample(0);
+        reversed[2] = computes_into(Op::Subtract, 4, &[r(2), r(3)]);
+        assert_ne!(flow_features(&less, 2), flow_features(&reversed, 2));
+    }
+
+    /// An operation is known by what defines its inputs, so one spelling
+    /// over another source is another feature.
+    #[test]
+    fn what_defines_an_input_is_part_of_the_feature() {
+        let mut moved = sample(0);
+        moved[0] = computes_into(Op::Move, 2, &[Operand::Const(0x1000)]);
+        let (loaded, constant) = (flow_features(&sample(0), 1), flow_features(&moved, 1));
+        assert_eq!(loaded.len(), constant.len());
+        assert_ne!(loaded, constant);
+    }
+
+    /// After a call, a register holds what the call left, not what was
+    /// written before it.
+    #[test]
+    fn a_call_ends_what_registers_held() {
+        let call = Some(Lifted {
+            op: Op::Call,
+            operands: [Operand::Target].into_iter().collect(),
+            ..Lifted::default()
+        });
+        let mut before = sample(0);
+        before.insert(2, call.clone());
+        let mut other = sample(0);
+        other[0] = computes_into(Op::Move, 2, &[Operand::Const(0x1000)]);
+        other.insert(2, call);
+        // The multiply after the call reads `r2` and `r3` as call results,
+        // whatever wrote them before.
+        let last = |body: &[Option<Lifted>]| flow_features(&body[3..], 2);
+        assert_eq!(last(&before), last(&other));
+    }
+
+    #[test]
+    fn nothing_lifted_has_no_flow_feature() {
+        assert!(flow_features(&[None, None], 2).is_empty());
+        assert!(flow_features(&[], 2).is_empty());
     }
 }

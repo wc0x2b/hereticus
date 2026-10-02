@@ -485,6 +485,13 @@ fn named_by_op(mut normalized: NormInsn, lifted: Option<&Option<Lifted>>) -> Nor
     normalized
 }
 
+/// The data-flow features of a body that lives in `space`: see
+/// [`il::flow_features`]. Frame work and idioms stay in, as a value can
+/// pass through them.
+pub fn flow_features_in(arch: &dyn Arch, code: &[u8], insns: &[Insn], depth: usize) -> Vec<u64> {
+    il::flow_features(&lift_all(arch, code, insns), depth)
+}
+
 /// Lift each instruction of `insns`, which `code` holds from its first
 /// byte. Without the code, nothing is lifted.
 fn lift_all(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<Option<Lifted>> {
@@ -1012,5 +1019,18 @@ mod tests {
         );
         // `add x1, x2, #0x1c` is no frame slot.
         assert_eq!(body_of(&Aarch64, &0x9100_7041_u32.to_le_bytes())[0].operation, "add");
+    }
+
+    #[test]
+    fn flow_features_of_any_code_never_panic() {
+        bolero::check!().with_type::<Vec<u32>>().for_each(|words| {
+            let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+            let (insns, _) = crate::arch::decode_all(&Aarch64, &code, 0x1000);
+            for depth in 0..4 {
+                let features = flow_features_in(&Aarch64, &code, &insns, depth);
+                assert!(features.len() <= insns.len());
+                assert!(features.is_sorted());
+            }
+        });
     }
 }
