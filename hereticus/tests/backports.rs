@@ -308,7 +308,7 @@ fn with_symbols_the_fix_is_named_exactly(
 /// The same for the Rust project, which has no GCC levels.
 #[rstest]
 fn with_symbols_the_rust_fix_is_named_exactly(
-    #[values("arm", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os")] level: &'static str,
 ) {
     check_with_symbols(build(Project::Smallvec, arch, level));
@@ -351,7 +351,7 @@ fn stripped_the_fix_is_covered_and_nothing_else(
 /// The same for the Rust project.
 #[rstest]
 fn stripped_the_rust_fix_is_covered_and_nothing_else(
-    #[values("arm", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os")] level: &'static str,
 ) {
     check_stripped(build(Project::Smallvec, arch, level));
@@ -379,7 +379,7 @@ fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
 /// The same for the Rust project.
 #[rstest]
 fn as_a_raw_image_the_rust_fix_is_covered_and_nothing_else(
-    #[values("arm", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os")] level: &'static str,
 ) {
     check_raw(build(Project::Smallvec, arch, level));
@@ -463,8 +463,8 @@ fn a_build_compared_with_itself_reports_nothing(
     #[values("arm", "armv5", "armv6", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
     #[values("before", "after")] variant: &str,
 ) {
-    // The Rust harness is built for 32-bit ARM and MIPS only, on ARMv7.
-    if project == Project::Smallvec && matches!(arch, "thumb" | "aarch64" | "armv5" | "armv6") {
+    // The Rust harness is built for ARMv7 and later, not ARMv5TE or ARMv6.
+    if project == Project::Smallvec && matches!(arch, "armv5" | "armv6") {
         return;
     }
     let build = build(project, arch, "O2");

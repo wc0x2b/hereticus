@@ -70,6 +70,13 @@ pub trait Arch {
         reg == crate::il::Reg::Stack
     }
 
+    /// Report whether `bytes` can open a function, where an unwind index
+    /// says one begins. A table of small numbers otherwise reads as an
+    /// index. Defaults to `false`, for the architectures with no such index.
+    fn can_open_function(&self, _bytes: &[u8]) -> bool {
+        false
+    }
+
     /// Report whether any operand reads or writes a frame slot.
     ///
     /// Takes the whole operand list, not one operand, because a frame

@@ -113,10 +113,6 @@ fn tally_all(first: &str, second: &str) -> Tally {
     let mut total = Tally::default();
     for project in projects {
         for arch in ["arm", "thumb", "aarch64", "mips", "mipsel"] {
-            // The Rust harness is built for 32-bit ARM and MIPS only.
-            if *project == "smallvec" && matches!(arch, "thumb" | "aarch64") {
-                continue;
-            }
             let one = tally(project, arch, first, second);
             total.right += one.right;
             total.wrong += one.wrong;
@@ -128,10 +124,10 @@ fn tally_all(first: &str, second: &str) -> Tally {
 }
 
 #[rstest]
-#[case::o1_o2("O1", "O2", Tally { right: 4253, wrong: 76, gone: 296, new: 244 })]
-#[case::o2_o3("O2", "O3", Tally { right: 4338, wrong: 30, gone: 210, new: 182 })]
-#[case::o2_os("O2", "Os", Tally { right: 3026, wrong: 193, gone: 1354, new: 1999 })]
-#[case::o3_os("O3", "Os", Tally { right: 2849, wrong: 205, gone: 1498, new: 2171 })]
+#[case::o1_o2("O1", "O2", Tally { right: 4324, wrong: 99, gone: 381, new: 294 })]
+#[case::o2_o3("O2", "O3", Tally { right: 4479, wrong: 30, gone: 213, new: 184 })]
+#[case::o2_os("O2", "Os", Tally { right: 3082, wrong: 220, gone: 1415, new: 2137 })]
+#[case::o3_os("O3", "Os", Tally { right: 2904, wrong: 230, gone: 1561, new: 2312 })]
 #[case::gcc_o2_gcc_os("gcc-O2", "gcc-Os", Tally { right: 3443, wrong: 103, gone: 937, new: 1394 })]
 #[case::clang_gcc("O2", "gcc-O2", Tally { right: 2307, wrong: 269, gone: 1782, new: 1979 })]
 fn pairs_across_builds_are_locked(

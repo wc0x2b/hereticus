@@ -28,7 +28,11 @@ functions right and 61 more wrong over the cross builds, mostly twins
 such as `math_max` and `math_min`. Still read as plain work:
 
 - A compare whose result a `cset`, a `csel` or a conditional instruction
-  of A32 uses, in place of a branch.
+  of A32 uses, in place of a branch. Naming the condition in the select,
+  either way, was measured: on A64 it paired 8 fewer right, and on the
+  conditional instructions of A32, 79 fewer right and 10 fewer wrong,
+  over the cross builds. A compiler picks a branch or a select freely, so
+  this wants a guard that reads both as one, not a name that splits them.
 - A chain of `ccmp`, which tests two conditions with one branch.
 
 ## Tell twins apart that no instruction separates
@@ -115,12 +119,6 @@ bit only for what it exports, and a raw image has none, so the scan still
 reads the whole image in one set. A call says which set its target is in
 (`bl` keeps the set, `blx` switches), and so do bit 0 of a pointer and the
 unwind index, so a scan could follow them per function.
-
-## Build the Rust fixture for Thumb-2
-
-The smallvec harness is built for A32 only, and the tests skip Thumb-2 for
-it. Build it for `thumbv7neon-unknown-linux-gnueabihf` or a soft-float
-Thumb-2 target, so Rust code is measured in Thumb-2 too.
 
 ## End the code of a raw image where its data begins
 

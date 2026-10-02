@@ -771,7 +771,7 @@ pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<Inde
     let entry = |offset: usize| -> Option<IndexEntry> {
         let (first, second) = (word(offset)?, word(offset + 4)?);
         let mut address = prel31(offset, first).filter(|&address| in_image(address))?;
-        if !address.is_multiple_of(4) {
+        if !address.is_multiple_of(arch.instruction_width() as u64) {
             return None;
         }
         let unwinding = match second {
@@ -783,6 +783,7 @@ pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<Inde
             }
         };
         let word_at = |address: u64| word(usize::try_from(address - base).ok()?);
+        let bytes_at = |address: u64| data.get(usize::try_from(address - base).ok()?..);
         // The last entry marks the end of `.text`, where the linker can put
         // zero fill before the next aligned section, as before `.plt`. What
         // follows the fill is code no entry lists.
@@ -793,16 +794,15 @@ pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<Inde
                 skipped += 1;
             }
         }
-        // The entry names the first instruction of a function, which runs
-        // always, as almost every ARM instruction does: its top four bits
-        // are `0xE`. A table of small numbers otherwise reads as an index.
-        if word_at(address)? >> 28 != 0xe {
+        // The entry names the first instruction of a function. A table of
+        // small numbers otherwise reads as an index.
+        if !arch.can_open_function(bytes_at(address)?) {
             return None;
         }
         Some(IndexEntry { address, unwinding })
     };
 
-    let mut found = Vec::new();
+    let mut runs = Vec::new();
     let mut offset = 0;
     while offset + EXIDX_ENTRY_LEN <= data.len() {
         let run: Vec<IndexEntry> = (offset..data.len())
@@ -828,11 +828,40 @@ pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<Inde
             .count();
         if run.len() >= FEWEST_INDEX_ENTRIES && outside && in_step * 2 <= run.len() {
             offset += run.len() * EXIDX_ENTRY_LEN;
-            found.extend(run);
+            runs.push(run);
         } else {
             offset += 4;
         }
     }
+    keep_whole_indexes(runs)
+}
+
+/// The runs that are whole indexes, longest first, their entries in one
+/// list.
+///
+/// A table near the index can read as a shorter run whose functions fall
+/// between those the index names: on tinyxml2 for Thumb-2, 17 such entries
+/// came just before the index and split `XMLPrinter::PushAttribute`. A
+/// second index, of another image, names functions of its own range, so a
+/// run whose targets fall inside a longer run's range, but are not its
+/// entries, is dropped.
+fn keep_whole_indexes(mut runs: Vec<Vec<IndexEntry>>) -> Vec<IndexEntry> {
+    runs.sort_by_key(|run| core::cmp::Reverse(run.len()));
+    let mut kept: Vec<Vec<IndexEntry>> = Vec::new();
+    for run in runs {
+        let interleaves = kept.iter().any(|index| {
+            let (first, last) = (index[0].address, index[index.len() - 1].address);
+            run.iter().any(|entry| {
+                (first..=last).contains(&entry.address)
+                    && index.binary_search_by_key(&entry.address, |known| known.address).is_err()
+            })
+        });
+        if !interleaves {
+            kept.push(run);
+        }
+    }
+    let mut found: Vec<IndexEntry> = kept.into_iter().flatten().collect();
+    found.sort_by_key(|entry| entry.address);
     found
 }
 
@@ -2621,5 +2650,27 @@ mod tests {
             vec![0x8],
             "the start is past the slot, not at it"
         );
+    }
+
+    fn entries(addresses: &[u64]) -> Vec<IndexEntry> {
+        addresses
+            .iter()
+            .map(|&address| IndexEntry { address, unwinding: Unwinding::Described })
+            .collect()
+    }
+
+    /// A short run whose targets fall between those of the index is a
+    /// table that reads as one; a run of its own range is another index.
+    #[test]
+    fn a_run_inside_the_range_of_an_index_is_dropped() {
+        let index = entries(&[0x100, 0x140, 0x180, 0x1c0]);
+        let between = entries(&[0x122, 0x162]);
+        let elsewhere = entries(&[0x400, 0x440]);
+        let found = keep_whole_indexes(vec![between, index.clone(), elsewhere.clone()]);
+        let expected: Vec<IndexEntry> = index.into_iter().chain(elsewhere).collect();
+        assert_eq!(found, expected);
+        // An entry the index names too is no conflict.
+        let repeated = entries(&[0x140, 0x180]);
+        assert_eq!(keep_whole_indexes(vec![entries(&[0x100, 0x140, 0x180]), repeated]).len(), 5);
     }
 }

@@ -163,6 +163,13 @@ impl Arch for Thumb2 {
         Arm32.is_frame_register(reg)
     }
 
+    /// T32 has no condition field to test, so the first instruction must
+    /// read as one and not as padding.
+    fn can_open_function(&self, bytes: &[u8]) -> bool {
+        self.decode(bytes, 0, 0)
+            .is_ok_and(|insn| insn.kind != InsnKind::Unknown && !self.is_padding(&insn))
+    }
+
     fn mentions_stack_slot(&self, operands: &str) -> bool {
         Arm32.mentions_stack_slot(operands)
     }
@@ -985,5 +992,15 @@ mod tests {
         let negate = lift_one(&[0x4248]).canonical();
         assert_eq!(negate.op, crate::il::Op::Negate);
         assert_eq!(negate.operands.as_slice(), [reg(0), reg(1)]);
+    }
+
+    /// The unwind index names a T32 function by its first instruction,
+    /// which must read as one and not as padding.
+    #[test]
+    fn a_function_opens_with_an_instruction_that_is_no_padding() {
+        assert!(Thumb2.can_open_function(&halfwords(&[0xb580])), "push {{r7, lr}}");
+        assert!(!Thumb2.can_open_function(&halfwords(&[0x0000])), "zero fill");
+        assert!(!Thumb2.can_open_function(&halfwords(&[0xbf00])), "nop");
+        assert!(!Thumb2.can_open_function(&[]), "no bytes");
     }
 }
