@@ -2918,13 +2918,13 @@ mod tests {
         /// Normalizing drops the constants of an address, and only those.
         #[test]
         fn normalizing_in_a_space_drops_only_the_address() {
-            use crate::norm::{normalize_body, normalize_body_in};
+            use crate::norm::normalize_body_in;
 
             let words = [lui(V0, 0x8001), addiu(V0, V0, 0x51b8), addiu(A0, A0, 0x25)];
             let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
             let (body, _) = decode_all(&Mips32::BIG, &code, BASE);
 
-            let plain = normalize_body(&Mips32::BIG, &body);
+            let plain = normalize_body_in(&Mips32::BIG, &code, &body, &AddressSpace::none());
             let placed = normalize_body_in(&Mips32::BIG, &code, &body, &space());
 
             assert_eq!(plain[2], placed[2], "a real constant keeps its shape");
