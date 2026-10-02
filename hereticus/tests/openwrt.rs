@@ -220,7 +220,7 @@ fn the_stub_report_is_locked(#[case] board: Board) {
 #[case::arm_ex6100v2(EX6100V2, [67, 67], &[(Changed::No, 57), (Changed::Data, 1), (Changed::InDetail, 1), (Changed::Yes, 7), (Changed::Unreadable, 1)], 0, 0)]
 #[case::mipsbe_eap245v3(EAP245V3, [8, 8], &[(Changed::No, 6), (Changed::InDetail, 2)], 0, 0)]
 #[case::mipsel_r6220(R6220, [8, 8], &[(Changed::No, 6), (Changed::InDetail, 2)], 0, 0)]
-#[case::arm_a385dbap(A385DBAP, [141, 141], &[(Changed::No, 131), (Changed::Data, 1), (Changed::InDetail, 4), (Changed::Yes, 5)], 0, 0)]
+#[case::arm_a385dbap(A385DBAP, [143, 143], &[(Changed::No, 133), (Changed::Data, 1), (Changed::InDetail, 4), (Changed::Yes, 5)], 0, 0)]
 fn the_stub_changes_are_known(
     #[case] board: Board,
     #[case] functions: [usize; 2],
@@ -477,7 +477,7 @@ fn slow_the_arm_kernel_report_is_locked() {
 fn slow_the_big_endian_mips_kernel_report_is_locked() {
     check_kernel(
         EAP245V3,
-        15533,
+        15524,
         [
             BaseFit::Plausible { pointers: 47586, examined: 1_377_328 },
             BaseFit::Plausible { pointers: 47778, examined: 1_385_296 },
@@ -490,7 +490,7 @@ fn slow_the_big_endian_mips_kernel_report_is_locked() {
 fn slow_the_little_endian_mips_kernel_report_is_locked() {
     check_kernel(
         R6220,
-        17701,
+        17694,
         [
             BaseFit::Plausible { pointers: 50248, examined: 1_606_891 },
             BaseFit::Plausible { pointers: 50444, examined: 1_615_796 },
@@ -516,7 +516,7 @@ fn slow_the_armada_kernel_report_is_locked() {
 fn slow_the_lantiq_kernel_report_is_locked() {
     check_kernel(
         VR200,
-        17465,
+        17457,
         [
             BaseFit::Plausible { pointers: 52265, examined: 1_630_772 },
             BaseFit::Plausible { pointers: 52465, examined: 1_638_279 },
@@ -529,7 +529,7 @@ fn slow_the_lantiq_kernel_report_is_locked() {
 fn slow_the_mt7628_kernel_report_is_locked() {
     check_kernel(
         MT300NV2,
-        15032,
+        15019,
         [
             BaseFit::Plausible { pointers: 45805, examined: 1_327_211 },
             BaseFit::Plausible { pointers: 45992, examined: 1_334_689 },

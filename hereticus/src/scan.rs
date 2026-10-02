@@ -1272,10 +1272,24 @@ fn starts_after_returns_in(
         // as Lua's `os_getenv` after `os_exit`, this found 8 more function
         // starts and invented none.
         if matches!(insn.kind, InsnKind::Call { .. }) && is_code(&insn) {
-            let next = index + 1 + arch.delay_slots(insn);
+            // The pool of the function, or padding, can come between: clang
+            // for ARM puts the pool word of the message after the call to
+            // `luaG_typeerror` that ends `luaV_objlen`, before `luaV_div`.
+            let after_call = index + 1 + arch.delay_slots(insn);
+            let mut next = after_call;
+            let mut past_pool = false;
+            while insns.get(next).is_some_and(|insn| arch.is_padding(insn) || !is_code(&insn)) {
+                past_pool |= !is_code(&&insns[next]);
+                next += 1;
+            }
+            // A branch can reach it only where the call is followed by data,
+            // which proves it does not return: then the branch is a tail
+            // call from another function, as `b luaV_div` in Lua for ARM.
+            // Measured on the OpenWrt MIPS kernels, allowing such a branch
+            // after any call left 19 to 34 more changed bytes unreported.
             if let Some(following) = insns.get(next)
                 && arch.is_prologue(following)
-                && !sources_of.contains_key(&following.address)
+                && (past_pool || !sources_of.contains_key(&following.address))
                 && !is_inside_a_function(next)
             {
                 out.push(start_of(&insns, next, arch));
@@ -1438,11 +1452,37 @@ fn starts_after_returns_in(
             continue;
         }
 
+        // A new function never starts by branching into the middle of the
+        // one before: a tail call goes to a function's start. So a first
+        // block that branches back past the start of this function, to no
+        // known start, is more of it, reached through a table the scan did
+        // not read. Measured on the stripped releases, the cases after the
+        // early return of expat's `prologTok` for MIPS and the like read as
+        // 24 invented functions, and none was missed for it.
+        let branches_back = function_start.is_some_and(|start| {
+            let mut block = insns[next..].iter();
+            let mut ended = false;
+            block
+                .by_ref()
+                .take_while(|insn| {
+                    let go = !ended;
+                    ended |= !matches!(insn.kind, InsnKind::Normal | InsnKind::Unknown);
+                    go
+                })
+                .any(|insn| match insn.kind {
+                    InsnKind::Branch { target: Some(target) }
+                    | InsnKind::Jump { target: Some(target) } => {
+                        start < target && target < following.address && !anchors.contains(&target)
+                    }
+                    _ => false,
+                })
+        });
+
         // Otherwise only a return that nothing branches across ends a
         // function. A jump without a prologue after it is a tail call or a
         // loop, which stays inside.
         let opens = may_open(following.address);
-        if ends && !is_internal(insn.address) && opens {
+        if ends && !is_internal(insn.address) && opens && !branches_back {
             out.push(following.address);
         }
     }
@@ -2154,6 +2194,44 @@ mod tests {
             vec![0xc],
             "only the prologue right after the second terminator is a start"
         );
+    }
+
+    /// Code after a return that branches back into the middle of the
+    /// function before is more of it, reached through a table not read.
+    #[test]
+    fn a_block_that_branches_back_continues_its_function() {
+        let words = |last: u32| {
+            arm_code(&[
+                0xe92d_4010, // 0x00 push {r4, lr}
+                0xe1a0_4000, // 0x04 mov r4, r0
+                0xe354_0000, // 0x08 cmp r4, #0
+                0xe8bd_8010, // 0x0c pop {r4, pc}
+                0xe59d_0000, // 0x10 ldr r0, [sp]
+                last,        // 0x14
+            ])
+        };
+        let back = words(0xeaff_fffa); // b 0x04
+        assert!(!starts_after_returns(&Arm32, &back, 0).contains(&0x10));
+        let leaves = words(0xe12f_ff1e); // bx lr
+        assert!(starts_after_returns(&Arm32, &leaves, 0).contains(&0x10));
+    }
+
+    /// A call that does not return can be followed by the pool word it
+    /// loads, and then by the next function, which a tail jump from
+    /// another function may reach, as `b luaV_div` does in Lua for ARM.
+    #[test]
+    fn a_prologue_past_the_pool_after_a_call_starts_a_function() {
+        let code = arm_code(&[
+            0xe92d_4010, // 0x00 push {r4, lr}
+            0xe59f_0000, // 0x04 ldr r0, [pc]: the word at 0x0c
+            0xeb00_003c, // 0x08 bl 0x100, which does not return
+            0xfe8a_5c6a, // 0x0c pool word, `cdp2`
+            0xe92d_4010, // 0x10 push {r4, lr}
+            0xe8bd_8010, // 0x14 pop {r4, pc}
+            0xe92d_4010, // 0x18 push {r4, lr}
+            0xeaff_fffb, // 0x1c b 0x10, a tail call
+        ]);
+        assert!(starts_after_returns(&Arm32, &code, 0).contains(&0x10));
     }
 
     /// Padding between functions must not be mistaken for their start.
