@@ -172,6 +172,7 @@ fn parse_raw(build: Build, variant: &str) -> Binary {
         "thumb" | "cortex-m0" | "cortex-m3" => Isa::Thumb2,
         "aarch64" => Isa::Aarch64,
         "mips" => Isa::Mips32Be,
+        "mips16" => Isa::Mips16,
         _ => Isa::Mips32,
     };
     Binary::parse_raw(&read(build, variant, "lib.bin"), base, isa).expect("a raw image must read")
@@ -392,6 +393,18 @@ fn check_raw(build: Build) {
         diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
 
     check_regions(build, Reading::Raw, &regions(build, &diff, &before, &after));
+}
+
+/// MIPS16e, which GCC alone builds, read every way.
+#[rstest]
+fn mips16_shows_the_fix_and_nothing_else(
+    #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
+    #[values("gcc-O2", "gcc-Os")] level: &'static str,
+) {
+    let build = build(project, "mips16", level);
+    check_with_symbols(build);
+    check_stripped(build);
+    check_raw(build);
 }
 
 /// Cortex-M firmware, bare metal behind a vector table, read every way:

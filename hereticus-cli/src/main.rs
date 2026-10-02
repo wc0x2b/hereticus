@@ -202,6 +202,10 @@ enum ArchName {
     Mips32,
     /// MIPS32, big endian, as most shipped firmware is.
     Mips32Be,
+    /// MIPS16e, little endian.
+    Mips16,
+    /// MIPS16e, big endian.
+    Mips16Be,
 }
 
 impl From<ArchName> for Isa {
@@ -212,6 +216,8 @@ impl From<ArchName> for Isa {
             ArchName::Aarch64 => Self::Aarch64,
             ArchName::Mips32 => Self::Mips32,
             ArchName::Mips32Be => Self::Mips32Be,
+            ArchName::Mips16 => Self::Mips16,
+            ArchName::Mips16Be => Self::Mips16Be,
         }
     }
 }

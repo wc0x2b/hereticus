@@ -26,14 +26,18 @@ thumb_flags=(-march=armv7-a -mthumb -mfloat-abi=softfp -mfpu=neon)
 # VFP, as Kirkwood, and ARMv6 has VFP but no `movw`, as older Broadcom.
 armv5_flags=(-march=armv5te -marm -mfloat-abi=soft)
 armv6_flags=(-march=armv6 -marm -mfloat-abi=softfp -mfpu=vfp)
+# MIPS16e, the compact set much MIPS user space is built in.
+mips16_flags=(-mips16)
 common_flags=(-fPIC -fno-stack-protector -w)
 
 # name:triple, one per architecture the tool reads. `mixed` builds every
 # other source as Thumb-2 and the rest as A32, as much ARM user space mixes
-# them. BACKPORTS_TARGETS, a list of these names, builds only those.
+# them. `mips16` is built by GCC alone: clang's MIPS16 back end is not
+# complete. BACKPORTS_TARGETS, a list of these names, builds only those.
 all_targets=(arm:arm-linux-gnueabi thumb:arm-linux-gnueabi mixed:arm-linux-gnueabi
     armv5:arm-linux-gnueabi armv6:arm-linux-gnueabi
-    aarch64:aarch64-linux-gnu mips:mips-linux-gnu mipsel:mipsel-linux-gnu)
+    aarch64:aarch64-linux-gnu mips:mips-linux-gnu mipsel:mipsel-linux-gnu
+    mips16:mipsel-linux-gnu)
 targets=()
 for target in "${all_targets[@]}"; do
     if [ -z "${BACKPORTS_TARGETS:-}" ] || [[ " $BACKPORTS_TARGETS " == *" ${target%%:*} "* ]]; then
@@ -107,8 +111,11 @@ build() {
         [ "$arch" = thumb ] && flags+=("${thumb_flags[@]}")
         [ "$arch" = armv5 ] && flags+=("${armv5_flags[@]}")
         [ "$arch" = armv6 ] && flags+=("${armv6_flags[@]}")
+        [ "$arch" = mips16 ] && flags+=("${mips16_flags[@]}")
+        local clang_levels=("${levels[@]}")
+        [ "$arch" = mips16 ] && clang_levels=()
 
-        for level in "${levels[@]}"; do
+        for level in "${clang_levels[@]}"; do
             local dest="$out/$name-$variant/$arch-$level"
             local objects="$dest/obj"
             mkdir -p "$objects"
@@ -290,7 +297,7 @@ out="$here/build/versions"
 current=()
 for target in "${targets[@]}"; do
     case "${target%%:*}" in
-        mixed | armv5 | armv6) ;;
+        mixed | armv5 | armv6 | mips16) ;;
         *) current+=("$target") ;;
     esac
 done
