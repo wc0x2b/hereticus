@@ -1854,7 +1854,7 @@ impl VfpWord {
                 return lifted;
             }
             Self::Compute { dest, sources, name, .. } => {
-                lifted.op = if name == "vmov" { Op::Move } else { Op::Float };
+                lifted.op = vfp_op(name);
                 let vector = |register: Vector| il::Operand::Reg(vector(register.number));
                 let values = sources.iter().flatten().map(|&source| vector(source));
                 lifted.operands = [vector(dest)].into_iter().chain(values).collect();
@@ -1889,6 +1889,28 @@ impl VfpWord {
             }
         }
         lifted
+    }
+}
+
+/// What a VFP data processing word computes. `vcvt` to an integer rounds
+/// toward zero, and `vcvtr` as the status register says.
+fn vfp_op(name: &str) -> il::Op {
+    use il::Op;
+    match name {
+        "vmov" => Op::Move,
+        "vadd" => Op::FloatAdd,
+        "vsub" => Op::FloatSubtract,
+        "vmul" | "vnmul" => Op::FloatMultiply,
+        "vmla" | "vmls" | "vnmla" | "vnmls" => Op::FloatMultiplyAdd,
+        "vdiv" => Op::FloatDivide,
+        "vneg" | "vabs" => Op::FloatSign,
+        "vsqrt" => Op::FloatSquareRoot,
+        _ if name.starts_with("vcvtr.") && !name.starts_with("vcvtr.f") => Op::FloatRoundNearest,
+        _ if name.starts_with("vcvt.s32") || name.starts_with("vcvt.u32") => {
+            Op::FloatRoundTowardZero
+        }
+        _ if name.starts_with("vcvt") => Op::FloatConvert,
+        _ => Op::Float,
     }
 }
 
@@ -3794,5 +3816,14 @@ mod tests {
             convert.operands.as_slice(),
             [il::Operand::Reg(vector(0)), il::Operand::Reg(vector(16))]
         );
+    }
+
+    #[test]
+    fn a_vfp_operation_names_what_it_computes() {
+        let op = |word| lift_fallback(word, Encoding::A32).expect("the word lifts").op;
+        assert_eq!(op(0xee40_1ba2), il::Op::FloatMultiplyAdd, "vmla.f64");
+        assert_eq!(op(0xeebd_0be0), il::Op::FloatRoundTowardZero, "vcvt.s32.f64");
+        assert_eq!(op(0xeef8_0bc0), il::Op::FloatConvert, "vcvt.f64.s32");
+        assert_eq!(op(0xeef5_0b40), il::Op::Float, "vcmp.f64");
     }
 }

@@ -479,11 +479,38 @@ fn op_of(opcode: Opcode, mnemonic: &str, role: Role, operands: &[Operand]) -> Op
         "cmp" | "cmn" | "tst" | "ccmp" | "ccmn" | "fcmp" | "fcmpe" | "fccmp" | "fccmpe" => {
             Op::Compare
         }
-        _ if mnemonic.starts_with('f') || mnemonic.ends_with("cvtf") => Op::Float,
+        _ if mnemonic.starts_with('f') || mnemonic.ends_with("cvtf") => float_op(mnemonic),
         "nop" | "hint" | "dmb" | "dsb" | "isb" | "msr" | "mrs" | "svc" | "hvc" | "smc" | "brk"
         | "hlt" | "udf" | "sys" | "sysl" | "yield" | "wfe" | "wfi" | "sev" | "sevl" | "clrex"
         | "bti" | "paciasp" | "pacibsp" | "autiasp" | "autibsp" | "prfm" | "prfum" => Op::System,
         _ => Op::Other,
+    }
+}
+
+/// What an A64 floating point instruction computes. A conversion to an
+/// integer names its rounding: `fcvtms` rounds down, as `floor` does.
+fn float_op(mnemonic: &str) -> Op {
+    match mnemonic {
+        "fadd" => Op::FloatAdd,
+        "fsub" => Op::FloatSubtract,
+        "fmul" | "fnmul" => Op::FloatMultiply,
+        "fmadd" | "fmsub" | "fnmadd" | "fnmsub" => Op::FloatMultiplyAdd,
+        "fdiv" => Op::FloatDivide,
+        "fneg" | "fabs" => Op::FloatSign,
+        "fsqrt" => Op::FloatSquareRoot,
+        "fmin" | "fmax" | "fminnm" | "fmaxnm" => Op::FloatMinMax,
+        "frintm" => Op::FloatRoundDown,
+        "frintp" => Op::FloatRoundUp,
+        "frintz" => Op::FloatRoundTowardZero,
+        "frintn" | "frinta" | "frintx" | "frinti" => Op::FloatRoundNearest,
+        _ if mnemonic.starts_with("fcvtm") => Op::FloatRoundDown,
+        _ if mnemonic.starts_with("fcvtp") => Op::FloatRoundUp,
+        _ if mnemonic.starts_with("fcvtz") => Op::FloatRoundTowardZero,
+        _ if mnemonic.starts_with("fcvtn") || mnemonic.starts_with("fcvta") => {
+            Op::FloatRoundNearest
+        }
+        _ if mnemonic.starts_with("fcvt") || mnemonic.ends_with("cvtf") => Op::FloatConvert,
+        _ => Op::Float,
     }
 }
 
@@ -1298,5 +1325,22 @@ mod tests {
         // `ldxp x1, x2, [x0]`
         assert_eq!(lift_one(0xc87f_0801).op, Op::Atomic);
         assert_eq!(lift_one(words::LDR_X1_X2_8).op, Op::Load);
+    }
+
+    /// `floor` and `ceil` inline as `frintm` and `frintp`, and Lua's
+    /// `math_floor` and `math_ceil` are twins but for them.
+    #[test]
+    fn a_float_operation_names_what_it_computes() {
+        let cases = [
+            (0x1e61_0800_u32, Op::FloatMultiply),    // fmul d0, d0, d1
+            (0x1e61_1800, Op::FloatDivide),          // fdiv d0, d0, d1
+            (0x1e65_4000, Op::FloatRoundDown),       // frintm d0, d0
+            (0x1e64_c000, Op::FloatRoundUp),         // frintp d0, d0
+            (0x1e78_0000, Op::FloatRoundTowardZero), // fcvtzs w0, d0
+            (0x1e62_0000, Op::FloatConvert),         // scvtf d0, w0
+        ];
+        for (word, op) in cases {
+            assert_eq!(lift_one(word).op, op, "{word:#010x}");
+        }
     }
 }

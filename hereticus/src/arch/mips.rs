@@ -1909,9 +1909,32 @@ fn op_of(inst: &Instruction, mnemonic: &str, access: Option<il::AccessKind>) -> 
             Op::System
         }
         _ if mnemonic.ends_with(".s") || mnemonic.ends_with(".d") || mnemonic.ends_with(".w") => {
-            Op::Float
+            float_op(mnemonic)
         }
         _ => Op::Other,
+    }
+}
+
+/// What a MIPS floating point instruction computes, from its stem: `div`
+/// of `div.d`. A conversion to an integer names its rounding: `floor.w.d`
+/// rounds down.
+fn float_op(mnemonic: &str) -> il::Op {
+    use il::Op;
+    match mnemonic.split('.').next().unwrap_or_default() {
+        "add" => Op::FloatAdd,
+        "sub" => Op::FloatSubtract,
+        "mul" => Op::FloatMultiply,
+        "madd" | "msub" | "nmadd" | "nmsub" => Op::FloatMultiplyAdd,
+        "div" => Op::FloatDivide,
+        "neg" | "abs" => Op::FloatSign,
+        "sqrt" => Op::FloatSquareRoot,
+        "mov" => Op::Move,
+        "floor" => Op::FloatRoundDown,
+        "ceil" => Op::FloatRoundUp,
+        "round" => Op::FloatRoundNearest,
+        "trunc" => Op::FloatRoundTowardZero,
+        "cvt" => Op::FloatConvert,
+        _ => Op::Float,
     }
 }
 
@@ -3619,5 +3642,16 @@ mod tests {
         let stored = 0x8000_0000u32.to_be_bytes();
         assert_eq!(Mips32::BIG.read_pointer(&stored), 0x8000_0000);
         assert_ne!(Mips32::LITTLE.read_pointer(&stored), 0x8000_0000);
+    }
+
+    #[test]
+    fn a_float_operation_names_what_it_computes() {
+        assert_eq!(float_op("div.d"), il::Op::FloatDivide);
+        assert_eq!(float_op("mul.s"), il::Op::FloatMultiply);
+        assert_eq!(float_op("floor.w.d"), il::Op::FloatRoundDown);
+        assert_eq!(float_op("ceil.w.s"), il::Op::FloatRoundUp);
+        assert_eq!(float_op("trunc.w.d"), il::Op::FloatRoundTowardZero);
+        assert_eq!(float_op("mov.d"), il::Op::Move);
+        assert_eq!(float_op("c.lt.d"), il::Op::Float);
     }
 }
