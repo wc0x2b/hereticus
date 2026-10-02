@@ -44,7 +44,15 @@ such as `math_max` and `math_min`. Still read as plain work:
 - A compare whose result a `cset`, a `csel` or a conditional instruction
   of A32 uses, in place of a branch.
 - A chain of `ccmp`, which tests two conditions with one branch.
-- The MIPS32 release 2 words that `mips32` reads, which lift to nothing.
+
+## Tell twins apart by the library function they call
+
+Most wrong pairs over the cross builds are twins that differ only in the
+function they call. Lua's `math_ceil` and `math_floor`, and `math_deg`
+and `math_rad`, pair the wrong way round at a score of 1.00 between clang
+and GCC, as each calls a different `libm` function through the PLT. A
+stripped library keeps the names of its PLT entries, so the matching can
+compare them before it pairs two functions that read the same.
 
 ## Make function recovery a library
 

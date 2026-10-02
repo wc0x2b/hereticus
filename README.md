@@ -76,10 +76,10 @@ $ hereticus --show-retouched fw-v1.elf fw-v2.elf
 ╭─────────────────┬────────────────┬───────┬─────────┬────────────────────────────────────────────────────┬─────────────────╮
 │ FUNCTION        │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                            │ MATCHED BY      │
 ├─────────────────┼────────────────┼───────┼─────────┼────────────────────────────────────────────────────┼─────────────────┤
+│ dispatch        │ changed        │  0.62 │ 21/11/5 │ 4 branch, 1 call, 6 jump, 6 mem, 1 const           │ same name       │
+│ check_header    │ changed        │  0.31 │ 8/1/0   │ 1 branch, 1 call, 1 mem                            │ same name       │
+│ handle          │ changed        │  0.76 │ 8/4/4   │ 1 branch, 1 call, 1 jump, 1 mem, 1 const, 2 unread │ same name       │
 │ validate_length │ changed values │  1.00 │ -       │ -                                                  │ identical shape │
-│ handle          │ changed        │  0.70 │ 8/4/6   │ 1 branch, 1 call, 2 jump, 1 mem, 1 const, 3 unread │ same name       │
-│ dispatch        │ changed        │  0.60 │ 21/11/5 │ 4 branch, 1 call, 7 jump, 5 mem, 1 const           │ same name       │
-│ check_header    │ changed        │  0.31 │ 8/1/0   │ 1 call, 1 jump, 1 mem                              │ same name       │
 ╰─────────────────┴────────────────┴───────┴─────────┴────────────────────────────────────────────────────┴─────────────────╯
 ```
 
