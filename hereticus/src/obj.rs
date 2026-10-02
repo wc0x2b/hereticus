@@ -176,7 +176,8 @@ impl Binary {
         };
 
         if let object::File::MachO64(macho) = &file
-            && let Some((functions, found_by)) = crate::macho::functions(macho)
+            && let Some((functions, found_by)) =
+                crate::macho::fileset_functions(macho).or_else(|| crate::macho::functions(macho))
         {
             return Ok(Self {
                 isa,

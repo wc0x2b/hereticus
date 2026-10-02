@@ -115,7 +115,8 @@ and 2 when the input could not be read.
   one set, so its minority reads as nonsense.
 * **ELF, raw images, and AArch64 Mach-O.** A Mach-O file is read as macOS
   and iOS ship it, arm64 or arm64e, stripped or not, and a universal binary
-  as its AArch64 slice. The dyld shared cache and 32-bit Mach-O are not read.
+  as its AArch64 slice. A kernelcache of iOS 15 and later is read kext by
+  kext. The dyld shared cache and 32-bit Mach-O are not read.
 * **NEON data processing is not decoded.** NEON loads and stores are read.
   The other NEON words stay opaque, named `(neon)`: decoding continues, and
   an edit to one shows, but not what it changed.

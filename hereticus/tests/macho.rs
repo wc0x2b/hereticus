@@ -181,3 +181,31 @@ fn a_universal_binary_with_no_aarch64_slice_is_refused() {
     let data = read_bytes("universal-x86_64-firmware.dylib");
     assert!(matches!(Binary::parse(&data), Err(ObjError::Parse(_))));
 }
+
+/// A kernelcache of iOS 15 and later is a fileset, read kext by kext.
+///
+/// Apple's kernelcaches are 66 MB each, too large to keep with the tests,
+/// so this runs where `HERETICUS_KERNELCACHE` names the directories
+/// `ipsw download ipsw --device iPhone15,2 --kernel` makes for iOS 27.0,
+/// build 24A437, and iOS 27.0.1, build 24A446, separated by a colon.
+#[test]
+fn a_kernelcache_reads_every_kext_and_its_update_changes_only_values() {
+    let Some(dirs) = std::env::var_os("HERETICUS_KERNELCACHE") else {
+        eprintln!("skipped: set HERETICUS_KERNELCACHE to the two kernelcache directories");
+        return;
+    };
+    let dirs = dirs.to_string_lossy().into_owned();
+    let read = |dir: &str| {
+        let data = std::fs::read(format!("{dir}/kernelcache.release.iPhone15,2"))
+            .expect("the kernelcache");
+        hereticus::obj::Binary::parse(&data).expect("the kernelcache parses")
+    };
+    let (old, new) = dirs.split_once(':').expect("two directories");
+    let (before, after) = (read(old), read(new));
+    // Read whole, the fileset gave 648 functions.
+    assert_eq!((before.functions.len(), after.functions.len()), (175_109, 175_109));
+    let diff = hereticus::matching::diff(&before, &after);
+    assert!(diff.removed.is_empty() && diff.added.is_empty());
+    // The update changed constants and the build paths in texts, not code.
+    assert!(diff.changed().all(|pair| pair.changed == hereticus::matching::Changed::InDetail));
+}
