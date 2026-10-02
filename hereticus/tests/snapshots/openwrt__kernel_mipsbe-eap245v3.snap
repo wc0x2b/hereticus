@@ -4,11 +4,11 @@ assertion_line: 406
 expression: kernel_digest(&comparison)
 ---
 functions 20531 -> 20635
-matched 20171
-{No: 17976, Reordered: 13, Data: 5, InDetail: 1609, Yes: 568}
-gone 360
-new 464
-fingerprint 0x2be7b6c4244d81c4
+matched 20172
+{No: 17977, Reordered: 13, Data: 5, InDetail: 1609, Yes: 568}
+gone 359
+new 463
+fingerprint 0x39e4296490ce74bf
 
 strongest changes:
 0x80066b2c -> 0x80066b3c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
@@ -17,7 +17,6 @@ strongest changes:
 0x80288d84 -> 0x80277af0 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x803652b4 -> 0x8035ec5c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 2, texts: 0 }
 0x8036ba04 -> 0x80370e2c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
-0x803bb5ac -> 0x803c0ea4 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 4, texts: 0 }
 0x80431720 -> 0x804376fc score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x8047edf8 -> 0x804850b4 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x80078f10 -> 0x80078f9c score=0.999 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 3, callees: 0, texts: 0 }
@@ -51,3 +50,4 @@ strongest changes:
 0x8044566c -> 0x8044b668 score=0.994 edits=Edits { added: 23, removed: 19, edited: 1 } kinds=EditKinds { branches: 9, calls: 0, jumps: 2, memory: 9, other: 23, opaque: 0, constants: 0, callees: 0, texts: 0 }
 0x80234034 -> 0x80222c20 score=0.994 edits=Edits { added: 93, removed: 91, edited: 9 } kinds=EditKinds { branches: 15, calls: 27, jumps: 13, memory: 41, other: 97, opaque: 0, constants: 4, callees: 0, texts: 0 }
 0x803311a0 -> 0x80335b18 score=0.994 edits=Edits { added: 6, removed: 9, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 8, other: 8, opaque: 0, constants: 1, callees: 0, texts: 0 }
+0x805cfdd0 -> 0x805d7ef0 score=0.994 edits=Edits { added: 1, removed: 0, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 1, other: 2, opaque: 0, constants: 0, callees: 0, texts: 0 }
