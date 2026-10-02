@@ -56,6 +56,33 @@ fn diffs_one_arm_stub_function() {
     );
 }
 
+/// `--unpack` takes the stub out of the image as downloaded, so the report
+/// is the one the extracted stub gives.
+#[test]
+fn unpacks_the_stub_of_a_downloaded_image() {
+    let image = |release: &str| {
+        format!(
+            "fixtures/build/openwrt/download/openwrt-{release}-ipq40xx-generic-netgear_ex6100v2-squashfs-sysupgrade.bin"
+        )
+    };
+    if !Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(image("22.03.2")).exists() {
+        eprintln!("skipped: run `just firmware` first");
+        return;
+    }
+    let unpacked = hereticus()
+        .args(["--progress", "never", "--raw", "--base", "0x80208000", "--arch", "arm32"])
+        .args(["--unpack", "stub", &image("22.03.2"), &image("22.03.5")])
+        .output()
+        .expect("the tool runs");
+    let extracted =
+        compare_stubs("arm-ex6100v2", "arm32", "0x80208000").output().expect("the tool runs");
+    assert!(unpacked.status.success(), "{}", String::from_utf8_lossy(&unpacked.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&unpacked.stdout),
+        String::from_utf8_lossy(&extracted.stdout)
+    );
+}
+
 /// The big-endian MIPS lzma-loader of the TP-Link EAP245 v3.
 #[test]
 fn compares_the_big_endian_mips_stubs_of_two_openwrt_releases() {

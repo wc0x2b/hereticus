@@ -26,6 +26,7 @@ $ hereticus --diff array_max before.elf after.elf   # the diff of one function
 $ hereticus --diff-all before.elf after.elf         # the diff of every changed function
 $ hereticus --ignore-names before.elf after.elf     # match from the code alone
 $ hereticus --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF header
+$ hereticus --raw --arch mips32 --unpack stub a.bin b.bin  # the decompressor in two firmware images
 ```
 
 For real fixes found with `hereticus`, such as the iOS kernel fix for
@@ -144,6 +145,7 @@ Options:
       --near-miss <NEAR_MISS>  Lowest score at which an unmatched function names its closest candidate, from 0.0 to 1.0 [default: 0.25]
       --raw                    Read the inputs as raw code with no container format
       --base <BASE>            Address a raw image loads at, for example `0x08000000`
+      --unpack <UNPACK>        Take one part out of each firmware image before reading it raw [possible values: stub, kernel]
       --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, aarch64, mips32, mips32-be]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact]
       --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified]
