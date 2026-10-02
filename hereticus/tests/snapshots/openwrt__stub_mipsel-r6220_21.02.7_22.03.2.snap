@@ -1,9 +1,10 @@
 ---
 source: hereticus/tests/openwrt.rs
+assertion_line: 629
 expression: report
 ---
 0x80001000 -> 0x80001000 Yes score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 } confidence=IdenticalCode
-0x80001044 -> 0x8000115c Yes score=0.676 edits=Edits { added: 32, removed: 46, edited: 2 } kinds=EditKinds { branches: 9, calls: 2, jumps: 8, memory: 0, other: 61, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=Similar
+0x80001044 -> 0x8000115c Yes score=0.727 edits=Edits { added: 32, removed: 46, edited: 2 } kinds=EditKinds { branches: 9, calls: 2, jumps: 8, memory: 0, other: 61, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=Similar
 0x80001240 -> 0x80001128 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 0x800012f4 -> 0x80001318 Yes score=0.927 edits=Edits { added: 64, removed: 71, edited: 13 } kinds=EditKinds { branches: 19, calls: 6, jumps: 6, memory: 0, other: 117, opaque: 0, constants: 32, callees: 0, texts: 0 } confidence=Similar
 0x800018dc -> 0x800018ec InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1, callees: 0, texts: 0 } confidence=IdenticalShape

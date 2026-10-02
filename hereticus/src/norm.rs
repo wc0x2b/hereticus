@@ -314,9 +314,11 @@ pub fn normalize_body_in(
                         *shape = OperandShape::Target;
                     }
                 }
-                out.push(normalized);
+                out.push(named_by_op(normalized, lifted.get(index)));
             }
-            Some(ConstantKind::Value) | None => out.push(normalize(arch, &insns[index])),
+            Some(ConstantKind::Value) | None => {
+                out.push(named_by_op(normalize(arch, &insns[index]), lifted.get(index)));
+            }
         }
         index += 1;
     }
@@ -409,6 +411,24 @@ fn shape_of(arch: &dyn Arch, operand: &str) -> Option<OperandShape> {
     } else {
         OperandShape::Other
     })
+}
+
+/// `normalized`, named by the operation its lifted form computes, where the
+/// lifter names one. `add`, `adds` and `addu` then compare equal, and so do
+/// `ldr` and `lw` of one width.
+fn named_by_op(mut normalized: NormInsn, lifted: Option<&Option<Lifted>>) -> NormInsn {
+    let Some(Some(lifted)) = lifted else { return normalized };
+    if lifted.op == il::Op::Other || normalized.flow == FlowShape::Opaque {
+        return normalized;
+    }
+    let width = lifted.memory.and_then(|access| access.width);
+    normalized.operation = match (lifted.op, width) {
+        (il::Op::Load | il::Op::Store | il::Op::Atomic, Some(width)) => {
+            format_compact!("{}.{}", lifted.op.name(), width.bits())
+        }
+        (op, _) => op.name().into(),
+    };
+    normalized
 }
 
 /// Lift each instruction of `insns`, which `code` holds from its first

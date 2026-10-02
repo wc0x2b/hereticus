@@ -102,6 +102,17 @@ pub enum Width {
 }
 
 impl Width {
+    /// How many bits wide this is.
+    pub fn bits(self) -> u32 {
+        match self {
+            Self::Bits8 => 8,
+            Self::Bits16 => 16,
+            Self::Bits32 => 32,
+            Self::Bits64 => 64,
+            Self::Bits128 => 128,
+        }
+    }
+
     /// The mask of the bits a value of this width holds.
     pub fn mask(self) -> u64 {
         match self {
