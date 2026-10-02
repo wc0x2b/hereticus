@@ -79,16 +79,12 @@ text after its own NUL is likely real.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 45863 of 46006 exact, 44 starts missed and 55 invented,
+stripped releases: 45891 of 46006 exact, 30 starts missed and 55 invented,
 over ARM, Thumb-2, AArch64 and MIPS, with the PLT left out. By cause:
 
 - Missed where GCC shrink-wraps: the function tests and returns before it
   pushes, so no prologue opens it, as `little2_scanPi` and `os_execute` for
   ARM.
-- Missed after a call that does not return through the GOT, where the next
-  function is a leaf with no frame, as `errorProcessor` after
-  `__assert_fail` in expat for MIPS. The scan does not know the names of
-  what it calls.
 - Missed after a pool that no load names, as `codebinexpval` for ARM.
 - Invented inside a function after an internal return on ARM, as in the
   two `scanLt` functions of expat, and inside Lua's `math_ceil` and

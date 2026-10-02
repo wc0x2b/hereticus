@@ -366,6 +366,7 @@ impl Binary {
                 })
                 .collect(),
             pointers: Vec::new(),
+            slot_names: dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default(),
         };
         let functions: Vec<Function> = crate::scan::recover_in_memory(
             &code,

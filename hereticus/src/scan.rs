@@ -172,6 +172,7 @@ pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
     let linked = Linked {
         exported: exported_functions(&file),
         pointers: relocated_pointers(&file, arch, &memory),
+        slot_names: crate::callee::slot_names(&file),
     };
     let mut found =
         recover_in_memory(&code_sections, &index, &linked, Regions::CodeOnly, arch, &memory);
@@ -192,6 +193,9 @@ pub struct Linked {
     pub exported: Vec<core::ops::Range<u64>>,
     /// The addresses the data holds, which the loader moves with the code.
     pub pointers: Vec<u64>,
+    /// The symbol each slot of the global offset table holds, by the
+    /// address of the slot.
+    pub slot_names: BTreeMap<u64, String>,
 }
 
 /// The addresses the words that relative relocations name hold.
@@ -378,7 +382,7 @@ pub fn recover_in_memory(
                     starts.insert((address, Source::CallTarget));
                 }
             }
-            for address in starts_after_returns_in(arch, code, *base, memory) {
+            for address in starts_after_returns_in(arch, code, *base, memory, linked) {
                 if blind.iter().any(|range| range.contains(&address)) {
                     starts.insert((address, Source::AfterReturn));
                 }
@@ -398,7 +402,7 @@ pub fn recover_in_memory(
         for address in function_entries(arch, code, *base) {
             starts.insert((address, Source::Entry));
         }
-        for address in starts_after_returns_in(arch, code, *base, memory) {
+        for address in starts_after_returns_in(arch, code, *base, memory, linked) {
             starts.insert((address, Source::AfterReturn));
         }
         // A region begins with a function unless something says otherwise.
@@ -497,6 +501,57 @@ fn within_exports(
         .filter(|&(address, _)| {
             !exported.iter().any(|range| range.start < address && range.contains(&address))
         })
+        .collect()
+}
+
+/// Functions of the C library and of the C++ runtime that never return.
+const NEVER_RETURN: [&str; 16] = [
+    "abort",
+    "exit",
+    "_exit",
+    "_Exit",
+    "quick_exit",
+    "__assert_fail",
+    "__assert",
+    "__stack_chk_fail",
+    "__fortify_fail",
+    "longjmp",
+    "siglongjmp",
+    "pthread_exit",
+    "err",
+    "errx",
+    "__cxa_throw",
+    "_Unwind_Resume",
+];
+
+/// The addresses of the calls among `insns` whose callee never returns, as
+/// the slot it goes through, or the slot of the PLT stub it reaches, names
+/// it.
+fn calls_that_never_return(
+    arch: &dyn Arch,
+    insns: &[Insn],
+    memory: &Memory<'_>,
+    slot_names: &BTreeMap<u64, String>,
+) -> BTreeSet<u64> {
+    if slot_names.is_empty() {
+        return BTreeSet::new();
+    }
+    let never_returns =
+        |slot: u64| slot_names.get(&slot).is_some_and(|name| NEVER_RETURN.contains(&name.as_str()));
+    /// More bytes than any PLT stub holds.
+    const STUB_BYTES: usize = 16;
+    arch.call_targets(insns)
+        .into_iter()
+        .filter(|&(index, _)| matches!(insns[index].kind, InsnKind::Call { .. }))
+        .filter(|(_, target)| match *target {
+            Some(CallTarget::Slot(slot)) => never_returns(slot),
+            Some(CallTarget::Address(address)) => {
+                let stub = (1..=STUB_BYTES).rev().find_map(|length| memory.bytes(address, length));
+                stub.and_then(|code| arch.stub_slot(code, address)).is_some_and(never_returns)
+            }
+            _ => false,
+        })
+        .map(|(index, _)| insns[index].address)
         .collect()
 }
 
@@ -1113,7 +1168,7 @@ fn pops_a_frame_it_did_not_make(arch: &dyn Arch, insns: &[Insn], target: u64) ->
 #[cfg(test)]
 fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     let regions = [(base, code)];
-    starts_after_returns_in(arch, code, base, &Memory::new(&regions))
+    starts_after_returns_in(arch, code, base, &Memory::new(&regions), &Linked::default())
 }
 
 /// [`starts_after_returns`], where `memory` holds what else the binary loads.
@@ -1122,8 +1177,10 @@ fn starts_after_returns_in(
     code: &[u8],
     base: u64,
     memory: &Memory<'_>,
+    linked: &Linked,
 ) -> Vec<u64> {
     let (insns, _) = decode_all(arch, code, base);
+    let never_returns = calls_that_never_return(arch, &insns, memory, &linked.slot_names);
     let end = base + code.len() as u64;
 
     // Pool words are data. Read as code they are a random return or branch,
@@ -1303,8 +1360,14 @@ fn starts_after_returns_in(
             // call from another function, as `b luaV_div` in Lua for ARM.
             // Measured on the OpenWrt MIPS kernels, allowing such a branch
             // after any call left 19 to 34 more changed bytes unreported.
+            // A callee the linker names as one that never returns, as
+            // `__assert_fail`, ends its caller even where a leaf with no
+            // frame comes next, as `errorProcessor` of expat for MIPS does.
+            let opens = |following: &Insn| {
+                arch.is_prologue(following) || never_returns.contains(&insn.address)
+            };
             if let Some(following) = insns.get(next)
-                && arch.is_prologue(following)
+                && opens(following)
                 && (past_pool || !sources_of.contains_key(&following.address))
                 && !is_inside_a_function(next)
             {
@@ -1653,6 +1716,37 @@ fn prologue_past_pool(
 mod tests {
     use super::*;
     use crate::arch::arm32::Arm32;
+
+    /// A PIC call of MIPS32 through the slot at 0x10010, after the
+    /// `_gp_disp` preamble.
+    fn mips_call_through_slot() -> Vec<u8> {
+        [
+            0x3c1c_0002_u32, // lui gp, 0x2
+            0x279c_8000,     // addiu gp, gp, -0x8000
+            0x0399_e021,     // addu gp, gp, t9: gp is 0x18000
+            0x8f99_8010,     // lw t9, -0x7ff0(gp)
+            0x0320_f809,     // jalr t9
+            0x0000_0000,     // nop
+        ]
+        .iter()
+        .flat_map(|word| word.to_be_bytes())
+        .collect()
+    }
+
+    #[test]
+    fn a_call_to_a_callee_that_never_returns_is_found_by_its_slot() {
+        let arch = &crate::arch::mips::Mips32::BIG;
+        let code = mips_call_through_slot();
+        let (insns, _) = decode_all(arch, &code, 0);
+        let regions = [(0, code.as_slice())];
+        let memory = Memory::new(&regions);
+        let named = |name: &str| BTreeMap::from([(0x10010, name.to_string())]);
+
+        let exit = calls_that_never_return(arch, &insns, &memory, &named("exit"));
+        assert_eq!(exit, BTreeSet::from([0x10]));
+        assert!(calls_that_never_return(arch, &insns, &memory, &named("puts")).is_empty());
+        assert!(calls_that_never_return(arch, &insns, &memory, &BTreeMap::new()).is_empty());
+    }
 
     #[test]
     fn call_frame_ranges_of_mips16_lose_bit_0() {
