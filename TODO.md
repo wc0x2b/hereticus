@@ -7,13 +7,6 @@ Four Apple CVE fixes, all AArch64, put each fix in the top 19 rows with
 CVEs, compare the two releases, and add a report to `real-life-reports/`
 for each. This tells if the default sort holds on the other sets.
 
-## Write the reports of the other Apple CVE fixes
-
-CVE-2026-28825 (smbfs), CVE-2025-24257 (IOGPUFamily) and CVE-2021-30883
-(AppleCLCD, iPhone 11) are confirmed, but have no report in
-`real-life-reports/`. The A14 and later iPhones run the display driver on
-the DCP, so CVE-2021-30883 needs a device without one.
-
 ## Lift more of what a guard can be
 
 `il` reads a compare and the branch on it as one guard on AArch64, A32,
