@@ -30,4 +30,6 @@ yaxpeax-arm = "0.4"
 # coverage-guided fuzzer when one is available.
 bolero = { version = "0.13", features = ["arbitrary"] }
 insta = "1.48"
+# Writes the small ELF objects the unit tests read.
+object = { version = "0.40", features = ["write"] }
 rstest = "0.27"

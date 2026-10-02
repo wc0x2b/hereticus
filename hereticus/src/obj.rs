@@ -66,6 +66,10 @@ pub enum Isa {
     Mips32,
     /// MIPS32, big endian, as most shipped firmware is.
     Mips32Be,
+    /// MIPS16e, little endian, which much MIPS user space is built as.
+    Mips16,
+    /// MIPS16e, big endian.
+    Mips16Be,
 }
 
 impl Isa {
@@ -81,6 +85,8 @@ impl Isa {
             Self::Aarch64 => &Aarch64,
             Self::Mips32 => &Mips32::LITTLE,
             Self::Mips32Be => &Mips32::BIG,
+            Self::Mips16 => &crate::arch::mips16::Mips16::LITTLE,
+            Self::Mips16Be => &crate::arch::mips16::Mips16::BIG,
         }
     }
 
@@ -90,7 +96,11 @@ impl Isa {
         match self {
             Self::Arm32 => Some(Self::Thumb2),
             Self::Thumb2 => Some(Self::Arm32),
-            Self::Aarch64 | Self::Mips32 | Self::Mips32Be => None,
+            Self::Mips32 => Some(Self::Mips16),
+            Self::Mips16 => Some(Self::Mips32),
+            Self::Mips32Be => Some(Self::Mips16Be),
+            Self::Mips16Be => Some(Self::Mips32Be),
+            Self::Aarch64 => None,
         }
     }
 
@@ -171,7 +181,9 @@ impl Binary {
         let data = crate::macho::aarch64_slice(data);
         let file = object::File::parse(data)?;
         let isa = match Isa::from_object(file.architecture(), file.is_little_endian())? {
-            Isa::Arm32 if holds_thumb(&file) => Isa::Thumb2,
+            isa @ (Isa::Arm32 | Isa::Mips32 | Isa::Mips32Be) => {
+                set_of_symbol(isa, most_functions_encoded(&file))
+            }
             isa => isa,
         };
 
@@ -196,7 +208,7 @@ impl Binary {
                 continue;
             }
 
-            let own = set_of_symbol(isa, symbol.address());
+            let own = set_of_symbol(isa, encoding_of(&symbol));
             let address = own.arch().function_address(symbol.address());
             if own != isa {
                 other_set.insert(address);
@@ -295,8 +307,8 @@ impl Binary {
         let mut index = crate::scan::find_exception_index(data, base, isa.arch());
         if index.is_empty() {
             let order = match isa {
-                Isa::Mips32Be => crate::unwind::ByteOrder::Big,
-                Isa::Arm32 | Isa::Thumb2 | Isa::Aarch64 | Isa::Mips32 => {
+                Isa::Mips32Be | Isa::Mips16Be => crate::unwind::ByteOrder::Big,
+                Isa::Arm32 | Isa::Thumb2 | Isa::Aarch64 | Isa::Mips32 | Isa::Mips16 => {
                     crate::unwind::ByteOrder::Little
                 }
             };
@@ -361,37 +373,73 @@ fn symbol_code(
     data.get(start..end).map(<[u8]>::to_vec)
 }
 
-/// The instruction set of the function a symbol at `address` names, in a
-/// binary read as `isa`: on ARM, bit 0 marks a Thumb-2 function.
-fn set_of_symbol(isa: Isa, address: u64) -> Isa {
-    match isa {
-        Isa::Arm32 | Isa::Thumb2 if address & 1 == 1 => Isa::Thumb2,
-        Isa::Arm32 | Isa::Thumb2 => Isa::Arm32,
-        Isa::Aarch64 | Isa::Mips32 | Isa::Mips32Be => isa,
+/// How a function's instructions are encoded, where an architecture has a
+/// compact set beside its full one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Encoding {
+    /// A32, or MIPS32.
+    Full,
+    /// Thumb-2, or MIPS16e.
+    Compact,
+}
+
+/// The `st_other` value of an ELF symbol that names a MIPS16e function.
+const STO_MIPS16: u8 = 0xf0;
+
+/// The encoding of the function a symbol names.
+///
+/// A linked file sets bit 0 of a Thumb-2 or MIPS16e function's address. An
+/// unlinked MIPS object does not: it marks the symbol in `st_other` instead.
+fn encoding_of(symbol: &object::Symbol<'_, '_>) -> Encoding {
+    let marked = match symbol.flags() {
+        object::SymbolFlags::Elf { st_other, .. } => st_other.0 & STO_MIPS16 == STO_MIPS16,
+        _ => false,
+    };
+    match symbol.address() & 1 == 1 || marked {
+        true => Encoding::Compact,
+        false => Encoding::Full,
     }
 }
 
-/// Report whether most functions of an ARM file are Thumb-2, as bit 0 of
-/// their symbols says.
+/// The instruction set of a function in `encoding`, in a binary read as
+/// `isa`.
+fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
+    match (isa, encoding) {
+        (Isa::Arm32 | Isa::Thumb2, Encoding::Compact) => Isa::Thumb2,
+        (Isa::Arm32 | Isa::Thumb2, Encoding::Full) => Isa::Arm32,
+        (Isa::Mips32 | Isa::Mips16, Encoding::Compact) => Isa::Mips16,
+        (Isa::Mips32 | Isa::Mips16, Encoding::Full) => Isa::Mips32,
+        (Isa::Mips32Be | Isa::Mips16Be, Encoding::Compact) => Isa::Mips16Be,
+        (Isa::Mips32Be | Isa::Mips16Be, Encoding::Full) => Isa::Mips32Be,
+        (Isa::Aarch64, _) => isa,
+    }
+}
+
+/// The encoding of most functions of a file, as their symbols say.
 ///
 /// The symbol table says it where there is one, and the dynamic symbol
 /// table where it was stripped. Where neither is left, as in stripped
 /// firmware, bit 0 of the entry point says which set the code runs in.
-fn holds_thumb(file: &object::File<'_>) -> bool {
+fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
     let count = |symbols: &mut dyn Iterator<Item = object::Symbol<'_, '_>>| {
         symbols
             .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
-            .fold((0usize, 0usize), |(thumb, all), symbol| {
-                (thumb + (symbol.address() & 1) as usize, all + 1)
+            .fold((0usize, 0usize), |(compact, all), symbol| {
+                let found = usize::from(encoding_of(&symbol) == Encoding::Compact);
+                (compact + found, all + 1)
             })
     };
-    let (thumb, all) = match count(&mut file.symbols()) {
+    let (compact, all) = match count(&mut file.symbols()) {
         (_, 0) => count(&mut file.dynamic_symbols()),
         counted => counted,
     };
-    match all {
+    let most = match all {
         0 => file.entry() & 1 == 1,
-        _ => thumb * 2 > all,
+        _ => compact * 2 > all,
+    };
+    match most {
+        true => Encoding::Compact,
+        false => Encoding::Full,
     }
 }
 
@@ -438,5 +486,103 @@ mod tests {
         assert_eq!(stable_name("odd.llvm."), "odd.llvm.", "no hash");
         assert_eq!(stable_name("odd.llvm.12a"), "odd.llvm.12a", "not a hash");
         assert_eq!(stable_name(""), "");
+    }
+
+    const EVERY_ISA: [Isa; 7] = [
+        Isa::Arm32,
+        Isa::Thumb2,
+        Isa::Aarch64,
+        Isa::Mips32,
+        Isa::Mips32Be,
+        Isa::Mips16,
+        Isa::Mips16Be,
+    ];
+
+    #[test]
+    fn the_other_set_of_the_other_set_is_the_set() {
+        for isa in EVERY_ISA {
+            if let Some(other) = isa.other_set() {
+                assert_ne!(other, isa);
+                assert_eq!(other.other_set(), Some(isa), "{isa:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_symbol_keeps_to_the_sets_of_its_binary() {
+        for isa in EVERY_ISA {
+            for encoding in [Encoding::Full, Encoding::Compact] {
+                let own = set_of_symbol(isa, encoding);
+                assert!(own == isa || isa.other_set() == Some(own), "{isa:?} {encoding:?}");
+                assert_eq!(set_of_symbol(own, encoding), own, "{isa:?} {encoding:?}");
+            }
+        }
+        assert_eq!(set_of_symbol(Isa::Mips32, Encoding::Compact), Isa::Mips16);
+        assert_eq!(set_of_symbol(Isa::Mips16Be, Encoding::Full), Isa::Mips32Be);
+        assert_eq!(set_of_symbol(Isa::Arm32, Encoding::Compact), Isa::Thumb2);
+        assert_eq!(set_of_symbol(Isa::Aarch64, Encoding::Compact), Isa::Aarch64);
+    }
+
+    /// How a MIPS object marks a MIPS16e function.
+    #[derive(Clone, Copy, Debug)]
+    enum Marking {
+        /// As an unlinked object does.
+        StOther,
+        /// As a linked file does.
+        Bit0,
+    }
+
+    /// A MIPS object with one function in each set: `full` at 0, and
+    /// `compact` at 8, marked as `marking` says.
+    fn mips_object(marking: Marking) -> Vec<u8> {
+        use object::write::{Object, Symbol, SymbolSection};
+        let mut object = Object::new(
+            object::BinaryFormat::Elf,
+            object::Architecture::Mips,
+            object::Endianness::Little,
+        );
+        let text = object.section_id(object::write::StandardSection::Text);
+        // `jr ra` and its delay slot, then MIPS16e `jrc ra`, `nop`, padded.
+        let code = [
+            0x08, 0x00, 0xe0, 0x03, 0, 0, 0, 0, 0xa0, 0xe8, 0x00, 0x65, 0x00, 0x65, 0x00, 0x65,
+        ];
+        object.append_section_data(text, &code, 4);
+        let mut add = |name: &str, value: u64, size: u64, st_other: u8| {
+            object.add_symbol(Symbol {
+                name: name.as_bytes().to_vec(),
+                value,
+                size,
+                kind: object::SymbolKind::Text,
+                scope: object::SymbolScope::Linkage,
+                weak: false,
+                section: SymbolSection::Section(text),
+                flags: object::SymbolFlags::Elf {
+                    st_info: object::elf::SymbolInfo::new(object::elf::STB_GLOBAL, object::elf::STT_FUNC),
+                    st_other: object::elf::SymbolOther(st_other),
+                },
+            });
+        };
+        add("full", 0, 8, 0);
+        match marking {
+            Marking::StOther => add("compact", 8, 4, STO_MIPS16),
+            Marking::Bit0 => add("compact", 9, 4, 0),
+        }
+        object.write().expect("a small object writes")
+    }
+
+    #[test]
+    fn a_mips16_function_is_found_by_st_other_or_by_bit_0() {
+        for marking in [Marking::StOther, Marking::Bit0] {
+            let binary = Binary::parse(&mips_object(marking)).expect("the object parses");
+            let set = |name: &str| {
+                let function =
+                    binary.functions.iter().find(|function| function.name == name).unwrap();
+                binary.isa_of(function)
+            };
+            assert_eq!(set("full"), Isa::Mips32, "{marking:?}");
+            assert_eq!(set("compact"), Isa::Mips16, "{marking:?}");
+            let compact = binary.functions.iter().find(|function| function.name == "compact");
+            assert_eq!(compact.map(|function| function.address), Some(8), "{marking:?}");
+        }
     }
 }

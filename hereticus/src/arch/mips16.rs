@@ -98,7 +98,7 @@ fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Decod
         let target26 = (first & 0x1f) << 21 | (first >> 5 & 0x1f) << 16 | second;
         let target = (address + 4) & !0x0fff_ffff | u64::from(target26) << 2;
         let exchange = first >> 10 & 1 == 1;
-        let (mnemonic, target) = if exchange { ("jalx", target) } else { ("jal", target | 1) };
+        let mnemonic = if exchange { "jalx" } else { "jal" };
         let operands = format!("{target:#x}");
         let kind = InsnKind::Call { target: Some(target) };
         return Some(Decoded {
@@ -469,6 +469,21 @@ impl Arch for Mips16 {
         Vec::new()
     }
 
+    fn is_function_entry(&self, body: &[Insn]) -> bool {
+        body.get(..GP_PREAMBLE_LENGTH).is_some_and(is_gp_preamble)
+    }
+
+    /// PIC computes the global pointer before `save`.
+    fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
+        let start = earlier.len().saturating_sub(GP_PREAMBLE_LENGTH);
+        if is_gp_preamble(&earlier[start..]) { GP_PREAMBLE_LENGTH } else { 0 }
+    }
+
+    /// A pointer to a MIPS16e function has bit 0 set, as on Thumb-2.
+    fn tagged_function(&self, word: u64) -> Option<u64> {
+        (word & 1 == 1).then_some(word & !1)
+    }
+
     /// `save` makes the frame of almost every function that calls, and a
     /// leaf drops the stack pointer as MIPS32 does.
     fn is_prologue(&self, insn: &Insn) -> bool {
@@ -479,8 +494,11 @@ impl Arch for Mips16 {
         matches!(insn.kind, InsnKind::Jump { target: None })
     }
 
+    /// A zero halfword pads as `nop` does, and reads as this `addiu`. In
+    /// the GCC builds of the tests, no instruction is a zero halfword: each
+    /// is fill or a word of a literal pool.
     fn is_padding(&self, insn: &Insn) -> bool {
-        insn.mnemonic == "nop"
+        insn.mnemonic == "nop" || (insn.mnemonic == "addiu" && insn.operands == "s0, sp, 0x0")
     }
 
     /// Only whole halfwords at the end are removed: the `nop` and zero fill.
@@ -521,12 +539,12 @@ impl Arch for Mips16 {
                 self.base.lift(&translated, &self.base.word_bytes(word))
             }
             Reading::Control { kind, .. } => {
-                let mut lifted = il::Lifted::default();
-                lifted.op = match kind {
+                let op = match kind {
                     InsnKind::Call { .. } => il::Op::Call,
                     InsnKind::Return => il::Op::Return,
                     _ => il::Op::Jump,
                 };
+                let mut lifted = il::Lifted { op, ..Default::default() };
                 if matches!(kind, InsnKind::Call { .. }) {
                     lifted.writes.insert(il::Reg::General(RA as u8));
                 }
@@ -563,6 +581,43 @@ impl Arch for Mips16 {
     }
 }
 
+/// The instructions of [`is_gp_preamble`].
+const GP_PREAMBLE_LENGTH: usize = 4;
+
+/// Report whether `body` is the sequence with which MIPS16e PIC computes
+/// the global pointer. It has no `t9` to add `_gp_disp` to, as MIPS32 does,
+/// so it adds the program counter:
+///
+/// ```text
+/// li    v0, %hi(_gp_disp)       ; read here as `ori v0, zero, ...`
+/// addiu v1, pc, %lo(_gp_disp)
+/// sll   v0, v0, 16
+/// addu  v0, v0, v1
+/// ```
+///
+/// Only the entry of a function runs it.
+fn is_gp_preamble(body: &[Insn]) -> bool {
+    fn operands(insn: &Insn) -> Vec<&str> {
+        insn.operands.split(',').map(str::trim).collect()
+    }
+    let [high, low, shift, add] = body else { return false };
+    let (high_ops, low_ops, shift_ops, add_ops) =
+        (operands(high), operands(low), operands(shift), operands(add));
+    let (&[loaded, "zero", _], &[from_pc, "pc", _], &[shifted, source, "16"], &[_, left, right]) =
+        (high_ops.as_slice(), low_ops.as_slice(), shift_ops.as_slice(), add_ops.as_slice())
+    else {
+        return false;
+    };
+    high.mnemonic == "ori"
+        && low.mnemonic == "addiu"
+        && shift.mnemonic == "sll"
+        && add.mnemonic == "addu"
+        && shifted == loaded
+        && source == loaded
+        && [left, right].contains(&loaded)
+        && [left, right].contains(&from_pc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,6 +627,33 @@ mod tests {
         let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
         let insn = Mips16::BIG.decode(&code, 0, address).expect("decodes");
         format!("{} {}", insn.mnemonic, insn.operands).trim_end().to_string()
+    }
+
+    /// The opening of `adler32_combine_` in zlib, by GCC 14 at `-Os`.
+    const GP_PREAMBLE: [u16; 7] = [0xf000, 0x6a02, 0xf0a8, 0x0b0c, 0xf400, 0x3240, 0xe269];
+
+    fn decode_all_big(values: &[u16]) -> Vec<Insn> {
+        let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
+        crate::arch::decode_all(&Mips16::BIG, &code, 0x1540).0
+    }
+
+    #[test]
+    fn the_gp_preamble_opens_a_function() {
+        let insns = decode_all_big(&GP_PREAMBLE);
+        assert_eq!(insns.len(), 4);
+        assert!(Mips16::BIG.is_function_entry(&insns));
+        assert_eq!(Mips16::BIG.preamble_before_prologue(&insns), 4);
+        assert_eq!(Mips16::BIG.preamble_before_prologue(&insns[1..]), 0);
+        assert!(!Mips16::BIG.is_function_entry(&insns[..3]));
+        assert!(!Mips16::BIG.is_function_entry(&insns[1..]));
+    }
+
+    #[test]
+    fn a_constant_built_elsewhere_is_no_gp_preamble() {
+        // `li v0, 2`, `sll v0, v0, 16`: no program counter joins it.
+        let insns = decode_all_big(&[0x6a02, 0x3240, 0x3240, 0xe269]);
+        assert!(!Mips16::BIG.is_function_entry(&insns));
+        assert_eq!(Mips16::BIG.preamble_before_prologue(&insns), 0);
     }
 
     /// Words from GCC 14 at `-mips16`, as `objdump` reads them.
@@ -644,7 +726,7 @@ mod tests {
         assert_eq!(Mips16::BIG.delay_slots(&jrc_ra), 0);
         // jal to 0x1000, which stays MIPS16e
         let jal = decode(&[0x1800, 0x0400]);
-        assert_eq!(jal.kind, InsnKind::Call { target: Some(0x1001) });
+        assert_eq!(jal.kind, InsnKind::Call { target: Some(0x1000) });
         assert_eq!(jal.bytes_len, 4);
     }
 
