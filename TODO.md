@@ -53,12 +53,14 @@ that. They depend only on `address.rs` and `obj::Function`. But the `Arch`
 trait mixes decoding with the rules of `hereticus`, about 30 methods, and
 reads operands back from text. Split a stable API out of it first.
 
-## Unpack firmware containers
+## Unpack more firmware containers
 
-`fixtures/firmware.py` unpacks FIT images, uImages, zImages, the TP-Link v1
-and v2 headers and the lzma-loader to reach a stub and a kernel. A user has
-to do the same by hand before the tool can read a vendor image. Read these
-containers directly, and add the formats still missing, such as AVM EVA.
+`--unpack` reads the containers the OpenWrt fixtures use: a zImage, alone
+or in a FIT image or a sysupgrade tar, a uImage of a kernel or of an
+lzma-loader, an ELF lzma-loader and a TP-Link v2 image, and the tests pin
+its output to the bytes `fixtures/firmware.py` extracts. Add the formats
+still missing, as AVM EVA, a gzip or zstd kernel, and the other branch
+filters of xz.
 
 ## Read the pointers of an arm64e Mach-O
 

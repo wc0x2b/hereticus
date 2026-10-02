@@ -17,6 +17,7 @@ bench = false
 [dependencies]
 compact_str = "0.9"
 gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
+lzma-rs = "0.3"
 object = "0.40"
 rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = ["std", "MIPS_II"] }
 rayon = "1.12.0"

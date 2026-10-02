@@ -109,6 +109,16 @@ struct Args {
     #[arg(long, value_parser = parse_address, requires = "raw")]
     base: Option<u64>,
 
+    /// Take one part out of each firmware image before reading it raw.
+    ///
+    /// Reads the containers OpenWrt builds: a zImage, alone or in a FIT
+    /// image or a sysupgrade tar, a uImage, an ELF lzma-loader and a TP-Link
+    /// v2 image. `stub` is the decompressor that runs first, and `kernel`
+    /// the kernel it holds, decompressed. Where the container says where the
+    /// part loads, that is the base unless `--base` gives one.
+    #[arg(long, value_enum, requires = "raw")]
+    unpack: Option<PartName>,
+
     /// Architecture of a raw image.
     #[arg(long, value_enum, default_value_t = ArchName::Arm32, requires = "raw")]
     arch: ArchName,
@@ -154,6 +164,33 @@ enum When {
 
 /// The architectures a raw image can be read as.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum PartName {
+    /// The decompressor that runs first.
+    Stub,
+    /// The kernel, decompressed.
+    Kernel,
+}
+
+/// Take the asked part out of a firmware image, with where it loads if the
+/// container says.
+fn unpack_part(
+    bytes: Vec<u8>,
+    part: Option<PartName>,
+    path: &Path,
+) -> Result<(Vec<u8>, Option<u64>), String> {
+    let Some(part) = part else { return Ok((bytes, None)) };
+    let unpacked = hereticus::unpack::unpack(&bytes)
+        .map_err(|error| format!("cannot unpack {}: {error}", path.display()))?;
+    let found = match part {
+        PartName::Stub => unpacked
+            .stub
+            .ok_or_else(|| format!("{} holds no stub, only a kernel", path.display()))?,
+        PartName::Kernel => unpacked.kernel,
+    };
+    Ok((found.bytes, found.load))
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum ArchName {
     /// ARM32, little endian, A32 instructions.
     Arm32,
@@ -305,12 +342,12 @@ fn main() -> ExitCode {
 ///
 /// Returns whether anything changed.
 fn run(args: &Args) -> Result<bool, String> {
-    let before_bytes = read_file(&args.before)?;
-    let after_bytes = read_file(&args.after)?;
+    let (before_bytes, load) = unpack_part(read_file(&args.before)?, args.unpack, &args.before)?;
+    let (after_bytes, _) = unpack_part(read_file(&args.after)?, args.unpack, &args.after)?;
 
     let (before, after) = if args.raw {
         let isa: Isa = args.arch.into();
-        let base = args.base.ok_or_else(|| missing_base(&before_bytes, isa))?;
+        let base = args.base.or(load).ok_or_else(|| missing_base(&before_bytes, isa))?;
 
         check_and_report_base(&before_bytes, base, isa, &args.before);
         // Comparing a file with itself is a normal way to inspect one image,
