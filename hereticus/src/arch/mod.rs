@@ -64,6 +64,12 @@ pub trait Arch {
     /// normalizer drops, so the two must not be confused.
     fn is_stack_register(&self, operand: &str) -> bool;
 
+    /// Report whether a lifted register is the stack or frame pointer, as
+    /// [`Arch::is_stack_register`] does for one printed.
+    fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
+        reg == crate::il::Reg::Stack
+    }
+
     /// Report whether any operand reads or writes a frame slot.
     ///
     /// Takes the whole operand list, not one operand, because a frame

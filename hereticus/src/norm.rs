@@ -307,7 +307,7 @@ pub fn normalize_body_in(
             // offset in a page went from 0xf8 to 0x108 when data before it
             // grew, and crossed from one size to the next.
             Some(ConstantKind::Address) => {
-                let mut normalized = normalize(arch, &insns[index]);
+                let mut normalized = normalize_lifted(arch, &insns[index], lifted.get(index));
                 normalized.constants.clear();
                 for shape in &mut normalized.operands {
                     if matches!(shape, OperandShape::Immediate(_)) {
@@ -317,7 +317,8 @@ pub fn normalize_body_in(
                 out.push(named_by_op(normalized, lifted.get(index)));
             }
             Some(ConstantKind::Value) | None => {
-                out.push(named_by_op(normalize(arch, &insns[index]), lifted.get(index)));
+                let normalized = normalize_lifted(arch, &insns[index], lifted.get(index));
+                out.push(named_by_op(normalized, lifted.get(index)));
             }
         }
         index += 1;
@@ -411,6 +412,51 @@ fn shape_of(arch: &dyn Arch, operand: &str) -> Option<OperandShape> {
     } else {
         OperandShape::Other
     })
+}
+
+/// Normalize one instruction, with its operands read from `lifted` where the
+/// lifter gives them, and parsed from the text where not.
+fn normalize_lifted(arch: &dyn Arch, insn: &Insn, lifted: Option<&Option<Lifted>>) -> NormInsn {
+    let mut normalized = normalize(arch, insn);
+    let Some(Some(lifted)) = lifted else { return normalized };
+    if normalized.flow == FlowShape::Opaque {
+        return normalized;
+    }
+    normalized.operands =
+        lifted.operands.iter().flat_map(|operand| lifted_shapes(arch, *operand)).collect();
+    normalized.constants = lifted
+        .operands
+        .iter()
+        .filter_map(|operand| match operand {
+            il::Operand::Const(value) => Some(*value),
+            _ => None,
+        })
+        .collect();
+    normalized
+}
+
+/// The shapes of a lifted operand, as [`shape_of`] gives for a printed one.
+///
+/// A memory reference outside the frame also gives the size of its offset:
+/// a field at 4 and one at 0x400 are different work. Measured over the
+/// cross builds, this paired 62 fewer functions wrong. A frame offset moves
+/// with every spill, so it gives none.
+fn lifted_shapes(arch: &dyn Arch, operand: il::Operand) -> impl Iterator<Item = OperandShape> {
+    let in_frame = |reg: Option<Reg>| reg.is_some_and(|reg| arch.is_frame_register(reg));
+    let (shape, offset) = match operand {
+        il::Operand::Reg(reg) if in_frame(Some(reg)) => (OperandShape::StackPointer, None),
+        il::Operand::Reg(_) | il::Operand::Zero => (OperandShape::Register, None),
+        il::Operand::Const(value) => (OperandShape::Immediate(Magnitude::of(value)), None),
+        il::Operand::Memory { base, .. } if in_frame(base) => (OperandShape::StackSlot, None),
+        il::Operand::Memory { offset, .. } => (
+            OperandShape::Memory,
+            offset.map(|offset| OperandShape::Immediate(Magnitude::of(offset.unsigned_abs()))),
+        ),
+        il::Operand::Target => (OperandShape::Target, None),
+        il::Operand::RegisterList => (OperandShape::RegisterList, None),
+        il::Operand::Other => (OperandShape::Other, None),
+    };
+    core::iter::once(shape).chain(offset)
 }
 
 /// `normalized`, named by the operation its lifted form computes, where the
@@ -529,6 +575,7 @@ fn normalize_test(test: &Test, address: bool) -> NormInsn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::aarch64::Aarch64;
     use crate::arch::arm32::Arm32;
 
     fn insn(mnemonic: &str, operands: &str, kind: InsnKind) -> Insn {
@@ -844,5 +891,61 @@ mod tests {
     fn handles_instructions_without_operands() {
         let normalized = normalize(&Arm32, &insn("nop", "", InsnKind::Normal));
         assert!(normalized.operands.is_empty());
+    }
+
+    fn shapes(operand: il::Operand) -> Vec<OperandShape> {
+        lifted_shapes(&Aarch64, operand).collect()
+    }
+
+    #[test]
+    fn a_lifted_register_reads_as_its_kind() {
+        use il::Operand::{Reg as R, Zero};
+        assert_eq!(shapes(R(Reg::General(3))), [OperandShape::Register]);
+        assert_eq!(shapes(Zero), [OperandShape::Register]);
+        assert_eq!(shapes(R(Reg::Stack)), [OperandShape::StackPointer]);
+        assert_eq!(shapes(R(Reg::General(29))), [OperandShape::StackPointer], "x29");
+    }
+
+    /// A frame slot moves with every spill, so its offset says nothing.
+    #[test]
+    fn a_frame_slot_gives_no_offset() {
+        let slot = il::Operand::Memory { base: Some(Reg::Stack), offset: Some(0x400) };
+        assert_eq!(shapes(slot), [OperandShape::StackSlot]);
+    }
+
+    #[test]
+    fn a_memory_reference_gives_the_size_of_its_offset() {
+        let at = |offset| il::Operand::Memory { base: Some(Reg::General(2)), offset };
+        let sized = |magnitude| [OperandShape::Memory, OperandShape::Immediate(magnitude)];
+        assert_eq!(shapes(at(Some(0))), sized(Magnitude::Zero));
+        assert_eq!(shapes(at(Some(8))), sized(Magnitude::Small));
+        assert_eq!(shapes(at(Some(-8))), sized(Magnitude::Small), "sized as its distance");
+        assert_eq!(shapes(at(Some(0x400))), sized(Magnitude::Large));
+        assert_eq!(shapes(at(Some(i64::MIN))), sized(Magnitude::Large));
+        assert_eq!(shapes(at(None)), [OperandShape::Memory], "an offset in a register");
+        let unnamed = il::Operand::Memory { base: None, offset: Some(8) };
+        assert_eq!(shapes(unnamed), sized(Magnitude::Small), "a literal pool load");
+    }
+
+    #[test]
+    fn a_lifted_body_reads_its_operands_from_the_il() {
+        // `ldr x1, [x2, #8]` and `ldr x1, [x2, #0x400]`: a near field and a
+        // far one.
+        let body = |word: u32| {
+            let code = word.to_le_bytes();
+            let (insns, _) = crate::arch::decode_all(&Aarch64, &code, 0x1000);
+            normalize_body_in(&Aarch64, &code, &insns, &AddressSpace::none())
+        };
+        let (near, far) = (body(0xf940_0441), body(0xf942_0041));
+        assert_ne!(near, far);
+        assert_eq!(
+            near[0].operands.as_slice(),
+            [
+                OperandShape::Register,
+                OperandShape::Memory,
+                OperandShape::Immediate(Magnitude::Small)
+            ]
+        );
+        assert!(near[0].constants.is_empty(), "an offset is no constant");
     }
 }

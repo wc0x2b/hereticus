@@ -15,6 +15,8 @@
 //! a check that a fix adds is made of. It does not say what value an
 //! instruction computes.
 
+use smallvec::SmallVec;
+
 /// A register, named the same way on every architecture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Reg {
@@ -444,14 +446,48 @@ impl Op {
     }
 }
 
+/// An operand, as the instruction names it.
+///
+/// The decoders print operands as text, and text is a poor source of their
+/// kind: a comma splits `[sp, #8]` and `{r4, lr}` apart, and each
+/// architecture spells a frame slot its own way. This says the kind once,
+/// from the decoded fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Operand {
+    Reg(Reg),
+    /// A register that always reads as zero, as `xzr` and the MIPS `zero`.
+    Zero,
+    /// A constant, with a negative one in two's complement.
+    Const(u64),
+    /// A memory reference, through `base` plus `offset`. A base the IL does
+    /// not name, as the program counter, is `None`, and so is an offset in a
+    /// register.
+    Memory {
+        base: Option<Reg>,
+        offset: Option<i64>,
+    },
+    /// A branch or address target, without the address, which moves.
+    Target,
+    /// A list of registers, as `push` and `ldm` take.
+    RegisterList,
+    /// Anything else, as a condition or a system register.
+    Other,
+}
+
+/// Operands held without a heap allocation. An instruction names four at
+/// most, bar a few rare forms, which spill to the heap and still work.
+pub type Operands = SmallVec<[Operand; 4]>;
+
 /// One instruction, lifted.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Lifted {
     pub op: Op,
     pub reads: RegSet,
     pub writes: RegSet,
     pub memory: Option<MemoryAccess>,
     pub test: Option<Test>,
+    /// The operands, in the order the decoder prints them.
+    pub operands: Operands,
 }
 
 /// Most instructions a compiler puts between a compare and the branch that
@@ -481,7 +517,7 @@ pub fn find_guards(body: &[Option<Lifted>]) -> Vec<FoundGuard> {
     let mut taken = Vec::new();
     for (index, lifted) in body.iter().enumerate() {
         let after = &body[index + 1..];
-        let fused = match lifted.and_then(|lifted| lifted.test) {
+        let fused = match lifted.as_ref().and_then(|lifted| lifted.test) {
             Some(Test::Guard(guard)) if !taken.contains(&index) => {
                 found.push(FoundGuard { compare: None, branch: index, guard });
                 continue;
@@ -510,7 +546,7 @@ pub fn find_guards(body: &[Option<Lifted>]) -> Vec<FoundGuard> {
 /// alone may come before it.
 fn branch_on_register(after: &[Option<Lifted>], dest: Reg) -> Option<(usize, bool)> {
     for (index, lifted) in after.iter().take(MOST_BETWEEN + 1).enumerate() {
-        let lifted = (*lifted)?;
+        let lifted = lifted.as_ref()?;
         if let Some(Test::Guard(guard)) = lifted.test {
             if guard.left != Value::Reg(dest) || guard.right != Value::Const(0) {
                 return None;
@@ -532,7 +568,7 @@ fn branch_on_register(after: &[Option<Lifted>], dest: Reg) -> Option<(usize, boo
 /// where only work that leaves the flags alone comes before it.
 fn branch_on_flags(after: &[Option<Lifted>]) -> Option<(usize, Cond)> {
     for (index, lifted) in after.iter().take(MOST_BETWEEN + 1).enumerate() {
-        let lifted = (*lifted)?;
+        let lifted = lifted.as_ref()?;
         if let Some(Test::OnFlags(cond)) = lifted.test {
             return Some((index, cond));
         }
@@ -747,7 +783,7 @@ mod tests {
             }),
             ..Lifted::default()
         });
-        assert_eq!(guards(&[tst, branch(Cond::Equal)]), [(Some(0), 1, Cond::BitsClear)]);
+        assert_eq!(guards(&[tst.clone(), branch(Cond::Equal)]), [(Some(0), 1, Cond::BitsClear)]);
         assert_eq!(guards(&[tst, branch(Cond::SignedLess)]), [], "no bit test");
     }
 

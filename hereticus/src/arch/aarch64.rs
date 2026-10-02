@@ -25,7 +25,8 @@ use super::arm32::split_mnemonic;
 use super::{Arch, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind};
 use crate::il::{
-    AccessKind, Comparison, Cond, Guard, Lifted, MemoryAccess, Op, Reg, RegSet, Test, Value, Width,
+    self, AccessKind, Comparison, Cond, Guard, Lifted, MemoryAccess, Op, Reg, RegSet, Test, Value,
+    Width,
 };
 
 /// Every A64 instruction is 4 bytes wide.
@@ -104,6 +105,10 @@ impl Arch for Aarch64 {
 
     fn is_stack_register(&self, operand: &str) -> bool {
         matches!(operand.trim(), "sp" | "wsp" | "x29")
+    }
+
+    fn is_frame_register(&self, reg: Reg) -> bool {
+        matches!(reg, Reg::Stack | FRAME)
     }
 
     fn mentions_stack_slot(&self, operands: &str) -> bool {
@@ -298,6 +303,9 @@ fn classify(inst: &Instruction, mnemonic: &str, address: u64) -> InsnKind {
 /// The link register, which a call writes and a return reads.
 const LINK: Reg = Reg::General(30);
 
+/// The frame pointer, as the A64 procedure call standard names it.
+const FRAME: Reg = Reg::General(29);
+
 /// What an instruction does with its first operand, and with the flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
@@ -365,7 +373,48 @@ fn lift(inst: &Instruction, mnemonic: &str) -> Lifted {
     lifted.test = test_of(inst, mnemonic, &operands);
     lifted.reads = reads;
     lifted.writes = writes;
+    lifted.operands = operands.iter().map(|operand| il_operand(*operand)).collect();
     lifted
+}
+
+/// An operand as the IL names it. Register 31 is the zero register as a
+/// value and the stack pointer as a base.
+fn il_operand(operand: Operand) -> il::Operand {
+    let general = |number: u16| il::Operand::Reg(Reg::General(number as u8));
+    let base = |number: u16, offset: Option<i64>| il::Operand::Memory {
+        base: Some(if number == 31 { Reg::Stack } else { Reg::General(number as u8) }),
+        offset,
+    };
+    match operand {
+        Operand::Register(_, 31) | Operand::RegShift(_, _, _, 31) => il::Operand::Zero,
+        Operand::Register(_, number)
+        | Operand::RegShift(_, _, _, number)
+        | Operand::RegisterPair(_, number) => general(number),
+        Operand::RegisterOrSP(_, 31) => il::Operand::Reg(Reg::Stack),
+        Operand::RegisterOrSP(_, number) => general(number),
+        Operand::SIMDRegister(_, number)
+        | Operand::SIMDRegisterElements(_, number, _)
+        | Operand::SIMDRegisterElementsLane(_, number, _, _)
+        | Operand::SIMDRegisterElementsMultipleLane(_, number, _, _, _)
+        | Operand::SIMDRegisterGroup(_, number, _, _)
+        | Operand::SIMDRegisterGroupLane(number, _, _, _) => {
+            il::Operand::Reg(Reg::Vector((number % 32) as u8))
+        }
+        Operand::PCOffset(_) => il::Operand::Target,
+        Operand::Immediate(value) => il::Operand::Const(value.into()),
+        Operand::Imm16(value) => il::Operand::Const(value.into()),
+        Operand::Imm64(value) => il::Operand::Const(value),
+        Operand::ImmShift(value, shift) | Operand::ImmShiftMSL(value, shift) => {
+            il::Operand::Const(u64::from(value) << shift)
+        }
+        Operand::RegPreIndex(number, offset, _) | Operand::RegPostIndex(number, offset) => {
+            base(number, Some(offset.into()))
+        }
+        Operand::RegPostIndexReg(number, _) | Operand::RegRegOffset(number, ..) => {
+            base(number, None)
+        }
+        _ => il::Operand::Other,
+    }
 }
 
 /// What an A64 instruction computes. `mnemonic` has its aliases resolved,
@@ -830,10 +879,13 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
             {
                 let base = reference.trim_start_matches('[');
                 let low = low.trim_end_matches(']').trim_end_matches('!');
-                if Aarch64
-                    .constant_value(low)
-                    .and_then(|low| formed(&held, &pages, base, low))
-                    .is_some()
+                // A page outside the image, as the GOT can be, still moves.
+                let on_a_page = !values_of(&pages, base).is_empty();
+                if on_a_page
+                    || Aarch64
+                        .constant_value(low)
+                        .and_then(|low| formed(&held, &pages, base, low))
+                        .is_some()
                 {
                     kinds[index] = ConstantKind::Address;
                 }
@@ -1109,6 +1161,37 @@ mod tests {
     }
 
     #[test]
+    fn operands_come_in_printed_order() {
+        use il::Operand::{Const, Other, Target, Zero};
+        let reg = |number| il::Operand::Reg(x(number));
+        let operands = |word| lift_one(word).operands.into_vec();
+        assert_eq!(operands(words::SUBS_X0_X0_1), [reg(0), reg(0), Const(1)]);
+        assert_eq!(operands(words::CSEL_X8_XZR_X8_EQ), [reg(8), Zero, reg(8), Other]);
+        assert_eq!(operands(words::BL), [Target]);
+        assert_eq!(operands(words::RET), [reg(30)], "the link register");
+    }
+
+    #[test]
+    fn a_memory_operand_names_its_base_and_offset() {
+        use il::Operand::Memory;
+        let memory = |word| *lift_one(word).operands.last().expect("a memory operand");
+        assert_eq!(memory(words::LDR_X1_X2_8), Memory { base: Some(x(2)), offset: Some(8) });
+        assert_eq!(memory(words::STR_W3_X4_X5), Memory { base: Some(x(4)), offset: None });
+        assert_eq!(
+            memory(words::LDP_X29_X30_SP_POST),
+            Memory { base: Some(Reg::Stack), offset: Some(16) }
+        );
+    }
+
+    #[test]
+    fn the_frame_registers_are_sp_and_x29() {
+        assert!(Aarch64.is_frame_register(Reg::Stack));
+        assert!(Aarch64.is_frame_register(x(29)));
+        assert!(!Aarch64.is_frame_register(x(28)));
+        assert!(!Aarch64.is_frame_register(Reg::Vector(29)));
+    }
+
+    #[test]
     fn lifting_any_word_never_panics() {
         bolero::check!().with_type::<u32>().for_each(|&word| {
             let bytes = word.to_le_bytes();
@@ -1157,6 +1240,23 @@ mod tests {
         assert_eq!(Aarch64.data_addresses(&[], &insns, &space, &Memory::new(&[])), [0x11028]);
         let kinds = Aarch64.constant_kinds(&[], &insns, &space);
         assert_eq!(kinds[..2], [ConstantKind::Address, ConstantKind::Address]);
+    }
+
+    /// A load from a page outside the image, as the GOT can be, still reads
+    /// at an address that moves when the linker lays the image out again.
+    #[test]
+    fn a_load_from_any_page_reads_at_an_address() {
+        let words = [
+            0x9000_0080, // 0x1000 adrp x0, 0x11000
+            0xf940_3408, // 0x1004 ldr x8, [x0, #0x68]
+            0xf940_3428, // 0x1008 ldr x8, [x1, #0x68]
+            0xd65f_03c0, // 0x100c ret
+        ];
+        let (insns, _) = decode_all(&Aarch64, &code(&words), 0x1000);
+        let space = AddressSpace::from_ranges(core::iter::once(0x1000..0x2000));
+        let kinds = Aarch64.constant_kinds(&[], &insns, &space);
+        assert_eq!(kinds[1], ConstantKind::Address, "through the page");
+        assert_eq!(kinds[2], ConstantKind::Value, "through a register with no page");
     }
 
     /// The PLT stub of LLD for AArch64, from zlib.

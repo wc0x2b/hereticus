@@ -159,6 +159,10 @@ impl Arch for Thumb2 {
         Arm32.is_stack_register(operand)
     }
 
+    fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
+        Arm32.is_frame_register(reg)
+    }
+
     fn mentions_stack_slot(&self, operands: &str) -> bool {
         Arm32.mentions_stack_slot(operands)
     }

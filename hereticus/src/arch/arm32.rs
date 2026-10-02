@@ -58,6 +58,9 @@ const REG_LR: u16 = 14;
 /// Register number of the stack pointer.
 const REG_SP: u16 = 13;
 
+/// The frame pointer, as the A32 procedure call standard names it.
+const FRAME: il::Reg = il::Reg::General(11);
+
 /// ARM32 in A32 (not Thumb) mode.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Arm32;
@@ -142,6 +145,10 @@ impl Arch for Arm32 {
 
     fn is_stack_register(&self, operand: &str) -> bool {
         matches!(operand.trim(), "sp" | "fp" | "r13" | "r11")
+    }
+
+    fn is_frame_register(&self, reg: il::Reg) -> bool {
+        matches!(reg, il::Reg::Stack | FRAME)
     }
 
     fn mentions_stack_slot(&self, operands: &str) -> bool {
@@ -520,6 +527,39 @@ fn lift(inst: &Instruction) -> il::Lifted {
         writes,
         memory: memory_access(inst.opcode, &operands),
         test: test_of(inst, &operands),
+        operands: operands.iter().map(|operand| il_operand(*operand)).collect(),
+    }
+}
+
+/// An operand as the IL names it.
+fn il_operand(operand: Operand) -> il::Operand {
+    let register = |reg: Reg| il_reg(reg).map_or(il::Operand::Other, il::Operand::Reg);
+    match operand {
+        Operand::Reg(reg) | Operand::RegWBack(reg, _) => register(reg),
+        Operand::RegShift(shift) => match shift.into_shift() {
+            RegShiftStyle::RegImm(shift) => register(shift.shiftee()),
+            RegShiftStyle::RegReg(shift) => register(shift.shiftee()),
+        },
+        Operand::RegList(_) => il::Operand::RegisterList,
+        Operand::RegDeref(base) => il::Operand::Memory { base: il_reg(base), offset: Some(0) },
+        Operand::RegDerefPostindexOffset(base, offset, add, _)
+        | Operand::RegDerefPreindexOffset(base, offset, add, _) => {
+            let offset = i64::from(offset);
+            il::Operand::Memory {
+                base: il_reg(base),
+                offset: Some(if add { offset } else { -offset }),
+            }
+        }
+        Operand::RegDerefPostindexRegShift(base, ..)
+        | Operand::RegDerefPreindexRegShift(base, ..)
+        | Operand::RegDerefPostindexReg(base, ..)
+        | Operand::RegDerefPreindexReg(base, ..) => {
+            il::Operand::Memory { base: il_reg(base), offset: None }
+        }
+        Operand::Imm12(value) => il::Operand::Const(value.into()),
+        Operand::Imm32(value) => il::Operand::Const(value.into()),
+        Operand::BranchOffset(_) | Operand::BranchThumbOffset(_) => il::Operand::Target,
+        _ => il::Operand::Other,
     }
 }
 
@@ -1858,6 +1898,40 @@ mod tests {
 
     fn lift_one(bytes: [u8; 4]) -> il::Lifted {
         Arm32.lift(&decode_one(bytes), &bytes).expect("the word must lift")
+    }
+
+    #[test]
+    fn operands_come_in_printed_order() {
+        use il::Operand::{Const, RegisterList, Target};
+        let reg = |number| il::Operand::Reg(il::Reg::General(number));
+        let operands = |bytes| lift_one(bytes).operands.into_vec();
+        assert_eq!(operands(words::ADD_R0_R1_R2), [reg(0), reg(1), reg(2)]);
+        assert_eq!(operands(words::CMP_R0_1), [reg(0), Const(1)], "no unused destination");
+        assert_eq!(operands(words::PUSH_R4_LR), [il::Operand::Reg(il::Reg::Stack), RegisterList]);
+        assert_eq!(operands(words::BL), [Target]);
+    }
+
+    #[test]
+    fn a_memory_operand_names_its_base_and_offset() {
+        use il::Operand::Memory;
+        let general = |number| Some(il::Reg::General(number));
+        let memory = |bytes| *lift_one(bytes).operands.last().expect("a memory operand");
+        // `ldr r1, [r2, #-8]`
+        const LDR_R1_R2_MINUS_8: [u8; 4] = [0x08, 0x10, 0x12, 0xe5];
+        assert_eq!(memory(words::LDR_R1_R2_8), Memory { base: general(2), offset: Some(8) });
+        assert_eq!(memory(LDR_R1_R2_MINUS_8), Memory { base: general(2), offset: Some(-8) });
+        assert_eq!(memory(words::STR_R3_R4_R5), Memory { base: general(4), offset: None });
+        assert_eq!(
+            memory(words::LDRD_R2_R3_SP),
+            Memory { base: Some(il::Reg::Stack), offset: Some(8) }
+        );
+    }
+
+    #[test]
+    fn the_frame_registers_are_sp_and_r11() {
+        assert!(Arm32.is_frame_register(il::Reg::Stack));
+        assert!(Arm32.is_frame_register(il::Reg::General(11)));
+        assert!(!Arm32.is_frame_register(il::Reg::General(7)));
     }
 
     fn regs(numbers: &[u8]) -> il::RegSet {
