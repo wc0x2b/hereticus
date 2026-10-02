@@ -706,8 +706,8 @@ impl Flow {
 fn constant_label(value: u64) -> u64 {
     match value {
         0 => ZERO,
-        1..=0xff => 0x534d_414c_4c,
-        _ => 0x4c41_5247_45,
+        1..=0xff => 0x0053_4d41_4c4c,
+        _ => 0x004c_4152_4745,
     }
 }
 
