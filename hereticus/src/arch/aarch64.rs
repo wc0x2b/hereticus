@@ -202,6 +202,16 @@ impl Arch for Aarch64 {
         track_pages(body, space).kinds
     }
 
+    fn formed_addresses(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        _memory: &Memory<'_>,
+    ) -> Vec<Option<u64>> {
+        track_pages(body, space).formed
+    }
+
     /// The addresses a function forms from a page, and the pointers it
     /// loads from one where they point into the image: a text that only a
     /// table of pointers reaches is a text of the function too. A pointer
@@ -838,6 +848,8 @@ fn page_of(insn: &Insn) -> Option<u64> {
 /// What reading a function for its pages found.
 struct Pages {
     kinds: Vec<ConstantKind>,
+    /// The address each instruction forms or reads, or the page it takes.
+    formed: Vec<Option<u64>>,
     addresses: Vec<u64>,
     /// Where a load of a whole pointer reads, from an address the page
     /// forms.
@@ -848,6 +860,7 @@ struct Pages {
 /// `adr`, to the `add` or the load that joins an offset to it.
 fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
     let mut kinds = vec![ConstantKind::Value; body.len()];
+    let mut formed_at = vec![None; body.len()];
     let mut addresses = Vec::new();
     let mut pointer_loads = Vec::new();
     // Registers holding a page, or an address.
@@ -891,6 +904,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                 held.retain(|(name, _)| *name != destination);
                 pages.retain(|(name, _)| *name != destination);
                 if let Some(value) = page_of(insn) {
+                    formed_at[index] = Some(value);
                     if insn.mnemonic == "adr" && space.contains_formed(value) {
                         addresses.push(value);
                     }
@@ -906,8 +920,16 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
             ("add", [_, source, low]) if low.starts_with('#') => {
                 let address =
                     Aarch64.constant_value(low).and_then(|low| formed(&held, &pages, source, low));
+                // An address outside what the image holds, as the data of a
+                // kext linked apart, is still one to show.
+                if address.is_none() {
+                    formed_at[index] = Aarch64.constant_value(low).and_then(|low| {
+                        values_of(&pages, source).first().map(|page| page.wrapping_add(low))
+                    });
+                }
                 if let Some(address) = address {
                     kinds[index] = ConstantKind::Address;
+                    formed_at[index] = Some(address);
                     addresses.push(address);
                     held.retain(|(name, _)| *name != destination);
                     held.push((destination, address));
@@ -932,6 +954,12 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                 if on_a_page || address.is_some() {
                     kinds[index] = ConstantKind::Address;
                 }
+                // A page outside the image, as the GOT of a kext can be,
+                // still names a slot.
+                formed_at[index] = address.or_else(|| {
+                    let low = Aarch64.constant_value(low)?;
+                    values_of(&pages, base).first().map(|page| page.wrapping_add(low))
+                });
                 // `ldr x0, [x8, #lo12]` reads a whole pointer, as from a slot
                 // of the GOT or a table of texts.
                 if let Some(address) = address
@@ -950,7 +978,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
             pages.retain(|(name, _)| *name != destination);
         }
     }
-    Pages { kinds, addresses, pointer_loads }
+    Pages { kinds, formed: formed_at, addresses, pointer_loads }
 }
 
 /// Read the table a `br` at `insns[index]` jumps through.

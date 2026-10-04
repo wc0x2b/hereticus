@@ -862,13 +862,7 @@ fn print_pair_diff(pair: &Match, before: &Binary, after: &Binary, view: View, pa
         println!("{before_name} -> {after_name}");
     }
 
-    let lines = instruction_diff_in(
-        view,
-        &before.functions[pair.before],
-        before.isa,
-        &after.functions[pair.after],
-        after.isa,
-    );
+    let lines = instruction_diff_in(view, before, pair.before, after, pair.after);
     for line in &lines {
         println!("{}", render_diff_line(line, paint));
     }

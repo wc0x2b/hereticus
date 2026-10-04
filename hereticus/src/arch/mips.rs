@@ -68,6 +68,54 @@ pub struct Mips32 {
 }
 
 impl Mips32 {
+    /// The slot of the global offset table that `load`, at `load_index` of
+    /// `body`, reads through the global pointer.
+    fn slot_of(&self, body: &[Insn], load_index: usize, load: &Insn) -> Option<u64> {
+        let (offset, base) = load_operands(load)?;
+        let (global_pointer, register) = global_pointer_before(body, load_index)?;
+        if base != register && base != "gp" {
+            return None;
+        }
+        Some(u64::from((global_pointer as u32).wrapping_add(offset as u32)))
+    }
+
+    /// Each address `body` forms, with the index of the instruction that
+    /// joins its lower half: see [`Arch::data_addresses`].
+    fn addresses_by_index(
+        &self,
+        body: &[Insn],
+        space: &AddressSpace,
+        memory: &Memory<'_>,
+    ) -> Vec<(usize, u64)> {
+        let slot_value = |load_index: usize, load: &Insn| {
+            let slot = self.slot_of(body, load_index, load)?;
+            Some(self.read_pointer(memory.bytes(slot, INSN_WIDTH)?))
+        };
+
+        body.iter()
+            .enumerate()
+            .filter(|(_, insn)| insn.mnemonic == "addiu" || insn.mnemonic == "ori")
+            .filter_map(|(index, insn)| {
+                let (destination, source, low) = three_operands(insn)?;
+                // `t9` receives a callee, not data.
+                if destination == "t9" {
+                    return None;
+                }
+                let low = Mips32::LITTLE.constant_value(low)?;
+                let (at, written) = last_write(body, index, source)?;
+                let high = match written.mnemonic.as_str() {
+                    // The `_gp_disp` halves are a distance, not an address.
+                    "lui" if is_gp_disp_preamble(&body[at..]) => return None,
+                    "lui" => upper_half(written)?.1,
+                    "lw" => slot_value(at, written)?,
+                    _ => return None,
+                };
+                Some((index, join_halves(&insn.mnemonic, high, low)))
+            })
+            .filter(|&(_, address)| space.contains_formed(address))
+            .collect()
+    }
+
     /// The decoder for a little-endian image.
     pub const LITTLE: Self = Self { order: ByteOrder::Little };
     /// The decoder for a big-endian image, which most firmware is.
@@ -588,38 +636,34 @@ impl Arch for Mips32 {
         space: &AddressSpace,
         memory: &Memory<'_>,
     ) -> Vec<u64> {
-        let slot_value = |load_index: usize, load: &Insn| {
-            let (offset, base) = load_operands(load)?;
-            let (global_pointer, register) = global_pointer_before(body, load_index)?;
-            if base != register && base != "gp" {
-                return None;
-            }
-            let slot = u64::from((global_pointer as u32).wrapping_add(offset as u32));
-            Some(self.read_pointer(memory.bytes(slot, INSN_WIDTH)?))
-        };
-
-        body.iter()
-            .enumerate()
-            .filter(|(_, insn)| insn.mnemonic == "addiu" || insn.mnemonic == "ori")
-            .filter_map(|(index, insn)| {
-                let (destination, source, low) = three_operands(insn)?;
-                // `t9` receives a callee, not data.
-                if destination == "t9" {
-                    return None;
-                }
-                let low = Mips32::LITTLE.constant_value(low)?;
-                let (at, written) = last_write(body, index, source)?;
-                let high = match written.mnemonic.as_str() {
-                    // The `_gp_disp` halves are a distance, not an address.
-                    "lui" if is_gp_disp_preamble(&body[at..]) => return None,
-                    "lui" => upper_half(written)?.1,
-                    "lw" => slot_value(at, written)?,
-                    _ => return None,
-                };
-                Some(join_halves(&insn.mnemonic, high, low))
-            })
-            .filter(|&address| space.contains_formed(address))
+        self.addresses_by_index(body, space, memory)
+            .into_iter()
+            .map(|(_, address)| address)
             .collect()
+    }
+
+    /// What [`Arch::data_addresses`] finds, and also the slot of the
+    /// global offset table each load through the global pointer reads.
+    fn formed_addresses(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        memory: &Memory<'_>,
+    ) -> Vec<Option<u64>> {
+        let mut formed = vec![None; body.len()];
+        for (index, address) in self.addresses_by_index(body, space, memory) {
+            formed[index] = Some(address);
+        }
+        for (index, insn) in body.iter().enumerate() {
+            if insn.mnemonic == "lw"
+                && formed[index].is_none()
+                && let Some(slot) = self.slot_of(body, index, insn)
+            {
+                formed[index] = Some(slot);
+            }
+        }
+        formed
     }
 
     fn absolute_call(&self, word: &[u8]) -> Option<AbsoluteCall> {

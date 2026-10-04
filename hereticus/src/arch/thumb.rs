@@ -431,6 +431,16 @@ impl Arch for Thumb2 {
         (word & 1 == 1).then_some(word & !1)
     }
 
+    fn formed_addresses(
+        &self,
+        code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        _memory: &Memory<'_>,
+    ) -> Vec<Option<u64>> {
+        track_pool_words(code, body, space, PcModel::T32).formed
+    }
+
     fn distance_words(&self, code: &[u8], insns: &[Insn]) -> BTreeSet<u64> {
         track_pool_words(code, insns, &AddressSpace::default(), PcModel::T32).distances
     }

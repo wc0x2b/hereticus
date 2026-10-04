@@ -12,22 +12,104 @@
 
 use std::collections::HashMap;
 
+use crate::address::AddressSpace;
 use crate::arch::{Arch, Insn, is_branch_target};
+use crate::callee::Links;
 use crate::il::{AccessKind, Comparison, Cond, Lifted, Op, Operand, Reg, Test};
+
+/// What the binary around the code says, to name what the code points at.
+#[derive(Clone, Copy)]
+pub struct Context<'a> {
+    pub links: &'a Links,
+    pub space: &'a AddressSpace,
+    /// The functions of the binary, sorted by address, to name a callee.
+    pub functions: &'a [crate::obj::Function],
+}
+
+impl Context<'_> {
+    /// The name of the function at `address`: its symbol, or the callee of
+    /// the PLT stub there. A function with no name has none here, as its
+    /// address moves.
+    fn callee_at(&self, arch: &dyn Arch, address: u64) -> Option<String> {
+        if let Some(name) = self.links.stub_callee(arch, address) {
+            return Some(name.to_string());
+        }
+        let index =
+            self.functions.binary_search_by_key(&address, |function| function.address).ok()?;
+        let name = &self.functions[index].name;
+        (!name.is_empty()).then(|| name.clone())
+    }
+
+    /// The name of the callee a call target reaches.
+    fn callee_of(&self, arch: &dyn Arch, target: crate::arch::CallTarget) -> Option<String> {
+        use crate::arch::CallTarget;
+        match target {
+            CallTarget::Address(address) => self.callee_at(arch, address),
+            CallTarget::Slot(slot) => self.links.slot_name(slot).map(str::to_string),
+            CallTarget::PageOffset { .. } => None,
+        }
+    }
+}
 
 /// The IL statement of each instruction of `insns`, which were decoded from
 /// `code`.
 pub fn il_lines(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<String> {
+    il_lines_in(arch, code, insns, None)
+}
+
+/// [`il_lines`], where `context` names the addresses the code forms: a text
+/// as `&"usage"`, a slot of the global offset table by its symbol, as
+/// `@malloc`, and any other address as `@0x57c6`. An address moves when
+/// code or data before it grows, so a diff aligns on `@` alone.
+pub fn il_lines_in(
+    arch: &dyn Arch,
+    code: &[u8],
+    insns: &[Insn],
+    context: Option<Context<'_>>,
+) -> Vec<String> {
     let Some(first) = insns.first() else { return Vec::new() };
+    let formed = match context {
+        Some(context) => {
+            let regions = context.links.regions();
+            let memory = crate::arch::Memory::new(&regions);
+            arch.formed_addresses(code, insns, context.space, &memory)
+        }
+        None => vec![None; insns.len()],
+    };
     let mut last_compare: Option<Compared> = None;
+    // The callee each register holds, from a load of a GOT slot.
+    let mut callees: HashMap<String, String> = HashMap::new();
+    // The callee of each call, as the architecture follows it, as through
+    // a slot on MIPS.
+    let named_calls: HashMap<usize, String> = match context {
+        Some(context) => arch
+            .call_targets(insns)
+            .into_iter()
+            .filter_map(|(index, target)| Some((index, context.callee_of(arch, target?)?)))
+            .collect(),
+        None => HashMap::new(),
+    };
     insns
         .iter()
-        .map(|insn| {
+        .zip(formed)
+        .enumerate()
+        .map(|(index, (insn, formed))| {
+            if let Some(name) = named_calls.get(&index)
+                && matches!(insn.kind, crate::arch::InsnKind::Call { .. })
+            {
+                return format!("call {name}");
+            }
+            let address =
+                formed.zip(context).map(|(address, context)| Pointed::of(address, context));
+            let text = named_line(arch, insn, &address, context, &mut callees);
+            if let Some(text) = text {
+                return text;
+            }
             let word = usize::try_from(insn.address - first.address)
                 .ok()
                 .and_then(|offset| code.get(offset..offset.checked_add(insn.bytes_len)?));
             let lifted = word.and_then(|word| arch.lift(insn, word));
-            match lifted.and_then(|lifted| statement(insn, &lifted, &mut last_compare)) {
+            match lifted.and_then(|lifted| statement(insn, &lifted, address, &mut last_compare)) {
                 Some(text) => match a32_condition(arch, insn) {
                     Some(cond) => format!("if ({cond}) {text}"),
                     None => text,
@@ -36,6 +118,93 @@ pub fn il_lines(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// The line of a call that a name can say better than an address, and
+/// what a load of a GOT slot leaves in its register for one.
+fn named_line(
+    arch: &dyn Arch,
+    insn: &Insn,
+    address: &Option<Pointed>,
+    context: Option<Context<'_>>,
+    callees: &mut HashMap<String, String>,
+) -> Option<String> {
+    let written = split_operands(&insn.operands).first().map(|first| first.to_string());
+    match insn.kind {
+        crate::arch::InsnKind::Call { target: Some(target) } => {
+            Some(format!("call {}", context?.callee_at(arch, target)?))
+        }
+        // A jump to a function is a tail call.
+        crate::arch::InsnKind::Jump { target: Some(target) } => {
+            Some(format!("goto {}", context?.callee_at(arch, target)?))
+        }
+        crate::arch::InsnKind::Call { target: None } => {
+            let register = split_operands(&insn.operands).last()?.to_string();
+            Some(format!("call {}", callees.get(&register)?))
+        }
+        _ => {
+            if let Some(written) = written {
+                match address {
+                    Some(Pointed::Slot(name)) if insn.mnemonic.starts_with("ld") => {
+                        callees.insert(written, name.clone());
+                    }
+                    _ => {
+                        callees.remove(&written);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+/// What an address the code forms points at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Pointed {
+    /// A text, which it shows in quotes.
+    Text(String),
+    /// A slot of the global offset table, by the symbol it holds.
+    Slot(String),
+    /// Anything else, by its address.
+    Address(u64),
+}
+
+impl Pointed {
+    fn of(address: u64, context: Context<'_>) -> Self {
+        /// More of a text than a line shows.
+        const LONGEST: usize = 40;
+        if let Some(text) =
+            context.links.text_at(address).filter(|text| context.links.is_sure_text(address, text))
+        {
+            let mut shown: String = text.chars().take(LONGEST).collect();
+            if text.len() > LONGEST {
+                shown.push_str("...");
+            }
+            return Self::Text(shown.escape_debug().to_string());
+        }
+        match context.links.slot_name(address) {
+            Some(name) => Self::Slot(name.to_string()),
+            None => Self::Address(address),
+        }
+    }
+
+    /// As a value an instruction forms: `&"text"` or `@name`.
+    fn as_value(&self) -> String {
+        match self {
+            Self::Text(text) => format!("&\"{text}\""),
+            Self::Slot(name) => format!("&@{name}"),
+            Self::Address(address) => format!("@{address:#x}"),
+        }
+    }
+
+    /// As a place an instruction reads or writes: `[@name]`.
+    fn as_place(&self) -> String {
+        match self {
+            Self::Text(text) => format!("[\"{text}\"]"),
+            Self::Slot(name) => format!("[@{name}]"),
+            Self::Address(address) => format!("[@{address:#x}]"),
+        }
+    }
 }
 
 /// The condition an A32 instruction runs on, as the `ne` of `addne`.
@@ -266,7 +435,12 @@ fn pair_operands(lifted: &[Operand], tokens: &[&str]) -> Option<Vec<Pairing>> {
 
 /// The statement of one instruction, or `None` where the IL does not name
 /// it well enough to show.
-fn statement(insn: &Insn, lifted: &Lifted, last_compare: &mut Option<Compared>) -> Option<String> {
+fn statement(
+    insn: &Insn,
+    lifted: &Lifted,
+    address: Option<Pointed>,
+    last_compare: &mut Option<Compared>,
+) -> Option<String> {
     let mut tokens = split_operands(&insn.operands);
     // The A32 decoder prints a register before the two a compare compares,
     // as `cmps r0, r3, 0x0`, which is no operand of it.
@@ -367,11 +541,18 @@ fn statement(insn: &Insn, lifted: &Lifted, last_compare: &mut Option<Compared>) 
             [dest, source] => format!("{dest} = {source}"),
             _ => return None,
         },
-        Op::Address => match operands.as_slice() {
-            [dest, source] => format!("{dest} = &{source}"),
+        // A page is half an address: the instruction that joins the offset
+        // to it names what the two point at.
+        Op::Address => match (operands.as_slice(), &address) {
+            ([dest, _], Some(_)) if insn.mnemonic == "adrp" => format!("{dest} = &page"),
+            ([dest, _], Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
+            ([dest, source], None) => format!("{dest} = &{source}"),
             _ => return None,
         },
-        Op::Add => binary("+")?,
+        Op::Add => match (operands.first(), &address) {
+            (Some(dest), Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
+            _ => binary("+")?,
+        },
         Op::Subtract => binary("-")?,
         Op::Multiply => binary("*")?,
         Op::Divide => binary("/")?,
@@ -408,7 +589,10 @@ fn statement(insn: &Insn, lifted: &Lifted, last_compare: &mut Option<Compared>) 
         },
         Op::Load | Op::Store | Op::Atomic => {
             let access = canonical.memory?;
-            let place = memory_text(memory?);
+            let place = match &address {
+                Some(pointed) => pointed.as_place(),
+                None => memory_text(memory?),
+            };
             let values: Vec<&String> =
                 operands.iter().filter(|operand| !operand.starts_with('[')).collect();
             let values = values.iter().map(|value| value.as_str()).collect::<Vec<_>>().join(", ");

@@ -511,37 +511,33 @@ impl Arch for Mips16 {
         space: &AddressSpace,
         memory: &Memory<'_>,
     ) -> Vec<u64> {
-        let constant = |operand: &str| self.constant_value(operand);
-        let page = |load_at: usize, load: &Insn| {
-            let [_, reference] = two_operands(load)?;
-            let (offset, base) = reference.strip_suffix(')')?.split_once('(')?;
-            if load.mnemonic != "lw" || !holds_global_pointer(body, load_at, base) {
-                return None;
-            }
-            let global_pointer = global_pointer_before(body, load_at, constant)?;
-            let slot = (global_pointer as u32).wrapping_add(constant(offset)? as u32);
-            let bytes = memory.bytes(u64::from(slot), 4)?;
-            Some(self.read_pointer(bytes) as u32)
-        };
-        body.iter()
-            .enumerate()
-            .filter(|(_, insn)| insn.mnemonic == "addiu")
-            .filter_map(|(index, insn)| match three_operands(insn)? {
-                // `t9` receives a callee, not data.
-                ["t9", ..] => None,
-                // The preamble's is half of `_gp_disp`, a distance.
-                [_, "pc", _] if index > 0 && is_gp_preamble_at(body, index - 1) => None,
-                [_, "pc", address] => constant(address),
-                // An address that is called is code, not data.
-                [destination, ..] if is_called(body, index, destination) => None,
-                [_, source, low] => {
-                    let (at, written) = last_write(body, index, source)?;
-                    let address = page(at, written)?.wrapping_add(constant(low)? as u32);
-                    Some(u64::from(address))
-                }
-            })
-            .filter(|&address| space.contains_formed(address))
+        self.addresses_by_index(body, space, memory)
+            .into_iter()
+            .map(|(_, address)| address)
             .collect()
+    }
+
+    /// What [`Arch::data_addresses`] finds, and also the slot of the
+    /// global offset table each load through the global pointer reads.
+    fn formed_addresses(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        memory: &Memory<'_>,
+    ) -> Vec<Option<u64>> {
+        let mut formed = vec![None; body.len()];
+        for (index, address) in self.addresses_by_index(body, space, memory) {
+            formed[index] = Some(address);
+        }
+        for (index, insn) in body.iter().enumerate() {
+            if formed[index].is_none()
+                && let Some(slot) = self.slot_of(body, index, insn)
+            {
+                formed[index] = Some(slot);
+            }
+        }
+        formed
     }
 
     /// PIC code calls a function it does not reach with `jal` through a
@@ -883,6 +879,59 @@ fn holds_global_pointer(insns: &[Insn], before: usize, register: &str) -> bool {
 fn three_operands(insn: &Insn) -> Option<[&str; 3]> {
     let operands: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
     operands.try_into().ok()
+}
+
+impl Mips16 {
+    /// The slot of the global offset table that the `lw` at `load_index`
+    /// of `body` reads through the global pointer or a copy of it.
+    fn slot_of(&self, body: &[Insn], load_index: usize, load: &Insn) -> Option<u64> {
+        let constant = |operand: &str| self.constant_value(operand);
+        let [_, reference] = two_operands(load)?;
+        let (offset, base) = reference.strip_suffix(')')?.split_once('(')?;
+        if load.mnemonic != "lw" || !holds_global_pointer(body, load_index, base) {
+            return None;
+        }
+        let global_pointer = global_pointer_before(body, load_index, constant)?;
+        Some(u64::from((global_pointer as u32).wrapping_add(constant(offset)? as u32)))
+    }
+
+    /// Each address `body` forms, with the index of the instruction that
+    /// forms it: see [`Arch::data_addresses`].
+    fn addresses_by_index(
+        &self,
+        body: &[Insn],
+        space: &AddressSpace,
+        memory: &Memory<'_>,
+    ) -> Vec<(usize, u64)> {
+        let constant = |operand: &str| self.constant_value(operand);
+        let page = |load_at: usize, load: &Insn| {
+            let slot = self.slot_of(body, load_at, load)?;
+            let bytes = memory.bytes(slot, 4)?;
+            Some(self.read_pointer(bytes) as u32)
+        };
+        body.iter()
+            .enumerate()
+            .filter(|(_, insn)| insn.mnemonic == "addiu")
+            .filter_map(|(index, insn)| {
+                let address = match three_operands(insn)? {
+                    // `t9` receives a callee, not data.
+                    ["t9", ..] => None,
+                    // The preamble's is half of `_gp_disp`, a distance.
+                    [_, "pc", _] if index > 0 && is_gp_preamble_at(body, index - 1) => None,
+                    [_, "pc", address] => constant(address),
+                    // An address that is called is code, not data.
+                    [destination, ..] if is_called(body, index, destination) => None,
+                    [_, source, low] => {
+                        let (at, written) = last_write(body, index, source)?;
+                        let address = page(at, written)?.wrapping_add(constant(low)? as u32);
+                        Some(u64::from(address))
+                    }
+                }?;
+                Some((index, address))
+            })
+            .filter(|&(_, address)| space.contains_formed(address))
+            .collect()
+    }
 }
 
 /// The instructions of [`is_gp_preamble`].
