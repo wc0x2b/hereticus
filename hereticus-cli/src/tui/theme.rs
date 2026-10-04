@@ -13,8 +13,8 @@ pub const YELLOW: Color = Color::Rgb(0xe6, 0xb4, 0x50);
 pub const GREEN: Color = Color::Rgb(0xaa, 0xd9, 0x4c);
 pub const RED: Color = Color::Rgb(0xff, 0x33, 0x33);
 pub const DARK_GRAY: Color = Color::Rgb(0x20, 0x27, 0x34);
-pub const GRAY: Color = Color::Rgb(0x44, 0x44, 0x44);
-pub const GRAY_FG: Color = Color::Rgb(100, 100, 100);
+pub const GRAY: Color = Color::Rgb(0x60, 0x60, 0x60);
+pub const GRAY_FG: Color = Color::Rgb(0x9a, 0x9a, 0x9a);
 
 /// The colors of a patch, as the `+/-/~` column uses them.
 pub const ADDED: Color = GREEN;
