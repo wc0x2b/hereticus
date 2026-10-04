@@ -1,6 +1,6 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
-assertion_line: 845
+assertion_line: 1029
 expression: "screen(&mut app, 120, 24)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
@@ -26,4 +26,4 @@ expression: "screen(&mut app, 120, 24)"
  e8   mvnhi r2, 0x0                                        │120   mvnhi r2, 0x0                                        ║
  ec - mov r0, r2                                           │124 + b $+0xd0                                             ║
  f0 - bx lr                                                │                                                           ║
- sort added  │  3 of 5 functions  │  view asm  │  hidden retouched, data                          0 gone  0 new  ? help
+ sort added ↓  │  3 of 5 functions  │  view asm  │  hidden retouched, data                        0 gone  0 new  ? help

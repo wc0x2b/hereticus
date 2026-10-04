@@ -6,11 +6,12 @@
 //! terminal.
 
 mod draw;
+mod fuzzy;
 mod rows;
 mod theme;
 
 use hereticus::address::Contents;
-use hereticus::matching::{Diff, DiffLine, View, instruction_diff_in};
+use hereticus::matching::{Diff, DiffLine, EditKind, View, instruction_diff_in};
 use hereticus::obj::Binary;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
@@ -102,6 +103,28 @@ struct Opened {
     scroll: usize,
 }
 
+/// Which way the sort runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Order {
+    /// As `--sort` names it: the most first, or the strongest match.
+    Descending,
+    /// The other way.
+    Ascending,
+}
+
+/// The kinds of code `t` steps through, as the `TOUCHED` column names
+/// them. `Other` names nothing a reader can act on, so it is left out.
+const TOUCHED_KINDS: [EditKind; 8] = [
+    EditKind::Branch,
+    EditKind::Call,
+    EditKind::Callee,
+    EditKind::Jump,
+    EditKind::Memory,
+    EditKind::Constant,
+    EditKind::Text,
+    EditKind::Opaque,
+];
+
 /// Which way a jump between changes goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -111,6 +134,13 @@ enum Direction {
 
 /// The rows a jump to a change leaves above it.
 const CONTEXT: usize = 3;
+
+/// The kind `t` steps to after `touched`, and none after the last.
+fn next_touched(touched: Option<EditKind>) -> Option<EditKind> {
+    let Some(touched) = touched else { return TOUCHED_KINDS.first().copied() };
+    let at = TOUCHED_KINDS.iter().position(|&kind| kind == touched)?;
+    TOUCHED_KINDS.get(at + 1).copied()
+}
 
 /// The address of each instruction of a function, in order.
 fn addresses_of(binary: &Binary, index: usize) -> Vec<u64> {
@@ -141,12 +171,16 @@ pub struct App<'a> {
     after: &'a Binary,
     files: [String; 2],
     sort: Sort,
+    order: Order,
+    /// Lists only the pairs whose edit touched this kind of code.
+    touched: Option<EditKind>,
     scope: Scope,
     hidden: Hidden,
     near_miss_floor: f64,
     view: View,
     layout: Layout,
-    /// Matches a name that holds this text, in any case.
+    /// Matches a name that holds the letters of this text in order, in any
+    /// case: see [`fuzzy`].
     filter: String,
     /// Every row the table can list: the pairs, then the functions gone,
     /// then the new ones.
@@ -197,6 +231,8 @@ impl<'a> App<'a> {
             after,
             files: start.files,
             sort: start.sort,
+            order: Order::Descending,
+            touched: None,
             scope: start.scope,
             hidden: start.hidden,
             near_miss_floor: start.near_miss_floor,
@@ -215,26 +251,33 @@ impl<'a> App<'a> {
         app
     }
 
-    /// Report whether the table lists `entry` with the present scope.
+    /// Report whether the table lists `entry` with the present scope and
+    /// the kind of code asked for.
     fn is_listed(&self, entry: Entry) -> bool {
         let shown = |contents| is_shown_unmatched(contents, self.hidden);
-        self.scope == Scope::All
+        let in_scope = self.scope == Scope::All
             || match entry {
                 Entry::Pair(index) => is_interesting(&self.diff.matched[index], self.hidden),
                 Entry::Gone { contents, .. } | Entry::New { contents, .. } => shown(contents),
+            };
+        // A function gone or new has no edit to touch anything.
+        let touches = match (self.touched, entry) {
+            (None, _) => true,
+            (Some(wanted), Entry::Pair(index)) => {
+                self.diff.matched[index].kinds.present().any(|(kind, _)| kind == wanted)
             }
+            (Some(_), Entry::Gone { .. } | Entry::New { .. }) => false,
+        };
+        in_scope && touches
     }
 
     /// List the rows again, after the order or a filter changed. The
     /// selected row stays selected where it is still listed.
     fn refresh(&mut self) {
         let kept = self.selected_entry();
-        let needle = self.filter.to_lowercase();
         let mut rows: Vec<usize> = (0..self.entries.len())
             .filter(|&index| self.is_listed(self.entries[index].entry))
-            .filter(|&index| {
-                needle.is_empty() || self.entries[index].label.to_lowercase().contains(&needle)
-            })
+            .filter(|&index| fuzzy::positions(&self.filter, &self.entries[index].label).is_some())
             .collect();
         // The library lists the pairs strongest first, which is the order
         // `confidence` names. The functions gone and new keep their place
@@ -250,6 +293,9 @@ impl<'a> App<'a> {
                 (Some(a), Some(b)) => rank(a, b, self.sort),
                 _ => core::cmp::Ordering::Equal,
             });
+        }
+        if self.order == Order::Ascending {
+            rows[..pairs].reverse();
         }
         self.rows = rows;
         let position = kept.and_then(|kept| self.rows.iter().position(|&row| row == kept));
@@ -456,6 +502,17 @@ impl<'a> App<'a> {
             KeyCode::Char('/') => self.screen = Screen::Filter,
             KeyCode::Char('s') => {
                 self.sort = self.sort.next();
+                self.refresh();
+            }
+            KeyCode::Char('S') => {
+                self.order = match self.order {
+                    Order::Descending => Order::Ascending,
+                    Order::Ascending => Order::Descending,
+                };
+                self.refresh();
+            }
+            KeyCode::Char('t') => {
+                self.touched = next_touched(self.touched);
                 self.refresh();
             }
             KeyCode::Char('a') => {
@@ -877,6 +934,63 @@ mod tests {
     }
 
     #[test]
+    fn a_kind_touched_narrows_the_pairs_and_cycles_back() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        let every = app.rows.len();
+        for &kind in &TOUCHED_KINDS {
+            press(&mut app, &[KeyCode::Char('t')]);
+            assert_eq!(app.touched, Some(kind));
+            for &row in &app.rows {
+                let Entry::Pair(index) = app.entries[row].entry else {
+                    panic!("only pairs touch code");
+                };
+                assert!(diff.matched[index].kinds.present().any(|(touched, _)| touched == kind));
+            }
+        }
+        press(&mut app, &[KeyCode::Char('t')]);
+        assert_eq!(app.touched, None, "after the last kind, every kind");
+        assert_eq!(app.rows.len(), every);
+
+        // The fixture adds a call, so `call` keeps a row.
+        app.touched = Some(EditKind::Call);
+        app.refresh();
+        assert!(!app.rows.is_empty());
+        assert!(screen(&mut app, 120, 12).contains("touched call"));
+    }
+
+    #[test]
+    fn a_reversed_sort_lists_the_pairs_the_other_way() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        let forward = app.rows.clone();
+        press(&mut app, &[KeyCode::Char('S')]);
+        assert_eq!(app.order, Order::Ascending);
+        let backward: Vec<usize> = app.rows.iter().rev().copied().collect();
+        assert_eq!(backward, forward);
+        assert!(screen(&mut app, 120, 12).contains("sort added ↑"));
+        press(&mut app, &[KeyCode::Char('S')]);
+        assert_eq!(app.rows, forward);
+    }
+
+    #[test]
+    fn the_filter_matches_letters_in_order() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        // `dsp` is no part of `dispatch`, but its letters come in order.
+        press(
+            &mut app,
+            &[KeyCode::Char('/'), KeyCode::Char('d'), KeyCode::Char('s'), KeyCode::Char('p')],
+        );
+        let labels: Vec<&str> =
+            app.rows.iter().map(|&row| app.entries[row].label.as_str()).collect();
+        assert_eq!(labels, ["dispatch"]);
+    }
+
+    #[test]
     fn help_opens_over_any_screen_and_holds_the_keys() {
         let Some((before, after)) = firmware() else { return };
         let diff = diff_with(&before, &after, Options::default());
@@ -934,7 +1048,7 @@ mod tests {
     fn any_keys_keep_the_selection_inside_the_rows() {
         let Some((before, after)) = firmware() else { return };
         let diff = diff_with(&before, &after, Options::default());
-        const KEYS: [KeyCode; 21] = [
+        const KEYS: [KeyCode; 23] = [
             KeyCode::Up,
             KeyCode::Down,
             KeyCode::PageUp,
@@ -956,6 +1070,8 @@ mod tests {
             KeyCode::Char(']'),
             KeyCode::Char('['),
             KeyCode::Char('?'),
+            KeyCode::Char('t'),
+            KeyCode::Char('S'),
         ];
         const MICE: [MouseEventKind; 3] = [
             MouseEventKind::ScrollDown,
