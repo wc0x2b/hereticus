@@ -91,6 +91,71 @@ the build. An edit that occurs in one function is a signal.
 
 Applies to: the sort order of the report, as a weight on each edit.
 
+## 7. Conserved order (synteny)
+
+Source: comparative genomics. Genes that sit in the same order in two
+genomes (synteny) tell orthologs from paralogs that sequence similarity
+alone confuses; see OrthoRefine, which looks for orthologs in a window of
+neighbors, and the survey of synteny tools in
+<https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-024-05786-7>.
+
+Idea, not found in the binary diffing work above: a linker places the
+functions of one object in source order, and a new release keeps most of
+that order. A function that sits between two pairs pairs with the one that
+sits between their partners, even where its code changed too much to
+score. A pair that breaks the order is more likely wrong.
+
+Applies to: `Cascade::pair_by_layout`.
+
+## 8. Saturate repeated evidence (BM25)
+
+Source: Robertson and Zaragoza, *The Probabilistic Relevance Framework:
+BM25 and Beyond*, Foundations and Trends in Information Retrieval, 2009.
+
+Idea: the first occurrences of a term are strong evidence, and each more
+occurrence adds less. The term frequency saturates as
+`tf · (k1 + 1) / (tf + k1)`.
+
+Applies to: `Match::rarity`, so that forty copies of one moved instruction
+do not outrank three rare ones.
+
+## 9. Optimal assignment
+
+Source: Kuhn, *The Hungarian Method for the Assignment Problem*, Naval
+Research Logistics Quarterly, 1955.
+
+Idea: choose the pairs whose scores sum highest, in place of best first,
+which is a ½-approximation of that sum.
+
+Applies to: the similarity stage, which takes candidates best first.
+
+## 10. Reciprocal best hits
+
+Source: ortholog detection, where two genes are orthologs if each is the
+other's best match. Known to fail on duplicated genes:
+<https://arxiv.org/abs/0706.0117>.
+
+Idea: pair two functions only where each is the other's best candidate.
+
+## 11. Weisfeiler-Lehman graph hashing
+
+Source: Shervashidze et al., *Weisfeiler-Lehman Graph Kernels*, JMLR 12,
+2011. <https://www.jmlr.org/papers/v12/shervashidze11a.html>
+
+Idea: label each node with its own label and the multiset of its
+neighbors' labels, and repeat. The labels hash the structure around each
+node in linear time.
+
+## 12. Outliers among the changes
+
+Source: anomaly detection; distance from the centroid of a population.
+
+Idea, not found in the binary diffing work above: another compiler or
+flag makes the same kind of edit in many functions, so their edits point
+the same way as vectors of added instructions. A fix is an edit unlike
+the others. Score each pair by one minus the cosine of its edit against
+the sum of all edits.
+
 ## Lower fit
 
 - Ye, Zhou and Zhang, *Enhancing Semantic-Aware Binary Diffing with
@@ -144,14 +209,18 @@ work of this file (commit `feaee43`) and after:
 | Set | Right | Wrong | Gone | New |
 |---|---|---|---|---|
 | Backports, before | 25260 | 956 | 6282 | 8295 |
-| Backports, after | 26408 (+1148) | 993 (+37) | 5097 | 7110 |
+| Backports, entries 1 to 6 | 26408 (+1148) | 993 (+37) | 5097 | 7110 |
+| Backports, entry 7 too | 28904 (+3644) | 810 (−146) | 2781 | 4794 |
 | Ubuntu, before | 264724 | 282 | 612 | 678 |
-| Ubuntu, after | 264757 (+33) | 287 (+5) | 574 | 640 |
+| Ubuntu, entries 1 to 6 | 264757 (+33) | 287 (+5) | 574 | 640 |
+| Ubuntu, entry 7 too | 264862 (+138) | 248 (−34) | 228 | 294 |
 
 The backports are where another build rewrites the code, which is where
-context and constants help. An Ubuntu update keeps the compiler and the
-flags, so nearly every function already paired; there, the new pairs are
-in 11 of 26 library builds, and the 5 wrong ones in expat and gnutls.
+context, constants and order help. An Ubuntu update keeps the compiler
+and the flags, so nearly every function already paired. Entry 7, the
+order of the functions, is the one change that pairs more right *and*
+fewer wrong on both sets. Most of what it pairs in the Ubuntu set is code
+no debug symbol covers, such as the PLT, so it counts as neither.
 
 The rank of the fix under `--sort added` (the default) and `--sort rare`,
 lower is better:
@@ -188,6 +257,12 @@ Before any change, on the backports: 25260 right, 956 wrong, 6282 gone,
 | 3. Seed, chain, extend | `align` | no change: no backport function is that large | Kept |
 | 6. IDF of additions | `Match::rarity`, `--sort rare` | see below | Kept, not the default |
 | 5. Security features | added branches, calls and returns | see below | Not kept |
+| 7. Conserved order | `Cascade::pair_by_layout` | +2496 right, −183 wrong | Kept |
+| 8. BM25 saturation | `saturated` in `Match::rarity` | see below | Kept |
+| 9. Optimal assignment | Hungarian method per group of candidates | −50 right, +78 wrong | Not kept |
+| 10. Reciprocal best hits | only mutual best candidates pair | −81 right, −94 wrong | Not kept: a trade |
+| 11. WL hashing of the CFG | — | not built | Not kept: `il::flow_features` already hashes the data flow this way |
+| 12. Outliers among changes | cosine against the centroid | see below | see below |
 
 ### 1 and 2: context
 
@@ -241,3 +316,56 @@ helps most: the Lua fix, a new guard of three instructions, rose from row
 which is why the mean reciprocal rank is lower. The guard features of
 entry 5 (added branches, calls and returns) helped the Lua fix and
 smbfs, but put the large fixes far down, so they are not kept.
+
+### 7: conserved order
+
+Pairing the free functions of a gap in order, where both sides hold as
+many, paired 1996 more right and 59 more wrong at a floor of 0.1. Two
+safeguards came from cases the fixtures showed:
+
+- Two unrelated objects of eight functions each paired three functions
+  by place alone, with no pair around them. Now the order counts only
+  where a quarter of the smaller binary pairs in order; this cost 4 right
+  pairs on the backports.
+- A gap whose counts differ means a function went or came. Aligning such
+  a gap by its scores (Needleman-Wunsch) paired at 70% precision at
+  best, and at no better when a pair had to share call edges too, so
+  these gaps are left alone.
+
+Then the order repairs: a weak pair off the chain of pairs in order is
+undone, its functions pair by place where they can, and it comes back
+where they do not. This paired 504 more right and 242 fewer wrong.
+Leaving the undone pairs unpaired lost 927 right pairs to save 207 wrong.
+
+The fixture tests that showed a function as gone and new, such as
+`factorial` from `-O1` to `-O2`, or `check_header` and `dispatch` in the
+MIPS firmware, now show it as changed, which the symbols confirm.
+
+### 9 and 10: assignment
+
+Choosing the pairs whose scores sum highest paired 50 fewer right and 78
+more wrong than best first: the sum trades one sure pair for two weak
+ones. Best first takes a pair only when it is the best that remains for
+both of its functions, which is already a weak form of reciprocal best
+hits. The strict form, the best of all candidates for both, drops pairs
+that are right in about half the cases, so it trades recall for
+precision and is not kept.
+
+### 8 and 12: ranking, again
+
+After entry 7 pairs more functions, more rows hold a change, so the ranks
+below are not comparable with the table above. `rare` is entry 6 with the
+BM25 saturation of entry 8.
+
+| Order | Backports MRR | Top 1 | Ubuntu MRR | Top 1 | IOGPU | smbfs | ubusd | kernel |
+|---|---|---|---|---|---|---|---|---|
+| added | 0.546 | 63 | 0.798 | 115 | 19 | 9 | 5 | 1 |
+| rare, entry 6 alone | 0.481 | 51 | 0.792 | 112 | 9 | 9 | 6 | 1 |
+| rare, with BM25 | 0.510 | 57 | 0.795 | 113 | 6 | 8 | 6 | 1 |
+| rare × (0.5 + outlier) | 0.503 | 55 | 0.778 | 108 | 2 | 6 | 6 | 1 |
+
+BM25 makes `rare` better on every set, and it is kept. The outlier score
+of entry 12 ranks the four published fixes best of all, but it is worse
+on the 300 backports and Ubuntu updates, and four fixes are too few to
+trust over them, so it is not kept. `added` stays the default: no order
+beats it on the mean reciprocal rank of any large set.
