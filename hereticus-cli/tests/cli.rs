@@ -163,6 +163,70 @@ fn compact_format_is_stable() {
     ]));
 }
 
+/// The markdown format is for documents, so its table must stay put.
+#[test]
+fn markdown_format_is_stable() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(hereticus().args([
+        "--format",
+        "markdown",
+        "--ignore-names",
+        "fixtures/build/O1/basic.o",
+        "fixtures/build/O2/basic.o",
+    ]));
+}
+
+/// The JSON format is for tools, so its fields must stay put.
+#[test]
+fn json_format_is_stable() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(hereticus().args([
+        "--format",
+        "json",
+        "--ignore-names",
+        "fixtures/build/O1/basic.o",
+        "fixtures/build/O2/basic.o",
+    ]));
+}
+
+/// The JSON report parses, and its totals agree with what it lists.
+#[test]
+fn the_json_report_parses_and_adds_up() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    let output = hereticus()
+        .args([
+            "--format",
+            "json",
+            "--all",
+            "--ignore-names",
+            "fixtures/build/O1/basic.o",
+            "fixtures/build/O2/basic.o",
+        ])
+        .output()
+        .expect("hereticus runs");
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the report is JSON");
+    let count = |key: &str| report[key].as_array().expect("a list").len();
+    let totals = &report["totals"];
+    assert_eq!(totals["matched"].as_u64(), Some(count("pairs") as u64), "--all lists every pair");
+    assert_eq!(totals["gone"].as_u64(), Some(count("gone") as u64));
+    assert_eq!(totals["new"].as_u64(), Some(count("new") as u64));
+    let first = &report["pairs"][0];
+    assert!(first["before"]["name"].is_string() && first["after"]["address"].is_u64());
+}
+
 /// Matching without names is the stripped-binary case.
 #[test]
 fn reports_functions_that_only_one_side_has() {

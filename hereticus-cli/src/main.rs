@@ -3,6 +3,8 @@
 //! The library holds the analysis. This binary reads arguments, prints
 //! results, and chooses an exit status.
 
+mod formats;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -238,6 +240,10 @@ enum Format {
     Text,
     /// One line per function, for a script to read.
     Compact,
+    /// A markdown table, to paste into a document.
+    Markdown,
+    /// One JSON object, for another tool to read.
+    Json,
 }
 
 /// How to order the changed functions in the report.
@@ -424,6 +430,23 @@ fn run(args: &Args) -> Result<bool, String> {
         Format::Compact => {
             print_compact(&diff, &before, &after, args.all, Hidden::from_args(args), args.sort)
         }
+        Format::Markdown => formats::print_markdown(
+            &diff,
+            &before,
+            &after,
+            args.all,
+            Hidden::from_args(args),
+            args.sort,
+            args.near_miss,
+        ),
+        Format::Json => formats::print_json(
+            &diff,
+            &before,
+            &after,
+            args.all,
+            Hidden::from_args(args),
+            args.sort,
+        ),
     }
 
     Ok(diff.changed().count() > 0 || !diff.removed.is_empty() || !diff.added.is_empty())
@@ -1039,9 +1062,31 @@ fn print_compact(
 }
 
 fn summarize(diff: &Diff, hidden: Hidden) {
+    let lines = summary_lines(diff, hidden);
+    // A table or a list comes before the totals, so a blank line parts them.
+    if lines.len() > 1 || !nothing_happened(diff) {
+        println!();
+    }
+    for line in lines {
+        println!("{line}");
+    }
+}
+
+/// Report whether nothing changed, went or came.
+fn nothing_happened(diff: &Diff) -> bool {
+    diff.changed().count() == 0 && diff.removed.is_empty() && diff.added.is_empty()
+}
+
+/// The totals of a report, and how many rows it held back, a line each.
+fn summary_lines(diff: &Diff, hidden: Hidden) -> Vec<String> {
     let changed = diff.changed().count();
     let same = diff.matched.len() - changed;
-    let nothing_happened = changed == 0 && diff.removed.is_empty() && diff.added.is_empty();
+
+    // Say so plainly when there is nothing to report. A bare count after an
+    // empty table reads like the tool failed.
+    if nothing_happened(diff) {
+        return vec![format!("No functions changed. {} matched.", diff.matched.len())];
+    }
 
     // A count that disagrees with the table reads like a bug, so say how many
     // rows were held back and how to see them.
@@ -1059,29 +1104,24 @@ fn summarize(diff: &Diff, hidden: Hidden) {
         0
     };
 
-    // Say so plainly when there is nothing to report. A bare count after an
-    // empty table reads like the tool failed.
-    if nothing_happened {
-        println!("No functions changed. {} matched.", diff.matched.len());
-        return;
-    }
-
-    println!();
-    println!(
+    let mut lines = vec![format!(
         "{} matched ({same} unchanged, {changed} changed), {} gone, {} new",
         diff.matched.len(),
         diff.removed.len(),
         diff.added.len()
-    );
+    )];
     if hidden_retouched > 0 {
-        println!(
+        lines.push(format!(
             "{hidden_retouched} changed only a constant, hidden. Use --show-retouched to list them."
-        );
+        ));
     }
     if hidden_data > 0 {
         let regions = if hidden_data == 1 { "region" } else { "regions" };
-        println!("{hidden_data} data {regions} changed, hidden. Use --show-data to list them.");
+        lines.push(format!(
+            "{hidden_data} data {regions} changed, hidden. Use --show-data to list them."
+        ));
     }
+    lines
 }
 
 #[cfg(test)]
