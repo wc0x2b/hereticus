@@ -150,11 +150,14 @@ fn addresses_of(binary: &Binary, index: usize) -> Vec<u64> {
     insns.iter().map(|insn| insn.address).collect()
 }
 
-/// Whether the help shows over the screen.
+/// What shows over the screen and holds the keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Help {
-    Shown,
-    Hidden,
+enum Overlay {
+    None,
+    Help,
+    /// Asks whether to quit, as `heretek` does: `Enter` quits and `Esc`
+    /// goes back.
+    Quit,
 }
 
 /// Whether the browser goes on after a key.
@@ -189,7 +192,7 @@ pub struct App<'a> {
     rows: Vec<usize>,
     table: TableState,
     screen: Screen,
-    help: Help,
+    overlay: Overlay,
     /// The height of the last drawn list, which a page moves by.
     page: usize,
     /// Where the last draw put what a click acts on.
@@ -243,7 +246,7 @@ impl<'a> App<'a> {
             rows: Vec::new(),
             table: TableState::default(),
             screen: Screen::Table,
-            help: Help::Hidden,
+            overlay: Overlay::None,
             page: 10,
             regions: Regions::default(),
         };
@@ -424,14 +427,18 @@ impl<'a> App<'a> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Flow::Quit;
         }
-        if self.help == Help::Shown {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q' | '?')) {
-                self.help = Help::Hidden;
+        match (self.overlay, key.code) {
+            (Overlay::Quit, KeyCode::Enter) => return Flow::Quit,
+            (Overlay::Help, KeyCode::Esc | KeyCode::Char('q' | '?'))
+            | (Overlay::Quit, KeyCode::Esc) => {
+                self.overlay = Overlay::None;
+                return Flow::Continue;
             }
-            return Flow::Continue;
+            (Overlay::Help | Overlay::Quit, _) => return Flow::Continue,
+            (Overlay::None, _) => {}
         }
         if key.code == KeyCode::Char('?') && !matches!(self.screen, Screen::Filter) {
-            self.help = Help::Shown;
+            self.overlay = Overlay::Help;
             return Flow::Continue;
         }
         match self.screen {
@@ -448,7 +455,7 @@ impl<'a> App<'a> {
     /// tab changes the screen, and a click on a row selects it, or opens it
     /// where it is selected already.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if self.help == Help::Shown {
+        if self.overlay != Overlay::None {
             return;
         }
         let step = match mouse.kind {
@@ -491,7 +498,7 @@ impl<'a> App<'a> {
     fn handle_table(&mut self, code: KeyCode) -> Flow {
         let page = self.page as isize;
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => return Flow::Quit,
+            KeyCode::Char('q') | KeyCode::Esc => self.overlay = Overlay::Quit,
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::PageDown => self.move_selection(page),
@@ -562,7 +569,7 @@ impl<'a> App<'a> {
         let page = self.page as isize;
         let scroll = |app: &mut Self, step: isize| app.scroll_by(step);
         match code {
-            KeyCode::Char('q') => return Flow::Quit,
+            KeyCode::Char('q') => self.overlay = Overlay::Quit,
             KeyCode::Esc | KeyCode::Backspace => self.screen = Screen::Table,
             KeyCode::Down | KeyCode::Char('j') => scroll(self, 1),
             KeyCode::Up | KeyCode::Char('k') => scroll(self, -1),
@@ -832,7 +839,9 @@ mod tests {
 
         assert_eq!(press(&mut app, &[KeyCode::Esc]), Flow::Continue);
         assert!(matches!(app.screen, Screen::Table));
-        assert_eq!(press(&mut app, &[KeyCode::Char('q')]), Flow::Quit);
+        assert_eq!(press(&mut app, &[KeyCode::Char('q')]), Flow::Continue);
+        assert_eq!(app.overlay, Overlay::Quit, "`q` asks first");
+        assert_eq!(press(&mut app, &[KeyCode::Enter]), Flow::Quit);
     }
 
     #[test]
@@ -991,27 +1000,55 @@ mod tests {
     }
 
     #[test]
+    fn quitting_asks_first() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        for opening in [KeyCode::Char('q'), KeyCode::Esc] {
+            assert_eq!(press(&mut app, &[opening]), Flow::Continue);
+            assert_eq!(app.overlay, Overlay::Quit);
+            // The question holds the keys and the mouse.
+            let selected = app.table.selected();
+            assert_eq!(press(&mut app, &[KeyCode::Down, KeyCode::Char('q')]), Flow::Continue);
+            screen(&mut app, 120, 12);
+            app.handle_mouse(mouse(MouseEventKind::ScrollDown, 10, 10));
+            assert_eq!(app.table.selected(), selected);
+            assert_eq!(press(&mut app, &[KeyCode::Esc]), Flow::Continue);
+            assert_eq!(app.overlay, Overlay::None, "`Esc` goes back");
+        }
+        press(&mut app, &[KeyCode::Char('q')]);
+        insta::assert_snapshot!("tui_quit", screen(&mut app, 120, 12));
+        assert_eq!(press(&mut app, &[KeyCode::Enter]), Flow::Quit);
+
+        // Ctrl+C quits at once, from anywhere.
+        let mut app = App::new(&diff, &before, &after, start());
+        press(&mut app, &[KeyCode::Char('?')]);
+        let control_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.handle(control_c), Flow::Quit);
+    }
+
+    #[test]
     fn help_opens_over_any_screen_and_holds_the_keys() {
         let Some((before, after)) = firmware() else { return };
         let diff = diff_with(&before, &after, Options::default());
         let mut app = App::new(&diff, &before, &after, start());
         press(&mut app, &[KeyCode::Char('?')]);
-        assert_eq!(app.help, Help::Shown);
+        assert_eq!(app.overlay, Overlay::Help);
         let sort = app.sort;
         assert_eq!(press(&mut app, &[KeyCode::Char('s'), KeyCode::Char('q')]), Flow::Continue);
         assert_eq!(app.sort, sort, "the help holds the keys");
-        assert_eq!(app.help, Help::Hidden, "`q` closes the help, not the browser");
+        assert_eq!(app.overlay, Overlay::None, "`q` closes the help, not the browser");
 
         // In the filter, `?` is a letter of a name.
         press(&mut app, &[KeyCode::Char('/'), KeyCode::Char('?')]);
-        assert_eq!(app.help, Help::Hidden);
+        assert_eq!(app.overlay, Overlay::None);
         assert_eq!(app.filter, "?");
 
         press(&mut app, &[KeyCode::Esc, KeyCode::Enter, KeyCode::Char('?')]);
         assert!(matches!(app.screen, Screen::Pair(_)));
-        assert_eq!(app.help, Help::Shown);
+        assert_eq!(app.overlay, Overlay::Help);
         press(&mut app, &[KeyCode::Esc]);
-        assert_eq!(app.help, Help::Hidden);
+        assert_eq!(app.overlay, Overlay::None);
         assert!(matches!(app.screen, Screen::Pair(_)), "`esc` closes the help only");
     }
 
@@ -1091,7 +1128,7 @@ mod tests {
                     let modifiers = KeyModifiers::NONE;
                     app.handle_mouse(MouseEvent { kind: mouse, column, row, modifiers });
                 } else if app.handle(KeyEvent::from(KEYS[kind % KEYS.len()])) == Flow::Quit {
-                    // `Esc` on the table ends the run.
+                    // `Enter` on the question to quit ends the run.
                     return;
                 }
                 match app.table.selected() {
