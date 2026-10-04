@@ -11,11 +11,12 @@ use ratatui::widgets::{
     Table, Tabs,
 };
 
+use super::rows::{Half, Side, side_by_side, unified};
 use super::theme::{
     ADDED, BLUE, DARK_GRAY, EDITED, Focus, GRAY, GRAY_FG, GREEN, ORANGE, PURPLE, REMOVED, YELLOW,
     pane_block, tone_of,
 };
-use super::{App, Entry, Help, Labeled, Layout, Scope, Screen, Side, side_by_side, unified};
+use super::{App, Entry, Help, Labeled, Layout, Scope, Screen};
 use crate::{
     DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_view,
     unmatched_word,
@@ -24,7 +25,7 @@ use crate::{
 /// The keys of each pane, at the right of its frame.
 const TABLE_HINTS: &str = "⏎ open  s sort  / filter";
 const FILTER_HINTS: &str = "⏎ keep  esc clear";
-const PAIR_HINTS: &str = "v asm/il  l layout  n/p next/prev  esc back";
+const PAIR_HINTS: &str = "]/[ change  v asm/il  l layout  n/p next/prev  esc back";
 
 impl App<'_> {
     pub(super) fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -181,20 +182,29 @@ impl App<'_> {
         let scroll = u16::try_from(opened.scroll).unwrap_or(u16::MAX);
         let label = &self.entries[index].label;
         let view = name_of_view(self.view);
+        let (at, changes) = self.change_position();
+        let position = match changes {
+            0 => "no change".to_string(),
+            changes => format!("change {at} of {changes}"),
+        };
         let context = Some(match &opened.against {
-            Some(against) => format!("{label}  against {against}  {view}"),
-            None => format!("{label}  {view}"),
+            Some(against) => format!("{label}  against {against}  {view}  {position}"),
+            None => format!("{label}  {view}  {position}"),
         });
         let block = pane_block("Diff", context, PAIR_HINTS, Focus::Active);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         // The scrollbar takes the last column.
         let content = Rect { width: inner.width.saturating_sub(1), ..inner };
+        let addresses = &opened.addresses;
+        let width = address_width(addresses.before.iter().chain(&addresses.after).copied());
         let total = match self.layout {
             Layout::SideBySide => {
-                let rows = side_by_side(&opened.lines);
-                let (left, right): (Vec<Line<'_>>, Vec<Line<'_>>) =
-                    rows.iter().map(|row| (side_line(row.left), side_line(row.right))).unzip();
+                let rows = side_by_side(&opened.lines, addresses);
+                let (left, right): (Vec<Line<'_>>, Vec<Line<'_>>) = rows
+                    .iter()
+                    .map(|row| (half_line(row.left, width), half_line(row.right, width)))
+                    .unzip();
                 let [left_area, divider, right_area] = Split::horizontal([
                     Constraint::Fill(1),
                     Constraint::Length(1),
@@ -210,8 +220,9 @@ impl App<'_> {
                 rows.len()
             }
             Layout::Unified => {
-                let sides = unified(&opened.lines);
-                let lines: Vec<Line<'_>> = sides.iter().map(|side| side_line(*side)).collect();
+                let sides = unified(&opened.lines, addresses);
+                let lines: Vec<Line<'_>> =
+                    sides.iter().map(|half| half_line(*half, width)).collect();
                 frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content);
                 sides.len()
             }
@@ -279,15 +290,31 @@ impl App<'_> {
     }
 }
 
-/// A line of a diff, with the sign and the color of a patch.
-fn side_line(side: Side<'_>) -> Line<'static> {
-    match side {
-        Side::Empty => Line::default(),
-        Side::Same(text) => Line::from(format!("  {text}")),
-        Side::Removed(text) => Line::styled(format!("- {text}"), Style::new().fg(REMOVED)),
-        Side::Added(text) => Line::styled(format!("+ {text}"), Style::new().fg(ADDED)),
-        Side::Changed(text) => Line::styled(format!("~ {text}"), Style::new().fg(EDITED)),
-    }
+/// How many hex digits the widest address takes.
+fn address_width(addresses: impl Iterator<Item = u64>) -> usize {
+    let widest = addresses.max().unwrap_or(0);
+    (u64::BITS - widest.leading_zeros()).div_ceil(4).max(1) as usize
+}
+
+/// A line of a diff: the address of its instruction in gray, then the line
+/// with the sign and the color of a patch.
+fn half_line(half: Half<'_>, width: usize) -> Line<'static> {
+    let (sign, text, color) = match half.side {
+        Side::Empty => return Line::default(),
+        Side::Same(text) => (' ', text, None),
+        Side::Removed(text) => ('-', text, Some(REMOVED)),
+        Side::Added(text) => ('+', text, Some(ADDED)),
+        Side::Changed(text) => ('~', text, Some(EDITED)),
+    };
+    let address = match half.address {
+        Some(address) => format!("{address:>width$x} "),
+        None => " ".repeat(width + 1),
+    };
+    let style = color.map_or_else(Style::new, |color| Style::new().fg(color));
+    Line::from(vec![
+        Span::styled(address, Style::new().fg(GRAY_FG)),
+        Span::styled(format!("{sign} {text}"), style),
+    ])
 }
 
 /// The `+/-/~` cell, each count in the color of its kind.
@@ -356,6 +383,7 @@ fn draw_help(frame: &mut Frame<'_>) {
         help_entry("j / k", "down / up"),
         help_entry("PgDn/PgUp", "a page down / up"),
         help_entry("g / G", "top / bottom"),
+        help_entry("] / [", "next / previous change"),
         help_entry("v", "assembly or IL"),
         help_entry("l", "side by side or one"),
         help_entry("n / p", "next / previous"),
