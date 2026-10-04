@@ -148,3 +148,8 @@ more right and 332 more wrong. At the present precision the gain is
 small, 14 more right and 3 fewer wrong at 0.63, and the change would move
 every score a report shows and the meaning of `--threshold`. Revisit it
 with the threshold.
+
+## Use our lift to generate some type of pcode (or whatever binja uses) like output for --diff
+This would be really nice in --diff, but maybe we could use it for more? Even use
+it to get a better diff for comparison?
+

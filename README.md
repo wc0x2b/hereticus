@@ -40,24 +40,25 @@ EX6100v2. The ARM decompressor stub is 15 KB of shipped code with no symbols,
 and 43 of its 15,351 bytes changed:
 
 ```console
-$ hereticus --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
-╭──────────────┬────────────────┬───────┬───────┬─────────┬────────────╮
-│ FUNCTION     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED │ MATCHED BY │
-├──────────────┼────────────────┼───────┼───────┼─────────┼────────────┤
-│ sub_80208000 │ changed        │  0.98 │ 1/1/1 │ -       │ similar    │
-│ sub_8020a338 │ changed        │  0.94 │ 0/0/1 │ -       │ similar    │
-│ sub_80208af8 │ changed        │  0.95 │ 0/0/1 │ -       │ similar    │
-│ sub_80208a18 │ changed        │  0.96 │ 0/0/1 │ -       │ similar    │
-│ sub_80209154 │ changed        │  0.96 │ 0/0/1 │ 1 mem   │ similar    │
-│ sub_8020b1f8 │ changed        │  0.98 │ 0/0/1 │ -       │ similar    │
-│ sub_80208e08 │ changed unread │  0.98 │ 0/0/1 │ -       │ similar    │
-│ sub_8020a3bc │ changed        │  1.00 │ 0/0/1 │ -       │ similar    │
-╰──────────────┴────────────────┴───────┴───────┴─────────┴────────────╯
+$ hereticus --format markdown --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
+```
+
+| FUNCTION       | CHANGE         | SCORE | +/-/~ | TOUCHED | MATCHED BY |
+|----------------|----------------|-------|-------|---------|------------|
+| `sub_80208000` | changed        | 0.98  | 1/1/1 | -       | similar    |
+| `sub_8020a338` | changed        | 0.94  | 0/0/1 | -       | similar    |
+| `sub_80208af8` | changed        | 0.95  | 0/0/1 | -       | similar    |
+| `sub_80208a18` | changed        | 0.96  | 0/0/1 | -       | similar    |
+| `sub_80209154` | changed        | 0.96  | 0/0/1 | 1 mem   | similar    |
+| `sub_8020b1f8` | changed        | 0.98  | 0/0/1 | -       | similar    |
+| `sub_80208e08` | changed unread | 0.98  | 0/0/1 | -       | similar    |
+| `sub_8020a3bc` | changed        | 1.00  | 0/0/1 | -       | similar    |
 
 67 matched (57 unchanged, 10 changed), 0 gone, 0 new
+
 1 changed only a constant, hidden. Use --show-retouched to list them.
+
 1 data region changed, hidden. Use --show-data to list them.
-```
 
 The `+/-/~` column counts the instructions the edit added, removed and rewrote.
 A score of 1.00 with no instruction touched means only a constant changed, so
@@ -77,16 +78,15 @@ rather than `1 const`.
 Two versions of one firmware, built the same way, one release apart:
 
 ```console
-$ hereticus --show-retouched fw-v1.elf fw-v2.elf
-╭─────────────────┬────────────────┬───────┬─────────┬────────────────────────────────────────────────────┬─────────────────╮
-│ FUNCTION        │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                            │ MATCHED BY      │
-├─────────────────┼────────────────┼───────┼─────────┼────────────────────────────────────────────────────┼─────────────────┤
-│ dispatch        │ changed        │  0.62 │ 21/11/5 │ 4 branch, 1 call, 6 jump, 6 mem, 1 const           │ same name       │
-│ check_header    │ changed        │  0.31 │ 8/1/0   │ 1 branch, 1 call, 1 mem                            │ same name       │
-│ handle          │ changed        │  0.76 │ 8/4/4   │ 1 branch, 1 call, 1 jump, 1 mem, 1 const, 2 unread │ same name       │
-│ validate_length │ changed values │  1.00 │ -       │ -                                                  │ identical shape │
-╰─────────────────┴────────────────┴───────┴─────────┴────────────────────────────────────────────────────┴─────────────────╯
+$ hereticus --format markdown --show-retouched fw-v1.elf fw-v2.elf
 ```
+
+| FUNCTION          | CHANGE         | SCORE | +/-/~   | TOUCHED                                            | MATCHED BY      |
+|-------------------|----------------|-------|---------|----------------------------------------------------|-----------------|
+| `dispatch`        | changed        | 0.62  | 21/11/5 | 4 branch, 1 call, 6 jump, 6 mem, 1 const           | same name       |
+| `check_header`    | changed        | 0.31  | 8/1/0   | 1 branch, 1 call, 1 mem                            | same name       |
+| `handle`          | changed        | 0.76  | 8/4/4   | 1 branch, 1 call, 1 jump, 1 mem, 1 const, 2 unread | same name       |
+| `validate_length` | changed values | 1.00  | -       | -                                                  | identical shape |
 
 The `1 call` on `check_header` is an added call to an authentication routine.
 The `1 const` on `handle` is a bound that moved from 1024 to 512, arriving
