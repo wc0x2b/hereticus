@@ -172,8 +172,6 @@ them, and none of them is a fault:
   own line says nothing more.
 - NEON and VFP work, as `vmov`, `vcmp` and `vmrs`, which the lift names
   `Vector` or `Float` only.
-- The MIPS float compares that are true on a NaN, as `c.ult.d` and
-  `c.un.d`, which no operator names.
 
 ## Name what the IL view cannot name yet
 
