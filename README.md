@@ -25,6 +25,7 @@ $ hereticus --all before.elf after.elf              # every function
 $ hereticus --diff array_max before.elf after.elf   # the diff of one function
 $ hereticus --diff-all before.elf after.elf         # the diff of every changed function
 $ hereticus --view il --diff array_max a.elf b.elf  # the diff as IL statements
+$ hereticus --tui before.elf after.elf              # browse, sort and open diffs in the terminal
 $ hereticus --ignore-names before.elf after.elf     # match from the code alone
 $ hereticus --format markdown before.elf after.elf  # a table to paste into a document
 $ hereticus --format json before.elf after.elf      # for another tool to read
@@ -122,6 +123,13 @@ mul_by_constant
   return
 ```
 
+`--tui` compares the two binaries once, then shows the report as a table to
+browse. `s` changes the order, `a`, `r` and `d` show every pair, the
+retouched pairs and the data regions, and `/` filters on the names. `Enter`
+opens the diff of a pair side by side: `v` changes between assembly and IL,
+`l` changes to one column, and `n` and `p` go to the next and the previous
+pair.
+
 Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
 and 2 when the input could not be read.
 
@@ -158,7 +166,8 @@ Options:
   -a, --all                    Report every function, not only the ones that changed
       --diff <FUNCTION>        Show the instruction-level diff of one function, then stop
       --diff-all               Show the instruction-level diff of every changed function, then stop
-      --view <VIEW>            How `--diff` and `--diff-all` show each instruction [default: asm] [possible values: asm, il]
+      --tui                    Browse the report in the terminal, and change its order, its filters and the diff it shows without a second run
+      --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il]
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
       --show-data              List regions that look like data rather than code

@@ -22,9 +22,11 @@ clap = { version = "4.5", features = ["derive"] }
 indicatif = "0.18.6"
 console = "0.16"
 tabled = { version = "0.22.0", default-features = false, features = ["ansi", "derive", "std"] }
+ratatui = "0.30.2"
 
 [dev-dependencies]
 insta = "1.48"
 # Checks that the JSON report parses.
 serde_json = "1"
 insta-cmd = "0.7"
+bolero = { version = "0.13", features = ["arbitrary"] }

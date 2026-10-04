@@ -114,6 +114,18 @@ fn an_added_call_is_reported_at_every_optimization_level() {
     }
 }
 
+/// The browser needs a terminal, and says so before the comparison runs.
+#[test]
+fn the_tui_stops_without_a_terminal() {
+    assert_cmd_snapshot!(hereticus().args(["--tui", "missing.o", "missing_v2.o"]));
+}
+
+/// The browser shows the report, so it takes no other way to print one.
+#[test]
+fn the_tui_takes_no_other_output() {
+    assert_cmd_snapshot!(hereticus().args(["--tui", "--format", "json", "a.o", "b.o"]));
+}
+
 #[test]
 fn reports_every_function_when_asked() {
     if !fixtures_present() {
