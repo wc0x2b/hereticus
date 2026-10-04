@@ -391,7 +391,28 @@ impl Arch for Thumb2 {
             }
             _ => None,
         };
-        lift_with(InstDecoder::default_thumb(), insn, word, a32.map(|a32| (a32, Encoding::T32)))
+        let mut lifted = lift_with(
+            InstDecoder::default_thumb(),
+            insn,
+            word,
+            a32.map(|a32| (a32, Encoding::T32)),
+        )?;
+        // `yaxpeax-arm` misplaces `imm4` of `movw` and `movt`, so the
+        // constant is read again from the encoding, as the text is.
+        if let [low, high, second_low, second_high] = *word
+            && let Some(value) = wide_move_value(
+                u16::from_le_bytes([low, high]),
+                u16::from_le_bytes([second_low, second_high]),
+            )
+            && let Some(constant) = lifted
+                .operands
+                .iter_mut()
+                .rev()
+                .find(|operand| matches!(operand, crate::il::Operand::Const(_)))
+        {
+            *constant = crate::il::Operand::Const(u64::from(value));
+        }
+        Some(lifted)
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
@@ -427,6 +448,13 @@ impl Arch for Thumb2 {
 /// builds have `imm4` clear, so only a far jump, as from T32 to an A32
 /// function, showed it.
 fn wide_move_operands(first: u16, second: u16) -> Option<String> {
+    let value = wide_move_value(first, second)?;
+    let register = REGISTER_NAMES[usize::from(second >> 8 & 0xf)];
+    Some(format!("{register}, {value:#x}"))
+}
+
+/// The 16-bit value of a T32 `movw` or `movt`: see [`wide_move_operands`].
+fn wide_move_value(first: u16, second: u16) -> Option<u32> {
     const MOVW: u16 = 0xf240;
     const MOVT: u16 = 0xf2c0;
     const OPCODE_MASK: u16 = 0xfbf0;
@@ -437,9 +465,7 @@ fn wide_move_operands(first: u16, second: u16) -> Option<String> {
     let i = u32::from(first >> 10 & 1);
     let imm3 = u32::from(second >> 12 & 0b111);
     let imm8 = u32::from(second & 0xff);
-    let value = imm4 << 12 | i << 11 | imm3 << 8 | imm8;
-    let register = REGISTER_NAMES[usize::from(second >> 8 & 0xf)];
-    Some(format!("{register}, {value:#x}"))
+    Some(imm4 << 12 | i << 11 | imm3 << 8 | imm8)
 }
 
 /// The T32 `tbb` or `tbh`, read from the encoding:
@@ -749,6 +775,10 @@ mod tests {
         assert_eq!((low.mnemonic.as_str(), low.operands.as_str()), ("mov", "ip, 0xfaac"));
         let high = decode_one(&[0xf6cf, 0x7cfe]);
         assert_eq!((high.mnemonic.as_str(), high.operands.as_str()), ("movt", "ip, 0xfffe"));
+        // The lift holds the same values the text shows.
+        let constant = |values: &[u16]| lift_one(values).operands.last().copied();
+        assert_eq!(constant(&[0xf64f, 0x2cac]), Some(crate::il::Operand::Const(0xfaac)));
+        assert_eq!(constant(&[0xf6cf, 0x7cfe]), Some(crate::il::Operand::Const(0xfffe)));
     }
 
     #[test]

@@ -13,7 +13,7 @@ use console::Term;
 use hereticus::address::Contents;
 use hereticus::matching::{
     Changed, Confidence, Diff, DiffLine, EditKind, EditKinds, Edits, Match, Options, Phase,
-    Progress, UseNames, diff_reporting, instruction_diff,
+    Progress, UseNames, View, diff_reporting, instruction_diff_in,
 };
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};
@@ -53,6 +53,10 @@ struct Args {
     /// function in turn would repeat.
     #[arg(long)]
     diff_all: bool,
+
+    /// How `--diff` and `--diff-all` show each instruction.
+    #[arg(long, value_enum, default_value_t = ViewName::Asm)]
+    view: ViewName,
 
     /// Ignore symbol names, as though both binaries were stripped.
     ///
@@ -246,6 +250,25 @@ enum Format {
     Json,
 }
 
+/// How a diff shows each instruction.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum ViewName {
+    /// As the decoder prints it.
+    Asm,
+    /// As the IL reads it, one statement each, the same on every
+    /// architecture, as `w0 = w1 + 0x10` and `if (w2 u> 0x3f) goto $+0x40`.
+    Il,
+}
+
+impl From<ViewName> for View {
+    fn from(name: ViewName) -> Self {
+        match name {
+            ViewName::Asm => Self::Assembly,
+            ViewName::Il => Self::Il,
+        }
+    }
+}
+
 /// How to order the changed functions in the report.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Sort {
@@ -397,7 +420,8 @@ fn run(args: &Args) -> Result<bool, String> {
     // printing the whole report.
     if let Some(wanted) = &args.diff {
         let paint = Paint::resolve(args.color);
-        return print_one_diff(&diff, &before, &after, wanted, paint).map(|()| false);
+        return print_one_diff(&diff, &before, &after, wanted, args.view.into(), paint)
+            .map(|()| false);
     }
     if args.diff_all {
         let mut shown: Vec<&Match> = diff
@@ -411,7 +435,7 @@ fn run(args: &Args) -> Result<bool, String> {
             if index > 0 {
                 println!();
             }
-            print_pair_diff(pair, &before, &after, paint);
+            print_pair_diff(pair, &before, &after, args.view.into(), paint);
         }
         return Ok(!shown.is_empty());
     }
@@ -806,6 +830,7 @@ fn print_one_diff(
     before: &Binary,
     after: &Binary,
     wanted: &str,
+    view: View,
     paint: Paint,
 ) -> Result<(), String> {
     let index = find_function(before, wanted)
@@ -823,12 +848,12 @@ fn print_one_diff(
         }
     })?;
 
-    print_pair_diff(pair, before, after, paint);
+    print_pair_diff(pair, before, after, view, paint);
     Ok(())
 }
 
 /// Print the name of a pair, then its instruction-level diff.
-fn print_pair_diff(pair: &Match, before: &Binary, after: &Binary, paint: Paint) {
+fn print_pair_diff(pair: &Match, before: &Binary, after: &Binary, view: View, paint: Paint) {
     let before_name = name_of(before, pair.before);
     let after_name = name_of(after, pair.after);
     if before_name == after_name {
@@ -837,7 +862,8 @@ fn print_pair_diff(pair: &Match, before: &Binary, after: &Binary, paint: Paint) 
         println!("{before_name} -> {after_name}");
     }
 
-    let lines = instruction_diff(
+    let lines = instruction_diff_in(
+        view,
         &before.functions[pair.before],
         before.isa,
         &after.functions[pair.after],

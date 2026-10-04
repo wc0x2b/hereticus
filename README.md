@@ -24,6 +24,7 @@ $ hereticus before.elf after.elf                    # what changed
 $ hereticus --all before.elf after.elf              # every function
 $ hereticus --diff array_max before.elf after.elf   # the diff of one function
 $ hereticus --diff-all before.elf after.elf         # the diff of every changed function
+$ hereticus --view il --diff array_max a.elf b.elf  # the diff as IL statements
 $ hereticus --ignore-names before.elf after.elf     # match from the code alone
 $ hereticus --format markdown before.elf after.elf  # a table to paste into a document
 $ hereticus --format json before.elf after.elf      # for another tool to read
@@ -144,6 +145,7 @@ Options:
   -a, --all                    Report every function, not only the ones that changed
       --diff <FUNCTION>        Show the instruction-level diff of one function, then stop
       --diff-all               Show the instruction-level diff of every changed function, then stop
+      --view <VIEW>            How `--diff` and `--diff-all` show each instruction [default: asm] [possible values: asm, il]
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
       --show-data              List regions that look like data rather than code
