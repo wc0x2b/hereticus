@@ -80,6 +80,7 @@ impl Arch for Aarch64 {
 
         let text = inst.to_string();
         let (mnemonic, operands) = split_mnemonic(&text);
+        let operands = extended_register(operands);
         let kind = classify(&inst, &mnemonic, insn_address);
         Ok(Insn { address: insn_address, bytes_len: INSN_WIDTH, mnemonic, operands, kind })
     }
@@ -302,6 +303,24 @@ impl Arch for Aarch64 {
 /// How an instruction moves control. The pointer authentication forms of a
 /// return, a jump and a call, as `retaa`, `braa` and `blraa`, move it as the
 /// plain ones do.
+/// `operands`, with the extend of a 32-bit register named as it is.
+///
+/// `yaxpeax-arm` 0.4 prints `add x1, x3, w1, uxtw #4` as `add x1, x3, w1,
+/// lsl #4`. `lsl` shifts a register of the full width; a `w` register in
+/// a 64-bit operation is zero-extended first, which is `uxtw`.
+fn extended_register(operands: String) -> String {
+    let Some((head, shift)) = operands.rsplit_once(", lsl ") else { return operands };
+    let mut registers = head.split(", ");
+    let first = registers.next().unwrap_or_default();
+    let last = head.rsplit(", ").next().unwrap_or_default();
+    let is_w = |name: &str| name.starts_with('w') && name[1..].bytes().all(|b| b.is_ascii_digit());
+    if (first.starts_with('x') || first == "sp") && is_w(last) {
+        format!("{head}, uxtw {shift}")
+    } else {
+        operands
+    }
+}
+
 fn classify(inst: &Instruction, mnemonic: &str, address: u64) -> InsnKind {
     let target = inst.operands.iter().find_map(|operand| match operand {
         Operand::PCOffset(offset) => address.checked_add_signed(*offset),
@@ -1065,6 +1084,24 @@ fn read_jump_table(
         targets.push(target);
     }
     Some(JumpTable { jump: jump.address, words: table..table + (cases * width) as u64, targets })
+}
+
+#[cfg(test)]
+mod extend_tests {
+    use super::*;
+
+    #[test]
+    fn a_32_bit_register_in_a_64_bit_add_is_zero_extended() {
+        let shown = |words: u32| {
+            let code = words.to_le_bytes();
+            let insn = Aarch64.decode(&code, 0, 0).expect("decodes");
+            format!("{} {}", insn.mnemonic, insn.operands)
+        };
+        // From `llvm-mc --triple=aarch64`.
+        assert_eq!(shown(0x8b21_5061), "add x1, x3, w1, uxtw #4");
+        assert_eq!(extended_register("x0, x1, x2, lsl #3".into()), "x0, x1, x2, lsl #3");
+        assert_eq!(extended_register("w0, w1, w2, lsl #3".into()), "w0, w1, w2, lsl #3");
+    }
 }
 
 #[cfg(test)]

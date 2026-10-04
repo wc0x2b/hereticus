@@ -20,7 +20,7 @@ dispatch
 - if (r1 == 1) goto $+0x28
 + push {r4, lr}
 + sp = sp - 8
-  mvn r2, r0, 0x0
+  r2 = -0x1
 - flags = compare(r1, 0)
 - if (r1 != 0) goto $+0x2c
 + flags = compare(r1, 3)
@@ -36,13 +36,13 @@ dispatch
   r2 = 0
 - flags = compare(r0, 0x400)
 + flags = compare(r0, 0x200)
-  mvnhi r2, r0, 0x0
+  if (hi) r2 = -0x1
 - r0 = r2
 - return
 - r0 = load.16 [r0]
 - r1 = 0x5a5a
 - r2 = r0 - r1
-- mvnne r2, r0, 0x0
+- if (ne) r2 = -0x1
 - r0 = r2
 - return
 - push {r4, lr}
@@ -99,7 +99,7 @@ dispatch
 + call $+0x0
 + r2 = r0
 + flags = compare(r0, 0)
-+ mvnne r2, r0, 0x1
++ if (ne) r2 = -0x2
 + goto $+0x8
 + r2 = 0
   r0 = r2
@@ -110,11 +110,11 @@ check_header
 - r0 = load.16 [r0]
 - r1 = 0x5a5a
 - r0 = r0 - r1
-- mvnne r0, r0, 0x0
+- if (ne) r0 = -0x1
 + r1 = load.16 [r0]
 + r2 = r0
 + r3 = 0x5a5a
-+ mvn r0, r0, 0x0
++ r0 = -0x1
 + flags = compare(r1, r3)
   return
 + push {fp, lr}
@@ -122,7 +122,7 @@ check_header
 + r0 = r2 + 4
 + call $+0x0
 + flags = compare(r0, 0)
-+ mvnne r0, r0, 0x1
++ if (ne) r0 = -0x2
 + pop {fp, lr}
 + return
 
@@ -149,7 +149,7 @@ handle
 + r1 = load.16 [r4 + 0x2]
 + r0 = r5
   call $+0x0
-- mvn r1, r0, 0x0
+- r1 = -0x1
 - r0 = r1
 + flags = compare(r0, 0)
 + if (r0 != 0) goto $+0x14
@@ -159,7 +159,7 @@ handle
 + if (r1 u<= 0x200) goto $+0x18
 + r0 = r6
 + call $+0x0
-+ mvn r0, r0, 0x0
++ r0 = -0x1
   sp = sp + 8
   return
 - flags = compare(lr, 0)

@@ -313,6 +313,10 @@ fn constant_text(value: u64) -> String {
     if (-0x1_0000..0).contains(&signed) {
         return format!("-{:#x}", signed.unsigned_abs());
     }
+    // A small negative number in a 32-bit register, as `mvn r0, #0` makes.
+    if (0xffff_0000..=0xffff_ffff).contains(&value) {
+        return format!("-{:#x}", 0x1_0000_0000 - value);
+    }
     if value < 10 { value.to_string() } else { format!("{value:#x}") }
 }
 
@@ -650,6 +654,17 @@ fn statement(
                 let [dest, left, right] = operands.as_slice() else { return None };
                 format!("{dest} = {left} {} {right}", relation(cond)?)
             }
+            // A conditional compare, as `cmpne`, leaves the flags of the
+            // compare before it where its condition fails, so a branch after
+            // it tests the flags, not one compare.
+            None => {
+                *last_compare = None;
+                let [left, right] = operands.as_slice() else { return None };
+                match insn.mnemonic.starts_with("cmn") {
+                    true => format!("flags = compare({left}, -{right})"),
+                    false => format!("flags = compare({left}, {right})"),
+                }
+            }
             _ => return None,
         },
         Op::Branch => {
@@ -693,6 +708,15 @@ mod tests {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
         let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
         il_lines(&Aarch64, &code, &insns)
+    }
+
+    #[test]
+    fn a_constant_reads_as_code_writes_it() {
+        assert_eq!(constant_text(3), "3");
+        assert_eq!(constant_text(0x40), "0x40");
+        assert_eq!(constant_text(u64::MAX), "-0x1");
+        assert_eq!(constant_text(0xffff_fffc), "-0x4", "in a 32-bit register");
+        assert_eq!(constant_text(0x8000_0000), "0x80000000");
     }
 
     #[test]
@@ -759,6 +783,20 @@ mod tests {
         let code = 0xe081_3204_u32.to_le_bytes(); // add r3, r1, r4, lsl #4
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         assert_eq!(il_lines(&Arm32, &code, &insns), ["r3 = r1 + (r4 lsl 4)"]);
+    }
+
+    #[test]
+    fn a_conditional_compare_leaves_the_branch_on_the_flags() {
+        use crate::arch::arm32::Arm32;
+        // cmp r2, r3; cmpne r6, r3; beq
+        let code: Vec<u8> = [0xe152_0003_u32, 0x1156_0003, 0x0a00_0002]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        let shown = il_lines(&Arm32, &code, &insns);
+        assert_eq!(shown[1], "if (ne) flags = compare(r6, r3)");
+        assert!(shown[2].starts_with("if (flags.Equal) goto"), "{shown:?}");
     }
 
     #[test]

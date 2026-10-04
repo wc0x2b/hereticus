@@ -17,8 +17,8 @@ if (r3 != 4) goto $+0xbc
 r3 = 0
 store.32 [r4 + 0x68] = r3
 flags = compare(r5, 0)
-cmnsne r0, r5, 0x5
-if (r5 != 0) goto $+0x88
+if (ne) flags = compare(r5, -5)
+if (flags.NotEqual) goto $+0x88
 flags = compare(r6, 0)
 store.32 [r4 + 0x64] = r5
 if (r6 == 0) goto $+0x74
@@ -55,14 +55,14 @@ return
 r3 = 0
 store.32 [r4 + 0x64] = r5
 flags = compare(r5, 4)
-cmpsne r0, r6, r3
+if (ne) flags = compare(r6, r3)
 store.32 [r4] = r3
-if (r5 != 4) goto $-0x8c
+if (flags.NotEqual) goto $-0x8c
 sp = sp + 0xc
 return
 call free
 goto $-0xbc
-mvn r3, r0, 0x3
+r3 = -0x4
 store.32 [r4 + 0x64] = r3
 goto $-0x38
 if (eq) r8 = r0 & (ip lsr 8)
