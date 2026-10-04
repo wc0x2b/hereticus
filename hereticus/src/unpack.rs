@@ -88,6 +88,8 @@ impl core::fmt::Display for UnpackError {
 impl std::error::Error for UnpackError {}
 
 /// Unpack a firmware image.
+///
+/// See RESEARCH.md, A18.
 pub fn unpack(image: &[u8]) -> Result<Unpacked, UnpackError> {
     if image.get(257..262) == Some(b"ustar") {
         let kernel = tar_member(image, "/kernel").ok_or(UnpackError::Missing("kernel"))?;

@@ -274,6 +274,8 @@ pub fn callees(
 }
 
 /// [`callees`], for a function already decoded to `insns`.
+///
+/// See RESEARCH.md, A11.
 pub fn callees_in(
     arch: &dyn Arch,
     links: &Links,
