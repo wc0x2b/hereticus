@@ -205,6 +205,9 @@ struct Features {
     rarity: f64,
     /// IDF of each instruction added, summed, by bag.
     idf_added: f64,
+    /// BM25 of the added instructions at k1 = 0.5, 1.2 and 3: each distinct
+    /// instruction counts its IDF times a count that saturates.
+    bm25: [f64; 3],
     /// Conditional branches added, by bag.
     added_branches: usize,
     /// Calls added, by bag.
@@ -223,6 +226,11 @@ const ORDERS: &[(&str, Order)] = &[
     ("added", |f| f.edits.added as f64 - f.score * 1e-3),
     ("a+0.5idf", |f| f.edits.added as f64 + 0.5 * f.idf_added),
     ("a+1idf", |f| f.edits.added as f64 + f.idf_added),
+    ("bm25 k0.5", |f| f.bm25[0]),
+    ("bm25 k1.2", |f| f.bm25[1]),
+    ("bm25 k3", |f| f.bm25[2]),
+    ("a+bm25 k1.2", |f| f.edits.added as f64 + f.bm25[1]),
+    ("a+2bm25 k1.2", |f| f.edits.added as f64 + 2.0 * f.bm25[1]),
     ("rarity", |f| f.rarity),
     ("a+2idf", |f| f.edits.added as f64 + 2.0 * f.idf_added),
     ("idf-added", |f| f.idf_added),
@@ -298,6 +306,16 @@ fn features_of(rows: &[&Match], stripped: &[Binary; 2]) -> Vec<Features> {
                 score: pair.score,
                 rarity: pair.rarity,
                 idf_added: tokens.iter().map(|t| idf(df[&t.0])).sum(),
+                bm25: [0.5, 1.2, 3.0].map(|k1| {
+                    let mut counts: HashMap<u64, f64> = HashMap::new();
+                    for token in tokens {
+                        *counts.entry(token.0).or_default() += 1.0;
+                    }
+                    counts
+                        .iter()
+                        .map(|(token, &tf)| idf(df[token]) * tf * (k1 + 1.0) / (tf + k1))
+                        .sum()
+                }),
                 added_branches: count(FlowShape::Branch),
                 added_calls: count(FlowShape::Call),
                 added_returns: count(FlowShape::Return) + count(FlowShape::Jump),
