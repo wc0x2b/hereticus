@@ -674,7 +674,9 @@ fn it_conditions(mnemonic: &str, condition: &str) -> Option<Vec<&'static str>> {
     Some(core::iter::once(then).chain(rest).collect())
 }
 
-fn it_block_length(mnemonic: &str) -> Option<usize> {
+/// How many instructions the `it` of `mnemonic` covers, or `None` where
+/// `mnemonic` is no `it`.
+pub(crate) fn it_block_length(mnemonic: &str) -> Option<usize> {
     let pattern = mnemonic.strip_prefix("it")?;
     (pattern.len() <= 3 && pattern.chars().all(|letter| letter == 't' || letter == 'e'))
         .then_some(pattern.len() + 1)

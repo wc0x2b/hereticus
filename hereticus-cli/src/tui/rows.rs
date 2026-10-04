@@ -39,8 +39,8 @@ pub struct SideRow<'l> {
     pub right: Half<'l>,
 }
 
-/// The address of each instruction of the two functions a diff compares,
-/// in order.
+/// The address of each line of the two functions a diff compares, in
+/// order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Addresses {
     pub before: Vec<u64>,
@@ -49,7 +49,8 @@ pub struct Addresses {
 
 /// Each line of a diff, with the address of its instruction on each side.
 ///
-/// A diff holds one line for each instruction of a side, in order: a line
+/// A diff holds one line for each line the view shows of a side, in
+/// order: a line
 /// both hold, or a changed one, takes the next of each side, a removed line
 /// the next of the earlier function, and an added one the next of the later.
 fn locate<'l>(

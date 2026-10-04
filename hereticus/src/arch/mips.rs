@@ -20,7 +20,10 @@ use rabbitizer::{
     operands::ValuedOperand,
 };
 
-use super::{AbsoluteCall, Arch, CallTarget, DecodeError, Insn, InsnKind, JumpTable, Memory};
+use super::{
+    AbsoluteCall, Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable,
+    Memory,
+};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
 use rabbitizer::registers_meta::Register as _;
@@ -326,6 +329,12 @@ impl Arch for Mips32 {
     /// than the address of a global.
     fn idiom_length(&self, body: &[Insn]) -> usize {
         if is_gp_disp_preamble(body) { 2 } else { 0 }
+    }
+
+    fn global_pointer_setup(&self, body: &[Insn]) -> Option<GlobalPointerSetup> {
+        let consumer = gp_disp_consumer(body)?;
+        let register = body[consumer].operands.split(',').next()?.trim().to_string();
+        Some(GlobalPointerSetup { parts: vec![0, 1, consumer], register })
     }
 
     /// MIPS builds a 32-bit address in two halves: `lui rX, hi` loads the
@@ -777,6 +786,12 @@ fn constant_pair_register<'a>(high: &'a Insn, low: &Insn) -> Option<&'a str> {
 /// prologue between them, which is why a window is searched rather than the
 /// next word alone.
 fn is_gp_disp_preamble(body: &[Insn]) -> bool {
+    gp_disp_consumer(body).is_some()
+}
+
+/// The index in `body` of the `addu` that joins the pair of
+/// [`is_gp_disp_preamble`] to `t9`.
+fn gp_disp_consumer(body: &[Insn]) -> Option<usize> {
     /// How far to look for the `addu` that consumes the pair. The frame
     /// prologue sits between them: an allocation and up to eleven register
     /// saves. Measured on zlib linked as a shared library, `compress2` puts
@@ -784,24 +799,24 @@ fn is_gp_disp_preamble(body: &[Insn]) -> bool {
     /// missed it.
     const MOST_WORDS_TO_CONSUMER: usize = 16;
 
-    let [high, low, rest @ ..] = body else { return false };
-    let Some(loaded) = constant_pair_register(high, low) else { return false };
+    let [high, low, rest @ ..] = body else { return None };
+    let loaded = constant_pair_register(high, low)?;
 
     // A write to the loaded register ends the search: past it an `addu`
     // with `t9` joins some other value. A branch does not, because a function
     // can test an argument and return early before it needs the pointer, as
     // `gzclose` does.
-    for insn in rest.iter().take(MOST_WORDS_TO_CONSUMER) {
+    for (index, insn) in rest.iter().enumerate().take(MOST_WORDS_TO_CONSUMER) {
         if joins_to_callee_address(insn, loaded) {
-            return true;
+            return Some(index + 2);
         }
         let writes_loaded = !is_store(&insn.mnemonic)
             && insn.operands.split(',').next().is_some_and(|first| first.trim() == loaded);
         if writes_loaded {
-            return false;
+            return None;
         }
     }
-    false
+    None
 }
 
 /// What reading a function for its addresses found.

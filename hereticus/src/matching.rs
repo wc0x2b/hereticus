@@ -2713,6 +2713,19 @@ pub enum View {
     Il,
 }
 
+/// The address of each line `view` shows of the function `index` of
+/// `binary`, in order: the IL view shows some idioms of several
+/// instructions as one line.
+pub fn line_addresses(view: View, binary: &Binary, index: usize) -> Vec<u64> {
+    let function = &binary.functions[index];
+    let arch = binary.isa_of(function).arch();
+    let insns = decode_all(arch, &function.code, function.address).0;
+    match view {
+        View::Assembly => insns.iter().map(|insn| insn.address).collect(),
+        View::Il => crate::view::il_line_addresses(arch, &insns),
+    }
+}
+
 /// [`instruction_diff`], or the same diff with each instruction shown as
 /// `view` says.
 ///

@@ -18,7 +18,7 @@
 //! encodings of the MIPS16e ASE manual.
 
 use super::mips::Mips32;
-use super::{Arch, CallTarget, DecodeError, Insn, InsnKind, JumpTable, Memory};
+use super::{Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
 use compact_str::CompactString;
@@ -665,6 +665,12 @@ impl Arch for Mips16 {
 
     fn is_function_entry(&self, body: &[Insn]) -> bool {
         body.get(..GP_PREAMBLE_LENGTH).is_some_and(is_gp_preamble)
+    }
+
+    fn global_pointer_setup(&self, body: &[Insn]) -> Option<GlobalPointerSetup> {
+        let preamble = body.get(..GP_PREAMBLE_LENGTH).filter(|run| is_gp_preamble(run))?;
+        let register = preamble.last()?.operands.split(',').next()?.trim().to_string();
+        Some(GlobalPointerSetup { parts: (0..GP_PREAMBLE_LENGTH).collect(), register })
     }
 
     /// PIC computes the global pointer before `save`.

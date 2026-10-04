@@ -34,6 +34,17 @@ use compact_str::CompactString;
 
 use crate::address::{AddressSpace, ConstantKind, Contents};
 
+/// The instructions that make the global pointer: see
+/// [`Arch::global_pointer_setup`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlobalPointerSetup {
+    /// The index in the body of each part, in order. Other code can sit
+    /// between them, as the prologue of a frame does on MIPS.
+    pub parts: Vec<usize>,
+    /// The register the last part leaves the pointer in.
+    pub register: String,
+}
+
 /// An architecture that `hereticus` can decode.
 ///
 /// The classifying methods take operands as printed, in the spelling this
@@ -292,6 +303,14 @@ pub trait Arch {
     /// recognizable one instruction at a time.
     fn idiom_length(&self, _body: &[Insn]) -> usize {
         0
+    }
+
+    /// The instructions that make the global pointer from `body[0]` on, as
+    /// the PIC preamble of MIPS does, which the IL view shows as one line.
+    ///
+    /// Defaults to `None`, for the architectures with no global pointer.
+    fn global_pointer_setup(&self, _body: &[Insn]) -> Option<GlobalPointerSetup> {
+        None
     }
 
     /// Report whether an instruction opens a function.
