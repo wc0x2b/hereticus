@@ -68,18 +68,18 @@ two seconds where the first takes eight minutes.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 45891 of 46006 exact, 30 starts missed and 55 invented,
-over ARM, Thumb-2, AArch64 and MIPS, with the PLT left out. By cause:
+stripped releases: 45919 of 46006 exact, 16 starts missed and 25 invented,
+over ARM, Thumb-2, AArch64 and MIPS, with the PLT and the lazy binding
+stubs of MIPS left out. By cause:
 
-- Missed where GCC shrink-wraps: the function tests and returns before it
-  pushes, so no prologue opens it, as `little2_scanPi` and `os_execute` for
-  ARM.
-- Missed after a pool that no load names, as `codebinexpval` for ARM.
-- Invented inside a function after an internal return on ARM, as in the
-  two `scanLt` functions of expat, and inside Lua's `math_ceil` and
-  `math_floor`.
-- Some invented starts are no fault: the lazy binding stubs of MIPS are
-  code that no symbol names. The test leaves out only the PLT.
+- Missed after a pool that no load names, as `codebinexpval` and
+  `auxsetnode` of Lua 5.3 by clang for ARM and Thumb-2.
+- Missed one by one: `luaV_shiftl` for MIPS, `getS` for ARM and
+  `db_getregistry` for Thumb-2, all by GCC, and `crc32_combine_` of zlib
+  1.2.11 by clang for Thumb-2.
+- Invented inside a function after an internal return, as in Lua's
+  `math_ceil` and `math_floor` for MIPS, and in the `luaopen_` functions
+  of Lua 5.3 and in zlib 1.2.11 by GCC for Thumb-2.
 
 ## Scan a raw binary that mixes two instruction sets
 
