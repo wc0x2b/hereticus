@@ -29,10 +29,14 @@ such as `math_max` and `math_min`. Still read as plain work:
 The twins this entry named, Lua's `math_ceil` and `math_floor` and
 `math_deg` and `math_rad`, paired the wrong way round because every float
 operation lifted alike; they pair right now. Of the wrong pairs left
-between clang and GCC, 73 score 1.00, and most are byte-identical twins,
-as tinyxml2's `XMLNode::ToComment` and `XMLNode::ToText`, which both
-return null, and `MemPool<52>::Free` and `MemPool<60>::Free`. Nothing in
-their code tells them apart; only names or callers could.
+between clang and GCC, 72 score 1.00, and 58 of those paired as twins in
+order (`Cascade::match_twins_in_order`): byte-identical twins, as
+tinyxml2's `XMLNode::ToComment` and `XMLNode::ToText`, which both return
+null, and `MemPool<52>::Free` and `MemPool<60>::Free`. Nothing in their
+code tells them apart; only names or callers could. The stages of
+`RESEARCH.md` entries 1, 2 and 7, which pair by callers, callees and the
+order of the functions, did not move these 58: clang and GCC place the
+twins in different orders, and their callers are twins too.
 
 ## Make function recovery a library
 
@@ -169,3 +173,39 @@ differential test skips too.
 
 - NEON work, which the lift names `Vector` only, and the few VFP forms
   that `yaxpeax-arm` 0.4 prints without their constant, as `vmov.f32 s1`.
+
+## Check the new pairs of the OpenWrt kernels
+
+The stages of `RESEARCH.md` entries 1 and 7 pair 59 to 981 more functions
+in each OpenWrt kernel of `tests/openwrt.rs`, and change some pairs of
+the decompressor stubs across a major version. Nothing names these
+functions, so no test checks the new pairs. OpenWrt publishes the
+symbols of each kernel it builds, as `kernel-debug.tar.zst` beside the
+images of a target. Read the `vmlinux` in it as the answer, as
+`examples/research_bench.rs --ubuntu` reads the `-dbgsym` files, and
+count the right and wrong pairs of each kernel.
+
+## Show where a function sits as a near miss
+
+`Cascade::pair_by_layout` leaves a gap alone where its two sides hold
+different counts of free functions. Aligning such a gap by its scores
+paired only 70% right, so it is not done. But it found a function of
+the fix in 11 more of the 130 backport comparisons, where the fix went
+and came as two functions. Show the function that sits in the same
+place as a hint on a gone or new row, as a near miss does, without
+pairing the two. See `RESEARCH.md`, entry 7.
+
+## Measure on more published fixes, and faster
+
+Four published fixes, in `examples/research_bench.rs --cves`, decide
+between the orders of the report. The outlier score of `RESEARCH.md`
+entry 12 ranks those four best of all, but ranks the backports and the
+Ubuntu updates worse, and four is too few to say which is right. Add a
+case for each fix of `real-life-reports/` and for more advisories with
+shipped binaries before and after.
+
+`--ubuntu` reads 218 security updates and takes about 30 minutes for one
+pass, so it is not a test. Most of the time goes to the similarity stage
+of the largest stripped libraries. Make it fast enough to lock its
+tallies as a slow test, as `tests/cross_build.rs` locks the backports.
+
