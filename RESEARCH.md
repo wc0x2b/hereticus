@@ -295,7 +295,7 @@ Every shared constant as an edge paired more (+361) but at 67% precision.
 
 A pair that fits the 16M-cell table aligns exactly as before, so nothing
 changed on the backports. On the OpenWrt kernels, each leaves 1 to 13
-fewer changed bytes unreported, and a large function shows its real
+fewer pairs reported unchanged whose bytes differ, and a large function shows its real
 edit, not a whole rewrite.
 
 ### 5 and 6: ranking
