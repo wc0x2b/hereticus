@@ -18,7 +18,7 @@ dispatch
 - if (r1 == 2) goto $+0x48
 - flags = compare(r1, 1)
 - if (r1 == 1) goto $+0x28
-+ push {r4, lr}
++ store.32 [sp - 8] = r4, lr; sp = sp - 8
 + sp = sp - 8
   r2 = -0x1
 - flags = compare(r1, 0)
@@ -45,7 +45,7 @@ dispatch
 - if (ne) r2 = -0x1
 - r0 = r2
 - return
-- push {r4, lr}
+- store.32 [sp - 8] = r4, lr; sp = sp - 8
 - sp = sp - 4
 + goto $+0xd0
   lr = load.16 [r0 + 0x2]
@@ -88,7 +88,7 @@ dispatch
 + r1 = load.16 [r0 + 0x2]
 + r0 = r0 + 4
 + sp = sp + 8
-  pop {r4, lr}
+  r4, lr = load.32 [sp]; sp = sp + 8
 + goto $+0x0
 + r1 = load.16 [r0]
 + r3 = 0x5a5a
@@ -117,18 +117,18 @@ check_header
 + r0 = -0x1
 + flags = compare(r1, r3)
   return
-+ push {fp, lr}
++ store.32 [sp - 8] = fp, lr; sp = sp - 8
 + r1 = load.16 [r2 + 0x2]
 + r0 = r2 + 4
 + call $+0x0
 + flags = compare(r0, 0)
 + if (ne) r0 = -0x2
-+ pop {fp, lr}
++ fp, lr = load.32 [sp]; sp = sp + 8
 + return
 
 handle
-- push {r4, lr}
-+ push {r4, r5, r6, lr}
+- store.32 [sp - 8] = r4, lr; sp = sp - 8
++ store.32 [sp - 0x10] = r4, r5, r6, lr; sp = sp - 0x10
   sp = sp - 8
 - r2 = load.16 [r0]
 - r1 = 1

@@ -4,7 +4,7 @@ assertion_line: 71
 expression: "shown.join(\"\\n\")"
 ---
 + r3 = load.32 [r0 + 0x14]
-  push {r4, lr}
+  store.32 [sp - 8] = r4, lr; sp = sp - 8
   r4 = r0
 - r3 = load.32 [r0 + 0x8]
 + flags = compare(r3, 0)
