@@ -242,6 +242,8 @@ pub fn normalize_body(arch: &dyn Arch, insns: &[Insn]) -> Vec<NormInsn> {
 /// linker moves what they point at, so keeping them would report every
 /// function that refers to moved data as changed. See
 /// [`Arch::constant_kinds`].
+///
+/// See RESEARCH.md, A2.
 pub fn normalize_body_in(
     arch: &dyn Arch,
     code: &[u8],

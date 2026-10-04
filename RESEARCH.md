@@ -9,6 +9,204 @@ Survey date: 2026-10-04. The entries are in order of value for the effort.
 The results of each entry, as applied and measured, are in
 [Results](#results).
 
+## Techniques already in hereticus
+
+What `hereticus` did before this survey, with the name each technique
+has in other tools and papers. Each entry names the code that does it,
+and that code names the entry back, as `RESEARCH.md, A1`; change both
+together. `tests/research.rs` fails where one side names what the other
+lacks. The tools: [BinDiff manual](https://www.zynamics.com/bindiff/manual/index.html), [Ghidra Version Tracking correlators](https://ghidradocs.com/11.1_PUBLIC/help/VersionTracking/help/topics/VersionTrackingPlugin/VT_Correlators.html), [Diaphora heuristics](https://github.com/joxeankoret/diaphora/blob/master/diaphora_heuristics.py), and Ghidra BSim
+([explained by Quarkslab](https://blog.quarkslab.com/bsim-explained-once-and-for-all.html)).
+
+The stages of the matcher run as a cascade, most reliable first, and a
+stage only sees what the stages before it left free. BinDiff and Ghidra
+Version Tracking work the same way; BinDiff calls the later rounds
+"drilling down".
+
+### A1. Identical bytes
+
+Code: `Cascade::match_identical_code` in `matching.rs`.
+
+Pair two functions whose machine code is byte for byte the same, where
+each is the only one of its bytes. BinDiff: *hash matching*. Ghidra:
+*Exact Function Bytes Match*. Diaphora: *Bytes hash*, *Function Hash*.
+
+### A2. Identical normalized shape
+
+Code: `Cascade::match_identical_shape` in `matching.rs`;
+`normalize_body_in` in `norm.rs`; `AddressSpace` in `address.rs`.
+
+Normalize each instruction to its operation and the kinds of its
+operands, without registers, branch targets, addresses or constants, and
+pair two functions whose normalized bodies are equal. Ghidra: *Exact
+Function Instructions Match*, which masks the operands. Diaphora: *Same
+cleaned assembly*. The papers call this instruction normalization; Asm2Vec
+and SAFE do the same before they learn.
+
+### A3. Names
+
+Code: `Cascade::match_by_name` in `matching.rs`.
+
+BinDiff: *name hash matching*. Ghidra: *Symbol Name Match*. Diaphora:
+*Same name* and its *Perfect match, same name*.
+
+### A4. Twins in address order
+
+Code: `Cascade::match_twins_in_order` in `matching.rs`.
+
+Several functions with one normalized body pair first with first, where
+both sides hold as many. BinDiff: *address sequence*, which "matches
+functions in order based on their entry point addresses". Diaphora: *Same
+order and hash*. Ghidra finds such groups with *Duplicate Function
+Instructions Match* but leaves the choice to the user. Entry 7 extends
+this to functions that are not twins.
+
+### A5. Stubs aligned in order
+
+Code: `Cascade::align_stubs` in `matching.rs`.
+
+The PLT stubs, which are all one code but for their slot, align as two
+ordered lists, with the calls of matched callers as votes: a weighted
+longest common subsequence. This joins BinDiff's *address sequence* with
+its *call reference matching*.
+
+### A6. Twins told apart by what they reach
+
+Code: `Cascade::pair_leftover_twins`, `Cascade::repair_twins_by_callees`
+and `group_by_shape_and_references` in `matching.rs`.
+
+Functions of one shape pair where their constants, callees and texts
+single one out. Diaphora: *Same constants*, *Same KOKA hash and
+constants*, *Import names hash*.
+
+### A7. Bag of normalized instructions
+
+Code: `similarity_of_symbols`, `Cascade::match_by_similarity`,
+`keep_best_candidates` and `CLOSE_SIMILARITY` in `matching.rs`.
+
+The score of two functions is the Jaccard similarity of their normalized
+instructions as multisets, so order does not count. The free pairs above
+the threshold are taken best first, in two passes: the close pairs first,
+whose callees then tell the rest apart. BinDiff's *prime signature
+matching*, which multiplies one prime for each mnemonic, is the form of
+this that pairs only on equal bags; Diaphora: *Mnemonics small-primes-
+product*. Taking candidates best first is the greedy assignment of
+Diaphora; entry 9 measured the optimal one, which did worse.
+
+### A8. References as a tie-breaker
+
+Code: `reference_agreement`, `REFERENCE_WEIGHT` and
+`Cascade::reference_keys` in `matching.rs`.
+
+What a function calls and the texts it points at rank its candidates.
+BinDiff: *string references* and *call reference matching*. Diaphora:
+*Import names hash*. Ghidra: *Combined Function and Data Reference Match*.
+
+### A9. Data-flow features
+
+Code: `flow_features` in `il.rs`; `FLOW_RESCUE` in `matching.rs`.
+
+Each value hashes with the operation that defines it and the values that
+operation reads, for two rounds, and a pair whose code scores under the
+threshold still pairs where these features agree. This is the feature
+vector of Ghidra BSim, over the IL of A15 in place of p-code, and it is
+a Weisfeiler-Lehman hash of the data-flow graph (entry 11).
+
+### A10. Callers vote
+
+Code: `Cascade::pair_by_callers` and `Cascade::uncross_by_callees` in
+`matching.rs`.
+
+The calls of a matched pair whose code agrees line up one for one, and
+each votes that its two callees are one function: weak pairs swap or move
+where the votes say so. BinDiff: *call graph expansion* and *call sequence
+matching*. Ghidra: *Implied Match*, which proposes the callees of an
+accepted pair. QBinDiff and entry 2 make the same evidence a term of one
+objective.
+
+### A11. A call or a text that changed
+
+Code: `Cascade::compare_callees`, `Cascade::compare_texts` and
+`differ_only_by_build_path` in `matching.rs`; `callees_in` in `callee.rs`.
+
+Normalizing hides a call target, so a call to another function, the most
+common shape of a fix (`strcpy` to `strlcpy`), is found by resolving each
+callee through the PLT, the GOT, Mach-O stubs or relocations, and
+comparing the callees once the pairs are known. Texts compare the same
+way, without the random build directory a build path holds. Diaphora
+compares callees as *Import names hash*; the patch-presence papers of
+entry 4 compare the arguments of calls.
+
+### A12. Kinds of change
+
+Code: `classify_change`, `Changed`, `EditKind` and `count_edits` in
+`matching.rs`.
+
+A pair is unchanged, reordered, changed in data, changed in a value,
+changed where the decoder cannot read, or changed in its instructions,
+and each edit is a branch, a call, a jump, a memory access or other work.
+BinDiff tells structural changes from instruction changes in its
+similarity and confidence; this splits them further, as a reader triages.
+
+### A13. Instruction diff
+
+Code: `count_edits`, `longest_common_subsequence`, `instruction_diff` and
+`coalesce_changed_constants` in `matching.rs`.
+
+The two bodies align as a longest common subsequence, the diff of Hunt
+and McIlroy, and a removal next to an addition of the same shape folds
+into one changed line. Entry 3 aligns a body too large for the table.
+
+### A14. Near misses
+
+Code: `Cascade::near_misses`, `NearMiss` in `matching.rs`.
+
+Each function left unpaired names its closest candidate and the score.
+Ghidra Version Tracking lists every candidate with its score in the same
+way; BinDiff lists unmatched functions without one.
+
+### A15. Lifting to an IL, and guards
+
+Code: `Lifted`, `Lifted::canonical` and `find_guards` in `il.rs`;
+`view.rs`.
+
+Each instruction lifts to what it reads, writes and tests, the same on
+every architecture, and a compare and the branch on it read as one guard.
+Ghidra: p-code. Binary Ninja: LLIL. BAP: BIL. angr: VEX. This IL is much
+smaller than those: it has no full semantics.
+
+### A16. Function recovery
+
+Code: `recover_functions` and `recover_in_memory` in `scan.rs`;
+`function_ranges` in `unwind.rs`.
+
+In a stripped binary, functions come from the dynamic symbols, the
+unwind index and `.eh_frame`, call targets, and code after a return.
+Papers: Andriesse et al., *Compiler-Agnostic Function Detection in
+Binaries* (Nucleus), EuroS&P 2017,
+<https://www.vusec.net/projects/function-detection/>; Pang et al., *Towards
+Optimal Use of Exception Handling Information for Function Detection*
+(FETCH), DSN 2021, <https://arxiv.org/abs/2104.03168>.
+
+### A17. Load address of a raw image
+
+Code: `check_base` and `suggest_base` in `raw.rs`.
+
+Words of data that hold absolute addresses, as vector tables and pointer
+tables do, fall inside the image only at the right base. Tools: rbasefind
+and basefind match pointers against the offsets of strings. Papers:
+*Determining image base of firmware for ARM devices by matching literal
+pools* (DBMLP), and Zhu, *Determining the base address of MIPS firmware
+based on absolute address statistics and string reference matching*,
+Computers & Security 88, 2020.
+
+### A18. Unpacking firmware
+
+Code: `unpack` in `unpack.rs`.
+
+zImage, FIT, uImage, sysupgrade, lzma-loader and TP-Link containers. Tool:
+binwalk, which finds such containers by their signatures.
+
 ## 1. Match functions by their matched neighbors
 
 Source: *Enhancing Binary Code Similarity Analysis for Software Updates: A
@@ -25,6 +223,9 @@ byte-identical functions get different callers, and the callers often pair
 first. `Cascade::pair_by_callers` in `matching.rs` already does a part of
 this.
 
+Code: `Cascade::realign_by_context`, `Cascade::paired_callers` and
+`sorted_shared` in `matching.rs`.
+
 ## 2. Diff as network alignment
 
 Source: Mengin and Rossi, *Binary Diffing as a Network Alignment Problem via
@@ -40,6 +241,9 @@ cases well but fail when the two programs differ more.
 Applies to: the last scoring stage of the cascade, where pairs are chosen
 greedily by score.
 
+Code: the count of kept edges in `Cascade::realign_by_context`, in
+`matching.rs`. The swap of entry 2 was measured and not kept.
+
 ## 3. Seed, chain, extend
 
 Source: Li, *Minimap2: pairwise alignment for nucleotide sequences*,
@@ -52,6 +256,9 @@ Align only the gaps between the anchors. Patience diff uses the same idea.
 Applies to: `instruction_diff` and `longest_common_subsequence` in
 `matching.rs`. Fewer bad alignments in long functions, and less time.
 
+Code: `align`, `align_within`, `chain_of_unique_items`,
+`longest_increasing_chain` and `steps_by_position` in `matching.rs`.
+
 ## 4. Constants as anchors for the fix
 
 Source: Dong et al., *Fine-Grained 1-Day Vulnerability Detection in Binaries
@@ -63,6 +270,10 @@ Use them as anchors in the control-flow graph to find the code of the patch.
 88.2% true positive rate, 12.9% false positive rate, 0.14 s for each case.
 
 Applies to: show *where* in a changed function the fix is.
+
+Code: `CONSTANT_WEIGHT`, `constant_agreement`, `LARGEST_PLAIN_CONSTANT`
+and `Prepared::shares_an_anchor_with` in `matching.rs`;
+`constant_signature` in `norm.rs`.
 
 ## 5. Rank changes by security features
 
@@ -79,6 +290,8 @@ lock functions. These features need no machine learning.
 Applies to: the sort order of the report. A new guard is the strongest sign
 of a fix (see "Lift more of what a guard can be" in `TODO.md`).
 
+Code: none; measured in `examples/research_bench.rs` and not kept.
+
 ## 6. Weight an edit by how rare it is
 
 Source: *Sift or Get Off the PoC: Applying Information Retrieval to
@@ -91,6 +304,9 @@ the build. An edit that occurs in one function is a signal.
 
 Applies to: the sort order of the report, as a weight on each edit.
 
+Code: `Match::rarity`, `Cascade::weigh_additions` and `sorted_only_in` in
+`matching.rs`; `Sort::Rare` in `hereticus-cli/src/main.rs`.
+
 ## 7. Conserved order (synteny)
 
 Source: comparative genomics. Genes that sit in the same order in two
@@ -99,13 +315,24 @@ alone confuses; see OrthoRefine, which looks for orthologs in a window of
 neighbors, and the survey of synteny tools in
 <https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-024-05786-7>.
 
-Idea, not found in the binary diffing work above: a linker places the
+Prior art in binary diffing: BinDiff's *address sequence* pairs
+functions in the order of their addresses, its *propagation (size==1)*
+pairs the single unmatched child of matched basic blocks, and Diaphora's
+*Same order and hash* and *Same compilation unit* use the order of the
+functions. A4 already paired twins in order. New here: the gaps are those
+of the longest chain of pairs in order, a weak pair off that chain is
+undone, and the order counts only where enough of the binary pairs in it.
+
+Idea: a linker places the
 functions of one object in source order, and a new release keeps most of
 that order. A function that sits between two pairs pairs with the one that
 sits between their partners, even where its code changed too much to
 score. A pair that breaks the order is more likely wrong.
 
 Applies to: `Cascade::pair_by_layout`.
+
+Code: `Cascade::pair_by_layout`, `LOWEST_LAYOUT_SIMILARITY`,
+`LEAST_ANCHORED_SHARE` and `Confidence::SameLayout` in `matching.rs`.
 
 ## 8. Saturate repeated evidence (BM25)
 
@@ -119,6 +346,8 @@ occurrence adds less. The term frequency saturates as
 Applies to: `Match::rarity`, so that forty copies of one moved instruction
 do not outrank three rare ones.
 
+Code: `saturated` and `SATURATION` in `matching.rs`.
+
 ## 9. Optimal assignment
 
 Source: Kuhn, *The Hungarian Method for the Assignment Problem*, Naval
@@ -129,6 +358,8 @@ which is a ½-approximation of that sum.
 
 Applies to: the similarity stage, which takes candidates best first.
 
+Code: none; measured and not kept.
+
 ## 10. Reciprocal best hits
 
 Source: ortholog detection, where two genes are orthologs if each is the
@@ -136,6 +367,8 @@ other's best match. Known to fail on duplicated genes:
 <https://arxiv.org/abs/0706.0117>.
 
 Idea: pair two functions only where each is the other's best candidate.
+
+Code: none; measured and not kept.
 
 ## 11. Weisfeiler-Lehman graph hashing
 
@@ -146,6 +379,8 @@ Idea: label each node with its own label and the multiset of its
 neighbors' labels, and repeat. The labels hash the structure around each
 node in linear time.
 
+Code: none; `flow_features` in `il.rs` (A9) hashes the data flow this way.
+
 ## 12. Outliers among the changes
 
 Source: anomaly detection; distance from the centroid of a population.
@@ -155,6 +390,8 @@ flag makes the same kind of edit in many functions, so their edits point
 the same way as vectors of added instructions. A fix is an edit unlike
 the others. Score each pair by one minus the cosine of its edit against
 the sum of all edits.
+
+Code: none; measured in `examples/research_bench.rs` and not kept.
 
 ## Lower fit
 
@@ -295,8 +532,8 @@ Every shared constant as an edge paired more (+361) but at 67% precision.
 
 A pair that fits the 16M-cell table aligns exactly as before, so nothing
 changed on the backports. On the OpenWrt kernels, each leaves 1 to 13
-fewer pairs reported unchanged whose bytes differ, and a large function shows its real
-edit, not a whole rewrite.
+fewer pairs reported unchanged whose bytes differ, and a large function
+shows its real edit, not a whole rewrite.
 
 ### 5 and 6: ranking
 

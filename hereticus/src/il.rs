@@ -543,6 +543,8 @@ pub enum Operand {
 pub type Operands = SmallVec<[Operand; 4]>;
 
 /// One instruction, lifted.
+///
+/// See RESEARCH.md, A15.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Lifted {
     pub op: Op,
@@ -604,6 +606,8 @@ impl Lifted {
 /// BSim also looks through copies and spills. Measured over the cross
 /// builds, neither helped here: the copies and spills a compiler adds are
 /// already frame work that normalizing drops, or show in both builds.
+///
+/// See RESEARCH.md, A9 and entry 11.
 pub fn flow_features(body: &[Option<Lifted>], depth: usize) -> Vec<u64> {
     let mut flow = Flow::default();
     let mut features: Vec<u64> =
@@ -740,6 +744,8 @@ pub struct FoundGuard {
 /// [`MOST_BETWEEN`] instructions may come that neither test nor touch the
 /// flags; an instruction that cannot be lifted ends the search, since
 /// nothing is known of it.
+///
+/// See RESEARCH.md, A15.
 pub fn find_guards(body: &[Option<Lifted>]) -> Vec<FoundGuard> {
     let mut found = Vec::new();
     // A branch that a compare before it took is no guard of its own.

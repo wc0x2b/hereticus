@@ -142,6 +142,8 @@ impl Edits {
 /// An instruction falls in exactly one kind, chosen by the order the variants
 /// are declared, so the counts sum to the instructions the edit touched. The
 /// order puts control flow first because it is what changes behavior.
+///
+/// See RESEARCH.md, A12.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EditKind {
     /// A conditional branch: a gate the code did not have, or lost.
@@ -288,6 +290,8 @@ fn kind_of(insn: &NormInsn) -> EditKind {
 /// The variants rise in how much a reader should care, so
 /// `Changed::No < Changed::Reordered < Changed::Data < Changed::InDetail <
 /// Changed::Unreadable < Changed::Yes`.
+///
+/// See RESEARCH.md, A12.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Changed {
     /// Nothing a reader would call a change.
@@ -343,6 +347,8 @@ pub enum Changed {
 ///
 /// Reporting the score costs nothing. It was computed while matching and then
 /// thrown away.
+///
+/// See RESEARCH.md, A14.
 #[derive(Clone, Copy, Debug)]
 pub struct NearMiss {
     /// The unmatched function this candidate is for, in its own binary.
@@ -1260,6 +1266,8 @@ impl Cascade<'_> {
     /// pairs than it weighs: an edited caller calls a new stub, and that must
     /// not undo the order that shows the edit. A stub the alignment leaves
     /// out went or came.
+    ///
+    /// See RESEARCH.md, A5.
     fn align_stubs(&mut self, before: &Binary, after: &Binary) {
         /// What one caller weighs against one pair kept in order.
         const CALLER_WEIGHT: usize = 2;
@@ -1362,6 +1370,8 @@ impl Cascade<'_> {
     /// fix makes three calls to a new PLT stub, whose twins pair by order.
     /// Where similarity cannot choose, one caller is enough; see
     /// [`Self::is_near_tie`].
+    ///
+    /// See RESEARCH.md, A10.
     fn pair_by_callers(&mut self, before: &Binary, after: &Binary) {
         /// Each round moves a pairing that is off by one along a run of
         /// twins by one place: a new PLT stub puts every stub after it one
@@ -1541,6 +1551,8 @@ impl Cascade<'_> {
     /// function on both sides exactly when the two pair. A pair whose code
     /// already differs keeps its verdict: its calls cannot be lined up one
     /// for one.
+    ///
+    /// See RESEARCH.md, A11.
     fn compare_callees(&mut self, before: &Binary, after: &Binary) {
         let partner_of_before: HashMap<usize, usize> =
             self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
@@ -1632,6 +1644,8 @@ impl Cascade<'_> {
     /// code around it as it was. A changed text counts as a changed value.
     ///
     /// A short text counts only as [`short_texts_changed`] says.
+    ///
+    /// See RESEARCH.md, A11.
     fn compare_texts(&mut self) {
         for pair in &mut self.matched {
             if !matches!(pair.changed, Changed::No | Changed::Reordered | Changed::InDetail) {
@@ -1744,6 +1758,8 @@ impl Cascade<'_> {
     /// The direction is a parameter, so one body serves both removed against
     /// added and added against removed. Each `NearMiss` reads its `unmatched`
     /// index in `theirs` and its `best` index in `others`.
+    ///
+    /// See RESEARCH.md, A14.
     fn near_misses(
         &self,
         unmatched: &[usize],
@@ -1944,6 +1960,8 @@ fn operands_are_interchangeable(
 /// Work out whether a matched pair differs.
 ///
 /// The order of these checks runs from cheapest and most certain to least.
+///
+/// See RESEARCH.md, A12.
 fn classify_change(
     before: &Prepared<'_>,
     after: &Prepared<'_>,
@@ -2052,6 +2070,8 @@ fn differs_only_where_unreadable(before: &[NormInsn], after: &[NormInsn]) -> boo
 /// instructions moved.
 ///
 /// A pair too large for the table aligns by anchors: see [`align`].
+///
+/// See RESEARCH.md, A12 and A13.
 fn count_edits(left: &[NormInsn], right: &[NormInsn]) -> (Edits, EditKinds) {
     let mut edits = Edits::default();
     let mut kinds = EditKinds::default();
@@ -2110,6 +2130,8 @@ impl Cascade<'_> {
     ///
     /// The strongest evidence there is, and the cheapest to find. A function
     /// that was not touched and did not move lands here.
+    ///
+    /// See RESEARCH.md, A1.
     fn match_identical_code(&mut self, progress: &dyn Progress) {
         progress.start(Phase::IdenticalCode, self.left.len());
         let mut by_code: HashMap<&[u8], Vec<usize>> = HashMap::new();
@@ -2182,6 +2204,8 @@ impl Cascade<'_> {
     /// This is the stage that survives recompilation. Two builds of one
     /// function differ in register choice and branch addresses, which
     /// normalizing removes, so what remains agrees exactly.
+    ///
+    /// See RESEARCH.md, A2.
     fn match_identical_shape(&mut self, progress: &dyn Progress) {
         progress.start(Phase::IdenticalShape, self.left.len());
         // Where names are known, a function named on both sides is its own
@@ -2271,6 +2295,8 @@ impl Cascade<'_> {
     /// both sides hold the same number of free functions of one shape, the
     /// first pairs with the first, and so on. A group of unequal size is left
     /// alone, because then an order is no evidence of which pairs with which.
+    ///
+    /// See RESEARCH.md, A4.
     fn match_twins_in_order(&mut self) {
         // A group holds one shape that calls the same named functions: order
         // is no evidence across compilers, and GCC places functions in
@@ -2317,6 +2343,8 @@ impl Cascade<'_> {
     /// stripped binary has none, and a renamed function keeps its behavior. It
     /// runs after the two code-based stages so that evidence from the code
     /// always wins.
+    ///
+    /// See RESEARCH.md, A3.
     fn match_by_name(&mut self, progress: &dyn Progress) {
         progress.start(Phase::Names, self.left.len());
         let mut by_name: HashMap<String, usize> = HashMap::new();
@@ -2353,6 +2381,7 @@ impl Cascade<'_> {
 /// Taking them in order would let a mediocre pair claim a function that a
 /// later, better pair needed.
 impl Cascade<'_> {
+    /// See RESEARCH.md, A7.
     fn match_by_similarity(&mut self, progress: &dyn Progress) {
         // Only the functions still free reach the inner loop, so counting them
         // gives a total the bar can actually reach.
@@ -2433,6 +2462,8 @@ impl Cascade<'_> {
     /// tail calls end functions, hundreds of such wrappers were left free,
     /// because each keeps only [`CANDIDATES_PER_FUNCTION`] candidates by
     /// similarity, and those went to its twins.
+    ///
+    /// See RESEARCH.md, A6.
     fn pair_leftover_twins(&mut self) {
         let (left_keys, right_keys) = self.reference_keys();
         let group = |side: &[Prepared<'_>], free: &[bool]| {
@@ -2491,6 +2522,8 @@ impl Cascade<'_> {
     /// `XMLComment::ShallowClone` and `XMLUnknown::ShallowClone` differ only
     /// in the thunk they call, so they can be told apart only once the
     /// thunks have paired again.
+    ///
+    /// See RESEARCH.md, A6.
     fn repair_twins_by_callees(&mut self) {
         /// Each round settles one more level of callers.
         const MOST_ROUNDS: usize = 4;
@@ -2597,6 +2630,8 @@ impl Cascade<'_> {
     /// every stage has run, the callees are known. Measured on zlib 1.2.12
     /// built by GCC for MIPS as a raw image, `gzgetc_` and `crc32_combine`,
     /// one tail call each, had paired crossed.
+    ///
+    /// See RESEARCH.md, A10.
     fn uncross_by_callees(&mut self) {
         /// A swap moves the callees of its callers, so a chain of wrappers
         /// settles in a few rounds.
@@ -2699,6 +2734,8 @@ enum Unpaired {
 /// reaches is only in part known, and the part can match a twin that
 /// reaches less. Tinyxml2's `SetAttribute` for `int64_t` and for
 /// `uint64_t` share one callee, and each has one of its own.
+///
+/// See RESEARCH.md, A6.
 fn group_by_shape_and_references<'a>(
     side: &'a [Prepared<'_>],
     keys: &'a [Vec<ReferenceKey>],
@@ -2796,6 +2833,8 @@ fn texts_that_differ(left: &[&str], right: &[&str]) -> usize {
 /// same length, six or more bytes, no `.`, and digits with both upper and
 /// lower case letters. A changed name of a file or a function is no such
 /// component, so it still shows.
+///
+/// See RESEARCH.md, A11.
 fn differ_only_by_build_path(left: &str, right: &str) -> bool {
     let generated = |component: &str| {
         component.len() >= 6
@@ -2830,6 +2869,8 @@ fn differ_only_by_build_path(left: &str, right: &str) -> bool {
 /// other compiler, stripped, this cut the wrong pairs by a quarter to a half,
 /// and 0.05 or 0.2 did no better. The texts each function points at, added
 /// later, cut them by a tenth more, with no comparison worse.
+///
+/// See RESEARCH.md, A8.
 const REFERENCE_WEIGHT: f64 = 0.1;
 
 /// How deep the data-flow features go: an operation with what defines its
@@ -2860,6 +2901,8 @@ struct FlowRescue {
 /// quarter of it paired 479 fewer right. As a part of the ranking, at 0.2,
 /// it paired 21 more right and 18 fewer wrong over the cross builds, but 7
 /// fewer right and 7 more wrong across the releases, all in tinyxml2.
+///
+/// See RESEARCH.md, A9.
 const FLOW_RESCUE: FlowRescue = FlowRescue { code: 0.5, flow: 0.7 };
 
 /// The similarity at which the first pass of the similarity stage pairs.
@@ -2867,6 +2910,8 @@ const FLOW_RESCUE: FlowRescue = FlowRescue { code: 0.5, flow: 0.7 };
 /// The pairs it makes are the callees that tell the second pass's
 /// candidates apart. Measured as for [`REFERENCE_WEIGHT`], 0.85 did best of
 /// 0.75, 0.85 and 0.95.
+///
+/// See RESEARCH.md, A7.
 const CLOSE_SIMILARITY: f64 = 0.85;
 
 /// A callee or a text, as both sides can name it.
@@ -2993,6 +3038,8 @@ fn sorted_shared<T: Ord>(left: &[T], right: &[T]) -> usize {
 
 /// How well two sorted lists of references agree, from -1.0 to 1.0, or 0.0
 /// where neither names any.
+///
+/// See RESEARCH.md, A8.
 fn reference_agreement(left: &[ReferenceKey], right: &[ReferenceKey]) -> f64 {
     if left.is_empty() && right.is_empty() {
         return 0.0;
@@ -3020,6 +3067,8 @@ const CANDIDATES_PER_FUNCTION: usize = 8;
 ///
 /// Called with one new candidate appended, so at most one entry is over the
 /// limit and a single pass finds the weakest.
+///
+/// See RESEARCH.md, A7.
 fn keep_best_candidates(candidates: &mut Vec<(f64, usize, usize)>) {
     if candidates.len() <= CANDIDATES_PER_FUNCTION {
         return;
@@ -3045,6 +3094,8 @@ fn keep_best_candidates(candidates: &mut Vec<(f64, usize, usize)>) {
 /// The same Jaccard similarity that [`similarity`] computes, over the same
 /// multiset, but by walking two sorted lists rather than building a map. This
 /// runs once per candidate pair in the scoring stage, so it allocates nothing.
+///
+/// See RESEARCH.md, A7.
 fn similarity_of_symbols<T: Ord>(left: &[T], right: &[T]) -> f64 {
     if left.is_empty() && right.is_empty() {
         return 1.0;
@@ -3337,6 +3388,8 @@ fn il_shape(line: &str) -> String {
 /// instructions agree in shape but differ in a constant, the line is
 /// [`DiffLine::Changed`] rather than [`DiffLine::Same`], so a changed value is
 /// never reported as no change.
+///
+/// See RESEARCH.md, A13.
 pub fn instruction_diff(
     before: &Function,
     before_isa: Isa,
@@ -3385,6 +3438,8 @@ fn diff_key(insn: &Insn) -> String {
 /// with another value, so they belong on one [`DiffLine::Changed`]. When the
 /// two are identical bar their targets they are no change at all. The pair is
 /// always adjacent, because the alignment keeps the order.
+///
+/// See RESEARCH.md, A13.
 fn coalesce_changed_constants(arch: &dyn Arch, lines: Vec<DiffLine>) -> Vec<DiffLine> {
     let mut folded: Vec<DiffLine> = Vec::with_capacity(lines.len());
     for line in lines {
@@ -3640,6 +3695,8 @@ fn steps_by_position<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
 /// The caller must check the size first, as [`align`] does. The table is
 /// quadratic, and on the largest functions of a whole kernel it would ask
 /// for more memory than the machine has.
+///
+/// See RESEARCH.md, A13.
 fn longest_common_subsequence<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
     let (rows, cols) = (left.len() + 1, right.len() + 1);
     let mut len = vec![vec![0usize; cols]; rows];

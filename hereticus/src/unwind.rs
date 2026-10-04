@@ -36,6 +36,8 @@ impl From<ByteOrder> for RunTimeEndian {
 ///
 /// `data` is the section and `address` where it loads. An FDE that does not
 /// parse, or that covers nothing, is left out rather than failing the rest.
+///
+/// See RESEARCH.md, A16.
 pub fn function_ranges(data: &[u8], address: u64, order: ByteOrder) -> Vec<Range<u64>> {
     let section = EhFrame::new(data, RunTimeEndian::from(order));
     let bases = BaseAddresses::default().set_eh_frame(address);

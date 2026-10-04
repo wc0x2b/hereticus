@@ -16,6 +16,8 @@ use core::ops::Range;
 const SMALLEST_ADDRESS: u64 = 0x1000;
 
 /// The address ranges a binary occupies.
+///
+/// See RESEARCH.md, A2.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddressSpace {
     ranges: Vec<Range<u64>>,

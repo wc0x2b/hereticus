@@ -190,6 +190,8 @@ impl core::fmt::Display for BaseFit {
 /// The architecture says how wide a stored address is and how to read one, so
 /// an image of 64-bit pointers is examined as such rather than as pairs of
 /// halves.
+///
+/// See RESEARCH.md, A17.
 pub fn check_base(data: &[u8], base: u64, arch: &dyn Arch) -> BaseFit {
     let by_pointers = check_pointers(data, base, arch);
     if by_pointers.is_suspect() {

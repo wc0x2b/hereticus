@@ -126,6 +126,8 @@ pub struct Recovered {
 ///
 /// Returns them in address order. The name of each is empty, because there is
 /// nothing to read a name from.
+///
+/// See RESEARCH.md, A16.
 pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
     let Ok(file) = object::File::parse(data) else { return Vec::new() };
 
@@ -301,6 +303,8 @@ pub enum Regions {
 /// Find the functions in code that is already located, where `memory` holds
 /// everything else the binary loads, for the tables the code reads, and
 /// `linked` what an object file says about its functions.
+///
+/// See RESEARCH.md, A16.
 pub fn recover_in_memory(
     regions: &[(u64, &[u8])],
     exception_index: &[IndexEntry],
