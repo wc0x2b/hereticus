@@ -466,6 +466,7 @@ fn run(args: &Args) -> Result<bool, String> {
             view: args.view.into(),
             scope: if args.all { tui::Scope::All } else { tui::Scope::Changed },
             hidden: Hidden::from_args(args),
+            near_miss_floor: args.near_miss,
         };
         return tui::run(&diff, &before, &after, start).map(|()| false);
     }

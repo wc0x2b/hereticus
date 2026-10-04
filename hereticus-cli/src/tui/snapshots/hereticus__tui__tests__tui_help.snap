@@ -1,21 +1,21 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
-assertion_line: 616
+assertion_line: 775
 expression: "screen(&mut app, 120, 24)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
- Pairs | Diff                                                                                firmware.o → firmware_v2.o 
+ Functions | Diff                                                                            firmware.o → firmware_v2.o 
 ── Diff dispatch  il ────────────────────────────────────────────────────── v asm/il  l layout  n/p next/prev  esc back 
 - flags = compare(r1, 2)                                                                                               █
 - if (r1 == 2) goto $+0x┌Help──────────────────────────────────────────────────────────────────┐                       █
-- flags = compare(r1, 1)│Pairs                              Diff                               │                       █
+- flags = compare(r1, 1)│Functions                          Diff                               │                       █
 - if (r1 == 1) goto $+0x│  j / k      down / up               j / k      down / up             │                       █
 + store.32 [sp - 8] = r4│  PgDn/PgUp  a page down / up        PgDn/PgUp  a page down / up      │                       ║
 + sp = sp - 8           │  g / G      first / last            g / G      top / bottom          │                       ║
   r2 = -0x1             │  ⏎          open the diff           v          assembly or IL        │                       ║
 - flags = compare(r1, 0)│  s          next order              l          side by side or one   │                       ║
-- if (r1 != 0) goto $+0x│  a          every pair              n / p      next / previous pair  │                       ║
-+ flags = compare(r1, 3)│  r          retouched pairs         esc        back to the pairs     │                       ║
+- if (r1 != 0) goto $+0x│  a          every function          n / p      next / previous       │                       ║
++ flags = compare(r1, 3)│  r          retouched pairs         esc        back to the list      │                       ║
 + if (r1 u> 3) goto $+0x│  d          data regions                                             │                       ║
 + adr r3, pc, 0x4       │  /          filter the names      Colors                             │                       ║
 + r1 = load.32 [r3 + (r1│                                     changed values unread            │                       ║
@@ -26,4 +26,4 @@ expression: "screen(&mut app, 120, 24)"
 + if (eq) r0 = r0 & (ip lsr 1)                                                                                         ║
   r0 = load.16 [r0 + 0x2]                                                                                              ║
   r2 = 0                                                                                                               ║
- sort added  │  3 of 5 pairs  │  view il  │  hidden retouched, data                               0 gone  0 new  ? help
+ sort added  │  3 of 5 functions  │  view il  │  hidden retouched, data                           0 gone  0 new  ? help
