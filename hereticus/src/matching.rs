@@ -22,7 +22,9 @@ use rayon::prelude::*;
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::arch::{Arch, Insn, InsnKind, Memory, decode_all, is_branch_target};
 use crate::callee::{Callee, callees, callees_in};
-use crate::norm::{FlowShape, NormInsn, OperandShape, flow_features_in, normalize_body_in};
+use crate::norm::{
+    FlowShape, NormInsn, OperandShape, constant_signature, flow_features_in, normalize_body_in,
+};
 use crate::obj::{Binary, FoundBy, Function, Isa};
 
 /// How confident a pairing is, and what justified it.
@@ -495,6 +497,9 @@ struct Prepared<'a> {
     /// The data-flow features of the body, sorted: see
     /// [`crate::il::flow_features`].
     flow: Vec<u64>,
+    /// The distinct constants of the body, sorted: see
+    /// [`crate::norm::constant_signature`].
+    constants: Vec<u64>,
 }
 
 /// What a function refers to that its normalized code does not show.
@@ -541,6 +546,21 @@ impl Prepared<'_> {
         let arch = self.isa.arch();
         let (insns, _) = decode_all(arch, &self.function.code, self.function.address);
         normalize_body_in(arch, &self.function.code, &insns, self.addresses)
+    }
+
+    /// Report whether the two functions share a constant too large to be
+    /// an offset or a count, as a magic number or a mask.
+    ///
+    /// See RESEARCH.md, entry 4 (PLocator): such a constant comes from the
+    /// source and survives another build.
+    fn shares_an_anchor_with(&self, other: &Prepared<'_>) -> bool {
+        sorted_shared(self.anchors(), other.anchors()) > 0
+    }
+
+    /// The constants above [`LARGEST_PLAIN_CONSTANT`], sorted.
+    fn anchors(&self) -> &[u64] {
+        let first = self.constants.partition_point(|&value| value <= LARGEST_PLAIN_CONSTANT);
+        &self.constants[first..]
     }
 
     /// Report whether this function normalized to nothing.
@@ -640,6 +660,7 @@ fn prepare<'a>(
             let sure_texts: Vec<&str> =
                 found.iter().filter(|&&(_, sure)| sure).map(|&(text, _)| text).collect();
 
+            let constants: Vec<u64> = constant_signature(&body).into_iter().collect();
             let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
             symbols.sort_unstable();
@@ -655,6 +676,7 @@ fn prepare<'a>(
                 texts,
                 sure_texts,
                 flow,
+                constants,
             }
         })
         .collect()
@@ -904,6 +926,7 @@ impl Cascade<'_> {
         let context = |x: usize, y: usize| {
             sorted_shared(&left_keys[x], &right_keys[y])
                 + sorted_shared(&left_callers[x], &right_callers[y])
+                + usize::from(self.left[x].shares_an_anchor_with(&self.right[y]))
         };
 
         // The free functions of the second binary that a paired caller of
@@ -2248,7 +2271,10 @@ impl Cascade<'_> {
         // Best first. Ties break on index so the answer does not depend on
         // the order two equal scores happened to be found in.
         let rank = |&(score, index, other): &(f64, usize, usize)| {
-            score + REFERENCE_WEIGHT * reference_agreement(&left_calls[index], &right_calls[other])
+            let (left, right) = (&self.left[index], &self.right[other]);
+            score
+                + REFERENCE_WEIGHT * reference_agreement(&left_calls[index], &right_calls[other])
+                + CONSTANT_WEIGHT * constant_agreement(&left.constants, &right.constants)
         };
         let mut ranked: Vec<(f64, (f64, usize, usize))> =
             candidates.into_iter().map(|candidate| (rank(&candidate), candidate)).collect();
@@ -2727,6 +2753,35 @@ enum ReferenceKey {
     Paired(usize),
     /// A text the function points at.
     Text(String),
+}
+
+/// How much the constants two functions share weigh in the order the
+/// similarity stage takes pairs in, against their code.
+///
+/// See RESEARCH.md, entry 4 (PLocator): constants come from the source, so
+/// another build keeps them where it rewrites the code around them. Pairing
+/// on constants alone fails, as [`crate::norm::constant_signature`] says,
+/// but as one part of the order they choose between close candidates.
+/// Measured over the cross builds, 0.1 paired 94 more right and 77 fewer
+/// wrong; 0.05 and 0.2 did less well.
+const CONSTANT_WEIGHT: f64 = 0.1;
+
+/// The largest constant that names no function in particular, as a stack
+/// offset, a field offset or a small count.
+///
+/// A shared constant above this counts as one edge in
+/// [`Cascade::realign_by_context`]. Measured over the cross builds, this
+/// paired 99 more right and 23 more wrong. Every shared constant, of any
+/// size, paired 361 more right but 175 more wrong.
+const LARGEST_PLAIN_CONSTANT: u64 = 0xfff;
+
+/// How well two sorted sets of constants agree, from -1.0 to 1.0, or 0.0
+/// where neither holds any.
+fn constant_agreement(left: &[u64], right: &[u64]) -> f64 {
+    if left.is_empty() && right.is_empty() {
+        return 0.0;
+    }
+    2.0 * similarity_of_symbols(left, right) - 1.0
 }
 
 /// The fewest call edges and texts a pair must share before
@@ -4342,6 +4397,32 @@ mod tests {
         let partner = diff.matched.iter().find(|pair| pair.before == 0).map(|pair| pair.after);
         assert_eq!(partner, Some(0));
         assert_eq!(diff.added, vec![4]);
+    }
+
+    /// Of two candidates that score the same, the one that keeps the
+    /// constants pairs.
+    #[test]
+    fn a_shared_constant_breaks_a_tie() {
+        const MOVW_1234: u32 = 0xe301_0234;
+        const MOVW_5678: u32 = 0xe305_0678;
+        let before = binary_of(&[("", &arm(&[MOVW_1234, ADD, SUB, BX_LR]))]);
+        let after = binary_of(&[
+            ("", &arm(&[MOVW_5678, ADD, SUB, ORR, BX_LR])),
+            ("", &arm(&[MOVW_1234, ADD, SUB, EOR, BX_LR])),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        assert_eq!(diff.matched.len(), 1);
+        assert_eq!(diff.matched[0].after, 1);
+    }
+
+    #[test]
+    fn constants_agree_by_what_they_share() {
+        assert_eq!(constant_agreement(&[], &[]), 0.0);
+        assert_eq!(constant_agreement(&[5, 9], &[5, 9]), 1.0);
+        assert_eq!(constant_agreement(&[5], &[9]), -1.0);
+        assert_eq!(constant_agreement(&[], &[9]), -1.0);
     }
 
     /// Context alone does not pair two functions whose code shares too

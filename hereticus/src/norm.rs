@@ -340,9 +340,11 @@ pub fn normalize_body_in(
 /// for every function the compiler did not vectorize: `mul_by_constant` keeps
 /// `{37}`, `classify` keeps `{2, 100}`, `switch_dense` keeps `{2, 6, 10}`.
 ///
-/// # Do not match on this
+/// # Do not pair on this alone
 ///
-/// This is for **reporting**, not for pairing functions. Matching on it was
+/// The matcher uses it only to choose between candidates the instructions
+/// already found, and as one edge of context: see `CONSTANT_WEIGHT` and
+/// `LARGEST_PLAIN_CONSTANT` in `matching.rs`. Pairing on it alone was
 /// tried and measured, and it is worse than the instruction comparison it
 /// would have joined:
 ///
