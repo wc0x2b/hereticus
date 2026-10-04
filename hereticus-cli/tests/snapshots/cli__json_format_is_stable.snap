@@ -1,6 +1,5 @@
 ---
 source: hereticus-cli/tests/cli.rs
-assertion_line: 191
 info:
   program: hereticus
   args:
@@ -13,6 +12,6 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-{"pairs":[{"before":{"name":"switch_dense","address":100},"after":{"name":"switch_dense","address":100},"change":"reordered","score":1.0000,"added":1,"removed":1,"edited":0,"touched":{"other":2},"matched_by":"similar"}],"gone":[{"function":{"name":"array_max","address":144},"holds":"code","closest":{"function":{"name":"array_max","address":144},"score":0.4000}},{"function":{"name":"factorial","address":204},"holds":"code","closest":{"function":{"name":"factorial","address":288},"score":0.1316}}],"new":[{"function":{"name":"array_max","address":144},"holds":"code","closest":{"function":{"name":"array_max","address":144},"score":0.4000}},{"function":{"name":"factorial","address":288},"holds":"code","closest":{"function":{"name":"array_max","address":144},"score":0.1860}}],"totals":{"matched":6,"unchanged":5,"changed":1,"gone":2,"new":2}}
+{"pairs":[{"before":{"name":"factorial","address":204},"after":{"name":"factorial","address":288},"change":"changed","score":0.1316,"added":30,"removed":1,"edited":2,"touched":{"branch":5,"jump":4,"mem":1,"const":1,"other":14,"unread":9},"matched_by":"same place"},{"before":{"name":"array_max","address":144},"after":{"name":"array_max","address":144},"change":"changed","score":0.4000,"added":20,"removed":1,"edited":1,"touched":{"branch":4,"mem":1,"other":12,"unread":5},"matched_by":"same place"},{"before":{"name":"switch_dense","address":100},"after":{"name":"switch_dense","address":100},"change":"reordered","score":1.0000,"added":1,"removed":1,"edited":0,"touched":{"other":2},"matched_by":"similar"}],"gone":[],"new":[],"totals":{"matched":8,"unchanged":5,"changed":3,"gone":0,"new":0}}
 
 ----- stderr -----

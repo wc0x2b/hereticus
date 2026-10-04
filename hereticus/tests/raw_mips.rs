@@ -104,15 +104,17 @@ fn recovers_exactly_the_functions_of_its_object(
     }
 }
 
-/// Comparisons where the object pairs more than its raw image, because only
-/// the object knows the calls.
+/// Comparisons where the object and its raw image pair the same functions
+/// for different reasons, because only the object knows the calls.
 ///
 /// A raw fixture is the `.text` of an object that was never linked, so each
 /// `jal` holds no target until a relocation fills it in. The object reads
-/// the relocations and the raw image cannot. At `-O0`, `dispatch` gains a
-/// call and a branch and scores 0.42 against itself, under the threshold,
-/// and only its callers and callees pair it: see `RESEARCH.md`, entry 1. A
-/// linked image holds the targets, so this does not apply to a flash dump.
+/// the relocations and the raw image cannot. At `-O0`, `check_header` and
+/// `dispatch` each gain a call and score under the threshold against
+/// themselves. The object pairs them by their callers and callees (see
+/// `RESEARCH.md`, entry 1), and the raw image by their place between the
+/// pairs around them (entry 7). A linked image holds the targets, so this
+/// does not apply to a flash dump.
 const CALLS_ONLY_IN_THE_OBJECT: &[(&str, &str)] =
     &[("mips-O0", "firmware"), ("mipsbe-O0", "firmware")];
 
@@ -145,12 +147,18 @@ fn a_raw_comparison_reports_what_the_objects_report(
     let raw_report = render(&diff_with(&before_raw, &after_raw, blind()), &before_raw, &after_raw);
 
     if CALLS_ONLY_IN_THE_OBJECT.contains(&(tree, name)) {
-        // Every pair the raw image makes, the object makes too.
-        for line in
-            raw_report.lines().filter(|line| !line.starts_with("gone") && !line.starts_with("new"))
-        {
-            assert!(object_report.contains(line), "{tree}/{name}: the object lost {line}");
-        }
+        let without_reasons = |report: &str| -> String {
+            report
+                .lines()
+                .map(|line| line.split(" confidence=").next().unwrap_or(line))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(
+            without_reasons(&raw_report),
+            without_reasons(&object_report),
+            "{tree}/{name}: the raw image must pair what the object pairs"
+        );
         assert_ne!(raw_report, object_report, "{tree}/{name}: remove it from the list");
     } else {
         assert_eq!(
@@ -175,14 +183,14 @@ fn a_raw_comparison_reports_what_the_objects_report(
 #[case::be_pic_basic("mipsbe-pic-O2", "basic", &[0x08, 0x50, 0xa0], 0, 0)]
 #[case::le_nopic_basic("mips-nopic-O2", "basic", &[0x08, 0x50, 0xa0], 0, 0)]
 #[case::be_nopic_basic("mipsbe-nopic-O2", "basic", &[0x08, 0x50, 0xa0], 0, 0)]
-#[case::le_o0_firmware("mips-O0", "firmware", &[0x00], 2, 2)]
-#[case::be_o0_firmware("mipsbe-O0", "firmware", &[0x00], 2, 2)]
-#[case::le_o2_firmware("mips-O2", "firmware", &[0x00, 0xdc], 2, 2)]
-#[case::be_o2_firmware("mipsbe-O2", "firmware", &[0x00, 0xdc], 2, 2)]
-#[case::le_pic_firmware("mips-pic-O2", "firmware", &[0x00, 0xdc], 2, 2)]
-#[case::be_pic_firmware("mipsbe-pic-O2", "firmware", &[0x00, 0xdc], 2, 2)]
-#[case::le_nopic_firmware("mips-nopic-O2", "firmware", &[0x00, 0xdc], 2, 2)]
-#[case::be_nopic_firmware("mipsbe-nopic-O2", "firmware", &[0x00, 0xdc], 2, 2)]
+#[case::le_o0_firmware("mips-O0", "firmware", &[0x00, 0x70, 0x17c], 0, 0)]
+#[case::be_o0_firmware("mipsbe-O0", "firmware", &[0x00, 0x70, 0x17c], 0, 0)]
+#[case::le_o2_firmware("mips-O2", "firmware", &[0x00, 0x10, 0x58, 0xdc], 0, 0)]
+#[case::be_o2_firmware("mipsbe-O2", "firmware", &[0x00, 0x10, 0x58, 0xdc], 0, 0)]
+#[case::le_pic_firmware("mips-pic-O2", "firmware", &[0x00, 0x10, 0x58, 0xdc], 0, 0)]
+#[case::be_pic_firmware("mipsbe-pic-O2", "firmware", &[0x00, 0x10, 0x58, 0xdc], 0, 0)]
+#[case::le_nopic_firmware("mips-nopic-O2", "firmware", &[0x00, 0x10, 0x58, 0xdc], 0, 0)]
+#[case::be_nopic_firmware("mipsbe-nopic-O2", "firmware", &[0x00, 0x10, 0x58, 0xdc], 0, 0)]
 fn a_raw_comparison_finds_the_known_changes(
     #[case] tree: &str,
     #[case] name: &str,

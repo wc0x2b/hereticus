@@ -746,8 +746,8 @@ mod tests {
         Some((fixture("firmware.o")?, fixture("firmware_v2.o")?))
     }
 
-    /// `basic` at two levels, compared from the code alone, where two
-    /// functions go and two come.
+    /// `basic` at `-O0` and `-O2`, compared from the code alone, where every
+    /// function goes and comes: the two levels rewrite too much to pair.
     fn basic_across_levels() -> Option<(Binary, Binary)> {
         let read = |level: &str| {
             let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -756,7 +756,7 @@ mod tests {
                 .join("basic.o");
             Some(Binary::parse(&std::fs::read(path).ok()?).expect("a fixture parses"))
         };
-        Some((read("O1")?, read("O2")?))
+        Some((read("O0")?, read("O2")?))
     }
 
     fn start() -> Start {
@@ -904,7 +904,7 @@ mod tests {
         let options =
             Options { use_names: hereticus::matching::UseNames::No, ..Options::default() };
         let diff = diff_with(&before, &after, options);
-        assert_eq!((diff.removed.len(), diff.added.len()), (2, 2), "the fixture is as expected");
+        assert_eq!((diff.removed.len(), diff.added.len()), (8, 8), "the fixture is as expected");
         let mut app = App::new(&diff, &before, &after, start());
         let kinds: Vec<Entry> = app.rows.iter().map(|&row| app.entries[row].entry).collect();
         let first_unmatched = kinds.iter().position(|entry| !matches!(entry, Entry::Pair(_)));
@@ -921,10 +921,10 @@ mod tests {
                     && matches!(app.entries[row].entry, Entry::Gone { .. }) == gone
             })
         };
-        app.table.select(row(&app, "array_max", true));
+        app.table.select(row(&app, "mul_by_constant", true));
         press(&mut app, &[KeyCode::Enter]);
         let Screen::Pair(opened) = &app.screen else { panic!("the row opens") };
-        assert_eq!(opened.against.as_deref(), Some("array_max at 0.40"));
+        assert_eq!(opened.against.as_deref(), Some("mul_by_constant at 0.50"));
 
         // One with none shows alone, every line removed or added.
         press(&mut app, &[KeyCode::Esc]);

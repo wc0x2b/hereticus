@@ -266,7 +266,7 @@ fn reports_functions_that_only_one_side_has() {
 
     assert_cmd_snapshot!(hereticus().args([
         "--ignore-names",
-        "fixtures/build/O1/basic.o",
+        "fixtures/build/O0/basic.o",
         "fixtures/build/O2/basic.o",
     ]));
 }
@@ -385,7 +385,7 @@ fn near_miss_floor_controls_what_is_shown() {
         "--ignore-names",
         "--near-miss",
         "0.0",
-        "fixtures/build/O1/basic.o",
+        "fixtures/build/O0/basic.o",
         "fixtures/build/O2/basic.o",
     ]));
 }

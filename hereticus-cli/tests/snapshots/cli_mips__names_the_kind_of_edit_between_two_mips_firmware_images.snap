@@ -1,6 +1,5 @@
 ---
 source: hereticus-cli/tests/cli_mips.rs
-assertion_line: 63
 info:
   program: hereticus
   args:
@@ -18,18 +17,16 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-╭──────────────────────────────┬────────────────┬───────┬───────┬──────────────────────────────────┬─────────────────╮
-│ FUNCTION                     │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED                          │ MATCHED BY      │
-├──────────────────────────────┼────────────────┼───────┼───────┼──────────────────────────────────┼─────────────────┤
-│ sub_800000dc -> sub_8000016c │ changed        │  0.82 │ 8/2/0 │ 1 branch, 3 call, 1 mem, 1 const │ similar         │
-│ sub_80000000                 │ changed values │  1.00 │ -     │ -                                │ identical shape │
-╰──────────────────────────────┴────────────────┴───────┴───────┴──────────────────────────────────┴─────────────────╯
-sub_80000010: gone
-sub_80000058: gone, closest sub_80000090 at 0.40
-sub_80000010: new
-sub_80000090: new, closest sub_80000058 at 0.40
+╭──────────────────────────────┬────────────────┬───────┬─────────┬──────────────────────────────────────────┬─────────────────╮
+│ FUNCTION                     │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                  │ MATCHED BY      │
+├──────────────────────────────┼────────────────┼───────┼─────────┼──────────────────────────────────────────┼─────────────────┤
+│ sub_80000058 -> sub_80000090 │ changed        │  0.40 │ 21/12/5 │ 4 branch, 2 call, 7 jump, 6 mem, 1 const │ same place      │
+│ sub_800000dc -> sub_8000016c │ changed        │  0.82 │ 8/2/0   │ 1 branch, 3 call, 1 mem, 1 const         │ similar         │
+│ sub_80000010                 │ changed        │  0.20 │ 7/1/2   │ 1 branch, 1 call, 1 mem                  │ same place      │
+│ sub_80000000                 │ changed values │  1.00 │ -       │ -                                        │ identical shape │
+╰──────────────────────────────┴────────────────┴───────┴─────────┴──────────────────────────────────────────┴─────────────────╯
 
-3 matched (1 unchanged, 2 changed), 2 gone, 2 new
+5 matched (1 unchanged, 4 changed), 0 gone, 0 new
 
 ----- stderr -----
 hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate

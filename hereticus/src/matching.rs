@@ -47,6 +47,9 @@ pub enum Confidence {
     /// weaker reason had paired each with another. See
     /// [`Cascade::pair_by_callers`].
     SameCallers,
+    /// The two sit in the same place between pairs on both sides. See
+    /// [`Cascade::pair_by_layout`].
+    SameLayout,
     /// The normalized instructions are similar enough to pair.
     Similar,
 }
@@ -824,6 +827,7 @@ pub fn diff_reporting(
     cascade.uncross_by_callees();
     cascade.pair_by_callers(before, after);
     cascade.realign_by_context();
+    cascade.pair_by_layout();
     cascade.pair_leftover_twins();
     cascade.compare_callees(before, after);
     cascade.compare_texts();
@@ -1045,6 +1049,79 @@ impl Cascade<'_> {
             self.take_pair(x, y, Confidence::SameCallers, score);
         }
         Repaired::Some
+    }
+
+    /// Pair the free functions that sit between two pairs in the same
+    /// place on both sides, in order.
+    ///
+    /// A linker places the functions of one object in source order, and a
+    /// new release keeps most of that order. Where two pairs `a`–`a′` and
+    /// `b`–`b′` keep their order, and as many free functions sit between
+    /// `a` and `b` as between `a′` and `b′`, the first pairs with the first,
+    /// and so on, where each pair scores [`LOWEST_LAYOUT_SIMILARITY`] or
+    /// more.
+    ///
+    /// See RESEARCH.md, entry 7: genome comparison calls this synteny, and
+    /// uses conserved gene order to tell orthologs from look-alikes.
+    fn pair_by_layout(&mut self) {
+        let order = |side: &[Prepared<'_>]| -> Vec<usize> {
+            let mut order: Vec<usize> = (0..side.len()).collect();
+            order.sort_by_key(|&index| side[index].function.address);
+            order
+        };
+        let (left_order, right_order) = (order(&self.left), order(&self.right));
+        let mut right_place = vec![0; self.right.len()];
+        for (place, &index) in right_order.iter().enumerate() {
+            right_place[index] = place;
+        }
+        let mut left_place = vec![0; self.left.len()];
+        for (place, &index) in left_order.iter().enumerate() {
+            left_place[index] = place;
+        }
+
+        // The pairs in the same order on both sides, as places.
+        let mut anchors: Vec<(usize, usize)> = self
+            .matched
+            .iter()
+            .map(|pair| (left_place[pair.before], right_place[pair.after]))
+            .collect();
+        anchors.sort_unstable();
+        let chain = longest_increasing_chain(&anchors);
+
+        // Two unrelated binaries pair few functions, and the place of one
+        // there means nothing.
+        let smaller = self.left.len().min(self.right.len());
+        if (chain.len() as f64) < LEAST_ANCHORED_SHARE * smaller as f64 {
+            return;
+        }
+
+        // Each gap runs from just after one anchor to just before the next,
+        // and the ends of the binaries bound the first and the last.
+        let ends = chain.iter().copied().chain([(left_order.len(), right_order.len())]);
+        let mut pairs = Vec::new();
+        let mut start = (0, 0);
+        for end in ends {
+            let free_in = |order: &[usize], free: &[bool], places: core::ops::Range<usize>| {
+                order[places].iter().copied().filter(|&index| free[index]).collect::<Vec<_>>()
+            };
+            let lefts = free_in(&left_order, &self.left_free, start.0..end.0);
+            let rights = free_in(&right_order, &self.right_free, start.1..end.1);
+            start = (end.0 + 1, end.1 + 1);
+            // Where the counts differ, a function went or came, and nothing
+            // says which.
+            if lefts.is_empty() || lefts.len() != rights.len() {
+                continue;
+            }
+            for (&x, &y) in lefts.iter().zip(&rights) {
+                let score = similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols);
+                if score >= LOWEST_LAYOUT_SIMILARITY {
+                    pairs.push((x, y, score));
+                }
+            }
+        }
+        for (x, y, score) in pairs {
+            self.take_pair(x, y, Confidence::SameLayout, score);
+        }
     }
 
     /// [`Self::reference_keys`], for every function.
@@ -2798,6 +2875,26 @@ fn constant_agreement(left: &[u64], right: &[u64]) -> f64 {
     2.0 * similarity_of_symbols(left, right) - 1.0
 }
 
+/// The lowest code similarity at which the layout alone pairs two
+/// functions: see [`Cascade::pair_by_layout`].
+///
+/// Measured over the backports built two ways, 0.1 paired 1996 more right
+/// and 59 more wrong; 0.2 paired 352 fewer right and 18 fewer wrong, and 0
+/// paired 201 more right and 14 more wrong. A floor stays, so that a
+/// function removed and another added in its place do not read as one.
+/// Gaps whose counts differ, aligned by the scores, paired at 70%
+/// precision at best, so they are left alone.
+const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
+
+/// The least share of the functions of the smaller binary that must pair
+/// in order before [`Cascade::pair_by_layout`] reads their places.
+///
+/// Two unrelated objects of eight functions each paired three by place
+/// alone, with no pair around them. Measured over the backports built two
+/// ways, 0.25 paired 4 fewer right than no floor, and 0.5 paired 167 fewer
+/// right and 45 fewer wrong: another compiler pairs few functions in order.
+const LEAST_ANCHORED_SHARE: f64 = 0.25;
+
 /// The fewest call edges and texts a pair must share before
 /// [`Cascade::realign_by_context`] takes it.
 const FEWEST_SHARED_EDGES: usize = 3;
@@ -4519,8 +4616,9 @@ mod tests {
         let reaching = |callee: u64| [prefix, &b(prefix.len() as u64, callee)].concat();
         // mov r0, 1; bx lr
         let one = returns(1);
-        // add r0, r0, r1; mul r0, r1, r0; eor r0, r0, r1; bx lr
-        let other: Vec<u8> = [0xe080_0001u32, 0xe000_0091, 0xe020_0001, 0xe12f_ff1e]
+        // add r0, r0, r1; mul r0, r1, r0; eor r0, r0, r1; sub r0, r0, r1:
+        // nothing in common with `one`, so not even its place pairs it.
+        let other: Vec<u8> = [0xe080_0001u32, 0xe000_0091, 0xe020_0001, 0xe040_0001]
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect();
@@ -4683,6 +4781,60 @@ mod tests {
         assert_eq!(sorted_only_in(&[5, 5], &[]), vec![5, 5]);
     }
 
+    /// A function rewritten past the threshold pairs by its place between
+    /// two pairs, where as many free functions sit there on both sides.
+    #[test]
+    fn a_rewritten_function_pairs_by_its_place() {
+        let first = arm(&[ADC, SBC, RSB, BX_LR]);
+        let last = arm(&[MUL, MUL, ADC, BX_LR]);
+        let before_code = arm(&[ADD, SUB, ORR, EOR, AND, BIC, BX_LR]);
+        let after_code = arm(&[ADD, MUL, MUL, MUL, MUL, MUL, BX_LR]);
+        let before = binary_of(&[("", &first), ("", &before_code), ("", &last)]);
+        let after = binary_of(&[("", &first), ("", &after_code), ("", &last)]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let pair = diff.matched.iter().find(|pair| pair.before == 1).expect("paired by place");
+        assert_eq!((pair.after, pair.confidence), (1, Confidence::SameLayout));
+    }
+
+    /// Two unrelated binaries pair nothing by place, though each function
+    /// has one opposite it.
+    #[test]
+    fn unrelated_binaries_pair_nothing_by_place() {
+        let before = binary_of(&[
+            ("", &arm(&[ADD, SUB, BX_LR])),
+            ("", &arm(&[ORR, EOR, BX_LR])),
+            ("", &arm(&[AND, BIC, BX_LR])),
+        ]);
+        let after = binary_of(&[
+            ("", &arm(&[MUL, ADC, BX_LR])),
+            ("", &arm(&[SBC, RSB, BX_LR])),
+            ("", &arm(&[MUL, SBC, BX_LR])),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        assert!(diff.matched.is_empty(), "{:?}", diff.matched);
+    }
+
+    /// Where one side holds more free functions between two pairs, one
+    /// went or came, and the place says nothing of which.
+    #[test]
+    fn a_gap_of_unequal_counts_pairs_nothing() {
+        let first = arm(&[ADC, SBC, RSB, BX_LR]);
+        let last = arm(&[MUL, MUL, ADC, BX_LR]);
+        let before_code = arm(&[ADD, SUB, ORR, EOR, AND, BIC, BX_LR]);
+        let after_code = arm(&[ADD, MUL, MUL, MUL, MUL, MUL, BX_LR]);
+        let other = arm(&[EOR, EOR, EOR, EOR, EOR, EOR, BX_LR]);
+        let before = binary_of(&[("", &first), ("", &before_code), ("", &last)]);
+        let after = binary_of(&[("", &first), ("", &after_code), ("", &other), ("", &last)]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        assert_eq!(diff.removed, vec![1]);
+    }
+
     /// Context alone does not pair two functions whose code shares too
     /// little: see [`LOWEST_CONTEXT_SIMILARITY`].
     #[test]
@@ -4695,8 +4847,10 @@ mod tests {
 
         let diff =
             diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
-        assert_eq!(diff.removed, vec![0]);
-        assert_eq!(diff.added, vec![0]);
+        // Its place alone may pair it, as the only function before the
+        // three; its context does not.
+        let pair = diff.matched.iter().find(|pair| pair.before == 0);
+        assert!(pair.is_none_or(|pair| pair.confidence != Confidence::SameCallers), "{pair:?}");
     }
 
     /// Twins that paired in order, each with the next one's partner, pair
@@ -4839,7 +4993,10 @@ mod tests {
     #[test]
     fn an_unmatched_function_reports_its_closest_candidate() {
         let before = binary_of(&[("only", ADD_THEN_RETURN)]);
-        let after = binary_of(&[("other", MUL_THEN_RETURN)]);
+        // A second function that shares nothing keeps the two from
+        // pairing by their place: see `Cascade::pair_by_layout`.
+        let unrelated = arm(&[SUB, SUB]);
+        let after = binary_of(&[("other", MUL_THEN_RETURN), ("unrelated", &unrelated)]);
 
         // A threshold of 1.0 refuses everything below an exact match, so the
         // pair is left for the near-miss report.
@@ -4984,13 +5141,16 @@ mod tests {
     #[test]
     fn an_added_function_reports_its_closest_candidate() {
         let before = binary_of(&[("only", ADD_THEN_RETURN)]);
-        let after = binary_of(&[("other", MUL_THEN_RETURN)]);
+        // A second function that shares nothing keeps the two from
+        // pairing by their place: see `Cascade::pair_by_layout`.
+        let unrelated = arm(&[SUB, SUB]);
+        let after = binary_of(&[("other", MUL_THEN_RETURN), ("unrelated", &unrelated)]);
 
         // A threshold of 1.0 refuses everything below an exact match, so both
         // sides are left for the near-miss report.
         let diff = diff_with(&before, &after, Options { threshold: 1.0, use_names: UseNames::No });
 
-        assert_eq!(diff.added, vec![0], "nothing could be paired");
+        assert_eq!(diff.added, vec![0, 1], "nothing could be paired");
         let miss = diff.added_near_miss(0).expect("the added function needs a near miss");
         assert_eq!(miss.best, Some(0), "the only candidate is the closest one");
         assert!(miss.score > 0.0, "the two share a return, so they are not unrelated");
