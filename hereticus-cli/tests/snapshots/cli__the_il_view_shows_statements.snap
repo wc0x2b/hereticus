@@ -116,7 +116,7 @@ check_header
 + r3 = 0x5a5a
 + r0 = -0x1
 + flags = compare(r1, r3)
-  return
++ if (ne) return
 + store.32 [sp - 8] = fp, lr; sp = sp - 8
 + r1 = load.16 [r2 + 0x2]
 + r0 = r2 + 4
@@ -124,7 +124,7 @@ check_header
 + flags = compare(r0, 0)
 + if (ne) r0 = -0x2
 + fp, lr = load.32 [sp]; sp = sp + 8
-+ return
+  return
 
 handle
 - store.32 [sp - 8] = r4, lr; sp = sp - 8
