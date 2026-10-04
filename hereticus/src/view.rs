@@ -10,7 +10,7 @@
 //! them from the operands the decoder printed. An instruction the IL does
 //! not name shows as the decoder printed it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::address::AddressSpace;
 use crate::arch::{Arch, Insn, is_branch_target};
@@ -86,6 +86,7 @@ pub fn il_lines_in(
         }
         None => vec![None; insns.len()],
     };
+    let pages = page_loads(insns, &formed);
     let mut last_compare: Option<Compared> = None;
     // The callee each register holds, from a load of a GOT slot.
     let mut callees: HashMap<String, String> = HashMap::new();
@@ -115,6 +116,12 @@ pub fn il_lines_in(
             if let Some(text) = text {
                 return text;
             }
+            if pages.contains(&index)
+                && matches!(address, Some(Pointed::Address(_)))
+                && let Some(dest) = split_operands(&insn.operands).first()
+            {
+                return format!("{dest} = &page");
+            }
             let word = usize::try_from(insn.address - first.address)
                 .ok()
                 .and_then(|offset| code.get(offset..offset.checked_add(insn.bytes_len)?));
@@ -129,6 +136,43 @@ pub fn il_lines_in(
                 },
                 None => insn.to_string(),
             }
+        })
+        .collect()
+}
+
+/// The MIPS loads of a page from the global offset table: each `lw` whose
+/// register an `addiu` or `ori` after it joins the low half to, to form an
+/// address, as
+///
+/// ```text
+/// lw    v0, %got(local)(gp)
+/// addiu v0, v0, %lo(local)
+/// ```
+///
+/// The slot the `lw` reads moves with the table, but the `addiu` names what
+/// the two point at, as the `add` after `adrp` does.
+fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
+    /// How far back the `lw` can be, as a compiler schedules others between.
+    const LOOK_BACK: usize = 16;
+    insns
+        .iter()
+        .enumerate()
+        .filter(|&(index, insn)| {
+            matches!(insn.mnemonic.as_str(), "addiu" | "ori") && formed[index].is_some()
+        })
+        .filter_map(|(index, insn)| {
+            // The MIPS16e `addiu v0, 0x10` adds to the register it writes.
+            let source = match split_operands(&insn.operands).as_slice() {
+                [_, source, _] => *source,
+                [dest, _] => *dest,
+                _ => return None,
+            };
+            let at = (index.saturating_sub(LOOK_BACK)..index).rev().find(|&at| {
+                let earlier = &insns[at];
+                matches!(earlier.kind, crate::arch::InsnKind::Call { .. })
+                    || split_operands(&earlier.operands).first() == Some(&source)
+            })?;
+            (insns[at].mnemonic == "lw" && formed[at].is_some()).then_some(at)
         })
         .collect()
 }
@@ -1021,6 +1065,47 @@ mod tests {
         assert_eq!(ListOrder::IncrementBefore.offsets(8, 4), (4, 8));
         assert_eq!(ListOrder::DecrementAfter.offsets(8, 4), (-4, -8));
         assert_eq!(ListOrder::DecrementBefore.offsets(8, 4), (-8, -8));
+    }
+
+    fn mips(mnemonic: &str, operands: &str, kind: crate::arch::InsnKind) -> Insn {
+        Insn { address: 0, bytes_len: 4, mnemonic: mnemonic.into(), operands: operands.into(), kind }
+    }
+
+    #[test]
+    fn a_load_of_a_page_is_found_by_the_addiu_after_it() {
+        use crate::arch::InsnKind::{Call, Normal};
+        let insns = [
+            mips("lw", "v0, -0x7fe0(gp)", Normal),
+            mips("lw", "a2, -0x7fe0(gp)", Normal),
+            mips("lw", "t9, -0x7f00(gp)", Normal),
+            mips("addiu", "v0, v0, 0x10", Normal),
+            mips("addiu", "a2, a2, 0x20", Normal),
+        ];
+        let formed = [Some(0x1000), Some(0x1000), Some(0x1004), Some(0x2010), Some(0x2020)];
+        assert_eq!(page_loads(&insns, &formed), HashSet::from([0, 1]));
+
+        // MIPS16e adds to the register it writes.
+        let insns = [mips("lw", "v0, 0x10(s0)", Normal), mips("addiu", "v0, 0x10", Normal)];
+        assert_eq!(page_loads(&insns, &[Some(0x1000), Some(0x2010)]), HashSet::from([0]));
+
+        // A write or a call between them leaves the register holding
+        // something else.
+        let insns = [
+            mips("lw", "v0, -0x7fe0(gp)", Normal),
+            mips("move", "v0, a0", Normal),
+            mips("addiu", "v0, v0, 0x10", Normal),
+        ];
+        assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
+        let insns = [
+            mips("lw", "v0, -0x7fe0(gp)", Normal),
+            mips("jalr", "t9", Call { target: None }),
+            mips("addiu", "v0, v0, 0x10", Normal),
+        ];
+        assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
+
+        // An `addiu` that forms no address joins no page.
+        let insns = [mips("lw", "v0, -0x7fe0(gp)", Normal), mips("addiu", "v0, v0, 1", Normal)];
+        assert!(page_loads(&insns, &[Some(0x1000), None]).is_empty());
     }
 
     #[test]

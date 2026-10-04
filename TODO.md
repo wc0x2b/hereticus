@@ -182,8 +182,5 @@ them, and none of them is a fault:
 - A call to a function with no symbol shows its distance, as
   `call $-0x2948`, which moves; it could show the function as the report
   names it, as `sub_2b58`, where the pairing says which it is.
-- A load of a local page from the MIPS global offset table shows the
-  slot, as `v0 = load.32 [@0x240e8]`; the `addiu` after it names the
-  data, so the load could read as `v0 = &page`, as `adrp` does.
 - The preamble that makes the global pointer is three or four lines of
   `@` constants on MIPS; it could read as one, as `gp = _gp`.
