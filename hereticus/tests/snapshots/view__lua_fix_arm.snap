@@ -31,5 +31,5 @@ expression: "shown.join(\"\\n\")"
   return
 + r3 = 1
 + store.32 [r4 + 0x14] = r3
-  mvn r0, r0, 0x0
+  r0 = -0x1
   goto $-0x14

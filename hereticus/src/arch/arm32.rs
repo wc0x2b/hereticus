@@ -117,6 +117,7 @@ impl Arch for Arm32 {
 
         let text = inst.to_string();
         let (mnemonic, operands) = split_mnemonic(&text);
+        let (mnemonic, operands) = without_unused_operand(mnemonic, operands);
 
         Ok(Insn {
             address: insn_address,
@@ -834,6 +835,42 @@ fn role_of(opcode: Opcode) -> Role {
             Role::Compute { count: 2 }
         }
         _ => Role::Compute { count: 1 },
+    }
+}
+
+/// The text of an A32 instruction without the register its encoding holds
+/// but does not use.
+///
+/// `yaxpeax-arm` 0.4 prints the first source of a compare, which a compare
+/// has none of, and a flag-setting `s` it always has: `cmp r3, r2` reads
+/// `cmps r0, r3, r2`. It prints the first source of `mov` and `mvn` too,
+/// which they do not read: `mvn r0, #0` reads `mvn r0, r0, 0x0`. Measured on
+/// Lua by GCC, 2601 of 28304 instructions printed so.
+fn without_unused_operand(mnemonic: String, operands: String) -> (String, String) {
+    const CONDITIONS: [&str; 15] =
+        ["eq", "ne", "hs", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al"];
+    let condition =
+        CONDITIONS.iter().find(|cond| mnemonic.len() > 4 && mnemonic.ends_with(*cond)).copied();
+    let base = &mnemonic[..mnemonic.len() - condition.map_or(0, str::len)];
+    let is_shift =
+        |part: &str| ["lsl", "lsr", "asr", "ror", "rrx"].iter().any(|s| part.starts_with(s));
+    let parts: Vec<&str> = operands.split(", ").collect();
+    match base {
+        "cmps" | "cmns" | "tsts" | "teqs" if parts.len() >= 3 => {
+            let name = format!("{}{}", &base[..3], condition.unwrap_or_default());
+            (name, parts[1..].join(", "))
+        }
+        "mov" | "movs" | "mvn" | "mvns" => {
+            let values = parts.iter().filter(|part| !is_shift(part)).count();
+            if values > 2 {
+                let kept: Vec<&str> =
+                    parts.iter().enumerate().filter(|&(i, _)| i != 1).map(|(_, p)| *p).collect();
+                (mnemonic, kept.join(", "))
+            } else {
+                (mnemonic, operands)
+            }
+        }
+        _ => (mnemonic, operands),
     }
 }
 
@@ -2683,6 +2720,27 @@ fn writes_pc(inst: &Instruction) -> bool {
             .iter()
             .any(|operand| matches!(operand, Operand::RegList(mask) if mask & (1 << REG_PC) != 0)),
         _ => is_pc(&inst.operands[0]),
+    }
+}
+
+#[cfg(test)]
+mod unused_operand_tests {
+    use super::*;
+
+    #[test]
+    fn a_compare_and_a_move_print_only_what_they_use() {
+        let shown = |word: u32| {
+            let code = word.to_le_bytes();
+            let insn = Arm32.decode(&code, 0, 0).expect("decodes");
+            format!("{} {}", insn.mnemonic, insn.operands)
+        };
+        // From `llvm-mc --triple=armv7`.
+        assert_eq!(shown(0xe153_0002), "cmp r3, r2");
+        assert_eq!(shown(0x1350_0007), "cmpne r0, 0x7");
+        assert_eq!(shown(0xe311_0003), "tst r1, 0x3");
+        assert_eq!(shown(0xe3e0_0000), "mvn r0, 0x0");
+        assert_eq!(shown(0xe1a0_4201), "mov r4, r1, lsl 4");
+        assert_eq!(shown(0xe1a0_7000), "mov r7, r0");
     }
 }
 

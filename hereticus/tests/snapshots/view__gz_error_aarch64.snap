@@ -18,7 +18,7 @@ if (w1 != 4) goto $+0xb8
 store.64 [x19 + 0x78] = xzr
 flags = compare(w20, 0)
 ccmn w20, #0x5, #0x4, ne
-if (w20 != 0) goto $+0x84
+if (flags.NotEqual) goto $+0x84
 store.32 [x19 + 0x74] = w20
 if (x21 == 0) goto $+0x90
 x22 = load.64 [x19 + 0x20]
@@ -55,7 +55,7 @@ store.32 [x19] = wzr
 flags = compare(x21, 0)
 store.32 [x19 + 0x74] = w20
 ccmn w20, #0x4, #0x4, ne
-if (x21 != 0) goto $-0x88
+if (flags.NotEqual) goto $-0x88
 x19, x20 = load.64 [sp + 0x10]
 x21, x22 = load.64 [sp + 0x20]
 x29, x30 = load.64 [sp]; sp = sp + 0x30
