@@ -87,15 +87,16 @@ pub struct Match {
     /// This is [`Edits::added`], plus ln((N + 1) / (n + 1)) for each
     /// instruction the later body holds more of, where N is the number of
     /// changed pairs and n the number of those that add the same
-    /// instruction. Another compiler or another flag adds the same
+    /// instruction, with many copies of one instruction weighed as
+    /// [`saturated`] says. Another compiler or another flag adds the same
     /// instructions to many functions, and a fix adds its own to few. Zero
     /// for a pair that did not change.
     ///
     /// Measured on four published fixes, this put the fix of
-    /// CVE-2025-24257 at row 8 where [`Edits::added`] put it at row 19, and
+    /// CVE-2025-24257 at row 6 where [`Edits::added`] put it at row 19, and
     /// the others within one row of where they were. Over the backports
-    /// built two ways, the Lua fix rose from row 100 to row 36 at most, but
-    /// eight fixes fell from row 1 to row 2.
+    /// built two ways, it lifts the fixes that rank worst, but some fall
+    /// from row 1 to row 2.
     ///
     /// See RESEARCH.md, entry 6: this is the inverse document frequency of
     /// information retrieval, over the instructions each pair added.
@@ -1678,11 +1679,15 @@ impl Cascade<'_> {
                 *pairs_adding.entry(symbol).or_default() += 1;
             }
         }
-        let weight =
-            |symbol: &Symbol| ((edited as f64 + 1.0) / (pairs_adding[symbol] as f64 + 1.0)).ln();
+        let rarity_of =
+            |symbol: Symbol| ((edited as f64 + 1.0) / (pairs_adding[&symbol] as f64 + 1.0)).ln();
         for (pair, symbols) in self.matched.iter_mut().zip(&added) {
             if is_edit(pair) {
-                pair.rarity = pair.edits.added as f64 + symbols.iter().map(weight).sum::<f64>();
+                let weighted: f64 = symbols
+                    .chunk_by(|a, b| a == b)
+                    .map(|run| rarity_of(run[0]) * saturated(run.len()))
+                    .sum();
+                pair.rarity = pair.edits.added as f64 + weighted;
             }
         }
     }
@@ -2931,6 +2936,23 @@ const FEWEST_SHARED_EDGES: usize = 3;
 
 /// The lowest code similarity at which context alone pairs two functions.
 const LOWEST_CONTEXT_SIMILARITY: f64 = 0.3;
+
+/// How much `count` copies of one added instruction weigh, from 1 for one
+/// copy toward [`SATURATION`] + 1 for many.
+///
+/// The term frequency of BM25 (RESEARCH.md, entry 8): the first copies are
+/// strong evidence, and each more copy adds less. A rewrite that adds forty
+/// moves of one shape then weighs less than a fix that adds three rare
+/// instructions.
+fn saturated(count: usize) -> f64 {
+    let count = count as f64;
+    count * (SATURATION + 1.0) / (count + SATURATION)
+}
+
+/// The `k1` of BM25. Measured on the backports built two ways and the
+/// published fixes, 1.2 ranked the fixes higher than 0.5 or 3, and higher
+/// than no saturation at all.
+const SATURATION: f64 = 1.2;
 
 /// The items of the sorted list `left` that `right` lacks, counted as a
 /// multiset, sorted.
@@ -4802,6 +4824,19 @@ mod tests {
         assert!(close(rarity(1), 1.0 + (4.0f64 / 3.0).ln()));
         assert!(close(rarity(2), 1.0 + 2.0f64.ln()));
         assert_eq!(rarity(3), Some(0.0));
+    }
+
+    /// One copy weighs one, each more copy weighs less than the last, and
+    /// no count passes `SATURATION + 1`.
+    #[test]
+    fn copies_of_an_addition_saturate() {
+        assert!((saturated(1) - 1.0).abs() < 1e-12);
+        let weights: Vec<f64> = (1..200).map(saturated).collect();
+        for step in weights.windows(3) {
+            assert!(step[1] > step[0], "more copies weigh more");
+            assert!(step[2] - step[1] < step[1] - step[0], "each copy adds less");
+        }
+        assert!(weights.iter().all(|&weight| weight < SATURATION + 1.0));
     }
 
     #[test]
