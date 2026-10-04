@@ -4,6 +4,7 @@
 //! results, and chooses an exit status.
 
 mod formats;
+mod tui;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -54,7 +55,12 @@ struct Args {
     #[arg(long)]
     diff_all: bool,
 
-    /// How `--diff` and `--diff-all` show each instruction.
+    /// Browse the report in the terminal, and change its order, its filters
+    /// and the diff it shows without a second run.
+    #[arg(long, conflicts_with_all = ["diff", "diff_all", "format", "exit_code"])]
+    tui: bool,
+
+    /// How `--diff`, `--diff-all` and `--tui` show each instruction.
     #[arg(long, value_enum, default_value_t = ViewName::Asm)]
     view: ViewName,
 
@@ -295,6 +301,26 @@ impl Sort {
             Self::Modified => Some(edits.edited),
         }
     }
+
+    /// The order after this one, to step through them all with one key.
+    fn next(self) -> Self {
+        match self {
+            Self::Added => Self::Removed,
+            Self::Removed => Self::Modified,
+            Self::Modified => Self::Confidence,
+            Self::Confidence => Self::Added,
+        }
+    }
+
+    /// The name `--sort` takes for this order.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Confidence => "confidence",
+            Self::Added => "added",
+            Self::Removed => "removed",
+            Self::Modified => "modified",
+        }
+    }
 }
 
 /// Reject a threshold outside the range a similarity score can take.
@@ -377,6 +403,10 @@ fn main() -> ExitCode {
 ///
 /// Returns whether anything changed.
 fn run(args: &Args) -> Result<bool, String> {
+    // Fail before the comparison, which can take minutes.
+    if args.tui && !Term::stdout().is_term() {
+        return Err("--tui needs a terminal on standard output".to_string());
+    }
     let (before_bytes, load) = unpack_part(read_file(&args.before)?, args.unpack, &args.before)?;
     let (after_bytes, _) = unpack_part(read_file(&args.after)?, args.unpack, &args.after)?;
 
@@ -422,6 +452,15 @@ fn run(args: &Args) -> Result<bool, String> {
         let paint = Paint::resolve(args.color);
         return print_one_diff(&diff, &before, &after, wanted, args.view.into(), paint)
             .map(|()| false);
+    }
+    if args.tui {
+        let start = tui::Start {
+            sort: args.sort,
+            view: args.view.into(),
+            scope: if args.all { tui::Scope::All } else { tui::Scope::Changed },
+            hidden: Hidden::from_args(args),
+        };
+        return tui::run(&diff, &before, &after, start).map(|()| false);
     }
     if args.diff_all {
         let mut shown: Vec<&Match> = diff
@@ -899,13 +938,16 @@ fn sort_shown(shown: &mut [&Match], sort: Sort) {
         return;
     }
 
-    shown.sort_by(|a, b| {
-        let a_count = sort.count_of(a.edits).unwrap_or(0);
-        let b_count = sort.count_of(b.edits).unwrap_or(0);
-        b_count
-            .cmp(&a_count)
-            .then_with(|| a.score.partial_cmp(&b.score).unwrap_or(core::cmp::Ordering::Equal))
-    });
+    shown.sort_by(|a, b| rank(a, b, sort));
+}
+
+/// Which of two pairs a count order puts first: see [`sort_shown`].
+fn rank(a: &Match, b: &Match, sort: Sort) -> core::cmp::Ordering {
+    let a_count = sort.count_of(a.edits).unwrap_or(0);
+    let b_count = sort.count_of(b.edits).unwrap_or(0);
+    b_count
+        .cmp(&a_count)
+        .then_with(|| a.score.partial_cmp(&b.score).unwrap_or(core::cmp::Ordering::Equal))
 }
 
 /// How the text report shows a comparison.

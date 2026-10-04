@@ -1,0 +1,16 @@
+---
+source: hereticus-cli/tests/cli.rs
+assertion_line: 120
+info:
+  program: hereticus
+  args:
+    - "--tui"
+    - missing.o
+    - missing_v2.o
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+hereticus: --tui needs a terminal on standard output
