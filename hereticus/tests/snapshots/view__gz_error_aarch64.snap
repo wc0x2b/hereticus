@@ -17,7 +17,7 @@ flags = compare(w1, 4)
 if (w1 != 4) goto $+0xb8
 store.64 [x19 + 0x78] = xzr
 flags = compare(w20, 0)
-ccmn w20, #0x5, #0x4, ne
+flags = ne ? compare(w20, -5) : nzcv(4)
 if (flags.NotEqual) goto $+0x84
 store.32 [x19 + 0x74] = w20
 if (x21 == 0) goto $+0x90
@@ -54,7 +54,7 @@ goto snprintf
 store.32 [x19] = wzr
 flags = compare(x21, 0)
 store.32 [x19 + 0x74] = w20
-ccmn w20, #0x4, #0x4, ne
+flags = ne ? compare(w20, -4) : nzcv(4)
 if (flags.NotEqual) goto $-0x88
 x19, x20 = load.64 [sp + 0x10]
 x21, x22 = load.64 [sp + 0x20]

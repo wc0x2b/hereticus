@@ -171,7 +171,7 @@ them, and none of them is a fault:
 - `it`, whose condition now sits on each instruction it covers, so its
   own line says nothing more.
 - NEON and VFP work, as `vmov`, `vcmp` and `vmrs`, which the lift names
-  `Vector` or `Float` only, and AArch64 `ccmp`, `movi` and `umov`.
+  `Vector` or `Float` only.
 - The MIPS float compares that are true on a NaN, as `c.ult.d` and
   `c.un.d`, which no operator names.
 

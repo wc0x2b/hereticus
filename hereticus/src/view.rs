@@ -490,6 +490,57 @@ fn frame_statement(mnemonic: &str, operands: &[&str]) -> Option<String> {
     Some(parts.join("; "))
 }
 
+/// The statement of an AArch64 instruction whose operands the IL does not
+/// pair with the printed ones: a conditional compare, a vector constant,
+/// and a move between a general register and a lane of a vector.
+fn aarch64_statement(
+    mnemonic: &str,
+    tokens: &[&str],
+    last_compare: &mut Option<Compared>,
+) -> Option<String> {
+    let immediate = |token: &str| {
+        let token = token.trim_start_matches('#');
+        token
+            .strip_prefix("0x")
+            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+            .map_or_else(|| token.to_string(), constant_text)
+    };
+    let is_lane = |token: &str| token.contains('.') && token.ends_with(']');
+    let line = match (mnemonic, tokens) {
+        // `ccmp x1, x2, #4, eq` compares where its condition holds, and
+        // else sets the flags to the constant it names. A branch after it
+        // tests the flags, not one compare.
+        ("ccmp" | "ccmn" | "fccmp" | "fccmpe", [left, right, flags, cond]) => {
+            *last_compare = None;
+            let right = immediate(right);
+            let right = if mnemonic == "ccmn" { format!("-{right}") } else { right };
+            format!("flags = {cond} ? compare({left}, {right}) : nzcv({})", immediate(flags))
+        }
+        ("movi", [dest, value]) => format!("{dest} = {}", immediate(value)),
+        ("mvni", [dest, value]) => format!("{dest} = ~{}", immediate(value)),
+        ("movi", [dest, value, shift]) | ("mvni", [dest, value, shift]) => {
+            let (kind, amount) = shift.split_once(' ')?;
+            let operator = match kind {
+                "lsl" => "<<",
+                // `msl` shifts ones in.
+                "msl" => "msl",
+                _ => return None,
+            };
+            let shifted = format!("{} {operator} {}", immediate(value), immediate(amount));
+            match mnemonic {
+                "mvni" => format!("{dest} = ~({shifted})"),
+                _ => format!("{dest} = {shifted}"),
+            }
+        }
+        ("mov" | "umov" | "ins", [dest, source]) if is_lane(dest) || is_lane(source) => {
+            format!("{dest} = {source}")
+        }
+        ("smov" | "dup", [dest, source]) => format!("{dest} = {mnemonic}({source})"),
+        _ => return None,
+    };
+    Some(line)
+}
+
 /// A constant as code reads it: small ones in decimal, a negative one with
 /// its sign.
 fn constant_text(value: u64) -> String {
@@ -774,6 +825,9 @@ fn statement(
         Op::Call => return Some(format!("call {}", target.or(tokens.last().copied())?)),
         Op::Jump => return Some(format!("goto {}", target.or(tokens.last().copied())?)),
         _ => {}
+    }
+    if let Some(line) = aarch64_statement(&insn.mnemonic, &tokens, last_compare) {
+        return Some(line);
     }
     // `lsl` and `lsr` of AArch64 are aliases of a field move, which the IL
     // holds with the two field bounds; the printed amount is the shift.
@@ -1333,6 +1387,43 @@ mod tests {
             kind: crate::arch::InsnKind::Normal,
         };
         assert_eq!(a32_condition(&Arm32, &mls, Op::MultiplyAdd), None, "a multiply-subtract");
+    }
+
+    #[test]
+    fn conditional_compares_and_vector_moves_read_plainly() {
+        let shown = lines(&[
+            0x7a43_1800, // ccmp w0, #3, #0, ne
+            0x5400_0040, // b.eq $+0x8
+            0x3a41_b862, // ccmn w3, #1, #2, lt
+            0x1e21_1400, // fccmp s0, s1, #0, ne
+            0x6f00_e400, // movi v0.2d, #0
+            0x4f00_2600, // movi v0.4s, #16, lsl #8
+            0x6f00_8441, // mvni v1.8h, #2
+            0x6f00_d462, // mvni v2.4s, #3, msl #16
+            0x0e0c_3c20, // mov w0, v1.s[1]
+            0x0e07_3ca4, // umov w4, v5.b[3]
+            0x4e0a_2ce6, // smov x6, v7.h[2]
+            0x4e0c_1c83, // mov v3.s[1], w4
+            0x4e04_0d07, // dup v7.4s, w8
+        ]);
+        assert_eq!(
+            shown,
+            [
+                "flags = ne ? compare(w0, 3) : nzcv(0)",
+                "if (flags.Equal) goto $+0x8",
+                "flags = lt ? compare(w3, -1) : nzcv(2)",
+                "flags = ne ? compare(s0, s1) : nzcv(0)",
+                "v0.2d = 0",
+                "v0.4s = 0x10 << 8",
+                "v1.8h = ~2",
+                "v2.4s = ~(3 msl 16)",
+                "w0 = v1.s[1]",
+                "w4 = v5.b[3]",
+                "x6 = smov(v7.h[2])",
+                "v3.s[1] = w4",
+                "v7.4s = dup(w8)",
+            ]
+        );
     }
 
     #[test]
