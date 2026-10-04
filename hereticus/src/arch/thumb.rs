@@ -122,7 +122,9 @@ impl Arch for Thumb2 {
                     u16::from_le_bytes([low, high]),
                     u16::from_le_bytes([second_low, second_high]),
                 );
-                match (table_branch(first, second), wide_move_operands(first, second)) {
+                let fixed = wide_move_operands(first, second)
+                    .or_else(|| wide_store(first, second).map(|store| store.operands()));
+                match (table_branch(first, second), fixed) {
                     (Some((mnemonic, operands)), _) => (mnemonic.to_string(), operands),
                     (None, Some(operands)) => (mnemonic, operands),
                     (None, None) => (mnemonic, operands),
@@ -385,6 +387,14 @@ impl Arch for Thumb2 {
     }
 
     fn lift(&self, insn: &Insn, word: &[u8]) -> Option<crate::il::Lifted> {
+        if let [low, high, second_low, second_high] = *word
+            && let Some(store) = wide_store(
+                u16::from_le_bytes([low, high]),
+                u16::from_le_bytes([second_low, second_high]),
+            )
+        {
+            return Some(store.lifted());
+        }
         let a32 = match *word {
             [low, high, second_low, second_high] => {
                 Some(as_a32(u32::from_le_bytes([second_low, second_high, low, high])))
@@ -461,6 +471,74 @@ fn wide_move_operands(first: u16, second: u16) -> Option<String> {
     let value = wide_move_value(first, second)?;
     let register = REGISTER_NAMES[usize::from(second >> 8 & 0xf)];
     Some(format!("{register}, {value:#x}"))
+}
+
+/// A T32 store of a register at an offset from a base, read from the
+/// encoding:
+///
+/// ```text
+/// 1111 1000 1 sz 0 Rn | Rt imm12      str.w, strh.w, strb.w
+/// ```
+///
+/// `yaxpeax-arm` 0.4 reads these as the store at an offset in a register,
+/// so `str.w r8, [sp, #0x1c]` read as `str r8, [sp, ip, lsl 1]`. The loads
+/// of the same form read right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WideStore {
+    value: u16,
+    base: u16,
+    offset: u16,
+    width: crate::il::Width,
+}
+
+impl WideStore {
+    /// The operands as the decoder prints those of a load.
+    fn operands(self) -> String {
+        let (value, base) =
+            (REGISTER_NAMES[usize::from(self.value)], REGISTER_NAMES[usize::from(self.base)]);
+        match self.offset {
+            0 => format!("{value}, [{base}]"),
+            offset => format!("{value}, [{base}, {offset:#x}]"),
+        }
+    }
+
+    /// The store as the IL reads it.
+    fn lifted(self) -> crate::il::Lifted {
+        use crate::il::{AccessKind, Lifted, MemoryAccess, Op, Operand, Reg};
+        let reg = |number: u16| match number {
+            13 => Reg::Stack,
+            number => Reg::General(number as u8),
+        };
+        let mut lifted = Lifted {
+            op: Op::Store,
+            memory: Some(MemoryAccess { kind: AccessKind::Store, width: Some(self.width) }),
+            ..Lifted::default()
+        };
+        lifted.reads.insert(reg(self.value));
+        lifted.reads.insert(reg(self.base));
+        lifted.operands = [
+            Operand::Reg(reg(self.value)),
+            Operand::Memory { base: Some(reg(self.base)), offset: Some(i64::from(self.offset)) },
+        ]
+        .into_iter()
+        .collect();
+        lifted
+    }
+}
+
+/// The wide store at an offset that `first` and `second` encode, if they
+/// encode one: see [`WideStore`].
+fn wide_store(first: u16, second: u16) -> Option<WideStore> {
+    use crate::il::Width;
+    let width = match first & 0xfff0 {
+        0xf8c0 => Width::Bits32,
+        0xf8a0 => Width::Bits16,
+        0xf880 => Width::Bits8,
+        _ => return None,
+    };
+    let (value, base) = (second >> 12, first & 0xf);
+    // `pc` as either is another encoding, or none.
+    (value != 15 && base != 15).then_some(WideStore { value, base, offset: second & 0xfff, width })
 }
 
 /// The 16-bit value of a T32 `movw` or `movt`: see [`wide_move_operands`].
@@ -776,6 +854,29 @@ mod tests {
         let tables = Thumb2.jump_tables(&Memory::new(&regions), 0x1000..0x1010, &insns);
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].targets, [0x1006 + 4, 0x1006 + 6]);
+    }
+
+    #[test]
+    fn a_wide_store_at_an_offset_reads_as_one() {
+        // From `llvm-mc --triple=thumbv7`.
+        let shown = |values: &[u16]| {
+            let insn = decode_one(values);
+            format!("{} {}", insn.mnemonic, insn.operands)
+        };
+        assert_eq!(shown(&[0xf8cd, 0x801c]), "str r8, [sp, 0x1c]");
+        assert_eq!(shown(&[0xf8ad, 0x801c]), "strh r8, [sp, 0x1c]");
+        assert_eq!(shown(&[0xf88d, 0x801c]), "strb r8, [sp, 0x1c]");
+        assert_eq!(shown(&[0xf8cd, 0x8000]), "str r8, [sp]");
+        assert_eq!(shown(&[0xf840, 0x8001]), "str r8, [r0, r1]", "the register form stays");
+        let lifted = lift_one(&[0xf8c5, 0x8004]);
+        assert_eq!(lifted.op, crate::il::Op::Store);
+        assert_eq!(
+            lifted.operands.last(),
+            Some(&crate::il::Operand::Memory {
+                base: Some(crate::il::Reg::General(5)),
+                offset: Some(4)
+            })
+        );
     }
 
     #[test]
