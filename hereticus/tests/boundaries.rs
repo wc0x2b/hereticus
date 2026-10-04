@@ -55,13 +55,16 @@ fn recovery_of(build: &Path) -> Recovery {
         let data = std::fs::read(build.join(file)).expect("the build exists");
         Binary::parse(&data).expect("the build parses")
     };
-    // The PLT is code no symbol names, so the stubs the scan finds there are
-    // no error, and are left out.
+    // The PLT, and the lazy binding stubs of MIPS, are code no symbol
+    // names, so the stubs the scan finds there are no error, and are left
+    // out.
     let library = std::fs::read(build.join("lib.so")).expect("the build exists");
     let file = object::File::parse(library.as_slice()).expect("the build parses");
     let plt: Vec<core::ops::Range<u64>> = file
         .sections()
-        .filter(|section| section.name().is_ok_and(|name| name.starts_with(".plt")))
+        .filter(|section| {
+            section.name().is_ok_and(|name| name.starts_with(".plt") || name == ".MIPS.stubs")
+        })
         .map(|section| section.address()..section.address() + section.size())
         .collect();
     let outside_plt = |&(start, _): &(u64, u64)| !plt.iter().any(|range| range.contains(&start));
@@ -94,7 +97,7 @@ fn stripped_functions_are_recovered() {
         });
     assert_eq!(
         total,
-        Recovery { functions: 46006, exact: 45891, invented: 55, missed: 30 },
+        Recovery { functions: 46006, exact: 45919, invented: 25, missed: 16 },
         "over {} builds",
         builds.len()
     );

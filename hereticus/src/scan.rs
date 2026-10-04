@@ -1417,9 +1417,12 @@ fn starts_after_returns_in(
             InsnKind::Jump { target: Some(target) } => {
                 let closes_a_loop =
                     function_start.is_some_and(|start| start <= target && target < insn.address);
+                // The pool of a function sits at its end as padding does.
+                // A pool in the middle, which branches jump over, still
+                // stays inside by the checks below.
                 let padded = insns
                     .get(index + 1 + arch.delay_slots(insn))
-                    .is_some_and(|next| arch.is_padding(next));
+                    .is_some_and(|next| arch.is_padding(next) || !is_code(&next));
                 (anchors.contains(&target) && Some(target) != function_start)
                     || (closes_a_loop && (padded || all_jumps_read(function_start, insn.address)))
             }
