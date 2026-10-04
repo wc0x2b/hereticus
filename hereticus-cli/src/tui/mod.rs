@@ -13,7 +13,12 @@ use hereticus::address::Contents;
 use hereticus::matching::{Diff, DiffLine, View, instruction_diff_in};
 use hereticus::obj::Binary;
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::crossterm::execute;
+use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 
 use rows::{Addresses, change_starts, side_by_side, unified};
@@ -153,7 +158,21 @@ pub struct App<'a> {
     help: Help,
     /// The height of the last drawn list, which a page moves by.
     page: usize,
+    /// Where the last draw put what a click acts on.
+    regions: Regions,
 }
+
+/// Where the last draw put what a click acts on.
+#[derive(Clone, Copy, Debug, Default)]
+struct Regions {
+    /// The tab of each screen: the functions, then the diff.
+    tabs: [Rect; 2],
+    /// The rows of the table, below its heading.
+    list: Rect,
+}
+
+/// How many rows a turn of the mouse wheel moves.
+const WHEEL_STEP: isize = 3;
 
 impl<'a> App<'a> {
     pub fn new(diff: &'a Diff, before: &'a Binary, after: &'a Binary, start: Start) -> Self {
@@ -190,6 +209,7 @@ impl<'a> App<'a> {
             screen: Screen::Table,
             help: Help::Hidden,
             page: 10,
+            regions: Regions::default(),
         };
         app.refresh();
         app
@@ -378,6 +398,50 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Act on the mouse: the wheel moves the list or the diff, a click on a
+    /// tab changes the screen, and a click on a row selects it, or opens it
+    /// where it is selected already.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.help == Help::Shown {
+            return;
+        }
+        let step = match mouse.kind {
+            MouseEventKind::ScrollDown => WHEEL_STEP,
+            MouseEventKind::ScrollUp => -WHEEL_STEP,
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.click(Position::new(mouse.column, mouse.row));
+                return;
+            }
+            _ => return,
+        };
+        match self.screen {
+            Screen::Table | Screen::Filter => self.move_selection(step),
+            Screen::Pair(_) => self.scroll_by(step),
+        }
+    }
+
+    fn click(&mut self, at: Position) {
+        let [functions, diff] = self.regions.tabs;
+        if functions.contains(at) {
+            self.screen = Screen::Table;
+        } else if diff.contains(at) {
+            if !matches!(self.screen, Screen::Pair(_)) {
+                self.open();
+            }
+        } else if self.regions.list.contains(at) && !matches!(self.screen, Screen::Pair(_)) {
+            let row = self.table.offset() + usize::from(at.y - self.regions.list.y);
+            if row >= self.rows.len() {
+                return;
+            }
+            self.screen = Screen::Table;
+            if self.table.selected() == Some(row) {
+                self.open();
+            } else {
+                self.table.select(Some(row));
+            }
+        }
+    }
+
     fn handle_table(&mut self, code: KeyCode) -> Flow {
         let page = self.page as isize;
         match code {
@@ -508,7 +572,10 @@ impl<'a> App<'a> {
 pub fn run(diff: &Diff, before: &Binary, after: &Binary, start: Start) -> Result<(), String> {
     let mut app = App::new(diff, before, after, start);
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut app, &mut terminal);
+    let result = execute!(std::io::stdout(), EnableMouseCapture)
+        .and_then(|()| event_loop(&mut app, &mut terminal));
+    // The terminal must get its mouse back even after a failed draw.
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result.map_err(|error| format!("cannot draw on the terminal: {error}"))
 }
@@ -516,12 +583,15 @@ pub fn run(diff: &Diff, before: &Binary, after: &Binary, start: Start) -> Result
 fn event_loop(app: &mut App<'_>, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
     loop {
         terminal.draw(|frame| app.draw(frame))?;
-        // A terminal on Windows sends a release of each key too.
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && app.handle(key) == Flow::Quit
-        {
-            return Ok(());
+        match event::read()? {
+            // A terminal on Windows sends a release of each key too.
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if app.handle(key) == Flow::Quit {
+                    return Ok(());
+                }
+            }
+            Event::Mouse(mouse) => app.handle_mouse(mouse),
+            _ => {}
         }
     }
 }
@@ -864,7 +934,7 @@ mod tests {
     fn any_keys_keep_the_selection_inside_the_rows() {
         let Some((before, after)) = firmware() else { return };
         let diff = diff_with(&before, &after, Options::default());
-        const KEYS: [KeyCode; 20] = [
+        const KEYS: [KeyCode; 21] = [
             KeyCode::Up,
             KeyCode::Down,
             KeyCode::PageUp,
@@ -883,14 +953,29 @@ mod tests {
             KeyCode::Char('l'),
             KeyCode::Char('n'),
             KeyCode::Char('p'),
-            KeyCode::Char('e'),
+            KeyCode::Char(']'),
+            KeyCode::Char('['),
             KeyCode::Char('?'),
         ];
-        bolero::check!().with_type::<(Vec<u8>, u8, u8)>().for_each(|(keys, width, height)| {
+        const MICE: [MouseEventKind; 3] = [
+            MouseEventKind::ScrollDown,
+            MouseEventKind::ScrollUp,
+            MouseEventKind::Down(MouseButton::Left),
+        ];
+        type Input = (Vec<(u8, u8, u8)>, u8, u8);
+        bolero::check!().with_type::<Input>().for_each(|(events, width, height)| {
+            let (width, height) = (u16::from(*width), u16::from(*height));
             let mut app = App::new(&diff, &before, &after, start());
-            for &key in keys {
-                // `Esc` on the table ends the run.
-                if app.handle(KeyEvent::from(KEYS[usize::from(key) % KEYS.len()])) == Flow::Quit {
+            for &(kind, column, row) in events {
+                // A click acts on where the last draw put things.
+                screen(&mut app, width, height);
+                let kind = usize::from(kind);
+                if let Some(&mouse) = MICE.get(kind % 32) {
+                    let (column, row) = (u16::from(column), u16::from(row));
+                    let modifiers = KeyModifiers::NONE;
+                    app.handle_mouse(MouseEvent { kind: mouse, column, row, modifiers });
+                } else if app.handle(KeyEvent::from(KEYS[kind % KEYS.len()])) == Flow::Quit {
+                    // `Esc` on the table ends the run.
                     return;
                 }
                 match app.table.selected() {
@@ -901,7 +986,57 @@ mod tests {
                     assert!(opened.scroll < app.diff_rows().max(1));
                 }
             }
-            screen(&mut app, u16::from(*width), u16::from(*height));
         });
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
+    }
+
+    #[test]
+    fn the_mouse_scrolls_selects_and_opens() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        let click = |column, row| mouse(MouseEventKind::Down(MouseButton::Left), column, row);
+        screen(&mut app, 120, 20);
+
+        // The wheel moves the selection, and stops at the last row.
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 10, 10));
+        assert_eq!(app.table.selected(), Some(app.rows.len().min(4) - 1));
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 10, 10));
+        assert_eq!(app.table.selected(), Some(0));
+
+        // A click on a row selects it, and a second click opens it.
+        let second = app.regions.list.y + 1;
+        app.handle_mouse(click(10, second));
+        assert_eq!(app.table.selected(), Some(1));
+        assert!(matches!(app.screen, Screen::Table));
+        app.handle_mouse(click(10, second));
+        assert!(matches!(app.screen, Screen::Pair(_)));
+
+        // The wheel scrolls the diff.
+        screen(&mut app, 120, 20);
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 10, 10));
+        let Screen::Pair(opened) = &app.screen else { panic!("the diff stays open") };
+        assert_eq!(opened.scroll, WHEEL_STEP as usize);
+
+        // A click on a tab changes the screen.
+        let [functions, diff_tab] = app.regions.tabs;
+        app.handle_mouse(click(functions.x, functions.y));
+        assert!(matches!(app.screen, Screen::Table));
+        screen(&mut app, 120, 20);
+        app.handle_mouse(click(diff_tab.x + 1, diff_tab.y));
+        assert!(matches!(app.screen, Screen::Pair(_)));
+
+        // A click past the last row, or under the help, does nothing.
+        press(&mut app, &[KeyCode::Esc]);
+        screen(&mut app, 120, 20);
+        let selected = app.table.selected();
+        app.handle_mouse(click(10, app.regions.list.y + 10));
+        assert_eq!(app.table.selected(), selected);
+        press(&mut app, &[KeyCode::Char('?')]);
+        app.handle_mouse(click(10, app.regions.list.y));
+        assert_eq!(app.table.selected(), selected);
     }
 }

@@ -54,7 +54,7 @@ impl App<'_> {
 
     /// The name and version over the tabs of the two screens, with the two
     /// files at the right.
-    fn draw_title(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn draw_title(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let [name, tabs] =
             Split::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
         let heading = Line::from(vec![
@@ -75,6 +75,13 @@ impl App<'_> {
             .select(selected)
             .divider("|".fg(GRAY_FG));
         frame.render_widget(tabs_widget, tabs);
+        // `Tabs` pads each title by one column, and a divider parts them.
+        let mut x = tabs.x;
+        for (region, title) in self.regions.tabs.iter_mut().zip(["Functions", "Diff"]) {
+            let width = title.chars().count() as u16;
+            *region = Rect { x: x.saturating_add(1), width, height: 1, ..tabs }.intersection(tabs);
+            x = x.saturating_add(width + 3);
+        }
         let [before, after] = &self.files;
         let files = Line::from(vec![
             Span::styled(before.as_str(), Style::new().fg(GRAY_FG)),
@@ -115,6 +122,9 @@ impl App<'_> {
             .row_highlight_style(Style::new().fg(ORANGE).bold())
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(table, area, &mut self.table);
+        // The frame and the heading take the first two lines.
+        self.regions.list =
+            Rect { y: area.y.saturating_add(2), height: area.height.saturating_sub(2), ..area };
         let position = self.table.selected().unwrap_or(0);
         draw_scrollbar(frame, area, self.rows.len(), position);
     }
@@ -377,6 +387,8 @@ fn draw_help(frame: &mut Frame<'_>) {
         help_header("Global"),
         help_entry("?", "this help"),
         help_entry("q", "quit"),
+        help_entry("wheel", "scroll"),
+        help_entry("click", "select, again to open"),
     ];
     let right = vec![
         help_header("Diff"),
@@ -411,7 +423,7 @@ fn draw_help(frame: &mut Frame<'_>) {
     ];
 
     let height = u16::try_from(left.len().max(right.len()) + 2).unwrap_or(u16::MAX);
-    let area = popup_area(frame.area(), 72, height);
+    let area = popup_area(frame.area(), 78, height);
     let block = Block::bordered()
         .border_style(Style::new().fg(ORANGE))
         .title(Span::styled("Help", Style::new().fg(YELLOW).bold()))
