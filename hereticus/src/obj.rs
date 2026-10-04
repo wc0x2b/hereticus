@@ -133,6 +133,14 @@ pub struct Function {
     pub code: Vec<u8>,
 }
 
+impl Function {
+    /// The name a report shows: the symbol, or `sub_<hex>` of the address
+    /// where the binary is stripped.
+    pub fn label(&self) -> String {
+        if self.name.is_empty() { format!("sub_{:x}", self.address) } else { self.name.clone() }
+    }
+}
+
 /// Where the functions of a binary came from.
 ///
 /// A caller should treat a scanned binary more carefully than one read from a

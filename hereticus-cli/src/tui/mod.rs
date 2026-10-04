@@ -11,7 +11,7 @@ mod rows;
 mod theme;
 
 use hereticus::address::Contents;
-use hereticus::matching::{Diff, DiffLine, EditKind, View, instruction_diff_in};
+use hereticus::matching::{Diff, DiffLine, EditKind, PairedLabels, View, instruction_diff_in};
 use hereticus::obj::Binary;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
@@ -195,6 +195,7 @@ enum Flow {
 /// The state of the browser.
 pub struct App<'a> {
     diff: &'a Diff,
+    paired: PairedLabels,
     before: &'a Binary,
     after: &'a Binary,
     files: [String; 2],
@@ -255,6 +256,7 @@ impl<'a> App<'a> {
         let entries = pairs.chain(gone).chain(new).collect();
         let mut app = Self {
             diff,
+            paired: PairedLabels::new(diff, before, after),
             before,
             after,
             files: start.files,
@@ -369,7 +371,7 @@ impl<'a> App<'a> {
         let Some(index) = self.selected_entry() else { return };
         let (view, before, after) = (self.view, self.before, self.after);
         let alone = |binary: &Binary, function: usize, side: fn(String) -> DiffLine| {
-            let lines = instruction_diff_in(view, binary, function, binary, function);
+            let lines = instruction_diff_in(view, None, binary, function, binary, function);
             lines
                 .into_iter()
                 .map(|line| match line {
@@ -397,17 +399,27 @@ impl<'a> App<'a> {
         let (lines, against) = match (entry, self.closest(entry)) {
             (Entry::Pair(index), _) => {
                 let pair = &self.diff.matched[index];
-                (instruction_diff_in(view, before, pair.before, after, pair.after), None)
+                (
+                    instruction_diff_in(
+                        view,
+                        Some(&self.paired),
+                        before,
+                        pair.before,
+                        after,
+                        pair.after,
+                    ),
+                    None,
+                )
             }
             (Entry::Gone { function, .. }, Some((best, score))) => (
-                instruction_diff_in(view, before, function, after, best),
+                instruction_diff_in(view, Some(&self.paired), before, function, after, best),
                 Some(format!("{} at {score:.2}", name_of(after, best))),
             ),
             (Entry::Gone { function, .. }, None) => {
                 (alone(before, function, DiffLine::Removed), None)
             }
             (Entry::New { function, .. }, Some((best, score))) => (
-                instruction_diff_in(view, before, best, after, function),
+                instruction_diff_in(view, Some(&self.paired), before, best, after, function),
                 Some(format!("{} at {score:.2}", name_of(before, best))),
             ),
             (Entry::New { function, .. }, None) => (alone(after, function, DiffLine::Added), None),

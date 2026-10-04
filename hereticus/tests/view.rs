@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use hereticus::arch::decode_all;
-use hereticus::matching::{DiffLine, Options, View, diff_with, instruction_diff_in};
+use hereticus::matching::{DiffLine, Options, PairedLabels, View, diff_with, instruction_diff_in};
 use hereticus::obj::Binary;
 use hereticus::view::{Context, il_lines_in};
 use rstest::rstest;
@@ -25,8 +25,12 @@ fn gz_error(arch: &str) -> Vec<String> {
     let function = binary.functions.iter().find(|f| f.name == "gz_error").expect("gz_error");
     let isa = binary.isa_of(function).arch();
     let (insns, _) = decode_all(isa, &function.code, function.address);
-    let context =
-        Context { links: &binary.links, space: &binary.addresses, functions: &binary.functions };
+    let context = Context {
+        links: &binary.links,
+        space: &binary.addresses,
+        functions: &binary.functions,
+        paired: None,
+    };
     il_lines_in(isa, &function.code, &insns, Some(context))
 }
 
@@ -58,7 +62,14 @@ fn the_il_diff_of_a_fix_is_locked(#[values("arm", "aarch64", "mips16")] arch: &s
     let diff = diff_with(&before, &after, Options::default());
     let index = before.functions.iter().position(|f| f.name == "luaZ_fill").expect("luaZ_fill");
     let pair = diff.matched.iter().find(|pair| pair.before == index).expect("luaZ_fill pairs");
-    let lines = instruction_diff_in(View::Il, &before, pair.before, &after, pair.after);
+    let lines = instruction_diff_in(
+        View::Il,
+        Some(&PairedLabels::new(&diff, &before, &after)),
+        &before,
+        pair.before,
+        &after,
+        pair.after,
+    );
     let shown: Vec<String> = lines
         .iter()
         .map(|line| match line {
@@ -69,4 +80,43 @@ fn the_il_diff_of_a_fix_is_locked(#[values("arm", "aarch64", "mips16")] arch: &s
         })
         .collect();
     insta::assert_snapshot!(format!("lua_fix_{arch}"), shown.join("\n"));
+}
+
+/// The stripped library of the backports, built by GCC at -O2 for `arch`.
+fn stripped(project: &str, variant: &str, arch: &str) -> Binary {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../fixtures/build/backports/{project}-{variant}"))
+        .join(format!("{arch}-gcc-O2/lib-stripped.so"));
+    let data = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("{}: {err}, run `just backports` first", path.display()));
+    Binary::parse(&data).expect("a fixture library parses")
+}
+
+/// A call to a stripped function names it as its pair does, so the call
+/// reads the same on both sides of a diff, though its address moved. The
+/// Lua fix changes no call to a stripped function. MIPS16e code calls
+/// through a register, so it names no stripped callee.
+#[rstest]
+fn a_call_to_a_stripped_function_names_its_pair(
+    #[values("arm", "thumb", "aarch64", "mips")] arch: &str,
+) {
+    let (before, after) = (stripped("lua", "before", arch), stripped("lua", "after", arch));
+    let diff = diff_with(&before, &after, Options::default());
+    let paired = PairedLabels::new(&diff, &before, &after);
+    let (mut same, mut differ) = (0, Vec::new());
+    for pair in &diff.matched {
+        let lines =
+            instruction_diff_in(View::Il, Some(&paired), &before, pair.before, &after, pair.after);
+        for line in lines {
+            match line {
+                DiffLine::Same(text) if text.contains("sub_") => same += 1,
+                DiffLine::Added(text) | DiffLine::Removed(text) if text.contains("sub_") => {
+                    differ.push(text)
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(same > 1000, "{arch}: {same} calls to a stripped function");
+    assert_eq!(differ, Vec::<String>::new(), "{arch}");
 }

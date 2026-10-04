@@ -179,8 +179,5 @@ them, and none of them is a fault:
 
 ## Name what the IL view cannot name yet
 
-- A call to a function with no symbol shows its distance, as
-  `call $-0x2948`, which moves; it could show the function as the report
-  names it, as `sub_2b58`, where the pairing says which it is.
 - The preamble that makes the global pointer is three or four lines of
   `@` constants on MIPS; it could read as one, as `gp = _gp`.

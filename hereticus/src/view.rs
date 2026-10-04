@@ -24,20 +24,48 @@ pub struct Context<'a> {
     pub space: &'a AddressSpace,
     /// The functions of the binary, sorted by address, to name a callee.
     pub functions: &'a [crate::obj::Function],
+    /// The labels the functions take from their pairs in the other binary
+    /// of a diff.
+    pub paired: Option<&'a PairedLabels>,
+}
+
+/// The label of each stripped function of the later binary of a diff, by
+/// address, as its pair in the earlier binary names it.
+///
+/// The address of a stripped function moves, so where each side names a
+/// callee by its own `sub_<hex>`, every call to it reads as a change.
+#[derive(Clone, Debug, Default)]
+pub struct PairedLabels(HashMap<u64, String>);
+
+impl PairedLabels {
+    pub fn new(
+        diff: &crate::matching::Diff,
+        before: &crate::obj::Binary,
+        after: &crate::obj::Binary,
+    ) -> Self {
+        let labels = diff
+            .matched
+            .iter()
+            .map(|pair| (&before.functions[pair.before], &after.functions[pair.after]))
+            .filter(|(_, later)| later.name.is_empty())
+            .map(|(earlier, later)| (later.address, earlier.label()))
+            .collect();
+        Self(labels)
+    }
 }
 
 impl Context<'_> {
-    /// The name of the function at `address`: its symbol, or the callee of
-    /// the PLT stub there. A function with no name has none here, as its
-    /// address moves.
+    /// The name of the function at `address`: the callee of the PLT stub
+    /// there, its symbol, the label of its pair, or `sub_<hex>`.
     fn callee_at(&self, arch: &dyn Arch, address: u64) -> Option<String> {
         if let Some(name) = self.links.stub_callee(arch, address) {
             return Some(name.to_string());
         }
         let index =
             self.functions.binary_search_by_key(&address, |function| function.address).ok()?;
-        let name = &self.functions[index].name;
-        (!name.is_empty()).then(|| name.clone())
+        let function = &self.functions[index];
+        let paired = self.paired.and_then(|paired| paired.0.get(&address));
+        Some(paired.cloned().unwrap_or_else(|| function.label()))
     }
 
     /// The name of the callee a call target reaches.
@@ -1251,7 +1279,11 @@ mod tests {
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         let shown = il_lines(&Arm32, &code, &insns);
         assert_eq!(shown[1], "if (ne) r6 = r4 + 1");
-        assert_eq!(a32_condition(&Arm32, &insns[0], Op::Compare), None, "a compare that always runs");
+        assert_eq!(
+            a32_condition(&Arm32, &insns[0], Op::Compare),
+            None,
+            "a compare that always runs"
+        );
         let mls = Insn {
             address: 0,
             bytes_len: 4,
@@ -1260,6 +1292,27 @@ mod tests {
             kind: crate::arch::InsnKind::Normal,
         };
         assert_eq!(a32_condition(&Arm32, &mls, Op::MultiplyAdd), None, "a multiply-subtract");
+    }
+
+    #[test]
+    fn a_callee_takes_its_symbol_its_pair_or_its_address() {
+        let function = |name: &str, address| crate::obj::Function {
+            name: name.into(),
+            address,
+            code: Vec::new(),
+        };
+        let functions = [function("main", 0x100), function("", 0x200), function("", 0x300)];
+        let paired = PairedLabels([(0x200, "sub_1f0".to_string())].into_iter().collect());
+        let (links, space) = (Links::default(), AddressSpace::default());
+        let context =
+            |paired| Context { links: &links, space: &space, functions: &functions, paired };
+        let arch = &crate::arch::aarch64::Aarch64;
+        let named = |paired, address| context(paired).callee_at(arch, address);
+        assert_eq!(named(None, 0x100).as_deref(), Some("main"));
+        assert_eq!(named(None, 0x200).as_deref(), Some("sub_200"));
+        assert_eq!(named(Some(&paired), 0x200).as_deref(), Some("sub_1f0"));
+        assert_eq!(named(Some(&paired), 0x300).as_deref(), Some("sub_300"), "with no pair");
+        assert_eq!(named(Some(&paired), 0x204), None, "inside a function");
     }
 
     #[test]
