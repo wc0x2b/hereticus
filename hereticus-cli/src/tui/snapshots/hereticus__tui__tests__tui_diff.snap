@@ -1,0 +1,29 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+assertion_line: 612
+expression: "screen(&mut app, 120, 24)"
+---
+─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
+ Pairs | Diff                                                                                firmware.o → firmware_v2.o 
+── Diff dispatch  asm ───────────────────────────────────────────────────── v asm/il  l layout  n/p next/prev  esc back 
+- cmp r1, 0x2                                              │+ push {r4, lr}                                            █
+- beq $+0x48                                               │+ sub sp, sp, 0x8                                          █
+- cmp r1, 0x1                                              │                                                           █
+- beq $+0x28                                               │                                                           █
+  mvn r2, 0x0                                              │  mvn r2, 0x0                                              ║
+- cmp r1, 0x0                                              │+ cmp r1, 0x3                                              ║
+- bne $+0x2c                                               │+ bhi $+0x100                                              ║
+                                                           │+ adr r3, pc, 0x4                                          ║
+                                                           │+ ldr r1, [r3, r1, lsl 2]                                  ║
+                                                           │+ add pc, r3, r1                                           ║
+                                                           │+ andeq r0, r0, r0, lsl r0                                 ║
+                                                           │+ andeq r0, r0, r0, asr 1                                  ║
+                                                           │+ andeq r0, r0, r4, lsr 0                                  ║
+                                                           │+ andeq r0, r0, ip, lsr 1                                  ║
+  ldrh r0, [r0, 0x2]                                       │  ldrh r0, [r0, 0x2]                                       ║
+  mov r2, 0x0                                              │  mov r2, 0x0                                              ║
+~ cmp r0, 0x400                                            │~ cmp r0, 0x200                                            ║
+  mvnhi r2, 0x0                                            │  mvnhi r2, 0x0                                            ║
+- mov r0, r2                                               │+ b $+0xd0                                                 ║
+- bx lr                                                    │                                                           ║
+ sort added  │  3 of 5 pairs  │  view asm  │  hidden retouched, data                              0 gone  0 new  ? help

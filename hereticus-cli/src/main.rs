@@ -454,7 +454,14 @@ fn run(args: &Args) -> Result<bool, String> {
             .map(|()| false);
     }
     if args.tui {
+        let file_name = |path: &Path| {
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        };
         let start = tui::Start {
+            files: [file_name(&args.before), file_name(&args.after)],
             sort: args.sort,
             view: args.view.into(),
             scope: if args.all { tui::Scope::All } else { tui::Scope::Changed },
@@ -560,6 +567,14 @@ fn name_of(binary: &Binary, index: usize) -> String {
         format!("sub_{:x}", function.address)
     } else {
         function.name.clone()
+    }
+}
+
+/// The name `--view` takes for a view.
+fn name_of_view(view: View) -> &'static str {
+    match view {
+        View::Assembly => "asm",
+        View::Il => "il",
     }
 }
 

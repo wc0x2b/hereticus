@@ -5,23 +5,22 @@
 //! reads the keys, apart from the drawing, so a test can drive it with no
 //! terminal.
 
-use hereticus::matching::{Changed, Diff, DiffLine, Edits, View, instruction_diff_in};
-use hereticus::obj::Binary;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout as Split, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
-use ratatui::{DefaultTerminal, Frame};
+mod draw;
+mod theme;
 
-use crate::{
-    DataRegions, Hidden, Retouched, Sort, describe, describe_confidence, describe_kinds,
-    is_interesting, name_of, rank, summary_lines,
-};
+use hereticus::matching::{Diff, DiffLine, View, instruction_diff_in};
+use hereticus::obj::Binary;
+use ratatui::DefaultTerminal;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::widgets::TableState;
+
+use crate::{DataRegions, Hidden, Retouched, Sort, is_interesting, name_of, rank};
 
 /// How the browser starts, from the flags of the command line.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Start {
+    /// The names of the two files, as the title shows them.
+    pub files: [String; 2],
     pub sort: Sort,
     pub view: View,
     pub scope: Scope,
@@ -65,6 +64,13 @@ struct Opened {
     scroll: usize,
 }
 
+/// Whether the help shows over the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Help {
+    Shown,
+    Hidden,
+}
+
 /// Whether the browser goes on after a key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Flow {
@@ -77,6 +83,7 @@ pub struct App<'a> {
     diff: &'a Diff,
     before: &'a Binary,
     after: &'a Binary,
+    files: [String; 2],
     sort: Sort,
     scope: Scope,
     hidden: Hidden,
@@ -91,6 +98,7 @@ pub struct App<'a> {
     rows: Vec<usize>,
     table: TableState,
     screen: Screen,
+    help: Help,
     /// The height of the last drawn list, which a page moves by.
     page: usize,
 }
@@ -110,6 +118,7 @@ impl<'a> App<'a> {
             diff,
             before,
             after,
+            files: start.files,
             sort: start.sort,
             scope: start.scope,
             hidden: start.hidden,
@@ -120,6 +129,7 @@ impl<'a> App<'a> {
             rows: Vec::new(),
             table: TableState::default(),
             screen: Screen::Table,
+            help: Help::Hidden,
             page: 10,
         };
         app.refresh();
@@ -178,6 +188,16 @@ impl<'a> App<'a> {
     fn handle(&mut self, key: KeyEvent) -> Flow {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Flow::Quit;
+        }
+        if self.help == Help::Shown {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q' | '?')) {
+                self.help = Help::Hidden;
+            }
+            return Flow::Continue;
+        }
+        if key.code == KeyCode::Char('?') && !matches!(self.screen, Screen::Filter) {
+            self.help = Help::Shown;
+            return Flow::Continue;
         }
         match self.screen {
             Screen::Table => self.handle_table(key.code),
@@ -301,137 +321,6 @@ impl<'a> App<'a> {
             Layout::Unified => unified(&opened.lines).len(),
         }
     }
-
-    fn draw(&mut self, frame: &mut Frame<'_>) {
-        let [body, status, keys] =
-            Split::vertical([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)])
-                .areas(frame.area());
-        // The block border takes two lines.
-        self.page = usize::from(body.height.saturating_sub(3)).max(1);
-        let hints = match self.screen {
-            Screen::Table => {
-                self.draw_table(frame, body);
-                "↑↓ move  ⏎ open  s sort  a all  r retouched  d data  / filter  q quit"
-            }
-            Screen::Filter => {
-                self.draw_table(frame, body);
-                "type to filter  ⏎ keep  esc clear"
-            }
-            Screen::Pair(_) => {
-                self.draw_pair(frame, body);
-                "↑↓ scroll  v asm/il  l layout  n next  p previous  esc back  q quit"
-            }
-        };
-        frame.render_widget(Line::from(self.status()), status);
-        frame
-            .render_widget(Line::from(hints).style(Style::new().add_modifier(Modifier::DIM)), keys);
-    }
-
-    /// The order, the filters and the count of the table, in one line.
-    fn status(&self) -> String {
-        let mut parts = vec![
-            format!("sort: {}", self.sort.name()),
-            format!("{} of {} pairs", self.rows.len(), self.diff.matched.len()),
-        ];
-        if let Screen::Pair(_) = self.screen {
-            let view = match self.view {
-                View::Assembly => "asm",
-                View::Il => "il",
-            };
-            parts.insert(0, format!("view: {view}"));
-        }
-        let mut hidden = Vec::new();
-        if self.scope == Scope::Changed {
-            if self.hidden.retouched == Retouched::Hide {
-                hidden.push("retouched");
-            }
-            if self.hidden.data == DataRegions::Hide {
-                hidden.push("data");
-            }
-        }
-        if !hidden.is_empty() {
-            parts.push(format!("hidden: {}", hidden.join(", ")));
-        }
-        if self.scope == Scope::All {
-            parts.push("all".to_string());
-        }
-        match self.screen {
-            Screen::Filter => parts.push(format!("filter: {}▏", self.filter)),
-            _ if !self.filter.is_empty() => parts.push(format!("filter: {}", self.filter)),
-            _ => {}
-        }
-        // The totals of the report, as its last lines say them.
-        if let Some(totals) = summary_lines(self.diff, self.hidden).into_iter().next() {
-            parts.push(totals);
-        }
-        parts.join(" │ ")
-    }
-
-    fn draw_table(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let header = ["FUNCTION", "CHANGE", "SCORE", "+/-/~", "TOUCHED", "MATCHED BY"]
-            .map(|title| Cell::from(title).style(Style::new().add_modifier(Modifier::BOLD)));
-        let rows = self.rows.iter().map(|&index| {
-            let pair = &self.diff.matched[index];
-            Row::new([
-                Cell::from(self.labels[index].as_str()),
-                Cell::from(describe(pair.changed)).style(Style::new().fg(tone_of(pair.changed))),
-                Cell::from(Line::from(format!("{:.2}", pair.score)).right_aligned()),
-                Cell::from(edits_line(pair.edits)),
-                Cell::from(describe_kinds(pair.kinds, pair.changed)),
-                Cell::from(describe_confidence(pair.confidence)),
-            ])
-        });
-        let widths = [
-            Constraint::Fill(1),
-            Constraint::Length(14),
-            Constraint::Length(5),
-            Constraint::Length(11),
-            Constraint::Length(30),
-            Constraint::Length(15),
-        ];
-        let table = Table::new(rows, widths)
-            .header(Row::new(header))
-            .block(Block::bordered().title(" hereticus "))
-            .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-        frame.render_stateful_widget(table, area, &mut self.table);
-    }
-
-    fn draw_pair(&self, frame: &mut Frame<'_>, area: Rect) {
-        let Screen::Pair(opened) = &self.screen else { return };
-        let Some(pair) = self.selected_pair().map(|index| &self.diff.matched[index]) else {
-            return;
-        };
-        let scroll = u16::try_from(opened.scroll).unwrap_or(u16::MAX);
-        match self.layout {
-            Layout::SideBySide => {
-                let rows = side_by_side(&opened.lines);
-                let (left, right): (Vec<Line<'_>>, Vec<Line<'_>>) =
-                    rows.iter().map(|row| (row.left.line(), row.right.line())).unzip();
-                let [left_area, right_area] =
-                    Split::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
-                let title = |binary: &Binary, index| format!(" {} ", name_of(binary, index));
-                let left_block = Block::bordered().title(title(self.before, pair.before));
-                let right_block = Block::bordered().title(title(self.after, pair.after));
-                frame.render_widget(
-                    Paragraph::new(left).block(left_block).scroll((scroll, 0)),
-                    left_area,
-                );
-                frame.render_widget(
-                    Paragraph::new(right).block(right_block).scroll((scroll, 0)),
-                    right_area,
-                );
-            }
-            Layout::Unified => {
-                let title = format!(" {} ", self.labels[self.selected_pair().unwrap_or(0)]);
-                let lines: Vec<Line<'_>> =
-                    unified(&opened.lines).into_iter().map(Side::line).collect();
-                frame.render_widget(
-                    Paragraph::new(lines).block(Block::bordered().title(title)).scroll((scroll, 0)),
-                    area,
-                );
-            }
-        }
-    }
 }
 
 /// Run the browser until the reader quits.
@@ -456,32 +345,6 @@ fn event_loop(app: &mut App<'_>, terminal: &mut DefaultTerminal) -> std::io::Res
     }
 }
 
-/// The color of the `CHANGE` cell, as the text report paints it.
-fn tone_of(change: Changed) -> Color {
-    match change {
-        Changed::Yes => Color::Red,
-        Changed::Unreadable => Color::Magenta,
-        Changed::InDetail => Color::Yellow,
-        Changed::Reordered => Color::Cyan,
-        Changed::Data => Color::Blue,
-        Changed::No => Color::Green,
-    }
-}
-
-/// The `+/-/~` cell, each count in the color of its kind.
-fn edits_line(edits: Edits) -> Line<'static> {
-    if edits.total() == 0 {
-        return Line::from("-");
-    }
-    Line::from(vec![
-        Span::styled(edits.added.to_string(), Style::new().fg(Color::Green)),
-        Span::raw("/"),
-        Span::styled(edits.removed.to_string(), Style::new().fg(Color::Red)),
-        Span::raw("/"),
-        Span::styled(edits.edited.to_string(), Style::new().fg(Color::Yellow)),
-    ])
-}
-
 /// One side of a row of a diff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Side<'l> {
@@ -490,18 +353,9 @@ enum Side<'l> {
     Same(&'l str),
     Removed(&'l str),
     Added(&'l str),
-}
-
-impl Side<'_> {
-    /// The line with the sign and the color of a patch.
-    fn line(self) -> Line<'static> {
-        match self {
-            Self::Empty => Line::default(),
-            Self::Same(text) => Line::from(format!("  {text}")),
-            Self::Removed(text) => Line::styled(format!("- {text}"), Style::new().fg(Color::Red)),
-            Self::Added(text) => Line::styled(format!("+ {text}"), Style::new().fg(Color::Green)),
-        }
-    }
+    /// A line kept in place with a changed constant, as `~` names it in the
+    /// `+/-/~` column.
+    Changed(&'l str),
 }
 
 /// One row of a diff laid side by side.
@@ -527,7 +381,7 @@ fn side_by_side(lines: &[DiffLine]) -> Vec<SideRow<'_>> {
             }
             DiffLine::Changed { before, after } => {
                 flush_runs(&mut rows, &mut removed, &mut added);
-                rows.push(SideRow { left: Side::Removed(before), right: Side::Added(after) });
+                rows.push(SideRow { left: Side::Changed(before), right: Side::Changed(after) });
             }
         }
     }
@@ -595,6 +449,7 @@ mod tests {
 
     fn start() -> Start {
         Start {
+            files: ["firmware.o".to_string(), "firmware_v2.o".to_string()],
             sort: Sort::Added,
             view: View::Assembly,
             scope: Scope::Changed,
@@ -615,11 +470,17 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("a test terminal");
         terminal.draw(|frame| app.draw(frame)).expect("a draw");
         let buffer = terminal.backend().buffer();
-        buffer.content().chunks(usize::from(width).max(1)).fold(String::new(), |mut text, row| {
-            row.iter().for_each(|cell| text.push_str(cell.symbol()));
-            text.push('\n');
-            text
-        })
+        let text = buffer.content().chunks(usize::from(width).max(1)).fold(
+            String::new(),
+            |mut text, row| {
+                row.iter().for_each(|cell| text.push_str(cell.symbol()));
+                text.push('\n');
+                text
+            },
+        );
+        // A release would otherwise change every snapshot.
+        let version = concat!(" v", env!("CARGO_PKG_VERSION"), " ");
+        text.replace(version, &format!(" v{:<width$} ", "X", width = version.len() - 3))
     }
 
     #[test]
@@ -695,13 +556,13 @@ mod tests {
         let Screen::Pair(opened) = &app.screen else { panic!("the pair opens") };
         let assembly = opened.lines.clone();
         assert!(!assembly.is_empty());
-        assert!(screen(&mut app, 120, 30).contains("view: asm"));
+        assert!(screen(&mut app, 120, 30).contains("view asm"));
 
         press(&mut app, &[KeyCode::Char('v')]);
         let Screen::Pair(opened) = &app.screen else { panic!("the pair stays open") };
         assert_eq!(app.view, View::Il);
         assert_ne!(opened.lines, assembly, "IL reads otherwise");
-        assert!(screen(&mut app, 120, 30).contains("view: il"));
+        assert!(screen(&mut app, 120, 30).contains("view il"));
 
         press(&mut app, &[KeyCode::End]);
         let Screen::Pair(opened) = &app.screen else { panic!("the pair stays open") };
@@ -713,13 +574,56 @@ mod tests {
     }
 
     #[test]
+    fn help_opens_over_any_screen_and_holds_the_keys() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        press(&mut app, &[KeyCode::Char('?')]);
+        assert_eq!(app.help, Help::Shown);
+        let sort = app.sort;
+        assert_eq!(press(&mut app, &[KeyCode::Char('s'), KeyCode::Char('q')]), Flow::Continue);
+        assert_eq!(app.sort, sort, "the help holds the keys");
+        assert_eq!(app.help, Help::Hidden, "`q` closes the help, not the browser");
+
+        // In the filter, `?` is a letter of a name.
+        press(&mut app, &[KeyCode::Char('/'), KeyCode::Char('?')]);
+        assert_eq!(app.help, Help::Hidden);
+        assert_eq!(app.filter, "?");
+
+        press(&mut app, &[KeyCode::Esc, KeyCode::Enter, KeyCode::Char('?')]);
+        assert!(matches!(app.screen, Screen::Pair(_)));
+        assert_eq!(app.help, Help::Shown);
+        press(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.help, Help::Hidden);
+        assert!(matches!(app.screen, Screen::Pair(_)), "`esc` closes the help only");
+    }
+
+    /// Each screen as a reader sees it, so a change to the look shows in
+    /// review.
+    #[test]
+    fn each_screen_is_locked() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        insta::assert_snapshot!("tui_pairs", screen(&mut app, 120, 12));
+        press(&mut app, &[KeyCode::Char('/'), KeyCode::Char('h')]);
+        insta::assert_snapshot!("tui_filter", screen(&mut app, 120, 12));
+        press(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+        insta::assert_snapshot!("tui_diff", screen(&mut app, 120, 24));
+        press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('l')]);
+        insta::assert_snapshot!("tui_diff_il_unified", screen(&mut app, 120, 16));
+        press(&mut app, &[KeyCode::Char('?')]);
+        insta::assert_snapshot!("tui_help", screen(&mut app, 120, 24));
+    }
+
+    #[test]
     fn the_table_shows_its_heading_and_order() {
         let Some((before, after)) = firmware() else { return };
         let diff = diff_with(&before, &after, Options::default());
         let mut app = App::new(&diff, &before, &after, start());
         let shown = screen(&mut app, 120, 20);
         assert!(shown.contains("FUNCTION"), "{shown}");
-        assert!(shown.contains("sort: added"), "{shown}");
+        assert!(shown.contains("sort added"), "{shown}");
         assert!(shown.contains(&app.labels[app.rows[0]]), "{shown}");
     }
 
@@ -747,7 +651,7 @@ mod tests {
             KeyCode::Char('n'),
             KeyCode::Char('p'),
             KeyCode::Char('e'),
-            KeyCode::Char('x'),
+            KeyCode::Char('?'),
         ];
         bolero::check!().with_type::<(Vec<u8>, u8, u8)>().for_each(|(keys, width, height)| {
             let mut app = App::new(&diff, &before, &after, start());
@@ -791,7 +695,7 @@ mod tests {
                 row(Side::Removed("b"), Side::Added("d")),
                 row(Side::Removed("c"), Side::Empty),
                 row(Side::Same("e"), Side::Same("e")),
-                row(Side::Removed("f"), Side::Added("g")),
+                row(Side::Changed("f"), Side::Changed("g")),
                 row(Side::Empty, Side::Added("h")),
             ]
         );
