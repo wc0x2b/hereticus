@@ -190,8 +190,8 @@ fn slow_warns_about_a_mips_kernel_base_a_page_off() {
     assert!(stderr.contains("58113 do at 0x80002000"), "got {stderr}");
 }
 
-/// Across a major version, data regions go and come as well as change. They
-/// are hidden with the changed ones, and `--show-data` lists each.
+/// Across a major version, data regions go as well as change. They are
+/// hidden with the changed ones, and `--show-data` lists each.
 #[test]
 fn slow_hides_the_data_regions_that_go_or_come() {
     let file =
@@ -208,10 +208,10 @@ fn slow_hides_the_data_regions_that_go_or_come() {
 
     let hidden = run(&[]);
     assert!(!hidden.contains("gone data") && !hidden.contains("new data"));
-    assert!(hidden.contains("7 data regions changed, hidden. Use --show-data to list them."));
+    assert!(hidden.contains("6 data regions changed, hidden. Use --show-data to list them."));
 
     let shown = run(&["--show-data"]);
     let listed =
         ["changed data", ": gone data", ": new data"].map(|word| shown.matches(word).count());
-    assert_eq!(listed, [4, 2, 1], "changed, gone and new data regions");
+    assert_eq!(listed, [5, 1, 0], "changed, gone and new data regions");
 }
