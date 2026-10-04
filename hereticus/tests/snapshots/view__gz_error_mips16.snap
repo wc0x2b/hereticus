@@ -7,7 +7,7 @@ v0 = @0x2
 v1 = @0x7340
 v0 = v0 << 0x10
 v0 = v0 + v1
-save 0x40
+store.32 [sp - 0xc] = s0, s1, ra; sp = sp - 0x40
 a3 = a0
 a0 = load.32 [a0 + 0x68]
 gp = v0
@@ -78,7 +78,7 @@ store.32 [sp + 0x14] = s1
 store.32 [sp + 0x10] = v0
 call snprintf
 t9 = s0
-restore 0x40
+s0, s1, ra = load.32 [sp + 0x34]; sp = sp + 0x40
 return
 v0 = a1 + 5
 if (v0 == 0) goto $+0x2c
@@ -88,7 +88,7 @@ store.32 [a3] = v0
 if (s1 == 0) goto $-0xe
 a1 = a1 + 4
 if (a1 != 0) goto $-0x94
-restore 0x40
+s0, s1, ra = load.32 [sp + 0x34]; sp = sp + 0x40
 return
 v0 = load.32 [s0 + -0x7FD4]
 store.32 [sp + 0x44] = a1
