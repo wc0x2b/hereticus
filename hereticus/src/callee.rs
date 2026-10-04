@@ -111,6 +111,21 @@ impl Links {
         Self { memory, slots, stubs, sites: BTreeMap::new(), read_only_starts }
     }
 
+    /// The symbol whose stub is at `address`: a Mach-O stub, or a PLT stub
+    /// whose slot a relocation names.
+    pub fn stub_callee(&self, arch: &dyn Arch, address: u64) -> Option<&str> {
+        if let Some(name) = self.stubs.get(&address) {
+            return Some(name);
+        }
+        let slot = arch.stub_slot(self.bytes_at(address)?, address)?;
+        self.slot_name(slot)
+    }
+
+    /// The symbol a relocation writes into the slot at `address`.
+    pub fn slot_name(&self, address: u64) -> Option<&str> {
+        self.slots.get(&address).map(String::as_str)
+    }
+
     /// The name of the function whose PLT stub `function` is, as
     /// `getpwnam@plt`, where a relocation names the slot it jumps through.
     pub(crate) fn stub_name(&self, arch: &dyn Arch, function: &Function) -> Option<String> {

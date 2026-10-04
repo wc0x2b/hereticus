@@ -1,0 +1,69 @@
+---
+source: hereticus/tests/view.rs
+assertion_line: 51
+expression: "gz_error(arch).join(\"\\n\")"
+---
+push {r4, r5, r6, r7, lr}
+r4 = r0
+r0 = load.32 [r0 + 0x68]
+sp = sp - 0xc
+r5 = r1
+r6 = r2
+flags = compare(r0, 0)
+if (r0 == 0) goto $+0x18
+r3 = load.32 [r4 + 0x64]
+flags = compare(r3, 4)
+if (r3 != 4) goto $+0xbc
+r3 = 0
+store.32 [r4 + 0x68] = r3
+flags = compare(r5, 0)
+cmnsne r0, r5, 0x5
+if (r5 != 0) goto $+0x88
+flags = compare(r6, 0)
+store.32 [r4 + 0x64] = r5
+if (r6 == 0) goto $+0x74
+r7 = load.32 [r4 + 0x18]
+r0 = r7
+call strlen
+r5 = r0
+r0 = r6
+call strlen
+r0 = r5 + r0
+r0 = r0 + 3
+call malloc
+r5 = r0
+flags = compare(r0, 0)
+store.32 [r4 + 0x68] = r0
+if (r0 == 0) goto $+0x70
+r0 = r7
+call strlen
+r4 = r0
+r0 = r6
+call strlen
+r2 = load.32 [pc + 0x5c]
+r1 = r4 + r0
+r3 = r7
+r2 = &": "
+stm sp, {r2, r6}
+r2 = load.32 [pc + 0x4c]
+r1 = r1 + 3
+r0 = r5
+r2 = &"%s%s%s"
+call snprintf
+sp = sp + 0xc
+return
+r3 = 0
+store.32 [r4 + 0x64] = r5
+flags = compare(r5, 4)
+cmpsne r0, r6, r3
+store.32 [r4] = r3
+if (r5 != 4) goto $-0x8c
+sp = sp + 0xc
+return
+call free
+goto $-0xbc
+mvn r3, r0, 0x3
+store.32 [r4 + 0x64] = r3
+goto $-0x38
+if (eq) r8 = r0 & (ip lsr 8)
+if (eq) r8 = r0 & (r0 lsl r4)

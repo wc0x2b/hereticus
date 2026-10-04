@@ -322,6 +322,16 @@ impl Arch for Arm32 {
         track_pool_words(code, body, space, PcModel::A32).addresses
     }
 
+    fn formed_addresses(
+        &self,
+        code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        _memory: &Memory<'_>,
+    ) -> Vec<Option<u64>> {
+        track_pool_words(code, body, space, PcModel::A32).formed
+    }
+
     /// `bx` through a register other than `lr`. A `switch` jumps with `add pc`
     /// or `ldr pc` instead.
     fn is_tail_call(&self, insn: &Insn) -> bool {
@@ -2305,6 +2315,8 @@ pub(super) struct PoolWords {
     pub(super) kinds: Vec<ConstantKind>,
     /// The addresses inside the image the function forms or loads whole.
     pub(super) addresses: Vec<u64>,
+    /// The address each instruction forms or reads, where one does.
+    pub(super) formed: Vec<Option<u64>>,
     /// The pool words the function adds to a base, as PIC code adds one to
     /// `pc`: each holds a distance, not an address.
     pub(super) distances: BTreeSet<u64>,
@@ -2319,13 +2331,14 @@ pub(super) fn track_pool_words(
     pc_model: PcModel,
 ) -> PoolWords {
     let mut kinds = vec![ConstantKind::Value; body.len()];
+    let mut formed = vec![None; body.len()];
     let mut addresses = Vec::new();
     // Pool words whose value lies in the image, by where they sit. PIC code
     // adds such a word to `pc`, and then the value is only a distance.
     let mut whole: Vec<(u64, u64)> = Vec::new();
     let mut distances: BTreeSet<u64> = BTreeSet::new();
     let Some(start) = body.first().map(|insn| insn.address) else {
-        return PoolWords { kinds, addresses, distances };
+        return PoolWords { kinds, addresses, formed, distances };
     };
 
     // Registers holding a pool word: where the word sits, and its value.
@@ -2379,6 +2392,7 @@ pub(super) fn track_pool_words(
                         // the image is one, as a word in a pool is.
                         if at[0] != at[1] && space.contains(u64::from(*value)) {
                             addresses.push(u64::from(*value));
+                            formed[index] = Some(u64::from(*value));
                             for at in *at {
                                 kinds[at] = ConstantKind::Address;
                             }
@@ -2396,6 +2410,7 @@ pub(super) fn track_pool_words(
                     let address = pc.wrapping_add(i64::from(value as i32) as u64) & 0xffff_ffff;
                     if space.contains_formed(address) {
                         addresses.push(address);
+                        formed[index] = Some(address);
                         for at in at {
                             kinds[at] = ConstantKind::Address;
                         }
@@ -2420,11 +2435,12 @@ pub(super) fn track_pool_words(
         };
         // The address a base and a pool word form, when it lies in the
         // image, marks the word as a stored address.
-        let mut formed = |base: u64, (pool, value): (u64, u32)| {
+        let mut join = |base: u64, (pool, value): (u64, u32)| {
             let address = base.wrapping_add(i64::from(value as i32) as u64);
             distances.insert(pool);
             if space.contains_formed(address) {
                 addresses.push(address);
+                formed[index] = Some(address);
                 if let Ok(index) = body.binary_search_by_key(&pool, |insn| insn.address) {
                     kinds[index] = ConstantKind::StoredAddress;
                 }
@@ -2468,7 +2484,7 @@ pub(super) fn track_pool_words(
             // `ldr rY, [base, rX]`: read at a distance from a base.
             ("ldr", Some((base, Offset::Register(index))), _) => {
                 if let (Some(base), Some(word)) = (base_of(base), literal_of(index)) {
-                    formed(base, word);
+                    join(base, word);
                 }
             }
             // `add rY, base, rX`, either order: build an address.
@@ -2481,7 +2497,7 @@ pub(super) fn track_pool_words(
                         _ => None,
                     };
                 if let Some((base, word)) = joined {
-                    let address = formed(base, word);
+                    let address = join(base, word);
                     forget(&mut literal, &mut relative, destination);
                     relative.push((destination, address));
                     continue;
@@ -2508,7 +2524,7 @@ pub(super) fn track_pool_words(
         }
     }
     addresses.extend(stored.into_iter().map(|(_, value)| value));
-    PoolWords { kinds, addresses, distances }
+    PoolWords { kinds, addresses, formed, distances }
 }
 
 /// Stop following a register the instruction writes.

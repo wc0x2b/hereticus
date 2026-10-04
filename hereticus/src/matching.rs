@@ -2718,20 +2718,28 @@ pub enum View {
 /// operation, as `eor r0, r0, r0` and `mov r0, #0`, are the same line.
 pub fn instruction_diff_in(
     view: View,
-    before: &Function,
-    before_isa: Isa,
-    after: &Function,
-    after_isa: Isa,
+    before: &Binary,
+    before_index: usize,
+    after: &Binary,
+    after_index: usize,
 ) -> Vec<DiffLine> {
+    let (left, right) = (&before.functions[before_index], &after.functions[after_index]);
+    let (before_isa, after_isa) = (before.isa_of(left), after.isa_of(right));
     if view == View::Assembly {
-        return instruction_diff(before, before_isa, after, after_isa);
+        return instruction_diff(left, before_isa, right, after_isa);
     }
-    let lines = |function: &Function, isa: Isa| {
+    let lines = |binary: &Binary, function: &Function, isa: Isa| {
         let arch = isa.arch();
         let insns = decode_all(arch, &function.code, function.address).0;
-        crate::view::il_lines(arch, &function.code, &insns)
+        let context = crate::view::Context {
+            links: &binary.links,
+            space: &binary.addresses,
+            functions: &binary.functions,
+        };
+        crate::view::il_lines_in(arch, &function.code, &insns, Some(context))
     };
-    let (before_lines, after_lines) = (lines(before, before_isa), lines(after, after_isa));
+    let (before_lines, after_lines) =
+        (lines(before, left, before_isa), lines(after, right, after_isa));
     if !can_align(before_lines.len(), after_lines.len()) {
         let mut lines: Vec<DiffLine> = before_lines.into_iter().map(DiffLine::Removed).collect();
         lines.extend(after_lines.into_iter().map(DiffLine::Added));
@@ -2840,10 +2848,23 @@ fn only_registers_differ(arch: &dyn Arch, before: &str, after: &str) -> bool {
 /// The text two IL statements must share to align: the statement with
 /// each target collapsed, as [`diff_key`] does for an instruction.
 fn il_key(line: &str) -> String {
-    line.split(' ')
-        .map(|word| if is_branch_target(word) { "$" } else { word })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let words: Vec<&str> =
+        line.split(' ').map(|word| if is_branch_target(word) { "$" } else { word }).collect();
+    // An address the code formed, as `@0x57c6`, moves as a target does,
+    // and so does the distance from `pc` to a literal pool.
+    let mut key = words.join(" ");
+    for marker in ["@0x", "[pc + 0x", "[pc - 0x"] {
+        let mut collapsed = String::with_capacity(key.len());
+        let mut rest = key.as_str();
+        while let Some(at) = rest.find(marker) {
+            collapsed.push_str(&rest[..at + marker.len() - 2]);
+            rest = rest[at + marker.len()..]
+                .trim_start_matches(|character: char| character.is_ascii_hexdigit());
+        }
+        collapsed.push_str(rest);
+        key = collapsed;
+    }
+    key
 }
 
 /// An IL statement with every number collapsed, so two that differ only in
@@ -3809,6 +3830,9 @@ mod tests {
         assert_eq!(il_shape("w0 = w1 + 0x10"), il_shape("w0 = w1 + 0x20"));
         assert_eq!(il_shape("x0 = load.32 [x1 + 8]"), "x0 = load.# [x1 + #]");
         assert_eq!(il_key("if (w0 <= 3) goto $+0x40"), "if (w0 <= 3) goto $");
+        assert_eq!(il_key("x8 = load.64 [@0x57c6]"), "x8 = load.64 [@]");
+        assert_eq!(il_key("r2 = load.32 [pc + 0x5c]"), "r2 = load.32 [pc + ]");
+        assert_eq!(il_key("x1 = &\"usage\""), "x1 = &\"usage\"");
         assert_ne!(il_shape("w0 = w1 + 1"), il_shape("w0 = w1 - 1"));
         let arch = &crate::arch::aarch64::Aarch64;
         assert!(only_registers_differ(arch, "x3 = x20 + 4", "x3 = x19 + 4"));

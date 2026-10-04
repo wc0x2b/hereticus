@@ -402,6 +402,20 @@ pub trait Arch {
         BTreeSet::new()
     }
 
+    /// The address each instruction of `body` forms or reads, where the
+    /// code shows it: a page and the offset joined to it, as `adrp` and
+    /// `add` do. A page counts as the address of its instruction. An
+    /// instruction that forms none is `None`. Defaults to none for each.
+    fn formed_addresses(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        _space: &AddressSpace,
+        _memory: &Memory<'_>,
+    ) -> Vec<Option<u64>> {
+        vec![None; body.len()]
+    }
+
     /// Adjust instructions that only their neighbours explain, once a run of
     /// them is decoded.
     ///
