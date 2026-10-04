@@ -1,0 +1,21 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+assertion_line: 614
+expression: "screen(&mut app, 120, 16)"
+---
+─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
+ Pairs | Diff                                                                                firmware.o → firmware_v2.o 
+── Diff dispatch  il ────────────────────────────────────────────────────── v asm/il  l layout  n/p next/prev  esc back 
+- flags = compare(r1, 2)                                                                                               █
+- if (r1 == 2) goto $+0x48                                                                                             ║
+- flags = compare(r1, 1)                                                                                               ║
+- if (r1 == 1) goto $+0x28                                                                                             ║
++ store.32 [sp - 8] = r4, lr; sp = sp - 8                                                                              ║
++ sp = sp - 8                                                                                                          ║
+  r2 = -0x1                                                                                                            ║
+- flags = compare(r1, 0)                                                                                               ║
+- if (r1 != 0) goto $+0x2c                                                                                             ║
++ flags = compare(r1, 3)                                                                                               ║
++ if (r1 u> 3) goto $+0x100                                                                                            ║
++ adr r3, pc, 0x4                                                                                                      ║
+ sort added  │  3 of 5 pairs  │  view il  │  hidden retouched, data                               0 gone  0 new  ? help
