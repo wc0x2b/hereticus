@@ -2760,27 +2760,62 @@ pub fn instruction_diff_in(
             }
         }
     }
-    // A removed statement right before an added one of the same shape is
-    // one statement: the same, where only a register differs, as a
-    // register is the compiler's free choice, and else with another
-    // constant.
-    let arch = after_isa.arch();
+    fold_il_runs(after_isa.arch(), aligned)
+}
+
+/// Pair a run of removed statements with the run of added ones right after
+/// it, one for one where the two runs are as long.
+///
+/// Each pair of the same shape is one statement: the same, where only a
+/// register differs, as a register is the compiler's free choice, and else
+/// with another constant. A compare and its branch move together, so their
+/// two statements come as a run of two.
+fn fold_il_runs(arch: &dyn Arch, aligned: Vec<DiffLine>) -> Vec<DiffLine> {
+    let fold = |before: &str, after: &str| {
+        if only_registers_differ(arch, before, after) {
+            Some(DiffLine::Same(after.to_string()))
+        } else if il_shape(before) == il_shape(after) {
+            Some(DiffLine::Changed { before: before.to_string(), after: after.to_string() })
+        } else {
+            None
+        }
+    };
     let mut folded: Vec<DiffLine> = Vec::with_capacity(aligned.len());
-    for line in aligned {
-        if let (Some(DiffLine::Removed(before)), DiffLine::Added(after)) = (folded.last(), &line) {
-            let same = only_registers_differ(arch, before, after);
-            if same || il_shape(before) == il_shape(after) {
-                let before = before.clone();
-                folded.pop();
-                folded.push(if same {
-                    DiffLine::Same(after.clone())
-                } else {
-                    DiffLine::Changed { before, after: after.clone() }
-                });
-                continue;
+    let mut index = 0;
+    while index < aligned.len() {
+        let removed =
+            aligned[index..].iter().take_while(|line| matches!(line, DiffLine::Removed(_))).count();
+        let added = aligned[index + removed..]
+            .iter()
+            .take_while(|line| matches!(line, DiffLine::Added(_)))
+            .count();
+        if removed == 0 || added == 0 {
+            folded.push(aligned[index].clone());
+            index += 1;
+            continue;
+        }
+        let text = |line: &DiffLine| match line {
+            DiffLine::Removed(text) | DiffLine::Added(text) => text.clone(),
+            _ => String::new(),
+        };
+        let (befores, afters) =
+            (&aligned[index..index + removed], &aligned[index + removed..index + removed + added]);
+        let pairs: Option<Vec<DiffLine>> = (removed == added)
+            .then(|| befores.iter().zip(afters).map(|(b, a)| fold(&text(b), &text(a))).collect())
+            .flatten();
+        match pairs {
+            Some(pairs) => folded.extend(pairs),
+            // Runs of other lengths fold only where they meet.
+            None => {
+                folded.extend(befores[..removed - 1].iter().cloned());
+                match fold(&text(&befores[removed - 1]), &text(&afters[0])) {
+                    Some(line) => folded.push(line),
+                    None => folded.extend([befores[removed - 1].clone(), afters[0].clone()]),
+                }
+                folded.extend(afters[1..].iter().cloned());
             }
         }
-        folded.push(line);
+        index += removed + added;
     }
     folded
 }
@@ -3778,6 +3813,20 @@ mod tests {
         let arch = &crate::arch::aarch64::Aarch64;
         assert!(only_registers_differ(arch, "x3 = x20 + 4", "x3 = x19 + 4"));
         assert!(!only_registers_differ(arch, "x3 = x20 + 4", "x3 = x20 + 8"));
+        let run = vec![
+            DiffLine::Removed("flags = compare(x23, x0)".into()),
+            DiffLine::Removed("if (x23 != x0) goto $-0x1c".into()),
+            DiffLine::Added("flags = compare(x20, x0)".into()),
+            DiffLine::Added("if (x20 != x0) goto $-0x1c".into()),
+        ];
+        let folded = fold_il_runs(arch, run);
+        assert!(folded.iter().all(|line| matches!(line, DiffLine::Same(_))), "{folded:?}");
+        let grew = vec![
+            DiffLine::Removed("w0 = w1 + 1".into()),
+            DiffLine::Added("w0 = w1 + 2".into()),
+            DiffLine::Added("call x1".into()),
+        ];
+        assert!(matches!(fold_il_runs(arch, grew)[0], DiffLine::Changed { .. }));
     }
 
     #[test]
