@@ -205,6 +205,9 @@ struct Features {
     rarity: f64,
     /// IDF of each instruction added, summed, by bag.
     idf_added: f64,
+    /// One minus the cosine of the added instructions, as a vector of
+    /// counts, against the sum of all the rows' vectors.
+    outlier: f64,
     /// BM25 of the added instructions at k1 = 0.5, 1.2 and 3: each distinct
     /// instruction counts its IDF times a count that saturates.
     bm25: [f64; 3],
@@ -230,6 +233,9 @@ const ORDERS: &[(&str, Order)] = &[
     ("bm25 k1.2", |f| f.bm25[1]),
     ("bm25 k3", |f| f.bm25[2]),
     ("a+bm25 k1.2", |f| f.edits.added as f64 + f.bm25[1]),
+    ("a*outlier", |f| f.edits.added as f64 * f.outlier),
+    ("rarity*outlier", |f| f.rarity * f.outlier),
+    ("rarity*(0.5+outlier)", |f| f.rarity * (0.5 + f.outlier)),
     ("a+2bm25 k1.2", |f| f.edits.added as f64 + 2.0 * f.bm25[1]),
     ("rarity", |f| f.rarity),
     ("a+2idf", |f| f.edits.added as f64 + 2.0 * f.idf_added),
@@ -297,6 +303,25 @@ fn features_of(rows: &[&Match], stripped: &[Binary; 2]) -> Vec<Features> {
         }
     }
     let idf = |df: usize| ((rows.len() as f64 + 1.0) / (df as f64 + 1.0)).ln();
+    let mut centroid: HashMap<u64, f64> = HashMap::new();
+    for tokens in &added {
+        for token in tokens {
+            *centroid.entry(token.0).or_default() += 1.0;
+        }
+    }
+    let centroid_norm = centroid.values().map(|v| v * v).sum::<f64>().sqrt();
+    let outlier = |tokens: &[(u64, FlowShape)]| {
+        let mut counts: HashMap<u64, f64> = HashMap::new();
+        for token in tokens {
+            *counts.entry(token.0).or_default() += 1.0;
+        }
+        let norm = counts.values().map(|v| v * v).sum::<f64>().sqrt();
+        if norm == 0.0 || centroid_norm == 0.0 {
+            return 0.0;
+        }
+        let dot: f64 = counts.iter().map(|(t, c)| c * centroid[t]).sum();
+        1.0 - dot / (norm * centroid_norm)
+    };
     rows.iter()
         .zip(&added)
         .map(|(pair, tokens)| {
@@ -306,6 +331,7 @@ fn features_of(rows: &[&Match], stripped: &[Binary; 2]) -> Vec<Features> {
                 score: pair.score,
                 rarity: pair.rarity,
                 idf_added: tokens.iter().map(|t| idf(df[&t.0])).sum(),
+                outlier: outlier(tokens),
                 bm25: [0.5, 1.2, 3.0].map(|k1| {
                     let mut counts: HashMap<u64, f64> = HashMap::new();
                     for token in tokens {
