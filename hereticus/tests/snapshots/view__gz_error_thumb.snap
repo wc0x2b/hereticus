@@ -13,11 +13,11 @@ if (r0 == 0) goto $+0xa
 r3 = load.32 [r4 + 0x64]
 r3 = r3 + 4
 if (flags.NotEqual) goto $+0x6e
-r3 = 0
+if (vs) r3 = 0
 store.32 [r4 + 0x68] = r3
 flags = compare(r5, 0)
 it ne
-flags = compare(r5, 5)
+if (ne) flags = compare(r5, 5)
 if (r5 != 5) goto $+0x4c
 store.32 [r4 + 0x64] = r5
 if (r6 == 0) goto $+0x44
@@ -50,11 +50,11 @@ r2 = &"%s%s%s"
 call snprintf
 sp = sp + 0xc
 return
-r3 = 0
+if (vs) r3 = 0
 store.32 [r4 + 0x64] = r5
 flags = compare(r5, 4)
 it ne
-flags = compare(r6, r3)
+if (ne) flags = compare(r6, r3)
 store.32 [r4] = r3
 if (r6 != r3) goto $-0x58
 sp = sp + 0xc
