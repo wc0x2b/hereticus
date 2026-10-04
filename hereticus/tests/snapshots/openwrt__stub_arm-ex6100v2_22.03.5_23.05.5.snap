@@ -1,6 +1,5 @@
 ---
 source: hereticus/tests/openwrt.rs
-assertion_line: 629
 expression: report
 ---
 0x80208000 -> 0x80208000 Yes score=0.854 edits=Edits { added: 11, removed: 6, edited: 9 } kinds=EditKinds { branches: 1, calls: 1, jumps: 0, memory: 6, other: 16, opaque: 2, constants: 8, callees: 0, texts: 0 } confidence=Similar
@@ -44,6 +43,7 @@ expression: report
 0x80209b08 -> 0x80209920 Yes score=0.938 edits=Edits { added: 48, removed: 28, edited: 9 } kinds=EditKinds { branches: 5, calls: 0, jumps: 3, memory: 30, other: 47, opaque: 0, constants: 2, callees: 0, texts: 0 } confidence=Similar
 0x8020a338 -> 0x8020a1a0 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalShape
 0x8020a3bc -> 0x8020a390 Yes score=0.957 edits=Edits { added: 137, removed: 128, edited: 21 } kinds=EditKinds { branches: 39, calls: 8, jumps: 12, memory: 98, other: 128, opaque: 1, constants: 4, callees: 0, texts: 0 } confidence=Similar
+0x8020b1f8 -> 0x8020b214 Yes score=0.374 edits=Edits { added: 114, removed: 3, edited: 20 } kinds=EditKinds { branches: 12, calls: 2, jumps: 10, memory: 82, other: 31, opaque: 0, constants: 3, callees: 0, texts: 0 } confidence=SameCallers
 0x8020b39c -> 0x8020b564 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 0x8020b3bc -> 0x8020b584 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 0x8020b3e8 -> 0x8020b5b0 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
@@ -68,10 +68,8 @@ expression: report
 0x8020ba08 -> 0x8020e470 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 0x8020ba10 -> 0x8020e478 Data score=0.769 edits=Edits { added: 34, removed: 0, edited: 1 } kinds=EditKinds { branches: 1, calls: 0, jumps: 0, memory: 6, other: 21, opaque: 7, constants: 0, callees: 0, texts: 0 } confidence=Similar
 gone 0x80209154
-gone 0x8020b1f8
 gone 0x8020b554
 new  0x80208b14
-new  0x8020b214
 new  0x8020b714
 new  0x8020b744
 new  0x8020b8a4

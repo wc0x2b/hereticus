@@ -104,6 +104,18 @@ fn recovers_exactly_the_functions_of_its_object(
     }
 }
 
+/// Comparisons where the object pairs more than its raw image, because only
+/// the object knows the calls.
+///
+/// A raw fixture is the `.text` of an object that was never linked, so each
+/// `jal` holds no target until a relocation fills it in. The object reads
+/// the relocations and the raw image cannot. At `-O0`, `dispatch` gains a
+/// call and a branch and scores 0.42 against itself, under the threshold,
+/// and only its callers and callees pair it: see `RESEARCH.md`, entry 1. A
+/// linked image holds the targets, so this does not apply to a flash dump.
+const CALLS_ONLY_IN_THE_OBJECT: &[(&str, &str)] =
+    &[("mips-O0", "firmware"), ("mipsbe-O0", "firmware")];
+
 /// Reading a raw image reports what reading its objects reports.
 ///
 /// This is the property that matters, checked as the whole report: every
@@ -132,7 +144,20 @@ fn a_raw_comparison_reports_what_the_objects_report(
         render(&diff_with(&before_object, &after_object, blind()), &before_object, &after_object);
     let raw_report = render(&diff_with(&before_raw, &after_raw, blind()), &before_raw, &after_raw);
 
-    assert_eq!(raw_report, object_report, "{tree}/{name}: the raw report must match the object");
+    if CALLS_ONLY_IN_THE_OBJECT.contains(&(tree, name)) {
+        // Every pair the raw image makes, the object makes too.
+        for line in
+            raw_report.lines().filter(|line| !line.starts_with("gone") && !line.starts_with("new"))
+        {
+            assert!(object_report.contains(line), "{tree}/{name}: the object lost {line}");
+        }
+        assert_ne!(raw_report, object_report, "{tree}/{name}: remove it from the list");
+    } else {
+        assert_eq!(
+            raw_report, object_report,
+            "{tree}/{name}: the raw report must match the object"
+        );
+    }
     insta::assert_snapshot!(format!("report_{tree}_{name}"), raw_report);
 }
 
