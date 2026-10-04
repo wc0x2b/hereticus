@@ -174,8 +174,8 @@ them, and none of them is a fault:
   own line says nothing more.
 - NEON and VFP work, as `vmov`, `vcmp` and `vmrs`, which the lift names
   `Vector` or `Float` only, and AArch64 `ccmp`, `movi` and `umov`.
-- MIPS `mfhi` and `mflo`, whose `hi` and `lo` have no printed operand
-  the view can name, and the float compares `c.eq.d` and `bc1t`.
+- The MIPS float compares that are true on a NaN, as `c.ult.d` and
+  `c.un.d`, which no operator names.
 
 ## Name what the IL view cannot name yet
 

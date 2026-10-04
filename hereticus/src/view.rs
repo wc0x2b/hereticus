@@ -88,6 +88,8 @@ pub fn il_lines_in(
     };
     let pages = page_loads(insns, &formed);
     let mut last_compare: Option<Compared> = None;
+    let is_mips = arch.triple().starts_with("mips");
+    let mut float_condition: Option<String> = None;
     // The callee each register holds, from a load of a GOT slot.
     let mut callees: HashMap<String, String> = HashMap::new();
     // The callee of each call, as the architecture follows it, as through
@@ -121,6 +123,9 @@ pub fn il_lines_in(
                 && let Some(dest) = split_operands(&insn.operands).first()
             {
                 return format!("{dest} = &page");
+            }
+            if is_mips && let Some(text) = mips_statement(insn, &mut float_condition) {
+                return text;
             }
             let word = usize::try_from(insn.address - first.address)
                 .ok()
@@ -175,6 +180,61 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
             (insns[at].mnemonic == "lw" && formed[at].is_some()).then_some(at)
         })
         .collect()
+}
+
+/// The statement of a MIPS instruction whose operands the code does not
+/// print: the `hi` and `lo` that a multiply or divide writes, and the
+/// condition bit that a float compare sets and `bc1t` and `bc1f` test.
+///
+/// `float_condition` keeps the test of the last float compare, so a branch
+/// on it reads as `if (fv0 < fv1) goto $+0xc`.
+fn mips_statement(insn: &Insn, float_condition: &mut Option<String>) -> Option<String> {
+    let operands = split_operands(&insn.operands);
+    // `multu` and `divu` read their operands unsigned, as `u>>` does.
+    let sign = if insn.mnemonic.ends_with('u') { "u" } else { "" };
+    let line = match (insn.mnemonic.as_str(), operands.as_slice()) {
+        ("mult" | "multu", [left, right]) => format!("hi:lo = {left} {sign}* {right}"),
+        ("madd" | "maddu", [left, right]) => {
+            format!("hi:lo = hi:lo + {left} {sign}* {right}")
+        }
+        ("msub" | "msubu", [left, right]) => {
+            format!("hi:lo = hi:lo - {left} {sign}* {right}")
+        }
+        // The assembler prints the `zero` that the encoding holds first.
+        ("div" | "divu", [left, right] | ["zero", left, right]) => {
+            format!("lo = {left} {sign}/ {right}; hi = {left} {sign}% {right}")
+        }
+        ("mfhi", [dest]) => format!("{dest} = hi"),
+        ("mflo", [dest]) => format!("{dest} = lo"),
+        ("mthi", [source]) => format!("hi = {source}"),
+        ("mtlo", [source]) => format!("lo = {source}"),
+        ("bc1t", [target]) => {
+            let test = float_condition.as_deref().unwrap_or("fcc");
+            format!("if ({test}) goto {target}")
+        }
+        ("bc1f", [target]) => {
+            let test = float_condition.as_deref().unwrap_or("fcc");
+            format!("if (!({test})) goto {target}")
+        }
+        (mnemonic, [left, right]) if mnemonic.starts_with("c.") => {
+            // Only the compares that are false on a NaN read as an
+            // operator; `c.ult` and its kin are true on one.
+            let operator = match mnemonic.split('.').nth(1)? {
+                "eq" | "seq" => "==",
+                "lt" | "olt" => "<",
+                "le" | "ole" => "<=",
+                _ => {
+                    *float_condition = None;
+                    return None;
+                }
+            };
+            let test = format!("{left} {operator} {right}");
+            *float_condition = Some(test.clone());
+            format!("fcc = {test}")
+        }
+        _ => return None,
+    };
+    Some(line)
 }
 
 /// The line of a call that a name can say better than an address, and
@@ -1068,7 +1128,13 @@ mod tests {
     }
 
     fn mips(mnemonic: &str, operands: &str, kind: crate::arch::InsnKind) -> Insn {
-        Insn { address: 0, bytes_len: 4, mnemonic: mnemonic.into(), operands: operands.into(), kind }
+        Insn {
+            address: 0,
+            bytes_len: 4,
+            mnemonic: mnemonic.into(),
+            operands: operands.into(),
+            kind,
+        }
     }
 
     #[test]
@@ -1106,6 +1172,56 @@ mod tests {
         // An `addiu` that forms no address joins no page.
         let insns = [mips("lw", "v0, -0x7fe0(gp)", Normal), mips("addiu", "v0, v0, 1", Normal)];
         assert!(page_loads(&insns, &[Some(0x1000), None]).is_empty());
+    }
+
+    #[test]
+    fn mips_hi_and_lo_read_as_registers() {
+        use crate::arch::mips::Mips32;
+        let words: [u32; 7] = [
+            0x0085_0018, // mult a0, a1
+            0x0000_1012, // mflo v0
+            0x0085_001b, // divu zero, a0, a1
+            0x0000_1810, // mfhi v1
+            0x0080_0013, // mtlo a0
+            0x7085_0000, // madd a0, a1
+            0x7085_1002, // mul v0, a0, a1
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0x1000);
+        assert_eq!(
+            il_lines(&Mips32::BIG, &code, &insns),
+            [
+                "hi:lo = a0 * a1",
+                "v0 = lo",
+                "lo = a0 u/ a1; hi = a0 u% a1",
+                "v1 = hi",
+                "lo = a0",
+                "hi:lo = hi:lo + a0 * a1",
+                "v0 = a0 * a1",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_mips_float_compare_and_its_branch_read_as_one_test() {
+        use crate::arch::mips::Mips32;
+        let words: [u32; 6] = [
+            0x4622_003c, // c.lt.d fv0, fv1
+            0x4501_0002, // bc1t $+0xc
+            0x4500_0002, // bc1f $+0xc
+            0x4622_0035, // c.ult.d fv0, fv1
+            0x4501_0002, // bc1t $+0xc
+            0x0000_0000, // nop
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0x1000);
+        let shown = il_lines(&Mips32::BIG, &code, &insns);
+        assert_eq!(
+            shown[..3],
+            ["fcc = fv0 < fv1", "if (fv0 < fv1) goto $+0xc", "if (!(fv0 < fv1)) goto $+0xc"]
+        );
+        assert_eq!(shown[3], "c.ult.d fv0, fv1", "true on a NaN, so no operator");
+        assert_eq!(shown[4], "if (fcc) goto $+0xc");
     }
 
     #[test]
