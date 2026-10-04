@@ -200,22 +200,16 @@ fn measure(project: &str, arch: &str, first: &str, second: &str, totals: &mut To
 /// What an order may read of one row.
 struct Features {
     edits: hereticus::matching::Edits,
-    kinds: hereticus::matching::EditKinds,
     score: f64,
+    /// See `Match::rarity`.
     rarity: f64,
-    /// Instructions in the longer body.
-    length: usize,
-    /// IDF of each token added or removed, summed.
-    idf_sum: f64,
-    idf_max: f64,
-    /// IDF of each token added, summed.
+    /// IDF of each instruction added, summed, by bag.
     idf_added: f64,
-    idf2_added: f64,
-    /// IDF of each pair of neighbors added or removed, summed.
-    idf2_sum: f64,
-    /// Count of added conditional branches, by bag.
+    /// Conditional branches added, by bag.
     added_branches: usize,
+    /// Calls added, by bag.
     added_calls: usize,
+    /// Jumps and returns added, by bag.
     added_returns: usize,
 }
 
@@ -276,62 +270,37 @@ fn bag_difference<T: Ord + Clone>(before: &[T], after: &[T]) -> (Vec<T>, Vec<T>)
     (added, removed)
 }
 
+/// The features of each row. The IDF counts over the rows, as
+/// `Match::rarity` counts over the changed pairs.
 fn features_of(rows: &[&Match], stripped: &[Binary; 2]) -> Vec<Features> {
     use hereticus::norm::FlowShape;
-    // (sign, token) so an added and a removed instruction differ.
-    let mut edits: Vec<(Vec<(bool, u64)>, Vec<(bool, u64, u64)>, usize, [usize; 3])> = Vec::new();
-    for pair in rows {
-        let before = body_tokens(&stripped[0], pair.before);
-        let after = body_tokens(&stripped[1], pair.after);
-        let (added, removed) = bag_difference(&before, &after);
-        let count = |list: &[(u64, FlowShape)], flow: FlowShape| {
-            list.iter().filter(|t| t.1 == flow).count()
-        };
-        let guards = [
-            count(&added, FlowShape::Branch),
-            count(&added, FlowShape::Call),
-            count(&added, FlowShape::Return) + count(&added, FlowShape::Jump),
-        ];
-        let mut tokens: Vec<(bool, u64)> = added.iter().map(|t| (true, t.0)).collect();
-        tokens.extend(removed.iter().map(|t| (false, t.0)));
-        let grams = |body: &[(u64, FlowShape)]| -> Vec<(u64, u64)> {
-            body.windows(2).map(|w| (w[0].0, w[1].0)).collect()
-        };
-        let (added2, removed2) = bag_difference(&grams(&before), &grams(&after));
-        let mut tokens2: Vec<(bool, u64, u64)> = added2.iter().map(|t| (true, t.0, t.1)).collect();
-        tokens2.extend(removed2.iter().map(|t| (false, t.0, t.1)));
-        edits.push((tokens, tokens2, before.len().max(after.len()), guards));
-    }
-    let rows_count = edits.len() as f64;
-    let mut df1: HashMap<(bool, u64), usize> = HashMap::new();
-    let mut df2: HashMap<(bool, u64, u64), usize> = HashMap::new();
-    for (tokens, tokens2, _, _) in &edits {
-        for token in tokens.iter().collect::<BTreeSet<_>>() {
-            *df1.entry(*token).or_default() += 1;
-        }
-        for token in tokens2.iter().collect::<BTreeSet<_>>() {
-            *df2.entry(*token).or_default() += 1;
+    let added: Vec<Vec<(u64, FlowShape)>> = rows
+        .iter()
+        .map(|pair| {
+            let before = body_tokens(&stripped[0], pair.before);
+            let after = body_tokens(&stripped[1], pair.after);
+            bag_difference(&before, &after).0
+        })
+        .collect();
+    let mut df: HashMap<u64, usize> = HashMap::new();
+    for tokens in &added {
+        for token in tokens.iter().map(|t| t.0).collect::<BTreeSet<_>>() {
+            *df.entry(token).or_default() += 1;
         }
     }
-    let idf = |df: usize| ((rows_count + 1.0) / (df as f64 + 1.0)).ln();
+    let idf = |df: usize| ((rows.len() as f64 + 1.0) / (df as f64 + 1.0)).ln();
     rows.iter()
-        .zip(&edits)
-        .map(|(pair, (tokens, tokens2, length, guards))| {
-            let weights: Vec<f64> = tokens.iter().map(|t| idf(df1[t])).collect();
+        .zip(&added)
+        .map(|(pair, tokens)| {
+            let count = |flow: FlowShape| tokens.iter().filter(|t| t.1 == flow).count();
             Features {
                 edits: pair.edits,
-                kinds: pair.kinds,
                 score: pair.score,
                 rarity: pair.rarity,
-                length: *length,
-                idf_sum: weights.iter().sum(),
-                idf_max: weights.iter().copied().fold(0.0, f64::max),
-                idf_added: tokens.iter().zip(&weights).filter(|(t, _)| t.0).map(|(_, w)| w).sum(),
-                idf2_sum: tokens2.iter().map(|t| idf(df2[t])).sum(),
-                idf2_added: tokens2.iter().filter(|t| t.0).map(|t| idf(df2[t])).sum(),
-                added_branches: guards[0],
-                added_calls: guards[1],
-                added_returns: guards[2],
+                idf_added: tokens.iter().map(|t| idf(df[&t.0])).sum(),
+                added_branches: count(FlowShape::Branch),
+                added_calls: count(FlowShape::Call),
+                added_returns: count(FlowShape::Return) + count(FlowShape::Jump),
             }
         })
         .collect()
@@ -421,7 +390,227 @@ fn measure_cves() {
     }
 }
 
+/// The functions of a debug file: start, end and name.
+fn debug_symbols(path: &str) -> Vec<(u64, u64, String)> {
+    use object::{Object, ObjectSymbol, SymbolKind};
+    let data = std::fs::read(path).expect("the debug file is cached");
+    let file = object::File::parse(&*data).expect("the debug file parses");
+    let mut symbols: Vec<(u64, u64, String)> = file
+        .symbols()
+        .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
+        .filter_map(|symbol| {
+            let name = function_name(symbol.name().ok()?).to_owned();
+            // A Thumb symbol has its low bit set.
+            let start = symbol.address() & !1;
+            Some((start, start + symbol.size(), name))
+        })
+        .collect();
+    symbols.sort();
+    symbols
+}
+
+/// Measure each Ubuntu security update that `fixtures/ubuntu_cves.py`
+/// fetched: the pairs of the stripped libraries, checked against the debug
+/// symbols, and the rank of the first function the update's patches touch.
+fn measure_ubuntu() {
+    let cache =
+        Path::new(&std::env::var("HOME").expect("a home")).join(".cache/hereticus-ubuntu-cve");
+    let text =
+        std::fs::read_to_string(cache.join("cases.json")).expect("run fixtures/ubuntu_cves.py");
+    let cases = parse_cases(&text);
+    let use_names = match std::env::var("NAMES").as_deref() {
+        Ok("yes") => UseNames::Yes,
+        _ => UseNames::No,
+    };
+    use rayon::prelude::*;
+    let mut all = Totals::default();
+    let mut libraries: std::collections::BTreeMap<String, Totals> = Default::default();
+    let results: Vec<(String, Totals, String)> =
+        cases.par_iter().map(|case| measure_ubuntu_case(case, use_names)).collect();
+    for (key, one, line) in results {
+        if std::env::var_os("BENCH_VERBOSE").is_some() {
+            println!("{line}");
+        }
+        add(libraries.entry(key).or_default(), &one);
+    }
+    println!(
+        "{:28} {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "library", "right", "wrong", "gone", "new", "cases"
+    );
+    for (library, totals) in &libraries {
+        println!(
+            "{library:28} {:>6} {:>6} {:>6} {:>6} {:>6}",
+            totals.right, totals.wrong, totals.gone, totals.new, totals.cases
+        );
+        add(&mut all, totals);
+    }
+    println!(
+        "{:28} {:>6} {:>6} {:>6} {:>6} {:>6}  (fix found in {} of {})",
+        "all",
+        all.right,
+        all.wrong,
+        all.gone,
+        all.new,
+        all.cases,
+        all.cases - all.missed,
+        all.cases
+    );
+    let ranked_cases = (all.cases - all.missed) as f64;
+    for ((name, _), (ranks, top1, top5, mrr)) in ORDERS.iter().zip(&all.orders) {
+        println!(
+            "order {name:16} ranks {ranks:>5} top1 {top1:>3} top5 {top5:>3} mrr {:.3}",
+            mrr / ranked_cases
+        );
+    }
+}
+
+/// One case of [`measure_ubuntu`]: its library, its counts and its line.
+fn measure_ubuntu_case(case: &Case, use_names: UseNames) -> (String, Totals, String) {
+    let binaries = [0, 1].map(|side| {
+        let data = std::fs::read(&case.files[side].0).expect("cached");
+        Binary::parse(&data).expect("the library parses")
+    });
+    let symbols = [0, 1].map(|side| debug_symbols(&case.files[side].1));
+    let diff = diff_with(&binaries[0], &binaries[1], Options { use_names, ..Default::default() });
+    let names = |side: usize, index: usize| -> BTreeSet<String> {
+        let function = &binaries[side].functions[index];
+        let (start, end) =
+            (function.address & !1, (function.address & !1) + function.code.len() as u64);
+        symbols[side]
+            .iter()
+            .filter(|(low, high, _)| *low < end && *high > start)
+            .map(|(_, _, name)| name.clone())
+            .collect()
+    };
+    let mut one = Totals::default();
+    let totals = &mut one;
+    totals.gone += diff.removed.len();
+    totals.new += diff.added.len();
+    for pair in &diff.matched {
+        let (left, right) = (names(0, pair.before), names(1, pair.after));
+        if left.is_empty() || right.is_empty() {
+            continue;
+        }
+        if left.is_disjoint(&right) {
+            totals.wrong += 1;
+        } else {
+            totals.right += 1;
+        }
+    }
+
+    totals.cases += 1;
+    let ranked = rows(&diff);
+    let is_fix_row = |pair: &Match| {
+        names(0, pair.before)
+            .iter()
+            .chain(&names(1, pair.after))
+            .any(|name| case.fixes.contains(name))
+    };
+    let features = features_of(&ranked, &binaries);
+    if totals.orders.is_empty() {
+        totals.orders = vec![(0, 0, 0, 0.0); ORDERS.len()];
+    }
+    let mut line = format!(
+        "{} {} {} -> {} ({} rows):",
+        case.library,
+        case.arch,
+        case.before,
+        case.after,
+        ranked.len()
+    );
+    let mut any = false;
+    for (slot, (name, order)) in ORDERS.iter().enumerate() {
+        let mut keyed: Vec<(f64, usize)> =
+            features.iter().enumerate().map(|(row, f)| (order(f), row)).collect();
+        keyed.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1.cmp(&b.1)));
+        let rank = keyed.iter().position(|&(_, row)| is_fix_row(ranked[row]));
+        if let Some(rank) = rank {
+            any = true;
+            totals.orders[slot].0 += rank + 1;
+            totals.orders[slot].1 += usize::from(rank == 0);
+            totals.orders[slot].2 += usize::from(rank < 5);
+            totals.orders[slot].3 += 1.0 / (rank + 1) as f64;
+        }
+        line += &format!(" {name}={}", rank.map_or("-".to_owned(), |rank| (rank + 1).to_string()));
+    }
+    if !any {
+        totals.missed += 1;
+    }
+    (format!("{} {}", case.library, case.arch), one, line)
+}
+
+fn add(all: &mut Totals, one: &Totals) {
+    all.right += one.right;
+    all.wrong += one.wrong;
+    all.gone += one.gone;
+    all.new += one.new;
+    all.missed += one.missed;
+    all.cases += one.cases;
+    if all.orders.is_empty() {
+        all.orders = vec![(0, 0, 0, 0.0); ORDERS.len()];
+    }
+    for (sum, one) in all.orders.iter_mut().zip(&one.orders) {
+        sum.0 += one.0;
+        sum.1 += one.1;
+        sum.2 += one.2;
+        sum.3 += one.3;
+    }
+}
+
+struct Case {
+    library: String,
+    arch: String,
+    before: String,
+    after: String,
+    /// The library and its debug file, before and after.
+    files: [(String, String); 2],
+    fixes: BTreeSet<String>,
+}
+
+/// Read `cases.json` without a JSON crate: each field is a string or a
+/// list of strings.
+fn parse_cases(text: &str) -> Vec<Case> {
+    let strings = |object: &str, key: &str| -> Vec<String> {
+        let start = object.find(&format!("\"{key}\":")).expect(key) + key.len() + 3;
+        let rest = &object[start..];
+        let end = if rest.trim_start().starts_with('[') {
+            let mut depth = 0;
+            rest.char_indices()
+                .find(|&(_, c)| {
+                    depth += match c {
+                        '[' => 1,
+                        ']' => -1,
+                        _ => 0,
+                    };
+                    c == ']' && depth == 0
+                })
+                .map_or(rest.len(), |(at, _)| at + 1)
+        } else {
+            rest.find(['\n', ',']).unwrap_or(rest.len())
+        };
+        rest[..end].split('"').skip(1).step_by(2).map(str::to_owned).collect()
+    };
+    text.split("\n {")
+        .skip(1)
+        .map(|object| {
+            let files = strings(object, "files");
+            Case {
+                library: strings(object, "library").remove(0),
+                arch: strings(object, "arch").remove(0),
+                before: strings(object, "before").remove(0),
+                after: strings(object, "after").remove(0),
+                files: [(files[0].clone(), files[1].clone()), (files[2].clone(), files[3].clone())],
+                fixes: strings(object, "fixes").into_iter().collect(),
+            }
+        })
+        .collect()
+}
+
 fn main() {
+    if std::env::args().any(|arg| arg == "--ubuntu") {
+        measure_ubuntu();
+        return;
+    }
     if std::env::args().any(|arg| arg == "--cves") {
         measure_cves();
         return;
