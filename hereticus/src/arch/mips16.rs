@@ -34,6 +34,11 @@ const T: u32 = 24;
 /// The stack pointer and the return address register.
 const SP: u32 = 29;
 const RA: u32 = 31;
+/// The registers that `save` and `restore` name.
+const A0: u32 = 4;
+const S0: u32 = 16;
+const S2: u32 = 18;
+const S8: u32 = 30;
 
 /// MIPS16e, in either byte order.
 #[derive(Clone, Copy, Debug)]
@@ -62,7 +67,67 @@ enum Reading {
     /// program counter: `lw rx, imm(pc)` and `addiu rx, pc, imm`.
     PcRelative { load: bool, dest: u32, address: u64 },
     /// `save` or `restore` of the frame.
-    Frame { save: bool, size: u32 },
+    Frame { step: FrameStep, size: u32, registers: FrameRegisters },
+}
+
+/// Whether a frame instruction makes the frame or drops it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameStep {
+    Save,
+    Restore,
+}
+
+/// The registers a `save` stores and a `restore` loads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FrameRegisters {
+    /// How many arguments, from `a0`, a `save` stores into the frame of the
+    /// caller. A `restore` loads none of them back.
+    arguments: u32,
+    /// The registers kept in the new frame, lowest address first. That is
+    /// the order of their numbers: `a2`, `a3`, `s0` to `s8`, then `ra`.
+    kept: Vec<u32>,
+}
+
+impl FrameRegisters {
+    /// The registers that `insn` and its `extend` prefix name, or `None`
+    /// for a reserved mix of arguments and statics.
+    fn read(insn: u32, extend: Option<u32>) -> Option<Self> {
+        // `aregs` splits `a0` to `a3` into arguments, which come first, and
+        // statics; two codes name all four of one kind.
+        const ALL_ARGUMENTS: u32 = 0b1110;
+        const ALL_STATICS: u32 = 0b1011;
+        let (xsregs, aregs) = extend.map_or((0, 0), |prefix| (prefix >> 8 & 7, prefix & 0xf));
+        let (arguments, statics) = match aregs {
+            ALL_ARGUMENTS => (4, 0),
+            ALL_STATICS => (0, 4),
+            _ => (aregs >> 2, aregs & 3),
+        };
+        if arguments + statics > 4 {
+            return None;
+        }
+        let has = |bit: u32| insn >> bit & 1 == 1;
+        // `s2` to `s7` are numbered in a row, and the seventh is `s8`.
+        let extra = (0..xsregs).map(|index| if index == 6 { S8 } else { S2 + index });
+        let kept = (A0 + 4 - statics..A0 + 4)
+            .chain(
+                [(5, S0), (4, S0 + 1)].into_iter().filter(|&(bit, _)| has(bit)).map(|(_, reg)| reg),
+            )
+            .chain(extra)
+            .chain(has(6).then_some(RA))
+            .collect();
+        Some(Self { arguments, kept })
+    }
+
+    /// The operands `save` and `restore` print: the arguments, the size of
+    /// the frame, then the registers kept, as `a0, 0x20, s0, s1, ra`.
+    fn operands(&self, size: u32) -> String {
+        (A0..A0 + self.arguments)
+            .map(|reg| REGISTER_NAMES[reg as usize].to_string())
+            .chain([format!("{size:#x}")])
+            .chain(self.kept.iter().map(|&reg| REGISTER_NAMES[reg as usize].to_string()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// The decoded fields of one instruction, and its width.
@@ -207,14 +272,15 @@ fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Reading> 
             0b010 => word(immediate(0x2b, SP, RA, wide.unwrap_or(i64::from(imm8 << 2)))),
             0b011 => word(immediate(0x09, SP, SP, wide.unwrap_or_else(|| signed(imm8, 8) << 3))),
             0b100 => {
-                let save = h >> 7 & 1 == 1;
+                let step = if h >> 7 & 1 == 1 { FrameStep::Save } else { FrameStep::Restore };
                 let low = h & 0xf;
                 let size = match extend {
                     Some((prefix, _)) => ((prefix >> 4 & 0xf) << 4 | low) * 8,
                     None if low == 0 => 128,
                     None => low * 8,
                 };
-                Some(Reading::Frame { save, size })
+                let registers = FrameRegisters::read(h, extend.map(|(prefix, _)| prefix))?;
+                Some(Reading::Frame { step, size, registers })
             }
             0b101 if extend.is_none() => {
                 // `move r32, rz`, which MIPS32 spells `or r32, rz, zero`,
@@ -389,11 +455,15 @@ impl Arch for Mips16 {
                 },
                 kind: InsnKind::Normal,
             },
-            Reading::Frame { save, size } => Insn {
+            Reading::Frame { step, size, registers } => Insn {
                 address: insn_address,
                 bytes_len: width,
-                mnemonic: if save { "save" } else { "restore" }.into(),
-                operands: format!("{size:#x}"),
+                mnemonic: match step {
+                    FrameStep::Save => "save",
+                    FrameStep::Restore => "restore",
+                }
+                .into(),
+                operands: registers.operands(size),
                 kind: InsnKind::Normal,
             },
         };
@@ -1166,11 +1236,50 @@ mod tests {
 
     #[test]
     fn save_and_restore_make_and_drop_the_frame() {
-        assert_eq!(text(&[0x64b4], 0), "save 0x20"); // save 32,s0-s1
+        assert_eq!(text(&[0x64b4], 0), "save 0x20, s0, s1"); // save 32,s0-s1
         let code = 0x64b4_u16.to_be_bytes();
         let insn = Mips16::BIG.decode(&code, 0, 0).expect("decodes");
         assert!(Mips16::BIG.is_frame_management(&insn));
         assert!(Mips16::BIG.is_prologue(&insn));
+    }
+
+    /// Each encoding as GNU `as` 2.44 assembles the `binutils` text.
+    #[test]
+    fn save_and_restore_name_the_registers_they_move() {
+        let cases: [(&[u16], &str, &str); 15] = [
+            (&[0x64f4], "save 32,ra,s0-s1", "save 0x20, s0, s1, ra"),
+            (&[0xf004, 0x64c4], "save a0,32,ra", "save a0, 0x20, ra"),
+            (&[0xf001, 0x64c4], "save 32,ra,a3", "save 0x20, a3, ra"),
+            (&[0xf005, 0x64c4], "save a0,32,ra,a3", "save a0, 0x20, a3, ra"),
+            (&[0xf008, 0x64c4], "save a0-a1,32,ra", "save a0, a1, 0x20, ra"),
+            (&[0xf009, 0x64c4], "save a0-a1,32,ra,a3", "save a0, a1, 0x20, a3, ra"),
+            (&[0xf00c, 0x64c4], "save a0-a2,32,ra", "save a0, a1, a2, 0x20, ra"),
+            (&[0xf00e, 0x64c4], "save a0-a3,32,ra", "save a0, a1, a2, a3, 0x20, ra"),
+            (&[0xf00b, 0x64c4], "save 32,ra,a0-a3", "save 0x20, a0, a1, a2, a3, ra"),
+            (&[0xf002, 0x64c4], "save 32,ra,a2-a3", "save 0x20, a2, a3, ra"),
+            (&[0xf003, 0x64c4], "save 32,ra,a1-a3", "save 0x20, a1, a2, a3, ra"),
+            (&[0xf006, 0x64c4], "save a0,32,ra,a2-a3", "save a0, 0x20, a2, a3, ra"),
+            (
+                &[0xf700, 0x64f4],
+                "save 32,ra,s0-s8",
+                "save 0x20, s0, s1, s2, s3, s4, s5, s6, s7, s8, ra",
+            ),
+            (&[0xf100, 0x64f4], "save 32,ra,s0-s2", "save 0x20, s0, s1, s2, ra"),
+            (&[0xf002, 0x6474], "restore 32,ra,s0-s1,a2-a3", "restore 0x20, a2, a3, s0, s1, ra"),
+        ];
+        for (halfwords, binutils, shown) in cases {
+            assert_eq!(text(halfwords, 0), shown, "{binutils}");
+        }
+    }
+
+    #[test]
+    fn a_reserved_mix_of_arguments_and_statics_is_no_save() {
+        // `aregs` 0b1111 names three arguments and three statics of four.
+        let code: Vec<u8> = [0xf00f_u16, 0x64c4].iter().flat_map(|h| h.to_be_bytes()).collect();
+        assert_eq!(
+            Mips16::BIG.decode(&code, 0, 0).map(|insn| insn.kind).ok(),
+            Some(InsnKind::Unknown)
+        );
     }
 
     #[test]

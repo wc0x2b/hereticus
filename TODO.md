@@ -168,8 +168,6 @@ differential test skips too.
 `--view il` shows 2 to 4 in 100 instructions of Lua as the code prints
 them, and none of them is a fault:
 
-- The MIPS16e `save` and `restore`, which the decoder prints with their
-  frame size only, as `save 0x20`, and not the registers they move.
 - `it`, whose condition now sits on each instruction it covers, so its
   own line says nothing more.
 - NEON and VFP work, as `vmov`, `vcmp` and `vmrs`, which the lift names

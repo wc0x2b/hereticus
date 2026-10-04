@@ -213,8 +213,9 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
 }
 
 /// The statement of a MIPS instruction whose operands the code does not
-/// print: the `hi` and `lo` that a multiply or divide writes, and the
-/// condition bit that a float compare sets and `bc1t` and `bc1f` test.
+/// print: the `hi` and `lo` that a multiply or divide writes, the
+/// condition bit that a float compare sets and `bc1t` and `bc1f` test, and
+/// the stores and loads of the MIPS16e `save` and `restore`.
 ///
 /// `float_condition` keeps the test of the last float compare, so a branch
 /// on it reads as `if (fv0 < fv1) goto $+0xc`.
@@ -234,6 +235,7 @@ fn mips_statement(insn: &Insn, float_condition: &mut Option<String>) -> Option<S
         ("div" | "divu", [left, right] | ["zero", left, right]) => {
             format!("lo = {left} {sign}/ {right}; hi = {left} {sign}% {right}")
         }
+        ("save" | "restore", _) => return frame_statement(&insn.mnemonic, &operands),
         ("mfhi", [dest]) => format!("{dest} = hi"),
         ("mflo", [dest]) => format!("{dest} = lo"),
         ("mthi", [source]) => format!("hi = {source}"),
@@ -447,6 +449,45 @@ fn memory_text(token: &str) -> String {
         }
     }
     format!("[{}]", parts.join(" + ").replace("+ -", "- "))
+}
+
+/// The statement of a MIPS16e `save` or `restore`, whose operands are the
+/// arguments `save` stores into the frame of the caller, the size of the
+/// frame, then the registers kept in the frame, lowest address first:
+///
+/// ```text
+/// save    a0, 0x20, s0, ra   store.32 [sp] = a0; store.32 [sp - 8] = s0, ra; sp = sp - 0x20
+/// restore 0x20, s0, ra       s0, ra = load.32 [sp + 0x18]; sp = sp + 0x20
+/// ```
+fn frame_statement(mnemonic: &str, operands: &[&str]) -> Option<String> {
+    let at = operands.iter().position(|operand| operand.starts_with("0x"))?;
+    let (arguments, [size, kept @ ..]) = operands.split_at(at) else { return None };
+    let size = u64::from_str_radix(size.strip_prefix("0x")?, 16).ok()?;
+    let kept_size = 4 * kept.len() as u64;
+    let mut parts = Vec::new();
+    match mnemonic {
+        "save" => {
+            if !arguments.is_empty() {
+                parts.push(format!("store.32 [sp] = {}", arguments.join(", ")));
+            }
+            if !kept.is_empty() {
+                let offset = constant_text(kept_size);
+                parts.push(format!("store.32 [sp - {offset}] = {}", kept.join(", ")));
+            }
+            parts.push(format!("sp = sp - {}", constant_text(size)));
+        }
+        _ => {
+            if !kept.is_empty() {
+                let base = match size.checked_sub(kept_size)? {
+                    0 => "sp".to_string(),
+                    offset => format!("sp + {}", constant_text(offset)),
+                };
+                parts.push(format!("{} = load.32 [{base}]", kept.join(", ")));
+            }
+            parts.push(format!("sp = sp + {}", constant_text(size)));
+        }
+    }
+    Some(parts.join("; "))
 }
 
 /// A constant as code reads it: small ones in decimal, a negative one with
@@ -1292,6 +1333,26 @@ mod tests {
             kind: crate::arch::InsnKind::Normal,
         };
         assert_eq!(a32_condition(&Arm32, &mls, Op::MultiplyAdd), None, "a multiply-subtract");
+    }
+
+    #[test]
+    fn a_mips16e_frame_reads_as_its_stores_and_loads() {
+        use crate::arch::mips16::Mips16;
+        // save a0,32,ra,s0; restore 32,ra,s0; save 128; restore 32,ra,s0-s1,a2-a3
+        let halfwords: [u16; 7] = [0xf004, 0x64e4, 0x6464, 0x6480, 0xf002, 0x6474, 0x6500];
+        let code: Vec<u8> = halfwords.iter().flat_map(|half| half.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips16::BIG, &code, 0x1000);
+        assert_eq!(
+            il_lines(&Mips16::BIG, &code, &insns)[..4],
+            [
+                "store.32 [sp] = a0; store.32 [sp - 8] = s0, ra; sp = sp - 0x20",
+                "s0, ra = load.32 [sp + 0x18]; sp = sp + 0x20",
+                "sp = sp - 0x80",
+                "a2, a3, s0, s1, ra = load.32 [sp + 0xc]; sp = sp + 0x20",
+            ]
+        );
+        assert_eq!(frame_statement("save", &["s0"]), None, "no size");
+        assert_eq!(frame_statement("restore", &["0x4", "s0", "ra"]), None, "a frame too small");
     }
 
     #[test]
