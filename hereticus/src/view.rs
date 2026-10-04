@@ -132,10 +132,12 @@ pub fn il_lines_in(
                 .and_then(|offset| code.get(offset..offset.checked_add(insn.bytes_len)?));
             let lifted = word.and_then(|word| arch.lift(insn, word));
             let moves = moving.get(index).copied().unwrap_or(false);
-            let shown = lifted
-                .and_then(|lifted| statement(insn, &lifted, address, moves, &mut last_compare));
+            let shown = lifted.and_then(|lifted| {
+                let text = statement(insn, &lifted, address, moves, &mut last_compare)?;
+                Some((lifted.op, text))
+            });
             match shown {
-                Some(text) => match a32_condition(arch, insn) {
+                Some((op, text)) => match a32_condition(arch, insn, op) {
                     Some(cond) => format!("if ({cond}) {text}"),
                     None => text,
                 },
@@ -328,8 +330,10 @@ impl Pointed {
 /// Thumb-2 one in an `it` block.
 ///
 /// The IL holds no such condition, so it is read from the mnemonic. A
-/// branch names its own, and `teq` is no conditional `t`.
-fn a32_condition<'i>(arch: &dyn Arch, insn: &'i Insn) -> Option<&'i str> {
+/// branch names its own, and `teq` is no conditional `t`. A conditional
+/// return or jump, as `bxne lr`, decodes as a branch too, but names no
+/// condition, so `op` and not the kind of `insn` decides.
+fn a32_condition<'i>(arch: &dyn Arch, insn: &'i Insn, op: Op) -> Option<&'i str> {
     const CONDITIONS: [&str; 16] = [
         "eq", "ne", "hs", "cs", "lo", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt",
         "le",
@@ -337,7 +341,7 @@ fn a32_condition<'i>(arch: &dyn Arch, insn: &'i Insn) -> Option<&'i str> {
     // Thumb-2 names the condition so inside an `it` block.
     let triple = arch.triple();
     let is_arm = triple.starts_with("arm") || triple.starts_with("thumb");
-    if !is_arm || matches!(insn.kind, crate::arch::InsnKind::Branch { .. }) {
+    if !is_arm || op == Op::Branch {
         return None;
     }
     let mnemonic = insn.mnemonic.as_str();
@@ -1247,7 +1251,7 @@ mod tests {
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         let shown = il_lines(&Arm32, &code, &insns);
         assert_eq!(shown[1], "if (ne) r6 = r4 + 1");
-        assert_eq!(a32_condition(&Arm32, &insns[0]), None, "a compare that always runs");
+        assert_eq!(a32_condition(&Arm32, &insns[0], Op::Compare), None, "a compare that always runs");
         let mls = Insn {
             address: 0,
             bytes_len: 4,
@@ -1255,7 +1259,24 @@ mod tests {
             operands: "r0, r1, r2, r3".into(),
             kind: crate::arch::InsnKind::Normal,
         };
-        assert_eq!(a32_condition(&Arm32, &mls), None, "a multiply-subtract");
+        assert_eq!(a32_condition(&Arm32, &mls, Op::MultiplyAdd), None, "a multiply-subtract");
+    }
+
+    #[test]
+    fn a_conditional_return_names_its_condition() {
+        use crate::arch::arm32::Arm32;
+        // cmp r1, r3; bxne lr; popne {r11, pc}; bxne r3; bne $+0x8
+        let code: Vec<u8> = [0xe151_0003_u32, 0x112f_ff1e, 0x18bd_8800, 0x112f_ff13, 0x1a00_0000]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        let shown = il_lines(&Arm32, &code, &insns);
+        assert_eq!(shown[1], "if (ne) return");
+        assert!(shown[2].starts_with("if (ne) "), "{shown:?}");
+        assert!(shown[2].ends_with("return"), "{shown:?}");
+        assert_eq!(shown[3], "if (ne) goto r3");
+        assert!(shown[4].starts_with("if (r1 != r3) goto"), "{shown:?}");
     }
 
     #[test]
