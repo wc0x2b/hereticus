@@ -25,4 +25,6 @@ tabled = { version = "0.22.0", default-features = false, features = ["ansi", "de
 
 [dev-dependencies]
 insta = "1.48"
+# Checks that the JSON report parses.
+serde_json = "1"
 insta-cmd = "0.7"

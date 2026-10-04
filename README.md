@@ -25,6 +25,8 @@ $ hereticus --all before.elf after.elf              # every function
 $ hereticus --diff array_max before.elf after.elf   # the diff of one function
 $ hereticus --diff-all before.elf after.elf         # the diff of every changed function
 $ hereticus --ignore-names before.elf after.elf     # match from the code alone
+$ hereticus --format markdown before.elf after.elf  # a table to paste into a document
+$ hereticus --format json before.elf after.elf      # for another tool to read
 $ hereticus --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF header
 $ hereticus --raw --arch mips32 --unpack stub a.bin b.bin  # the decompressor in two firmware images
 ```
@@ -152,7 +154,7 @@ Options:
       --base <BASE>            Address a raw image loads at, for example `0x08000000`
       --unpack <UNPACK>        Take one part out of each firmware image before reading it raw [possible values: stub, kernel]
       --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, aarch64, mips32, mips32-be, mips16, mips16-be]
-      --format <FORMAT>        How to print the result [default: text] [possible values: text, compact]
+      --format <FORMAT>        How to print the result [default: text] [possible values: text, compact, markdown, json]
       --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]
       --color <COLOR>          When to color the report. [default: auto] [possible values: auto, always, never]

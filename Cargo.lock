@@ -572,6 +572,7 @@ dependencies = [
  "indicatif",
  "insta",
  "insta-cmd",
+ "serde_json",
  "tabled",
 ]
 
