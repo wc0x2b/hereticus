@@ -118,6 +118,7 @@ impl Arch for Arm32 {
         let text = inst.to_string();
         let (mnemonic, operands) = split_mnemonic(&text);
         let (mnemonic, operands) = without_unused_operand(mnemonic, operands);
+        let mnemonic = with_list_order(&inst.opcode, mnemonic);
 
         Ok(Insn {
             address: insn_address,
@@ -900,6 +901,22 @@ fn without_unused_operand(mnemonic: String, operands: String) -> (String, String
             }
         }
         _ => (mnemonic, operands),
+    }
+}
+
+/// The name of an A32 access to a list of registers with the order it has.
+///
+/// `yaxpeax-arm` 0.4 prints the increment-before form as `ldmia` and
+/// `stmia`, the name of increment-after, which it prints as `ldm` and `stm`.
+/// So `ldmib r0, {r1, r2}`, which loads from `r0 + 4`, read as a load from
+/// `r0`.
+fn with_list_order(opcode: &Opcode, mnemonic: String) -> String {
+    match opcode {
+        Opcode::LDM(true, true, ..) | Opcode::STM(true, true, ..) => match mnemonic.get(..5) {
+            Some(stem @ ("ldmia" | "stmia")) => format!("{}ib{}", &stem[..3], &mnemonic[5..]),
+            _ => mnemonic,
+        },
+        _ => mnemonic,
     }
 }
 
@@ -2809,6 +2826,17 @@ mod tests {
 
     fn lift_one(bytes: [u8; 4]) -> il::Lifted {
         Arm32.lift(&decode_one(bytes), &bytes).expect("the word must lift")
+    }
+
+    #[test]
+    fn a_list_access_names_its_order() {
+        let name = |word: u32| decode_one(word.to_le_bytes()).mnemonic;
+        assert_eq!(name(0xe890_0006), "ldm", "increment after");
+        assert_eq!(name(0xe990_0006), "ldmib");
+        assert_eq!(name(0x1990_0006), "ldmibne");
+        assert_eq!(name(0xe980_0006), "stmib");
+        assert_eq!(name(0xe910_0006), "ldmdb");
+        assert_eq!(name(0xe810_0006), "ldmda");
     }
 
     #[test]
