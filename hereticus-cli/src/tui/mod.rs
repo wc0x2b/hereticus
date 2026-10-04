@@ -95,12 +95,37 @@ struct Labeled {
 #[derive(Debug)]
 struct Opened {
     lines: Vec<DiffLine>,
+    /// The lines of the other view, once shown, so `v` back is at once.
+    other_view: Option<Vec<DiffLine>>,
     addresses: Addresses,
     /// What a gone or new function is shown against: its closest
     /// candidate.
     against: Option<String>,
     /// The first line shown.
     scroll: usize,
+    /// Whether each row shows a change, in the present layout. A long
+    /// function has many thousand rows, so a key does not lay them out
+    /// again.
+    changes: Vec<bool>,
+    /// Where each run of changes starts, from `changes`.
+    starts: Vec<usize>,
+}
+
+impl Opened {
+    /// Lay the rows out again, for another layout or other lines.
+    fn relayout(&mut self, layout: Layout) {
+        self.changes = match layout {
+            Layout::SideBySide => side_by_side(&self.lines, &self.addresses)
+                .iter()
+                .map(|row| row.left.is_change() || row.right.is_change())
+                .collect(),
+            Layout::Unified => {
+                unified(&self.lines, &self.addresses).iter().map(|half| half.is_change()).collect()
+            }
+        };
+        self.starts = change_starts(self.changes.iter().copied());
+        self.scroll = self.scroll.min(self.changes.len().saturating_sub(1));
+    }
 }
 
 /// Which way the sort runs.
@@ -387,14 +412,46 @@ impl<'a> App<'a> {
             ),
             (Entry::New { function, .. }, None) => (alone(after, function, DiffLine::Added), None),
         };
-        self.screen = Screen::Pair(Opened { lines, addresses, against, scroll });
-        self.scroll_by(0);
+        let mut opened = Opened {
+            lines,
+            other_view: None,
+            addresses,
+            against,
+            scroll,
+            changes: Vec::new(),
+            starts: Vec::new(),
+        };
+        opened.relayout(self.layout);
+        self.screen = Screen::Pair(opened);
+    }
+
+    /// Show the open diff in the other view, from the same row. The two
+    /// views hold a line for each instruction, so the row shows about the
+    /// same code.
+    fn switch_view(&mut self) {
+        self.view = match self.view {
+            View::Assembly => View::Il,
+            View::Il => View::Assembly,
+        };
+        let Screen::Pair(opened) = &mut self.screen else { return };
+        if let Some(other) = opened.other_view.take() {
+            let shown = core::mem::replace(&mut opened.lines, other);
+            opened.other_view = Some(shown);
+            opened.relayout(self.layout);
+            return;
+        }
+        let shown = core::mem::take(&mut opened.lines);
+        let scroll = opened.scroll;
+        self.open_at(scroll);
+        if let Screen::Pair(opened) = &mut self.screen {
+            opened.other_view = Some(shown);
+        }
     }
 
     /// Scroll the open diff by `step` rows, and stop at either end.
     fn scroll_by(&mut self, step: isize) {
-        let last = self.diff_changes().len().saturating_sub(1);
         if let Screen::Pair(opened) = &mut self.screen {
+            let last = opened.changes.len().saturating_sub(1);
             opened.scroll = opened.scroll.saturating_add_signed(step).min(last);
         }
     }
@@ -402,14 +459,16 @@ impl<'a> App<'a> {
     /// Scroll the open diff to the next run of changes, or the one before,
     /// with a few rows above it to read it in.
     fn jump_to_change(&mut self, direction: Direction) {
-        let Screen::Pair(opened) = &self.screen else { return };
-        let starts = change_starts(self.diff_changes());
+        let Screen::Pair(opened) = &mut self.screen else { return };
         let at = opened.scroll + CONTEXT;
+        // The starts are in order, so a search finds the ones on each side.
+        let after = opened.starts.partition_point(|&start| start <= at);
+        let before = opened.starts.partition_point(|&start| start < at);
         let target = match direction {
-            Direction::Next => starts.into_iter().find(|&start| start > at),
-            Direction::Previous => starts.into_iter().rev().find(|&start| start < at),
+            Direction::Next => opened.starts.get(after),
+            Direction::Previous => before.checked_sub(1).and_then(|at| opened.starts.get(at)),
         };
-        if let (Some(target), Screen::Pair(opened)) = (target, &mut self.screen) {
+        if let Some(&target) = target {
             opened.scroll = target.saturating_sub(CONTEXT);
         }
     }
@@ -418,9 +477,8 @@ impl<'a> App<'a> {
     /// it holds, as `(2, 5)`.
     fn change_position(&self) -> (usize, usize) {
         let Screen::Pair(opened) = &self.screen else { return (0, 0) };
-        let starts = change_starts(self.diff_changes());
         let at = opened.scroll + CONTEXT;
-        (starts.iter().filter(|&&start| start <= at).count(), starts.len())
+        (opened.starts.partition_point(|&start| start <= at), opened.starts.len())
     }
 
     fn handle(&mut self, key: KeyEvent) -> Flow {
@@ -577,22 +635,15 @@ impl<'a> App<'a> {
             KeyCode::PageUp => scroll(self, -page),
             KeyCode::Home | KeyCode::Char('g') => scroll(self, isize::MIN),
             KeyCode::End | KeyCode::Char('G') => scroll(self, isize::MAX),
-            KeyCode::Char('v') => {
-                self.view = match self.view {
-                    View::Assembly => View::Il,
-                    View::Il => View::Assembly,
-                };
-                // The two views hold a line for each instruction, so the
-                // same row shows about the same code.
-                let Screen::Pair(opened) = &self.screen else { return Flow::Continue };
-                self.open_at(opened.scroll);
-            }
+            KeyCode::Char('v') => self.switch_view(),
             KeyCode::Char('l') => {
                 self.layout = match self.layout {
                     Layout::SideBySide => Layout::Unified,
                     Layout::Unified => Layout::SideBySide,
                 };
-                scroll(self, 0);
+                if let Screen::Pair(opened) = &mut self.screen {
+                    opened.relayout(self.layout);
+                }
             }
             KeyCode::Char(']') => self.jump_to_change(Direction::Next),
             KeyCode::Char('[') => self.jump_to_change(Direction::Previous),
@@ -611,24 +662,19 @@ impl<'a> App<'a> {
 
     /// Whether each row of the open diff shows a change, in the present
     /// layout.
+    #[cfg(test)]
     fn diff_changes(&self) -> Vec<bool> {
         let Screen::Pair(opened) = &self.screen else { return Vec::new() };
-        let addresses = &opened.addresses;
-        match self.layout {
-            Layout::SideBySide => side_by_side(&opened.lines, addresses)
-                .iter()
-                .map(|row| row.left.is_change() || row.right.is_change())
-                .collect(),
-            Layout::Unified => {
-                unified(&opened.lines, addresses).iter().map(|half| half.is_change()).collect()
-            }
-        }
+        opened.changes.clone()
     }
 
     /// How many rows the open diff takes in the present layout.
     #[cfg(test)]
     fn diff_rows(&self) -> usize {
-        self.diff_changes().len()
+        match &self.screen {
+            Screen::Pair(opened) => opened.changes.len(),
+            _ => 0,
+        }
     }
 }
 
@@ -997,6 +1043,79 @@ mod tests {
         let labels: Vec<&str> =
             app.rows.iter().map(|&row| app.entries[row].label.as_str()).collect();
         assert_eq!(labels, ["dispatch"]);
+    }
+
+    /// The A385-DB-AP kernels of two releases, read raw: about 20000
+    /// functions each.
+    fn kernels() -> Option<(Binary, Binary)> {
+        let read = |release: &str| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../fixtures/build/openwrt")
+                .join(format!("arm-a385dbap-kernel-{release}.bin"));
+            let Ok(data) = std::fs::read(&path) else {
+                eprintln!("skipped: run `just firmware` first");
+                return None;
+            };
+            let isa = hereticus::obj::Isa::Arm32;
+            Some(Binary::parse_raw(&data, 0xc000_8000, isa).expect("a kernel parses"))
+        };
+        Some((read("22.03.2")?, read("22.03.5")?))
+    }
+
+    /// A kernel lists many thousand functions, and one of its regions
+    /// diffs to some 200000 rows. A key must answer at once on both: the
+    /// budgets are ten times what each takes, and a fifth of what each took
+    /// when every frame built every row.
+    #[test]
+    fn slow_a_kernel_stays_responsive() {
+        use std::time::{Duration, Instant};
+        let Some((before, after)) = kernels() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        press(&mut app, &[KeyCode::Char('a')]);
+        assert!(app.rows.len() > 20_000, "the kernels list {} rows", app.rows.len());
+
+        // The mean time of a key and the draw after it, a hundred times.
+        let per_step = |app: &mut App<'_>, key: KeyCode| {
+            let at = Instant::now();
+            for _ in 0..100 {
+                press(app, &[key]);
+                screen(app, 200, 60);
+            }
+            at.elapsed() / 100
+        };
+        let list = per_step(&mut app, KeyCode::Down);
+        assert!(list < Duration::from_millis(12), "a step of the list takes {list:?}");
+        let sort = per_step(&mut app, KeyCode::Char('s'));
+        assert!(sort < Duration::from_millis(30), "a sort takes {sort:?}");
+
+        let longest = (0..app.rows.len())
+            .max_by_key(|&at| match app.entries[app.rows[at]].entry {
+                Entry::Pair(index) => before.functions[diff.matched[index].before].code.len(),
+                _ => 0,
+            })
+            .expect("a row");
+        app.table.select(Some(longest));
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.diff_rows() > 100_000, "the diff holds {} rows", app.diff_rows());
+        let scroll = per_step(&mut app, KeyCode::Down);
+        assert!(scroll < Duration::from_millis(35), "a step of the diff takes {scroll:?}");
+        let jump = per_step(&mut app, KeyCode::Char(']'));
+        assert!(jump < Duration::from_millis(35), "a jump takes {jump:?}");
+
+        // A row past what a `u16` holds still shows.
+        press(&mut app, &[KeyCode::End]);
+        let Screen::Pair(opened) = &app.screen else { panic!("the diff stays open") };
+        assert!(opened.scroll > usize::from(u16::MAX));
+        let last = screen(&mut app, 200, 60);
+        assert!(last.lines().nth(3).is_some_and(|line| line.contains(['+', '-', '~'])), "{last}");
+
+        // The second change of view takes the lines the first one kept.
+        press(&mut app, &[KeyCode::Char('v')]);
+        let at = Instant::now();
+        press(&mut app, &[KeyCode::Char('v')]);
+        let back = at.elapsed();
+        assert!(back < Duration::from_millis(50), "a change of view back takes {back:?}");
     }
 
     #[test]

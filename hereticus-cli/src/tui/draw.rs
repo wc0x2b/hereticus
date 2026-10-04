@@ -8,7 +8,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Table, Tabs,
+    Table, TableState, Tabs,
 };
 
 use super::rows::{Half, Side, side_by_side, unified};
@@ -107,8 +107,16 @@ impl App<'_> {
 
         let header = Row::new(["FUNCTION", "CHANGE", "SCORE", "+/-/~", "TOUCHED", "MATCHED BY"])
             .style(Style::new().fg(BLUE).bold());
-        let rows: Vec<Row<'static>> =
-            self.rows.iter().map(|&index| self.table_row(&self.entries[index])).collect();
+        // Only the rows in sight are built: a kernel lists many thousand.
+        let shown = usize::from(area.height.saturating_sub(2));
+        let offset =
+            visible_offset(self.table.offset(), self.table.selected(), shown, self.rows.len());
+        *self.table.offset_mut() = offset;
+        let rows: Vec<Row<'static>> = self.rows[offset..]
+            .iter()
+            .take(shown)
+            .map(|&index| self.table_row(&self.entries[index]))
+            .collect();
         // The names and the kinds touched are the long cells.
         let widths = [
             Constraint::Fill(3),
@@ -123,7 +131,12 @@ impl App<'_> {
             .block(block)
             .row_highlight_style(Style::new().fg(ORANGE).bold())
             .highlight_symbol("▶ ");
-        frame.render_stateful_widget(table, area, &mut self.table);
+        let selected = self.table.selected().map(|selected| selected - offset);
+        frame.render_stateful_widget(
+            table,
+            area,
+            &mut TableState::default().with_selected(selected),
+        );
         // The frame and the heading take the first two lines.
         self.regions.list =
             Rect { y: area.y.saturating_add(2), height: area.height.saturating_sub(2), ..area };
@@ -191,7 +204,7 @@ impl App<'_> {
         self.page = usize::from(area.height.saturating_sub(1)).max(1);
         let Screen::Pair(opened) = &self.screen else { return };
         let Some(index) = self.selected_entry() else { return };
-        let scroll = u16::try_from(opened.scroll).unwrap_or(u16::MAX);
+        let scroll = opened.scroll;
         let label = &self.entries[index].label;
         let view = name_of_view(self.view);
         let (at, changes) = self.change_position();
@@ -210,11 +223,17 @@ impl App<'_> {
         let content = Rect { width: inner.width.saturating_sub(1), ..inner };
         let addresses = &opened.addresses;
         let width = address_width(addresses.before.iter().chain(&addresses.after).copied());
-        let total = match self.layout {
+        // Only the rows in sight are drawn: a long function has many
+        // thousand, more than a `u16` scroll reaches.
+        let shown = usize::from(content.height);
+        let total = opened.changes.len();
+        match self.layout {
             Layout::SideBySide => {
                 let rows = side_by_side(&opened.lines, addresses);
                 let (left, right): (Vec<Line<'_>>, Vec<Line<'_>>) = rows
                     .iter()
+                    .skip(scroll)
+                    .take(shown)
                     .map(|row| (half_line(row.left, width), half_line(row.right, width)))
                     .unzip();
                 let [left_area, divider, right_area] = Split::horizontal([
@@ -223,23 +242,25 @@ impl App<'_> {
                     Constraint::Fill(1),
                 ])
                 .areas(content);
-                frame.render_widget(Paragraph::new(left).scroll((scroll, 0)), left_area);
+                frame.render_widget(Paragraph::new(left), left_area);
                 frame.render_widget(
                     Block::new().borders(Borders::LEFT).border_style(Style::new().fg(GRAY)),
                     divider,
                 );
-                frame.render_widget(Paragraph::new(right).scroll((scroll, 0)), right_area);
-                rows.len()
+                frame.render_widget(Paragraph::new(right), right_area);
             }
             Layout::Unified => {
                 let sides = unified(&opened.lines, addresses);
-                let lines: Vec<Line<'_>> =
-                    sides.iter().map(|half| half_line(*half, width)).collect();
-                frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content);
-                sides.len()
+                let lines: Vec<Line<'_>> = sides
+                    .iter()
+                    .skip(scroll)
+                    .take(shown)
+                    .map(|half| half_line(*half, width))
+                    .collect();
+                frame.render_widget(Paragraph::new(lines), content);
             }
-        };
-        draw_scrollbar(frame, area, total, usize::from(scroll));
+        }
+        draw_scrollbar(frame, area, total, scroll);
     }
 
     /// The state of the browser at the left, and the totals and the key to
@@ -314,6 +335,18 @@ impl App<'_> {
         );
         frame.render_widget(Paragraph::new(right), area);
     }
+}
+
+/// The first row a list of `rows` shows in `shown` lines: the one it showed
+/// before, moved as little as keeps the selected row in sight.
+fn visible_offset(before: usize, selected: Option<usize>, shown: usize, rows: usize) -> usize {
+    let last_start = rows.saturating_sub(shown);
+    let offset = match selected {
+        Some(selected) if selected < before => selected,
+        Some(selected) if shown > 0 && selected >= before + shown => selected + 1 - shown,
+        _ => before,
+    };
+    offset.min(last_start)
 }
 
 /// A name with the letters a filter matched in bold yellow.
@@ -512,6 +545,31 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_list_moves_as_little_as_keeps_the_selection_in_sight() {
+        assert_eq!(visible_offset(0, Some(3), 10, 100), 0, "in sight already");
+        assert_eq!(visible_offset(0, Some(10), 10, 100), 1, "one below");
+        assert_eq!(visible_offset(20, Some(5), 10, 100), 5, "above");
+        assert_eq!(visible_offset(95, Some(99), 10, 100), 90, "no blank rows at the end");
+        assert_eq!(visible_offset(5, None, 10, 3), 0, "fewer rows than lines");
+        assert_eq!(visible_offset(5, Some(7), 0, 100), 5, "no lines");
+        bolero::check!().with_type::<(u16, u16, u8, u16)>().for_each(
+            |&(before, selected, shown, rows)| {
+                let (before, shown, rows) =
+                    (usize::from(before), usize::from(shown), usize::from(rows));
+                if rows == 0 {
+                    return;
+                }
+                let selected = usize::from(selected) % rows;
+                let offset = visible_offset(before, Some(selected), shown, rows);
+                assert!(offset <= rows.saturating_sub(shown));
+                if shown > 0 {
+                    assert!((offset..offset + shown).contains(&selected));
+                }
+            },
+        );
+    }
 
     #[test]
     fn the_letters_a_filter_matched_stand_out() {
