@@ -457,6 +457,106 @@ fn pair_operands(lifted: &[Operand], tokens: &[&str]) -> Option<Vec<Pairing>> {
     Some(paired)
 }
 
+/// Where an ARM access to a list of registers starts, relative to its base,
+/// and in which direction it moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListOrder {
+    IncrementAfter,
+    IncrementBefore,
+    DecrementAfter,
+    DecrementBefore,
+}
+
+/// Whether an access to a list of registers writes its last address back to
+/// its base, as the `!` of `ldm r0!, {r1}` and every `push` do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteBack {
+    Yes,
+    No,
+}
+
+impl ListOrder {
+    /// The order a mnemonic names, as `ia` of `ldmia`, or `None` for one
+    /// that does not access a list. A condition can follow, as in `ldmne`.
+    fn of(mnemonic: &str) -> Option<(Self, WriteBack)> {
+        let mnemonic = mnemonic.strip_prefix('v').unwrap_or(mnemonic);
+        let mnemonic = mnemonic.split('.').next().unwrap_or(mnemonic);
+        if mnemonic.starts_with("push") {
+            return Some((Self::DecrementBefore, WriteBack::Yes));
+        }
+        if mnemonic.starts_with("pop") {
+            return Some((Self::IncrementAfter, WriteBack::Yes));
+        }
+        let suffix = mnemonic.strip_prefix("ldm").or_else(|| mnemonic.strip_prefix("stm"))?;
+        // `stmfd` and the other stack names are never printed.
+        let order = match suffix.get(..2) {
+            Some("ib") => Self::IncrementBefore,
+            Some("da") => Self::DecrementAfter,
+            Some("db") => Self::DecrementBefore,
+            _ => Self::IncrementAfter,
+        };
+        Some((order, WriteBack::No))
+    }
+
+    /// The offset of the first register from the base, and the change of
+    /// the base after it, for `size` bytes in all.
+    fn offsets(self, size: u64, slot: u64) -> (i64, i64) {
+        let size = size as i64;
+        match self {
+            Self::IncrementAfter => (0, size),
+            Self::IncrementBefore => (slot as i64, size),
+            Self::DecrementAfter => (slot as i64 - size, -size),
+            Self::DecrementBefore => (-size, -size),
+        }
+    }
+}
+
+/// An ARM access to a list of registers as one load or store, as
+/// `store.32 [sp - 0x8] = r4, lr; sp = sp - 0x8` for `push {r4, lr}`.
+///
+/// It is read from the printed text, as the IL holds no list.
+fn list_statement(insn: &Insn, lifted: &Lifted) -> Option<String> {
+    let (order, mut write_back) = ListOrder::of(&insn.mnemonic)?;
+    let (before, list) = insn.operands.split_once('{')?;
+    let registers: Vec<&str> =
+        list.trim_end().strip_suffix('}')?.split(',').map(str::trim).collect();
+    if registers.iter().any(|register| register.is_empty() || register.contains('-')) {
+        return None;
+    }
+    let base = match before.trim().trim_end_matches(',').trim() {
+        "" => "sp",
+        base => match base.strip_suffix('!') {
+            Some(base) => {
+                write_back = WriteBack::Yes;
+                base
+            }
+            None => base,
+        },
+    };
+    let bits = lifted.memory.and_then(|memory| memory.width).map_or(32, |width| width.bits());
+    let slot = u64::from(bits / 8);
+    let (start, change) = order.offsets(slot * registers.len() as u64, slot);
+    let place = match start {
+        0 => format!("[{base}]"),
+        start if start < 0 => format!("[{base} - {}]", constant_text(start.unsigned_abs())),
+        start => format!("[{base} + {}]", constant_text(start as u64)),
+    };
+    let values = registers.join(", ");
+    let mut line = match lifted.memory?.kind {
+        AccessKind::Load => format!("{values} = load.{bits} {place}"),
+        AccessKind::Store => format!("store.{bits} {place} = {values}"),
+        AccessKind::LoadStore => return None,
+    };
+    // A load into the base leaves the loaded value there, not the address.
+    let loads_base = lifted.memory?.kind == AccessKind::Load && registers.contains(&base);
+    if write_back == WriteBack::Yes && !loads_base {
+        let operator = if change < 0 { "-" } else { "+" };
+        let amount = constant_text(change.unsigned_abs());
+        line.push_str(&format!("; {base} = {base} {operator} {amount}"));
+    }
+    Some(line)
+}
+
 /// The statement of one instruction, or `None` where the IL does not name
 /// it well enough to show.
 fn statement(
@@ -489,6 +589,11 @@ fn statement(
     // MIPS16e `jalr ra, v0` do.
     match lifted.op {
         Op::Return => return Some("return".to_string()),
+        Op::Load | Op::Store => {
+            if let Some(line) = list_statement(insn, lifted) {
+                return Some(line);
+            }
+        }
         Op::Call => return Some(format!("call {}", target.or(tokens.last().copied())?)),
         Op::Jump => return Some(format!("goto {}", target.or(tokens.last().copied())?)),
         _ => {}
@@ -871,6 +976,51 @@ mod tests {
         let code = 0xe081_3204_u32.to_le_bytes(); // add r3, r1, r4, lsl #4
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         assert_eq!(il_lines(&Arm32, &code, &insns), ["r3 = r1 + (r4 lsl 4)"]);
+    }
+
+    #[test]
+    fn a_list_of_registers_reads_as_one_access() {
+        use crate::arch::arm32::Arm32;
+        let words = [
+            0xe92d_4010_u32, // push {r4, lr}
+            0xe890_0006,     // ldm r0, {r1, r2}
+            0xe830_0002,     // ldmda r0!, {r1}
+            0xe990_0006,     // ldmib r0, {r1, r2}
+            0x1890_0002,     // ldmne r0, {r1}
+            0xed2d_8b02,     // vpush {d8}
+            0xecb0_8b04,     // vldmia r0!, {d8, d9}
+            0xe49d_0004,     // pop {r0}
+            0xe8b0_0001,     // ldm r0!, {r0}
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        assert_eq!(
+            il_lines(&Arm32, &code, &insns),
+            [
+                "store.32 [sp - 8] = r4, lr; sp = sp - 8",
+                "r1, r2 = load.32 [r0]",
+                "r1 = load.32 [r0]; r0 = r0 - 4",
+                "r1, r2 = load.32 [r0 + 4]",
+                "if (ne) r1 = load.32 [r0]",
+                "store.64 [sp - 8] = d8; sp = sp - 8",
+                "d8, d9 = load.64 [r0]; r0 = r0 + 0x10",
+                "r0 = load.32 [sp]; sp = sp + 4",
+                "r0 = load.32 [r0]",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_list_order_names_where_the_access_starts() {
+        assert_eq!(ListOrder::of("push.w"), Some((ListOrder::DecrementBefore, WriteBack::Yes)));
+        assert_eq!(ListOrder::of("vpop"), Some((ListOrder::IncrementAfter, WriteBack::Yes)));
+        assert_eq!(ListOrder::of("stmdb"), Some((ListOrder::DecrementBefore, WriteBack::No)));
+        assert_eq!(ListOrder::of("ldmne"), Some((ListOrder::IncrementAfter, WriteBack::No)));
+        assert_eq!(ListOrder::of("ldr"), None);
+        assert_eq!(ListOrder::IncrementAfter.offsets(8, 4), (0, 8));
+        assert_eq!(ListOrder::IncrementBefore.offsets(8, 4), (4, 8));
+        assert_eq!(ListOrder::DecrementAfter.offsets(8, 4), (-4, -8));
+        assert_eq!(ListOrder::DecrementBefore.offsets(8, 4), (-8, -8));
     }
 
     #[test]
