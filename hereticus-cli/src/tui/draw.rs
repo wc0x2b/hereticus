@@ -15,8 +15,11 @@ use super::theme::{
     ADDED, BLUE, DARK_GRAY, EDITED, Focus, GRAY, GRAY_FG, GREEN, ORANGE, PURPLE, REMOVED, YELLOW,
     pane_block, tone_of,
 };
-use super::{App, Help, Layout, Scope, Screen, Side, side_by_side, unified};
-use crate::{DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of_view};
+use super::{App, Entry, Help, Labeled, Layout, Scope, Screen, Side, side_by_side, unified};
+use crate::{
+    DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_view,
+    unmatched_word,
+};
 
 /// The keys of each pane, at the right of its frame.
 const TABLE_HINTS: &str = "⏎ open  s sort  / filter";
@@ -66,7 +69,7 @@ impl App<'_> {
             Screen::Table | Screen::Filter => 0,
             Screen::Pair(_) => 1,
         };
-        let tabs_widget = Tabs::new(["Pairs", "Diff"])
+        let tabs_widget = Tabs::new(["Functions", "Diff"])
             .highlight_style(Style::new().fg(GREEN).bold())
             .select(selected)
             .divider("|".fg(GRAY_FG));
@@ -90,22 +93,12 @@ impl App<'_> {
             _ => (Focus::Active, TABLE_HINTS),
         };
         let context = (!self.filter.is_empty()).then(|| format!("filter: \"{}\"", self.filter));
-        let block = pane_block("Pairs", context, hints, focus);
+        let block = pane_block("Functions", context, hints, focus);
 
         let header = Row::new(["FUNCTION", "CHANGE", "SCORE", "+/-/~", "TOUCHED", "MATCHED BY"])
             .style(Style::new().fg(BLUE).bold());
-        let rows = self.rows.iter().map(|&index| {
-            let pair = &self.diff.matched[index];
-            Row::new([
-                Cell::from(self.labels[index].as_str()),
-                Cell::from(describe(pair.changed)).style(Style::new().fg(tone_of(pair.changed))),
-                Cell::from(Line::from(format!("{:.2}", pair.score)).right_aligned()),
-                Cell::from(edits_line(pair.edits)),
-                Cell::from(describe_kinds(pair.kinds, pair.changed))
-                    .style(Style::new().fg(GRAY_FG)),
-                Cell::from(describe_confidence(pair.confidence)).style(Style::new().fg(PURPLE)),
-            ])
-        });
+        let rows: Vec<Row<'static>> =
+            self.rows.iter().map(|&index| self.table_row(&self.entries[index])).collect();
         // The names and the kinds touched are the long cells.
         let widths = [
             Constraint::Fill(3),
@@ -123,6 +116,43 @@ impl App<'_> {
         frame.render_stateful_widget(table, area, &mut self.table);
         let position = self.table.selected().unwrap_or(0);
         draw_scrollbar(frame, area, self.rows.len(), position);
+    }
+
+    /// One row of the table. A function gone or new names its closest
+    /// candidate where it has one, in the column of what a pair touched.
+    fn table_row(&self, labeled: &Labeled) -> Row<'static> {
+        let name = Cell::from(labeled.label.clone());
+        let (word, color, closest_in) = match labeled.entry {
+            Entry::Pair(index) => {
+                let pair = &self.diff.matched[index];
+                return Row::new([
+                    name,
+                    Cell::from(describe(pair.changed))
+                        .style(Style::new().fg(tone_of(pair.changed))),
+                    Cell::from(Line::from(format!("{:.2}", pair.score)).right_aligned()),
+                    Cell::from(edits_line(pair.edits)),
+                    Cell::from(describe_kinds(pair.kinds, pair.changed))
+                        .style(Style::new().fg(GRAY_FG)),
+                    Cell::from(describe_confidence(pair.confidence)).style(Style::new().fg(PURPLE)),
+                ]);
+            }
+            Entry::Gone { contents, .. } => (unmatched_word("gone", contents), REMOVED, self.after),
+            Entry::New { contents, .. } => (unmatched_word("new", contents), ADDED, self.before),
+        };
+        let (score, note) = match self.closest(labeled.entry) {
+            Some((best, score)) => {
+                (format!("{score:.2}"), format!("closest {}", name_of(closest_in, best)))
+            }
+            None => (String::new(), "-".to_string()),
+        };
+        Row::new([
+            name,
+            Cell::from(word).style(Style::new().fg(color)),
+            Cell::from(Line::styled(score, Style::new().fg(GRAY_FG)).right_aligned()),
+            Cell::from(Line::styled("-", Style::new().fg(GRAY_FG))),
+            Cell::from(note).style(Style::new().fg(GRAY_FG)),
+            Cell::from(Line::styled("-", Style::new().fg(GRAY_FG))),
+        ])
     }
 
     /// The box the filter is typed in, with the cursor at its end.
@@ -147,10 +177,14 @@ impl App<'_> {
         // The frame takes a line.
         self.page = usize::from(area.height.saturating_sub(1)).max(1);
         let Screen::Pair(opened) = &self.screen else { return };
-        let Some(index) = self.selected_pair() else { return };
+        let Some(index) = self.selected_entry() else { return };
         let scroll = u16::try_from(opened.scroll).unwrap_or(u16::MAX);
-        let label = &self.labels[index];
-        let context = Some(format!("{label}  {}", name_of_view(self.view)));
+        let label = &self.entries[index].label;
+        let view = name_of_view(self.view);
+        let context = Some(match &opened.against {
+            Some(against) => format!("{label}  against {against}  {view}"),
+            None => format!("{label}  {view}"),
+        });
         let block = pane_block("Diff", context, PAIR_HINTS, Focus::Active);
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -196,7 +230,7 @@ impl App<'_> {
             Span::styled(self.sort.name(), Style::new().fg(ORANGE).bold()),
             separator(),
             Span::styled(
-                format!("{} of {} pairs", self.rows.len(), self.diff.matched.len()),
+                format!("{} of {} functions", self.rows.len(), self.entries.len()),
                 Style::new().fg(GREEN),
             ),
         ];
@@ -302,13 +336,13 @@ fn help_entry(key: &str, what: &'static str) -> Line<'static> {
 fn draw_help(frame: &mut Frame<'_>) {
     let swatch = |text: &'static str, color| Span::styled(text, Style::new().fg(color).bold());
     let left = vec![
-        help_header("Pairs"),
+        help_header("Functions"),
         help_entry("j / k", "down / up"),
         help_entry("PgDn/PgUp", "a page down / up"),
         help_entry("g / G", "first / last"),
         help_entry("⏎", "open the diff"),
         help_entry("s", "next order"),
-        help_entry("a", "every pair"),
+        help_entry("a", "every function"),
         help_entry("r", "retouched pairs"),
         help_entry("d", "data regions"),
         help_entry("/", "filter the names"),
@@ -324,8 +358,8 @@ fn draw_help(frame: &mut Frame<'_>) {
         help_entry("g / G", "top / bottom"),
         help_entry("v", "assembly or IL"),
         help_entry("l", "side by side or one"),
-        help_entry("n / p", "next / previous pair"),
-        help_entry("esc", "back to the pairs"),
+        help_entry("n / p", "next / previous"),
+        help_entry("esc", "back to the list"),
         Line::default(),
         help_header("Colors"),
         Line::from(vec![

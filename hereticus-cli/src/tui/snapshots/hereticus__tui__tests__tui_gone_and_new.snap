@@ -1,0 +1,17 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+assertion_line: 707
+expression: "screen(&mut app, 120, 12)"
+---
+─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
+ Functions | Diff                                                                            firmware.o → firmware_v2.o 
+── Functions ───────────────────────────────────────────────────────────────────────────────── ⏎ open  s sort  / filter 
+  FUNCTION                                  CHANGE         SCORE +/-/~       TOUCHED                     MATCHED BY     
+▶ switch_dense                              reordered       1.00 1/1/0       -                           similar        
+  array_max                                 gone            0.40 -           closest array_max           -              
+  factorial                                 gone                 -           -                           -              
+  array_max                                 new             0.40 -           closest array_max           -              
+  factorial                                 new                  -           -                           -              
+                                                                                                                        
+                                                                                                                        
+ sort added  │  5 of 10 functions  │  hidden retouched, data                                      2 gone  2 new  ? help

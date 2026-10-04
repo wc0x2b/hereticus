@@ -1,10 +1,10 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
-assertion_line: 614
+assertion_line: 773
 expression: "screen(&mut app, 120, 16)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
- Pairs | Diff                                                                                firmware.o → firmware_v2.o 
+ Functions | Diff                                                                            firmware.o → firmware_v2.o 
 ── Diff dispatch  il ────────────────────────────────────────────────────── v asm/il  l layout  n/p next/prev  esc back 
 - flags = compare(r1, 2)                                                                                               █
 - if (r1 == 2) goto $+0x48                                                                                             ║
@@ -18,4 +18,4 @@ expression: "screen(&mut app, 120, 16)"
 + flags = compare(r1, 3)                                                                                               ║
 + if (r1 u> 3) goto $+0x100                                                                                            ║
 + adr r3, pc, 0x4                                                                                                      ║
- sort added  │  3 of 5 pairs  │  view il  │  hidden retouched, data                               0 gone  0 new  ? help
+ sort added  │  3 of 5 functions  │  view il  │  hidden retouched, data                           0 gone  0 new  ? help

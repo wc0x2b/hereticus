@@ -1,11 +1,11 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
-assertion_line: 610
+assertion_line: 769
 expression: "screen(&mut app, 120, 12)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
- Pairs | Diff                                                                                firmware.o → firmware_v2.o 
-── Pairs filter: "h" ──────────────────────────────────────────────────────────────────────────────── ⏎ keep  esc clear 
+ Functions | Diff                                                                            firmware.o → firmware_v2.o 
+── Functions filter: "h" ──────────────────────────────────────────────────────────────────────────── ⏎ keep  esc clear 
   FUNCTION                                  CHANGE         SCORE +/-/~       TOUCHED                     MATCHED BY     
 ▶ dispatch                                  changed         0.62 21/11/5     4 branch, 1 call, 6 jump, 6 same name      
   check_header                              changed         0.31 8/1/0       1 branch, 1 call, 1 mem     same name      
@@ -14,4 +14,4 @@ expression: "screen(&mut app, 120, 12)"
 ┌Filter────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │h                                                                                                                     │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- sort added  │  3 of 5 pairs  │  hidden retouched, data                                           0 gone  0 new  ? help
+ sort added  │  3 of 5 functions  │  hidden retouched, data                                       0 gone  0 new  ? help

@@ -8,13 +8,16 @@
 mod draw;
 mod theme;
 
+use hereticus::address::Contents;
 use hereticus::matching::{Diff, DiffLine, View, instruction_diff_in};
 use hereticus::obj::Binary;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 
-use crate::{DataRegions, Hidden, Retouched, Sort, is_interesting, name_of, rank};
+use crate::{
+    DataRegions, Hidden, Retouched, Sort, is_interesting, is_shown_unmatched, name_of, rank,
+};
 
 /// How the browser starts, from the flags of the command line.
 #[derive(Clone, Debug)]
@@ -25,6 +28,9 @@ pub struct Start {
     pub view: View,
     pub scope: Scope,
     pub hidden: Hidden,
+    /// The lowest score at which a function gone or new names its closest
+    /// candidate, as `--near-miss` sets.
+    pub near_miss_floor: f64,
 }
 
 /// Which pairs the table lists.
@@ -56,10 +62,33 @@ enum Screen {
     Pair(Opened),
 }
 
-/// The diff of the selected pair, kept so a redraw does not compute it again.
+/// What a row of the table stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Entry {
+    /// A pair, by its index in `diff.matched`.
+    Pair(usize),
+    /// A function of the earlier binary with no counterpart, by its index
+    /// in that binary.
+    Gone { function: usize, contents: Contents },
+    /// A function of the later binary with no counterpart.
+    New { function: usize, contents: Contents },
+}
+
+/// A row of the table, with the name it shows and filters on.
+#[derive(Clone, Debug)]
+struct Labeled {
+    entry: Entry,
+    label: String,
+}
+
+/// The diff of the selected row, kept so a redraw does not compute it
+/// again.
 #[derive(Debug)]
 struct Opened {
     lines: Vec<DiffLine>,
+    /// What a gone or new function is shown against: its closest
+    /// candidate.
+    against: Option<String>,
     /// The first line shown.
     scroll: usize,
 }
@@ -87,14 +116,15 @@ pub struct App<'a> {
     sort: Sort,
     scope: Scope,
     hidden: Hidden,
+    near_miss_floor: f64,
     view: View,
     layout: Layout,
     /// Matches a name that holds this text, in any case.
     filter: String,
-    /// The label of each pair of `diff.matched`, as the table shows it.
-    labels: Vec<String>,
-    /// The pairs the table lists, in order, by their index in
-    /// `diff.matched`.
+    /// Every row the table can list: the pairs, then the functions gone,
+    /// then the new ones.
+    entries: Vec<Labeled>,
+    /// The rows the table lists, in order, by their index in `entries`.
     rows: Vec<usize>,
     table: TableState,
     screen: Screen,
@@ -105,15 +135,21 @@ pub struct App<'a> {
 
 impl<'a> App<'a> {
     pub fn new(diff: &'a Diff, before: &'a Binary, after: &'a Binary, start: Start) -> Self {
-        let labels = diff
-            .matched
-            .iter()
-            .map(|pair| {
-                let name = name_of(before, pair.before);
-                let renamed = name_of(after, pair.after);
-                if name == renamed { name } else { format!("{name} -> {renamed}") }
-            })
-            .collect();
+        let pairs = diff.matched.iter().enumerate().map(|(index, pair)| {
+            let name = name_of(before, pair.before);
+            let renamed = name_of(after, pair.after);
+            let label = if name == renamed { name } else { format!("{name} -> {renamed}") };
+            Labeled { entry: Entry::Pair(index), label }
+        });
+        let gone = diff.removed_with_contents().map(|(function, contents)| Labeled {
+            entry: Entry::Gone { function, contents },
+            label: name_of(before, function),
+        });
+        let new = diff.added_with_contents().map(|(function, contents)| Labeled {
+            entry: Entry::New { function, contents },
+            label: name_of(after, function),
+        });
+        let entries = pairs.chain(gone).chain(new).collect();
         let mut app = Self {
             diff,
             before,
@@ -122,10 +158,11 @@ impl<'a> App<'a> {
             sort: start.sort,
             scope: start.scope,
             hidden: start.hidden,
+            near_miss_floor: start.near_miss_floor,
             view: start.view,
             layout: Layout::SideBySide,
             filter: String::new(),
-            labels,
+            entries,
             rows: Vec::new(),
             table: TableState::default(),
             screen: Screen::Table,
@@ -136,26 +173,44 @@ impl<'a> App<'a> {
         app
     }
 
-    /// List the pairs again, after the order or a filter changed. The
-    /// selected pair stays selected where it is still listed.
+    /// Report whether the table lists `entry` with the present scope.
+    fn is_listed(&self, entry: Entry) -> bool {
+        let shown = |contents| is_shown_unmatched(contents, self.hidden);
+        self.scope == Scope::All
+            || match entry {
+                Entry::Pair(index) => is_interesting(&self.diff.matched[index], self.hidden),
+                Entry::Gone { contents, .. } | Entry::New { contents, .. } => shown(contents),
+            }
+    }
+
+    /// List the rows again, after the order or a filter changed. The
+    /// selected row stays selected where it is still listed.
     fn refresh(&mut self) {
-        let kept = self.selected_pair();
+        let kept = self.selected_entry();
         let needle = self.filter.to_lowercase();
-        let matched = &self.diff.matched;
-        self.rows = (0..matched.len())
+        let mut rows: Vec<usize> = (0..self.entries.len())
+            .filter(|&index| self.is_listed(self.entries[index].entry))
             .filter(|&index| {
-                self.scope == Scope::All || is_interesting(&matched[index], self.hidden)
-            })
-            .filter(|&index| {
-                needle.is_empty() || self.labels[index].to_lowercase().contains(&needle)
+                needle.is_empty() || self.entries[index].label.to_lowercase().contains(&needle)
             })
             .collect();
         // The library lists the pairs strongest first, which is the order
-        // `confidence` names.
+        // `confidence` names. The functions gone and new keep their place
+        // after the pairs, as the text report lists them.
+        let matched = &self.diff.matched;
+        let pair_of = |row: usize| match self.entries[row].entry {
+            Entry::Pair(index) => Some(&matched[index]),
+            _ => None,
+        };
+        let pairs = rows.iter().take_while(|&&row| pair_of(row).is_some()).count();
         if self.sort != Sort::Confidence {
-            self.rows.sort_by(|&a, &b| rank(&matched[a], &matched[b], self.sort));
+            rows[..pairs].sort_by(|&a, &b| match (pair_of(a), pair_of(b)) {
+                (Some(a), Some(b)) => rank(a, b, self.sort),
+                _ => core::cmp::Ordering::Equal,
+            });
         }
-        let position = kept.and_then(|pair| self.rows.iter().position(|&row| row == pair));
+        self.rows = rows;
+        let position = kept.and_then(|kept| self.rows.iter().position(|&row| row == kept));
         self.table.select(match (position, self.rows.is_empty()) {
             (_, true) => None,
             (Some(position), false) => Some(position),
@@ -163,8 +218,8 @@ impl<'a> App<'a> {
         });
     }
 
-    /// The index in `diff.matched` of the selected pair.
-    fn selected_pair(&self) -> Option<usize> {
+    /// The index in `entries` of the selected row.
+    fn selected_entry(&self) -> Option<usize> {
         self.rows.get(self.table.selected()?).copied()
     }
 
@@ -175,14 +230,52 @@ impl<'a> App<'a> {
         self.table.select(Some(at.saturating_add_signed(step).min(last)));
     }
 
-    /// Show the diff of the selected pair.
+    /// The closest candidate of a function gone or new, with its score,
+    /// where it scores at least the floor.
+    fn closest(&self, entry: Entry) -> Option<(usize, f64)> {
+        let miss = match entry {
+            Entry::Pair(_) => return None,
+            Entry::Gone { function, .. } => self.diff.near_miss(function),
+            Entry::New { function, .. } => self.diff.added_near_miss(function),
+        }?;
+        Some((miss.best?, miss.score)).filter(|&(_, score)| score >= self.near_miss_floor)
+    }
+
+    /// Show the diff of the selected row. A function gone or new shows
+    /// against its closest candidate, or alone where it has none.
     fn open(&mut self) {
-        let Some(pair) = self.selected_pair().map(|index| &self.diff.matched[index]) else {
-            return;
+        let Some(index) = self.selected_entry() else { return };
+        let (view, before, after) = (self.view, self.before, self.after);
+        let alone = |binary: &Binary, function: usize, side: fn(String) -> DiffLine| {
+            let lines = instruction_diff_in(view, binary, function, binary, function);
+            lines
+                .into_iter()
+                .map(|line| match line {
+                    DiffLine::Same(text) => side(text),
+                    line => line,
+                })
+                .collect()
         };
-        let lines =
-            instruction_diff_in(self.view, self.before, pair.before, self.after, pair.after);
-        self.screen = Screen::Pair(Opened { lines, scroll: 0 });
+        let entry = self.entries[index].entry;
+        let (lines, against) = match (entry, self.closest(entry)) {
+            (Entry::Pair(index), _) => {
+                let pair = &self.diff.matched[index];
+                (instruction_diff_in(view, before, pair.before, after, pair.after), None)
+            }
+            (Entry::Gone { function, .. }, Some((best, score))) => (
+                instruction_diff_in(view, before, function, after, best),
+                Some(format!("{} at {score:.2}", name_of(after, best))),
+            ),
+            (Entry::Gone { function, .. }, None) => {
+                (alone(before, function, DiffLine::Removed), None)
+            }
+            (Entry::New { function, .. }, Some((best, score))) => (
+                instruction_diff_in(view, before, best, after, function),
+                Some(format!("{} at {score:.2}", name_of(before, best))),
+            ),
+            (Entry::New { function, .. }, None) => (alone(after, function, DiffLine::Added), None),
+        };
+        self.screen = Screen::Pair(Opened { lines, against, scroll: 0 });
     }
 
     fn handle(&mut self, key: KeyEvent) -> Flow {
@@ -447,6 +540,19 @@ mod tests {
         Some((fixture("firmware.o")?, fixture("firmware_v2.o")?))
     }
 
+    /// `basic` at two levels, compared from the code alone, where two
+    /// functions go and two come.
+    fn basic_across_levels() -> Option<(Binary, Binary)> {
+        let read = |level: &str| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../fixtures/build")
+                .join(level)
+                .join("basic.o");
+            Some(Binary::parse(&std::fs::read(path).ok()?).expect("a fixture parses"))
+        };
+        Some((read("O1")?, read("O2")?))
+    }
+
     fn start() -> Start {
         Start {
             files: ["firmware.o".to_string(), "firmware_v2.o".to_string()],
@@ -454,6 +560,7 @@ mod tests {
             view: View::Assembly,
             scope: Scope::Changed,
             hidden: Hidden { retouched: Retouched::Hide, data: DataRegions::Hide },
+            near_miss_floor: 0.25,
         }
     }
 
@@ -490,12 +597,21 @@ mod tests {
         let mut app = App::new(&diff, &before, &after, start());
         let count = app.rows.len();
         assert!(count > 1, "the fixture changes more than one function");
+        let pairs = |app: &App<'_>| -> Vec<usize> {
+            app.rows
+                .iter()
+                .filter_map(|&row| match app.entries[row].entry {
+                    Entry::Pair(index) => Some(index),
+                    _ => None,
+                })
+                .collect()
+        };
         for sort in [Sort::Removed, Sort::Modified, Sort::Confidence, Sort::Added] {
             press(&mut app, &[KeyCode::Char('s')]);
             assert_eq!(app.sort, sort);
             assert_eq!(app.rows.len(), count, "a sort keeps every row");
             if sort != Sort::Confidence {
-                assert!(is_ranked(&diff, &app.rows, sort), "{sort:?}");
+                assert!(is_ranked(&diff, &pairs(&app), sort), "{sort:?}");
             }
         }
     }
@@ -506,9 +622,9 @@ mod tests {
         let diff = diff_with(&before, &after, Options::default());
         let mut app = App::new(&diff, &before, &after, start());
         press(&mut app, &[KeyCode::End]);
-        let chosen = app.selected_pair();
+        let chosen = app.selected_entry();
         press(&mut app, &[KeyCode::Char('s'), KeyCode::Char('s')]);
-        assert_eq!(app.selected_pair(), chosen);
+        assert_eq!(app.selected_entry(), chosen);
     }
 
     #[test]
@@ -518,7 +634,8 @@ mod tests {
         let mut app = App::new(&diff, &before, &after, start());
         let changed = app.rows.len();
         press(&mut app, &[KeyCode::Char('a')]);
-        assert_eq!(app.rows.len(), diff.matched.len());
+        let every = diff.matched.len() + diff.removed.len() + diff.added.len();
+        assert_eq!(app.rows.len(), every);
         press(&mut app, &[KeyCode::Char('a')]);
         assert_eq!(app.rows.len(), changed);
     }
@@ -529,16 +646,16 @@ mod tests {
         let diff = diff_with(&before, &after, Options::default());
         let mut app = App::new(&diff, &before, &after, start());
         let count = app.rows.len();
-        let wanted = app.labels[app.rows[0]].clone();
+        let wanted = app.entries[app.rows[0]].label.clone();
         let mut keys = vec![KeyCode::Char('/')];
         keys.extend(wanted.to_uppercase().chars().map(KeyCode::Char));
         press(&mut app, &keys);
-        assert!(app.rows.iter().all(|&row| app.labels[row].contains(&wanted)));
-        assert!(app.rows.contains(&app.selected_pair().expect("a row")));
+        assert!(app.rows.iter().all(|&row| app.entries[row].label.contains(&wanted)));
+        assert!(app.rows.contains(&app.selected_entry().expect("a row")));
 
         press(&mut app, &[KeyCode::Char('#')]);
         assert!(app.rows.is_empty(), "no name holds `#`");
-        assert_eq!(app.selected_pair(), None);
+        assert_eq!(app.selected_entry(), None);
         press(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
         assert!(matches!(app.screen, Screen::Table), "no row to open");
 
@@ -571,6 +688,48 @@ mod tests {
         assert_eq!(press(&mut app, &[KeyCode::Esc]), Flow::Continue);
         assert!(matches!(app.screen, Screen::Table));
         assert_eq!(press(&mut app, &[KeyCode::Char('q')]), Flow::Quit);
+    }
+
+    #[test]
+    fn functions_gone_and_new_follow_the_pairs() {
+        let Some((before, after)) = basic_across_levels() else { return };
+        let options =
+            Options { use_names: hereticus::matching::UseNames::No, ..Options::default() };
+        let diff = diff_with(&before, &after, options);
+        assert_eq!((diff.removed.len(), diff.added.len()), (2, 2), "the fixture is as expected");
+        let mut app = App::new(&diff, &before, &after, start());
+        let kinds: Vec<Entry> = app.rows.iter().map(|&row| app.entries[row].entry).collect();
+        let first_unmatched = kinds.iter().position(|entry| !matches!(entry, Entry::Pair(_)));
+        let first_unmatched = first_unmatched.expect("gone and new rows");
+        assert!(kinds[first_unmatched..].iter().all(|entry| !matches!(entry, Entry::Pair(_))));
+        assert!(matches!(kinds[first_unmatched], Entry::Gone { .. }), "gone rows come first");
+        assert!(matches!(kinds.last(), Some(Entry::New { .. })));
+        insta::assert_snapshot!("tui_gone_and_new", screen(&mut app, 120, 12));
+
+        // A function with a close candidate shows against it.
+        let row = |app: &App<'_>, label: &str, gone: bool| {
+            app.rows.iter().position(|&row| {
+                app.entries[row].label == label
+                    && matches!(app.entries[row].entry, Entry::Gone { .. }) == gone
+            })
+        };
+        app.table.select(row(&app, "array_max", true));
+        press(&mut app, &[KeyCode::Enter]);
+        let Screen::Pair(opened) = &app.screen else { panic!("the row opens") };
+        assert_eq!(opened.against.as_deref(), Some("array_max at 0.40"));
+
+        // One with none shows alone, every line removed or added.
+        press(&mut app, &[KeyCode::Esc]);
+        app.table.select(row(&app, "factorial", true));
+        press(&mut app, &[KeyCode::Enter]);
+        let Screen::Pair(opened) = &app.screen else { panic!("the row opens") };
+        assert_eq!(opened.against, None);
+        assert!(opened.lines.iter().all(|line| matches!(line, DiffLine::Removed(_))));
+        press(&mut app, &[KeyCode::Esc]);
+        app.table.select(row(&app, "factorial", false));
+        press(&mut app, &[KeyCode::Enter]);
+        let Screen::Pair(opened) = &app.screen else { panic!("the row opens") };
+        assert!(opened.lines.iter().all(|line| matches!(line, DiffLine::Added(_))));
     }
 
     #[test]
@@ -624,7 +783,7 @@ mod tests {
         let shown = screen(&mut app, 120, 20);
         assert!(shown.contains("FUNCTION"), "{shown}");
         assert!(shown.contains("sort added"), "{shown}");
-        assert!(shown.contains(&app.labels[app.rows[0]]), "{shown}");
+        assert!(shown.contains(&app.entries[app.rows[0]].label), "{shown}");
     }
 
     #[test]
