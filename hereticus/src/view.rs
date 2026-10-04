@@ -550,6 +550,38 @@ fn aarch64_statement(
     Some(line)
 }
 
+/// The statement of an A32 or T32 VFP instruction that the IL names only
+/// `Float`: a compare, the move of its result to the flags, and a move of a
+/// double between two general registers, low half first.
+fn vfp_statement(
+    mnemonic: &str,
+    tokens: &[&str],
+    last_compare: &mut Option<Compared>,
+) -> Option<String> {
+    let base = mnemonic.split('.').next()?;
+    let line = match (base, tokens) {
+        // A branch after it tests the flags, not the operands: the flags of
+        // a float compare mean other things than those of an integer one.
+        ("vcmp" | "vcmpe", [left, right]) => {
+            *last_compare = None;
+            let right = if *right == "0x0" { "0" } else { right };
+            format!("fpscr = compare({left}, {right})")
+        }
+        ("vmrs", ["APSR_nzcv", "fpscr"]) => {
+            *last_compare = None;
+            "flags = fpscr".to_string()
+        }
+        ("vmov", [low, high, double]) if double.starts_with('d') => {
+            format!("{high}:{low} = {double}")
+        }
+        ("vmov", [double, low, high]) if double.starts_with('d') => {
+            format!("{double} = {high}:{low}")
+        }
+        _ => return None,
+    };
+    Some(line)
+}
+
 /// A constant as code reads it: small ones in decimal, a negative one with
 /// its sign.
 fn constant_text(value: u64) -> String {
@@ -836,6 +868,9 @@ fn statement(
         _ => {}
     }
     if let Some(line) = aarch64_statement(&insn.mnemonic, &tokens, last_compare) {
+        return Some(line);
+    }
+    if let Some(line) = vfp_statement(&insn.mnemonic, &tokens, last_compare) {
         return Some(line);
     }
     // `lsl` and `lsr` of AArch64 are aliases of a field move, which the IL
@@ -1467,6 +1502,35 @@ mod tests {
                 "x6 = smov(v7.h[2])",
                 "v3.s[1] = w4",
                 "v7.4s = dup(w8)",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_vfp_compare_and_its_moves_read_plainly() {
+        use crate::arch::arm32::Arm32;
+        let words: [u32; 8] = [
+            0xe150_0001, // cmp r0, r1
+            0xeeb4_0b41, // vcmp.f64 d0, d1
+            0xeeb5_0ac0, // vcmpe.f32 s0, #0
+            0xeef1_fa10, // vmrs APSR_nzcv, fpscr
+            0xca00_0000, // bgt $+0x8
+            0xec51_0b12, // vmov r0, r1, d2
+            0xec43_2b13, // vmov d3, r2, r3
+            0xee02_5a10, // vmov s4, r5
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        assert_eq!(
+            il_lines(&Arm32, &code, &insns)[1..],
+            [
+                "fpscr = compare(d0, d1)",
+                "fpscr = compare(s0, 0)",
+                "flags = fpscr",
+                "if (flags.SignedGreater) goto $+0x8",
+                "r1:r0 = d2",
+                "d3 = r3:r2",
+                "s4 = r5",
             ]
         );
     }

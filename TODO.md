@@ -170,8 +170,8 @@ them, and none of them is a fault:
 
 - `it`, whose condition now sits on each instruction it covers, so its
   own line says nothing more.
-- NEON and VFP work, as `vmov`, `vcmp` and `vmrs`, which the lift names
-  `Vector` or `Float` only.
+- NEON work, which the lift names `Vector` only, and the few VFP forms
+  that `yaxpeax-arm` 0.4 prints without their constant, as `vmov.f32 s1`.
 
 ## Name what the IL view cannot name yet
 
