@@ -459,7 +459,7 @@ fn kernel_digest(comparison: &Comparison) -> String {
 fn slow_the_arm_kernel_report_is_locked() {
     check_kernel(
         EX6100V2,
-        15765,
+        15752,
         [
             BaseFit::Plausible { pointers: 65274, examined: 1_804_835 },
             BaseFit::Plausible { pointers: 65514, examined: 1_813_763 },
@@ -477,7 +477,7 @@ fn slow_the_arm_kernel_report_is_locked() {
 fn slow_the_big_endian_mips_kernel_report_is_locked() {
     check_kernel(
         EAP245V3,
-        15524,
+        15523,
         [
             BaseFit::Plausible { pointers: 47586, examined: 1_377_328 },
             BaseFit::Plausible { pointers: 47778, examined: 1_385_296 },
@@ -490,7 +490,7 @@ fn slow_the_big_endian_mips_kernel_report_is_locked() {
 fn slow_the_little_endian_mips_kernel_report_is_locked() {
     check_kernel(
         R6220,
-        17694,
+        17693,
         [
             BaseFit::Plausible { pointers: 50248, examined: 1_606_891 },
             BaseFit::Plausible { pointers: 50444, examined: 1_615_796 },
@@ -503,7 +503,7 @@ fn slow_the_little_endian_mips_kernel_report_is_locked() {
 fn slow_the_armada_kernel_report_is_locked() {
     check_kernel(
         A385DBAP,
-        17507,
+        17497,
         [
             BaseFit::Plausible { pointers: 76052, examined: 2_107_105 },
             BaseFit::Plausible { pointers: 76384, examined: 2_116_947 },
@@ -516,7 +516,7 @@ fn slow_the_armada_kernel_report_is_locked() {
 fn slow_the_lantiq_kernel_report_is_locked() {
     check_kernel(
         VR200,
-        17457,
+        17448,
         [
             BaseFit::Plausible { pointers: 52265, examined: 1_630_772 },
             BaseFit::Plausible { pointers: 52465, examined: 1_638_279 },
@@ -529,7 +529,7 @@ fn slow_the_lantiq_kernel_report_is_locked() {
 fn slow_the_mt7628_kernel_report_is_locked() {
     check_kernel(
         MT300NV2,
-        15019,
+        15017,
         [
             BaseFit::Plausible { pointers: 45805, examined: 1_327_211 },
             BaseFit::Plausible { pointers: 45992, examined: 1_334_689 },

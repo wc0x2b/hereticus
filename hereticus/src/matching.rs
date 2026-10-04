@@ -1919,45 +1919,6 @@ fn differs_only_where_unreadable(before: &[NormInsn], after: &[NormInsn]) -> boo
     differs
 }
 
-/// Count an edit without aligning the two bodies.
-///
-/// For a pair too large for [`longest_common_subsequence`]. Length gives the
-/// added and removed counts, and the overlap is compared position by position.
-/// An instruction inserted near the top therefore makes every instruction after
-/// it look rewritten, which overstates the edit. The alternative is to report
-/// nothing at all for such a function.
-fn count_edits_by_position(left: &[NormInsn], right: &[NormInsn]) -> (Edits, EditKinds) {
-    let mut kinds = EditKinds::default();
-    let overlap = left.len().min(right.len());
-
-    let mut edited = 0usize;
-    for (a, b) in left.iter().zip(right) {
-        if a == b {
-            if a.differs_in_detail(b) {
-                kinds.add(EditKind::Constant);
-            }
-            continue;
-        }
-        edited += 1;
-        kinds.add(kind_of(b));
-    }
-
-    // Whatever one side has beyond the overlap was added or removed outright.
-    for insn in right.iter().skip(overlap) {
-        kinds.add(kind_of(insn));
-    }
-    for insn in left.iter().skip(overlap) {
-        kinds.add(kind_of(insn));
-    }
-
-    let edits = Edits {
-        added: right.len().saturating_sub(left.len()),
-        removed: left.len().saturating_sub(right.len()),
-        edited,
-    };
-    (edits, kinds)
-}
-
 /// Count how many instructions an edit added, removed and rewrote.
 ///
 /// The two bodies are aligned with the same longest-common-subsequence walk
@@ -1978,15 +1939,8 @@ fn count_edits_by_position(left: &[NormInsn], right: &[NormInsn]) -> (Edits, Edi
 /// untouched. A reader sorting by this count wants the functions whose
 /// instructions moved.
 ///
-/// A pair too large to align falls back to comparing position by position.
-/// That misattributes everything after an insertion, but it is bounded work,
-/// and it only happens on functions of many thousand instructions where the
-/// exact split between added and rewritten helps nobody.
+/// A pair too large for the table aligns by anchors: see [`align`].
 fn count_edits(left: &[NormInsn], right: &[NormInsn]) -> (Edits, EditKinds) {
-    if !can_align(left.len(), right.len()) {
-        return count_edits_by_position(left, right);
-    }
-
     let mut edits = Edits::default();
     let mut kinds = EditKinds::default();
     // Instructions removed since the last kept one, still free to pair with an
@@ -1996,7 +1950,7 @@ fn count_edits(left: &[NormInsn], right: &[NormInsn]) -> (Edits, EditKinds) {
     let mut unpaired_removals: Vec<usize> = Vec::new();
 
     let (mut i, mut j) = (0, 0);
-    for step in longest_common_subsequence(left, right) {
+    for step in align(left, right) {
         match step {
             Step::Both => {
                 // A kept pair agrees in shape, so only its constants can
@@ -3059,14 +3013,9 @@ pub fn instruction_diff_in(
     };
     let (before_lines, after_lines) =
         (lines(before, left, before_isa, None), lines(after, right, after_isa, paired));
-    if !can_align(before_lines.len(), after_lines.len()) {
-        let mut lines: Vec<DiffLine> = before_lines.into_iter().map(DiffLine::Removed).collect();
-        lines.extend(after_lines.into_iter().map(DiffLine::Added));
-        return lines;
-    }
     let before_keys: Vec<String> = before_lines.iter().map(|line| il_key(line)).collect();
     let after_keys: Vec<String> = after_lines.iter().map(|line| il_key(line)).collect();
-    let steps = longest_common_subsequence(&before_keys, &after_keys);
+    let steps = align(&before_keys, &after_keys);
 
     let mut aligned = Vec::with_capacity(steps.len());
     let (mut i, mut j) = (0, 0);
@@ -3258,17 +3207,7 @@ pub fn instruction_diff(
     let before_keys: Vec<String> = before_insns.iter().map(diff_key).collect();
     let after_keys: Vec<String> = after_insns.iter().map(diff_key).collect();
 
-    // A function too large to align is shown as a whole replacement rather
-    // than line by line. Aligning it would ask for more memory than the
-    // machine has, and no reader follows a diff of twenty thousand lines.
-    if !can_align(before_keys.len(), after_keys.len()) {
-        let mut lines: Vec<DiffLine> =
-            before_insns.iter().map(|insn| DiffLine::Removed(insn.to_string())).collect();
-        lines.extend(after_insns.iter().map(|insn| DiffLine::Added(insn.to_string())));
-        return lines;
-    }
-
-    let steps = longest_common_subsequence(&before_keys, &after_keys);
+    let steps = align(&before_keys, &after_keys);
     let lines = lines_from_alignment(&steps, &before_insns, &after_insns);
     coalesce_changed_constants(before_arch, lines)
 }
@@ -3377,7 +3316,7 @@ fn same_operation(arch: &dyn Arch, before: &str, after: &str) -> bool {
 }
 
 /// A move through the alignment grid: keep both sides, or drop one.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
     /// The instruction is on both sides; advance both.
     Both,
@@ -3396,9 +3335,151 @@ enum Step {
 /// can report anything.
 const LARGEST_ALIGNMENT: usize = 16 * 1024 * 1024;
 
-/// Report whether two bodies are small enough to align.
-fn can_align(left: usize, right: usize) -> bool {
-    left.saturating_add(1).saturating_mul(right.saturating_add(1)) <= LARGEST_ALIGNMENT
+/// Align two sequences: exactly where the table fits, and by anchors where
+/// it does not.
+///
+/// The exact walk is [`longest_common_subsequence`], which is quadratic in
+/// memory. For a pair whose table passes [`LARGEST_ALIGNMENT`] cells, this
+/// follows the seed, chain and extend of genome alignment (RESEARCH.md,
+/// entry 3, minimap2), as patience diff does:
+///
+/// 1. **Seed**: the common head and tail, and the items that occur once on
+///    each side, are anchors.
+/// 2. **Chain**: the longest run of anchors in the same order on both
+///    sides, found as a longest increasing subsequence.
+/// 3. **Extend**: each gap between two anchors aligns the same way.
+///
+/// A gap with no anchor and too large to align is compared position by
+/// position. An insertion near the top of a large function then costs one
+/// addition, where comparing the whole function by position made every
+/// instruction after it look rewritten.
+fn align<T: Eq + core::hash::Hash>(left: &[T], right: &[T]) -> Vec<Step> {
+    align_within(left, right, LARGEST_ALIGNMENT)
+}
+
+/// [`align`], with the largest table to build given, so a test can reach
+/// the anchors with short sequences.
+fn align_within<T: Eq + core::hash::Hash>(left: &[T], right: &[T], largest: usize) -> Vec<Step> {
+    let mut steps = Vec::with_capacity(left.len().max(right.len()));
+    align_into(left, right, largest, &mut steps);
+    steps
+}
+
+/// [`align_within`], appending to `steps`.
+fn align_into<T: Eq + core::hash::Hash>(
+    left: &[T],
+    right: &[T],
+    largest: usize,
+    steps: &mut Vec<Step>,
+) {
+    // A pair that fits takes the exact walk unchanged, so that its ties
+    // break as they always have.
+    let fits = |left: usize, right: usize| {
+        left.saturating_add(1).saturating_mul(right.saturating_add(1)) <= largest
+    };
+    if fits(left.len(), right.len()) {
+        steps.extend(longest_common_subsequence(left, right));
+        return;
+    }
+    let head = left.iter().zip(right).take_while(|(a, b)| a == b).count();
+    let tail = left[head..]
+        .iter()
+        .rev()
+        .zip(right[head..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    steps.extend(core::iter::repeat_n(Step::Both, head));
+    let (left_gap, right_gap) = (&left[head..left.len() - tail], &right[head..right.len() - tail]);
+
+    if fits(left_gap.len(), right_gap.len()) {
+        steps.extend(longest_common_subsequence(left_gap, right_gap));
+    } else {
+        let anchors = chain_of_unique_items(left_gap, right_gap);
+        if anchors.is_empty() {
+            steps.extend(steps_by_position(left_gap, right_gap));
+        } else {
+            let (mut i, mut j) = (0, 0);
+            for (x, y) in anchors {
+                align_into(&left_gap[i..x], &right_gap[j..y], largest, steps);
+                steps.push(Step::Both);
+                (i, j) = (x + 1, y + 1);
+            }
+            align_into(&left_gap[i..], &right_gap[j..], largest, steps);
+        }
+    }
+    steps.extend(core::iter::repeat_n(Step::Both, tail));
+}
+
+/// The positions of the items that occur once on each side, as `(left,
+/// right)`, keeping the longest run in the same order on both sides.
+fn chain_of_unique_items<T: Eq + core::hash::Hash>(left: &[T], right: &[T]) -> Vec<(usize, usize)> {
+    /// Where an item sits on each side, and how often it occurs there.
+    #[derive(Default)]
+    struct Seen {
+        left: (usize, usize),
+        right: (usize, usize),
+    }
+    let mut seen: HashMap<&T, Seen> = HashMap::new();
+    for (index, item) in left.iter().enumerate() {
+        let entry = seen.entry(item).or_default();
+        entry.left = (entry.left.0 + 1, index);
+    }
+    for (index, item) in right.iter().enumerate() {
+        if let Some(entry) = seen.get_mut(item) {
+            entry.right = (entry.right.0 + 1, index);
+        }
+    }
+    let mut seeds: Vec<(usize, usize)> = seen
+        .into_values()
+        .filter(|entry| entry.left.0 == 1 && entry.right.0 == 1)
+        .map(|entry| (entry.left.1, entry.right.1))
+        .collect();
+    seeds.sort_unstable();
+    longest_increasing_chain(&seeds)
+}
+
+/// The longest subsequence of `seeds`, sorted by their left position, whose
+/// right positions increase too.
+///
+/// Patience sorting: `ends[k]` is the seed that ends the best chain of
+/// length `k + 1` found so far, with the smallest right position.
+fn longest_increasing_chain(seeds: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut ends: Vec<usize> = Vec::new();
+    let mut previous: Vec<Option<usize>> = vec![None; seeds.len()];
+    for (index, &(_, right)) in seeds.iter().enumerate() {
+        let length = ends.partition_point(|&end| seeds[end].1 < right);
+        previous[index] = length.checked_sub(1).map(|before| ends[before]);
+        if length == ends.len() {
+            ends.push(index);
+        } else {
+            ends[length] = index;
+        }
+    }
+    let mut chain = Vec::with_capacity(ends.len());
+    let mut at = ends.last().copied();
+    while let Some(index) = at {
+        chain.push(seeds[index]);
+        at = previous[index];
+    }
+    chain.reverse();
+    chain
+}
+
+/// Compare two sequences position by position, for a gap with no anchor
+/// that is too large to align.
+fn steps_by_position<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
+    let mut steps = Vec::with_capacity(left.len() + right.len());
+    for (a, b) in left.iter().zip(right) {
+        if a == b {
+            steps.push(Step::Both);
+        } else {
+            steps.extend([Step::Left, Step::Right]);
+        }
+    }
+    let overlap = left.len().min(right.len());
+    steps.extend(core::iter::repeat_n(Step::Left, left.len() - overlap));
+    steps.extend(core::iter::repeat_n(Step::Right, right.len() - overlap));
+    steps
 }
 
 /// Table of the classic longest-common-subsequence dynamic program.
@@ -3407,11 +3488,10 @@ fn can_align(left: usize, right: usize) -> bool {
 /// tails `left[i..]` and `right[j..]`. Reading it back from the top left gives
 /// the alignment.
 ///
-/// The caller must check [`can_align`] first. The table is quadratic, and on
-/// the largest functions of a whole kernel it would ask for more memory than
-/// the machine has.
+/// The caller must check the size first, as [`align`] does. The table is
+/// quadratic, and on the largest functions of a whole kernel it would ask
+/// for more memory than the machine has.
 fn longest_common_subsequence<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
-    debug_assert!(can_align(left.len(), right.len()), "the caller must check the size first");
     let (rows, cols) = (left.len() + 1, right.len() + 1);
     let mut len = vec![vec![0usize; cols]; rows];
 
@@ -3977,18 +4057,80 @@ mod tests {
     /// rather than bring the run down.
     #[test]
     fn a_pair_too_large_to_align_is_still_counted() {
-        assert!(!can_align(19926, 19872), "a whole-kernel pair is over the limit");
-        assert!(can_align(500, 500), "an ordinary function is well under it");
+        let cells = |left: usize, right: usize| (left + 1) * (right + 1);
+        assert!(cells(19926, 19872) > LARGEST_ALIGNMENT, "a whole-kernel pair is over the limit");
+        assert!(cells(500, 500) <= LARGEST_ALIGNMENT, "an ordinary function is well under it");
 
         // One instruction rewritten, in bodies past the alignment limit.
         let left = vec![body(&[("add", "r0, r1, r2")])[0].clone(); 5000];
         let mut right = left.clone();
         right[0] = body(&[("sub", "r0, r1, r2")])[0].clone();
-        assert!(!can_align(left.len(), right.len()), "the test bodies are over the limit");
+        assert!(
+            cells(left.len(), right.len()) > LARGEST_ALIGNMENT,
+            "the test bodies are over the limit"
+        );
 
         let (edits, kinds) = count_edits(&left, &right);
         assert_eq!(edits, Edits { added: 0, removed: 0, edited: 1 });
         assert_eq!(kinds.other, 1, "the rewritten instruction is classified");
+    }
+
+    /// Check that `steps` is an alignment of the two sequences: it walks
+    /// both to the end and keeps only equal items. Return how many it kept.
+    fn kept_by<T: PartialEq + core::fmt::Debug>(left: &[T], right: &[T], steps: &[Step]) -> usize {
+        let (mut i, mut j, mut kept) = (0, 0, 0);
+        for step in steps {
+            match step {
+                Step::Both => {
+                    assert_eq!(left[i], right[j], "a kept pair must be equal");
+                    (i, j, kept) = (i + 1, j + 1, kept + 1);
+                }
+                Step::Left => i += 1,
+                Step::Right => j += 1,
+            }
+        }
+        assert_eq!((i, j), (left.len(), right.len()), "the alignment must walk both sides");
+        kept
+    }
+
+    /// Any two sequences align validly by anchors, and never keep more
+    /// than the exact alignment does.
+    #[test]
+    fn anchors_align_any_two_sequences() {
+        // A small linear congruential generator keeps the test repeatable.
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |limit: u64| {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (state >> 33) % limit
+        };
+        for _ in 0..500 {
+            let alphabet = 1 + next(40);
+            let left: Vec<u64> = (0..next(60)).map(|_| next(alphabet)).collect();
+            let right: Vec<u64> = (0..next(60)).map(|_| next(alphabet)).collect();
+            let exact = kept_by(&left, &right, &longest_common_subsequence(&left, &right));
+            for largest in [0, 16, 200] {
+                let kept = kept_by(&left, &right, &align_within(&left, &right, largest));
+                assert!(kept <= exact, "{left:?} {right:?}");
+            }
+        }
+    }
+
+    /// An instruction inserted at the top of a function too large for the
+    /// table costs one addition, not a rewrite of every one after it.
+    #[test]
+    fn an_insertion_into_a_large_body_costs_one_addition() {
+        let left: Vec<u32> = (0..1000).collect();
+        let right: Vec<u32> = core::iter::once(5000).chain(0..1000).collect();
+        let steps = align_within(&left, &right, 100);
+        assert_eq!(kept_by(&left, &right, &steps), 1000);
+        assert_eq!(steps.iter().filter(|step| **step == Step::Right).count(), 1);
+    }
+
+    #[test]
+    fn the_chain_keeps_the_longest_run_in_order() {
+        let seeds = [(0, 3), (1, 0), (2, 1), (3, 4), (4, 2), (5, 5)];
+        assert_eq!(longest_increasing_chain(&seeds), vec![(1, 0), (2, 1), (4, 2), (5, 5)]);
+        assert_eq!(longest_increasing_chain(&[]), vec![]);
     }
 
     /// A function compared with itself has nothing to count.
