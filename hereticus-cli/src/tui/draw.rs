@@ -16,14 +16,14 @@ use super::theme::{
     ADDED, BLUE, DARK_GRAY, EDITED, Focus, GRAY, GRAY_FG, GREEN, ORANGE, PURPLE, REMOVED, YELLOW,
     pane_block, tone_of,
 };
-use super::{App, Entry, Help, Labeled, Layout, Scope, Screen};
+use super::{App, Entry, Help, Labeled, Layout, Order, Scope, Screen, fuzzy};
 use crate::{
-    DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_view,
-    unmatched_word,
+    DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_kind,
+    name_of_view, unmatched_word,
 };
 
 /// The keys of each pane, at the right of its frame.
-const TABLE_HINTS: &str = "⏎ open  s sort  / filter";
+const TABLE_HINTS: &str = "⏎ open  s/S sort  t touched  / filter";
 const FILTER_HINTS: &str = "⏎ keep  esc clear";
 const PAIR_HINTS: &str = "]/[ change  v asm/il  l layout  n/p next/prev  esc back";
 
@@ -132,7 +132,7 @@ impl App<'_> {
     /// One row of the table. A function gone or new names its closest
     /// candidate where it has one, in the column of what a pair touched.
     fn table_row(&self, labeled: &Labeled) -> Row<'static> {
-        let name = Cell::from(labeled.label.clone());
+        let name = Cell::from(highlighted(&labeled.label, &self.filter));
         let (word, color, closest_in) = match labeled.entry {
             Entry::Pair(index) => {
                 let pair = &self.diff.matched[index];
@@ -249,12 +249,26 @@ impl App<'_> {
             Span::raw(" "),
             label("sort "),
             Span::styled(self.sort.name(), Style::new().fg(ORANGE).bold()),
+            Span::styled(
+                match self.order {
+                    Order::Descending => " ↓",
+                    Order::Ascending => " ↑",
+                },
+                Style::new().fg(ORANGE),
+            ),
             separator(),
             Span::styled(
                 format!("{} of {} functions", self.rows.len(), self.entries.len()),
                 Style::new().fg(GREEN),
             ),
         ];
+        if let Some(kind) = self.touched {
+            spans.extend([
+                separator(),
+                label("touched "),
+                Span::styled(name_of_kind(kind), Style::new().fg(YELLOW).bold()),
+            ]);
+        }
         if let Screen::Pair(_) = self.screen {
             spans.extend([
                 separator(),
@@ -297,6 +311,33 @@ impl App<'_> {
             area,
         );
         frame.render_widget(Paragraph::new(right), area);
+    }
+}
+
+/// A name with the letters a filter matched in bold yellow.
+fn highlighted(name: &str, filter: &str) -> Line<'static> {
+    let matched = fuzzy::positions(filter, name).unwrap_or_default();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_matched = false;
+    for (at, letter) in name.chars().enumerate() {
+        let is_matched = matched.binary_search(&at).is_ok();
+        if is_matched != run_matched && !run.is_empty() {
+            spans.push(name_span(core::mem::take(&mut run), run_matched));
+        }
+        run_matched = is_matched;
+        run.push(letter);
+    }
+    if !run.is_empty() {
+        spans.push(name_span(run, run_matched));
+    }
+    Line::from(spans)
+}
+
+fn name_span(text: String, matched: bool) -> Span<'static> {
+    match matched {
+        true => Span::styled(text, Style::new().fg(YELLOW).bold()),
+        false => Span::raw(text),
     }
 }
 
@@ -379,10 +420,12 @@ fn draw_help(frame: &mut Frame<'_>) {
         help_entry("g / G", "first / last"),
         help_entry("⏎", "open the diff"),
         help_entry("s", "next order"),
+        help_entry("S", "reverse the order"),
+        help_entry("t", "next kind touched"),
         help_entry("a", "every function"),
         help_entry("r", "retouched pairs"),
         help_entry("d", "data regions"),
-        help_entry("/", "filter the names"),
+        help_entry("/", "filter the names, fuzzy"),
         Line::default(),
         help_header("Global"),
         help_entry("?", "this help"),
@@ -442,4 +485,22 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
     let [area] = Split::vertical([Constraint::Max(height)]).flex(Flex::Center).areas(area);
     let [area] = Split::horizontal([Constraint::Max(width)]).flex(Flex::Center).areas(area);
     area
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_letters_a_filter_matched_stand_out() {
+        let line = highlighted("dispatch", "dsp");
+        let spans: Vec<(&str, bool)> = line
+            .spans
+            .iter()
+            .map(|span| (span.content.as_ref(), span.style.fg == Some(YELLOW)))
+            .collect();
+        assert_eq!(spans, [("d", true), ("i", false), ("sp", true), ("atch", false)],);
+        assert_eq!(highlighted("main", "").spans.len(), 1, "no filter, one plain span");
+        assert_eq!(highlighted("", "x").spans.len(), 0);
+    }
 }

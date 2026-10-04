@@ -124,11 +124,14 @@ mul_by_constant
 ```
 
 `--tui` compares the two binaries once, then shows the report as a table to
-browse. `s` changes the order, `a`, `r` and `d` show every pair, the
-retouched pairs and the data regions, and `/` filters on the names. `Enter`
-opens the diff of a pair side by side: `v` changes between assembly and IL,
-`l` changes to one column, and `n` and `p` go to the next and the previous
-pair.
+browse, with the functions gone and new after the pairs. `s` changes the
+order and `S` reverses it, `t` lists only the pairs that touched one kind of
+code, `a`, `r` and `d` show every function, the retouched pairs and the data
+regions, and `/` filters on the names, with the letters in order. `Enter`, or
+a second click, opens the diff side by side, with the address of each
+instruction: `]` and `[` go to the next and the previous change, `v` changes
+between assembly and IL, `l` changes to one column, and `n` and `p` go to the
+next and the previous function. `?` shows every key.
 
 Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
 and 2 when the input could not be read.

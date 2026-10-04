@@ -1,6 +1,6 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
-assertion_line: 847
+assertion_line: 1031
 expression: "screen(&mut app, 120, 16)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
@@ -18,4 +18,4 @@ expression: "screen(&mut app, 120, 16)"
  f0 + flags = compare(r1, 3)                                                                                           ║
  f4 + if (r1 u> 3) goto $+0x100                                                                                        ║
  f8 + adr r3, pc, 0x4                                                                                                  ║
- sort added  │  3 of 5 functions  │  view il  │  hidden retouched, data                           0 gone  0 new  ? help
+ sort added ↓  │  3 of 5 functions  │  view il  │  hidden retouched, data                         0 gone  0 new  ? help
