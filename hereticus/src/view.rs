@@ -220,7 +220,8 @@ impl Pointed {
     }
 }
 
-/// The condition an A32 instruction runs on, as the `ne` of `addne`.
+/// The condition an A32 instruction runs on, as the `ne` of `addne`, or a
+/// Thumb-2 one in an `it` block.
 ///
 /// The IL holds no such condition, so it is read from the mnemonic. A
 /// branch names its own, and `teq` is no conditional `t`.
@@ -229,12 +230,18 @@ fn a32_condition<'i>(arch: &dyn Arch, insn: &'i Insn) -> Option<&'i str> {
         "eq", "ne", "hs", "cs", "lo", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt",
         "le",
     ];
-    if !arch.triple().starts_with("arm")
-        || matches!(insn.kind, crate::arch::InsnKind::Branch { .. })
-    {
+    // Thumb-2 names the condition so inside an `it` block.
+    let triple = arch.triple();
+    let is_arm = triple.starts_with("arm") || triple.starts_with("thumb");
+    if !is_arm || matches!(insn.kind, crate::arch::InsnKind::Branch { .. }) {
         return None;
     }
     let mnemonic = insn.mnemonic.as_str();
+    // These end in the letters of a condition and name none.
+    const UNCONDITIONAL: [&str; 4] = ["mls", "vmls", "vnmls", "teq"];
+    if UNCONDITIONAL.contains(&mnemonic) || mnemonic.contains('.') {
+        return None;
+    }
     let cond = CONDITIONS.iter().find(|cond| mnemonic.ends_with(*cond))?;
     let base = &mnemonic[..mnemonic.len() - cond.len()];
     (!base.is_empty() && base != "t").then(|| &mnemonic[base.len()..])
@@ -469,6 +476,14 @@ fn statement(
     if lifted.op == Op::Compare && tokens.len() == lifted.operands.len() + 1 {
         tokens.remove(0);
     }
+    // The MIPS16e `la` prints the `pc` it reads, as `addiu v1, pc, 0x7340`,
+    // and already adds it into the address it prints.
+    if lifted.op == Op::Address
+        && tokens.len() == lifted.operands.len() + 1
+        && tokens.get(1) == Some(&"pc")
+    {
+        tokens.remove(1);
+    }
     let target = tokens.iter().rev().find(|token| is_branch_target(token)).copied();
     // A call or jump through a register names it last, as `blr x1` and the
     // MIPS16e `jalr ra, v0` do.
@@ -490,6 +505,34 @@ fn statement(
         (shift, tokens.as_slice(), lifted.operands.len())
     {
         return Some(format!("{dest} = {source} {operator} {}", amount.trim_start_matches('#')));
+    }
+    // What the IL names but has no operator for reads as a function of its
+    // sources, named and spelled as the code prints them: `x1 = sxtw(w1)`.
+    // Many are aliases, whose IL operands do not pair with the printed ones.
+    let functional = matches!(
+        lifted.op,
+        Op::Extend
+            | Op::BitField
+            | Op::Bits
+            | Op::FloatConvert
+            | Op::FloatRoundDown
+            | Op::FloatRoundUp
+            | Op::FloatRoundNearest
+            | Op::FloatRoundTowardZero
+            | Op::FloatSign
+            | Op::FloatSquareRoot
+            | Op::FloatMinMax
+            | Op::FloatMultiplyAdd
+    ) && !insn.mnemonic.starts_with("movt");
+    if functional
+        && !lifted.writes.is_empty()
+        && let Some((dest, sources)) = tokens.split_first()
+        && !sources.is_empty()
+    {
+        let name = insn.mnemonic.split('.').next().unwrap_or(&insn.mnemonic);
+        let sources: Vec<String> =
+            sources.iter().map(|source| source.trim_start_matches('#').to_string()).collect();
+        return Some(format!("{dest} = {name}({})", sources.join(", ")));
     }
     let mut paired = pair_operands(&lifted.operands, &tokens)?;
     // A post-index access writes its base after it, as `ldp x29, x30, [sp],
@@ -573,6 +616,8 @@ fn statement(
                 _ => return None,
             },
             ([dest, _], Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
+            // A distance that moves, as half of `_gp_disp`.
+            ([dest, source], None) if moves => format!("{dest} = @{source}"),
             ([dest, source], None) => format!("{dest} = &{source}"),
             _ => return None,
         },
@@ -581,7 +626,17 @@ fn statement(
             _ => binary("+")?,
         },
         Op::Subtract => binary("-")?,
+        // `mul` is a multiply-add of zero on AArch64.
+        Op::Multiply | Op::MultiplyAdd
+            if operands.len() == 4 && canonical.operands.get(3).is_some_and(is_zero) =>
+        {
+            format!("{} = {} * {}", operands[0], operands[1], operands[2])
+        }
         Op::Multiply => binary("*")?,
+        Op::FloatAdd => binary("+")?,
+        Op::FloatSubtract => binary("-")?,
+        Op::FloatMultiply => binary("*")?,
+        Op::FloatDivide => binary("/")?,
         Op::Divide => binary("/")?,
         Op::And => binary("&")?,
         Op::Or => binary("|")?,
@@ -591,6 +646,15 @@ fn statement(
         Op::ShiftLeft => binary("<<")?,
         Op::ShiftRight => binary("u>>")?,
         Op::ShiftRightArithmetic => binary(">>")?,
+        // `cset w0, ne` picks 1 or 0, and `csetm` all ones or 0.
+        Op::Select
+            if operands.len() == 4
+                && canonical.operands.get(1).is_some_and(is_zero)
+                && canonical.operands.get(2).is_some_and(is_zero) =>
+        {
+            let one = if insn.mnemonic == "csetm" { "-1" } else { "1" };
+            format!("{} = {} ? {one} : 0", operands[0], operands[3])
+        }
         // `csel x0, x1, x2, ls` picks on the condition it names last.
         Op::Select => match operands.as_slice() {
             [dest, chosen, other, cond]
@@ -606,8 +670,12 @@ fn statement(
             [dest, left, right, add] => format!("{dest} = {left} * {right} + {add}"),
             _ => return None,
         },
+        // `mvn` of AArch64 is `orn` with the zero register.
         Op::Not => match operands.as_slice() {
             [dest, source] => format!("{dest} = ~{source}"),
+            [dest, _, source] if canonical.operands.get(1).is_some_and(is_zero) => {
+                format!("{dest} = ~{source}")
+            }
             _ => return None,
         },
         Op::Negate => match operands.as_slice() {
@@ -693,6 +761,11 @@ fn statement(
                 _ => return None,
             }
         }
+        // `movt` sets the upper half and keeps the lower.
+        Op::BitField if insn.mnemonic.starts_with("movt") => match operands.as_slice() {
+            [dest, high] => format!("{dest} = {dest} & 0xffff | {high} << 16"),
+            _ => return None,
+        },
         _ => return None,
     };
     Some(line)
@@ -778,6 +851,21 @@ mod tests {
     }
 
     #[test]
+    fn more_forms_of_aarch64_read_as_statements() {
+        let shown = lines(&[
+            0x1a9f_07e0, // cset w0, ne
+            0x2a33_03e1, // mvn w1, w19
+            0x9b02_7c20, // mul x0, x1, x2
+            0x9340_7c21, // sxtw x1, w1
+            0x5ac0_1020, // clz w0, w1
+        ]);
+        assert_eq!(
+            shown,
+            ["w0 = ne ? 1 : 0", "w1 = ~w19", "x0 = x1 * x2", "x1 = sxtw(w1)", "w0 = clz(w1)"]
+        );
+    }
+
+    #[test]
     fn a_shifted_register_reads_as_one_operand() {
         use crate::arch::arm32::Arm32;
         let code = 0xe081_3204_u32.to_le_bytes(); // add r3, r1, r4, lsl #4
@@ -809,6 +897,14 @@ mod tests {
         let shown = il_lines(&Arm32, &code, &insns);
         assert_eq!(shown[1], "if (ne) r6 = r4 + 1");
         assert_eq!(a32_condition(&Arm32, &insns[0]), None, "a compare that always runs");
+        let mls = Insn {
+            address: 0,
+            bytes_len: 4,
+            mnemonic: "mls".into(),
+            operands: "r0, r1, r2, r3".into(),
+            kind: crate::arch::InsnKind::Normal,
+        };
+        assert_eq!(a32_condition(&Arm32, &mls), None, "a multiply-subtract");
     }
 
     #[test]

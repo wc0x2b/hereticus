@@ -341,17 +341,28 @@ impl Arch for Thumb2 {
     /// two, `itete` four. A return or a jump among them falls through when
     /// its condition fails, so it is a branch.
     fn after_decoding(&self, insns: &mut [Insn]) {
-        let mut conditional = 0;
+        // The conditions of the instructions an `it` covers, next first.
+        let mut conditions: Vec<&'static str> = Vec::new();
         for insn in insns {
-            if conditional > 0 {
-                conditional -= 1;
+            if !conditions.is_empty() {
+                let condition = conditions.remove(0);
                 insn.kind = match insn.kind {
                     InsnKind::Return => InsnKind::Branch { target: None },
                     InsnKind::Jump { target } => InsnKind::Branch { target },
                     kind => kind,
                 };
-            } else if let Some(count) = it_block_length(&insn.mnemonic) {
-                conditional = count;
+                // `yaxpeax-arm` prints no condition inside the block, so
+                // `movgt r0, #0` read as `movs r0, 0x0`. A 16-bit form that
+                // sets the flags outside a block does not inside one.
+                let base = match insn.bytes_len == HALFWORD && insn.mnemonic.len() > 2 {
+                    true => insn.mnemonic.strip_suffix('s').unwrap_or(&insn.mnemonic),
+                    false => &insn.mnemonic,
+                };
+                if !base.ends_with(condition) {
+                    insn.mnemonic = format!("{base}{condition}");
+                }
+            } else if let Some(covered) = it_conditions(&insn.mnemonic, &insn.operands) {
+                conditions = covered;
             }
         }
     }
@@ -641,6 +652,28 @@ fn branch_target(inst: &Instruction, address: u64, width: usize) -> Option<u64> 
 
 /// How many instructions after an `it` it makes conditional, if `mnemonic`
 /// is one: one, and one more for each `t` or `e` after `it`.
+/// The condition of each instruction an `it` covers, in order: `t` takes
+/// the condition of the block, and `e` its opposite.
+fn it_conditions(mnemonic: &str, condition: &str) -> Option<Vec<&'static str>> {
+    const PAIRS: [(&str, &str); 7] = [
+        ("eq", "ne"),
+        ("hs", "lo"),
+        ("mi", "pl"),
+        ("vs", "vc"),
+        ("hi", "ls"),
+        ("ge", "lt"),
+        ("gt", "le"),
+    ];
+    let condition = condition.trim();
+    let (then, otherwise) = PAIRS.iter().find_map(|&(a, b)| {
+        (condition == a).then_some((a, b)).or((condition == b).then_some((b, a)))
+    })?;
+    it_block_length(mnemonic)?;
+    let pattern = &mnemonic[2..];
+    let rest = pattern.chars().map(|letter| if letter == 't' { then } else { otherwise });
+    Some(core::iter::once(then).chain(rest).collect())
+}
+
 fn it_block_length(mnemonic: &str) -> Option<usize> {
     let pattern = mnemonic.strip_prefix("it")?;
     (pattern.len() <= 3 && pattern.chars().all(|letter| letter == 't' || letter == 'e'))
@@ -854,6 +887,17 @@ mod tests {
         let tables = Thumb2.jump_tables(&Memory::new(&regions), 0x1000..0x1010, &insns);
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].targets, [0x1006 + 4, 0x1006 + 6]);
+    }
+
+    #[test]
+    fn an_it_block_names_each_condition() {
+        // ite gt; movgt r0, #0; movle r0, #1; adds r0, #1
+        let code = halfwords(&[0xbfcc, 0x2000, 0x2001, 0x3001]);
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        let mnemonics: Vec<&str> = insns.iter().map(|insn| insn.mnemonic.as_str()).collect();
+        assert_eq!(mnemonics, ["ite", "movgt", "movle", "adds"]);
+        assert_eq!(it_conditions("itet", "eq"), Some(vec!["eq", "ne", "eq"]));
+        assert_eq!(it_conditions("it", "al"), None, "no condition to name");
     }
 
     #[test]

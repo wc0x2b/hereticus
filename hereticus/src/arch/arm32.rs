@@ -513,7 +513,7 @@ fn lift(inst: &Instruction) -> il::Lifted {
     }
     // It gives an A32 `mvn` of a constant the unused first value field too,
     // as in `mvn r0, r0, 0x1`.
-    if inst.opcode == Opcode::MVN && operands.len() == 3 {
+    if matches!(inst.opcode, Opcode::MVN | Opcode::MOV) && operands.len() == 3 {
         operands.remove(1);
     }
     let mut reads = il::RegSet::EMPTY;
@@ -575,6 +575,35 @@ fn lift(inst: &Instruction) -> il::Lifted {
     // `sub` does: `rsb r0, r1, #0` is `0 - r1`.
     if matches!(inst.opcode, Opcode::RSB | Opcode::RSC) && lifted.operands.len() == 3 {
         lifted.operands.swap(1, 2);
+    }
+    // `mov r4, r1, lsl #4` is the shift `lsl r4, r1, #4`.
+    if let (Opcode::MOV, [_, Operand::RegShift(shift)]) = (inst.opcode, operands.as_slice()) {
+        let op_of_style = |style: ShiftStyle| match style {
+            ShiftStyle::LSL => il::Op::ShiftLeft,
+            ShiftStyle::LSR => il::Op::ShiftRight,
+            ShiftStyle::ASR => il::Op::ShiftRightArithmetic,
+            ShiftStyle::ROR => il::Op::Rotate,
+        };
+        let shifted = match shift.into_shift() {
+            // A shift right of 0 encodes one of 32; a rotate of 0 is `rrx`,
+            // and a shift left of 0 is no shift.
+            RegShiftStyle::RegImm(shift) => match (shift.stype(), shift.imm()) {
+                (ShiftStyle::LSL, 0) | (ShiftStyle::ROR, 0) => None,
+                (style, 0) => Some((op_of_style(style), shift.shiftee(), il::Operand::Const(32))),
+                (style, amount) => {
+                    Some((op_of_style(style), shift.shiftee(), il::Operand::Const(amount.into())))
+                }
+            },
+            RegShiftStyle::RegReg(shift) => il_reg(shift.shifter())
+                .map(|by| (op_of_style(shift.stype()), shift.shiftee(), il::Operand::Reg(by))),
+        };
+        if let Some((op, source, amount)) = shifted
+            && let Some(source) = il_reg(source)
+        {
+            lifted.op = op;
+            lifted.operands =
+                [lifted.operands[0], il::Operand::Reg(source), amount].into_iter().collect();
+        }
     }
     // `mvn r0, #1` puts the constant `~1` in `r0`, as `mov` would.
     if let (Opcode::MVN, [dest, il::Operand::Const(constant)]) =
