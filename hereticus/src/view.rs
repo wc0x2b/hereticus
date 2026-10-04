@@ -79,8 +79,17 @@ impl Context<'_> {
     }
 }
 
-/// The IL statement of each instruction of `insns`, which were decoded from
-/// `code`.
+/// One line of the IL view, and the address of the instruction it shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Statement {
+    pub address: u64,
+    pub text: String,
+}
+
+/// The IL statements of `insns`, which were decoded from `code`: one for
+/// each instruction, but where an idiom of several instructions shows as
+/// one, as the making of the global pointer on MIPS, and an `it`, whose
+/// condition sits on each instruction it covers, shows as none.
 pub fn il_lines(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<String> {
     il_lines_in(arch, code, insns, None)
 }
@@ -90,6 +99,78 @@ pub fn il_lines(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<String> {
 /// `@malloc`, and any other address as `@0x57c6`. An address moves when
 /// code or data before it grows, so a diff aligns on `@` alone.
 pub fn il_lines_in(
+    arch: &dyn Arch,
+    code: &[u8],
+    insns: &[Insn],
+    context: Option<Context<'_>>,
+) -> Vec<String> {
+    il_statements_in(arch, code, insns, context).into_iter().map(|line| line.text).collect()
+}
+
+/// [`il_lines_in`], with the address of each line.
+pub fn il_statements_in(
+    arch: &dyn Arch,
+    code: &[u8],
+    insns: &[Insn],
+    context: Option<Context<'_>>,
+) -> Vec<Statement> {
+    insns
+        .iter()
+        .zip(instruction_lines(arch, code, insns, context))
+        .zip(folds(arch, insns))
+        .filter_map(|((insn, text), fold)| {
+            let text = match fold {
+                Fold::Own => text,
+                Fold::Hidden => return None,
+                Fold::GlobalPointer(register) => format!("{register} = _gp"),
+            };
+            Some(Statement { address: insn.address, text })
+        })
+        .collect()
+}
+
+/// The address of each line of [`il_statements_in`], which needs only the
+/// instructions.
+pub fn il_line_addresses(arch: &dyn Arch, insns: &[Insn]) -> Vec<u64> {
+    insns
+        .iter()
+        .zip(folds(arch, insns))
+        .filter(|(_, fold)| *fold != Fold::Hidden)
+        .map(|(insn, _)| insn.address)
+        .collect()
+}
+
+/// How the IL view shows an instruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Fold {
+    /// On a line of its own.
+    Own,
+    /// Not at all: another line shows what it does.
+    Hidden,
+    /// As the last part of the making of the global pointer, which it
+    /// leaves in this register.
+    GlobalPointer(String),
+}
+
+/// How the IL view shows each instruction of `insns`.
+fn folds(arch: &dyn Arch, insns: &[Insn]) -> Vec<Fold> {
+    let mut folds = vec![Fold::Own; insns.len()];
+    for index in 0..insns.len() {
+        if crate::arch::thumb::it_block_length(&insns[index].mnemonic).is_some() {
+            folds[index] = Fold::Hidden;
+        }
+        let Some(setup) = arch.global_pointer_setup(&insns[index..]) else { continue };
+        let Some((last, earlier)) = setup.parts.split_last() else { continue };
+        for part in earlier {
+            folds[index + part] = Fold::Hidden;
+        }
+        folds[index + last] = Fold::GlobalPointer(setup.register);
+    }
+    folds
+}
+
+/// The IL statement of each instruction of `insns`, one to one.
+fn instruction_lines(
     arch: &dyn Arch,
     code: &[u8],
     insns: &[Insn],
@@ -135,16 +216,21 @@ pub fn il_lines_in(
         .zip(formed)
         .enumerate()
         .map(|(index, (insn, formed))| {
+            // A call can run on a condition, as `blne` does.
+            let conditional = |text: String, op| match a32_condition(arch, insn, op) {
+                Some(cond) => format!("if ({cond}) {text}"),
+                None => text,
+            };
             if let Some(name) = named_calls.get(&index)
                 && matches!(insn.kind, crate::arch::InsnKind::Call { .. })
             {
-                return format!("call {name}");
+                return conditional(format!("call {name}"), None);
             }
             let address =
                 formed.zip(context).map(|(address, context)| Pointed::of(address, context));
             let text = named_line(arch, insn, &address, context, &mut callees);
             if let Some(text) = text {
-                return text;
+                return conditional(text, None);
             }
             if pages.contains(&index)
                 && matches!(address, Some(Pointed::Address(_)))
@@ -165,10 +251,7 @@ pub fn il_lines_in(
                 Some((lifted.op, text))
             });
             match shown {
-                Some((op, text)) => match a32_condition(arch, insn, op) {
-                    Some(cond) => format!("if ({cond}) {text}"),
-                    None => text,
-                },
+                Some((op, text)) => conditional(text, Some(op)),
                 None => insn.to_string(),
             }
         })
@@ -371,8 +454,9 @@ impl Pointed {
 /// The IL holds no such condition, so it is read from the mnemonic. A
 /// branch names its own, and `teq` is no conditional `t`. A conditional
 /// return or jump, as `bxne lr`, decodes as a branch too, but names no
-/// condition, so `op` and not the kind of `insn` decides.
-fn a32_condition<'i>(arch: &dyn Arch, insn: &'i Insn, op: Op) -> Option<&'i str> {
+/// condition, so `op`, where the lift names one, and not the kind of `insn`
+/// decides.
+fn a32_condition<'i>(arch: &dyn Arch, insn: &'i Insn, op: Option<Op>) -> Option<&'i str> {
     const CONDITIONS: [&str; 16] = [
         "eq", "ne", "hs", "cs", "lo", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt",
         "le",
@@ -380,7 +464,7 @@ fn a32_condition<'i>(arch: &dyn Arch, insn: &'i Insn, op: Op) -> Option<&'i str>
     // Thumb-2 names the condition so inside an `it` block.
     let triple = arch.triple();
     let is_arm = triple.starts_with("arm") || triple.starts_with("thumb");
-    if !is_arm || op == Op::Branch {
+    if !is_arm || op == Some(Op::Branch) {
         return None;
     }
     let mnemonic = insn.mnemonic.as_str();
@@ -1455,7 +1539,7 @@ mod tests {
         let shown = il_lines(&Arm32, &code, &insns);
         assert_eq!(shown[1], "if (ne) r6 = r4 + 1");
         assert_eq!(
-            a32_condition(&Arm32, &insns[0], Op::Compare),
+            a32_condition(&Arm32, &insns[0], Some(Op::Compare)),
             None,
             "a compare that always runs"
         );
@@ -1466,7 +1550,7 @@ mod tests {
             operands: "r0, r1, r2, r3".into(),
             kind: crate::arch::InsnKind::Normal,
         };
-        assert_eq!(a32_condition(&Arm32, &mls, Op::MultiplyAdd), None, "a multiply-subtract");
+        assert_eq!(a32_condition(&Arm32, &mls, Some(Op::MultiplyAdd)), None, "a multiply-subtract");
     }
 
     #[test]
@@ -1593,6 +1677,76 @@ mod tests {
         assert!(shown[4].starts_with("if (r1 != r3) goto"), "{shown:?}");
     }
 
+    /// A function that calls a named one, `foo`, at `foo` from its start.
+    fn calling_foo(arch: &dyn Arch, code: &[u8], foo: u64) -> Vec<String> {
+        let functions =
+            [crate::obj::Function { name: "foo".into(), address: 0x1000 + foo, code: Vec::new() }];
+        let (links, space) = (Links::default(), AddressSpace::default());
+        let context = Context { links: &links, space: &space, functions: &functions, paired: None };
+        let (insns, _) = decode_all(arch, code, 0x1000);
+        il_lines_in(arch, code, &insns, Some(context))
+    }
+
+    #[test]
+    fn an_it_shows_no_line_and_its_call_keeps_the_condition() {
+        use crate::arch::thumb::Thumb2;
+        // cmp r0, #0; it ne; blne foo; bx lr; foo: bx lr
+        let halfwords: [u16; 6] = [0x2800, 0xbf18, 0xf000, 0xf801, 0x4770, 0x4770];
+        let code: Vec<u8> = halfwords.iter().flat_map(|half| half.to_le_bytes()).collect();
+        assert_eq!(
+            calling_foo(&Thumb2, &code, 0xa),
+            ["flags = compare(r0, 0)", "if (ne) call foo", "return", "return"]
+        );
+    }
+
+    #[test]
+    fn a_conditional_a32_call_keeps_its_condition() {
+        use crate::arch::arm32::Arm32;
+        // cmp r0, #0; blne foo; bx lr; foo: bx lr
+        let words: [u32; 4] = [0xe350_0000, 0x1b00_0000, 0xe12f_ff1e, 0xe12f_ff1e];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        assert_eq!(calling_foo(&Arm32, &code, 0xc)[1], "if (ne) call foo");
+    }
+
+    #[test]
+    fn the_making_of_the_global_pointer_reads_as_one_line() {
+        use crate::arch::mips::Mips32;
+        let words: [u32; 5] = [
+            0x3c1c_0002, // lui gp, 0x2
+            0x279c_59ec, // addiu gp, gp, 0x59ec
+            0x27bd_ffc8, // addiu sp, sp, -0x38
+            0x0399_e021, // addu gp, gp, t9
+            0x0000_0000, // nop
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0x1000);
+        let statements = il_statements_in(&Mips32::BIG, &code, &insns, None);
+        let shown: Vec<(u64, &str)> =
+            statements.iter().map(|line| (line.address, line.text.as_str())).collect();
+        assert_eq!(shown, [(0x1008, "sp = sp + -0x38"), (0x100c, "gp = _gp"), (0x1010, "nop")]);
+        assert_eq!(il_line_addresses(&Mips32::BIG, &insns), [0x1008, 0x100c, 0x1010]);
+    }
+
+    #[test]
+    fn the_mips16e_global_pointer_reads_as_one_line() {
+        use crate::arch::mips16::Mips16;
+        // The opening of `adler32_combine_` in zlib, by GCC 14 at `-Os`.
+        let halfwords: [u16; 7] = [0xf000, 0x6a02, 0xf0a8, 0x0b0c, 0xf400, 0x3240, 0xe269];
+        let code: Vec<u8> = halfwords.iter().flat_map(|half| half.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips16::BIG, &code, 0x1000);
+        assert_eq!(il_lines(&Mips16::BIG, &code, &insns), ["v0 = _gp"]);
+    }
+
+    #[test]
+    fn a_constant_built_alone_is_no_global_pointer() {
+        use crate::arch::mips::Mips32;
+        // lui gp, 0x2; addiu gp, gp, 0x59ec; with no `addu` of `t9`
+        let words: [u32; 2] = [0x3c1c_0002, 0x279c_59ec];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0x1000);
+        assert_eq!(il_lines(&Mips32::BIG, &code, &insns).len(), 2);
+    }
+
     #[test]
     fn any_code_shows_without_a_panic() {
         use crate::arch::{arm32::Arm32, mips::Mips32, mips16::Mips16, thumb::Thumb2};
@@ -1601,7 +1755,10 @@ mod tests {
                 [&Aarch64, &Arm32, &Thumb2, &Mips32::BIG, &Mips16::LITTLE, &Mips16::BIG];
             for arch in arches {
                 let (insns, _) = decode_all(arch, code, 0x1000);
-                assert_eq!(il_lines(arch, code, &insns).len(), insns.len());
+                let statements = il_statements_in(arch, code, &insns, None);
+                let addresses: Vec<u64> = statements.iter().map(|line| line.address).collect();
+                assert_eq!(il_line_addresses(arch, &insns), addresses);
+                assert!(addresses.is_sorted_by(|earlier, later| earlier < later));
             }
         });
     }

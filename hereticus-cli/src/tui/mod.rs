@@ -11,7 +11,9 @@ mod rows;
 mod theme;
 
 use hereticus::address::Contents;
-use hereticus::matching::{Diff, DiffLine, EditKind, PairedLabels, View, instruction_diff_in};
+use hereticus::matching::{
+    Diff, DiffLine, EditKind, PairedLabels, View, instruction_diff_in, line_addresses,
+};
 use hereticus::obj::Binary;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
@@ -95,8 +97,9 @@ struct Labeled {
 #[derive(Debug)]
 struct Opened {
     lines: Vec<DiffLine>,
-    /// The lines of the other view, once shown, so `v` back is at once.
-    other_view: Option<Vec<DiffLine>>,
+    /// The lines of the other view and their addresses, once shown, so `v`
+    /// back is at once.
+    other_view: Option<(Vec<DiffLine>, Addresses)>,
     addresses: Addresses,
     /// What a gone or new function is shown against: its closest
     /// candidate.
@@ -165,14 +168,6 @@ fn next_touched(touched: Option<EditKind>) -> Option<EditKind> {
     let Some(touched) = touched else { return TOUCHED_KINDS.first().copied() };
     let at = TOUCHED_KINDS.iter().position(|&kind| kind == touched)?;
     TOUCHED_KINDS.get(at + 1).copied()
-}
-
-/// The address of each instruction of a function, in order.
-fn addresses_of(binary: &Binary, index: usize) -> Vec<u64> {
-    let function = &binary.functions[index];
-    let arch = binary.isa_of(function).arch();
-    let (insns, _) = hereticus::arch::decode_all(arch, &function.code, function.address);
-    insns.iter().map(|insn| insn.address).collect()
 }
 
 /// What shows over the screen and holds the keys.
@@ -393,8 +388,8 @@ impl<'a> App<'a> {
             (Entry::New { function, .. }, None) => [(after, function), (after, function)],
         };
         let addresses = Addresses {
-            before: addresses_of(shown[0].0, shown[0].1),
-            after: addresses_of(shown[1].0, shown[1].1),
+            before: line_addresses(view, shown[0].0, shown[0].1),
+            after: line_addresses(view, shown[1].0, shown[1].1),
         };
         let (lines, against) = match (entry, self.closest(entry)) {
             (Entry::Pair(index), _) => {
@@ -438,21 +433,22 @@ impl<'a> App<'a> {
     }
 
     /// Show the open diff in the other view, from the same row. The two
-    /// views hold a line for each instruction, so the row shows about the
-    /// same code.
+    /// views hold about a line for each instruction, so the row shows about
+    /// the same code.
     fn switch_view(&mut self) {
         self.view = match self.view {
             View::Assembly => View::Il,
             View::Il => View::Assembly,
         };
         let Screen::Pair(opened) = &mut self.screen else { return };
-        if let Some(other) = opened.other_view.take() {
-            let shown = core::mem::replace(&mut opened.lines, other);
-            opened.other_view = Some(shown);
+        if let Some((lines, addresses)) = opened.other_view.take() {
+            let lines = core::mem::replace(&mut opened.lines, lines);
+            let addresses = core::mem::replace(&mut opened.addresses, addresses);
+            opened.other_view = Some((lines, addresses));
             opened.relayout(self.layout);
             return;
         }
-        let shown = core::mem::take(&mut opened.lines);
+        let shown = (core::mem::take(&mut opened.lines), core::mem::take(&mut opened.addresses));
         let scroll = opened.scroll;
         self.open_at(scroll);
         if let Screen::Pair(opened) = &mut self.screen {
@@ -976,6 +972,55 @@ mod tests {
         assert_eq!(scroll(&app), kept);
         press(&mut app, &[KeyCode::Char('n')]);
         assert_eq!(scroll(&app), 0, "another function opens at its top");
+    }
+
+    /// How many lines of `lines` each side shows.
+    fn lines_per_side(lines: &[DiffLine]) -> (usize, usize) {
+        lines.iter().fold((0, 0), |(before, after), line| match line {
+            DiffLine::Same(_) | DiffLine::Changed { .. } => (before + 1, after + 1),
+            DiffLine::Removed(_) => (before + 1, after),
+            DiffLine::Added(_) => (before, after + 1),
+        })
+    }
+
+    /// The IL view folds the making of the global pointer into one line, so
+    /// it shows fewer lines than instructions, and each view keeps its own
+    /// addresses.
+    #[test]
+    fn each_view_holds_an_address_for_each_line() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/backports");
+        let read = |variant: &str| {
+            let data =
+                std::fs::read(path.join(format!("lua-{variant}/mips-gcc-O2/lib.so"))).ok()?;
+            Some(Binary::parse(&data).expect("a fixture parses"))
+        };
+        let (Some(before), Some(after)) = (read("before"), read("after")) else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let start = Start { view: View::Il, scope: Scope::All, ..start() };
+        let mut app = App::new(&diff, &before, &after, start);
+        let per_side = |app: &App<'_>| match &app.screen {
+            Screen::Pair(opened) => {
+                let addresses = (opened.addresses.before.len(), opened.addresses.after.len());
+                assert_eq!(lines_per_side(&opened.lines), addresses, "{:?}", app.view);
+                opened
+                    .lines
+                    .iter()
+                    .any(|line| matches!(line, DiffLine::Same(text) if text == "gp = _gp"))
+            }
+            _ => panic!("the diff stays open"),
+        };
+        press(&mut app, &[KeyCode::Enter]);
+        let mut folded = false;
+        // The first pairs are enough to meet the global pointer.
+        for _ in 0..app.rows.len().min(50) {
+            folded |= per_side(&app);
+            press(&mut app, &[KeyCode::Char('v')]);
+            per_side(&app);
+            press(&mut app, &[KeyCode::Char('v')]);
+            per_side(&app);
+            press(&mut app, &[KeyCode::Char('n')]);
+        }
+        assert!(folded, "a function makes the global pointer");
     }
 
     #[test]

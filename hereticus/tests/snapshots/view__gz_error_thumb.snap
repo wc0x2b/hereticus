@@ -16,7 +16,6 @@ if (flags.NotEqual) goto $+0x6e
 if (vs) r3 = 0
 store.32 [r4 + 0x68] = r3
 flags = compare(r5, 0)
-it ne
 if (ne) flags = compare(r5, 5)
 if (r5 != 5) goto $+0x4c
 store.32 [r4 + 0x64] = r5
@@ -53,7 +52,6 @@ return
 if (vs) r3 = 0
 store.32 [r4 + 0x64] = r5
 flags = compare(r5, 4)
-it ne
 if (ne) flags = compare(r6, r3)
 store.32 [r4] = r3
 if (r6 != r3) goto $-0x58

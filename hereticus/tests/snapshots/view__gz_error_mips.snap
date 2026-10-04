@@ -3,9 +3,7 @@ source: hereticus/tests/view.rs
 assertion_line: 51
 expression: "gz_error(arch).join(\"\\n\")"
 ---
-gp = @0x20000
-gp = gp + @0x59ec
-gp = gp + t9
+gp = _gp
 sp = sp + -0x38
 store.32 [sp + 0x24] = s0
 s0 = a0
