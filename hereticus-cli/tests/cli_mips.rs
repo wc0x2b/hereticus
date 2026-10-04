@@ -246,7 +246,7 @@ fn a_raw_mips_report_matches_the_object_report() {
     };
 
     let raw_rows = rows(&raw);
-    assert_eq!(raw_rows.len(), 6, "two matched, two gone, two new");
+    assert_eq!(raw_rows.len(), 4, "four matched, by code or by place");
     assert_eq!(raw_rows, rows(&object));
 }
 

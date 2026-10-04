@@ -1,26 +1,32 @@
 ---
 source: hereticus-cli/tests/cli.rs
-assertion_line: 102
 info:
   program: hereticus
   args:
     - "--ignore-names"
-    - fixtures/build/O1/basic.o
+    - fixtures/build/O0/basic.o
     - fixtures/build/O2/basic.o
 ---
 success: true
 exit_code: 0
 ----- stdout -----
-╭──────────────┬───────────┬───────┬───────┬─────────┬────────────╮
-│ FUNCTION     │ CHANGE    │ SCORE │ +/-/~ │ TOUCHED │ MATCHED BY │
-├──────────────┼───────────┼───────┼───────┼─────────┼────────────┤
-│ switch_dense │ reordered │  1.00 │ 1/1/0 │ -       │ similar    │
-╰──────────────┴───────────┴───────┴───────┴─────────┴────────────╯
-array_max: gone, closest array_max at 0.40
+add: gone, closest add at 0.33
+mul_by_constant: gone, closest mul_by_constant at 0.50
+sum_to: gone
+classify: gone, closest classify at 0.30
+switch_dense: gone
+call_chain: gone
+array_max: gone
 factorial: gone
-array_max: new, closest array_max at 0.40
+add: new, closest add at 0.33
+mul_by_constant: new, closest mul_by_constant at 0.50
+sum_to: new
+classify: new, closest classify at 0.30
+switch_dense: new
+call_chain: new, closest mul_by_constant at 0.40
+array_max: new
 factorial: new
 
-6 matched (5 unchanged, 1 changed), 2 gone, 2 new
+0 matched (0 unchanged, 0 changed), 8 gone, 8 new
 
 ----- stderr -----

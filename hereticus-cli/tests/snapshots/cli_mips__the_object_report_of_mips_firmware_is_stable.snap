@@ -1,6 +1,5 @@
 ---
 source: hereticus-cli/tests/cli_mips.rs
-assertion_line: 255
 info:
   program: hereticus
   args:
@@ -16,11 +15,9 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
+changed	dispatch	dispatch	0.40	21	12	5
 changed	handle	handle	0.82	8	2	0
+changed	check_header	check_header	0.20	7	1	2
 changed values	validate_length	validate_length	1.00	0	0	0
-gone	check_header	check_header	0.20			
-gone	dispatch	dispatch	0.40			
-new	dispatch	check_header	0.24			
-new	dispatch	dispatch	0.40			
 
 ----- stderr -----
