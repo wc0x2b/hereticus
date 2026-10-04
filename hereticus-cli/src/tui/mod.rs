@@ -812,7 +812,7 @@ mod tests {
                 })
                 .collect()
         };
-        for sort in [Sort::Removed, Sort::Modified, Sort::Confidence, Sort::Added] {
+        for sort in [Sort::Removed, Sort::Modified, Sort::Rare, Sort::Confidence, Sort::Added] {
             press(&mut app, &[KeyCode::Char('s')]);
             assert_eq!(app.sort, sort);
             assert_eq!(app.rows.len(), count, "a sort keeps every row");

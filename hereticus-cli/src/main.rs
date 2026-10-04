@@ -286,19 +286,24 @@ enum Sort {
     Removed,
     /// Most instructions rewritten first.
     Modified,
+    /// Most instructions added first, where an addition that few other
+    /// functions share weighs more. A fix adds its own code, while another
+    /// compiler or flag adds the same code to many functions.
+    Rare,
 }
 
 impl Sort {
-    /// The edit count this order ranks by, if any.
+    /// The measure of a pair this order ranks by, if any.
     ///
-    /// `Confidence` ranks by no count, so it returns nothing and the report
+    /// `Confidence` ranks by no measure, so it returns nothing and the report
     /// keeps the order the library gave it.
-    fn count_of(self, edits: Edits) -> Option<usize> {
+    fn key_of(self, pair: &Match) -> Option<f64> {
         match self {
             Self::Confidence => None,
-            Self::Added => Some(edits.added),
-            Self::Removed => Some(edits.removed),
-            Self::Modified => Some(edits.edited),
+            Self::Added => Some(pair.edits.added as f64),
+            Self::Removed => Some(pair.edits.removed as f64),
+            Self::Modified => Some(pair.edits.edited as f64),
+            Self::Rare => Some(pair.rarity),
         }
     }
 
@@ -307,7 +312,8 @@ impl Sort {
         match self {
             Self::Added => Self::Removed,
             Self::Removed => Self::Modified,
-            Self::Modified => Self::Confidence,
+            Self::Modified => Self::Rare,
+            Self::Rare => Self::Confidence,
             Self::Confidence => Self::Added,
         }
     }
@@ -319,6 +325,7 @@ impl Sort {
             Self::Added => "added",
             Self::Removed => "removed",
             Self::Modified => "modified",
+            Self::Rare => "rare",
         }
     }
 }
@@ -962,10 +969,10 @@ fn sort_shown(shown: &mut [&Match], sort: Sort) {
 
 /// Which of two pairs a count order puts first: see [`sort_shown`].
 fn rank(a: &Match, b: &Match, sort: Sort) -> core::cmp::Ordering {
-    let a_count = sort.count_of(a.edits).unwrap_or(0);
-    let b_count = sort.count_of(b.edits).unwrap_or(0);
-    b_count
-        .cmp(&a_count)
+    let a_key = sort.key_of(a).unwrap_or(0.0);
+    let b_key = sort.key_of(b).unwrap_or(0.0);
+    b_key
+        .total_cmp(&a_key)
         .then_with(|| a.score.partial_cmp(&b.score).unwrap_or(core::cmp::Ordering::Equal))
 }
 
@@ -1267,6 +1274,21 @@ mod tests {
         assert_eq!(shown[0].edits.removed, 5, "removed ranks by the - column");
     }
 
+    /// `--sort rare` ranks by the weighted additions, not by their count.
+    #[test]
+    fn sort_by_rare_ranks_by_rarity() {
+        let common =
+            Match { rarity: 6.0, ..pair_with(Edits { added: 6, removed: 0, edited: 0 }, 0.9) };
+        let rare =
+            Match { rarity: 9.5, ..pair_with(Edits { added: 4, removed: 0, edited: 0 }, 0.9) };
+        let mut shown = vec![&common, &rare];
+
+        sort_shown(&mut shown, Sort::Rare);
+        assert_eq!(shown[0].edits.added, 4, "the rarer addition is first");
+        sort_shown(&mut shown, Sort::Added);
+        assert_eq!(shown[0].edits.added, 6, "added still ranks by the count");
+    }
+
     /// An equal-sized edit is broken by the lowest score, which wants the most
     /// attention.
     #[test]
@@ -1294,6 +1316,7 @@ mod tests {
     /// instruction, so only its [`Changed`] decides whether it is shown.
     fn edited_pair(changed: Changed) -> Match {
         Match {
+            rarity: 0.0,
             before: 0,
             after: 0,
             confidence: Confidence::IdenticalCode,

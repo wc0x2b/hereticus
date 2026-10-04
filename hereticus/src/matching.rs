@@ -78,6 +78,25 @@ pub struct Match {
     pub edits: Edits,
     /// What kind of code the edit touched.
     pub kinds: EditKinds,
+    /// The instructions the later build added, with more weight where the
+    /// addition is rare among the changed pairs.
+    ///
+    /// This is [`Edits::added`], plus ln((N + 1) / (n + 1)) for each
+    /// instruction the later body holds more of, where N is the number of
+    /// changed pairs and n the number of those that add the same
+    /// instruction. Another compiler or another flag adds the same
+    /// instructions to many functions, and a fix adds its own to few. Zero
+    /// for a pair that did not change.
+    ///
+    /// Measured on four published fixes, this put the fix of
+    /// CVE-2025-24257 at row 8 where [`Edits::added`] put it at row 19, and
+    /// the others within one row of where they were. Over the backports
+    /// built two ways, the Lua fix rose from row 100 to row 36 at most, but
+    /// eight fixes fell from row 1 to row 2.
+    ///
+    /// See RESEARCH.md, entry 6: this is the inverse document frequency of
+    /// information retrieval, over the instructions each pair added.
+    pub rarity: f64,
 }
 
 /// The size of an edit, in normalized instructions.
@@ -1085,6 +1104,7 @@ impl Cascade<'_> {
             changed: classify_change(left, right, &left_body, &right_body),
             edits,
             kinds,
+            rarity: 0.0,
         }
     }
 
@@ -1522,8 +1542,48 @@ impl Cascade<'_> {
         }
     }
 
+    /// Weigh what each changed pair added by how rare it is: see
+    /// [`Match::rarity`].
+    fn weigh_additions(&mut self) {
+        // A pair that changed only a value adds no instruction, and counting
+        // it would make every addition look rarer than it is.
+        let is_edit = |pair: &Match| {
+            !matches!(pair.changed, Changed::No | Changed::Data) && pair.edits.total() > 0
+        };
+        let added: Vec<Vec<Symbol>> = self
+            .matched
+            .iter()
+            .map(|pair| {
+                if !is_edit(pair) {
+                    return Vec::new();
+                }
+                sorted_only_in(&self.right[pair.after].symbols, &self.left[pair.before].symbols)
+            })
+            .collect();
+        let edited = self.matched.iter().filter(|pair| is_edit(pair)).count();
+
+        // In how many changed pairs each instruction was added.
+        let mut pairs_adding: HashMap<Symbol, usize> = HashMap::new();
+        for symbols in &added {
+            let mut distinct = symbols.clone();
+            distinct.dedup();
+            for symbol in distinct {
+                *pairs_adding.entry(symbol).or_default() += 1;
+            }
+        }
+        let weight =
+            |symbol: &Symbol| ((edited as f64 + 1.0) / (pairs_adding[symbol] as f64 + 1.0)).ln();
+        for (pair, symbols) in self.matched.iter_mut().zip(&added) {
+            if is_edit(pair) {
+                pair.rarity = pair.edits.added as f64 + symbols.iter().map(weight).sum::<f64>();
+            }
+        }
+    }
+
     /// Sort the pairs and collect what stayed unmatched.
     fn finish(mut self, progress: &dyn Progress) -> Diff {
+        self.weigh_additions();
+
         // Strongest reason first, then highest score, so the rows a reader
         // should trust sit at the top of a report.
         self.matched.sort_by(|a, b| {
@@ -2790,6 +2850,25 @@ const FEWEST_SHARED_EDGES: usize = 3;
 
 /// The lowest code similarity at which context alone pairs two functions.
 const LOWEST_CONTEXT_SIMILARITY: f64 = 0.3;
+
+/// The items of the sorted list `left` that `right` lacks, counted as a
+/// multiset, sorted.
+fn sorted_only_in<T: Ord + Copy>(left: &[T], right: &[T]) -> Vec<T> {
+    let mut only = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < left.len() {
+        if j == right.len() || left[i] < right[j] {
+            only.push(left[i]);
+            i += 1;
+        } else if left[i] > right[j] {
+            j += 1;
+        } else {
+            i += 1;
+            j += 1;
+        }
+    }
+    only
+}
 
 /// How many items two sorted lists share.
 fn sorted_shared<T: Ord>(left: &[T], right: &[T]) -> usize {
@@ -4423,6 +4502,43 @@ mod tests {
         assert_eq!(constant_agreement(&[5, 9], &[5, 9]), 1.0);
         assert_eq!(constant_agreement(&[5], &[9]), -1.0);
         assert_eq!(constant_agreement(&[], &[9]), -1.0);
+    }
+
+    /// An addition few pairs share weighs more than one many pairs share,
+    /// and an unchanged pair weighs nothing.
+    #[test]
+    fn a_rare_addition_weighs_more() {
+        let before = binary_of(&[
+            ("a", &arm(&[ADD, ORR, BX_LR])),
+            ("b", &arm(&[ADD, EOR, BX_LR])),
+            ("c", &arm(&[ADD, AND, BX_LR])),
+            ("d", &arm(&[ADC, SBC, BX_LR])),
+        ]);
+        let after = binary_of(&[
+            ("a", &arm(&[ADD, ORR, SUB, BX_LR])),
+            ("b", &arm(&[ADD, EOR, SUB, BX_LR])),
+            ("c", &arm(&[ADD, AND, MUL, BX_LR])),
+            ("d", &arm(&[ADC, SBC, BX_LR])),
+        ]);
+
+        let diff = diff(&before, &after);
+        let rarity = |index: usize| {
+            diff.matched.iter().find(|pair| pair.before == index).map(|pair| pair.rarity)
+        };
+        // Three pairs changed. Two add `sub` and one adds `mul`.
+        let close =
+            |found: Option<f64>, expected: f64| (found.expect("paired") - expected).abs() < 1e-9;
+        assert!(close(rarity(0), 1.0 + (4.0f64 / 3.0).ln()), "{:?}", rarity(0));
+        assert!(close(rarity(1), 1.0 + (4.0f64 / 3.0).ln()));
+        assert!(close(rarity(2), 1.0 + 2.0f64.ln()));
+        assert_eq!(rarity(3), Some(0.0));
+    }
+
+    #[test]
+    fn only_in_counts_a_multiset() {
+        assert_eq!(sorted_only_in(&[1, 2, 2, 3], &[2, 3, 4]), vec![1, 2]);
+        assert_eq!(sorted_only_in::<u32>(&[], &[1]), Vec::<u32>::new());
+        assert_eq!(sorted_only_in(&[5, 5], &[]), vec![5, 5]);
     }
 
     /// Context alone does not pair two functions whose code shares too
