@@ -109,6 +109,19 @@ mul_by_constant
   bx lr
 ```
 
+`--view il` shows each instruction as the IL reads it, the same on every
+architecture, and a branch with the compare it tests, as
+`if (w0 <= 0) goto $-0x40`:
+
+```console
+$ hereticus --view il --diff mul_by_constant before.elf after.elf
+mul_by_constant
+- r1 = 0x25
++ r1 = 0x29
+  r0 = r0 * r1
+  return
+```
+
 Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
 and 2 when the input could not be read.
 
