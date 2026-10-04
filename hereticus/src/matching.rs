@@ -2701,6 +2701,142 @@ pub enum DiffLine {
     Changed { before: String, after: String },
 }
 
+/// How `--diff` shows each instruction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum View {
+    /// As the decoder printed it.
+    #[default]
+    Assembly,
+    /// As the IL reads it: see [`crate::view`].
+    Il,
+}
+
+/// [`instruction_diff`], or the same diff with each instruction shown as
+/// `view` says.
+///
+/// The IL view aligns on the IL statements, so two spellings of one
+/// operation, as `eor r0, r0, r0` and `mov r0, #0`, are the same line.
+pub fn instruction_diff_in(
+    view: View,
+    before: &Function,
+    before_isa: Isa,
+    after: &Function,
+    after_isa: Isa,
+) -> Vec<DiffLine> {
+    if view == View::Assembly {
+        return instruction_diff(before, before_isa, after, after_isa);
+    }
+    let lines = |function: &Function, isa: Isa| {
+        let arch = isa.arch();
+        let insns = decode_all(arch, &function.code, function.address).0;
+        crate::view::il_lines(arch, &function.code, &insns)
+    };
+    let (before_lines, after_lines) = (lines(before, before_isa), lines(after, after_isa));
+    if !can_align(before_lines.len(), after_lines.len()) {
+        let mut lines: Vec<DiffLine> = before_lines.into_iter().map(DiffLine::Removed).collect();
+        lines.extend(after_lines.into_iter().map(DiffLine::Added));
+        return lines;
+    }
+    let before_keys: Vec<String> = before_lines.iter().map(|line| il_key(line)).collect();
+    let after_keys: Vec<String> = after_lines.iter().map(|line| il_key(line)).collect();
+    let steps = longest_common_subsequence(&before_keys, &after_keys);
+
+    let mut aligned = Vec::with_capacity(steps.len());
+    let (mut i, mut j) = (0, 0);
+    for step in steps {
+        match step {
+            Step::Both => {
+                aligned.push(DiffLine::Same(after_lines[j].clone()));
+                i += 1;
+                j += 1;
+            }
+            Step::Left => {
+                aligned.push(DiffLine::Removed(before_lines[i].clone()));
+                i += 1;
+            }
+            Step::Right => {
+                aligned.push(DiffLine::Added(after_lines[j].clone()));
+                j += 1;
+            }
+        }
+    }
+    // A removed statement right before an added one of the same shape is
+    // one statement: the same, where only a register differs, as a
+    // register is the compiler's free choice, and else with another
+    // constant.
+    let arch = after_isa.arch();
+    let mut folded: Vec<DiffLine> = Vec::with_capacity(aligned.len());
+    for line in aligned {
+        if let (Some(DiffLine::Removed(before)), DiffLine::Added(after)) = (folded.last(), &line) {
+            let same = only_registers_differ(arch, before, after);
+            if same || il_shape(before) == il_shape(after) {
+                let before = before.clone();
+                folded.pop();
+                folded.push(if same {
+                    DiffLine::Same(after.clone())
+                } else {
+                    DiffLine::Changed { before, after: after.clone() }
+                });
+                continue;
+            }
+        }
+        folded.push(line);
+    }
+    folded
+}
+
+/// Report whether two statements differ in nothing but register names.
+fn only_registers_differ(arch: &dyn Arch, before: &str, after: &str) -> bool {
+    let words = |line: &str| -> Vec<String> {
+        il_key(line)
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .filter(|word| !word.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let (before, after) = (words(before), words(after));
+    before.len() == after.len()
+        && before
+            .iter()
+            .zip(&after)
+            .all(|(a, b)| a == b || (arch.is_register(a) && arch.is_register(b)))
+}
+
+/// The text two IL statements must share to align: the statement with
+/// each target collapsed, as [`diff_key`] does for an instruction.
+fn il_key(line: &str) -> String {
+    line.split(' ')
+        .map(|word| if is_branch_target(word) { "$" } else { word })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// An IL statement with every number collapsed, so two that differ only in
+/// a constant share it.
+fn il_shape(line: &str) -> String {
+    let key = il_key(line);
+    let mut shape = String::with_capacity(key.len());
+    let mut in_number = false;
+    let mut previous = ' ';
+    for character in key.chars() {
+        let starts_number = character.is_ascii_digit() && !previous.is_ascii_alphanumeric();
+        if starts_number
+            || (in_number && character.is_ascii_hexdigit())
+            || (in_number && character == 'x')
+        {
+            if !in_number {
+                shape.push('#');
+            }
+            in_number = true;
+        } else {
+            in_number = false;
+            shape.push(character);
+        }
+        previous = character;
+    }
+    shape
+}
+
 /// Align two matched functions instruction by instruction.
 ///
 /// The alignment keys on the normalized form, so a branch whose target only
@@ -3631,6 +3767,17 @@ mod tests {
         assert_eq!(unsure, 0, "neither is sure");
         let one_sure = short_texts_changed((&["%d"], &["%d"]), (&["!f"], &[]));
         assert_eq!(one_sure, 0, "the other side's is not sure");
+    }
+
+    #[test]
+    fn an_il_shape_collapses_numbers_but_not_names() {
+        assert_eq!(il_shape("w0 = w1 + 0x10"), il_shape("w0 = w1 + 0x20"));
+        assert_eq!(il_shape("x0 = load.32 [x1 + 8]"), "x0 = load.# [x1 + #]");
+        assert_eq!(il_key("if (w0 <= 3) goto $+0x40"), "if (w0 <= 3) goto $");
+        assert_ne!(il_shape("w0 = w1 + 1"), il_shape("w0 = w1 - 1"));
+        let arch = &crate::arch::aarch64::Aarch64;
+        assert!(only_registers_differ(arch, "x3 = x20 + 4", "x3 = x19 + 4"));
+        assert!(!only_registers_differ(arch, "x3 = x20 + 4", "x3 = x20 + 8"));
     }
 
     #[test]

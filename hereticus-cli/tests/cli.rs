@@ -197,6 +197,23 @@ fn json_format_is_stable() {
     ]));
 }
 
+/// The IL view shows a diff as IL statements.
+#[test]
+fn the_il_view_shows_statements() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(hereticus().args([
+        "--view",
+        "il",
+        "--diff-all",
+        "fixtures/build/O2/firmware.o",
+        "fixtures/build/O2/firmware_v2.o",
+    ]));
+}
+
 /// The JSON report parses, and its totals agree with what it lists.
 #[test]
 fn the_json_report_parses_and_adds_up() {
