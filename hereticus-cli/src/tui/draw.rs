@@ -16,7 +16,7 @@ use super::theme::{
     ADDED, BLUE, DARK_GRAY, EDITED, Focus, GRAY, GRAY_FG, GREEN, ORANGE, PURPLE, REMOVED, YELLOW,
     pane_block, tone_of,
 };
-use super::{App, Entry, Help, Labeled, Layout, Order, Scope, Screen, fuzzy};
+use super::{App, Entry, Labeled, Layout, Order, Overlay, Scope, Screen, fuzzy};
 use crate::{
     DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_kind,
     name_of_view, unmatched_word,
@@ -47,8 +47,10 @@ impl App<'_> {
             self.draw_filter(frame, filter);
         }
         self.draw_status(frame, status);
-        if self.help == Help::Shown {
-            draw_help(frame);
+        match self.overlay {
+            Overlay::None => {}
+            Overlay::Help => draw_help(frame),
+            Overlay::Quit => draw_quit(frame),
         }
     }
 
@@ -429,7 +431,7 @@ fn draw_help(frame: &mut Frame<'_>) {
         Line::default(),
         help_header("Global"),
         help_entry("?", "this help"),
-        help_entry("q", "quit"),
+        help_entry("q", "quit, after a question"),
         help_entry("wheel", "scroll"),
         help_entry("click", "select, again to open"),
     ];
@@ -478,6 +480,26 @@ fn draw_help(frame: &mut Frame<'_>) {
         Split::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(inner);
     frame.render_widget(Paragraph::new(left), left_area);
     frame.render_widget(Paragraph::new(right), right_area);
+}
+
+/// The question whether to quit, over the middle of the screen.
+fn draw_quit(frame: &mut Frame<'_>) {
+    let [area] = Split::vertical([Constraint::Length(3)]).flex(Flex::Center).areas(frame.area());
+    let [area] = Split::horizontal([Constraint::Percentage(60)]).flex(Flex::Center).areas(area);
+    let question = Paragraph::new(Line::from(vec![
+        Span::raw("Are you sure you want to exit? ("),
+        Span::styled("Enter", Style::new().fg(GREEN)),
+        Span::raw(" to confirm, "),
+        Span::styled("Esc", Style::new().fg(GREEN)),
+        Span::raw(" to cancel)"),
+    ]))
+    .block(
+        Block::bordered()
+            .border_style(Style::new().fg(ORANGE))
+            .title(Span::styled("Quit Confirmation", Style::new().fg(YELLOW).bold())),
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(question, area);
 }
 
 /// A box of at most `width` by `height` in the middle of `area`.

@@ -1,6 +1,6 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
-assertion_line: 1033
+assertion_line: 1070
 expression: "screen(&mut app, 120, 24)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
@@ -21,7 +21,7 @@ expression: "screen(&mut app, 120, 24)"
  fc + r1 = load.32 [r│                                        reordered data same                 │                    ║
 100 + pc = r3 + r1   │Global                                  + added - removed ~ value           │                    ║
 104 + if (eq) r0 = r0│  ?          this help                                                      │                    ║
-108 + if (eq) r0 = r0│  q          quit                                                           │                    ║
+108 + if (eq) r0 = r0│  q          quit, after a question                                         │                    ║
 10c + if (eq) r0 = r0│  wheel      scroll                                                         │                    ║
 110 + if (eq) r0 = r0│  click      select, again to open                                          │                    ║
 114   r0 = load.16 [r└───────────────────────────────────────────────────────────────esc/q/? close┘                    ║
