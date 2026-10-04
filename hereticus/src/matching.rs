@@ -2851,9 +2851,24 @@ fn il_key(line: &str) -> String {
     let words: Vec<&str> =
         line.split(' ').map(|word| if is_branch_target(word) { "$" } else { word }).collect();
     // An address the code formed, as `@0x57c6`, moves as a target does,
-    // and so does the distance from `pc` to a literal pool.
+    // and so does the distance from `pc` to a literal pool. A slot of the
+    // stack frame moves when the frame grows, which the compiler decides:
+    // the matcher reads every frame slot as one kind too. The size of the
+    // frame stays, as `sp = sp - 0x40`, since a stack buffer can grow.
     let mut key = words.join(" ");
-    for marker in ["@0x", "[pc + 0x", "[pc - 0x"] {
+    for marker in [
+        "@0x",
+        "[pc + 0x",
+        "[pc - 0x",
+        "[sp + 0x",
+        "[sp - 0x",
+        "[x29 + 0x",
+        "[x29 - 0x",
+        "[fp + 0x",
+        "[fp - 0x",
+        "[r7 + 0x",
+        "[s8 + 0x",
+    ] {
         let mut collapsed = String::with_capacity(key.len());
         let mut rest = key.as_str();
         while let Some(at) = rest.find(marker) {
@@ -3832,6 +3847,8 @@ mod tests {
         assert_eq!(il_key("if (w0 <= 3) goto $+0x40"), "if (w0 <= 3) goto $");
         assert_eq!(il_key("x8 = load.64 [@0x57c6]"), "x8 = load.64 [@]");
         assert_eq!(il_key("r2 = load.32 [pc + 0x5c]"), "r2 = load.32 [pc + ]");
+        assert_eq!(il_key("store.64 [sp + 0x20] = x22, x21"), "store.64 [sp + ] = x22, x21");
+        assert_eq!(il_key("sp = sp - 0x40"), "sp = sp - 0x40", "the frame size stays");
         assert_eq!(il_key("x1 = &\"usage\""), "x1 = &\"usage\"");
         assert_ne!(il_shape("w0 = w1 + 1"), il_shape("w0 = w1 - 1"));
         let arch = &crate::arch::aarch64::Aarch64;

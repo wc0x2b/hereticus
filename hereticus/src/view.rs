@@ -68,6 +68,16 @@ pub fn il_lines_in(
     context: Option<Context<'_>>,
 ) -> Vec<String> {
     let Some(first) = insns.first() else { return Vec::new() };
+    // The constants that are part of an address, which move with what
+    // they reach.
+    let moving: Vec<bool> = match context {
+        Some(context) => arch
+            .constant_kinds(code, insns, context.space)
+            .into_iter()
+            .map(|kind| kind != crate::address::ConstantKind::Value)
+            .collect(),
+        None => vec![false; insns.len()],
+    };
     let formed = match context {
         Some(context) => {
             let regions = context.links.regions();
@@ -109,7 +119,10 @@ pub fn il_lines_in(
                 .ok()
                 .and_then(|offset| code.get(offset..offset.checked_add(insn.bytes_len)?));
             let lifted = word.and_then(|word| arch.lift(insn, word));
-            match lifted.and_then(|lifted| statement(insn, &lifted, address, &mut last_compare)) {
+            let moves = moving.get(index).copied().unwrap_or(false);
+            let shown = lifted
+                .and_then(|lifted| statement(insn, &lifted, address, moves, &mut last_compare));
+            match shown {
                 Some(text) => match a32_condition(arch, insn) {
                     Some(cond) => format!("if ({cond}) {text}"),
                     None => text,
@@ -439,8 +452,13 @@ fn statement(
     insn: &Insn,
     lifted: &Lifted,
     address: Option<Pointed>,
+    moves: bool,
     last_compare: &mut Option<Compared>,
 ) -> Option<String> {
+    // A constant that is part of an address shows as one, as `@0x20000`.
+    let constant = |value: u64| {
+        if moves { format!("@{value:#x}") } else { constant_text(value) }
+    };
     let mut tokens = split_operands(&insn.operands);
     // The A32 decoder prints a register before the two a compare compares,
     // as `cmps r0, r3, 0x0`, which is no operand of it.
@@ -502,7 +520,7 @@ fn statement(
             .zip(paired)
             .map(|(operand, text)| match operand {
                 Operand::Memory { .. } => memory_text(&text),
-                Operand::Const(value) => constant_text(*value),
+                Operand::Const(value) => constant(*value),
                 _ => text,
             })
             .collect()
@@ -511,7 +529,7 @@ fn statement(
             Some(match operand {
                 Operand::Reg(reg) => (*names.get(reg)?).to_string(),
                 Operand::Zero => "0".to_string(),
-                Operand::Const(value) => constant_text(*value),
+                Operand::Const(value) => constant(*value),
                 Operand::Memory { .. } => memory_text(memory?),
                 Operand::Target => target?.to_string(),
                 Operand::RegisterList | Operand::Other => return None,
@@ -545,6 +563,11 @@ fn statement(
         // to it names what the two point at.
         Op::Address => match (operands.as_slice(), &address) {
             ([dest, _], Some(_)) if insn.mnemonic == "adrp" => format!("{dest} = &page"),
+            // `lui` puts its constant in the upper half.
+            ([dest, _], None) if insn.mnemonic == "lui" => match canonical.operands.get(1) {
+                Some(Operand::Const(high)) => format!("{dest} = {}", constant(high << 16)),
+                _ => return None,
+            },
             ([dest, _], Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
             ([dest, source], None) => format!("{dest} = &{source}"),
             _ => return None,
