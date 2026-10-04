@@ -15,6 +15,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+pub use crate::view::PairedLabels;
+
 use rayon::prelude::*;
 
 use crate::address::{AddressSpace, ConstantKind, Contents};
@@ -2715,9 +2717,12 @@ pub enum View {
 /// `view` says.
 ///
 /// The IL view aligns on the IL statements, so two spellings of one
-/// operation, as `eor r0, r0, r0` and `mov r0, #0`, are the same line.
+/// operation, as `eor r0, r0, r0` and `mov r0, #0`, are the same line. With
+/// `paired`, a call to a stripped function of `after` names the function as
+/// its pair in `before` is named.
 pub fn instruction_diff_in(
     view: View,
+    paired: Option<&PairedLabels>,
     before: &Binary,
     before_index: usize,
     after: &Binary,
@@ -2728,18 +2733,19 @@ pub fn instruction_diff_in(
     if view == View::Assembly {
         return instruction_diff(left, before_isa, right, after_isa);
     }
-    let lines = |binary: &Binary, function: &Function, isa: Isa| {
+    let lines = |binary: &Binary, function: &Function, isa: Isa, paired| {
         let arch = isa.arch();
         let insns = decode_all(arch, &function.code, function.address).0;
         let context = crate::view::Context {
             links: &binary.links,
             space: &binary.addresses,
             functions: &binary.functions,
+            paired,
         };
         crate::view::il_lines_in(arch, &function.code, &insns, Some(context))
     };
     let (before_lines, after_lines) =
-        (lines(before, left, before_isa), lines(after, right, after_isa));
+        (lines(before, left, before_isa, None), lines(after, right, after_isa, paired));
     if !can_align(before_lines.len(), after_lines.len()) {
         let mut lines: Vec<DiffLine> = before_lines.into_iter().map(DiffLine::Removed).collect();
         lines.extend(after_lines.into_iter().map(DiffLine::Added));

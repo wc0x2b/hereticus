@@ -13,8 +13,8 @@ use clap::{Parser, ValueEnum};
 use console::Term;
 use hereticus::address::Contents;
 use hereticus::matching::{
-    Changed, Confidence, Diff, DiffLine, EditKind, EditKinds, Edits, Match, Options, Phase,
-    Progress, UseNames, View, diff_reporting, instruction_diff_in,
+    Changed, Confidence, Diff, DiffLine, EditKind, EditKinds, Edits, Match, Options, PairedLabels,
+    Phase, Progress, UseNames, View, diff_reporting, instruction_diff_in,
 };
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};
@@ -478,11 +478,12 @@ fn run(args: &Args) -> Result<bool, String> {
             .collect();
         sort_shown(&mut shown, args.sort);
         let paint = Paint::resolve(args.color);
+        let paired = PairedLabels::new(&diff, &before, &after);
         for (index, pair) in shown.iter().enumerate() {
             if index > 0 {
                 println!();
             }
-            print_pair_diff(pair, &before, &after, args.view.into(), paint);
+            print_pair_diff(pair, &paired, &before, &after, args.view.into(), paint);
         }
         return Ok(!shown.is_empty());
     }
@@ -563,12 +564,7 @@ fn check_and_report_base(data: &[u8], base: u64, isa: Isa, path: &Path) {
 
 /// Name a function, falling back to its address when it has no symbol.
 fn name_of(binary: &Binary, index: usize) -> String {
-    let function = &binary.functions[index];
-    if function.name.is_empty() {
-        format!("sub_{:x}", function.address)
-    } else {
-        function.name.clone()
-    }
+    binary.functions[index].label()
 }
 
 /// The name `--view` takes for a view.
@@ -903,12 +899,19 @@ fn print_one_diff(
         }
     })?;
 
-    print_pair_diff(pair, before, after, view, paint);
+    print_pair_diff(pair, &PairedLabels::new(diff, before, after), before, after, view, paint);
     Ok(())
 }
 
 /// Print the name of a pair, then its instruction-level diff.
-fn print_pair_diff(pair: &Match, before: &Binary, after: &Binary, view: View, paint: Paint) {
+fn print_pair_diff(
+    pair: &Match,
+    paired: &PairedLabels,
+    before: &Binary,
+    after: &Binary,
+    view: View,
+    paint: Paint,
+) {
     let before_name = name_of(before, pair.before);
     let after_name = name_of(after, pair.after);
     if before_name == after_name {
@@ -917,7 +920,7 @@ fn print_pair_diff(pair: &Match, before: &Binary, after: &Binary, view: View, pa
         println!("{before_name} -> {after_name}");
     }
 
-    let lines = instruction_diff_in(view, before, pair.before, after, pair.after);
+    let lines = instruction_diff_in(view, Some(paired), before, pair.before, after, pair.after);
     for line in &lines {
         println!("{}", render_diff_line(line, paint));
     }
