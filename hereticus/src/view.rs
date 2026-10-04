@@ -244,23 +244,32 @@ fn mips_statement(insn: &Insn, float_condition: &mut Option<String>) -> Option<S
             let test = float_condition.as_deref().unwrap_or("fcc");
             format!("if ({test}) goto {target}")
         }
-        ("bc1f", [target]) => {
-            let test = float_condition.as_deref().unwrap_or("fcc");
-            format!("if (!({test})) goto {target}")
-        }
+        ("bc1f", [target]) => match float_condition.as_deref() {
+            Some(test) if test.starts_with("!(") => {
+                format!("if ({}) goto {target}", &test[2..test.len() - 1])
+            }
+            Some(test) => format!("if (!({test})) goto {target}"),
+            None => format!("if (!fcc) goto {target}"),
+        },
         (mnemonic, [left, right]) if mnemonic.starts_with("c.") => {
-            // Only the compares that are false on a NaN read as an
-            // operator; `c.ult` and its kin are true on one.
-            let operator = match mnemonic.split('.').nth(1)? {
-                "eq" | "seq" => "==",
-                "lt" | "olt" => "<",
-                "le" | "ole" => "<=",
+            // Each operator is false on a NaN, so a compare that is true on
+            // one reads as the negation of its opposite: `c.ult` is
+            // `!(a >= b)`. The signaling forms test the same; `rabbitizer`
+            // spells `c.sf.d` as `c.df.d`.
+            let test = match mnemonic.split('.').nth(1)? {
+                "f" | "sf" | "df" => "0".to_string(),
+                "un" | "ngle" => format!("unordered({left}, {right})"),
+                "eq" | "seq" => format!("{left} == {right}"),
+                "ueq" | "ngl" => format!("!({left} < {right} || {left} > {right})"),
+                "olt" | "lt" => format!("{left} < {right}"),
+                "ult" | "nge" => format!("!({left} >= {right})"),
+                "ole" | "le" => format!("{left} <= {right}"),
+                "ule" | "ngt" => format!("!({left} > {right})"),
                 _ => {
                     *float_condition = None;
                     return None;
                 }
             };
-            let test = format!("{left} {operator} {right}");
             *float_condition = Some(test.clone());
             format!("fcc = {test}")
         }
@@ -1347,8 +1356,44 @@ mod tests {
             shown[..3],
             ["fcc = fv0 < fv1", "if (fv0 < fv1) goto $+0xc", "if (!(fv0 < fv1)) goto $+0xc"]
         );
-        assert_eq!(shown[3], "c.ult.d fv0, fv1", "true on a NaN, so no operator");
-        assert_eq!(shown[4], "if (fcc) goto $+0xc");
+        assert_eq!(shown[3], "fcc = !(fv0 >= fv1)", "true on a NaN");
+        assert_eq!(shown[4], "if (!(fv0 >= fv1)) goto $+0xc");
+    }
+
+    #[test]
+    fn every_mips_float_compare_reads_as_a_test() {
+        use crate::arch::mips::Mips32;
+        let expected = [
+            "fcc = 0",
+            "fcc = unordered(fv0, fv1)",
+            "fcc = fv0 == fv1",
+            "fcc = !(fv0 < fv1 || fv0 > fv1)",
+            "fcc = fv0 < fv1",
+            "fcc = !(fv0 >= fv1)",
+            "fcc = fv0 <= fv1",
+            "fcc = !(fv0 > fv1)",
+        ];
+        // c.f.d to c.ngt.d: the signaling eight test as the quiet eight do.
+        let words: Vec<u32> = (0..16).map(|cond| 0x4622_0030 | cond).collect();
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0x1000);
+        let shown = il_lines(&Mips32::BIG, &code, &insns);
+        assert_eq!(shown[..8], expected);
+        assert_eq!(shown[8..], expected);
+    }
+
+    #[test]
+    fn a_branch_on_false_negates_the_float_compare() {
+        use crate::arch::mips::Mips32;
+        let words: [u32; 3] = [
+            0x4622_0035, // c.ult.d fv0, fv1
+            0x4500_0002, // bc1f $+0xc
+            0x0000_0000, // nop
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0x1000);
+        let shown = il_lines(&Mips32::BIG, &code, &insns);
+        assert_eq!(shown[1], "if (fv0 >= fv1) goto $+0xc");
     }
 
     #[test]
