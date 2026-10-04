@@ -782,6 +782,7 @@ pub fn diff_reporting(
     cascade.repair_twins_by_callees();
     cascade.uncross_by_callees();
     cascade.pair_by_callers(before, after);
+    cascade.realign_by_context();
     cascade.pair_leftover_twins();
     cascade.compare_callees(before, after);
     cascade.compare_texts();
@@ -835,6 +836,173 @@ impl Cascade<'_> {
     /// already paired. Others say nothing yet. Every text counts.
     fn reference_keys(&self) -> (Vec<Vec<ReferenceKey>>, Vec<Vec<ReferenceKey>>) {
         self.reference_keys_where(Only::Free)
+    }
+
+    /// The callers of each function that already paired, as indices into
+    /// the second binary, sorted and without repeats.
+    ///
+    /// A caller of the first binary is known by its partner, so two lists
+    /// compare directly.
+    ///
+    /// See RESEARCH.md, entry 1: the callers are the context of a function.
+    fn paired_callers(&self) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+        let partner: HashMap<usize, usize> =
+            self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
+        let callers = |side: &[Prepared<'_>], key: &dyn Fn(usize) -> Option<usize>| {
+            let mut callers = vec![Vec::new(); side.len()];
+            for (caller, prepared) in side.iter().enumerate() {
+                let Some(key) = key(caller) else { continue };
+                for callee in &prepared.calls {
+                    if let Callee::Function(callee) = callee
+                        && let Some(list) = callers.get_mut(*callee)
+                    {
+                        list.push(key);
+                    }
+                }
+            }
+            for list in &mut callers {
+                list.sort_unstable();
+                list.dedup();
+            }
+            callers
+        };
+        (
+            callers(&self.left, &|caller| partner.get(&caller).copied()),
+            callers(&self.right, &|caller| (!self.right_free[caller]).then_some(caller)),
+        )
+    }
+
+    /// Move a pairing by similarity to a free function that keeps more of
+    /// its call edges, and pair two free functions whose call edges agree.
+    ///
+    /// Two builds made another way rewrite a function past what its code
+    /// can show: measured over the cross builds, 572 wrong pairs had their
+    /// true partner left free, and 358 of those partners scored under 0.5.
+    /// Their context still agrees: the functions they call, the functions
+    /// that call them, and the texts they point at. The code then only has
+    /// to clear [`LOWEST_CONTEXT_SIMILARITY`].
+    ///
+    /// See RESEARCH.md, entry 1 (contextual diffing, ASIA CCS 2025), which
+    /// matches through the neighbors of matched functions, and entry 2
+    /// (network alignment, QBinDiff), which scores a pair by the call edges
+    /// it keeps together with its code.
+    fn realign_by_context(&mut self) {
+        /// Each round lets the new pairs serve as context for the next.
+        const MOST_ROUNDS: usize = 4;
+
+        for _ in 0..MOST_ROUNDS {
+            if self.realign_by_context_once() == Repaired::Nothing {
+                break;
+            }
+        }
+    }
+
+    /// One round of [`Self::realign_by_context`].
+    fn realign_by_context_once(&mut self) -> Repaired {
+        let (left_keys, right_keys) = self.reference_keys_of_all();
+        let (left_callers, right_callers) = self.paired_callers();
+        let context = |x: usize, y: usize| {
+            sorted_shared(&left_keys[x], &right_keys[y])
+                + sorted_shared(&left_callers[x], &right_callers[y])
+        };
+
+        // The free functions of the second binary that a paired caller of
+        // `x` calls, or that call a paired callee of `x`.
+        let mut right_callers_of: Vec<Vec<usize>> = vec![Vec::new(); self.right.len()];
+        for (caller, prepared) in self.right.iter().enumerate() {
+            for callee in &prepared.calls {
+                if let Callee::Function(callee) = callee
+                    && let Some(list) = right_callers_of.get_mut(*callee)
+                {
+                    list.push(caller);
+                }
+            }
+        }
+        let neighbors = |x: usize| -> BTreeSet<usize> {
+            let mut found = BTreeSet::new();
+            for &caller in &left_callers[x] {
+                for callee in &self.right[caller].calls {
+                    if let Callee::Function(callee) = callee {
+                        found.insert(*callee);
+                    }
+                }
+            }
+            for key in &left_keys[x] {
+                if let ReferenceKey::Paired(callee) = key {
+                    found.extend(right_callers_of[*callee].iter().copied());
+                }
+            }
+            found.retain(|&y| y < self.right.len() && self.right_free[y]);
+            found
+        };
+
+        let weak_partner: HashMap<usize, (usize, usize)> = self
+            .matched
+            .iter()
+            .enumerate()
+            .filter(|(_, pair)| pair.confidence == Confidence::Similar)
+            .map(|(index, pair)| (pair.before, (index, pair.after)))
+            .collect();
+
+        // (context, score, x, y): the best free partner of each function of
+        // the first binary that is free or paired by similarity alone.
+        let mut proposals: Vec<(usize, f64, usize, usize)> = (0..self.left.len())
+            .into_par_iter()
+            .filter(|&x| self.left_free[x] || weak_partner.contains_key(&x))
+            .filter_map(|x| {
+                let now = weak_partner.get(&x).map_or(0, |&(_, y)| context(x, y));
+                neighbors(x)
+                    .into_iter()
+                    .filter_map(|y| {
+                        let shared = context(x, y);
+                        let score =
+                            similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols);
+                        (shared >= FEWEST_SHARED_EDGES
+                            && shared > now
+                            && score >= LOWEST_CONTEXT_SIMILARITY)
+                            .then_some((shared, score, x, y))
+                    })
+                    .max_by(|a, b| {
+                        a.0.cmp(&b.0)
+                            .then_with(|| {
+                                a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal)
+                            })
+                            .then_with(|| b.3.cmp(&a.3))
+                    })
+            })
+            .collect();
+        proposals.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal))
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.3.cmp(&b.3))
+        });
+
+        let mut taken = BTreeSet::new();
+        let mut moves = Vec::new();
+        let mut joins = Vec::new();
+        for (_, score, x, y) in proposals {
+            if !taken.insert(y) {
+                continue;
+            }
+            match weak_partner.get(&x) {
+                Some(&(index, _)) => moves.push((index, x, y, score)),
+                None => joins.push((x, y, score)),
+            }
+        }
+        if moves.is_empty() && joins.is_empty() {
+            return Repaired::Nothing;
+        }
+        for (index, x, y, score) in moves {
+            let old = self.matched[index].after;
+            self.right_free[old] = true;
+            self.right_free[y] = false;
+            self.matched[index] = self.assess(x, y, Confidence::Similar, score);
+        }
+        for (x, y, score) in joins {
+            self.take_pair(x, y, Confidence::SameCallers, score);
+        }
+        Repaired::Some
     }
 
     /// [`Self::reference_keys`], for every function.
@@ -2561,12 +2729,15 @@ enum ReferenceKey {
     Text(String),
 }
 
-/// How well two sorted lists of references agree, from -1.0 to 1.0, or 0.0
-/// where neither names any.
-fn reference_agreement(left: &[ReferenceKey], right: &[ReferenceKey]) -> f64 {
-    if left.is_empty() && right.is_empty() {
-        return 0.0;
-    }
+/// The fewest call edges and texts a pair must share before
+/// [`Cascade::realign_by_context`] takes it.
+const FEWEST_SHARED_EDGES: usize = 3;
+
+/// The lowest code similarity at which context alone pairs two functions.
+const LOWEST_CONTEXT_SIMILARITY: f64 = 0.3;
+
+/// How many items two sorted lists share.
+fn sorted_shared<T: Ord>(left: &[T], right: &[T]) -> usize {
     let mut shared = 0usize;
     let (mut i, mut j) = (0usize, 0usize);
     while i < left.len() && j < right.len() {
@@ -2580,6 +2751,16 @@ fn reference_agreement(left: &[ReferenceKey], right: &[ReferenceKey]) -> f64 {
             }
         }
     }
+    shared
+}
+
+/// How well two sorted lists of references agree, from -1.0 to 1.0, or 0.0
+/// where neither names any.
+fn reference_agreement(left: &[ReferenceKey], right: &[ReferenceKey]) -> f64 {
+    if left.is_empty() && right.is_empty() {
+        return 0.0;
+    }
+    let shared = sorted_shared(left, right);
     let combined = left.len() + right.len() - shared;
     2.0 * shared as f64 / combined as f64 - 1.0
 }
@@ -2632,22 +2813,7 @@ fn similarity_of_symbols<T: Ord>(left: &[T], right: &[T]) -> f64 {
         return 1.0;
     }
 
-    // Both sides are sorted, so one pass counts the shared instructions. Every
-    // instruction counts toward the combined total either way, so the combined
-    // count needs no separate walk.
-    let mut shared = 0usize;
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < left.len() && j < right.len() {
-        match left[i].cmp(&right[j]) {
-            core::cmp::Ordering::Less => i += 1,
-            core::cmp::Ordering::Greater => j += 1,
-            core::cmp::Ordering::Equal => {
-                shared += 1;
-                i += 1;
-                j += 1;
-            }
-        }
-    }
+    let shared = sorted_shared(left, right);
 
     // |A ∪ B| = |A| + |B| − |A ∩ B| for multisets, so the union needs no walk.
     let combined = left.len() + right.len() - shared;
@@ -4124,6 +4290,74 @@ mod tests {
             assert_eq!(caller.changed, Changed::No, "names {names:?}");
             assert_eq!(caller.kinds.callees, 0, "names {names:?}");
         }
+    }
+
+    /// ARM words, little endian.
+    fn arm(words: &[u32]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    const ADD: u32 = 0xe080_0001;
+    const SUB: u32 = 0xe040_0001;
+    const ORR: u32 = 0xe180_0001;
+    const EOR: u32 = 0xe020_0001;
+    const AND: u32 = 0xe000_0001;
+    const BIC: u32 = 0xe1c0_0001;
+    const ADC: u32 = 0xe0a0_0001;
+    const SBC: u32 = 0xe0c0_0001;
+    const RSB: u32 = 0xe060_0001;
+    const MUL: u32 = 0xe000_0091;
+    const BX_LR: u32 = 0xe12f_ff1e;
+
+    /// A function at 0x0 that calls the three at 0x100, 0x200 and 0x300,
+    /// then runs `rest`.
+    fn calls_three_then(rest: &[u32]) -> Vec<u8> {
+        let calls: Vec<u32> = [0x100, 0x200, 0x300]
+            .iter()
+            .enumerate()
+            .map(|(slot, &target)| u32::from_le_bytes(bl(slot as u64 * 4, target)))
+            .collect();
+        arm(&[calls.as_slice(), rest].concat())
+    }
+
+    /// A function rewritten past the threshold pairs with itself by the
+    /// functions it calls, and not with a free look-alike that calls none.
+    #[test]
+    fn a_rewritten_function_pairs_by_its_context() {
+        let before_code = calls_three_then(&[ADD, SUB, ORR, EOR, AND, BIC, ADC, SBC, BX_LR]);
+        let after_code = calls_three_then(&[ADD, SUB, MUL, BX_LR]);
+        let look_alike = arm(&[ADD, SUB, ORR, EOR, AND, BIC, ADC, SBC, BX_LR, RSB]);
+        let [one, two, three] = [returns(1), returns(2), returns(3)];
+        let before = binary_of(&[("", &before_code), ("", &one), ("", &two), ("", &three)]);
+        let after = binary_of(&[
+            ("", &after_code),
+            ("", &one),
+            ("", &two),
+            ("", &three),
+            ("", &look_alike),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let partner = diff.matched.iter().find(|pair| pair.before == 0).map(|pair| pair.after);
+        assert_eq!(partner, Some(0));
+        assert_eq!(diff.added, vec![4]);
+    }
+
+    /// Context alone does not pair two functions whose code shares too
+    /// little: see [`LOWEST_CONTEXT_SIMILARITY`].
+    #[test]
+    fn context_does_not_pair_unrelated_code() {
+        let before_code = calls_three_then(&[ADD, SUB, ORR, EOR, AND, BIC, ADC, SBC, BX_LR]);
+        let after_code = calls_three_then(&[MUL, MUL, MUL, MUL, MUL, MUL, MUL, MUL, MUL, BX_LR]);
+        let [one, two, three] = [returns(1), returns(2), returns(3)];
+        let before = binary_of(&[("", &before_code), ("", &one), ("", &two), ("", &three)]);
+        let after = binary_of(&[("", &after_code), ("", &one), ("", &two), ("", &three)]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        assert_eq!(diff.removed, vec![0]);
+        assert_eq!(diff.added, vec![0]);
     }
 
     /// Twins that paired in order, each with the next one's partner, pair
