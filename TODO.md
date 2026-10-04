@@ -149,7 +149,41 @@ small, 14 more right and 3 fewer wrong at 0.63, and the change would move
 every score a report shows and the meaning of `--threshold`. Revisit it
 with the threshold.
 
-## Use our lift to generate some type of pcode (or whatever binja uses) like output for --diff
-This would be really nice in --diff, but maybe we could use it for more? Even use
-it to get a better diff for comparison?
+## Check every operand against llvm-objdump
 
+`tests/differential.rs` compares only boundaries and mnemonics with
+`llvm-objdump`, so four faults of `yaxpeax-arm` 0.4 in operands went
+unseen until a comparison by hand: the Thumb-2 `str.w` at an offset, the
+unused register of an A32 compare, `mov` and `mvn`, the lost condition
+inside an `it` block, and `lsl` for `uxtw` on AArch64. Add a test that
+compares the operands too, after folding the spellings the two tools
+differ in (`#`, decimal against hex, `sp, sp, #4` against `sp, #4`,
+`pop {r4}` against `ldr r4, [sp], #4`, register aliases such as `ip`),
+and locks the count of disagreements left, so a new fault raises it.
+It needs `llvm-objdump` on the machine; the one here has none, so the
+differential test skips too.
+
+## Show the last instructions as IL
+
+`--view il` shows 2 to 4 in 100 instructions of Lua as the code prints
+them, and none of them is a fault:
+
+- `push`, `pop`, `ldm`, `stm`, `vpush` and `vpop`, which move a list of
+  registers, and the MIPS16e `save` and `restore`.
+- `it`, whose condition now sits on each instruction it covers, so its
+  own line says nothing more.
+- NEON and VFP work, as `vmov`, `vcmp` and `vmrs`, which the lift names
+  `Vector` or `Float` only, and AArch64 `ccmp`, `movi` and `umov`.
+- MIPS `mfhi` and `mflo`, whose `hi` and `lo` have no printed operand
+  the view can name, and the float compares `c.eq.d` and `bc1t`.
+
+## Name what the IL view cannot name yet
+
+- A call to a function with no symbol shows its distance, as
+  `call $-0x2948`, which moves; it could show the function as the report
+  names it, as `sub_2b58`, where the pairing says which it is.
+- A load of a local page from the MIPS global offset table shows the
+  slot, as `v0 = load.32 [@0x240e8]`; the `addiu` after it names the
+  data, so the load could read as `v0 = &page`, as `adrp` does.
+- The preamble that makes the global pointer is three or four lines of
+  `@` constants on MIPS; it could read as one, as `gp = _gp`.
