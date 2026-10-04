@@ -182,7 +182,7 @@ Options:
       --unpack <UNPACK>        Take one part out of each firmware image before reading it raw [possible values: stub, kernel]
       --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, aarch64, mips32, mips32-be, mips16, mips16-be]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact, markdown, json]
-      --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified]
+      --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified, rare]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]
       --color <COLOR>          When to color the report. [default: auto] [possible values: auto, always, never]
   -h, --help                   Print help (see more with '--help')
