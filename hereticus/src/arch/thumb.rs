@@ -130,11 +130,15 @@ impl Arch for Thumb2 {
                     u16::from_le_bytes([second_low, second_high]),
                 );
                 let fixed = wide_move_operands(first, second)
-                    .or_else(|| wide_store(first, second).map(|store| store.operands()));
+                    .map(|operands| (mnemonic.clone(), operands))
+                    .or_else(|| {
+                        wide_store(first, second)
+                            .map(|store| (store.mnemonic().to_string(), store.operands()))
+                    });
                 match (table_branch(first, second), WideWord::of(first, second), fixed) {
                     (Some((mnemonic, operands)), ..) => (mnemonic.to_string(), operands),
                     (None, Some(word), _) => word.text(),
-                    (None, None, Some(operands)) => (mnemonic, operands),
+                    (None, None, Some(fixed)) => fixed,
                     (None, None, None) => (mnemonic, shift_of_32(first, second, operands)),
                 }
             }
@@ -523,6 +527,17 @@ struct WideStore {
 }
 
 impl WideStore {
+    /// The mnemonic, by the width stored. `yaxpeax-arm` 0.4 names a store
+    /// whose offset has the bits `1110` at 8 to 11 `strt`: `str.w r1, [r8,
+    /// #0xec4]` read as `strt`.
+    fn mnemonic(self) -> &'static str {
+        match self.width {
+            crate::il::Width::Bits8 => "strb",
+            crate::il::Width::Bits16 => "strh",
+            _ => "str",
+        }
+    }
+
     /// The operands as the decoder prints those of a load.
     fn operands(self) -> String {
         let (value, base) =
