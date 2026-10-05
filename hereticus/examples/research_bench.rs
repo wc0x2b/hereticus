@@ -408,6 +408,12 @@ fn rows(diff: &Diff) -> Vec<&Match> {
 /// the first release that the fix edits, by address or by name.
 const CVES: &[(&str, &str, &str, &str)] = &[
     (
+        "CVE-2024-23265",
+        "hereticus-apple/cve/17.3.1/com.apple.driver.AppleDiskImages2",
+        "hereticus-apple/cve/17.4/com.apple.driver.AppleDiskImages2",
+        "0xfffffff028a156c8",
+    ),
+    (
         "CVE-2025-24257",
         "hereticus-apple/cve/18.3.2/com.apple.iokit.IOGPUFamily",
         "hereticus-apple/cve/18.4/com.apple.iokit.IOGPUFamily",
@@ -424,6 +430,24 @@ const CVES: &[(&str, &str, &str, &str)] = &[
         "hereticus-openwrt-cve/24.10.3/armsr-armv8/sbin/ubusd",
         "hereticus-openwrt-cve/24.10.4/armsr-armv8/sbin/ubusd",
         "0x4a3c",
+    ),
+    (
+        "CVE-2025-62526 A32",
+        "hereticus-openwrt-cve/24.10.3/armsr-armv7/sbin/ubusd",
+        "hereticus-openwrt-cve/24.10.4/armsr-armv7/sbin/ubusd",
+        "0x3e34",
+    ),
+    (
+        "CVE-2025-62526 MIPS16e BE",
+        "hereticus-openwrt-cve/24.10.3/malta-be/sbin/ubusd",
+        "hereticus-openwrt-cve/24.10.4/malta-be/sbin/ubusd",
+        "0x39e0",
+    ),
+    (
+        "CVE-2025-62526 MIPS16e LE",
+        "hereticus-openwrt-cve/24.10.3/malta-le/sbin/ubusd",
+        "hereticus-openwrt-cve/24.10.4/malta-le/sbin/ubusd",
+        "0x3b0c",
     ),
     (
         "CVE-2021-30883",

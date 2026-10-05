@@ -187,12 +187,13 @@ count the right and wrong pairs of each kernel.
 
 ## Measure on more published fixes, and faster
 
-Four published fixes, in `examples/research_bench.rs --cves`, decide
-between the orders of the report. The outlier score of `RESEARCH.md`
-entry 12 ranks those four best of all, but ranks the backports and the
-Ubuntu updates worse, and four is too few to say which is right. Add a
-case for each fix of `real-life-reports/` and for more advisories with
-shipped binaries before and after.
+Eight cases of five published fixes, in `examples/research_bench.rs
+--cves`, decide between the orders of the report: each fix of
+`real-life-reports/`, and `ubusd` for four architectures. The outlier
+score of `RESEARCH.md` entry 12 ranks those best of all, but ranks the
+backports and the Ubuntu updates worse, and five fixes are too few to say
+which is right. Add more advisories with shipped binaries before and
+after.
 
 `--ubuntu` reads 218 security updates and takes about 30 minutes for one
 pass, so it is not a test. Most of the time goes to the similarity stage
