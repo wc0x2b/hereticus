@@ -26,8 +26,8 @@ use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operan
 
 use super::arm32::{
     Arm32, Encoding, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION,
-    call_targets_through_thunks, classify, decode_fallback, is_long_thunk, lift_with, parse_hex,
-    pool_loads, split_mnemonic, track_pool_words,
+    call_targets_through_thunks, classify, decode_fallback, decoder_misreads, is_long_thunk,
+    lift_with, parse_hex, pool_loads, split_mnemonic, track_pool_words,
 };
 use super::{
     Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps, VectorTable,
@@ -73,7 +73,13 @@ impl Arch for Thumb2 {
         let mut reader = U8Reader::new(bytes);
         let mut inst = Instruction::default();
         let failed = InstDecoder::default_thumb().decode_into(&mut inst, &mut reader).is_err();
-        if failed || inst.opcode == Opcode::Invalid {
+        let misread = match *bytes {
+            [low, high, second_low, second_high] => {
+                decoder_misreads(as_a32(u32::from_le_bytes([second_low, second_high, low, high])))
+            }
+            _ => false,
+        };
+        if failed || inst.opcode == Opcode::Invalid || misread {
             // `yaxpeax-arm` 0.4 reads no VFP in T32 either. A wide T32 `vldr`
             // is the A32 word with the condition that means always, so the
             // A32 reading serves: without it, the doubles a `vldr` loads
