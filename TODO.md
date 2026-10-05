@@ -164,8 +164,11 @@ it `Vector` only.
 kernels against the symbols of their builds (`RESEARCH.md`, "The OpenWrt
 kernels, against their symbols"). Across a kernel upgrade, 6% to 12% of
 the pairs are wrong, and the stages of entries 1 and 7 pair only 77% and
-79% right there. List the wrong pairs with `BENCH_WRONG=1`, and find
-what tells them apart.
+79% right there. List the wrong pairs with `BENCH_WRONG=1` and the
+right ones with `BENCH_RIGHT=1`, one kernel with `BENCH_ONLY`, and find
+what tells them apart. The length of the gap does not (`RESEARCH.md`).
+A pair wrong by the names can be a renamed function; a list of the
+renames between the kernel versions would make the count exact.
 
 ## Measure on more published fixes, and faster
 

@@ -667,3 +667,13 @@ of the pairs are wrong, and the pairs by callers and by place are right
 77% and 79% of the time, well below what the backports measured. A pair
 that is wrong by the names may still be one function under a new name,
 so these counts are an upper bound on the wrong pairs.
+
+Across a kernel upgrade, the pairs by place that score under 0.4 are
+mostly wrong: 643 right and 1038 wrong over the six upgrades, where the
+backports chose the floor of 0.1. Many pairs wrong by the names are one
+function renamed, as `mpage_readpages` to `mpage_readahead`, so the
+names overstate the fault. Leaving such a pair out where its gap holds
+more than one function each side cut 537 wrong pairs and 180 right from
+the kernels, but 935 right and 8 wrong from the backports; more than
+two, four or eight functions cut less of both. The length of the gap
+does not tell the two kinds of pair apart, and the floor stays.
