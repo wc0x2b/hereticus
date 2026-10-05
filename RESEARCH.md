@@ -332,7 +332,8 @@ score. A pair that breaks the order is more likely wrong.
 Applies to: `Cascade::pair_by_layout`.
 
 Code: `Cascade::pair_by_layout`, `LOWEST_LAYOUT_SIMILARITY`,
-`LEAST_ANCHORED_SHARE` and `Confidence::SameLayout` in `matching.rs`.
+`LEAST_ANCHORED_SHARE`, `Confidence::SameLayout`, `Cascade::same_places`
+and `NearMiss::in_place` in `matching.rs`.
 
 ## 8. Saturate repeated evidence (BM25)
 
@@ -577,6 +578,16 @@ Leaving the undone pairs unpaired lost 927 right pairs to save 207 wrong.
 The fixture tests that showed a function as gone and new, such as
 `factorial` from `-O1` to `-O2`, or `check_header` and `dispatch` in the
 MIPS firmware, now show it as changed, which the symbols confirm.
+
+A gap whose counts differ still says where a function went, as a hint
+and not a pair. Each function gone or new names the one in its place:
+in a gap with equal counts the one opposite, and in a gap whose counts
+differ the one the alignment by scores gives it. Of the 18 backport
+comparisons where no changed pair holds the fix, 13 name a function of
+the fix in its place; 888 of the hints are right and 564 wrong. Aligning
+the gaps of equal counts by scores too named 38 fewer right and 5 fewer
+wrong, and a floor of 0.1 to 0.3 on the scores lost more right hints
+than wrong ones.
 
 ### 9 and 10: assignment
 

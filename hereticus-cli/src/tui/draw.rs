@@ -145,7 +145,8 @@ impl App<'_> {
     }
 
     /// One row of the table. A function gone or new names its closest
-    /// candidate where it has one, in the column of what a pair touched.
+    /// candidate where it has one, in the column of what a pair touched, and
+    /// the function in its place, in the column of how a pair matched.
     fn table_row(&self, labeled: &Labeled) -> Row<'static> {
         let name = Cell::from(highlighted(&labeled.label, &self.filter));
         let (word, color, closest_in) = match labeled.entry {
@@ -171,13 +172,17 @@ impl App<'_> {
             }
             None => (String::new(), "-".to_string()),
         };
+        let place = match self.in_place(labeled.entry) {
+            Some(place) => format!("same place as {}", name_of(closest_in, place)),
+            None => "-".to_string(),
+        };
         Row::new([
             name,
             Cell::from(word).style(Style::new().fg(color)),
             Cell::from(Line::styled(score, Style::new().fg(GRAY_FG)).right_aligned()),
             Cell::from(Line::styled("-", Style::new().fg(GRAY_FG))),
             Cell::from(note).style(Style::new().fg(GRAY_FG)),
-            Cell::from(Line::styled("-", Style::new().fg(GRAY_FG))),
+            Cell::from(Line::styled(place, Style::new().fg(GRAY_FG))),
         ])
     }
 

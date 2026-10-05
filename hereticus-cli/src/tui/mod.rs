@@ -354,6 +354,17 @@ impl<'a> App<'a> {
         Some((miss.best?, miss.score)).filter(|&(_, score)| score >= self.near_miss_floor)
     }
 
+    /// The unpaired function of the other side that sits in the place of a
+    /// function gone or new: see [`hereticus::matching::NearMiss::in_place`].
+    fn in_place(&self, entry: Entry) -> Option<usize> {
+        let miss = match entry {
+            Entry::Pair(_) => return None,
+            Entry::Gone { function, .. } => self.diff.near_miss(function),
+            Entry::New { function, .. } => self.diff.added_near_miss(function),
+        }?;
+        miss.in_place
+    }
+
     /// Show the diff of the selected row from its top.
     fn open(&mut self) {
         self.open_at(0);
