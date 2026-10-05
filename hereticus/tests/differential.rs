@@ -665,7 +665,6 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
 /// What is left are faults still unfixed:
 ///
 /// * A32 `smulbb` reads as `smultt`.
-/// * AArch64 leaves out `uxtw` on a register that it extends.
 /// * The NEON loads and stores this decoder reads leave out the alignment,
 ///   as `[r3:64]`.
 ///
@@ -717,5 +716,4 @@ fn operands_agree_with_objdump() {
 }
 
 /// What [`operands_agree_with_objdump`] still finds, by instruction set.
-const KNOWN_OPERAND_DISAGREEMENTS: &[(&str, usize)] =
-    &[("Aarch64", 108), ("Arm32", 3), ("Thumb2", 2)];
+const KNOWN_OPERAND_DISAGREEMENTS: &[(&str, usize)] = &[("Arm32", 3), ("Thumb2", 2)];
