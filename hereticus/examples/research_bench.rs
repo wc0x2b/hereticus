@@ -541,8 +541,12 @@ fn measure_kernels() {
         "{:36} {:>7} {:>7} {:>6} {:>6} {:>6}",
         "kernel", "starts", "right", "wrong", "gone", "new"
     );
+    let only = std::env::var("BENCH_ONLY").ok();
     for &(first, second, boards) in KERNEL_RELEASES {
         for &(board, target, isa, base) in &BOARDS[..boards] {
+            if only.as_deref().is_some_and(|only| !format!("{board} {first}").contains(only)) {
+                continue;
+            }
             let read = |release: &str| {
                 let path = firmware.join(format!("{board}-kernel-{release}.bin"));
                 let data = std::fs::read(&path).expect("run `just firmware`");
@@ -595,6 +599,9 @@ fn measure_kernels() {
                 } else {
                     right += 1;
                     stage.0 += 1;
+                    if std::env::var_os("BENCH_RIGHT").is_some() {
+                        println!("RIGHT {:?} {:.2}", pair.confidence, pair.score);
+                    }
                 }
             }
             println!(
