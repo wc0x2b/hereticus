@@ -169,10 +169,8 @@ differential test skips too.
 
 ## Show the last instructions as IL
 
-`--view il` still shows a few instructions as the code prints them:
-
-- NEON work, which the lift names `Vector` only, and the few VFP forms
-  that `yaxpeax-arm` 0.4 prints without their constant, as `vmov.f32 s1`.
+`--view il` still shows NEON work as the code prints it: the lift names
+it `Vector` only.
 
 ## Check the new pairs of the OpenWrt kernels
 

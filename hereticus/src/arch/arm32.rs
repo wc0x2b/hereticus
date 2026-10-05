@@ -81,8 +81,9 @@ impl Arch for Arm32 {
         // returns an error, or it succeeds and sets `Opcode::Invalid`. The
         // standard ARM `nop`, `0xe320f000`, takes the second path. Both mean
         // the same thing here.
+        let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let failed = InstDecoder::default().decode_into(&mut inst, &mut reader).is_err();
-        if failed || inst.opcode == Opcode::Invalid {
+        if failed || inst.opcode == Opcode::Invalid || decoder_misreads(word) {
             // A32 instructions are all 4 bytes, so stepping over an
             // unreadable word keeps everything after it aligned. Reporting an
             // error instead would throw away the rest of the function.
@@ -90,7 +91,6 @@ impl Arch for Arm32 {
             // The raw word goes in the operand field. Without it every
             // unreadable instruction would look like every other one, and an
             // edit inside a NEON loop would be reported as no change at all.
-            let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             if let Some((mnemonic, operands)) = decode_fallback(word, Encoding::A32) {
                 return Ok(Insn {
                     address: insn_address,
@@ -481,7 +481,8 @@ pub(super) fn lift_with(
     }
     let mut inst = Instruction::default();
     let decoded = decoder.decode_into(&mut inst, &mut U8Reader::new(word)).is_ok();
-    if decoded && inst.opcode != Opcode::Invalid {
+    let misread = fallback.is_some_and(|(a32, _)| decoder_misreads(a32));
+    if decoded && inst.opcode != Opcode::Invalid && !misread {
         Some(lift(&inst))
     } else {
         let (a32, encoding) = fallback?;
@@ -1668,6 +1669,18 @@ impl IntegerWord {
     }
 }
 
+/// Whether `yaxpeax` 0.4 reads the A32 `word` but prints it wrong, so that
+/// [`decode_fallback`] and [`lift_fallback`] read it instead.
+///
+/// It reads the VFP data processing words, but loses operands: `vmov.f32 s1,
+/// #1.0` prints as `vmov.f32 s1`, `vmov.f64 d16, d8` as `vmov.f64 d16`, and
+/// `vcvt.f64.u32 d0, s0` as `vmov.f64 d0`. An edit to what they read then
+/// shows as no change.
+pub(super) fn decoder_misreads(word: u32) -> bool {
+    word >> 28 != 0b1111
+        && matches!(VfpWord::of(word), Some(VfpWord::Compute { .. } | VfpWord::MoveConstant { .. }))
+}
+
 /// A VFP word `yaxpeax` 0.4 refuses: the moves between core and VFP
 /// registers, the multiple loads and stores, and the data processing.
 ///
@@ -1697,6 +1710,8 @@ enum VfpWord {
     /// The arithmetic, compares and conversions. A conversion names its
     /// sizes in `name`, as `vcvt.s32.f64`; the rest take `size`.
     Compute { name: &'static str, size: &'static str, dest: Vector, sources: [Option<Vector>; 2] },
+    /// `vmov.f32 s0, #1.0`: a constant of 8 bits, which a few floats fit.
+    MoveConstant { dest: Vector, bits: u64 },
 }
 
 /// A VFP register: `d` where `double`, else `s`.
@@ -1788,9 +1803,13 @@ impl VfpWord {
                 (0b011, 0) => float("vadd", both),
                 (0b011, _) => float("vsub", both),
                 (0b100, 0) => float("vdiv", both),
-                // `vmov` of a constant: the constant is in the operands as no
-                // value the IL names.
-                (0b111, 0) => float("vmov", [None, None]),
+                (0b111, 0) => {
+                    let constant = field(16, 4) << 4 | field(0, 4);
+                    Some(Self::MoveConstant {
+                        dest,
+                        bits: expand_float_constant(constant, is_double),
+                    })
+                }
                 (0b111, _) => match (field(16, 4), field(7, 1)) {
                     (0b0000, 0) => float("vmov", one),
                     (0b0000, _) => float("vabs", one),
@@ -1887,6 +1906,15 @@ impl VfpWord {
                     }
                 }
             }
+            Self::MoveConstant { dest, bits } => {
+                let value = if dest.double {
+                    f64::from_bits(bits)
+                } else {
+                    f64::from(f32::from_bits(bits as u32))
+                };
+                let size = if dest.double { "f64" } else { "f32" };
+                (format!("vmov.{size}"), format!("{}, #{value:?}", dest.text()))
+            }
             Self::Compute { name, size, dest, sources } => {
                 let mut operands = vec![dest.text()];
                 operands.extend(sources.iter().flatten().map(|source| source.text()));
@@ -1952,6 +1980,11 @@ impl VfpWord {
                 general(base).into_iter().for_each(|reg| lifted.reads.insert(reg));
                 return lifted;
             }
+            Self::MoveConstant { dest, bits } => {
+                lifted.op = Op::Move;
+                let dest = il::Operand::Reg(vector(dest.number));
+                lifted.operands = [dest, il::Operand::Const(bits)].into_iter().collect();
+            }
             Self::Compute { dest, sources, name, .. } => {
                 lifted.op = vfp_op(name);
                 let vector = |register: Vector| il::Operand::Reg(vector(register.number));
@@ -1989,6 +2022,22 @@ impl VfpWord {
         }
         lifted
     }
+}
+
+/// The bits of the float that the 8-bit constant of a VFP `vmov` stands
+/// for: `VFPExpandImm` of the Arm architecture manual. The constant holds a
+/// sign, three bits of exponent and four of fraction.
+fn expand_float_constant(constant: u32, double: bool) -> u64 {
+    let constant = u64::from(constant);
+    let sign = constant >> 7;
+    let b = constant >> 6 & 1;
+    let low_exponent = constant >> 4 & 0b11;
+    let fraction = constant & 0b1111;
+    // The exponent is NOT(b), then b again and again, then the two bits.
+    let (repeats, width, fraction_shift) = if double { (8, 64, 48) } else { (5, 32, 19) };
+    let copies = if b == 1 { (1 << repeats) - 1 } else { 0 };
+    let exponent = (b ^ 1) << (repeats + 2) | copies << 2 | low_exponent;
+    sign << (width - 1) | exponent << (width - 1 - (repeats + 3)) | fraction << fraction_shift
 }
 
 /// What a VFP data processing word computes. `vcvt` to an integer rounds
@@ -3900,9 +3949,62 @@ mod tests {
             (0xeef1_fa10, "vmrs APSR_nzcv, fpscr"),
             (0xed2d_8b04, "vpush {d8, d9}"),
             (0xecbd_8b04, "vpop {d8, d9}"),
+            (0xeef7_0a00, "vmov.f32 s1, #1.0"),
+            (0xeeb8_0b00, "vmov.f64 d0, #-2.0"),
+            (0xeef0_0b48, "vmov.f64 d16, d8"),
         ];
         for (word, text) in cases {
             assert_eq!(fallback_text(word).as_deref(), Some(text), "{word:#010x}");
+        }
+    }
+
+    /// `yaxpeax` reads these words but drops an operand, so the decoder
+    /// reads them itself, in A32 and in T32.
+    #[test]
+    fn the_vfp_words_the_decoder_misreads_keep_their_operands() {
+        let cases = [
+            (0xeef7_0a00_u32, "vmov.f32", "s1, #1.0"),
+            (0xeef0_0b48, "vmov.f64", "d16, d8"),
+            (0xeeb8_0b40, "vcvt.f64.u32", "d0, s0"),
+            (0x1eb7_0b00, "vmov.f64ne", "d0, #1.0"),
+        ];
+        for (word, mnemonic, operands) in cases {
+            let insn = Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word reads");
+            assert_eq!((insn.mnemonic.as_str(), insn.operands.as_str()), (mnemonic, operands));
+            if word >> 28 == 0b1110 {
+                let halves = [(word >> 16) as u16, word as u16];
+                let bytes: Vec<u8> = halves.iter().flat_map(|half| half.to_le_bytes()).collect();
+                let insn = super::super::thumb::Thumb2.decode(&bytes, 0, 0).expect("reads");
+                assert_eq!((insn.mnemonic.as_str(), insn.operands.as_str()), (mnemonic, operands));
+            }
+        }
+        let constant = Arm32
+            .lift(
+                &Arm32.decode(&0xeef7_0a00_u32.to_le_bytes(), 0, 0).unwrap(),
+                &0xeef7_0a00_u32.to_le_bytes(),
+            )
+            .expect("the word lifts");
+        assert_eq!(constant.op, il::Op::Move);
+        assert_eq!(
+            constant.operands.as_slice(),
+            [il::Operand::Reg(il::Reg::Vector(1)), il::Operand::Const(0x3f80_0000)]
+        );
+        assert_eq!(constant.writes, [il::Reg::Vector(1)].into_iter().collect());
+    }
+
+    /// Each of the 256 constants of a VFP `vmov` stands for the same value
+    /// as a single and as a double: a sign, then 16 to 31 sixteenths times
+    /// a power of two from 2^-3 to 2^4.
+    #[test]
+    fn a_vfp_constant_is_the_same_value_at_both_sizes() {
+        for constant in 0..=255 {
+            let single = f64::from(f32::from_bits(expand_float_constant(constant, false) as u32));
+            let double = f64::from_bits(expand_float_constant(constant, true));
+            assert_eq!(single, double, "{constant:#x}");
+            let exponent = (i32::from((constant >> 4 & 0b111) as u8) ^ 0b100) - 3;
+            let sixteenths = f64::from(16 + (constant & 0b1111));
+            let sign = if constant >> 7 == 1 { -1.0 } else { 1.0 };
+            assert_eq!(double, sign * sixteenths / 16.0 * 2f64.powi(exponent), "{constant:#x}");
         }
     }
 
