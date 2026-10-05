@@ -172,16 +172,14 @@ differential test skips too.
 `--view il` still shows NEON work as the code prints it: the lift names
 it `Vector` only.
 
-## Check the new pairs of the OpenWrt kernels
+## Pair better across a kernel upgrade
 
-The stages of `RESEARCH.md` entries 1 and 7 pair 59 to 981 more functions
-in each OpenWrt kernel of `tests/openwrt.rs`, and change some pairs of
-the decompressor stubs across a major version. Nothing names these
-functions, so no test checks the new pairs. OpenWrt publishes the
-symbols of each kernel it builds, as `kernel-debug.tar.zst` beside the
-images of a target. Read the `vmlinux` in it as the answer, as
-`examples/research_bench.rs --ubuntu` reads the `-dbgsym` files, and
-count the right and wrong pairs of each kernel.
+`examples/research_bench.rs --kernels` checks the pairs of the OpenWrt
+kernels against the symbols of their builds (`RESEARCH.md`, "The OpenWrt
+kernels, against their symbols"). Across a kernel upgrade, 6% to 12% of
+the pairs are wrong, and the stages of entries 1 and 7 pair only 77% and
+79% right there. List the wrong pairs with `BENCH_WRONG=1`, and find
+what tells them apart.
 
 ## Measure on more published fixes, and faster
 
@@ -193,8 +191,11 @@ backports and the Ubuntu updates worse, and five fixes are too few to say
 which is right. Add more advisories with shipped binaries before and
 after.
 
-`--ubuntu` reads 218 security updates and takes about 30 minutes for one
-pass, so it is not a test. Most of the time goes to the similarity stage
-of the largest stripped libraries. Make it fast enough to lock its
-tallies as a slow test, as `tests/cross_build.rs` locks the backports.
+`--ubuntu` reads 218 security updates. Built for glibc it takes 71
+seconds; built for musl, the target `.cargo/config.toml` picks, it takes
+27 minutes, nearly all of it in the kernel, as the allocator of musl
+serves many threads. The CLI on an OpenWrt kernel takes 35 seconds on
+musl and 22 on glibc. Choose an allocator for the musl build, as
+`mimalloc`, then lock the tallies of `--ubuntu` as a slow test, as
+`tests/cross_build.rs` locks the backports.
 

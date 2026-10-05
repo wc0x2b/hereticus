@@ -635,3 +635,35 @@ The three `ubusd` cases follow the first: `rare × outlier` ranks the fix
 best there too. But the four builds of `ubusd` are one fix, not four, so
 the set holds five independent fixes, still too few to trust over the
 backports and the Ubuntu updates.
+
+### The OpenWrt kernels, against their symbols
+
+OpenWrt publishes the `vmlinux` of each kernel it builds, with symbols
+and without code, as `kernel-debug.tar.zst` beside the images.
+`fixtures/openwrt_debug.py` fetches it for each kernel of
+`tests/openwrt.rs`, and `examples/research_bench.rs --kernels` checks
+their pairs against it. 98% to 99.7% of the functions the scan recovers
+start where a symbol does, so the debug files are of the same builds.
+
+| Kernels | Right | Wrong |
+|---|---|---|
+| 22.03.2 to 22.03.5, six boards | 133065 | 637 |
+| 21.02.7 to 22.03.2, three boards | 50497 | 5859 |
+| 22.03.5 to 23.05.5, three boards | 58962 | 3727 |
+
+By the stage that paired them, over all twelve:
+
+| Stage | Right | Wrong |
+|---|---|---|
+| identical code | 20894 | 130 |
+| identical shape | 127869 | 677 |
+| twins in order | 17823 | 707 |
+| similar | 63262 | 5034 |
+| callers, entry 1 | 7302 | 2219 |
+| place, entry 7 | 5374 | 1456 |
+
+A point release pairs under 1% wrong. Across a kernel upgrade, 6% to 12%
+of the pairs are wrong, and the pairs by callers and by place are right
+77% and 79% of the time, well below what the backports measured. A pair
+that is wrong by the names may still be one function under a new name,
+so these counts are an upper bound on the wrong pairs.

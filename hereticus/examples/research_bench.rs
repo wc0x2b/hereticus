@@ -6,6 +6,13 @@
 //! ranks them.
 //!
 //! Run with `cargo run --release --example research_bench -p hereticus`.
+//! `--cves` ranks published fixes, `--ubuntu` measures Ubuntu security
+//! updates, and `--kernels` checks the pairs of the OpenWrt kernels against
+//! their symbols.
+//!
+//! Build it for glibc, with `--target x86_64-unknown-linux-gnu`: the
+//! allocator of musl, the default target, makes `--ubuntu` take 27 minutes
+//! in place of 71 seconds.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -490,6 +497,120 @@ fn measure_cves() {
     }
 }
 
+/// A board of `tests/openwrt.rs`: the name its files carry, the target
+/// whose kernel it runs, how its code reads, and where its kernel is linked.
+const BOARDS: &[(&str, &str, hereticus::obj::Isa, u64)] = {
+    use hereticus::obj::Isa;
+    &[
+        ("arm-ex6100v2", "ipq40xx-generic", Isa::Arm32, 0xc020_8000),
+        ("mipsbe-eap245v3", "ath79-generic", Isa::Mips32Be, 0x8006_0000),
+        ("mipsel-r6220", "ramips-mt7621", Isa::Mips32, 0x8000_1000),
+        ("arm-a385dbap", "mvebu-cortexa9", Isa::Arm32, 0xc000_8000),
+        ("mipsbe-vr200", "lantiq-xrx200", Isa::Mips32Be, 0x8000_2000),
+        ("mipsel-mt300nv2", "ramips-mt76x8", Isa::Mips32, 0x8000_0000),
+    ]
+};
+
+/// The releases `tests/openwrt.rs` compares, and the boards it compares
+/// them on: the point release on all, the two kernel upgrades on three.
+const KERNEL_RELEASES: &[(&str, &str, usize)] =
+    &[("22.03.2", "22.03.5", 6), ("21.02.7", "22.03.2", 3), ("22.03.5", "23.05.5", 3)];
+
+/// The names of the symbols that overlap `range`, from symbols sorted by
+/// their start.
+fn names_in(symbols: &[(u64, u64, String)], range: core::ops::Range<u64>) -> BTreeSet<String> {
+    let first = symbols.partition_point(|symbol| symbol.0 <= range.start).saturating_sub(1);
+    symbols[first..]
+        .iter()
+        .take_while(|symbol| symbol.0 < range.end)
+        .filter(|symbol| symbol.1 > range.start)
+        .map(|symbol| symbol.2.clone())
+        .collect()
+}
+
+/// Check the pairs of each OpenWrt kernel of `tests/openwrt.rs` against the
+/// symbols of its build, which `fixtures/openwrt_debug.py` fetched, by the
+/// stage that paired them.
+fn measure_kernels() {
+    use std::collections::BTreeMap;
+    let firmware = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/openwrt");
+    let debug =
+        Path::new(&std::env::var("HOME").expect("a home")).join(".cache/hereticus-openwrt-debug");
+    let mut stages: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    println!(
+        "{:36} {:>7} {:>7} {:>6} {:>6} {:>6}",
+        "kernel", "starts", "right", "wrong", "gone", "new"
+    );
+    for &(first, second, boards) in KERNEL_RELEASES {
+        for &(board, target, isa, base) in &BOARDS[..boards] {
+            let read = |release: &str| {
+                let path = firmware.join(format!("{board}-kernel-{release}.bin"));
+                let data = std::fs::read(&path).expect("run `just firmware`");
+                Binary::parse_raw(&data, base, isa).expect("the kernel reads")
+            };
+            let symbols = |release: &str| {
+                let path = debug.join(release).join(target).join("vmlinux");
+                debug_symbols(path.to_str().expect("a path"))
+            };
+            let kernels = [read(first), read(second)];
+            let answers = [symbols(first), symbols(second)];
+            // How many recovered functions start where a symbol does: the
+            // debug file belongs to the same build only where most do.
+            let starts: usize = (0..2)
+                .map(|side| {
+                    let known: BTreeSet<u64> =
+                        answers[side].iter().map(|symbol| symbol.0).collect();
+                    kernels[side].functions.iter().filter(|f| known.contains(&f.address)).count()
+                })
+                .sum();
+            let functions = kernels[0].functions.len() + kernels[1].functions.len();
+            let diff = diff_with(
+                &kernels[0],
+                &kernels[1],
+                Options { use_names: UseNames::No, ..Default::default() },
+            );
+            let names = |side: usize, index: usize| {
+                let function = &kernels[side].functions[index];
+                names_in(
+                    &answers[side],
+                    function.address..function.address + function.code.len() as u64,
+                )
+            };
+            let (mut right, mut wrong) = (0, 0);
+            for pair in &diff.matched {
+                let (left, right_names) = (names(0, pair.before), names(1, pair.after));
+                if left.is_empty() || right_names.is_empty() {
+                    continue;
+                }
+                let stage = stages.entry(format!("{:?}", pair.confidence)).or_default();
+                if left.is_disjoint(&right_names) {
+                    wrong += 1;
+                    stage.1 += 1;
+                    if std::env::var_os("BENCH_WRONG").is_some() {
+                        println!(
+                            "WRONG {:?} {:.2} {left:?} {right_names:?}",
+                            pair.confidence, pair.score
+                        );
+                    }
+                } else {
+                    right += 1;
+                    stage.0 += 1;
+                }
+            }
+            println!(
+                "{:36} {:>6.1}% {right:>7} {wrong:>6} {:>6} {:>6}",
+                format!("{board} {first}/{second}"),
+                100.0 * starts as f64 / functions as f64,
+                diff.removed.len(),
+                diff.added.len()
+            );
+        }
+    }
+    for (stage, (right, wrong)) in &stages {
+        println!("stage {stage:16} right {right:>7} wrong {wrong:>5}");
+    }
+}
+
 /// The functions of a debug file: start, end and name.
 fn debug_symbols(path: &str) -> Vec<(u64, u64, String)> {
     use object::{Object, ObjectSymbol, SymbolKind};
@@ -709,6 +830,10 @@ fn parse_cases(text: &str) -> Vec<Case> {
 fn main() {
     if std::env::args().any(|arg| arg == "--ubuntu") {
         measure_ubuntu();
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--kernels") {
+        measure_kernels();
         return;
     }
     if std::env::args().any(|arg| arg == "--cves") {
