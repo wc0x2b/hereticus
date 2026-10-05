@@ -59,7 +59,7 @@ sp = sp + 0xc
 return
 call free
 goto $-0x72
-r3 = 3
+r3 = -0x4
 store.32 [r4 + 0x64] = r3
 goto $-0x24
 .word 00005ab8

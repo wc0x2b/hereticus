@@ -1431,7 +1431,7 @@ pub(super) fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, 
 /// halfword extends, the bit field operations, `mov` and `mvn` of a register
 /// shifted by a register, and a halfword or signed byte load with no offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum IntegerWord {
+pub(super) enum IntegerWord {
     /// `uxtb rd, rm` and kin, which may add `rn` and rotate `rm` first.
     Extend { name: &'static str, rd: u32, rn: Option<u32>, rm: u32, rotation: u32 },
     /// `bfi rd, rn, lsb, width`, or `bfc` with no `rn`.
@@ -1447,7 +1447,7 @@ enum IntegerWord {
 
 /// How a load or store forms its address and moves its base.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Indexing {
+pub(super) enum Indexing {
     /// `[rn, imm]`: the base stays.
     Offset,
     /// `[rn, imm]!`: the base moves first.
@@ -1521,7 +1521,7 @@ impl IntegerWord {
         None
     }
 
-    fn mnemonic(self) -> String {
+    pub(super) fn mnemonic(self) -> String {
         match self {
             Self::Extend { name, rn: None, .. } => name.to_string(),
             // `uxtab` adds the extended value to `rn`.
@@ -1537,7 +1537,7 @@ impl IntegerWord {
         }
     }
 
-    fn operands(self) -> String {
+    pub(super) fn operands(self) -> String {
         let name = |number: u32| ARM_REGISTERS[number as usize];
         match self {
             Self::Extend { rd, rn, rm, rotation, .. } => {
@@ -1582,7 +1582,7 @@ impl IntegerWord {
 
     /// The IL form of this word, as [`lift`] gives for the words `yaxpeax`
     /// reads.
-    fn lift(self) -> il::Lifted {
+    pub(super) fn lift(self) -> il::Lifted {
         use il::Op;
         let general = |number: u32| il_reg(Reg::from_u8(number as u8));
         let value = |number: u32| general(number).map_or(il::Operand::Other, il::Operand::Reg);
