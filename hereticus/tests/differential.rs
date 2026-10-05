@@ -364,15 +364,17 @@ Disassembly of section .text:
     );
 }
 
-/// The backport libraries the operand check reads: three projects, each
-/// architecture, by clang and by GCC. They keep their symbols, so each
+/// The backport libraries the operand check reads: each project,
+/// architecture and level built. They keep their symbols, so each
 /// function reads in the instruction set its symbol names.
 fn backport_libraries() -> Vec<PathBuf> {
     let root = fixtures_dir().join("backports");
     let mut libraries = Vec::new();
-    for project in ["zlib", "lua", "tinyxml2"] {
-        for arch in ["arm", "thumb", "aarch64", "mips", "mipsel"] {
-            for level in ["O2", "gcc-O2"] {
+    const ARCHES: [&str; 9] =
+        ["arm", "armv5", "armv6", "thumb", "cortex-m0", "cortex-m3", "aarch64", "mips", "mipsel"];
+    for project in ["zlib", "lua", "tinyxml2", "smallvec"] {
+        for arch in ARCHES {
+            for level in ["O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os"] {
                 let path = root.join(format!("{project}-before/{arch}-{level}/lib.so"));
                 if path.exists() {
                     libraries.push(path);
@@ -466,8 +468,10 @@ fn number(token: &str) -> Option<i128> {
 /// * A rotation or an extension by 0, which `llvm-objdump` leaves out.
 /// * Where a VFP condition goes, `vmovgt.f64` or `vmov.f64gt`, and how a
 ///   float constant prints.
-/// * `trap` for `udf #254`, the code 0 of a MIPS `teq` or `break`, and
-///   spaces inside braces.
+/// * `trap` for `udf #254`, the code 0 of a MIPS `teq` or `break`, spaces
+///   inside braces and after a minus, and an offset of 0, `[pc, #0]`.
+/// * `add r2, sp, r2` for `add r2, sp`, and AArch64 `orr w1, wzr, #2` for
+///   `mov w1, #2`.
 fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
     let mips = matches!(isa, Isa::Mips32 | Isa::Mips32Be | Isa::Mips16 | Isa::Mips16Be);
     let mut operands = operands.to_string();
@@ -577,7 +581,7 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
         }
     }
     for operand in &mut list {
-        *operand = operand.replace("{ ", "{").replace(" }", "}");
+        *operand = operand.replace("{ ", "{").replace(" }", "}").replace("- ", "-");
     }
     if mips {
         if matches!(mnemonic.as_str(), "teq" | "break") && list.last().is_some_and(|l| l == "0") {
@@ -636,23 +640,33 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
             list[2] = amount.to_string();
         }
         // `ldr r4, [sp], 4` is `pop {r4}`, and `str lr, [sp, -4]!` is
-        // `push {lr}`.
-        if list.len() == 3 {
-            match (mnemonic.as_str(), list[1].as_str(), list[2].as_str()) {
-                ("ldr", "[sp]", "4") => {
-                    (mnemonic, list) = ("pop".into(), vec![format!("{{{}}}", list[0])])
-                }
-                ("str", "[sp", "-4]!") => {
-                    (mnemonic, list) = ("push".into(), vec![format!("{{{}}}", list[0])])
-                }
-                _ => {}
+        // `push {lr}`, with a condition or without.
+        if list.len() == 3 && mnemonic.len() >= 3 {
+            let (stem, condition) = mnemonic.split_at(3);
+            let alias = match (stem, list[1].as_str(), list[2].as_str()) {
+                ("ldr", "[sp]", "4") => Some("pop"),
+                ("str", "[sp", "-4]!") => Some("push"),
+                _ => None,
+            };
+            if let Some(alias) = alias {
+                (mnemonic, list) =
+                    (format!("{alias}{condition}"), vec![format!("{{{}}}", list[0])]);
             }
         }
         if list.len() >= 3 && list[0] == list[1] {
             list.remove(1);
         }
+        // `add r2, sp, r2` is `add r2, sp`: the sum is the same either way.
+        if list.len() == 3 && list[0] == list[2] && mnemonic.starts_with("add") {
+            list.pop();
+        }
+        // AArch64 `mov w1, #2` is `orr w1, wzr, #2`.
+        if mnemonic == "orr" && list.len() == 3 && matches!(list[1].as_str(), "wzr" | "xzr") {
+            mnemonic = "mov".to_string();
+            list.remove(1);
+        }
     }
-    format!("{mnemonic} {}", list.join(", "))
+    format!("{mnemonic} {}", list.join(", ")).replace(", 0]", "]")
 }
 
 /// The operands of each instruction, against `llvm-objdump`.
@@ -663,7 +677,7 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
 /// by [`folded`], and what still differs is counted by instruction set.
 /// The counts are locked: a new fault raises one.
 /// The comparison found faults of `yaxpeax-arm` 0.4 in Thumb-2 `mvn`,
-/// shifts, extends and bit fields, in the A32 multiplies of halfwords, in
+/// shifts, extends, bit fields and `str.w`, in the A32 multiplies of halfwords, in
 /// the `uxtw` of AArch64, and the NEON alignment this decoder left out.
 /// All are fixed, so nothing differs now.
 ///
