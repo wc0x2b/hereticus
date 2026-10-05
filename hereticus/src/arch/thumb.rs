@@ -74,9 +74,10 @@ impl Arch for Thumb2 {
         let mut inst = Instruction::default();
         let failed = InstDecoder::default_thumb().decode_into(&mut inst, &mut reader).is_err();
         let misread = match *bytes {
-            [low, high, second_low, second_high] => {
-                decoder_misreads(as_a32(u32::from_le_bytes([second_low, second_high, low, high])))
-            }
+            [low, high, second_low, second_high] => decoder_misreads(
+                as_a32(u32::from_le_bytes([second_low, second_high, low, high])),
+                Encoding::T32,
+            ),
             _ => false,
         };
         if failed || inst.opcode == Opcode::Invalid || misread {
