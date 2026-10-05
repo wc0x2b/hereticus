@@ -153,19 +153,13 @@ small, 14 more right and 3 fewer wrong at 0.63, and the change would move
 every score a report shows and the meaning of `--threshold`. Revisit it
 with the threshold.
 
-## Check every operand against llvm-objdump
+## Fix the operands that differ from llvm-objdump
 
-`tests/differential.rs` compares only boundaries and mnemonics with
-`llvm-objdump`, so four faults of `yaxpeax-arm` 0.4 in operands went
-unseen until a comparison by hand: the Thumb-2 `str.w` at an offset, the
-unused register of an A32 compare, `mov` and `mvn`, the lost condition
-inside an `it` block, and `lsl` for `uxtw` on AArch64. Add a test that
-compares the operands too, after folding the spellings the two tools
-differ in (`#`, decimal against hex, `sp, sp, #4` against `sp, #4`,
-`pop {r4}` against `ldr r4, [sp], #4`, register aliases such as `ip`),
-and locks the count of disagreements left, so a new fault raises it.
-It needs `llvm-objdump` on the machine; the one here has none, so the
-differential test skips too.
+`tests/differential.rs` (`operands_agree_with_objdump`) compares every
+operand of the backport libraries with `llvm-objdump`, after folding the
+spellings the two tools differ in, and locks how many still differ:
+faults of `yaxpeax-arm` 0.4, listed on the test. Fix each and lower the
+count.
 
 ## Show the last instructions as IL
 
