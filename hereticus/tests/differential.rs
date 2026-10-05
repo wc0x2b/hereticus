@@ -661,10 +661,11 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
 /// checks. Operands went unchecked, and four faults of `yaxpeax-arm` 0.4
 /// hid in them until a comparison by hand. Here each instruction is folded
 /// by [`folded`], and what still differs is counted by instruction set.
-/// The counts are locked: a new fault raises one, and a fix lowers one.
-/// What is left are faults still unfixed:
-///
-/// * A32 `smulbb` reads as `smultt`.
+/// The counts are locked: a new fault raises one.
+/// The comparison found faults of `yaxpeax-arm` 0.4 in Thumb-2 `mvn`,
+/// shifts, extends and bit fields, in the A32 multiplies of halfwords, in
+/// the `uxtw` of AArch64, and the NEON alignment this decoder left out.
+/// All are fixed, so nothing differs now.
 ///
 /// Another version of LLVM can print otherwise, so this needs the one it
 /// was counted with, LLVM 22.
@@ -714,4 +715,4 @@ fn operands_agree_with_objdump() {
 }
 
 /// What [`operands_agree_with_objdump`] still finds, by instruction set.
-const KNOWN_OPERAND_DISAGREEMENTS: &[(&str, usize)] = &[("Arm32", 1)];
+const KNOWN_OPERAND_DISAGREEMENTS: &[(&str, usize)] = &[];

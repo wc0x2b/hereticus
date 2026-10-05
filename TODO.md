@@ -153,14 +153,6 @@ small, 14 more right and 3 fewer wrong at 0.63, and the change would move
 every score a report shows and the meaning of `--threshold`. Revisit it
 with the threshold.
 
-## Fix the operands that differ from llvm-objdump
-
-`tests/differential.rs` (`operands_agree_with_objdump`) compares every
-operand of the backport libraries with `llvm-objdump`, after folding the
-spellings the two tools differ in, and locks how many still differ:
-faults of `yaxpeax-arm` 0.4, listed on the test. Fix each and lower the
-count.
-
 ## Show the last instructions as IL
 
 `--view il` still shows NEON work as the code prints it: the lift names

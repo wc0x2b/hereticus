@@ -83,7 +83,7 @@ impl Arch for Arm32 {
         // the same thing here.
         let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let failed = InstDecoder::default().decode_into(&mut inst, &mut reader).is_err();
-        if failed || inst.opcode == Opcode::Invalid || decoder_misreads(word) {
+        if failed || inst.opcode == Opcode::Invalid || decoder_misreads(word, Encoding::A32) {
             // A32 instructions are all 4 bytes, so stepping over an
             // unreadable word keeps everything after it aligned. Reporting an
             // error instead would throw away the rest of the function.
@@ -481,7 +481,7 @@ pub(super) fn lift_with(
     }
     let mut inst = Instruction::default();
     let decoded = decoder.decode_into(&mut inst, &mut U8Reader::new(word)).is_ok();
-    let misread = fallback.is_some_and(|(a32, _)| decoder_misreads(a32));
+    let misread = fallback.is_some_and(|(a32, encoding)| decoder_misreads(a32, encoding));
     if decoded && inst.opcode != Opcode::Invalid && !misread {
         Some(lift(&inst))
     } else {
@@ -1440,6 +1440,17 @@ pub(super) enum IntegerWord {
     Extract { signed: bool, rd: u32, rn: u32, lsb: u32, width: u32 },
     /// `mov rd, rm, lsl rs` and kin, or `mvn` of the same.
     ShiftByRegister { not: bool, sets_flags: bool, rd: u32, rm: u32, kind: u32, rs: u32 },
+    /// `smulbb rd, rn, rm` and kin. `top_n` and `top_m` take the top
+    /// halfword of `rn` and of `rm`. A long form names `rdlo` as `ra`.
+    HalfwordMultiply {
+        kind: HalfwordMultiply,
+        top_n: bool,
+        top_m: bool,
+        rd: u32,
+        ra: u32,
+        rn: u32,
+        rm: u32,
+    },
     /// `ldrsb rt, [rn, imm]` and the other loads and stores of a halfword,
     /// a signed byte or a pair.
     Halfword { name: &'static str, rt: u32, rn: u32, offset: i64, index: Indexing },
@@ -1460,6 +1471,28 @@ impl IntegerWord {
     fn of(word: u32) -> Option<Self> {
         let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
         let (rn, rd, rm) = (field(16, 4), field(12, 4), field(0, 4));
+        // cond 0001 0 op 0 Rd Ra Rm 1 y x 0 Rn
+        if field(23, 5) == 0b00010 && field(20, 1) == 0 && field(7, 1) == 1 && field(4, 1) == 0 {
+            let (top_n, top_m) = (field(5, 1) == 1, field(6, 1) == 1);
+            let kind = match (field(21, 2), top_n) {
+                (0b00, _) => HalfwordMultiply::MultiplyAdd,
+                // In the word forms, `x` chooses the form, not a halfword.
+                (0b01, false) => HalfwordMultiply::WordMultiplyAdd,
+                (0b01, true) => HalfwordMultiply::WordMultiply,
+                (0b10, _) => HalfwordMultiply::LongMultiplyAdd,
+                _ => HalfwordMultiply::Multiply,
+            };
+            let top_n = top_n && !matches!(field(21, 2), 0b01);
+            return Some(Self::HalfwordMultiply {
+                kind,
+                top_n,
+                top_m,
+                rd: field(16, 4),
+                ra: field(12, 4),
+                rn: field(0, 4),
+                rm: field(8, 4),
+            });
+        }
         if field(23, 5) == 0b01101 && field(4, 4) == 0b0111 && field(8, 2) == 0 {
             let name = match field(20, 3) {
                 0b000 => "sxtb16",
@@ -1533,6 +1566,18 @@ impl IntegerWord {
             Self::ShiftByRegister { not, sets_flags, .. } => {
                 format!("{}{}", if not { "mvn" } else { "mov" }, if sets_flags { "s" } else { "" })
             }
+            Self::HalfwordMultiply { kind, top_n, top_m, .. } => {
+                let half = |top: bool| if top { 't' } else { 'b' };
+                match kind {
+                    HalfwordMultiply::Multiply => format!("smul{}{}", half(top_n), half(top_m)),
+                    HalfwordMultiply::MultiplyAdd => format!("smla{}{}", half(top_n), half(top_m)),
+                    HalfwordMultiply::WordMultiply => format!("smulw{}", half(top_m)),
+                    HalfwordMultiply::WordMultiplyAdd => format!("smlaw{}", half(top_m)),
+                    HalfwordMultiply::LongMultiplyAdd => {
+                        format!("smlal{}{}", half(top_n), half(top_m))
+                    }
+                }
+            }
             Self::Halfword { name, .. } => name.into(),
         }
     }
@@ -1556,6 +1601,18 @@ impl IntegerWord {
             Self::ShiftByRegister { rd, rm, kind, rs, .. } => {
                 let shift = ["lsl", "lsr", "asr", "ror"][kind as usize];
                 format!("{}, {}, {shift} {}", name(rd), name(rm), name(rs))
+            }
+            Self::HalfwordMultiply { kind, rd, ra, rn, rm, .. } => {
+                let (rd, ra, rn, rm) = (name(rd), name(ra), name(rn), name(rm));
+                match kind {
+                    HalfwordMultiply::Multiply | HalfwordMultiply::WordMultiply => {
+                        format!("{rd}, {rn}, {rm}")
+                    }
+                    HalfwordMultiply::MultiplyAdd | HalfwordMultiply::WordMultiplyAdd => {
+                        format!("{rd}, {rn}, {rm}, {ra}")
+                    }
+                    HalfwordMultiply::LongMultiplyAdd => format!("{ra}, {rd}, {rn}, {rm}"),
+                }
             }
             Self::Halfword { name: mnemonic, rt, rn, offset, index } => {
                 let pair = if mnemonic.ends_with('d') {
@@ -1637,6 +1694,28 @@ impl IntegerWord {
                     lifted.writes.insert(il::Reg::Flags);
                 }
             }
+            Self::HalfwordMultiply { kind, rd, ra, rn, rm, .. } => {
+                // Written first, then read, as the operands list them.
+                let (written, read_too): (&[u32], &[u32]) = match kind {
+                    HalfwordMultiply::Multiply | HalfwordMultiply::WordMultiply => {
+                        lifted.op = Op::Multiply;
+                        (&[rd], &[rn, rm])
+                    }
+                    HalfwordMultiply::MultiplyAdd | HalfwordMultiply::WordMultiplyAdd => {
+                        lifted.op = Op::MultiplyAdd;
+                        (&[rd], &[rn, rm, ra])
+                    }
+                    // The sum is in the pair it adds to, low then high.
+                    HalfwordMultiply::LongMultiplyAdd => {
+                        lifted.op = Op::MultiplyAdd;
+                        (&[ra, rd], &[ra, rd, rn, rm])
+                    }
+                };
+                let listed = written.iter().chain(read_too.iter().filter(|r| !written.contains(r)));
+                lifted.operands = listed.map(|&number| value(number)).collect();
+                read_too.iter().for_each(|&number| read(&mut lifted, number));
+                written.iter().for_each(|&number| write(&mut lifted, number));
+            }
             Self::Halfword { name, rt, rn, offset, index } => {
                 let load = name.starts_with("ld");
                 let pair = name.ends_with('d');
@@ -1676,9 +1755,31 @@ impl IntegerWord {
 /// #1.0` prints as `vmov.f32 s1`, `vmov.f64 d16, d8` as `vmov.f64 d16`, and
 /// `vcvt.f64.u32 d0, s0` as `vmov.f64 d0`. An edit to what they read then
 /// shows as no change.
-pub(super) fn decoder_misreads(word: u32) -> bool {
-    word >> 28 != 0b1111
-        && matches!(VfpWord::of(word), Some(VfpWord::Compute { .. } | VfpWord::MoveConstant { .. }))
+///
+/// In A32 it swaps `bb` and `tt` of the multiplies of halfwords, so that
+/// `smulbb` reads as `smultt`, and reads `smulwb` as `smlawb`.
+pub(super) fn decoder_misreads(word: u32, encoding: Encoding) -> bool {
+    let vfp =
+        matches!(VfpWord::of(word), Some(VfpWord::Compute { .. } | VfpWord::MoveConstant { .. }));
+    let multiply = encoding == Encoding::A32
+        && matches!(IntegerWord::of(word), Some(IntegerWord::HalfwordMultiply { .. }));
+    word >> 28 != 0b1111 && (vfp || multiply)
+}
+
+/// Which multiply of halfwords an A32 word is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HalfwordMultiply {
+    /// `smulbb rd, rn, rm`: a halfword of each.
+    Multiply,
+    /// `smlabb rd, rn, rm, ra`: the product, plus `ra`.
+    MultiplyAdd,
+    /// `smulwb rd, rn, rm`: all of `rn` by a halfword of `rm`, the top 32
+    /// bits of the 48.
+    WordMultiply,
+    /// `smlawb rd, rn, rm, ra`: the same, plus `ra`.
+    WordMultiplyAdd,
+    /// `smlalbb rdlo, rdhi, rn, rm`: the product, added to a 64-bit value.
+    LongMultiplyAdd,
 }
 
 /// A VFP word `yaxpeax` 0.4 refuses: the moves between core and VFP
@@ -3971,6 +4072,52 @@ mod tests {
         let lifted = lift_fallback(0x16ef_3073, Encoding::A32).expect("the word lifts");
         assert!(lifted.reads.contains(il::Reg::Flags));
         assert_eq!(fallback_text(0x16ef_3073).as_deref(), Some("uxtbne r3, r3"));
+    }
+
+    /// `yaxpeax` swaps `bb` and `tt` of the multiplies of halfwords, and
+    /// reads `smulwb` as `smlawb`; all 16 forms read as `llvm-mc` reads
+    /// them.
+    #[test]
+    fn the_multiplies_of_halfwords_read_as_encoded() {
+        let cases = [
+            (0xe107_3182, "smlabb r7, r2, r1, r3"),
+            (0xe107_31a2, "smlatb r7, r2, r1, r3"),
+            (0xe107_31c2, "smlabt r7, r2, r1, r3"),
+            (0xe107_31e2, "smlatt r7, r2, r1, r3"),
+            (0xe127_3182, "smlawb r7, r2, r1, r3"),
+            (0xe127_31a2, "smulwb r7, r2, r1"),
+            (0xe127_31c2, "smlawt r7, r2, r1, r3"),
+            (0xe127_31e2, "smulwt r7, r2, r1"),
+            (0xe147_3182, "smlalbb r3, r7, r2, r1"),
+            (0xe147_31a2, "smlaltb r3, r7, r2, r1"),
+            (0xe147_31c2, "smlalbt r3, r7, r2, r1"),
+            (0xe147_31e2, "smlaltt r3, r7, r2, r1"),
+            (0xe167_3182, "smulbb r7, r2, r1"),
+            (0xe167_31a2, "smultb r7, r2, r1"),
+            (0xe167_31c2, "smulbt r7, r2, r1"),
+            (0xe167_31e2, "smultt r7, r2, r1"),
+        ];
+        for (word, text) in cases {
+            let insn = Arm32.decode(&u32::to_le_bytes(word), 0, 0).expect("the word reads");
+            assert_eq!(format!("{} {}", insn.mnemonic, insn.operands), text, "{word:#010x}");
+        }
+        let lift = |word: u32| {
+            let bytes = word.to_le_bytes();
+            Arm32.lift(&Arm32.decode(&bytes, 0, 0).unwrap(), &bytes).expect("the word lifts")
+        };
+        let general = il::Reg::General;
+        // `smulwb r7, r2, r1` multiplies and adds nothing.
+        let word = lift(0xe127_31a2);
+        assert_eq!(word.op, il::Op::Multiply);
+        assert_eq!(word.reads, [general(2), general(1)].into_iter().collect());
+        // `smlalbb r3, r7, r2, r1` adds to the pair, and writes both.
+        let long = lift(0xe147_3182);
+        assert_eq!(long.op, il::Op::MultiplyAdd);
+        assert_eq!(long.writes, [general(3), general(7)].into_iter().collect());
+        assert_eq!(
+            long.reads,
+            [general(1), general(2), general(3), general(7)].into_iter().collect()
+        );
     }
 
     /// A NEON load names the alignment it asserts, as `llvm-mc` reads it:
