@@ -14,6 +14,7 @@
 //! and a `switch` jumps through a table of distances in `.rodata`.
 
 use core::ops::Range;
+use std::collections::HashMap;
 
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, U8Reader};
@@ -888,21 +889,16 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
     // keeps it: on another path through the function, the register still
     // holds the page. GCC's `inflate_table` for AArch64 at `-Os` adds the
     // same offset to one page register on two paths.
-    let mut pages: Vec<(&str, u64)> = Vec::new();
-    // Every page each register took. Code that only a branch reaches, after
-    // a jump or a return, can find a register as any path left it, and the
-    // path the page came by is not always the one above: `inflate_table`
-    // copies over the page register just before it jumps away.
-    let mut ever: Vec<(&str, u64)> = Vec::new();
+    let mut pages = PageRegisters::default();
     let values_of = |list: &[(&str, u64)], register: &str| -> Vec<u64> {
         list.iter().filter(|(name, _)| *name == register).map(|&(_, value)| value).collect()
     };
     // The address a base register and an offset form, if what the register
     // holds, or a page it may hold, lands in the image.
-    let formed = |held: &[(&str, u64)], pages: &[(&str, u64)], base: &str, low: u64| {
+    let formed = |held: &[(&str, u64)], pages: &PageRegisters<'_>, base: &str, low: u64| {
         values_of(held, base)
             .into_iter()
-            .chain(values_of(pages, base))
+            .chain(pages.values(base).iter().copied())
             .map(|value| value.wrapping_add(low))
             .find(|&address| space.contains_formed(address))
     };
@@ -911,7 +907,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
         let after_an_end =
             index > 0 && matches!(body[index - 1].kind, InsnKind::Jump { .. } | InsnKind::Return);
         if after_an_end {
-            pages = ever.clone();
+            pages.after_an_end();
         }
         let operands: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
         let Some(&destination) = operands.first() else { continue };
@@ -921,7 +917,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
             ("adrp" | "adr", _) => {
                 kinds[index] = ConstantKind::Address;
                 held.retain(|(name, _)| *name != destination);
-                pages.retain(|(name, _)| *name != destination);
+                pages.forget(destination);
                 if let Some(value) = page_of(insn) {
                     formed_at[index] = Some(value);
                     if insn.mnemonic == "adr" && space.contains_formed(value) {
@@ -929,8 +925,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                     }
                     held.push((destination, value));
                     if insn.mnemonic == "adrp" {
-                        pages.push((destination, value));
-                        ever.push((destination, value));
+                        pages.take(destination, value);
                     }
                 }
                 continue;
@@ -943,7 +938,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                 // kext linked apart, is still one to show.
                 if address.is_none() {
                     formed_at[index] = Aarch64.constant_value(low).and_then(|low| {
-                        values_of(&pages, source).first().map(|page| page.wrapping_add(low))
+                        pages.values(source).first().map(|page| page.wrapping_add(low))
                     });
                 }
                 if let Some(address) = address {
@@ -953,7 +948,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                     held.retain(|(name, _)| *name != destination);
                     held.push((destination, address));
                     if destination != *source {
-                        pages.retain(|(name, _)| *name != destination);
+                        pages.forget(destination);
                     }
                     continue;
                 }
@@ -967,7 +962,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                 let base = reference.trim_start_matches('[');
                 let low = low.trim_end_matches(']').trim_end_matches('!');
                 // A page outside the image, as the GOT can be, still moves.
-                let on_a_page = !values_of(&pages, base).is_empty();
+                let on_a_page = !pages.values(base).is_empty();
                 let address =
                     Aarch64.constant_value(low).and_then(|low| formed(&held, &pages, base, low));
                 if on_a_page || address.is_some() {
@@ -977,7 +972,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                 // still names a slot.
                 formed_at[index] = address.or_else(|| {
                     let low = Aarch64.constant_value(low)?;
-                    values_of(&pages, base).first().map(|page| page.wrapping_add(low))
+                    pages.values(base).first().map(|page| page.wrapping_add(low))
                 });
                 // `ldr x0, [x8, #lo12]` reads a whole pointer, as from a slot
                 // of the GOT or a table of texts.
@@ -994,10 +989,76 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
         // the register it reads first.
         if !insn.mnemonic.starts_with("st") && !insn.mnemonic.starts_with("cmp") {
             held.retain(|(name, _)| *name != destination);
-            pages.retain(|(name, _)| *name != destination);
+            pages.forget(destination);
         }
     }
     Pages { kinds, formed: formed_at, addresses, pointer_loads }
+}
+
+/// The pages each register may hold, as [`track_pages`] reads on.
+///
+/// Code that only a branch reaches, after a jump or a return, can find a
+/// register as any path left it, and the path the page came by is not always
+/// the one above: `inflate_table` copies over the page register just before
+/// it jumps away. So each register keeps every page it ever took, and after
+/// an end may hold any of them.
+///
+/// `track_pages` reads a whole region of a stripped library as one body, and
+/// a library of 300000 instructions takes thousands of pages. A copy of every
+/// page after each end then took 9.5 seconds on `libgnutls` for AArch64, so
+/// a register after an end holds a count of its pages, not a copy. Only the
+/// first page of a register that forms an address counts, so each page is
+/// kept once, in the order it came.
+#[derive(Default)]
+struct PageRegisters<'a> {
+    /// Every page each register took, each once, the first first.
+    ever: HashMap<&'a str, Vec<u64>>,
+    /// What each register holds on the path read now. A register missing
+    /// here holds no page.
+    now: HashMap<&'a str, MayHold>,
+}
+
+/// The pages a register may hold.
+#[derive(Clone, Copy)]
+enum MayHold {
+    /// The first so many pages the register ever took.
+    AnyOf(usize),
+    /// The page it took last, on this path.
+    One(u64),
+}
+
+impl<'a> PageRegisters<'a> {
+    /// The pages `register` may hold, the most likely first.
+    fn values(&self, register: &str) -> &[u64] {
+        match self.now.get(register) {
+            Some(MayHold::AnyOf(count)) => &self.ever[register][..*count],
+            Some(MayHold::One(page)) => core::slice::from_ref(page),
+            None => &[],
+        }
+    }
+
+    /// `register` takes `page` from `adrp`.
+    fn take(&mut self, register: &'a str, page: u64) {
+        self.now.insert(register, MayHold::One(page));
+        let taken = self.ever.entry(register).or_default();
+        if !taken.contains(&page) {
+            taken.push(page);
+        }
+    }
+
+    /// `register` holds no page any more.
+    fn forget(&mut self, register: &str) {
+        self.now.remove(register);
+    }
+
+    /// Past a jump or a return, each register may hold any page it took.
+    fn after_an_end(&mut self) {
+        self.now = self
+            .ever
+            .iter()
+            .map(|(&register, taken)| (register, MayHold::AnyOf(taken.len())))
+            .collect();
+    }
 }
 
 /// Read the table a `br` at `insns[index]` jumps through.
@@ -1108,6 +1169,32 @@ mod extend_tests {
 mod tests {
     use super::*;
     use crate::arch::decode_all;
+
+    /// After an end, a register may hold any page it took, each once and
+    /// the first first; a new page on the path read now replaces them.
+    #[test]
+    fn a_register_after_an_end_may_hold_any_page_it_took() {
+        let mut pages = PageRegisters::default();
+        pages.take("x8", 0x1000);
+        pages.take("x8", 0x2000);
+        pages.take("x8", 0x1000);
+        pages.take("x9", 0x3000);
+        assert_eq!(pages.values("x8"), [0x1000]);
+        pages.forget("x9");
+        assert!(pages.values("x9").is_empty());
+
+        pages.after_an_end();
+        assert_eq!(pages.values("x8"), [0x1000, 0x2000]);
+        assert_eq!(pages.values("x9"), [0x3000]);
+        assert!(pages.values("x10").is_empty());
+
+        // A page taken later is not one this path may hold.
+        pages.take("x9", 0x4000);
+        pages.forget("x9");
+        assert_eq!(pages.values("x8"), [0x1000, 0x2000]);
+        pages.after_an_end();
+        assert_eq!(pages.values("x9"), [0x3000, 0x4000]);
+    }
 
     fn code(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|word| word.to_le_bytes()).collect()
