@@ -75,6 +75,13 @@ struct Totals {
     top5: usize,
     /// Comparisons where no changed row holds the fix.
     missed: usize,
+    /// Comparisons that [`Totals::missed`] counts, where a function of the
+    /// fix gone or new names a function of the fix as in its place.
+    found_in_place: usize,
+    /// Hints of a place, `NearMiss::in_place`, right and wrong by the
+    /// symbols.
+    places_right: usize,
+    places_wrong: usize,
     cases: usize,
     /// For each order of [`ORDERS`]: the rank sum, top 1 and top 5.
     orders: Vec<(usize, usize, usize, f64)>,
@@ -168,6 +175,31 @@ fn measure(project: &str, arch: &str, first: &str, second: &str, totals: &mut To
         }
         None => totals.missed += 1,
     }
+
+    // The hints of a place, on the rows of functions gone and new.
+    let hints = diff
+        .near_misses
+        .iter()
+        .filter_map(|miss| Some((miss.unmatched, miss.in_place?)))
+        .chain(
+            diff.added_near_misses.iter().filter_map(|miss| Some((miss.in_place?, miss.unmatched))),
+        )
+        .collect::<BTreeSet<_>>();
+    let mut fix_in_place = false;
+    for &(x, y) in &hints {
+        let (left, right) = (names(0, x), names(1, y));
+        if left.is_empty() || right.is_empty() {
+            continue;
+        }
+        if left.is_disjoint(&right) {
+            totals.places_wrong += 1;
+        } else {
+            totals.places_right += 1;
+        }
+        let holds_fix = |side: &BTreeSet<String>| side.iter().any(|name| is_fix(project, name));
+        fix_in_place |= holds_fix(&left) && holds_fix(&right);
+    }
+    totals.found_in_place += usize::from(rank.is_none() && fix_in_place);
 
     // Each other order, over the same rows.
     let features = features_of(&ranked, &stripped);
@@ -697,6 +729,9 @@ fn main() {
         all.top1 += totals.top1;
         all.top5 += totals.top5;
         all.missed += totals.missed;
+        all.found_in_place += totals.found_in_place;
+        all.places_right += totals.places_right;
+        all.places_wrong += totals.places_wrong;
         all.cases += totals.cases;
         if all.orders.is_empty() {
             all.orders = vec![(0, 0, 0, 0.0); ORDERS.len()];
@@ -720,6 +755,10 @@ fn main() {
         all.top5,
         all.missed,
         all.cases
+    );
+    println!(
+        "in place: {} right, {} wrong; the fix found in place in {} of {} missed",
+        all.places_right, all.places_wrong, all.found_in_place, all.missed
     );
     for ((name, _), (ranks, top1, top5, mrr)) in ORDERS.iter().zip(&all.orders) {
         println!(

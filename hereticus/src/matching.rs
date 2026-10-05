@@ -357,6 +357,14 @@ pub struct NearMiss {
     pub best: Option<usize>,
     /// How close that candidate came, from 0.0 to 1.0.
     pub score: f64,
+    /// The unmatched function of the other binary that sits in the same
+    /// place, between the same two pairs, if one does.
+    ///
+    /// A fix can rewrite a function so much that no score pairs it, or split
+    /// it in two. Its place still shows where it went. This is a hint, not a
+    /// pair: measured over the backports, 61% of these hints are right. See
+    /// [`Cascade::same_places`] and RESEARCH.md, entry 7.
+    pub in_place: Option<usize>,
 }
 
 /// The result of comparing two binaries.
@@ -1076,36 +1084,11 @@ impl Cascade<'_> {
     /// See RESEARCH.md, entry 7: genome comparison calls this synteny, and
     /// uses conserved gene order to tell orthologs from look-alikes.
     fn pair_by_layout(&mut self) {
-        let order = |side: &[Prepared<'_>]| -> Vec<usize> {
-            let mut order: Vec<usize> = (0..side.len()).collect();
-            order.sort_by_key(|&index| side[index].function.address);
-            order
-        };
-        let (left_order, right_order) = (order(&self.left), order(&self.right));
-        let mut right_place = vec![0; self.right.len()];
-        for (place, &index) in right_order.iter().enumerate() {
-            right_place[index] = place;
-        }
-        let mut left_place = vec![0; self.left.len()];
-        for (place, &index) in left_order.iter().enumerate() {
-            left_place[index] = place;
-        }
-
-        // The pairs in the same order on both sides, as places.
-        let mut anchors: Vec<(usize, usize)> = self
-            .matched
-            .iter()
-            .map(|pair| (left_place[pair.before], right_place[pair.after]))
-            .collect();
-        anchors.sort_unstable();
-        let chain = longest_increasing_chain(&anchors);
-
-        // Two unrelated binaries pair few functions, and the place of one
-        // there means nothing.
-        let smaller = self.left.len().min(self.right.len());
-        if (chain.len() as f64) < LEAST_ANCHORED_SHARE * smaller as f64 {
+        let layout = self.layout();
+        if layout.is_unanchored() {
             return;
         }
+        let Layout { left_place, right_place, chain, .. } = &layout;
 
         // A weak pair off the chain breaks the order of the pairs around
         // it, which a wrong pair does more often than a right one. Its
@@ -1125,18 +1108,8 @@ impl Cascade<'_> {
             self.right_free[pair.after] = true;
         }
 
-        // Each gap runs from just after one anchor to just before the next,
-        // and the ends of the binaries bound the first and the last.
-        let ends = chain.iter().copied().chain([(left_order.len(), right_order.len())]);
         let mut pairs = Vec::new();
-        let mut start = (0, 0);
-        for end in ends {
-            let free_in = |order: &[usize], free: &[bool], places: core::ops::Range<usize>| {
-                order[places].iter().copied().filter(|&index| free[index]).collect::<Vec<_>>()
-            };
-            let lefts = free_in(&left_order, &self.left_free, start.0..end.0);
-            let rights = free_in(&right_order, &self.right_free, start.1..end.1);
-            start = (end.0 + 1, end.1 + 1);
+        for (lefts, rights) in layout.gaps(&self.left_free, &self.right_free) {
             // Where the counts differ, a function went or came, and nothing
             // says which.
             if lefts.is_empty() || lefts.len() != rights.len() {
@@ -1159,6 +1132,85 @@ impl Cascade<'_> {
                 self.matched.push(pair);
             }
         }
+    }
+
+    /// The functions of each side in address order, and the longest chain
+    /// of pairs that keep that order on both sides.
+    fn layout(&self) -> Layout {
+        let order = |side: &[Prepared<'_>]| -> Vec<usize> {
+            let mut order: Vec<usize> = (0..side.len()).collect();
+            order.sort_by_key(|&index| side[index].function.address);
+            order
+        };
+        let place_of = |order: &[usize]| -> Vec<usize> {
+            let mut place = vec![0; order.len()];
+            for (at, &index) in order.iter().enumerate() {
+                place[index] = at;
+            }
+            place
+        };
+        let (left_order, right_order) = (order(&self.left), order(&self.right));
+        let (left_place, right_place) = (place_of(&left_order), place_of(&right_order));
+
+        let mut anchors: Vec<(usize, usize)> = self
+            .matched
+            .iter()
+            .map(|pair| (left_place[pair.before], right_place[pair.after]))
+            .collect();
+        anchors.sort_unstable();
+        let chain = longest_increasing_chain(&anchors);
+        Layout { left_order, right_order, left_place, right_place, chain }
+    }
+
+    /// For each unpaired function, the unpaired function of the other side
+    /// that sits in the same place, as two maps: first to second binary,
+    /// and second to first.
+    ///
+    /// Where a gap between two pairs holds as many free functions on both
+    /// sides, the first sits in the place of the first, and so on. Where
+    /// the counts differ, a function went or came, and the gap aligns by
+    /// the scores of its functions, in order, so that the sum of the scores
+    /// is highest; a function that shares nothing with its partner in such
+    /// an alignment has no place.
+    ///
+    /// Measured over the backports built two ways, 888 of these hints are
+    /// right and 564 wrong. Of the 18 comparisons where no changed pair holds
+    /// the fix, because it went and came as two functions, 13 name a
+    /// function of the fix in its place. Zipping a gap with equal counts
+    /// named 38 more right and 5 more wrong than aligning it by scores, and
+    /// a floor on the scores of 0.1 to 0.3 lost more right than wrong. See
+    /// RESEARCH.md, entry 7.
+    fn same_places(&self) -> (HashMap<usize, usize>, HashMap<usize, usize>) {
+        let mut places = (HashMap::new(), HashMap::new());
+        let layout = self.layout();
+        if layout.is_unanchored() {
+            return places;
+        }
+        for (lefts, rights) in layout.gaps(&self.left_free, &self.right_free) {
+            let cells = lefts.len().saturating_mul(rights.len());
+            if cells == 0 || cells > MOST_PLACE_CELLS {
+                continue;
+            }
+            let aligned = if lefts.len() == rights.len() {
+                lefts.iter().copied().zip(rights.iter().copied()).collect()
+            } else {
+                let score = |x: usize, y: usize| {
+                    similarity_of_symbols(
+                        &self.left[lefts[x]].symbols,
+                        &self.right[rights[y]].symbols,
+                    )
+                };
+                align_by_scores(lefts.len(), rights.len(), score)
+                    .into_iter()
+                    .map(|(x, y)| (lefts[x], rights[y]))
+                    .collect::<Vec<_>>()
+            };
+            for (x, y) in aligned {
+                places.0.insert(x, y);
+                places.1.insert(y, x);
+            }
+        }
+        places
     }
 
     /// [`Self::reference_keys`], for every function.
@@ -1729,9 +1781,11 @@ impl Cascade<'_> {
         // side. The two passes together score every unmatched function against
         // every one on the far side, so the phase counts both.
         progress.start(Phase::NearMisses, removed.len() + added.len());
-        let near_misses = self.near_misses(&removed, &self.left, &added, &self.right, progress);
+        let (left_places, right_places) = self.same_places();
+        let near_misses =
+            self.near_misses(&removed, &self.left, &added, &self.right, &left_places, progress);
         let added_near_misses =
-            self.near_misses(&added, &self.right, &removed, &self.left, progress);
+            self.near_misses(&added, &self.right, &removed, &self.left, &right_places, progress);
         progress.finish();
 
         let removed_contents = removed.iter().map(|&index| self.left[index].contents).collect();
@@ -1766,6 +1820,7 @@ impl Cascade<'_> {
         theirs: &[Prepared<'_>],
         others: &[usize],
         others_side: &[Prepared<'_>],
+        places: &HashMap<usize, usize>,
         progress: &dyn Progress,
     ) -> Vec<NearMiss> {
         // Read-only, like the scoring stage, and the same shape of work. The
@@ -1787,9 +1842,12 @@ impl Cascade<'_> {
                     })
                     .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
 
+                let in_place = places.get(one).copied();
                 match best {
-                    Some((score, other)) => NearMiss { unmatched: *one, best: Some(other), score },
-                    None => NearMiss { unmatched: *one, best: None, score: 0.0 },
+                    Some((score, other)) => {
+                        NearMiss { unmatched: *one, best: Some(other), score, in_place }
+                    }
+                    None => NearMiss { unmatched: *one, best: None, score: 0.0, in_place },
                 }
             })
             .collect()
@@ -2966,6 +3024,13 @@ fn constant_agreement(left: &[u64], right: &[u64]) -> f64 {
 /// precision at best, so they are left alone.
 const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
 
+/// The largest gap, as the product of its free functions on the two sides,
+/// that [`Cascade::same_places`] aligns.
+///
+/// The alignment keeps a table of this many scores. A gap this large holds
+/// two unrelated runs of code, where a place means nothing.
+const MOST_PLACE_CELLS: usize = 1 << 20;
+
 /// The least share of the functions of the smaller binary that must pair
 /// in order before [`Cascade::pair_by_layout`] reads their places.
 ///
@@ -3640,6 +3705,99 @@ fn chain_of_unique_items<T: Eq + core::hash::Hash>(left: &[T], right: &[T]) -> V
         .collect();
     seeds.sort_unstable();
     longest_increasing_chain(&seeds)
+}
+
+/// The functions of two binaries in address order, and the pairs that keep
+/// that order: see [`Cascade::layout`].
+struct Layout {
+    /// The functions of the first binary, by address.
+    left_order: Vec<usize>,
+    /// The functions of the second binary, by address.
+    right_order: Vec<usize>,
+    /// The place of each function of the first binary in `left_order`.
+    left_place: Vec<usize>,
+    /// The place of each function of the second binary in `right_order`.
+    right_place: Vec<usize>,
+    /// The longest chain of pairs in the same order on both sides, as
+    /// places.
+    chain: Vec<(usize, usize)>,
+}
+
+impl Layout {
+    /// Whether too few pairs keep their order for a place to mean anything.
+    ///
+    /// Two unrelated binaries pair few functions, and the place of one there
+    /// means nothing: see [`LEAST_ANCHORED_SHARE`].
+    fn is_unanchored(&self) -> bool {
+        let smaller = self.left_order.len().min(self.right_order.len());
+        (self.chain.len() as f64) < LEAST_ANCHORED_SHARE * smaller as f64
+    }
+
+    /// The free functions of each gap between two pairs of the chain, in
+    /// address order, on the first and the second binary.
+    ///
+    /// Each gap runs from just after one pair to just before the next, and
+    /// the ends of the binaries bound the first and the last.
+    fn gaps<'a>(
+        &'a self,
+        left_free: &'a [bool],
+        right_free: &'a [bool],
+    ) -> impl Iterator<Item = (Vec<usize>, Vec<usize>)> + 'a {
+        let free_in = |order: &[usize], free: &[bool], places: core::ops::Range<usize>| {
+            order[places].iter().copied().filter(|&index| free[index]).collect::<Vec<_>>()
+        };
+        let ends =
+            self.chain.iter().copied().chain([(self.left_order.len(), self.right_order.len())]);
+        let starts = [(0, 0)].into_iter().chain(self.chain.iter().map(|&(x, y)| (x + 1, y + 1)));
+        starts.zip(ends).map(move |(start, end)| {
+            (
+                free_in(&self.left_order, left_free, start.0..end.0),
+                free_in(&self.right_order, right_free, start.1..end.1),
+            )
+        })
+    }
+}
+
+/// Align two runs in order so that the sum of the scores of the aligned
+/// items is highest, and return the aligned items that score above zero.
+///
+/// The dynamic program of Needleman and Wunsch, with no cost for a gap.
+/// `score(x, y)` scores item `x` of the first run against item `y` of the
+/// second.
+fn align_by_scores(
+    left_len: usize,
+    right_len: usize,
+    score: impl Fn(usize, usize) -> f64,
+) -> Vec<(usize, usize)> {
+    let width = right_len + 1;
+    let mut scores = vec![0.0; left_len * right_len];
+    // `best[x * width + y]` is the highest sum over the first `x` and `y`
+    // items.
+    let mut best = vec![0.0_f64; (left_len + 1) * width];
+    for x in 1..=left_len {
+        for y in 1..=right_len {
+            let here = score(x - 1, y - 1);
+            scores[(x - 1) * right_len + (y - 1)] = here;
+            best[x * width + y] = (best[(x - 1) * width + (y - 1)] + here)
+                .max(best[(x - 1) * width + y])
+                .max(best[x * width + y - 1]);
+        }
+    }
+    let mut aligned = Vec::new();
+    let (mut x, mut y) = (left_len, right_len);
+    while x > 0 && y > 0 {
+        let here = scores[(x - 1) * right_len + (y - 1)];
+        if here > 0.0 && best[x * width + y] == best[(x - 1) * width + (y - 1)] + here {
+            aligned.push((x - 1, y - 1));
+            (x, y) = (x - 1, y - 1);
+        } else if best[x * width + y] == best[(x - 1) * width + y] {
+            x -= 1;
+        } else {
+            y -= 1;
+        }
+    }
+    aligned.reverse();
+    aligned
 }
 
 /// The longest subsequence of `seeds`, sorted by their left position, whose
@@ -4981,6 +5139,112 @@ mod tests {
         let diff =
             diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
         assert_eq!(diff.removed, vec![1]);
+    }
+
+    /// Where a gap holds one more function on one side, the function gone
+    /// names the new one that scores closest as in its place, and the
+    /// other new one has no place.
+    #[test]
+    fn a_gap_of_unequal_counts_names_the_function_in_place() {
+        let first = arm(&[ADC, SBC, RSB, BX_LR]);
+        let last = arm(&[MUL, MUL, ADC, BX_LR]);
+        let before_code = arm(&[ADD, SUB, ORR, EOR, AND, BIC, BX_LR]);
+        let after_code = arm(&[ADD, SUB, ORR, MUL, MUL, MUL, BX_LR]);
+        let other = arm(&[EOR, EOR, EOR, EOR, EOR, EOR, BX_LR]);
+        let before = binary_of(&[("", &first), ("", &before_code), ("", &last)]);
+        let after = binary_of(&[("", &first), ("", &other), ("", &after_code), ("", &last)]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        assert_eq!(diff.removed, vec![1]);
+        assert_eq!(diff.near_miss(1).and_then(|miss| miss.in_place), Some(2));
+        assert_eq!(diff.added_near_miss(2).and_then(|miss| miss.in_place), Some(1));
+        assert_eq!(diff.added_near_miss(1).and_then(|miss| miss.in_place), None);
+    }
+
+    /// A function that shares too little with the one in its place to pair
+    /// by place still names it.
+    #[test]
+    fn a_replaced_function_names_the_one_in_its_place() {
+        let first = arm(&[ADC, SBC, RSB, BX_LR]);
+        let last = arm(&[MUL, MUL, ADC, BX_LR]);
+        let before_code = arm(&[ADD, SUB, ORR, EOR, AND, BIC, ADD, SUB, ORR, EOR, BX_LR]);
+        let after_code = arm(&[[MUL; 40].as_slice(), &[BX_LR]].concat());
+        let before = binary_of(&[("", &first), ("", &before_code), ("", &last)]);
+        let after = binary_of(&[("", &first), ("", &after_code), ("", &last)]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        assert_eq!(
+            (diff.removed.as_slice(), diff.added.as_slice()),
+            ([1].as_slice(), [1].as_slice())
+        );
+        assert_eq!(diff.near_miss(1).and_then(|miss| miss.in_place), Some(1));
+        assert_eq!(diff.added_near_miss(1).and_then(|miss| miss.in_place), Some(1));
+    }
+
+    /// Two unrelated binaries name no function in place.
+    #[test]
+    fn unrelated_binaries_name_nothing_in_place() {
+        let before = binary_of(&[
+            ("", &arm(&[ADD, SUB, BX_LR])),
+            ("", &arm(&[ORR, EOR, BX_LR])),
+            ("", &arm(&[AND, BIC, BX_LR])),
+        ]);
+        let after = binary_of(&[
+            ("", &arm(&[MUL, ADC, BX_LR])),
+            ("", &arm(&[SBC, RSB, BX_LR])),
+            ("", &arm(&[MUL, SBC, BX_LR])),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let misses = diff.near_misses.iter().chain(&diff.added_near_misses);
+        assert!(misses.clone().count() == 6, "{diff:?}");
+        assert!(misses.into_iter().all(|miss| miss.in_place.is_none()), "{diff:?}");
+    }
+
+    #[test]
+    fn alignment_by_scores_takes_the_highest_sum_in_order() {
+        let table = [[0.9, 0.0, 0.0], [0.0, 0.2, 0.8]];
+        assert_eq!(align_by_scores(2, 3, |x, y| table[x][y]), vec![(0, 0), (1, 2)]);
+        // Crossing pairs score more, but break the order.
+        let table = [[0.0, 0.9], [0.9, 0.0]];
+        assert_eq!(align_by_scores(2, 2, |x, y| table[x][y]).len(), 1);
+        assert!(align_by_scores(2, 2, |_, _| 0.0).is_empty(), "nothing shared");
+        assert!(align_by_scores(0, 3, |_, _| 1.0).is_empty());
+        assert!(align_by_scores(3, 0, |_, _| 1.0).is_empty());
+    }
+
+    /// The highest sum of scores of any alignment in order, by trying
+    /// every one.
+    fn best_alignment_sum(left: usize, right: usize, score: &dyn Fn(usize, usize) -> f64) -> f64 {
+        if left == 0 || right == 0 {
+            return 0.0;
+        }
+        let both = best_alignment_sum(left - 1, right - 1, score) + score(left - 1, right - 1);
+        both.max(best_alignment_sum(left - 1, right, score)).max(best_alignment_sum(
+            left,
+            right - 1,
+            score,
+        ))
+    }
+
+    /// Any alignment by scores keeps the order on both sides, takes only
+    /// items that share something, and reaches the highest sum.
+    #[test]
+    fn alignment_by_scores_is_ordered_and_best() {
+        bolero::check!().with_type::<(u8, u8, [u8; 25])>().for_each(|&(left, right, cells)| {
+            let (left, right) = (usize::from(left % 6), usize::from(right % 6));
+            let score = |x: usize, y: usize| f64::from(cells[(x * 5 + y) % 25] % 4) / 4.0;
+            let aligned = align_by_scores(left, right, score);
+            for step in aligned.windows(2) {
+                assert!(step[0].0 < step[1].0 && step[0].1 < step[1].1, "{aligned:?}");
+            }
+            assert!(aligned.iter().all(|&(x, y)| x < left && y < right && score(x, y) > 0.0));
+            let sum: f64 = aligned.iter().map(|&(x, y)| score(x, y)).sum();
+            assert!((sum - best_alignment_sum(left, right, &score)).abs() < 1e-9);
+        });
     }
 
     /// Context alone does not pair two functions whose code shares too

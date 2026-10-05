@@ -185,16 +185,6 @@ images of a target. Read the `vmlinux` in it as the answer, as
 `examples/research_bench.rs --ubuntu` reads the `-dbgsym` files, and
 count the right and wrong pairs of each kernel.
 
-## Show where a function sits as a near miss
-
-`Cascade::pair_by_layout` leaves a gap alone where its two sides hold
-different counts of free functions. Aligning such a gap by its scores
-paired only 70% right, so it is not done. But it found a function of
-the fix in 11 more of the 130 backport comparisons, where the fix went
-and came as two functions. Show the function that sits in the same
-place as a hint on a gone or new row, as a near miss does, without
-pairing the two. See `RESEARCH.md`, entry 7.
-
 ## Measure on more published fixes, and faster
 
 Four published fixes, in `examples/research_bench.rs --cves`, decide

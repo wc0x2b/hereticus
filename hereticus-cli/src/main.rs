@@ -13,8 +13,8 @@ use clap::{Parser, ValueEnum};
 use console::Term;
 use hereticus::address::Contents;
 use hereticus::matching::{
-    Changed, Confidence, Diff, DiffLine, EditKind, EditKinds, Edits, Match, Options, PairedLabels,
-    Phase, Progress, UseNames, View, diff_reporting, instruction_diff_in,
+    Changed, Confidence, Diff, DiffLine, EditKind, EditKinds, Edits, Match, NearMiss, Options,
+    PairedLabels, Phase, Progress, UseNames, View, diff_reporting, instruction_diff_in,
 };
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};
@@ -1047,10 +1047,11 @@ fn print_text(diff: &Diff, before: &Binary, after: &Binary, view: TextView) {
         }
         let name = name_of(before, index);
         let gone = paint.pick(REMOVED_COLOR).colorize(unmatched_word("gone", contents));
-        match near_miss_note(diff, index, after, near_miss_floor) {
-            Some(note) => println!("{name}: {gone}, {note}"),
-            None => println!("{name}: {gone}"),
-        }
+        let notes = [
+            near_miss_note(diff, index, after, near_miss_floor),
+            place_note(diff.near_miss(index), after),
+        ];
+        println!("{name}: {gone}{}", joined_notes(notes));
     }
     for (index, contents) in diff.added_with_contents() {
         if !is_shown_unmatched(contents, hidden) {
@@ -1058,10 +1059,11 @@ fn print_text(diff: &Diff, before: &Binary, after: &Binary, view: TextView) {
         }
         let name = name_of(after, index);
         let new = paint.pick(ADDED_COLOR).colorize(unmatched_word("new", contents));
-        match added_near_miss_note(diff, index, before, near_miss_floor) {
-            Some(note) => println!("{name}: {new}, {note}"),
-            None => println!("{name}: {new}"),
-        }
+        let notes = [
+            added_near_miss_note(diff, index, before, near_miss_floor),
+            place_note(diff.added_near_miss(index), before),
+        ];
+        println!("{name}: {new}{}", joined_notes(notes));
     }
 
     summarize(diff, hidden);
@@ -1093,6 +1095,21 @@ fn added_near_miss_note(diff: &Diff, index: usize, before: &Binary, floor: f64) 
         return None;
     }
     Some(format!("closest {} at {:.2}", name_of(before, best), miss.score))
+}
+
+/// Name the unpaired function of the other binary that sits in the same
+/// place, between the same two pairs.
+///
+/// A fix that rewrites a function past any score, or splits it in two, leaves
+/// a function gone and another new where it was. The place links the two
+/// without a claim that they are one. See [`NearMiss::in_place`].
+fn place_note(miss: Option<&NearMiss>, other: &Binary) -> Option<String> {
+    Some(format!("same place as {}", name_of(other, miss?.in_place?)))
+}
+
+/// The notes that are present, each after a comma.
+fn joined_notes(notes: impl IntoIterator<Item = Option<String>>) -> String {
+    notes.into_iter().flatten().map(|note| format!(", {note}")).collect()
 }
 
 /// Print one line per function, with no header or alignment.

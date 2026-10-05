@@ -99,6 +99,20 @@ the edit around it is far too large to read as `changed values`.
 Run it with `just run`, or `just run O0` to see how much the optimizer moves
 the counts.
 
+A function with no pair is listed after the table as `gone` or `new`. It names
+its closest candidate on the other side, with the score, where the score is
+`--near-miss` or more. It also names the unpaired function that sits in the
+same place, between the same two pairs. A fix can rewrite a function so much
+that no score pairs it, or split it in two; its place still shows where it
+went. Zlib built for ARM at `-O1` and then `-O2`, stripped:
+
+```text
+inflateInit_: gone, same place as inflateInit_
+inflate_table: gone, closest inflate_table at 0.57, same place as inflate_table
+```
+
+A place is a hint and not a pair: over the backports, 61% of them are right.
+
 To see what changed inside one function:
 
 ```console

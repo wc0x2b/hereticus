@@ -40,6 +40,17 @@ fn closest_note(miss: Option<&NearMiss>, other: &Binary, floor: f64) -> Option<S
     Some(format!("closest {} at {:.2}", code(&name_of(other, miss.best?)), miss.score))
 }
 
+/// The function on the other side in the same place, as the text report
+/// names it.
+fn place_note(miss: Option<&NearMiss>, other: &Binary) -> Option<String> {
+    Some(format!("same place as {}", code(&name_of(other, miss?.in_place?))))
+}
+
+/// The notes that are present, each after a comma.
+fn joined_notes(notes: impl IntoIterator<Item = Option<String>>) -> String {
+    notes.into_iter().flatten().map(|note| format!(", {note}")).collect()
+}
+
 /// Print the report as a markdown table, the functions that went or came as
 /// a list, and the summary.
 pub(crate) fn print_markdown(
@@ -77,23 +88,25 @@ pub(crate) fn print_markdown(
     let mut unmatched = Vec::new();
     for (index, contents) in diff.removed_with_contents() {
         if show_all || is_shown_unmatched(contents, hidden) {
-            let note = closest_note(diff.near_miss(index), after, near_miss_floor);
+            let miss = diff.near_miss(index);
+            let notes = [closest_note(miss, after, near_miss_floor), place_note(miss, after)];
             unmatched.push(format!(
                 "- {}: {}{}",
                 code(&name_of(before, index)),
                 unmatched_word("gone", contents),
-                note.map(|note| format!(", {note}")).unwrap_or_default()
+                joined_notes(notes)
             ));
         }
     }
     for (index, contents) in diff.added_with_contents() {
         if show_all || is_shown_unmatched(contents, hidden) {
-            let note = closest_note(diff.added_near_miss(index), before, near_miss_floor);
+            let miss = diff.added_near_miss(index);
+            let notes = [closest_note(miss, before, near_miss_floor), place_note(miss, before)];
             unmatched.push(format!(
                 "- {}: {}{}",
                 code(&name_of(after, index)),
                 unmatched_word("new", contents),
-                note.map(|note| format!(", {note}")).unwrap_or_default()
+                joined_notes(notes)
             ));
         }
     }
@@ -168,20 +181,26 @@ fn json_unmatched(
     binary: &Binary,
     index: usize,
     contents: Contents,
-    closest: Option<(&Binary, usize, f64)>,
+    other: &Binary,
+    miss: Option<&NearMiss>,
 ) -> String {
     let holds = match contents {
         Contents::Code => "code",
         Contents::Data => "data",
     };
-    let closest = match closest {
-        Some((other, best, score)) => {
+    let closest = match miss.and_then(|miss| Some((miss.best?, miss.score))) {
+        Some((best, score)) => {
             format!("{{\"function\":{},\"score\":{score:.4}}}", json_function(other, best))
         }
         None => "null".to_string(),
     };
+    let in_place = match miss.and_then(|miss| miss.in_place) {
+        Some(place) => json_function(other, place),
+        None => "null".to_string(),
+    };
     format!(
-        "{{\"function\":{},\"holds\":\"{holds}\",\"closest\":{closest}}}",
+        "{{\"function\":{},\"holds\":\"{holds}\",\"closest\":{closest},\
+         \"in_place\":{in_place}}}",
         json_function(binary, index)
     )
 }
@@ -206,18 +225,14 @@ pub(crate) fn print_json(
         .removed_with_contents()
         .filter(|&(_, contents)| show_all || is_shown_unmatched(contents, hidden))
         .map(|(index, contents)| {
-            let miss = diff.near_miss(index);
-            let closest = miss.and_then(|miss| Some((after, miss.best?, miss.score)));
-            json_unmatched(before, index, contents, closest)
+            json_unmatched(before, index, contents, after, diff.near_miss(index))
         })
         .collect();
     let new: Vec<String> = diff
         .added_with_contents()
         .filter(|&(_, contents)| show_all || is_shown_unmatched(contents, hidden))
         .map(|(index, contents)| {
-            let miss = diff.added_near_miss(index);
-            let closest = miss.and_then(|miss| Some((before, miss.best?, miss.score)));
-            json_unmatched(after, index, contents, closest)
+            json_unmatched(after, index, contents, before, diff.added_near_miss(index))
         })
         .collect();
     let changed = diff.changed().count();

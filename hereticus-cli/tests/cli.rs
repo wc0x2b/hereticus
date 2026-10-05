@@ -580,3 +580,38 @@ fn strip_color(bytes: &[u8]) -> String {
     plain.push_str(rest);
     plain
 }
+
+/// A function gone or new names the function of the other side that sits in
+/// its place. A stripped library keeps the names of what it exports, and
+/// these say whether the place is right.
+#[test]
+fn a_function_gone_names_the_one_in_its_place() {
+    let backport = |variant: &str, level: &str| {
+        format!("fixtures/build/backports/zlib-{variant}/arm-{level}/lib-stripped.so")
+    };
+    let (before, after) = (backport("before", "O1"), backport("after", "O2"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    if !root.join(&before).exists() {
+        eprintln!("skipped: run `just backports` first");
+        return;
+    }
+
+    let text = hereticus().args(["--ignore-names", &before, &after]).output().expect("runs");
+    let text = String::from_utf8(text.stdout).expect("the report is text");
+    assert!(text.contains("inflateInit_: gone, same place as inflateInit_\n"), "{text}");
+    assert!(
+        text.contains("inflateInit_: new, closest _tr_init at 0.26, same place as inflateInit_\n"),
+        "{text}"
+    );
+
+    let json = hereticus()
+        .args(["--format", "json", "--ignore-names", &before, &after])
+        .output()
+        .expect("runs");
+    let report: serde_json::Value =
+        serde_json::from_slice(&json.stdout).expect("the report is JSON");
+    let gone = report["gone"].as_array().expect("a list");
+    let init = gone.iter().find(|gone| gone["function"]["name"] == "inflateInit_").expect("listed");
+    assert_eq!(init["in_place"]["name"], "inflateInit_");
+    assert!(gone.iter().all(|gone| gone.get("in_place").is_some()), "every row holds the field");
+}
