@@ -662,13 +662,8 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
 /// hid in them until a comparison by hand. Here each instruction is folded
 /// by [`folded`], and what still differs is counted by instruction set.
 /// The counts are locked: a new fault raises one, and a fix lowers one.
-/// What is left are faults of `yaxpeax-arm` 0.4 still unfixed:
+/// What is left are faults still unfixed:
 ///
-/// * Thumb-2 `mvn` with a constant reads as `mov`, and a narrow `asr` by a
-///   register as `lsl`.
-/// * Thumb-2 `bfi` and `bfc` print the last bit, not the width, `uxtb`,
-///   `uxth` and kin print a rotation where there is none, and a shift
-///   `asr #32` prints as `asr 0`.
 /// * A32 `smulbb` reads as `smultt`.
 /// * AArch64 leaves out `uxtw` on a register that it extends.
 /// * The NEON loads and stores this decoder reads leave out the alignment,
@@ -723,4 +718,4 @@ fn operands_agree_with_objdump() {
 
 /// What [`operands_agree_with_objdump`] still finds, by instruction set.
 const KNOWN_OPERAND_DISAGREEMENTS: &[(&str, usize)] =
-    &[("Aarch64", 108), ("Arm32", 3), ("Thumb2", 834)];
+    &[("Aarch64", 108), ("Arm32", 3), ("Thumb2", 2)];

@@ -25,9 +25,9 @@ use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
 use super::arm32::{
-    Arm32, Encoding, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC, UNWIND_SECTION,
-    call_targets_through_thunks, classify, decode_fallback, decoder_misreads, is_long_thunk,
-    lift_with, parse_hex, pool_loads, split_mnemonic, track_pool_words,
+    Arm32, Encoding, IntegerWord, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC,
+    UNWIND_SECTION, call_targets_through_thunks, classify, decode_fallback, decoder_misreads,
+    is_long_thunk, lift_with, parse_hex, pool_loads, split_mnemonic, track_pool_words,
 };
 use super::{
     Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps, VectorTable,
@@ -130,10 +130,11 @@ impl Arch for Thumb2 {
                 );
                 let fixed = wide_move_operands(first, second)
                     .or_else(|| wide_store(first, second).map(|store| store.operands()));
-                match (table_branch(first, second), fixed) {
-                    (Some((mnemonic, operands)), _) => (mnemonic.to_string(), operands),
-                    (None, Some(operands)) => (mnemonic, operands),
-                    (None, None) => (mnemonic, operands),
+                match (table_branch(first, second), WideWord::of(first, second), fixed) {
+                    (Some((mnemonic, operands)), ..) => (mnemonic.to_string(), operands),
+                    (None, Some(word), _) => word.text(),
+                    (None, None, Some(operands)) => (mnemonic, operands),
+                    (None, None, None) => (mnemonic, shift_of_32(first, second, operands)),
                 }
             }
             _ => (mnemonic, operands),
@@ -416,6 +417,14 @@ impl Arch for Thumb2 {
         {
             return Some(store.lifted());
         }
+        if let [low, high, second_low, second_high] = *word
+            && let Some(wide) = WideWord::of(
+                u16::from_le_bytes([low, high]),
+                u16::from_le_bytes([second_low, second_high]),
+            )
+        {
+            return Some(wide.lifted());
+        }
         let a32 = match *word {
             [low, high, second_low, second_high] => {
                 Some(as_a32(u32::from_le_bytes([second_low, second_high, low, high])))
@@ -575,6 +584,157 @@ fn wide_move_value(first: u16, second: u16) -> Option<u32> {
     let imm3 = u32::from(second >> 12 & 0b111);
     let imm8 = u32::from(second & 0xff);
     Some(imm4 << 12 | i << 11 | imm3 << 8 | imm8)
+}
+
+/// A wide T32 word that `yaxpeax-arm` 0.4 reads wrong, read from the
+/// encoding. `tests/differential.rs` found each against `llvm-objdump`:
+///
+/// ```text
+/// 1111 0i00 011S 1111 | 0 imm3 Rd imm8          mvn rd, #const
+/// 1111 1010 0 ty S Rn | 1111 Rd 0000 Rm         lsl rd, rn, rm, and kin
+/// 1111 1010 0 op Rn   | 1111 Rd 10 rot Rm       uxtb rd, rm, ror #8, and kin
+/// 1111 0011 0110 Rn   | 0 imm3 Rd imm2 0 msb    bfi rd, rn, #lsb, #width
+/// ```
+///
+/// It read `mvn` as `mov`, every shift by a register as `lsl`, the
+/// rotation of an extend from the wrong bits, and `bfi` with its last bit
+/// for its width. The shift, the extend and the insert are the operations
+/// A32 encodes too, so they read and lift as [`IntegerWord`] does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WideWord {
+    /// `mvn rd, #value`, or `mvns`.
+    NotConstant { rd: u32, value: u32, sets_flags: bool },
+    /// `lsl rd, rn, rm` and kin, or `lsls`.
+    Shift { kind: u32, sets_flags: bool, rd: u32, rn: u32, rm: u32 },
+    /// An extend or a bit field insert.
+    Integer(IntegerWord),
+}
+
+impl WideWord {
+    fn of(first: u16, second: u16) -> Option<Self> {
+        let (first, second) = (u32::from(first), u32::from(second));
+        let field = |half: u32, shift: u32, width: u32| half >> shift & ((1 << width) - 1);
+        let rd = field(second, 8, 4);
+        let rn = field(first, 0, 4);
+        let rm = field(second, 0, 4);
+        if first & 0xfbef == 0xf06f && second & 0x8000 == 0 {
+            let constant =
+                field(first, 10, 1) << 11 | field(second, 12, 3) << 8 | field(second, 0, 8);
+            return Some(Self::NotConstant {
+                rd,
+                value: thumb_expand_constant(constant),
+                sets_flags: field(first, 4, 1) == 1,
+            });
+        }
+        if first & 0xff80 == 0xfa00 && second & 0xf0f0 == 0xf000 {
+            let (kind, sets_flags) = (field(first, 5, 2), field(first, 4, 1) == 1);
+            return Some(Self::Shift { kind, sets_flags, rd, rn, rm });
+        }
+        if first & 0xff80 == 0xfa00 && second & 0xf0c0 == 0xf080 {
+            let name = match field(first, 4, 3) {
+                0b000 => "sxth",
+                0b001 => "uxth",
+                0b010 => "sxtb16",
+                0b011 => "uxtb16",
+                0b100 => "sxtb",
+                0b101 => "uxtb",
+                _ => return None,
+            };
+            let rn = (rn != 15).then_some(rn);
+            let rotation = field(second, 4, 2) * 8;
+            return Some(Self::Integer(IntegerWord::Extend { name, rd, rn, rm, rotation }));
+        }
+        if first & 0xfff0 == 0xf360 && second & 0x8020 == 0 {
+            let lsb = field(second, 12, 3) << 2 | field(second, 6, 2);
+            let width = field(second, 0, 5).checked_sub(lsb)? + 1;
+            let rn = (rn != 15).then_some(rn);
+            return Some(Self::Integer(IntegerWord::Insert { rd, rn, lsb, width }));
+        }
+        None
+    }
+
+    /// The mnemonic and the operands, as the decoder prints them.
+    fn text(self) -> (String, String) {
+        let name = |number: u32| REGISTER_NAMES[number as usize];
+        let flags = |sets_flags: bool| if sets_flags { "s" } else { "" };
+        match self {
+            Self::NotConstant { rd, value, sets_flags } => {
+                (format!("mvn{}", flags(sets_flags)), format!("{}, {value:#x}", name(rd)))
+            }
+            Self::Shift { kind, sets_flags, rd, rn, rm } => {
+                let shift = ["lsl", "lsr", "asr", "ror"][kind as usize];
+                (
+                    format!("{shift}{}", flags(sets_flags)),
+                    format!("{}, {}, {}", name(rd), name(rn), name(rm)),
+                )
+            }
+            Self::Integer(word) => (word.mnemonic(), word.operands()),
+        }
+    }
+
+    /// The IL form, as A32 lifts the same operation.
+    fn lifted(self) -> crate::il::Lifted {
+        use crate::il::{Lifted, Op, Operand, Reg};
+        match self {
+            // `mvn r0, #1` puts the constant `~1` in `r0`.
+            Self::NotConstant { rd, value, sets_flags } => {
+                let mut lifted = Lifted { op: Op::Move, ..Lifted::default() };
+                let dest = match rd {
+                    13 => Reg::Stack,
+                    number => Reg::General(number as u8),
+                };
+                lifted.operands =
+                    [Operand::Reg(dest), Operand::Const(u64::from(!value))].into_iter().collect();
+                lifted.writes.insert(dest);
+                if sets_flags {
+                    lifted.writes.insert(Reg::Flags);
+                }
+                lifted
+            }
+            Self::Shift { kind, sets_flags, rd, rn, rm } => {
+                IntegerWord::ShiftByRegister { not: false, sets_flags, rd, rm: rn, kind, rs: rm }
+                    .lift()
+            }
+            Self::Integer(word) => word.lift(),
+        }
+    }
+}
+
+/// The 32-bit constant that the 12 bits of a T32 data processing word
+/// stand for: `ThumbExpandImm` of the Arm architecture manual. A byte
+/// repeated in a pattern, or a byte with its top bit set, rotated.
+fn thumb_expand_constant(constant: u32) -> u32 {
+    let byte = constant & 0xff;
+    if constant >> 10 == 0 {
+        return match constant >> 8 & 0b11 {
+            0b00 => byte,
+            0b01 => byte << 16 | byte,
+            0b10 => byte << 24 | byte << 8,
+            _ => byte * 0x0101_0101,
+        };
+    }
+    (0x80 | constant & 0x7f).rotate_right(constant >> 7)
+}
+
+/// `operands` of a wide data processing word whose second value is
+/// shifted, with a shift right of 0 put right: the encoding means 32.
+///
+/// ```text
+/// 1110 101x xxxx Rn | 0 imm3 Rd imm2 type Rm
+/// ```
+///
+/// `yaxpeax-arm` 0.4 prints the field, so `ands.w r3, r3, r1, asr #32`
+/// read as `asr 0`.
+fn shift_of_32(first: u16, second: u16, operands: String) -> String {
+    let amount = (second >> 12 & 0b111) << 2 | (second >> 6 & 0b11);
+    let kind = second >> 4 & 0b11;
+    if first & 0xfe00 != 0xea00 || amount != 0 || !matches!(kind, 0b01 | 0b10) {
+        return operands;
+    }
+    match operands.strip_suffix(" 0x0").or_else(|| operands.strip_suffix(" 0")) {
+        Some(rest) => format!("{rest} 0x20"),
+        None => operands,
+    }
 }
 
 /// The T32 `tbb` or `tbh`, read from the encoding:
@@ -783,6 +943,54 @@ fn read_branch_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wide words `yaxpeax` misreads, against `llvm-mc`.
+    #[test]
+    fn reads_the_wide_words_the_decoder_misreads() {
+        let cases: [(u16, u16, &str, &str); 9] = [
+            (0xf06f, 0x0002, "mvn", "r0, 0x2"),
+            (0xf07f, 0x4300, "mvns", "r3, 0x80000000"),
+            (0xfa0c, 0xfc00, "lsl", "ip, ip, r0"),
+            (0xfa2c, 0xfc00, "lsr", "ip, ip, r0"),
+            (0xfa4c, 0xfc00, "asr", "ip, ip, r0"),
+            (0xfa6c, 0xfc00, "ror", "ip, ip, r0"),
+            (0xfa1f, 0xf29b, "uxth", "r2, fp, ror 0x8"),
+            (0xf362, 0x3596, "bfi", "r5, r2, 0xe, 0x9"),
+            (0xf36f, 0x209f, "bfc", "r0, 0xa, 0x16"),
+        ];
+        for (first, second, mnemonic, operands) in cases {
+            let bytes = halfwords(&[first, second]);
+            let insn = Thumb2.decode(&bytes, 0, 0).expect("the word reads");
+            assert_eq!((insn.mnemonic.as_str(), insn.operands.as_str()), (mnemonic, operands));
+        }
+        let lift = |first, second| {
+            let bytes = halfwords(&[first, second]);
+            Thumb2.lift(&Thumb2.decode(&bytes, 0, 0).unwrap(), &bytes).expect("the word lifts")
+        };
+        // `mvn r0, #2` puts `~2` in `r0`.
+        let not = lift(0xf06f, 0x0002);
+        assert_eq!(not.op, crate::il::Op::Move);
+        assert_eq!(not.operands[1], crate::il::Operand::Const(u64::from(!2u32)));
+        assert_eq!(lift(0xfa4c, 0xfc00).op, crate::il::Op::ShiftRightArithmetic);
+        assert_eq!(lift(0xfa6c, 0xfc00).op, crate::il::Op::Rotate);
+        // `asr #32` is encoded as a shift of 0.
+        let shifted = Thumb2.decode(&halfwords(&[0xea13, 0x0321]), 0, 0).unwrap();
+        assert_eq!(shifted.operands, "r3, r3, r1, asr 0x20");
+        let plain = Thumb2.decode(&halfwords(&[0xea13, 0x0301]), 0, 0).unwrap();
+        assert_eq!(plain.operands, "r3, r3, r1");
+    }
+
+    /// Each pattern of `ThumbExpandImm`, and a rotated byte.
+    #[test]
+    fn a_t32_constant_expands() {
+        assert_eq!(thumb_expand_constant(0x0ab), 0xab);
+        assert_eq!(thumb_expand_constant(0x1ab), 0x00ab_00ab);
+        assert_eq!(thumb_expand_constant(0x2ab), 0xab00_ab00);
+        assert_eq!(thumb_expand_constant(0x3ab), 0xabab_abab);
+        assert_eq!(thumb_expand_constant(0x400), 0x8000_0000);
+        // A rotation of 31 puts the byte `0xff` at bits 1 to 8.
+        assert_eq!(thumb_expand_constant(0xfff), 0x1fe);
+    }
 
     /// A branch prints the distance from itself to where it goes, as
     /// `llvm-objdump` resolves it: `bne` at 0x14cf6 goes to 0x14d26.
