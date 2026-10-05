@@ -81,7 +81,7 @@ impl Arch for Aarch64 {
 
         let text = inst.to_string();
         let (mnemonic, operands) = split_mnemonic(&text);
-        let operands = extended_register(operands);
+        let operands = extended_register(&mnemonic, operands);
         let kind = classify(&inst, &mnemonic, insn_address);
         Ok(Insn { address: insn_address, bytes_len: INSN_WIDTH, mnemonic, operands, kind })
     }
@@ -307,16 +307,30 @@ impl Arch for Aarch64 {
 /// `operands`, with the extend of a 32-bit register named as it is.
 ///
 /// `yaxpeax-arm` 0.4 prints `add x1, x3, w1, uxtw #4` as `add x1, x3, w1,
-/// lsl #4`. `lsl` shifts a register of the full width; a `w` register in
-/// a 64-bit operation is zero-extended first, which is `uxtw`.
-fn extended_register(operands: String) -> String {
-    let Some((head, shift)) = operands.rsplit_once(", lsl ") else { return operands };
-    let mut registers = head.split(", ");
-    let first = registers.next().unwrap_or_default();
-    let last = head.rsplit(", ").next().unwrap_or_default();
-    let is_w = |name: &str| name.starts_with('w') && name[1..].bytes().all(|b| b.is_ascii_digit());
-    if (first.starts_with('x') || first == "sp") && is_w(last) {
-        format!("{head}, uxtw {shift}")
+/// lsl #4`, and `add x23, x10, w8, uxtw` as `add x23, x10, w8`. `lsl`
+/// shifts a register of the full width; a `w` register in a 64-bit
+/// operation is zero-extended first, which is `uxtw`. Only an add, a
+/// subtract or a compare extends so: `smull x0, w1, w2` reads `w`
+/// registers as it is.
+fn extended_register(mnemonic: &str, operands: String) -> String {
+    let is_w = |name: &str| {
+        name == "wzr" || (name.starts_with('w') && name[1..].bytes().all(|b| b.is_ascii_digit()))
+    };
+    let is_wide = |name: &str| name.starts_with('x') || name == "sp";
+    if let Some((head, shift)) = operands.rsplit_once(", lsl ") {
+        let first = head.split(", ").next().unwrap_or_default();
+        let last = head.rsplit(", ").next().unwrap_or_default();
+        return if is_wide(first) && is_w(last) {
+            format!("{head}, uxtw {shift}")
+        } else {
+            operands
+        };
+    }
+    let extends = matches!(mnemonic, "add" | "adds" | "sub" | "subs" | "cmp" | "cmn");
+    let first = operands.split(", ").next().unwrap_or_default();
+    let last = operands.rsplit(", ").next().unwrap_or_default();
+    if extends && operands.contains(", ") && is_wide(first) && is_w(last) {
+        format!("{operands}, uxtw")
     } else {
         operands
     }
@@ -1160,8 +1174,16 @@ mod extend_tests {
         };
         // From `llvm-mc --triple=aarch64`.
         assert_eq!(shown(0x8b21_5061), "add x1, x3, w1, uxtw #4");
-        assert_eq!(extended_register("x0, x1, x2, lsl #3".into()), "x0, x1, x2, lsl #3");
-        assert_eq!(extended_register("w0, w1, w2, lsl #3".into()), "w0, w1, w2, lsl #3");
+        // `add x23, x10, w8, uxtw`, `sub x29, x6, w30, uxtw` and
+        // `cmp x12, w11, uxtw`, as `llvm-mc` reads them.
+        assert_eq!(shown(0x8b28_4157), "add x23, x10, w8, uxtw");
+        assert_eq!(shown(0xcb3e_40dd), "sub x29, x6, w30, uxtw");
+        assert_eq!(shown(0xeb2b_419f), "cmp x12, w11, uxtw");
+        assert_eq!(shown(0x9b22_7c20), "smull x0, w1, w2");
+        assert_eq!(extended_register("add", "x0, x1, x2, lsl #3".into()), "x0, x1, x2, lsl #3");
+        assert_eq!(extended_register("add", "w0, w1, w2, lsl #3".into()), "w0, w1, w2, lsl #3");
+        assert_eq!(extended_register("smull", "x0, w1, w2".into()), "x0, w1, w2");
+        assert_eq!(extended_register("add", "x0, x1, w2, sxtw".into()), "x0, x1, w2, sxtw");
     }
 }
 
