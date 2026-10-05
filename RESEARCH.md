@@ -617,3 +617,21 @@ of entry 12 ranks the four published fixes best of all, but it is worse
 on the 300 backports and Ubuntu updates, and four fixes are too few to
 trust over them, so it is not kept. `added` stays the default: no order
 beats it on the mean reciprocal rank of any large set.
+
+### Eight published fixes
+
+`--cves` now holds eight cases: the four above, CVE-2024-23265 in
+AppleDiskImages2, and the `ubusd` fix of CVE-2025-62526 for A32 and for
+MIPS16e in both byte orders. The rank of the fix:
+
+| Order | DiskImages2 | IOGPU | smbfs | ubusd A64 | A32 | MIPS16e BE | LE | kernel |
+|---|---|---|---|---|---|---|---|---|
+| added | 1 | 19 | 9 | 5 | 4 | 7 | 7 | 1 |
+| rare, with BM25 | 1 | 6 | 8 | 6 | 5 | 7 | 7 | 1 |
+| rare × (0.5 + outlier) | 1 | 2 | 6 | 6 | 3 | 7 | 7 | 1 |
+| rare × outlier | 1 | 2 | 7 | 4 | 2 | 4 | 4 | 1 |
+
+The three `ubusd` cases follow the first: `rare × outlier` ranks the fix
+best there too. But the four builds of `ubusd` are one fix, not four, so
+the set holds five independent fixes, still too few to trust over the
+backports and the Ubuntu updates.
