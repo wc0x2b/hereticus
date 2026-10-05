@@ -1,6 +1,6 @@
 ---
 source: hereticus-cli/tests/cli.rs
-assertion_line: 208
+assertion_line: 220
 info:
   program: hereticus
   args:
@@ -64,7 +64,7 @@ dispatch
   r4 = load.32 [r2]; r2 = r2 + 0x4
   r1 = r1 - 4
   store.32 [sp + 0x4] = r4
-  {d18[0]} = load.32 [r3]
+  {d18[0]} = load.32 [r3:32]
   (neon) 0xf3c82a32
   (neon) 0xf3d02a32
   (neon) 0xf26008e2
@@ -184,13 +184,13 @@ handle
 - r4 = load.32 [r1]; r1 = r1 + 0x4
 - r2 = r2 - 4
 - store.32 [sp + 0x4] = r4
-- {d18[0]} = load.32 [r3]
+- {d18[0]} = load.32 [r3:32]
 + r0 = sp + 4
 + r3 = r2
 + r6 = load.32 [r5]; r5 = r5 + 0x4
 + r3 = r3 - 4
 + store.32 [sp + 0x4] = r6
-+ {d18[0]} = load.32 [r0]
++ {d18[0]} = load.32 [r0:32]
   (neon) 0xf3c82a32
   (neon) 0xf3d02a32
   (neon) 0xf26008e2

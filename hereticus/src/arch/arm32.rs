@@ -2103,7 +2103,8 @@ fn decode_neon_load_store(word: u32) -> Option<(String, String)> {
     };
     let list: Vec<String> =
         access.registers().map(|register| format!("d{register}{lane}")).collect();
-    let base = format!("[{}]", ARM_REGISTERS[access.base as usize]);
+    let alignment = access.alignment.map(|bits| format!(":{bits}")).unwrap_or_default();
+    let base = format!("[{}{alignment}]", ARM_REGISTERS[access.base as usize]);
     let address = match access.index {
         0b1111 => base,
         0b1101 => format!("{base}!"),
@@ -2228,6 +2229,8 @@ struct NeonAccess {
     /// The base register, and `Rm`, which says how the base moves after.
     base: u32,
     index: u32,
+    /// The alignment the access asserts, in bits, as `[r3:64]` prints it.
+    alignment: Option<u32>,
 }
 
 impl NeonAccess {
@@ -2286,7 +2289,44 @@ impl NeonAccess {
             lanes,
             base: field(16, 4),
             index: field(0, 4),
+            alignment: Self::alignment(word, structures, size, lanes),
         })
+    }
+
+    /// The alignment the `align` field of `word` asserts, in bits, by the
+    /// tables of `VLD1` to `VLD4` in the Arm architecture manual.
+    fn alignment(word: u32, structures: u32, size: u32, lanes: Lanes) -> Option<u32> {
+        let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
+        let bits = match lanes {
+            Lanes::Whole => match field(4, 2) {
+                0 => 0,
+                align => 32 << align,
+            },
+            Lanes::All => match (field(4, 1), structures, size) {
+                (0, ..) => 0,
+                (_, 1, _) => 8 << size,
+                (_, 2, _) => 16 << size,
+                (_, 4, 0) => 32,
+                (_, 4, 1 | 2) => 64,
+                // A size of `11` moves words, aligned to 128 bits.
+                (_, 4, _) => 128,
+                _ => 0,
+            },
+            Lanes::One(_) => {
+                let index_align = field(4, 4);
+                match (structures, size, index_align & 0b11) {
+                    (1, 1, align) if align & 1 == 1 => 16,
+                    (1, 2, 0b11) => 32,
+                    (2, size, align) if align & 1 == 1 => 16 << size,
+                    (4, 0, align) if align & 1 == 1 => 32,
+                    (4, 1, align) if align & 1 == 1 => 64,
+                    (4, 2, 0b01) => 64,
+                    (4, 2, 0b10) => 128,
+                    _ => 0,
+                }
+            }
+        };
+        (bits != 0).then_some(bits)
     }
 
     /// The numbers of the `d` registers moved.
@@ -3931,6 +3971,26 @@ mod tests {
         let lifted = lift_fallback(0x16ef_3073, Encoding::A32).expect("the word lifts");
         assert!(lifted.reads.contains(il::Reg::Flags));
         assert_eq!(fallback_text(0x16ef_3073).as_deref(), Some("uxtbne r3, r3"));
+    }
+
+    /// A NEON load names the alignment it asserts, as `llvm-mc` reads it:
+    /// whole structures, all lanes and one lane. A sweep of 510 encodings
+    /// agreed with `llvm-mc` when this was written.
+    #[test]
+    fn a_neon_load_names_its_alignment() {
+        let cases = [
+            (0xf423_0a0f, "vld1.8 {d0, d1}, [r3]"),
+            (0xf423_0a1f, "vld1.8 {d0, d1}, [r3:64]"),
+            (0xf423_0a2f, "vld1.8 {d0, d1}, [r3:128]"),
+            (0xf423_023f, "vld1.8 {d0, d1, d2, d3}, [r3:256]"),
+            (0xf4a3_0f9f, "vld4.32 {d0[], d1[], d2[], d3[]}, [r3:64]"),
+            (0xf4a3_0c5f, "vld1.16 {d0[]}, [r3:16]"),
+            (0xf4a3_041f, "vld1.16 {d0[0]}, [r3:16]"),
+            (0xf4a3_0baf, "vld4.32 {d0[1], d1[1], d2[1], d3[1]}, [r3:128]"),
+        ];
+        for (word, text) in cases {
+            assert_eq!(fallback_text(word).as_deref(), Some(text), "{word:#010x}");
+        }
     }
 
     /// VFP words `yaxpeax` 0.4 refuses, as `llvm-mc` reads them.
