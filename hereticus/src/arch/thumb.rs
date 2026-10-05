@@ -139,6 +139,10 @@ impl Arch for Thumb2 {
             _ => (mnemonic, operands),
         };
         let target = branch_target(&inst, insn_address, width);
+        let operands = match target {
+            Some(target) => with_target_text(&operands, insn_address, target),
+            None => operands,
+        };
         let kind = match inst.opcode {
             Opcode::CBZ | Opcode::CBNZ => InsnKind::Branch { target },
             Opcode::TBB | Opcode::TBH => InsnKind::Jump { target: None },
@@ -381,7 +385,7 @@ impl Arch for Thumb2 {
             || (insn.mnemonic == "lsls" && insn.operands == "r0, r0, 0x0")
             // LLD's fill, `0xd4d4`, reads as this branch back. No compiler
             // branches back into the middle of the fill before a function.
-            || (insn.mnemonic == "bmi" && insn.operands == "$-0x56")
+            || (insn.mnemonic == "bmi" && insn.operands == "$-0x54")
             || (insn.kind == InsnKind::Unknown && insn.operands == "0000")
     }
 
@@ -656,6 +660,23 @@ fn branch_target(inst: &Instruction, address: u64, width: usize) -> Option<u64> 
     Some(if inst.opcode == Opcode::BLX { target & !3 } else { target })
 }
 
+/// `operands` with the distance `yaxpeax` prints, `$+0x2e`, put right: the
+/// distance from the instruction to `target`.
+///
+/// `yaxpeax` 0.4 prints the offset of the encoding, which counts from the
+/// program counter, 4 bytes on, and for a narrow conditional branch is one
+/// halfword off besides: `bne $+0x2e` went to the instruction 0x30 on.
+/// A32 prints the distance from the instruction, and so does this.
+fn with_target_text(operands: &str, address: u64, target: u64) -> String {
+    let Some(start) = operands.find("$+").or_else(|| operands.find("$-")) else {
+        return operands.to_string();
+    };
+    let end = operands[start..].find(',').map_or(operands.len(), |at| start + at);
+    let distance = target as i64 - address as i64;
+    let sign = if distance < 0 { '-' } else { '+' };
+    format!("{}${sign}{:#x}{}", &operands[..start], distance.unsigned_abs(), &operands[end..])
+}
+
 /// How many instructions after an `it` it makes conditional, if `mnemonic`
 /// is one: one, and one more for each `t` or `e` after `it`.
 /// The condition of each instruction an `it` covers, in order: `t` takes
@@ -762,6 +783,37 @@ fn read_branch_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A branch prints the distance from itself to where it goes, as
+    /// `llvm-objdump` resolves it: `bne` at 0x14cf6 goes to 0x14d26.
+    #[test]
+    fn a_branch_prints_the_distance_to_its_target() {
+        let cases: [(&[u8], &str, &str); 4] = [
+            // `bne`, narrow and conditional.
+            (&[0x16, 0xd1], "bne", "$+0x30"),
+            // `cbz r1`, narrow.
+            (&[0xd1, 0xb1], "cbz", "r1, $+0x38"),
+            // `b.w`, wide.
+            (&[0x00, 0xf0, 0x10, 0xb8], "b", "$+0x24"),
+            // LLD's fill, a branch back.
+            (&[0xd4, 0xd4], "bmi", "$-0x54"),
+        ];
+        for (bytes, mnemonic, operands) in cases {
+            let insn = Thumb2.decode(bytes, 0, 0x1000).expect("the branch reads");
+            assert_eq!((insn.mnemonic.as_str(), insn.operands.as_str()), (mnemonic, operands));
+            let (InsnKind::Branch { target: Some(target) }
+            | InsnKind::Jump { target: Some(target) }) = insn.kind
+            else {
+                panic!("{bytes:x?} is a branch")
+            };
+            let distance = operands.rsplit('$').next().expect("a distance");
+            let distance = i64::from_str_radix(&distance[3..], 16).expect("hex")
+                * if distance.starts_with('-') { -1 } else { 1 };
+            assert_eq!(target as i64 - 0x1000, distance, "{bytes:x?}");
+        }
+        assert_eq!(with_target_text("r1, $+0x2", 0x10, 0x8), "r1, $-0x8");
+        assert_eq!(with_target_text("r1", 0x10, 0x8), "r1", "no distance to put right");
+    }
     use crate::arch::decode_all;
 
     /// T32 code from halfwords, little endian.

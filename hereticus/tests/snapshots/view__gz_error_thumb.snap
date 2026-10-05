@@ -1,6 +1,6 @@
 ---
 source: hereticus/tests/view.rs
-assertion_line: 51
+assertion_line: 55
 expression: "gz_error(arch).join(\"\\n\")"
 ---
 store.32 [sp - 0x14] = r4, r5, r6, r7, lr; sp = sp - 0x14
@@ -9,17 +9,17 @@ r0 = load.32 [r0 + 0x68]
 sp = sp - 0xc
 r5 = r1
 r6 = r2
-if (r0 == 0) goto $+0xa
+if (r0 == 0) goto $+0xc
 r3 = load.32 [r4 + 0x64]
 r3 = r3 + 4
-if (flags.NotEqual) goto $+0x6e
+if (flags.NotEqual) goto $+0x70
 if (vs) r3 = 0
 store.32 [r4 + 0x68] = r3
 flags = compare(r5, 0)
 if (ne) flags = compare(r5, 5)
-if (r5 != 5) goto $+0x4c
+if (r5 != 5) goto $+0x4e
 store.32 [r4 + 0x64] = r5
-if (r6 == 0) goto $+0x44
+if (r6 == 0) goto $+0x46
 r7 = load.32 [r4 + 0x18]
 r0 = r7
 call strlen
@@ -31,7 +31,7 @@ r0 = r0 + 3
 call malloc
 r5 = r0
 store.32 [r4 + 0x68] = r0
-if (r0 == 0) goto $+0x44
+if (r0 == 0) goto $+0x46
 r0 = r7
 call strlen
 r4 = r0
@@ -54,13 +54,13 @@ store.32 [r4 + 0x64] = r5
 flags = compare(r5, 4)
 if (ne) flags = compare(r6, r3)
 store.32 [r4] = r3
-if (r6 != r3) goto $-0x58
+if (r6 != r3) goto $-0x56
 sp = sp + 0xc
 return
 call free
-goto $-0x76
+goto $-0x72
 r3 = 3
 store.32 [r4 + 0x64] = r3
-goto $-0x28
+goto $-0x24
 .word 00005ab8
 .word 00005aa4
