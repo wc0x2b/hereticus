@@ -531,15 +531,19 @@ fn names_in(symbols: &[(u64, u64, String)], range: core::ops::Range<u64>) -> BTr
 /// Check the pairs of each OpenWrt kernel of `tests/openwrt.rs` against the
 /// symbols of its build, which `fixtures/openwrt_debug.py` fetched, by the
 /// stage that paired them.
+///
+/// A wrong pair counts as proven where its true partner exists by name;
+/// the others can be one function renamed. `BENCH_WHERE=1` shows where
+/// the true partner of each wrong pair went: absent, free, or paired.
 fn measure_kernels() {
     use std::collections::BTreeMap;
     let firmware = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/openwrt");
     let debug =
         Path::new(&std::env::var("HOME").expect("a home")).join(".cache/hereticus-openwrt-debug");
-    let mut stages: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut stages: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
     println!(
-        "{:36} {:>7} {:>7} {:>6} {:>6} {:>6}",
-        "kernel", "starts", "right", "wrong", "gone", "new"
+        "{:36} {:>7} {:>7} {:>6} {:>6} {:>6} {:>6}",
+        "kernel", "starts", "right", "wrong", "proven", "gone", "new"
     );
     let only = std::env::var("BENCH_ONLY").ok();
     for &(first, second, boards) in KERNEL_RELEASES {
@@ -580,6 +584,18 @@ fn measure_kernels() {
                     function.address..function.address + function.code.len() as u64,
                 )
             };
+            // A wrong pair is proven wrong where a name of one side lives on
+            // in the other build: the true partner exists. Otherwise it can
+            // be one function renamed.
+            let all_names: [BTreeSet<&str>; 2] =
+                [0, 1].map(|side| answers[side].iter().map(|symbol| symbol.2.as_str()).collect());
+            let mut proven = 0;
+            // Where the true partner of each wrong pair is.
+            let after_of_name: HashMap<String, usize> = (0..kernels[1].functions.len())
+                .flat_map(|y| names(1, y).into_iter().map(move |name| (name, y)))
+                .collect();
+            let partner_of_after: HashMap<usize, usize> =
+                diff.matched.iter().map(|pair| (pair.after, pair.before)).collect();
             let (mut right, mut wrong) = (0, 0);
             for pair in &diff.matched {
                 let (left, right_names) = (names(0, pair.before), names(1, pair.after));
@@ -590,22 +606,47 @@ fn measure_kernels() {
                 if left.is_disjoint(&right_names) {
                     wrong += 1;
                     stage.1 += 1;
+                    let is_proven = left.iter().any(|name| all_names[1].contains(name.as_str()))
+                        || right_names.iter().any(|name| all_names[0].contains(name.as_str()));
+                    proven += usize::from(is_proven);
+                    stage.2 += usize::from(is_proven);
+                    let truth = left.iter().find_map(|name| after_of_name.get(name)).copied();
+                    let place = match truth {
+                        None => "absent",
+                        Some(y) => match partner_of_after.get(&y) {
+                            None => "free",
+                            Some(&x) if !names(0, x).is_disjoint(&names(1, y)) => "paired-right",
+                            Some(_) => "paired-wrong",
+                        },
+                    };
+                    if std::env::var_os("BENCH_WHERE").is_some() {
+                        println!("WHERE {:?} {place}", pair.confidence);
+                    }
                     if std::env::var_os("BENCH_WRONG").is_some() {
                         println!(
-                            "WRONG {:?} {:.2} {left:?} {right_names:?}",
-                            pair.confidence, pair.score
+                            "WRONG {:?} {:.2} {} {} {is_proven} {left:?} {right_names:?}",
+                            pair.confidence,
+                            pair.score,
+                            kernels[0].functions[pair.before].code.len(),
+                            kernels[1].functions[pair.after].code.len(),
                         );
                     }
                 } else {
                     right += 1;
                     stage.0 += 1;
                     if std::env::var_os("BENCH_RIGHT").is_some() {
-                        println!("RIGHT {:?} {:.2}", pair.confidence, pair.score);
+                        println!(
+                            "RIGHT {:?} {:.2} {} {}",
+                            pair.confidence,
+                            pair.score,
+                            kernels[0].functions[pair.before].code.len(),
+                            kernels[1].functions[pair.after].code.len(),
+                        );
                     }
                 }
             }
             println!(
-                "{:36} {:>6.1}% {right:>7} {wrong:>6} {:>6} {:>6}",
+                "{:36} {:>6.1}% {right:>7} {wrong:>6} {proven:>6} {:>6} {:>6}",
                 format!("{board} {first}/{second}"),
                 100.0 * starts as f64 / functions as f64,
                 diff.removed.len(),
@@ -613,8 +654,8 @@ fn measure_kernels() {
             );
         }
     }
-    for (stage, (right, wrong)) in &stages {
-        println!("stage {stage:16} right {right:>7} wrong {wrong:>5}");
+    for (stage, (right, wrong, proven)) in &stages {
+        println!("stage {stage:16} right {right:>7} wrong {wrong:>5} proven {proven:>5}");
     }
 }
 
