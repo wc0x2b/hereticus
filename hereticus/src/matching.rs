@@ -43,6 +43,9 @@ pub enum Confidence {
     /// paired with its counterpart by position. See
     /// [`Cascade::match_twins_in_order`].
     TwinInOrder,
+    /// The two alone hold a text or a constant on both sides. See
+    /// [`Cascade::pair_by_unique_references`].
+    SameReferences,
     /// Calls from functions paired on firmer ground reach these two, where a
     /// weaker reason had paired each with another. See
     /// [`Cascade::pair_by_callers`].
@@ -840,6 +843,7 @@ pub fn diff_reporting(
     cascade.align_stubs(before, after);
     cascade.repair_twins_by_callees();
     cascade.uncross_by_callees();
+    cascade.pair_by_unique_references();
     cascade.pair_by_callers(before, after);
     cascade.realign_by_context();
     cascade.pair_by_layout();
@@ -1099,7 +1103,10 @@ impl Cascade<'_> {
             core::mem::take(&mut self.matched).into_iter().partition(|pair| {
                 !matches!(
                     pair.confidence,
-                    Confidence::Similar | Confidence::SameCallers | Confidence::TwinInOrder
+                    Confidence::Similar
+                        | Confidence::SameReferences
+                        | Confidence::SameCallers
+                        | Confidence::TwinInOrder
                 ) || on_chain.contains(&(left_place[pair.before], right_place[pair.after]))
             });
         self.matched = kept;
@@ -1131,6 +1138,79 @@ impl Cascade<'_> {
                 self.right_free[pair.after] = false;
                 self.matched.push(pair);
             }
+        }
+    }
+
+    /// Pair two functions that hold a text or a constant that no other
+    /// function of either binary holds.
+    ///
+    /// A message or a magic number comes from the source, and a function
+    /// that alone holds it on both sides is one function, however its code
+    /// changed. Such a pair is taken where its code scores
+    /// [`LOWEST_UNIQUE_REFERENCE_SIMILARITY`] or more and the pairs it
+    /// breaks share fewer such references: a pair by identical code or
+    /// shape is never broken. Such a pair is still weak:
+    /// [`Self::pair_by_layout`] undoes it where it breaks the order of the
+    /// pairs around it.
+    ///
+    /// Measured over the backports built two ways, this paired 304 more
+    /// right and 40 fewer wrong, and every fix now shows on a changed row,
+    /// where 18 did not. Over the OpenWrt kernels it paired 32 more right
+    /// and 18 fewer wrong.
+    ///
+    /// See RESEARCH.md, entry 13: BinDiff matches on string references,
+    /// and Diaphora on a rare constant.
+    fn pair_by_unique_references(&mut self) {
+        let left_keys = unique_reference_holders(&self.left);
+        let right_keys = unique_reference_holders(&self.right);
+        let mut shared: HashMap<(usize, usize), usize> = HashMap::new();
+        for (key, &x) in &left_keys {
+            if let Some(&y) = right_keys.get(key) {
+                *shared.entry((x, y)).or_default() += 1;
+            }
+        }
+        let shared_by = |x: usize, y: usize| shared.get(&(x, y)).copied().unwrap_or(0);
+
+        // (shared references, score, x, y): most shared first, then the
+        // best code, then the index, so the order does not depend on the
+        // map.
+        let mut candidates: Vec<(usize, f64, usize, usize)> = shared
+            .iter()
+            .map(|(&(x, y), &count)| {
+                (count, similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols), x, y)
+            })
+            .filter(|&(_, score, _, _)| score >= LOWEST_UNIQUE_REFERENCE_SIMILARITY)
+            .collect();
+        candidates.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal))
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.3.cmp(&b.3))
+        });
+
+        for (count, score, x, y) in candidates {
+            let pair_of_x = self.matched.iter().position(|pair| pair.before == x);
+            let pair_of_y = self.matched.iter().position(|pair| pair.after == y);
+            if pair_of_x.is_some() && pair_of_x == pair_of_y {
+                continue;
+            }
+            let mut broken: Vec<usize> = [pair_of_x, pair_of_y].into_iter().flatten().collect();
+            let outweighs = broken.iter().all(|&index| {
+                let pair = &self.matched[index];
+                !matches!(pair.confidence, Confidence::IdenticalCode | Confidence::IdenticalShape)
+                    && shared_by(pair.before, pair.after) < count
+            });
+            if !outweighs {
+                continue;
+            }
+            // Highest first, so that removing one does not move the other.
+            broken.sort_unstable_by(|a, b| b.cmp(a));
+            for index in broken {
+                let pair = self.matched.swap_remove(index);
+                self.left_free[pair.before] = true;
+                self.right_free[pair.after] = true;
+            }
+            self.take_pair(x, y, Confidence::SameReferences, score);
         }
     }
 
@@ -3023,6 +3103,44 @@ fn constant_agreement(left: &[u64], right: &[u64]) -> f64 {
 /// Gaps whose counts differ, aligned by the scores, paired at 70%
 /// precision at best, so they are left alone.
 const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
+
+/// The lowest code similarity at which a text or a constant that only two
+/// functions hold pairs them: see [`Cascade::pair_by_unique_references`].
+///
+/// Measured over the backports built two ways, 0.3 paired 304 more right
+/// and 40 fewer wrong; 0.1 paired 328 more right and 31 fewer wrong, and
+/// 0.4 paired 274 more right and 43 fewer wrong. A floor stays, so that a
+/// text that moved to another function does not pair the two.
+const LOWEST_UNIQUE_REFERENCE_SIMILARITY: f64 = 0.3;
+
+/// A reference that can tell one function from all others.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum UniqueReference<'a> {
+    Text(&'a str),
+    /// A constant above [`LARGEST_PLAIN_CONSTANT`].
+    Constant(u64),
+}
+
+/// Each text and large constant that exactly one function of `side`
+/// holds, and that function.
+fn unique_reference_holders<'a>(side: &'a [Prepared<'_>]) -> HashMap<UniqueReference<'a>, usize> {
+    let mut holders: HashMap<UniqueReference<'a>, Option<usize>> = HashMap::new();
+    for (index, prepared) in side.iter().enumerate() {
+        let texts = prepared.texts.iter().map(|text| UniqueReference::Text(text));
+        let constants = prepared.anchors().iter().map(|&value| UniqueReference::Constant(value));
+        for key in texts.chain(constants) {
+            holders
+                .entry(key)
+                .and_modify(|holder| {
+                    if *holder != Some(index) {
+                        *holder = None;
+                    }
+                })
+                .or_insert(Some(index));
+        }
+    }
+    holders.into_iter().filter_map(|(key, holder)| Some((key, holder?))).collect()
+}
 
 /// The largest gap, as the product of its free functions on the two sides,
 /// that [`Cascade::same_places`] aligns.
@@ -4983,6 +5101,54 @@ mod tests {
         let partner = diff.matched.iter().find(|pair| pair.before == 0).map(|pair| pair.after);
         assert_eq!(partner, Some(0));
         assert_eq!(diff.added, vec![4]);
+    }
+
+    /// A function rewritten past the threshold pairs with the one function
+    /// that holds its constant, and not with a look-alike that lacks it.
+    #[test]
+    fn a_unique_constant_pairs_a_rewritten_function() {
+        const MOVW_1234: u32 = 0xe301_0234;
+        let before = binary_of(&[("", &arm(&[MOVW_1234, ADD, SUB, ORR, EOR, BX_LR]))]);
+        let after = binary_of(&[
+            ("", &arm(&[ADD, SUB, ORR, EOR, AND, BX_LR])),
+            ("", &arm(&[MOVW_1234, ADD, MUL, MUL, MUL, BX_LR])),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let pair = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!((pair.after, pair.confidence), (1, Confidence::SameReferences));
+        assert_eq!(diff.added, vec![0]);
+    }
+
+    /// A constant that two functions of one side hold tells neither apart.
+    #[test]
+    fn a_constant_held_twice_pairs_nothing() {
+        const MOVW_1234: u32 = 0xe301_0234;
+        let before = binary_of(&[
+            ("", &arm(&[MOVW_1234, ADD, SUB, ORR, EOR, BX_LR])),
+            ("", &arm(&[MOVW_1234, RSB, RSB, RSB, BX_LR])),
+        ]);
+        let after = binary_of(&[
+            ("", &arm(&[ADD, SUB, ORR, EOR, AND, BX_LR])),
+            ("", &arm(&[MOVW_1234, ADD, MUL, MUL, MUL, BX_LR])),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        assert!(diff.matched.iter().all(|pair| pair.confidence != Confidence::SameReferences));
+    }
+
+    /// Code too far apart does not pair, whatever constant it shares.
+    #[test]
+    fn a_unique_constant_needs_some_code_in_common() {
+        const MOVW_1234: u32 = 0xe301_0234;
+        let before = binary_of(&[("", &arm(&[MOVW_1234, ADD, SUB, ORR, EOR, AND, BIC, BX_LR]))]);
+        let after = binary_of(&[("", &arm(&[MOVW_1234, MUL, MUL, MUL, MUL, RSB, RSB, RSB]))]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        assert!(diff.matched.iter().all(|pair| pair.confidence != Confidence::SameReferences));
     }
 
     /// Of two candidates that score the same, the one that keeps the
