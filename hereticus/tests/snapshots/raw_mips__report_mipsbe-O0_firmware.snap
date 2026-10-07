@@ -3,7 +3,7 @@ source: hereticus/tests/raw_mips.rs
 expression: raw_report
 ---
 0x00000 -> 0x00000 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 1, callees: 0, texts: 0 } confidence=IdenticalShape
-0x00070 -> 0x00070 Yes score=0.481 edits=Edits { added: 14, removed: 0, edited: 0 } kinds=EditKinds { branches: 1, calls: 1, jumps: 2, memory: 1, other: 9, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=SameLayout
+0x00070 -> 0x00070 Yes score=0.481 edits=Edits { added: 14, removed: 0, edited: 0 } kinds=EditKinds { branches: 1, calls: 1, jumps: 2, memory: 1, other: 9, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=SameReferences
 0x000e4 -> 0x0014c No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 0x0017c -> 0x001e4 Yes score=0.417 edits=Edits { added: 4, removed: 1, edited: 9 } kinds=EditKinds { branches: 1, calls: 1, jumps: 1, memory: 3, other: 8, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=SameLayout
 0x00288 -> 0x00314 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode

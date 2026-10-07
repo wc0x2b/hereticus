@@ -113,8 +113,9 @@ fn recovers_exactly_the_functions_of_its_object(
 /// `dispatch` each gain a call and score under the threshold against
 /// themselves. The object pairs them by their callers and callees (see
 /// `RESEARCH.md`, entry 1), and the raw image by their place between the
-/// pairs around them (entry 7). A linked image holds the targets, so this
-/// does not apply to a flash dump.
+/// pairs around them (entry 7), or, for `check_header`, by a text or a
+/// constant that it alone holds (entry 13). A linked image holds the
+/// targets, so this does not apply to a flash dump.
 const CALLS_ONLY_IN_THE_OBJECT: &[(&str, &str)] =
     &[("mips-O0", "firmware"), ("mipsbe-O0", "firmware")];
 

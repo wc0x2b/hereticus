@@ -5,7 +5,8 @@ important changes faster. Each entry gives the source, the idea, and where it
 applies in `hereticus`. When code applies an idea, the doc comment of that
 function names the source from this file.
 
-Survey date: 2026-10-04. The entries are in order of value for the effort.
+Survey date: 2026-10-04, with entry 13 and more sources added on
+2026-10-07. The entries are in order of value for the effort.
 The results of each entry, as applied and measured, are in
 [Results](#results).
 
@@ -394,6 +395,27 @@ the sum of all edits.
 
 Code: none; measured in `examples/research_bench.rs` and not kept.
 
+## 13. Unique references
+
+Sources: BinDiff's *string references* matcher, which pairs two functions
+that point at the same string, and Diaphora's *Same rare constant*
+heuristic ([Diaphora heuristics](https://github.com/joxeankoret/diaphora/blob/master/diaphora_heuristics.py)).
+Both are much older than this survey; the new part here is where in the
+cascade they run, and that they may break a weaker pair.
+
+Idea: a message or a magic number comes from the source. Where one
+function alone holds it in each binary, the two are one function, however
+far their code moved apart. This is the same evidence as entry 4, but
+used to choose a partner, not only to break a tie.
+
+Applies to: functions that a fix or another build rewrote past the
+similarity threshold, and pairs by similarity with a look-alike that lacks
+the text.
+
+Code: `Cascade::pair_by_unique_references`, `unique_reference_holders`,
+`UniqueReference`, `LOWEST_UNIQUE_REFERENCE_SIMILARITY` and
+`Confidence::SameReferences` in `matching.rs`.
+
 ## Lower fit
 
 - Ye, Zhou and Zhang, *Enhancing Semantic-Aware Binary Diffing with
@@ -406,6 +428,24 @@ Code: none; measured in `examples/research_bench.rs` and not kept.
   SA2Pat <https://link.springer.com/article/10.1007/s10664-026-10942-z>,
   <https://arxiv.org/abs/2509.23970>. This fits a tool that reads
   `--format json`, not `hereticus` itself.
+- Ren et al., *RevDecode: Enhancing Binary Function Matching with
+  Context-Aware Graph Representations and Relevance Decoding*, USENIX
+  Security 2025.
+  <https://www.usenix.org/system/files/usenixsecurity25-ren.pdf> It
+  ranks the candidates of each function along the address order with a
+  variant of Viterbi decoding, and adds an *uncertain* state to each
+  layer, so a function with no candidate that its neighbors support
+  stays unmatched. Entry 7 already pairs by order; the uncertain state
+  is what entry 7 lacks where the counts of a gap differ. It matches
+  against a corpus of libraries, not one release against the next.
+- Rimsa et al., *Binary Diffing via Library Signatures*, CGO 2026.
+  <https://homepages.dcc.ufmg.br/~fernando/publications/papers/CGO26_Rimsa.pdf>
+  It compares whole programs by the sequence of library calls they make
+  when they run. It needs to run the program, and it answers whether two
+  programs are one, not which function is which.
+- fnprint, <https://docs.rs/fnprint-core>: Rust, MIT. It runs each
+  x86-64 function in a small emulator on random inputs and hashes what
+  it does. Like BARRACUDA, it needs an emulator for each architecture.
 - MinHash and LSH for a fast search of similar functions:
   <https://arxiv.org/abs/2112.05492>. Use it only if the scoring of all pairs
   becomes too slow.
@@ -421,6 +461,14 @@ Code: none; measured in `examples/research_bench.rs` and not kept.
   <https://conf.researchr.org/details/saner-2025/saner-2025-papers/32/BinEGA-Enhancing-DNN-based-Binary-Code-Similarity-Detection-through-Efficient-Graph->
 - RefactoringMiner AST diff: <https://arxiv.org/abs/2403.05939>
 - Code LLMs for binary security patches: <https://arxiv.org/abs/2509.06052>
+- Bifrost, a Binary Ninja plugin in the BinDiff and Diaphora mold:
+  <https://github.com/mutinylaboratories/bifrost>. Among its stages is
+  BinDiff's MD-index, a hash of the control-flow graph by the
+  topological order and the degrees of each edge's ends (the formula is
+  in [QBinDiff](https://diffing.quarkslab.com/_modules/qbindiff/features/graph.html)).
+  `hereticus` builds no control-flow graph yet, so it cannot use it.
+- Diaphora MCP server and ghidriff, both updated in 2026, wrap the
+  existing heuristics of Diaphora and of Ghidra Version Tracking.
 
 ## Results
 
@@ -452,6 +500,10 @@ work of this file (commit `feaee43`) and after:
 | Ubuntu, before | 264724 | 282 | 612 | 678 |
 | Ubuntu, entries 1 to 6 | 264757 (+33) | 287 (+5) | 574 | 640 |
 | Ubuntu, entry 7 too | 264862 (+138) | 248 (−34) | 228 | 294 |
+| Backports, before entry 13 (commit `65c9eb6`) | 28902 | 809 | 2784 | 4797 |
+| Backports, entry 13 too | 29206 (+304) | 769 (−40) | 2519 | 4532 |
+| Ubuntu, before entry 13 (commit `65c9eb6`) | 264863 | 248 | 227 | 293 |
+| Ubuntu, entry 13 too | 264864 (+1) | 251 (+3) | 223 | 289 |
 
 The backports are where another build rewrites the code, which is where
 context, constants and order help. An Ubuntu update keeps the compiler
@@ -501,6 +553,7 @@ Before any change, on the backports: 25260 right, 956 wrong, 6282 gone,
 | 10. Reciprocal best hits | only mutual best candidates pair | −81 right, −94 wrong | Not kept: a trade |
 | 11. WL hashing of the CFG | — | not built | Not kept: `il::flow_features` already hashes the data flow this way |
 | 12. Outliers among changes | cosine against the centroid | see below | see below |
+| 13. Unique references | `Cascade::pair_by_unique_references` | +304 right, −40 wrong | Kept |
 
 ### 1 and 2: context
 
@@ -677,3 +730,39 @@ more than one function each side cut 537 wrong pairs and 180 right from
 the kernels, but 935 right and 8 wrong from the backports; more than
 two, four or eight functions cut less of both. The length of the gap
 does not tell the two kinds of pair apart, and the floor stays.
+
+A wrong pair counts as proven where a name of one side lives on in the
+other build, so that its true partner exists. 7927 of the 10223 wrong
+pairs are proven: a rename explains about a fifth of them, not most.
+
+Two more checks on the weak pairs did not help. Moving a pair by
+similarity, callers or place to a free function that ranks better by
+code, references and constants, once more pairs are known, cut 45 wrong
+kernel pairs at a margin of 0.15, but cost the backports 332 right and
+added 332 wrong. At 0.05 it was worse on both sets.
+
+### 13: unique references
+
+A text or a constant above `LARGEST_PLAIN_CONSTANT` that one function
+alone holds on each side pairs the two, where their code scores 0.3 or
+more. It breaks a weaker pair where that pair shares fewer such
+references, but never a pair by identical code or shape. It runs after
+the similarity stage and before the callers vote.
+
+| Set | Right | Wrong |
+|---|---|---|
+| Backports | +304 | −40 |
+| OpenWrt kernels | +32 | −18 |
+| Ubuntu updates | +1 | +3 |
+
+On the backports, every fix now shows on a changed row: 18 comparisons
+missed it before. The rank sum rose from 2799 to 3173 because those 18
+now count; top 5 rose from 78 to 83 and the MRR from 0.546 to 0.566.
+
+Breaking only a pair that scores no better than the new one cut the 3
+wrong Ubuntu pairs, but on the backports it paired 75 fewer right and
+kept 48 more wrong. A pair this stage makes is still weak: entry 7 undoes
+it where it breaks the order. Kept from that, the stage paired 19 more
+wrong kernel pairs, not 18 fewer. Texts alone, without constants, paired
+255 more right and 66 fewer wrong on the backports, and a second shared
+reference as a floor only 100 more right.
