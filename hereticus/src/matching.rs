@@ -1141,20 +1141,20 @@ impl Cascade<'_> {
         }
     }
 
-    /// Pair two functions that hold a text or a constant that no other
-    /// function of either binary holds.
+    /// Pair two functions that hold a text, a constant or a call to a named
+    /// function that no other function of either binary holds.
     ///
-    /// A message or a magic number comes from the source, and a function
-    /// that alone holds it on both sides is one function, however its code
-    /// changed. Such a pair is taken where its code scores
+    /// A message, a magic number or the one call to an import comes from
+    /// the source, and a function that alone holds it on both sides is one
+    /// function, however its code changed. Such a pair is taken where its code scores
     /// [`LOWEST_UNIQUE_REFERENCE_SIMILARITY`] or more and the pairs it
     /// breaks share fewer such references: a pair by identical code or
     /// shape is never broken. Such a pair is still weak:
     /// [`Self::pair_by_layout`] undoes it where it breaks the order of the
     /// pairs around it.
     ///
-    /// Measured over the backports built two ways, this paired 304 more
-    /// right and 40 fewer wrong, and every fix now shows on a changed row,
+    /// Measured over the backports built two ways, this paired 445 more
+    /// right and 56 fewer wrong, and every fix now shows on a changed row,
     /// where 18 did not. Over the OpenWrt kernels it paired 32 more right
     /// and 18 fewer wrong.
     ///
@@ -3117,18 +3117,24 @@ const LOWEST_UNIQUE_REFERENCE_SIMILARITY: f64 = 0.3;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum UniqueReference<'a> {
     Text(&'a str),
+    /// A function the linker names, as an import.
+    Callee(&'a str),
     /// A constant above [`LARGEST_PLAIN_CONSTANT`].
     Constant(u64),
 }
 
-/// Each text and large constant that exactly one function of `side`
-/// holds, and that function.
+/// Each text, large constant and named callee that exactly one function
+/// of `side` holds, and that function.
 fn unique_reference_holders<'a>(side: &'a [Prepared<'_>]) -> HashMap<UniqueReference<'a>, usize> {
     let mut holders: HashMap<UniqueReference<'a>, Option<usize>> = HashMap::new();
     for (index, prepared) in side.iter().enumerate() {
         let texts = prepared.texts.iter().map(|text| UniqueReference::Text(text));
         let constants = prepared.anchors().iter().map(|&value| UniqueReference::Constant(value));
-        for key in texts.chain(constants) {
+        let calls = prepared.calls.iter().filter_map(|callee| match callee {
+            Callee::Named(name) => Some(UniqueReference::Callee(name.as_str())),
+            _ => None,
+        });
+        for key in texts.chain(constants).chain(calls) {
             holders
                 .entry(key)
                 .and_modify(|holder| {

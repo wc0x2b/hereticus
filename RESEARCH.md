@@ -501,7 +501,7 @@ work of this file (commit `feaee43`) and after:
 | Ubuntu, entries 1 to 6 | 264757 (+33) | 287 (+5) | 574 | 640 |
 | Ubuntu, entry 7 too | 264862 (+138) | 248 (−34) | 228 | 294 |
 | Backports, before entry 13 (commit `65c9eb6`) | 28902 | 809 | 2784 | 4797 |
-| Backports, entry 13 too | 29206 (+304) | 769 (−40) | 2519 | 4532 |
+| Backports, entry 13 too | 29347 (+445) | 753 (−56) | 2394 | 4407 |
 | Ubuntu, before entry 13 (commit `65c9eb6`) | 264863 | 248 | 227 | 293 |
 | Ubuntu, entry 13 too | 264864 (+1) | 251 (+3) | 223 | 289 |
 
@@ -553,7 +553,7 @@ Before any change, on the backports: 25260 right, 956 wrong, 6282 gone,
 | 10. Reciprocal best hits | only mutual best candidates pair | −81 right, −94 wrong | Not kept: a trade |
 | 11. WL hashing of the CFG | — | not built | Not kept: `il::flow_features` already hashes the data flow this way |
 | 12. Outliers among changes | cosine against the centroid | see below | see below |
-| 13. Unique references | `Cascade::pair_by_unique_references` | +304 right, −40 wrong | Kept |
+| 13. Unique references | `Cascade::pair_by_unique_references` | +445 right, −56 wrong | Kept |
 
 ### 1 and 2: context
 
@@ -752,6 +752,7 @@ the similarity stage and before the callers vote.
 | Set | Right | Wrong |
 |---|---|---|
 | Backports | +304 | −40 |
+| Backports, with named callees | +445 | −56 |
 | OpenWrt kernels | +32 | −18 |
 | Ubuntu updates | +1 | +3 |
 
@@ -766,3 +767,10 @@ it where it breaks the order. Kept from that, the stage paired 19 more
 wrong kernel pairs, not 18 fewer. Texts alone, without constants, paired
 255 more right and 66 fewer wrong on the backports, and a second shared
 reference as a floor only 100 more right.
+
+A call to a function the linker names, where one function alone makes it
+on each side, counts as such a reference too, as Diaphora's *Import names
+hash* does. On top of texts and constants it paired 141 more right and
+16 fewer wrong on the backports, and changed nothing on the Ubuntu
+updates; a raw kernel names no function. It moved one fix out of the top
+5, and the MRR from 0.566 to 0.564.
