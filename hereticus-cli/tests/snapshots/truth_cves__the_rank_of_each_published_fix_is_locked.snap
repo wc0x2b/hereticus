@@ -1,0 +1,14 @@
+---
+source: hereticus-cli/tests/truth_cves.rs
+assertion_line: 111
+expression: out
+---
+fix                                rank  rows  row
+CVE-2021-30883 IOMobileFramebuffer    1   334  changed sub_fffffff009c0b13c sub_fffffff009c0b178 0.72 28 16 5
+CVE-2024-23265 AppleDiskImages2       1    33  changed sub_fffffff028a156c8 sub_fffffff008a3341c 0.97 4 0 0
+CVE-2025-24257 IOGPUFamily           19   404  changed sub_fffffff009a765c0 sub_fffffff009b92fa8 0.76 20 6 3
+CVE-2026-28825 smbfs                  9   462  changed _smb2_rq_decompress_read _smb2_rq_decompress_read 0.97 81 68 3
+CVE-2025-62526 ubusd AArch64          5     9  changed sub_4a3c sub_49a0 0.98 4 5 0
+CVE-2025-62526 ubusd A32              4    21  changed sub_3e34 sub_3d80 0.94 5 8 2
+CVE-2025-62526 ubusd MIPS16e BE       7    18  changed sub_39e0 sub_38a4 0.98 5 5 1
+CVE-2025-62526 ubusd MIPS16e LE       7    18  changed sub_3b0c sub_39d0 0.98 5 5 1

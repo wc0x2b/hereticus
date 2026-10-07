@@ -18,8 +18,9 @@
 //! An ARM kernel is compared at the virtual address it is linked at,
 //! `0xc0000000` up, rather than where the bootloader loads it.
 //!
-//! Nothing here says which answer is right: no symbol table exists to check
-//! against. These tests record what the tool reports, so a change to it is
+//! The images hold no symbols, so nothing here says which answer is right;
+//! `tests/truth_kernels.rs` checks the kernel pairs against the debug files
+//! of the builds. These tests record what the tool reports, so a change to it is
 //! seen and judged, and they check the properties that must hold whatever the
 //! answer: no changed byte goes unreported, and the byte order and the base
 //! do not change the answer.
