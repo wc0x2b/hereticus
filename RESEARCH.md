@@ -743,7 +743,7 @@ on row 28, and cut the rank sums from 3179 to 2921 on the backports and
 from 343 to 306 on the Ubuntu updates. But a fix can be a reordering:
 CVE-2023-28484 in libxml2 moves code, and fell from row 1 to row 7. The
 MRR rose 0.001 on the backports and fell 0.003 on the Ubuntu updates, so
-the order stays; the bench keeps it as `added, reordered last`.
+that order was not kept; the bench keeps it as `added, reordered last`.
 
 With the names the libraries export, as the tool uses them by default,
 the Ubuntu updates pair 265032 right and 51 wrong. The getters of
@@ -753,6 +753,37 @@ code is the old code of the next one, and without names the stage of
 identical code pairs every one of them with its neighbour. With names,
 13 of the 51 wrong pairs came from entry 13; a pair by name no longer
 breaks, which paired 2 more right and 1 fewer wrong.
+
+Entry 13 also broke close pairs for one weak reference. In libexpat
+2.4.7-1ubuntu0.6, `storeEntityValue` paired with itself at 0.92, until
+the constant 0x1839, which only it held before and only
+`appendAttributeValue` holds after, paired it at 0.73 with the wrong one;
+6201 reads as the line number of an assertion, which a patch above it
+moves. The callee set of `appendAttributeValue` broke its pair at 0.88
+the same way. Entry 13 now keeps a pair that scores `CLOSE_SIMILARITY`
+or more and more than the new pair:
+
+| Set | Right | Wrong |
+|---|---|---|
+| Backports | −8 | +8 |
+| OpenWrt kernels | +40 | −18 |
+| Ubuntu updates | +7 | −6 |
+| Ubuntu updates, with names | +5 | −5 |
+
+The rows of an arm64 update that read `reordered` mostly move loads and
+arithmetic, as a scheduler does. The fix of CVE-2023-28484 in libxml2
+moves code, and with it branches. So the report now puts last a
+reordered pair whose edit touches no branch, call or jump
+(`is_rescheduled` in `hereticus-cli/src/main.rs`), and leaves the rest
+in place. Unlike sorting every reordered pair last, this lost no fix on
+any set:
+
+| Set | Rank sum | Top 1 | Top 5 | MRR |
+|---|---|---|---|---|
+| Backports | 3179 → 3035 | 64 → 64 | 82 → 82 | 0.568 → 0.568 |
+| Ubuntu updates | 342 → 303 | 121 → 121 | 171 → 173 | 0.812 → 0.813 |
+| Ubuntu updates, with names | 343 → 304 | 121 → 121 | 171 → 173 | 0.812 → 0.813 |
+| Eight published fixes | the same rows | | | |
 
 ### The OpenWrt kernels, against their symbols
 

@@ -165,7 +165,7 @@ fn inlined_copies(path: &Path) -> Vec<Symbol> {
     } else {
         gimli::RunTimeEndian::Big
     };
-    let sections = gimli::Dwarf::load(|id| -> Result<Cow<'_, [u8]>, gimli::Error> {
+    let sections = gimli::DwarfSections::load(|id| -> Result<Cow<'_, [u8]>, gimli::Error> {
         Ok(file
             .section_by_name(id.name())
             .and_then(|section| section.uncompressed_data().ok())
@@ -231,7 +231,8 @@ fn inlined_copies(path: &Path) -> Vec<Symbol> {
 }
 
 /// The rows the report shows by default, in the order of `--sort added`:
-/// most instructions added first, then the lowest score.
+/// a rescheduled pair last, then most instructions added first, then the
+/// lowest score. See `is_rescheduled` in `hereticus-cli/src/main.rs`.
 fn rows(diff: &Diff) -> Vec<&Match> {
     let mut shown: Vec<&Match> = diff
         .changed()
@@ -243,10 +244,12 @@ fn rows(diff: &Diff) -> Vec<&Match> {
                 && pair.score >= 1.0)
         })
         .collect();
+    let rescheduled =
+        |pair: &Match| pair.changed == Changed::Reordered && !pair.kinds.touches_control_flow();
     shown.sort_by(|a, b| {
-        b.edits
-            .added
-            .cmp(&a.edits.added)
+        rescheduled(a)
+            .cmp(&rescheduled(b))
+            .then_with(|| b.edits.added.cmp(&a.edits.added))
             .then_with(|| a.score.partial_cmp(&b.score).unwrap_or(core::cmp::Ordering::Equal))
     });
     shown

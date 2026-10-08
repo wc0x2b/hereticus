@@ -1166,7 +1166,11 @@ impl Cascade<'_> {
     /// a given set of paired functions. Such a pair is taken where its code scores
     /// [`LOWEST_UNIQUE_REFERENCE_SIMILARITY`] or more and the pairs it
     /// breaks share fewer such references: a pair by identical code, by
-    /// identical shape or by name is never broken. Such a pair is still weak:
+    /// identical shape or by name is never broken, and nor is one that
+    /// scores [`CLOSE_SIMILARITY`] or more and more than the new pair. A
+    /// constant can be a line number that a patch moved to the next
+    /// function: libexpat's `storeEntityValue`, at 0.92 against itself, lost
+    /// its partner to `appendAttributeValue` at 0.73 that way. Such a pair is still weak:
     /// [`Self::pair_by_layout`] undoes it where it breaks the order of the
     /// pairs around it.
     ///
@@ -1224,6 +1228,7 @@ impl Cascade<'_> {
                     pair.confidence,
                     Confidence::IdenticalCode | Confidence::IdenticalShape | Confidence::SameName
                 ) && shared_by(pair.before, pair.after) < count
+                    && (pair.score < CLOSE_SIMILARITY || score >= pair.score)
             });
             if !outweighs {
                 continue;

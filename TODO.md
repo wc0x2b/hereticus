@@ -191,21 +191,3 @@ The CLI on an OpenWrt kernel takes 30 seconds built for musl, the target
 `.cargo/config.toml` picks, with `mimalloc`, and took 22 built for glibc
 with its own allocator. The gap is CPU time, not time in the kernel, and
 nearly all of it runs on one thread; a profiler should find where.
-
-
-## Find why unique references swap two functions
-
-With names, 12 of the 51 wrong pairs of the Ubuntu updates come from
-`Cascade::pair_by_unique_references`, among functions that export no
-name. In libexpat, `appendAttributeValue` and `storeEntityValue` pair
-with each other on both architectures, at scores of 0.66 to 0.75. Find
-which reference they share uniquely, and why it points the wrong way.
-
-## Tell a fix that moves code from a reordering by LTO
-
-On arm64, LTO schedules the code of many functions another way in each
-build, so most rows of an update read `reordered`; one libssh fix falls
-to row 66 of 122. Sorting those rows last lifts it to row 28, but drops
-the fix of CVE-2023-28484 in libxml2, which moves code, from row 1 to
-row 7 (`RESEARCH.md`, "The Ubuntu updates, checked again"). Find what
-tells the two apart.
