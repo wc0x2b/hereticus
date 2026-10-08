@@ -122,7 +122,11 @@ impl Arch for Thumb2 {
         // does. Without it, the narrow and the wide form of one operation
         // compare alike, as A32 names them. A condition can follow it, as in
         // `b.wne`.
-        let mnemonic = mnemonic.replace(".w", "").replace(".n", "");
+        let mnemonic = if mnemonic.contains('.') {
+            without_suffix(&without_suffix(&mnemonic, b'w'), b'n')
+        } else {
+            mnemonic
+        };
         let (mnemonic, operands) = match *bytes {
             [low, high, second_low, second_high] => {
                 let (first, second) = (
@@ -843,8 +847,34 @@ fn branch_target(inst: &Instruction, address: u64, width: usize) -> Option<u64> 
 /// program counter, 4 bytes on, and for a narrow conditional branch is one
 /// halfword off besides: `bne $+0x2e` went to the instruction 0x30 on.
 /// A32 prints the distance from the instruction, and so does this.
+/// `mnemonic` with every `.` followed by `letter` taken out, as
+/// `str::replace` would, but by a scan of bytes: a search for a string on
+/// every instruction cost a sixth of a whole comparison.
+fn without_suffix(mnemonic: &str, letter: u8) -> String {
+    let bytes = mnemonic.as_bytes();
+    let mut kept = String::with_capacity(mnemonic.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'.' && bytes.get(at + 1) == Some(&letter) {
+            at += 2;
+        } else {
+            let next = mnemonic[at + 1..].find('.').map_or(bytes.len(), |dot| at + 1 + dot);
+            kept.push_str(&mnemonic[at..next]);
+            at = next;
+        }
+    }
+    kept
+}
+
 fn with_target_text(operands: &str, address: u64, target: u64) -> String {
-    let Some(start) = operands.find("$+").or_else(|| operands.find("$-")) else {
+    // A search for a byte, not for `"$+"`: this runs on every branch.
+    let after_dollar = |sign: u8| {
+        operands
+            .match_indices('$')
+            .map(|(at, _)| at)
+            .find(|&at| operands.as_bytes().get(at + 1) == Some(&sign))
+    };
+    let Some(start) = after_dollar(b'+').or_else(|| after_dollar(b'-')) else {
         return operands.to_string();
     };
     let end = operands[start..].find(',').map_or(operands.len(), |at| start + at);
@@ -959,6 +989,30 @@ fn read_branch_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Taking out a suffix by bytes gives what `str::replace` gives, for
+    /// any text of dots, the two letters and others.
+    #[test]
+    fn a_suffix_comes_out_as_replace_takes_it() {
+        bolero::check!().with_type::<Vec<u8>>().for_each(|picks| {
+            let text: String =
+                picks.iter().map(|pick| ['.', 'w', 'n', 'b', 'e'][*pick as usize % 5]).collect();
+            for letter in [b'w', b'n'] {
+                let pattern = format!(".{}", letter as char);
+                assert_eq!(without_suffix(&text, letter), text.replace(&pattern, ""), "{text:?}");
+            }
+        });
+    }
+
+    /// The target of a branch replaces the first `$+` offset, or else the
+    /// first `$-` one.
+    #[test]
+    fn a_branch_names_the_distance_to_its_target() {
+        assert_eq!(with_target_text("$+0x2e", 0x100, 0x130), "$+0x30");
+        assert_eq!(with_target_text("r0, $-0x4", 0x100, 0xf0), "r0, $-0x10");
+        assert_eq!(with_target_text("r1, r2", 0x100, 0x130), "r1, r2");
+        assert_eq!(with_target_text("$5, $+0x2", 0x100, 0x108), "$5, $+0x8");
+    }
 
     /// The wide words `yaxpeax` misreads, against `llvm-mc`.
     #[test]
