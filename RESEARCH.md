@@ -1043,3 +1043,13 @@ and smallvec, and the wrappers of the Ubuntu libraries, form groups of 5
 to 64 that order pairs right, so no limit was kept. The size of a group
 does not tell a group in order from one out of it.
 
+The pairs by place of entry 7 under a score of 0.4 are wrong about half
+the time on the kernels, and most of those have their true partner free.
+A ratio test for place, which took no such pair where either function
+had a free rival scoring 0.1 more, cut 408 wrong kernel pairs for 7 more
+right, and lifted the MRR of the backports from 0.568 to 0.579. But it
+cost the backports 1267 right pairs and the Ubuntu updates 27: between
+two compilers, a function with a look-alike elsewhere is still most
+often the one in its place. At a margin of 0.2 it cost them 1030 and 15.
+It was not kept.
+
