@@ -736,6 +736,15 @@ CVE-2023-28484 in libxml2 moves code, and fell from row 1 to row 7. The
 MRR rose 0.001 on the backports and fell 0.003 on the Ubuntu updates, so
 the order stays; the bench keeps it as `added, reordered last`.
 
+With the names the libraries export, as the tool uses them by default,
+the Ubuntu updates pair 265032 right and 51 wrong. The getters of
+libtiff, `return tif->tif_readproc` and its kind, show why the names
+matter: an update put a field into `struct tiff`, so each getter's new
+code is the old code of the next one, and without names the stage of
+identical code pairs every one of them with its neighbour. With names,
+13 of the 51 wrong pairs came from entry 13; a pair by name no longer
+breaks, which paired 2 more right and 1 fewer wrong.
+
 ### The OpenWrt kernels, against their symbols
 
 OpenWrt publishes the `vmlinux` of each kernel it builds, with symbols
