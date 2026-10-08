@@ -407,7 +407,9 @@ cascade they run, and that they may break a weaker pair.
 Idea: a message, a magic number or a call comes from the source. Where
 one function alone holds it in each binary, the two are one function,
 however far their code moved apart. A call counts where it reaches an
-import or a function already paired. This is the same evidence as entry 4, but
+import or a function already paired, and so does the whole set of paired
+functions a function calls: many functions call `kmalloc`, but few call
+exactly the same three functions. This is the same evidence as entry 4, but
 used to choose a partner, not only to break a tie.
 
 Applies to: functions that a fix or another build rewrote past the
@@ -416,9 +418,10 @@ the text.
 
 Code: `Cascade::pair_by_unique_references`,
 `Cascade::pair_by_unique_references_until_settled`,
-`unique_reference_holders`, `UniqueReference`,
-`LOWEST_UNIQUE_REFERENCE_SIMILARITY`, `MOST_UNIQUE_REFERENCE_ROUNDS` and
-`Confidence::SameReferences` in `matching.rs`.
+`unique_reference_holders`, `paired_callee_set`, `UniqueReference`,
+`LOWEST_UNIQUE_REFERENCE_SIMILARITY`, `MOST_UNIQUE_REFERENCE_ROUNDS`,
+`FEWEST_CALLEES_IN_A_SET` and `Confidence::SameReferences` in
+`matching.rs`.
 
 ## Lower fit
 
@@ -505,9 +508,9 @@ work of this file (commit `feaee43`) and after:
 | Ubuntu, entries 1 to 6 | 264757 (+33) | 287 (+5) | 574 | 640 |
 | Ubuntu, entry 7 too | 264862 (+138) | 248 (−34) | 228 | 294 |
 | Backports, before entry 13 (commit `65c9eb6`) | 28902 | 809 | 2784 | 4797 |
-| Backports, entry 13 too | 29433 (+531) | 682 (−127) | 2379 | 4392 |
+| Backports, entry 13 too | 29449 (+547) | 674 (−135) | 2371 | 4384 |
 | Ubuntu, before entry 13 (commit `65c9eb6`) | 264863 | 248 | 227 | 293 |
-| Ubuntu, entry 13 too | 264861 (−2) | 252 (+4) | 225 | 291 |
+| Ubuntu, entry 13 too | 264861 (−2) | 254 (+6) | 223 | 289 |
 
 The backports are where another build rewrites the code, which is where
 context, constants and order help. An Ubuntu update keeps the compiler
@@ -557,7 +560,7 @@ Before any change, on the backports: 25260 right, 956 wrong, 6282 gone,
 | 10. Reciprocal best hits | only mutual best candidates pair | −81 right, −94 wrong | Not kept: a trade |
 | 11. WL hashing of the CFG | — | not built | Not kept: `il::flow_features` already hashes the data flow this way |
 | 12. Outliers among changes | cosine against the centroid | see below | see below |
-| 13. Unique references | `Cascade::pair_by_unique_references` | +531 right, −127 wrong | Kept |
+| 13. Unique references | `Cascade::pair_by_unique_references` | +547 right, −135 wrong | Kept |
 
 ### 1 and 2: context
 
@@ -755,9 +758,9 @@ the similarity stage and before the callers vote.
 
 | Set | Right | Wrong |
 |---|---|---|
-| Backports | +531 | −127 |
-| OpenWrt kernels | +421 | −331 |
-| Ubuntu updates | −2 | +4 |
+| Backports | +547 | −135 |
+| OpenWrt kernels | +704 | −575 |
+| Ubuntu updates | −2 | +6 |
 
 Each part, in the order it was added, against the step before:
 
@@ -768,13 +771,15 @@ Each part, in the order it was added, against the step before:
 | The one call to a paired function | +28, −11 | +126, −36 | none |
 | Up to four rounds | none | +7, −7 | not measured |
 | Again after entry 7 | +58, −60 | +256, −270 | −3, +1 |
+| The one caller of a set of paired functions | +16, −8 | +283, −244 | none, +2 |
 
 Run after entry 7 alone, without the first run, the stage paired 102
 fewer right and 12 more wrong on the backports than both runs did.
 
-Across the kernel upgrades the wrong pairs fell from 10.40% to 9.98% and
-from 5.92% to 5.80%, and over all twelve kernel comparisons from 4.04%
-to 3.91%.
+Across the kernel upgrades the wrong pairs fell from 10.40% to 9.71% and
+from 5.95% to 5.64%, and over all twelve kernel comparisons from 4.04%
+to 3.82%. The pairs by place (entry 7) are wrong 15.9% of the time, from
+21.3%, since this stage takes the clearest of them first.
 
 On the backports, every fix now shows on a changed row: 18 comparisons
 missed it before. The rank sum rose from 2799 to 3173 because those 18
@@ -797,3 +802,13 @@ A floor on the code similarity of a pair that the callers vote for (A10)
 did not help: at 0.4 it paired 86 fewer right and 30 more wrong kernel
 pairs, and changed nothing on the backports. The pairs it would undo are
 mostly right.
+
+The two floors of entry 1, measured again with entry 13 in place, trade
+right pairs for wrong ones at every setting tried, so they stay:
+
+| `realign_by_context` | Backports, right and wrong | Kernels, right and wrong |
+|---|---|---|
+| 3 shared edges, 0.3 (kept) | 29433, 682 | 242945, 9892 |
+| 4 shared edges | 29340, 658 | 242220, 9343 |
+| 2 shared edges | 29555, 725 | 243688, 11127 |
+| similarity 0.4 | 29387, 662 | 242573, 9668 |

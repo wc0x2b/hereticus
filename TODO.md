@@ -162,9 +162,11 @@ it `Vector` only.
 
 `examples/research_bench.rs --kernels` checks the pairs of the OpenWrt
 kernels against the symbols of their builds (`RESEARCH.md`, "The OpenWrt
-kernels, against their symbols"). Across a kernel upgrade, 6% to 12% of
-the pairs are wrong, and the stages of entries 1 and 7 pair only 77% and
-79% right there. List the wrong pairs with `BENCH_WRONG=1` and the
+kernels, against their symbols"), and `tests/truth_kernels.rs` locks
+the counts. Across a kernel upgrade, 5% to 11% of the pairs are wrong,
+and the pairs by callers and by place are right only 74% and 84% of the
+time. About three in four wrong pairs are proven wrong: the true partner
+exists by name. `BENCH_WHERE=1` shows where it went. List the wrong pairs with `BENCH_WRONG=1` and the
 right ones with `BENCH_RIGHT=1`, one kernel with `BENCH_ONLY`, and find
 what tells them apart. The length of the gap does not (`RESEARCH.md`).
 A pair wrong by the names can be a renamed function; a list of the
