@@ -1048,7 +1048,7 @@ impl Cascade<'_> {
             .filter(|&x| self.left_free[x] || weak_partner.contains_key(&x))
             .filter_map(|x| {
                 let now = weak_partner.get(&x).map_or(0, |&(_, y)| context(x, y));
-                neighbors(x)
+                let mut found: Vec<(usize, f64, usize, usize)> = neighbors(x)
                     .into_iter()
                     .filter_map(|y| {
                         let shared = context(x, y);
@@ -1059,15 +1059,40 @@ impl Cascade<'_> {
                             && score >= LOWEST_CONTEXT_SIMILARITY)
                             .then_some((shared, score, x, y))
                     })
-                    .max_by(|a, b| {
-                        a.0.cmp(&b.0)
-                            .then_with(|| {
-                                a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal)
-                            })
-                            .then_with(|| b.3.cmp(&a.3))
-                    })
+                    .collect();
+                found.sort_by(|a, b| {
+                    b.0.cmp(&a.0)
+                        .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal))
+                        .then_with(|| a.3.cmp(&b.3))
+                });
+                // Two candidates alike in context and code: see
+                // `RIVAL_MARGIN`.
+                match found.as_slice() {
+                    [best, second, ..]
+                        if second.0 == best.0 && second.1 >= best.1 - RIVAL_MARGIN =>
+                    {
+                        None
+                    }
+                    found => found.first().copied(),
+                }
             })
             .collect();
+        // A free function of the second binary that two functions propose
+        // alike goes to neither, unless a third shares more with it.
+        let mut by_after: HashMap<usize, Vec<(usize, f64)>> = HashMap::new();
+        for &(shared, score, _, y) in &proposals {
+            by_after.entry(y).or_default().push((shared, score));
+        }
+        proposals.retain(|&(shared, score, _, y)| {
+            let rivals = &by_after[&y];
+            let alike = rivals
+                .iter()
+                .filter(|&&(other, other_score)| {
+                    other == shared && (other_score - score).abs() <= RIVAL_MARGIN
+                })
+                .count();
+            alike <= 1 || rivals.iter().any(|&(other, _)| other > shared)
+        });
         proposals.sort_by(|a, b| {
             b.0.cmp(&a.0)
                 .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal))
@@ -3142,7 +3167,12 @@ struct FlowRescue {
 const FLOW_RESCUE: FlowRescue = FlowRescue { code: 0.5, flow: 0.7 };
 
 /// How close in rank a free rival must come to stop the similarity stage
-/// from taking a pair: see [`Cascade::match_by_similarity`].
+/// from taking a pair: see [`Cascade::match_by_similarity`]. The context
+/// joins of [`Cascade::realign_by_context`] use it too, between two
+/// candidates that share as many edges: there it paired 6 more right and
+/// 11 fewer wrong over the backports, 96 fewer right and 145 fewer wrong
+/// over the OpenWrt kernels, and 3 fewer right and 2 fewer wrong over the
+/// Ubuntu updates.
 ///
 /// Measured against no margin, 0.03 paired 24 fewer right and 159 fewer
 /// wrong over the backports, and 223 fewer right and 2201 fewer wrong over
@@ -5344,6 +5374,42 @@ mod tests {
             .map(|(slot, &target)| u32::from_le_bytes(bl(slot as u64 * 4, target)))
             .collect();
         arm(&[calls.as_slice(), rest].concat())
+    }
+
+    /// Code at `base` that calls the functions at 0x100, 0x200 and 0x300,
+    /// then runs `rest`.
+    fn calls_three_from(base: u64, rest: &[u32]) -> Vec<u8> {
+        let calls: Vec<u32> = [0x100, 0x200, 0x300]
+            .iter()
+            .enumerate()
+            .map(|(slot, &target)| u32::from_le_bytes(bl(base + slot as u64 * 4, target)))
+            .collect();
+        arm(&[calls.as_slice(), rest].concat())
+    }
+
+    /// Of two free candidates with the same context and the same code,
+    /// context joins neither; the function then pairs by its place.
+    #[test]
+    fn context_joins_neither_of_two_alike() {
+        let before_code = calls_three_from(0, &[ADD, SUB, ORR, EOR, AND, BIC, ADC, SBC, BX_LR]);
+        let after_code = |base| calls_three_from(base, &[ADD, SUB, MUL, BX_LR]);
+        let [one, two, three] = [returns(1), returns(2), returns(3)];
+        let before = binary_of(&[("", &before_code), ("", &one), ("", &two), ("", &three)]);
+        let after = binary_of(&[
+            ("", &after_code(0)),
+            ("", &one),
+            ("", &two),
+            ("", &three),
+            ("", &after_code(0x400)),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let pair = diff.matched.iter().find(|pair| pair.before == 0);
+        assert_eq!(
+            pair.map(|pair| (pair.after, pair.confidence)),
+            Some((0, Confidence::SameLayout))
+        );
     }
 
     /// A function rewritten past the threshold pairs with itself by the

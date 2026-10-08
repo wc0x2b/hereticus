@@ -1005,3 +1005,12 @@ lose right pairs faster than wrong ones, and at 0.1 three fixes leave the
 first row. At 0.03 the ranks of the fixes stay the same, and the wrong
 kernel pairs fall from 3.46% to 2.61%.
 
+The context joins of entry 1 take the same test: no join where a second
+candidate shares as many edges and scores within 0.03, nor where two
+functions propose the same partner alike. That paired 6 more right and
+11 fewer wrong over the backports, 96 fewer right and 145 fewer wrong
+over the kernels, to 2.56%, and 3 fewer right and 2 fewer wrong over the
+Ubuntu updates. With an exact tie in place of 0.03 it paired 2 fewer
+right and 1 more wrong over the backports, and on the kernels less of
+both.
+
