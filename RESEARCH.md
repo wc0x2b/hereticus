@@ -812,3 +812,10 @@ right pairs for wrong ones at every setting tried, so they stay:
 | 4 shared edges | 29340, 658 | 242220, 9343 |
 | 2 shared edges | 29555, 725 | 243688, 11127 |
 | similarity 0.4 | 29387, 662 | 242573, 9668 |
+
+The floor of entry 7, `LOWEST_LAYOUT_SIMILARITY`, measured the same way
+with the set of paired callees in place (29449, 674 and 243228, 9648):
+0.2 paired 452 fewer right on the backports for 58 fewer wrong on the
+kernels; 0.05 paired 161 more right on the backports, but 12 fewer right
+and 15 more wrong on the kernels, and put 2 fewer fixes on the first row.
+The floor stays at 0.1.
