@@ -208,6 +208,7 @@ its printed mnemonic. Text is slow and wrong in ways an opcode is not:
 Keep the text for what a reader sees, and for the normalized body until
 a measure says the body may change. Move one architecture at a time, and
 keep each report the same: the operand test against llvm-objdump and the
-snapshots tell. The musl build of the CLI runs about the same number of
+snapshots tell. Start with AArch64, whose `op_of` and `role_of` hold the
+most string tests. The musl build of the CLI runs about the same number of
 instructions as the glibc build, so its remaining gap is in how fast
 musl runs them, as in `memcmp`.
