@@ -1370,6 +1370,20 @@ impl Cascade<'_> {
     /// Compare two functions as a pair.
     fn assess(&self, before: usize, after: usize, confidence: Confidence, score: f64) -> Match {
         let (left, right) = (&self.left[before], &self.right[after]);
+        // The same bytes edit nothing. Most pairs of a release are such, and
+        // normalizing their bodies again cost a quarter of a comparison.
+        if left.function.code == right.function.code {
+            return Match {
+                before,
+                after,
+                confidence,
+                score,
+                changed: Changed::No,
+                edits: Edits::default(),
+                kinds: EditKinds::default(),
+                rarity: 0.0,
+            };
+        }
         // Normalize each side once and share it between the two answers below;
         // neither the cascade nor the scoring stage keeps a body around.
         let (left_body, right_body) = (left.body(), right.body());
