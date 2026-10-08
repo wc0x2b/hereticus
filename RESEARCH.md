@@ -1014,3 +1014,21 @@ Ubuntu updates. With an exact tie in place of 0.03 it paired 2 fewer
 right and 1 more wrong over the backports, and on the kernels less of
 both.
 
+The twins of A4 are now the third source of wrong kernel pairs: 710,
+of which 551 have their true partner paired with another. A kernel holds
+groups of hundreds of twins, as `return 0;`, whose members come and go
+between releases, so equal counts no longer mean the same members.
+Leaving groups larger than N alone, each cell right then wrong:
+
+| N | Backports | Kernels | Ubuntu updates |
+|---|---|---|---|
+| 4 | −352, −50 | −203, −361 | −34, +2 |
+| 16 | −152, −8 | +24, −234 | −18, +9 |
+| 64 | 0, 0 | +10, −29 | −14, +7 |
+| 256 | 0, 0 | 0, 0 | 0, 0 |
+
+The kernels gain at every size, but the template instances of tinyxml2
+and smallvec, and the wrappers of the Ubuntu libraries, form groups of 5
+to 64 that order pairs right, so no limit was kept. The size of a group
+does not tell a group in order from one out of it.
+
