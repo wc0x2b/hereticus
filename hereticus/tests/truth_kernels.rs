@@ -12,6 +12,10 @@
 //!
 //! The inputs are about 800 MB, so `just quick-test` skips this test.
 
+/// See `ALLOCATOR` in `hereticus-cli/src/main.rs`.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

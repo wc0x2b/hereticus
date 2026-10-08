@@ -11,6 +11,10 @@
 //! The "before" build is read at the first level and the "after" build at
 //! the second, so the fix is part of each comparison too.
 
+/// See `ALLOCATOR` in `hereticus-cli/src/main.rs`.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

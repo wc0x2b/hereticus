@@ -17,6 +17,10 @@
 //!
 //! The tallies are locked, so a change that moves them must update them here.
 
+/// See `ALLOCATOR` in `hereticus-cli/src/main.rs`.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

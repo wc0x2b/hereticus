@@ -34,9 +34,7 @@ build:
 # The tests in `truth_*` files check the results against the truth: the pairs
 # of the OpenWrt kernels against the symbols of their builds, and the rank of
 # each published fix of `real-life-reports/`. They read about 800 MB that
-# `truth` downloads to ~/.cache once, so `quick-test` skips them. They run built
-# for glibc: on musl, the allocator makes the kernel test take ten minutes, not
-# one.
+# `truth` downloads to ~/.cache once, so `quick-test` skips them.
 truth_tests := "binary(/^truth_/)"
 
 # Fetch and pin what the `truth_*` tests read. The Apple binaries need the
@@ -46,8 +44,7 @@ truth: firmware
     python3 fixtures/cve_binaries.py
 
 test *args: build fixtures firmware backports truth
-    cargo nextest run --release -E 'not {{truth_tests}}' {{args}}
-    cargo nextest run --release --target x86_64-unknown-linux-gnu -E '{{truth_tests}}' {{args}}
+    cargo nextest run --release {{args}}
 
 # Skips tests marked slow and the `truth_*` tests, for a fast inner loop
 quick-test *args: build fixtures firmware backports

@@ -6,6 +6,14 @@
 mod formats;
 mod tui;
 
+/// The allocator of musl, the default target, serves the threads of the
+/// matcher one at a time. Measured with this one in its place, the CLI on
+/// two OpenWrt kernels took 30.0 seconds, not 34.8; the kernel test of
+/// `tests/truth_kernels.rs` 68 seconds, not 9.6 minutes; and `--ubuntu` of
+/// the research bench 81 seconds, not 27 minutes.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

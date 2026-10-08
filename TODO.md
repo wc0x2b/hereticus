@@ -182,11 +182,12 @@ backports and the Ubuntu updates worse, and five fixes are too few to say
 which is right. Add more advisories with shipped binaries before and
 after.
 
-`--ubuntu` reads 218 security updates. Built for glibc it takes 71
-seconds; built for musl, the target `.cargo/config.toml` picks, it takes
-27 minutes, nearly all of it in the kernel, as the allocator of musl
-serves many threads. The CLI on an OpenWrt kernel takes 35 seconds on
-musl and 22 on glibc. Choose an allocator for the musl build, as
-`mimalloc`, then lock the tallies of `--ubuntu` as a slow test, as
-`tests/cross_build.rs` locks the backports.
+`--ubuntu` reads 218 security updates in 81 seconds. Lock its tallies as
+a slow test, as `tests/cross_build.rs` locks the backports, with
+`fixtures/ubuntu_cves.py` pinning what it fetches.
+
+The CLI on an OpenWrt kernel takes 30 seconds built for musl, the target
+`.cargo/config.toml` picks, with `mimalloc`, and took 22 built for glibc
+with its own allocator. The gap is CPU time, not time in the kernel, and
+nearly all of it runs on one thread; a profiler should find where.
 
