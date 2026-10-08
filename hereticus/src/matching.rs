@@ -1165,8 +1165,8 @@ impl Cascade<'_> {
     /// assumes where one caller is left, and the one function that calls
     /// a given set of paired functions. Such a pair is taken where its code scores
     /// [`LOWEST_UNIQUE_REFERENCE_SIMILARITY`] or more and the pairs it
-    /// breaks share fewer such references: a pair by identical code or
-    /// shape is never broken. Such a pair is still weak:
+    /// breaks share fewer such references: a pair by identical code, by
+    /// identical shape or by name is never broken. Such a pair is still weak:
     /// [`Self::pair_by_layout`] undoes it where it breaks the order of the
     /// pairs around it.
     ///
@@ -1220,8 +1220,10 @@ impl Cascade<'_> {
             let mut broken: Vec<usize> = [pair_of_x, pair_of_y].into_iter().flatten().collect();
             let outweighs = broken.iter().all(|&index| {
                 let pair = &self.matched[index];
-                !matches!(pair.confidence, Confidence::IdenticalCode | Confidence::IdenticalShape)
-                    && shared_by(pair.before, pair.after) < count
+                !matches!(
+                    pair.confidence,
+                    Confidence::IdenticalCode | Confidence::IdenticalShape | Confidence::SameName
+                ) && shared_by(pair.before, pair.after) < count
             });
             if !outweighs {
                 continue;
@@ -5252,6 +5254,22 @@ mod tests {
         let pair = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
         assert_eq!((pair.after, pair.confidence), (0, Confidence::SameReferences));
         assert_eq!(diff.added, vec![5]);
+    }
+
+    /// A pair by name stays, though its constant moved to another function.
+    #[test]
+    fn a_unique_constant_does_not_break_a_pair_by_name() {
+        const MOVW_1234: u32 = 0xe301_0234;
+        let before = binary_of(&[("foo", &arm(&[MOVW_1234, ADD, SUB, ORR, EOR, BX_LR]))]);
+        let after = binary_of(&[
+            ("foo", &arm(&[ADD, SUB, ORR, EOR, AND, BX_LR])),
+            ("bar", &arm(&[MOVW_1234, ADD, MUL, MUL, MUL, BX_LR])),
+        ]);
+
+        let diff = diff_with(&before, &after, Options::default());
+        let pair = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!((pair.after, pair.confidence), (0, Confidence::SameName));
+        assert_eq!(diff.added, vec![1]);
     }
 
     /// A constant that two functions of one side hold tells neither apart.
