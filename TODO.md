@@ -193,16 +193,6 @@ with its own allocator. The gap is CPU time, not time in the kernel, and
 nearly all of it runs on one thread; a profiler should find where.
 
 
-## Credit a fix that the compiler inlined
-
-`tests/truth_ubuntu.rs` counts a fix as found where a changed row holds
-a function the patch names. Under LTO, the patched function can be
-inlined into another and have no symbol of its own: liblzma's
-`lzma_index_prealloc` lives inside `index_decode` on arm64, which the
-report shows second, but the test counts as missed. The DWARF of the
-`-dbgsym` file records each inlined copy (`DW_TAG_inlined_subroutine`),
-so the test can credit the function that holds it.
-
 ## Find why unique references swap two functions
 
 With names, 12 of the 51 wrong pairs of the Ubuntu updates come from

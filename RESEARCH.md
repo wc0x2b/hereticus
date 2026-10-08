@@ -724,7 +724,16 @@ all: the others patch a tool or a test of the same source, as
 The fix shows on a changed row in 176 of those 180. Of the 4 left, one
 is in liblzma on arm64: LTO inlined the patched `lzma_index_prealloc`
 into `index_decode`, which the report shows second, but which no patch
-names. The DWARF inline records would name it.
+names.
+
+The test now reads the DWARF of each debug file, and counts a row as the
+fix where it holds an inlined copy of a patched function too. Then 196
+updates touch the library, and the fix shows on a changed row in 193 of
+them: on row 1 in 161, where 121 counted before, and in the first five
+in 185. In 51 of the 193, the first row holds the fix only as an inlined
+copy, as `output_auth_headers` of libcurl holds `Curl_output_digest`, or
+`png_process_data` of libpng holds `png_push_read_chunk`. Inlining is
+common even without LTO: 23 of the 51 are on armhf.
 
 Most rows of an arm64 update are `reordered`: LTO schedules the code of
 many functions another way in each build. In the libssh update
