@@ -4,7 +4,7 @@ expression: out
 ---
 library                cases  right wrong  gone   new | in lib found inline ranks top1 top5
 libarchive13 arm64         9  13100    33    15    16 |     8     8      4    42    5    7
-libarchive13 armhf         9  13200     2    27    22 |     8     8      3    44    5    7
+libarchive13 armhf         9  13199     2    28    23 |     8     8      3    43    5    7
 libcurl4 arm64            25  19339     0    23    33 |    23    23     11    23   23   23
 libcurl4 armhf            25  26404     9    14    25 |    23    23     10    27   21   23
 libexpat1 arm64           10   2800    22     6     9 |    10    10      0    10   10   10
@@ -29,4 +29,4 @@ libxml2 arm64             12  30202     6    27    30 |    12    12      6    26
 libxml2 armhf             12  29375     1    11    16 |    12    12      6    12   12   12
 zlib1g arm64               1    118     0     0     0 |     1     1      0     1    1    1
 zlib1g armhf               1    127     0     0     0 |     1     1      0     2    0    1
-all                      218 264891   173   222   288 |   196   193     51   372  161  187
+all                      218 264890   173   223   289 |   196   193     51   371  161  187

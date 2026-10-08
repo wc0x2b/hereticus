@@ -603,6 +603,21 @@ impl Prepared<'_> {
         &self.constants[first..]
     }
 
+    /// How many functions this one calls, each once.
+    fn distinct_callees(&self) -> usize {
+        let mut callees: Vec<usize> = self
+            .calls
+            .iter()
+            .filter_map(|callee| match callee {
+                Callee::Function(callee) => Some(*callee),
+                _ => None,
+            })
+            .collect();
+        callees.sort_unstable();
+        callees.dedup();
+        callees.len()
+    }
+
     /// Report whether this function normalized to nothing.
     ///
     /// The symbols carry one entry per normalized instruction, so they answer
@@ -949,6 +964,12 @@ impl Cascade<'_> {
     /// that call them, and the texts they point at. The code then only has
     /// to clear [`LOWEST_CONTEXT_SIMILARITY`].
     ///
+    /// An edge that many functions share says little: most of a kernel
+    /// calls `kfree` and `mutex_lock`, so two unrelated functions share
+    /// three edges by chance. A callee or a text that more than
+    /// [`MOST_HOLDERS_OF_AN_EDGE`] functions hold, and a caller that calls
+    /// more than that many, do not count.
+    ///
     /// See RESEARCH.md, entry 1 (contextual diffing, ASIA CCS 2025), which
     /// matches through the neighbors of matched functions, and entry 2
     /// (network alignment, QBinDiff), which scores a pair by the call edges
@@ -966,8 +987,16 @@ impl Cascade<'_> {
 
     /// One round of [`Self::realign_by_context`].
     fn realign_by_context_once(&mut self) -> Repaired {
-        let (left_keys, right_keys) = self.reference_keys_of_all();
-        let (left_callers, right_callers) = self.paired_callers();
+        let (mut left_keys, mut right_keys) = self.reference_keys_of_all();
+        let (mut left_callers, mut right_callers) = self.paired_callers();
+        let common = common_keys(&right_keys);
+        for keys in left_keys.iter_mut().chain(right_keys.iter_mut()) {
+            keys.retain(|key| !common.contains(key));
+        }
+        let fanout: Vec<usize> = self.right.iter().map(Prepared::distinct_callees).collect();
+        for callers in left_callers.iter_mut().chain(right_callers.iter_mut()) {
+            callers.retain(|&caller| fanout[caller] <= MOST_HOLDERS_OF_AN_EDGE);
+        }
         let context = |x: usize, y: usize| {
             sorted_shared(&left_keys[x], &right_keys[y])
                 + sorted_shared(&left_callers[x], &right_callers[y])
@@ -3260,6 +3289,35 @@ const MOST_PLACE_CELLS: usize = 1 << 20;
 /// right and 45 fewer wrong: another compiler pairs few functions in order.
 const LEAST_ANCHORED_SHARE: f64 = 0.25;
 
+/// The keys that more than [`MOST_HOLDERS_OF_AN_EDGE`] of the functions
+/// of `keys` hold.
+fn common_keys(keys: &[Vec<ReferenceKey>]) -> HashSet<ReferenceKey> {
+    let mut holders: HashMap<&ReferenceKey, usize> = HashMap::new();
+    for list in keys {
+        // The keys are sorted, so a repeat sits next to its first.
+        let mut distinct: Vec<&ReferenceKey> = list.iter().collect();
+        distinct.dedup();
+        for key in distinct {
+            *holders.entry(key).or_default() += 1;
+        }
+    }
+    holders
+        .into_iter()
+        .filter(|&(_, count)| count > MOST_HOLDERS_OF_AN_EDGE)
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// The most functions an edge may join before
+/// [`Cascade::realign_by_context`] counts it no more.
+///
+/// Measured over the OpenWrt kernels, where context joins were wrong 35%
+/// of the time, 128 paired 390 fewer right and 918 fewer wrong; the
+/// backports did not change, and the Ubuntu updates paired 1 fewer right.
+/// 64 paired 113 fewer right for 74 fewer wrong than 128, and 256 paired
+/// 85 more right for 141 more wrong.
+const MOST_HOLDERS_OF_AN_EDGE: usize = 128;
+
 /// The fewest call edges and texts a pair must share before
 /// [`Cascade::realign_by_context`] takes it.
 const FEWEST_SHARED_EDGES: usize = 3;
@@ -5054,6 +5112,21 @@ mod tests {
         let diff = diff_with(&passes_text("ab"), &passes_text("cd"), Options::default());
         assert_eq!(diff.matched[0].changed, Changed::No);
         assert_eq!(diff.matched[0].kinds.texts, 0);
+    }
+
+    /// A key counts as common where more than `MOST_HOLDERS_OF_AN_EDGE`
+    /// functions hold it, and a repeat within one function counts once.
+    #[test]
+    fn a_key_is_common_past_the_most_holders() {
+        let key = |name: &str| ReferenceKey::Named(name.to_string());
+        let mut keys = vec![vec![key("kfree"), key("kfree"), key("rare")]];
+        keys.extend((0..MOST_HOLDERS_OF_AN_EDGE - 1).map(|_| vec![key("kfree"), key("often")]));
+        assert!(common_keys(&keys).is_empty(), "{} holders is not too many", keys.len());
+
+        keys.push(vec![key("kfree")]);
+        let common = common_keys(&keys);
+        assert!(common.contains(&key("kfree")));
+        assert!(!common.contains(&key("often")) && !common.contains(&key("rare")));
     }
 
     #[test]

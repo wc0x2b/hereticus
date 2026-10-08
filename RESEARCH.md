@@ -224,8 +224,9 @@ byte-identical functions get different callers, and the callers often pair
 first. `Cascade::pair_by_callers` in `matching.rs` already does a part of
 this.
 
-Code: `Cascade::realign_by_context`, `Cascade::paired_callers` and
-`sorted_shared` in `matching.rs`.
+Code: `Cascade::realign_by_context`, `Cascade::paired_callers`,
+`sorted_shared`, `common_keys` and `MOST_HOLDERS_OF_AN_EDGE` in
+`matching.rs`.
 
 ## 2. Diff as network alignment
 
@@ -785,6 +786,36 @@ any set:
 | Ubuntu updates, with names | 343 → 304 | 121 → 121 | 171 → 173 | 0.812 → 0.813 |
 | Eight published fixes | the same rows | | | |
 
+A floor on the unique constants of entry 13, against such line numbers,
+did not help: counting only constants of 32768 or more paired 38 fewer
+right and 1 more wrong on the backports, and 14 fewer right and 7 more
+wrong on the kernels; 65536 or more did as badly. Most constants from
+0x1000 to 0xffff are masks and magic numbers, not lines.
+
+Most of the 133 twins left wrong on the Ubuntu updates are exported
+functions alike to the byte, as `archive_entry_set_gname` and
+`archive_entry_copy_gname` of libarchive. Code outside the library calls
+them, so inside it they have no caller to vote, and only their names
+tell them apart; with names, 45 wrong pairs are left in all.
+
+### Speed, under callgrind
+
+A comparison of two releases of libxml2 for arm64, under callgrind:
+
+| Change | Instructions |
+|---|---|
+| Before | 65.6 billion |
+| `extended_register` finds a comma, not `", "` | 58.6 billion |
+| The table of the instruction diff skips the shared head | 50.3 billion |
+| `Cascade::assess` skips a pair of the same bytes | 49.8 billion |
+
+The musl build runs about as many instructions as the glibc build, 65.6
+against 66.5 billion before these changes, but takes 4.7 seconds to
+glibc's 3.1: musl runs its `memcmp` and the like more slowly. Of what is
+left, `decode_all` takes 45%, most of it formatting each instruction as
+text, which a function goes through three times: to find it, to prepare
+it, and to assess each pair it is in.
+
 ### The OpenWrt kernels, against their symbols
 
 OpenWrt publishes the `vmlinux` of each kernel it builds, with symbols
@@ -901,6 +932,29 @@ right pairs for wrong ones at every setting tried, so they stay:
 | 4 shared edges | 29340, 658 | 242220, 9343 |
 | 2 shared edges | 29555, 725 | 243688, 11127 |
 | similarity 0.4 | 29387, 662 | 242573, 9668 |
+
+The pairs entry 1 joins are wrong far more often than the rest of the
+label it shares with A10: on the kernels, 3300 right and 1762 wrong,
+where the callers' own joins, moves and swaps paired 1957 right and 140
+wrong. In a kernel, two unrelated functions easily share three edges,
+when the edges are `kfree`, `mutex_lock` and `printk`. Counting no edge
+that more than N functions of the second binary hold, and no caller that
+calls more than N:
+
+| N | Backports | Kernels | Ubuntu updates |
+|---|---|---|---|
+| 16 | −29, −34 | −951, −1153 | −1, −1 |
+| 32 | −16, −8 | −669, −1050 | −1, 0 |
+| 64 | 0, 0 | −503, −992 | −1, 0 |
+| 128 (kept) | 0, 0 | −390, −918 | −1, 0 |
+| 256 | 0, 0 | −305, −777 | 0, 0 |
+
+Each cell is right, then wrong, against no limit. From 256 to 128 the
+kernels drop 141 wrong pairs for 85 right; from 128 to 64, 74 wrong for
+113 right, so the limit is 128. The wrong kernel pairs fall from 3.81%
+to 3.46%. The same limit on the edges that break near ties in the
+similarity stage (A8) paired 26 fewer right and 14 more wrong kernel
+pairs, and was not kept.
 
 The floor of entry 7, `LOWEST_LAYOUT_SIMILARITY`, measured the same way
 with the set of paired callees in place (29449, 674 and 243228, 9648):
