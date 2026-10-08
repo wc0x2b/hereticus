@@ -2593,8 +2593,14 @@ impl Cascade<'_> {
 /// Pairs are taken best first, rather than in the order the functions appear.
 /// Taking them in order would let a mediocre pair claim a function that a
 /// later, better pair needed.
+///
+/// A pair is not taken where either function has a free rival that ranks
+/// within [`RIVAL_MARGIN`] of it: the code cannot choose between the two,
+/// and a later stage, by place, references or callers, can. A kernel holds
+/// many small functions alike in shape, as `return 2;`, and best first
+/// paired them by index.
 impl Cascade<'_> {
-    /// See RESEARCH.md, A7.
+    /// See RESEARCH.md, A7, and entry 14 (the ratio test).
     fn match_by_similarity(&mut self, progress: &dyn Progress) {
         // Only the functions still free reach the inner loop, so counting them
         // gives a total the bar can actually reach.
@@ -2653,8 +2659,25 @@ impl Cascade<'_> {
                 .then_with(|| a.1.2.cmp(&b.1.2))
         });
 
-        for (_, (score, index, other)) in ranked {
-            if self.left_free[index] && self.right_free[other] {
+        // The candidates of each function, to find a rival of a pair.
+        let mut of_left: HashMap<usize, Vec<(f64, usize)>> = HashMap::new();
+        let mut of_right: HashMap<usize, Vec<(f64, usize)>> = HashMap::new();
+        for &(rank, (_, index, other)) in &ranked {
+            of_left.entry(index).or_default().push((rank, other));
+            of_right.entry(other).or_default().push((rank, index));
+        }
+        for (rank, (score, index, other)) in ranked {
+            if !(self.left_free[index] && self.right_free[other]) {
+                continue;
+            }
+            let close = |rival: f64| rival >= rank - RIVAL_MARGIN;
+            let rival_after = of_left[&index]
+                .iter()
+                .any(|&(rival, y)| y != other && self.right_free[y] && close(rival));
+            let rival_before = of_right[&other]
+                .iter()
+                .any(|&(rival, x)| x != index && self.left_free[x] && close(rival));
+            if !(rival_after || rival_before) {
                 self.take_pair(index, other, Confidence::Similar, score);
             }
         }
@@ -3117,6 +3140,16 @@ struct FlowRescue {
 ///
 /// See RESEARCH.md, A9.
 const FLOW_RESCUE: FlowRescue = FlowRescue { code: 0.5, flow: 0.7 };
+
+/// How close in rank a free rival must come to stop the similarity stage
+/// from taking a pair: see [`Cascade::match_by_similarity`].
+///
+/// Measured against no margin, 0.03 paired 24 fewer right and 159 fewer
+/// wrong over the backports, and 223 fewer right and 2201 fewer wrong over
+/// the OpenWrt kernels. Each step up to 0.03 was better on every set; 0.05
+/// cost the backports 81 more right pairs for 16 fewer wrong. See
+/// RESEARCH.md, entry 14.
+const RIVAL_MARGIN: f64 = 0.03;
 
 /// The similarity at which the first pass of the similarity stage pairs.
 ///
@@ -5527,6 +5560,28 @@ mod tests {
         assert_eq!(sorted_only_in(&[1, 2, 2, 3], &[2, 3, 4]), vec![1, 2]);
         assert_eq!(sorted_only_in::<u32>(&[], &[1]), Vec::<u32>::new());
         assert_eq!(sorted_only_in(&[5, 5], &[]), vec![5, 5]);
+    }
+
+    /// Of two candidates that rank the same, the similarity stage takes
+    /// neither; with one clearly better, it takes that one.
+    #[test]
+    fn a_tie_between_candidates_pairs_neither() {
+        let before = binary_of(&[("", &arm(&[ADD, SUB, ORR, EOR, BX_LR]))]);
+        let tie = binary_of(&[
+            ("", &arm(&[ADD, SUB, ORR, EOR, AND, BX_LR])),
+            ("", &arm(&[ADD, SUB, ORR, EOR, BIC, BX_LR])),
+        ]);
+        let blind = Options { use_names: UseNames::No, ..Default::default() };
+        let diff = diff_with(&before, &tie, blind);
+        assert!(diff.matched.is_empty(), "{:?}", diff.matched);
+
+        let clear = binary_of(&[
+            ("", &arm(&[ADD, SUB, ORR, EOR, AND, BX_LR])),
+            ("", &arm(&[ADD, SUB, MUL, MUL, BIC, BX_LR])),
+        ]);
+        let diff = diff_with(&before, &clear, blind);
+        let pair = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!((pair.after, pair.confidence), (0, Confidence::Similar));
     }
 
     /// A function rewritten past the threshold pairs by its place between

@@ -424,6 +424,26 @@ Code: `Cascade::pair_by_unique_references`,
 `FEWEST_CALLEES_IN_A_SET` and `Confidence::SameReferences` in
 `matching.rs`.
 
+## 14. Ratio test
+
+Source: Lowe, *Distinctive Image Features from Scale-Invariant
+Keypoints*, IJCV 60(2), 2004, section 7.1. To match a point of one image
+with one of another, SIFT accepts the nearest neighbour only where it is
+clearly nearer than the second nearest; the ratio of the two distances
+rejects most false matches and few right ones.
+
+Idea: where a function has two candidates the code ranks alike, best
+first picks one by index. Take neither, and leave the function to the
+stages that look past its code: its place, its references and its
+callers.
+
+Applies to: the similarity stage. A kernel holds many small functions
+alike in shape, as `return 2;` or a getter of one field, which paired
+with each other at a score of 1.00.
+
+Code: `Cascade::match_by_similarity` and `RIVAL_MARGIN` in
+`matching.rs`.
+
 ## Lower fit
 
 - Ye, Zhou and Zhang, *Enhancing Semantic-Aware Binary Diffing with
@@ -562,6 +582,7 @@ Before any change, on the backports: 25260 right, 956 wrong, 6282 gone,
 | 11. WL hashing of the CFG | — | not built | Not kept: `il::flow_features` already hashes the data flow this way |
 | 12. Outliers among changes | cosine against the centroid | see below | see below |
 | 13. Unique references | `Cascade::pair_by_unique_references` | +547 right, −135 wrong | Kept |
+| 14. Ratio test | `RIVAL_MARGIN` in `Cascade::match_by_similarity` | −24 right, −159 wrong | Kept |
 
 ### 1 and 2: context
 
@@ -962,3 +983,25 @@ with the set of paired callees in place (29449, 674 and 243228, 9648):
 kernels; 0.05 paired 161 more right on the backports, but 12 fewer right
 and 15 more wrong on the kernels, and put 2 fewer fixes on the first row.
 The floor stays at 0.1.
+
+### 14: ratio test
+
+Half the wrong kernel pairs came from the similarity stage, and many
+were small functions at a score of 1.00: `kszphy_get_sset_count` with
+`irq_default_primary_handler`, both `return 2;`. The stage now takes no
+pair where either function has a free rival within a margin of its rank.
+Against no margin, each cell right then wrong:
+
+| Margin | Backports | Kernels | Ubuntu updates | With names |
+|---|---|---|---|---|
+| a tie | −36, −111 | −182, −1922 | −1, −12 | −1, −6 |
+| 0.01 | −33, −134 | −171, −2021 | −1, −12 | −1, −6 |
+| 0.03 (kept) | −24, −159 | −223, −2201 | −3, −13 | −1, −5 |
+| 0.05 | −105, −175 | −271, −2383 | −3, −13 | −1, −5 |
+| 0.1 | −142, −233 | −521, −2690 | −3, −13 | −1, −5 |
+
+Up to 0.03, every step is better on every set; past it, the backports
+lose right pairs faster than wrong ones, and at 0.1 three fixes leave the
+first row. At 0.03 the ranks of the fixes stay the same, and the wrong
+kernel pairs fall from 3.46% to 2.61%.
+
