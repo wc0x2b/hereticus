@@ -301,9 +301,6 @@ impl Arch for Aarch64 {
     }
 }
 
-/// How an instruction moves control. The pointer authentication forms of a
-/// return, a jump and a call, as `retaa`, `braa` and `blraa`, move it as the
-/// plain ones do.
 /// `operands`, with the extend of a 32-bit register named as it is.
 ///
 /// `yaxpeax-arm` 0.4 prints `add x1, x3, w1, uxtw #4` as `add x1, x3, w1,
@@ -312,14 +309,27 @@ impl Arch for Aarch64 {
 /// operation is zero-extended first, which is `uxtw`. Only an add, a
 /// subtract or a compare extends so: `smull x0, w1, w2` reads `w`
 /// registers as it is.
+///
+/// This runs on every instruction, so it searches for the comma, a single
+/// byte, and not for `", "`: a search for a string builds a searcher each
+/// time, which cost 8% of a whole comparison.
 fn extended_register(mnemonic: &str, operands: String) -> String {
     let is_w = |name: &str| {
         name == "wzr" || (name.starts_with('w') && name[1..].bytes().all(|b| b.is_ascii_digit()))
     };
     let is_wide = |name: &str| name.starts_with('x') || name == "sp";
-    if let Some((head, shift)) = operands.rsplit_once(", lsl ") {
-        let first = head.split(", ").next().unwrap_or_default();
-        let last = head.rsplit(", ").next().unwrap_or_default();
+    /// The first and the last of operands that `", "` separates.
+    fn ends(list: &str) -> (&str, &str) {
+        let first = list.split(',').next().unwrap_or_default();
+        let last = list.rsplit(',').next().unwrap_or_default().trim_start();
+        (first, last)
+    }
+    let last_comma = operands.rfind(',');
+    if let Some(comma) = last_comma
+        && let Some(shift) = operands[comma..].strip_prefix(", lsl ")
+    {
+        let head = &operands[..comma];
+        let (first, last) = ends(head);
         return if is_wide(first) && is_w(last) {
             format!("{head}, uxtw {shift}")
         } else {
@@ -327,15 +337,16 @@ fn extended_register(mnemonic: &str, operands: String) -> String {
         };
     }
     let extends = matches!(mnemonic, "add" | "adds" | "sub" | "subs" | "cmp" | "cmn");
-    let first = operands.split(", ").next().unwrap_or_default();
-    let last = operands.rsplit(", ").next().unwrap_or_default();
-    if extends && operands.contains(", ") && is_wide(first) && is_w(last) {
-        format!("{operands}, uxtw")
-    } else {
-        operands
+    if !extends || last_comma.is_none() {
+        return operands;
     }
+    let (first, last) = ends(&operands);
+    if is_wide(first) && is_w(last) { format!("{operands}, uxtw") } else { operands }
 }
 
+/// How an instruction moves control. The pointer authentication forms of a
+/// return, a jump and a call, as `retaa`, `braa` and `blraa`, move it as the
+/// plain ones do.
 fn classify(inst: &Instruction, mnemonic: &str, address: u64) -> InsnKind {
     let target = inst.operands.iter().find_map(|operand| match operand {
         Operand::PCOffset(offset) => address.checked_add_signed(*offset),

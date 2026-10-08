@@ -191,3 +191,14 @@ The CLI on an OpenWrt kernel takes 30 seconds built for musl, the target
 `.cargo/config.toml` picks, with `mimalloc`, and took 22 built for glibc
 with its own allocator. The gap is CPU time, not time in the kernel, and
 nearly all of it runs on one thread; a profiler should find where.
+
+## Classify AArch64 instructions by opcode, not by mnemonic text
+
+Under callgrind, a comparison of two releases of libxml2 for arm64 spends
+17% of its instructions in `Aarch64::lift`, which decodes each word a
+second time and then tests the mnemonic text: `op_of` holds 132 string
+tests and `role_of` 54. `yaxpeax-arm` already gives an `Opcode`, so a
+match on it would do the same in a few instructions. The musl build of
+the CLI runs about the same number of instructions as the glibc build,
+so its remaining gap is in how fast musl runs them, as in `memcmp`.
+
