@@ -843,10 +843,13 @@ pub fn diff_reporting(
     cascade.align_stubs(before, after);
     cascade.repair_twins_by_callees();
     cascade.uncross_by_callees();
-    cascade.pair_by_unique_references();
+    cascade.pair_by_unique_references_until_settled();
     cascade.pair_by_callers(before, after);
     cascade.realign_by_context();
     cascade.pair_by_layout();
+    // Again, now that the callers and the order paired more of the callees
+    // that tell two callers apart.
+    cascade.pair_by_unique_references_until_settled();
     cascade.pair_leftover_twins();
     cascade.compare_callees(before, after);
     cascade.compare_texts();
@@ -1141,28 +1144,47 @@ impl Cascade<'_> {
         }
     }
 
-    /// Pair two functions that hold a text, a constant or a call to a named
-    /// function that no other function of either binary holds.
+    /// Run [`Self::pair_by_unique_references`] until it pairs nothing more,
+    /// or [`MOST_UNIQUE_REFERENCE_ROUNDS`] times: each new pair is a callee
+    /// that can tell its callers apart.
+    fn pair_by_unique_references_until_settled(&mut self) {
+        for _ in 0..MOST_UNIQUE_REFERENCE_ROUNDS {
+            if self.pair_by_unique_references() == Repaired::Nothing {
+                break;
+            }
+        }
+    }
+
+    /// Pair two functions that hold a text, a constant or a call that no
+    /// other function of either binary holds.
     ///
     /// A message, a magic number or the one call to an import comes from
     /// the source, and a function that alone holds it on both sides is one
-    /// function, however its code changed. Such a pair is taken where its code scores
+    /// function, however its code changed. So is the one caller of a
+    /// function already paired, as BinDiff's call graph propagation
+    /// assumes where one caller is left. Such a pair is taken where its code scores
     /// [`LOWEST_UNIQUE_REFERENCE_SIMILARITY`] or more and the pairs it
     /// breaks share fewer such references: a pair by identical code or
     /// shape is never broken. Such a pair is still weak:
     /// [`Self::pair_by_layout`] undoes it where it breaks the order of the
     /// pairs around it.
     ///
-    /// Measured over the backports built two ways, this paired 445 more
-    /// right and 56 fewer wrong, and every fix now shows on a changed row,
-    /// where 18 did not. Over the OpenWrt kernels it paired 32 more right
-    /// and 18 fewer wrong.
+    /// Measured over the backports built two ways, this paired 531 more
+    /// right and 127 fewer wrong, and every fix now shows on a changed row,
+    /// where 18 did not. Over the OpenWrt kernels it paired 421 more right
+    /// and 331 fewer wrong.
     ///
     /// See RESEARCH.md, entry 13: BinDiff matches on string references,
     /// and Diaphora on a rare constant.
-    fn pair_by_unique_references(&mut self) {
-        let left_keys = unique_reference_holders(&self.left);
-        let right_keys = unique_reference_holders(&self.right);
+    fn pair_by_unique_references(&mut self) -> Repaired {
+        let mut repaired = Repaired::Nothing;
+        let partner: HashMap<usize, usize> =
+            self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
+        let left_keys =
+            unique_reference_holders(&self.left, &|callee| partner.get(&callee).copied());
+        let right_keys = unique_reference_holders(&self.right, &|callee| {
+            self.right_free.get(callee).is_some_and(|free| !free).then_some(callee)
+        });
         let mut shared: HashMap<(usize, usize), usize> = HashMap::new();
         for (key, &x) in &left_keys {
             if let Some(&y) = right_keys.get(key) {
@@ -1211,7 +1233,9 @@ impl Cascade<'_> {
                 self.right_free[pair.after] = true;
             }
             self.take_pair(x, y, Confidence::SameReferences, score);
+            repaired = Repaired::Some;
         }
+        repaired
     }
 
     /// The functions of each side in address order, and the longest chain
@@ -3104,6 +3128,12 @@ fn constant_agreement(left: &[u64], right: &[u64]) -> f64 {
 /// precision at best, so they are left alone.
 const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
 
+/// How many times [`Cascade::pair_by_unique_references_until_settled`]
+/// runs the stage at most. Measured over the OpenWrt kernels, a second
+/// round paired 7 more right and 7 fewer wrong, and the backports did not
+/// change.
+const MOST_UNIQUE_REFERENCE_ROUNDS: usize = 4;
+
 /// The lowest code similarity at which a text or a constant that only two
 /// functions hold pairs them: see [`Cascade::pair_by_unique_references`].
 ///
@@ -3119,19 +3149,25 @@ enum UniqueReference<'a> {
     Text(&'a str),
     /// A function the linker names, as an import.
     Callee(&'a str),
+    /// A function already paired, by its index in the second binary.
+    Paired(usize),
     /// A constant above [`LARGEST_PLAIN_CONSTANT`].
     Constant(u64),
 }
 
 /// Each text, large constant and named callee that exactly one function
 /// of `side` holds, and that function.
-fn unique_reference_holders<'a>(side: &'a [Prepared<'_>]) -> HashMap<UniqueReference<'a>, usize> {
+fn unique_reference_holders<'a>(
+    side: &'a [Prepared<'_>],
+    paired: &dyn Fn(usize) -> Option<usize>,
+) -> HashMap<UniqueReference<'a>, usize> {
     let mut holders: HashMap<UniqueReference<'a>, Option<usize>> = HashMap::new();
     for (index, prepared) in side.iter().enumerate() {
         let texts = prepared.texts.iter().map(|text| UniqueReference::Text(text));
         let constants = prepared.anchors().iter().map(|&value| UniqueReference::Constant(value));
         let calls = prepared.calls.iter().filter_map(|callee| match callee {
             Callee::Named(name) => Some(UniqueReference::Callee(name.as_str())),
+            Callee::Function(callee) => paired(*callee).map(UniqueReference::Paired),
             _ => None,
         });
         for key in texts.chain(constants).chain(calls) {
@@ -5125,6 +5161,26 @@ mod tests {
         let pair = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
         assert_eq!((pair.after, pair.confidence), (1, Confidence::SameReferences));
         assert_eq!(diff.added, vec![0]);
+    }
+
+    /// The one caller of a function already paired pairs with its one
+    /// caller on the other side, though a look-alike scores higher.
+    #[test]
+    fn the_one_caller_of_a_paired_function_pairs() {
+        let call = u32::from_le_bytes(bl(0, 0x100));
+        let before =
+            binary_of(&[("", &arm(&[call, ADD, SUB, ORR, EOR, BX_LR])), ("", &returns(1))]);
+        let after = binary_of(&[
+            ("", &arm(&[call, ADD, MUL, MUL, MUL, BX_LR])),
+            ("", &returns(1)),
+            ("", &arm(&[ADD, SUB, ORR, EOR, AND, BX_LR])),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let pair = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!((pair.after, pair.confidence), (0, Confidence::SameReferences));
+        assert_eq!(diff.added, vec![2]);
     }
 
     /// A constant that two functions of one side hold tells neither apart.

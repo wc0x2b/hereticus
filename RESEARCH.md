@@ -398,22 +398,26 @@ Code: none; measured in `examples/research_bench.rs` and not kept.
 ## 13. Unique references
 
 Sources: BinDiff's *string references* matcher, which pairs two functions
-that point at the same string, and Diaphora's *Same rare constant*
-heuristic ([Diaphora heuristics](https://github.com/joxeankoret/diaphora/blob/master/diaphora_heuristics.py)).
+that point at the same string, and its *call graph propagation*, which
+pairs the one unmatched caller left on each side; Diaphora's *Same rare
+constant* and *Import names hash* heuristics ([Diaphora heuristics](https://github.com/joxeankoret/diaphora/blob/master/diaphora_heuristics.py)).
 Both are much older than this survey; the new part here is where in the
 cascade they run, and that they may break a weaker pair.
 
-Idea: a message or a magic number comes from the source. Where one
-function alone holds it in each binary, the two are one function, however
-far their code moved apart. This is the same evidence as entry 4, but
+Idea: a message, a magic number or a call comes from the source. Where
+one function alone holds it in each binary, the two are one function,
+however far their code moved apart. A call counts where it reaches an
+import or a function already paired. This is the same evidence as entry 4, but
 used to choose a partner, not only to break a tie.
 
 Applies to: functions that a fix or another build rewrote past the
 similarity threshold, and pairs by similarity with a look-alike that lacks
 the text.
 
-Code: `Cascade::pair_by_unique_references`, `unique_reference_holders`,
-`UniqueReference`, `LOWEST_UNIQUE_REFERENCE_SIMILARITY` and
+Code: `Cascade::pair_by_unique_references`,
+`Cascade::pair_by_unique_references_until_settled`,
+`unique_reference_holders`, `UniqueReference`,
+`LOWEST_UNIQUE_REFERENCE_SIMILARITY`, `MOST_UNIQUE_REFERENCE_ROUNDS` and
 `Confidence::SameReferences` in `matching.rs`.
 
 ## Lower fit
@@ -501,9 +505,9 @@ work of this file (commit `feaee43`) and after:
 | Ubuntu, entries 1 to 6 | 264757 (+33) | 287 (+5) | 574 | 640 |
 | Ubuntu, entry 7 too | 264862 (+138) | 248 (−34) | 228 | 294 |
 | Backports, before entry 13 (commit `65c9eb6`) | 28902 | 809 | 2784 | 4797 |
-| Backports, entry 13 too | 29347 (+445) | 753 (−56) | 2394 | 4407 |
+| Backports, entry 13 too | 29433 (+531) | 682 (−127) | 2379 | 4392 |
 | Ubuntu, before entry 13 (commit `65c9eb6`) | 264863 | 248 | 227 | 293 |
-| Ubuntu, entry 13 too | 264864 (+1) | 251 (+3) | 223 | 289 |
+| Ubuntu, entry 13 too | 264861 (−2) | 252 (+4) | 225 | 291 |
 
 The backports are where another build rewrites the code, which is where
 context, constants and order help. An Ubuntu update keeps the compiler
@@ -553,7 +557,7 @@ Before any change, on the backports: 25260 right, 956 wrong, 6282 gone,
 | 10. Reciprocal best hits | only mutual best candidates pair | −81 right, −94 wrong | Not kept: a trade |
 | 11. WL hashing of the CFG | — | not built | Not kept: `il::flow_features` already hashes the data flow this way |
 | 12. Outliers among changes | cosine against the centroid | see below | see below |
-| 13. Unique references | `Cascade::pair_by_unique_references` | +445 right, −56 wrong | Kept |
+| 13. Unique references | `Cascade::pair_by_unique_references` | +531 right, −127 wrong | Kept |
 
 ### 1 and 2: context
 
@@ -751,14 +755,31 @@ the similarity stage and before the callers vote.
 
 | Set | Right | Wrong |
 |---|---|---|
-| Backports | +304 | −40 |
-| Backports, with named callees | +445 | −56 |
-| OpenWrt kernels | +32 | −18 |
-| Ubuntu updates | +1 | +3 |
+| Backports | +531 | −127 |
+| OpenWrt kernels | +421 | −331 |
+| Ubuntu updates | −2 | +4 |
+
+Each part, in the order it was added, against the step before:
+
+| Part | Backports | Kernels | Ubuntu |
+|---|---|---|---|
+| Texts and constants, one run | +304, −40 | +32, −18 | +1, +3 |
+| The one call to a named function | +141, −16 | none | none |
+| The one call to a paired function | +28, −11 | +126, −36 | none |
+| Up to four rounds | none | +7, −7 | not measured |
+| Again after entry 7 | +58, −60 | +256, −270 | −3, +1 |
+
+Run after entry 7 alone, without the first run, the stage paired 102
+fewer right and 12 more wrong on the backports than both runs did.
+
+Across the kernel upgrades the wrong pairs fell from 10.40% to 9.98% and
+from 5.92% to 5.80%, and over all twelve kernel comparisons from 4.04%
+to 3.91%.
 
 On the backports, every fix now shows on a changed row: 18 comparisons
 missed it before. The rank sum rose from 2799 to 3173 because those 18
-now count; top 5 rose from 78 to 83 and the MRR from 0.546 to 0.566.
+now count; top 1 rose from 63 to 64, top 5 from 78 to 82 and the MRR from
+0.546 to 0.568. The ranks of the eight published fixes did not move.
 
 Breaking only a pair that scores no better than the new one cut the 3
 wrong Ubuntu pairs, but on the backports it paired 75 fewer right and
@@ -768,9 +789,11 @@ wrong kernel pairs, not 18 fewer. Texts alone, without constants, paired
 255 more right and 66 fewer wrong on the backports, and a second shared
 reference as a floor only 100 more right.
 
-A call to a function the linker names, where one function alone makes it
-on each side, counts as such a reference too, as Diaphora's *Import names
-hash* does. On top of texts and constants it paired 141 more right and
-16 fewer wrong on the backports, and changed nothing on the Ubuntu
-updates; a raw kernel names no function. It moved one fix out of the top
-5, and the MRR from 0.566 to 0.564.
+A raw kernel names no function, so the call to a named function cannot
+help there; the call to a paired function can. The named calls moved one
+fix out of the top 5 on the backports.
+
+A floor on the code similarity of a pair that the callers vote for (A10)
+did not help: at 0.4 it paired 86 fewer right and 30 more wrong kernel
+pairs, and changed nothing on the backports. The pairs it would undo are
+mostly right.
