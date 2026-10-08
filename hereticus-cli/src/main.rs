@@ -966,9 +966,10 @@ fn render_diff_line(line: &DiffLine, paint: Paint) -> String {
 /// Order the shown pairs by the chosen edit count, most first.
 ///
 /// `Confidence` keeps the order the library gave, which is already strongest
-/// match first. The count orders break a tie by the lowest score, so the least
+/// match first. The count orders put a rescheduled pair last (see
+/// [`is_rescheduled`]), and break a tie by the lowest score, so the least
 /// certain of an equal-sized edit sits on top, where it wants the most
-/// attention. The sort is stable, so pairs that tie on both keep their place.
+/// attention. The sort is stable, so pairs that tie on all keep their place.
 fn sort_shown(shown: &mut [&Match], sort: Sort) {
     if sort == Sort::Confidence {
         return;
@@ -981,9 +982,25 @@ fn sort_shown(shown: &mut [&Match], sort: Sort) {
 fn rank(a: &Match, b: &Match, sort: Sort) -> core::cmp::Ordering {
     let a_key = sort.key_of(a).unwrap_or(0.0);
     let b_key = sort.key_of(b).unwrap_or(0.0);
-    b_key
-        .total_cmp(&a_key)
+    is_rescheduled(a)
+        .cmp(&is_rescheduled(b))
+        .then_with(|| b_key.total_cmp(&a_key))
         .then_with(|| a.score.partial_cmp(&b.score).unwrap_or(core::cmp::Ordering::Equal))
+}
+
+/// Report whether a pair only moved instructions that are not control
+/// flow: the shape of a compiler scheduling the same code another way.
+///
+/// Under LTO, GCC schedules the code of many functions anew in each build:
+/// most rows of an arm64 Ubuntu update are such pairs, and one put a
+/// libssh fix on row 66. A fix that moves code moves branches or calls,
+/// as the fix of CVE-2023-28484 in libxml2 does, so it stays in place.
+/// Measured on the Ubuntu updates, this cut the rank sum of the fixes
+/// from 342 to 303 and put 2 more in the first five; on the backports it
+/// cut it from 3179 to 3035, with the first row and the first five the
+/// same. See RESEARCH.md, "The Ubuntu updates, checked again".
+fn is_rescheduled(pair: &Match) -> bool {
+    pair.changed == Changed::Reordered && !pair.kinds.touches_control_flow()
 }
 
 /// How the text report shows a comparison.
@@ -1274,6 +1291,29 @@ mod tests {
     /// Build a pair with a given edit count and score, for the sort tests.
     fn pair_with(edits: Edits, score: f64) -> Match {
         Match { score, edits, ..edited_pair(Changed::Yes) }
+    }
+
+    /// A pair that only moved loads and arithmetic goes after the other
+    /// changes, however many it moved; one that moved a branch does not.
+    #[test]
+    fn a_rescheduled_pair_goes_last() {
+        let edits = Edits { added: 40, removed: 40, edited: 0 };
+        let rescheduled = Match {
+            kinds: EditKinds { memory: 40, ..EditKinds::default() },
+            ..pair_with(edits, 1.0)
+        };
+        let rescheduled = Match { changed: Changed::Reordered, ..rescheduled };
+        let moved_branch = Match {
+            changed: Changed::Reordered,
+            kinds: EditKinds { branches: 1, memory: 39, ..EditKinds::default() },
+            ..pair_with(edits, 1.0)
+        };
+        let small = pair_with(Edits { added: 1, removed: 0, edited: 0 }, 0.9);
+        let mut shown = vec![&rescheduled, &small, &moved_branch];
+
+        sort_shown(&mut shown, Sort::Added);
+        let order: Vec<_> = shown.iter().map(|pair| pair.kinds).collect();
+        assert_eq!(order, [moved_branch.kinds, small.kinds, rescheduled.kinds]);
     }
 
     /// `--sort modified` puts the most-rewritten function first.

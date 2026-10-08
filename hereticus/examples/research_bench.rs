@@ -243,6 +243,8 @@ struct Features {
     edits: hereticus::matching::Edits,
     /// The same instructions in another order: `Changed::Reordered`.
     reordered: bool,
+    /// The edit touched a branch, a call or a jump.
+    control_flow: bool,
     score: f64,
     /// See `Match::rarity`.
     rarity: f64,
@@ -269,7 +271,12 @@ fn guards(f: &Features) -> f64 {
 }
 
 const ORDERS: &[(&str, Order)] = &[
-    ("added", |f| f.edits.added as f64 - f.score * 1e-3),
+    // The default of the report: a rescheduled pair last.
+    ("added", |f| {
+        let rescheduled = f.reordered && !f.control_flow;
+        f.edits.added as f64 - f.score * 1e-3 - if rescheduled { 1e6 } else { 0.0 }
+    }),
+    ("added, as before", |f| f.edits.added as f64 - f.score * 1e-3),
     ("added, reordered last", |f| {
         f.edits.added as f64 - f.score * 1e-3 - if f.reordered { 1e6 } else { 0.0 }
     }),
@@ -375,6 +382,7 @@ fn features_of(rows: &[&Match], stripped: &[Binary; 2]) -> Vec<Features> {
             Features {
                 edits: pair.edits,
                 reordered: pair.changed == Changed::Reordered,
+                control_flow: pair.kinds.touches_control_flow(),
                 score: pair.score,
                 rarity: pair.rarity,
                 idf_added: tokens.iter().map(|t| idf(df[&t.0])).sum(),
@@ -778,8 +786,8 @@ fn measure_ubuntu_case(case: &Case, use_names: UseNames) -> (String, Totals, Str
             totals.wrong += 1;
             if std::env::var_os("BENCH_WRONG").is_some() {
                 println!(
-                    "WRONG {} {} {:?} {:.2} {left:?} {right:?}",
-                    case.library, case.arch, pair.confidence, pair.score
+                    "WRONG {} {} {} -> {} {:?} {:.2} {left:?} {right:?}",
+                    case.library, case.arch, case.before, case.after, pair.confidence, pair.score
                 );
             }
         } else {
