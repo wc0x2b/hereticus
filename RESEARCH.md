@@ -1014,7 +1014,10 @@ Against no margin, each cell right then wrong:
 Up to 0.03, every step is better on every set; past it, the backports
 lose right pairs faster than wrong ones, and at 0.1 three fixes leave the
 first row. At 0.03 the ranks of the fixes stay the same, and the wrong
-kernel pairs fall from 3.46% to 2.61%.
+kernel pairs fall from 3.46% to 2.61%. Running the similarity stage
+once more at the end, when the stages after it have paired many of the
+rivals, gave back more wrong pairs than right: 322 more right and 494
+more wrong on the kernels, and 35 and 41 on the backports.
 
 The context joins of entry 1 take the same test: no join where a second
 candidate shares as many edges and scores within 0.03, nor where two
