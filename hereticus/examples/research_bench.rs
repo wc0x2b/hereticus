@@ -42,7 +42,9 @@ fn read(project: &str, variant: &str, arch: &str, level: &str, file: &str) -> Bi
 }
 
 fn function_name(symbol: &str) -> &str {
-    [".isra.", ".constprop.", ".part.", ".cold"]
+    // GCC names a local function `.lto_priv.N` where it built with LTO,
+    // as Ubuntu does for arm64 and not for armhf.
+    [".isra.", ".constprop.", ".part.", ".cold", ".lto_priv."]
         .iter()
         .filter_map(|suffix| symbol.find(suffix))
         .min()
@@ -668,7 +670,13 @@ fn debug_symbols(path: &str) -> Vec<(u64, u64, String)> {
         .symbols()
         .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
         .filter_map(|symbol| {
-            let name = function_name(symbol.name().ok()?).to_owned();
+            let name = symbol.name().ok()?;
+            // GNU ld names each veneer of the Cortex-A53 erratum 843419 by
+            // where it sits, so one veneer has another name in each build.
+            if name.starts_with("e843419@") {
+                return None;
+            }
+            let name = function_name(name).to_owned();
             // A Thumb symbol has its low bit set.
             let start = symbol.address() & !1;
             Some((start, start + symbol.size(), name))
@@ -762,6 +770,12 @@ fn measure_ubuntu_case(case: &Case, use_names: UseNames) -> (String, Totals, Str
         }
         if left.is_disjoint(&right) {
             totals.wrong += 1;
+            if std::env::var_os("BENCH_WRONG").is_some() {
+                println!(
+                    "WRONG {} {} {:?} {:.2} {left:?} {right:?}",
+                    case.library, case.arch, pair.confidence, pair.score
+                );
+            }
         } else {
             totals.right += 1;
         }

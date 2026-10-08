@@ -859,6 +859,7 @@ dependencies = [
  "rabbitizer",
  "rayon",
  "rstest",
+ "serde_json",
  "smallvec",
  "yaxpeax-arch",
  "yaxpeax-arm",
