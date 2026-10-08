@@ -9,10 +9,10 @@
 //! `--cves` ranks published fixes, `--ubuntu` measures Ubuntu security
 //! updates, and `--kernels` checks the pairs of the OpenWrt kernels against
 //! their symbols.
-//!
-//! Build it for glibc, with `--target x86_64-unknown-linux-gnu`: the
-//! allocator of musl, the default target, makes `--ubuntu` take 27 minutes
-//! in place of 71 seconds.
+
+/// See `ALLOCATOR` in `hereticus-cli/src/main.rs`.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};

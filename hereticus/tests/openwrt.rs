@@ -28,6 +28,10 @@
 //! The kernel tests take about ten seconds each, so they are named `slow` and
 //! `just quick-test` skips them.
 
+/// See `ALLOCATOR` in `hereticus-cli/src/main.rs`.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

@@ -30,6 +30,9 @@ yaxpeax-arm = "0.4"
 # coverage-guided fuzzer when one is available.
 bolero = { version = "0.13", features = ["arbitrary"] }
 insta = "1.48"
+# The tests and the bench that read whole kernels run threads that the
+# allocator of musl, the default target, serves one at a time.
+mimalloc = { version = "0.1.52", default-features = false }
 # Writes the small ELF objects the unit tests read.
 object = { version = "0.40", features = ["write"] }
 rstest = "0.27"
