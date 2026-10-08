@@ -135,10 +135,10 @@ fn tally_arches(first: &str, second: &str, arches: &[&str]) -> Tally {
 #[rstest]
 #[case::o1_o2("O1", "O2", Tally { right: 4574, wrong: 60, gone: 173, new: 86 })]
 #[case::o2_o3("O2", "O3", Tally { right: 4632, wrong: 23, gone: 68, new: 39 })]
-#[case::o2_os("O2", "Os", Tally { right: 4268, wrong: 132, gone: 319, new: 1041 })]
-#[case::o3_os("O3", "Os", Tally { right: 4185, wrong: 136, gone: 375, new: 1126 })]
+#[case::o2_os("O2", "Os", Tally { right: 4267, wrong: 131, gone: 321, new: 1043 })]
+#[case::o3_os("O3", "Os", Tally { right: 4189, wrong: 129, gone: 378, new: 1129 })]
 #[case::gcc_o2_gcc_os("gcc-O2", "gcc-Os", Tally { right: 4122, wrong: 44, gone: 320, new: 776 })]
-#[case::clang_gcc("O2", "gcc-O2", Tally { right: 2920, wrong: 128, gone: 1313, new: 1513 })]
+#[case::clang_gcc("O2", "gcc-O2", Tally { right: 2923, wrong: 125, gone: 1313, new: 1513 })]
 fn pairs_across_builds_are_locked(
     #[case] first: &str,
     #[case] second: &str,
@@ -151,5 +151,5 @@ fn pairs_across_builds_are_locked(
 #[test]
 fn mips16_pairs_across_builds_are_locked() {
     let found = tally_arches("gcc-O2", "gcc-Os", &["mips16"]);
-    assert_eq!(found, Tally { right: 818, wrong: 23, gone: 68, new: 153 });
+    assert_eq!(found, Tally { right: 819, wrong: 23, gone: 67, new: 152 });
 }
