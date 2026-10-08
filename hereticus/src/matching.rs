@@ -1162,17 +1162,18 @@ impl Cascade<'_> {
     /// the source, and a function that alone holds it on both sides is one
     /// function, however its code changed. So is the one caller of a
     /// function already paired, as BinDiff's call graph propagation
-    /// assumes where one caller is left. Such a pair is taken where its code scores
+    /// assumes where one caller is left, and the one function that calls
+    /// a given set of paired functions. Such a pair is taken where its code scores
     /// [`LOWEST_UNIQUE_REFERENCE_SIMILARITY`] or more and the pairs it
     /// breaks share fewer such references: a pair by identical code or
     /// shape is never broken. Such a pair is still weak:
     /// [`Self::pair_by_layout`] undoes it where it breaks the order of the
     /// pairs around it.
     ///
-    /// Measured over the backports built two ways, this paired 531 more
-    /// right and 127 fewer wrong, and every fix now shows on a changed row,
-    /// where 18 did not. Over the OpenWrt kernels it paired 421 more right
-    /// and 331 fewer wrong.
+    /// Measured over the backports built two ways, this paired 547 more
+    /// right and 135 fewer wrong, and every fix now shows on a changed row,
+    /// where 18 did not. Over the OpenWrt kernels it paired 704 more right
+    /// and 575 fewer wrong.
     ///
     /// See RESEARCH.md, entry 13: BinDiff matches on string references,
     /// and Diaphora on a rare constant.
@@ -3151,6 +3152,9 @@ enum UniqueReference<'a> {
     Callee(&'a str),
     /// A function already paired, by its index in the second binary.
     Paired(usize),
+    /// The set of functions already paired that a function calls, hashed,
+    /// where it holds [`FEWEST_CALLEES_IN_A_SET`] or more.
+    CalleeSet(u64),
     /// A constant above [`LARGEST_PLAIN_CONSTANT`].
     Constant(u64),
 }
@@ -3170,7 +3174,8 @@ fn unique_reference_holders<'a>(
             Callee::Function(callee) => paired(*callee).map(UniqueReference::Paired),
             _ => None,
         });
-        for key in texts.chain(constants).chain(calls) {
+        let callee_set = paired_callee_set(prepared, paired);
+        for key in texts.chain(constants).chain(calls).chain(callee_set) {
             holders
                 .entry(key)
                 .and_modify(|holder| {
@@ -3183,6 +3188,40 @@ fn unique_reference_holders<'a>(
     }
     holders.into_iter().filter_map(|(key, holder)| Some((key, holder?))).collect()
 }
+
+/// The paired callees of `prepared` as one reference, where there are
+/// [`FEWEST_CALLEES_IN_A_SET`] or more. `paired` names a callee by its
+/// partner, so both sides hash alike.
+fn paired_callee_set(
+    prepared: &Prepared<'_>,
+    paired: &dyn Fn(usize) -> Option<usize>,
+) -> Option<UniqueReference<'static>> {
+    use core::hash::{Hash, Hasher};
+    let mut set: Vec<usize> = prepared
+        .calls
+        .iter()
+        .filter_map(|callee| match callee {
+            Callee::Function(callee) => paired(*callee),
+            _ => None,
+        })
+        .collect();
+    set.sort_unstable();
+    set.dedup();
+    if set.len() < FEWEST_CALLEES_IN_A_SET {
+        return None;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    set.hash(&mut hasher);
+    Some(UniqueReference::CalleeSet(hasher.finish()))
+}
+
+/// The fewest paired callees whose set counts as a unique reference.
+///
+/// One function calls `kmalloc` among hundreds, but few call exactly the
+/// same three functions. Measured over the OpenWrt kernels, sets of two or
+/// more paired 283 more right and 244 fewer wrong; sets of three or more
+/// 177 more right and 177 fewer wrong.
+const FEWEST_CALLEES_IN_A_SET: usize = 2;
 
 /// The largest gap, as the product of its free functions on the two sides,
 /// that [`Cascade::same_places`] aligns.
@@ -5181,6 +5220,38 @@ mod tests {
         let pair = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
         assert_eq!((pair.after, pair.confidence), (0, Confidence::SameReferences));
         assert_eq!(diff.added, vec![2]);
+    }
+
+    /// The one function that calls both of two paired functions pairs, where
+    /// other functions call each of them alone.
+    #[test]
+    fn the_one_caller_of_a_set_of_paired_functions_pairs() {
+        let call = |from: u64, to: u64| u32::from_le_bytes(bl(from, to));
+        let calls_both = |rest: &[u32]| arm(&[&[call(0, 0x300), call(4, 0x400)], rest].concat());
+        let calls_a = arm(&[call(0x100, 0x300), RSB, RSB, BX_LR]);
+        let calls_b = arm(&[call(0x200, 0x400), BIC, BIC, BX_LR]);
+        let [a, b] = [returns(1), returns(2)];
+        let before = binary_of(&[
+            ("", &calls_both(&[ADD, SUB, ORR, EOR, BX_LR])),
+            ("", &calls_a),
+            ("", &calls_b),
+            ("", &a),
+            ("", &b),
+        ]);
+        let after = binary_of(&[
+            ("", &calls_both(&[ADD, MUL, MUL, MUL, BX_LR])),
+            ("", &calls_a),
+            ("", &calls_b),
+            ("", &a),
+            ("", &b),
+            ("", &arm(&[ADD, SUB, ORR, EOR, AND, BX_LR])),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let pair = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!((pair.after, pair.confidence), (0, Confidence::SameReferences));
+        assert_eq!(diff.added, vec![5]);
     }
 
     /// A constant that two functions of one side hold tells neither apart.
