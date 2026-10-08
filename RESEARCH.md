@@ -830,6 +830,17 @@ A comparison of two releases of libxml2 for arm64, under callgrind:
 | The table of the instruction diff skips the shared head | 50.3 billion |
 | `Cascade::assess` skips a pair of the same bytes | 49.8 billion |
 
+The same update of libxml2 for armhf, which Ubuntu builds as Thumb-2,
+ran 144.3 billion instructions, and `str::replace` alone, which took the
+width suffix `.w` out of every mnemonic, 16% of them. Checking for a dot
+first, and taking the suffix out by bytes, brought it to 122.0 billion.
+Of what is left, the decoder of yaxpeax-arm reads its bit fields in 7%,
+and the rest is spread over small string work, none of it above 5%.
+
+On the wall clock, with the ratio tests in place too, the CLI compares
+the two ARM kernels of the EX6100v2 in 28.3 seconds, from 30.0, and the
+arm64 update of libxml2 in 3.9 seconds, from 4.7.
+
 The musl build runs about as many instructions as the glibc build, 65.6
 against 66.5 billion before these changes, but takes 4.7 seconds to
 glibc's 3.1: musl runs its `memcmp` and the like more slowly. Of what is
