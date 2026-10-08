@@ -4062,27 +4062,33 @@ fn steps_by_position<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
 ///
 /// See RESEARCH.md, A13.
 fn longest_common_subsequence<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
-    let (rows, cols) = (left.len() + 1, right.len() + 1);
-    let mut len = vec![vec![0usize; cols]; rows];
+    // A shared head aligns with itself: the walk below takes each equal
+    // pair as it meets it. Most changed functions share a long head, and the
+    // table is quadratic in what is left.
+    let head = left.iter().zip(right).take_while(|(a, b)| a == b).count();
+    let mut steps = vec![Step::Both; head];
+    let (left, right) = (&left[head..], &right[head..]);
 
+    // `len[i * cols + j]`, in one allocation.
+    let cols = right.len() + 1;
+    let mut len = vec![0usize; (left.len() + 1) * cols];
     for i in (0..left.len()).rev() {
         for j in (0..right.len()).rev() {
-            len[i][j] = if left[i] == right[j] {
-                len[i + 1][j + 1] + 1
+            len[i * cols + j] = if left[i] == right[j] {
+                len[(i + 1) * cols + j + 1] + 1
             } else {
-                len[i + 1][j].max(len[i][j + 1])
+                len[(i + 1) * cols + j].max(len[i * cols + j + 1])
             };
         }
     }
 
-    let mut steps = Vec::new();
     let (mut i, mut j) = (0, 0);
     while i < left.len() && j < right.len() {
         if left[i] == right[j] {
             steps.push(Step::Both);
             i += 1;
             j += 1;
-        } else if len[i + 1][j] >= len[i][j + 1] {
+        } else if len[(i + 1) * cols + j] >= len[i * cols + j + 1] {
             steps.push(Step::Left);
             i += 1;
         } else {
@@ -4661,6 +4667,59 @@ mod tests {
         }
         assert_eq!((i, j), (left.len(), right.len()), "the alignment must walk both sides");
         kept
+    }
+
+    /// The table without its shared head gives the same walk as the full
+    /// table, step for step.
+    #[test]
+    fn a_shared_head_aligns_as_the_full_table_does() {
+        fn full_table(left: &[u64], right: &[u64]) -> Vec<Step> {
+            let mut len = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+            for i in (0..left.len()).rev() {
+                for j in (0..right.len()).rev() {
+                    len[i][j] = if left[i] == right[j] {
+                        len[i + 1][j + 1] + 1
+                    } else {
+                        len[i + 1][j].max(len[i][j + 1])
+                    };
+                }
+            }
+            let (mut steps, mut i, mut j) = (Vec::new(), 0, 0);
+            while i < left.len() && j < right.len() {
+                if left[i] == right[j] {
+                    steps.push(Step::Both);
+                    (i, j) = (i + 1, j + 1);
+                } else if len[i + 1][j] >= len[i][j + 1] {
+                    steps.push(Step::Left);
+                    i += 1;
+                } else {
+                    steps.push(Step::Right);
+                    j += 1;
+                }
+            }
+            steps.extend(core::iter::repeat_n(Step::Left, left.len() - i));
+            steps.extend(core::iter::repeat_n(Step::Right, right.len() - j));
+            steps
+        }
+
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |limit: u64| {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (state >> 33) % limit
+        };
+        for _ in 0..2000 {
+            let alphabet = 1 + next(6);
+            let head: Vec<u64> = (0..next(8)).map(|_| next(alphabet)).collect();
+            let left: Vec<u64> =
+                head.iter().copied().chain((0..next(12)).map(|_| next(alphabet))).collect();
+            let right: Vec<u64> =
+                head.iter().copied().chain((0..next(12)).map(|_| next(alphabet))).collect();
+            assert_eq!(
+                longest_common_subsequence(&left, &right),
+                full_table(&left, &right),
+                "{left:?} {right:?}"
+            );
+        }
     }
 
     /// Any two sequences align validly by anchors, and never keep more
