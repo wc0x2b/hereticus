@@ -696,6 +696,28 @@ best there too. But the four builds of `ubusd` are one fix, not four, so
 the set holds five independent fixes, still too few to trust over the
 backports and the Ubuntu updates.
 
+### The Ubuntu updates, checked again
+
+`tests/truth_ubuntu.rs` locks the counts of the 218 updates, which
+`fixtures/ubuntu_cases.json` pins. Writing it showed that the check
+itself counted 75 pairs wrong that are not, all on arm64:
+
+- 39 are veneers that GNU ld adds for the Cortex-A53 erratum 843419. It
+  names each by where it sits, as `e843419@015e_00003dc0_96c4`, so one
+  veneer has another name in each build. They now count as neither.
+- 36 are one function, named `.lto_priv.0` on one side only. Ubuntu
+  builds arm64 with LTO and armhf without, and GCC adds the suffix to a
+  local function it keeps under LTO. The suffix is now cut, as `.isra.`
+  is.
+
+The same cut finds the fix in 176 of the 218 updates, not 170: a patch
+names `foo`, and the symbol is `foo.lto_priv.0`. With both, the Ubuntu
+updates pair 264884 right and 179 wrong. The wrong pairs left are 114 on
+arm64 and 65 on armhf. Three in four, 133, are twins, paired by identical
+code, identical shape or their order: functions alike to the byte, as
+`TIFFGetReadProc` and `TIFFGetWriteProc`, that nothing in the code can
+tell apart. The counts above this section were taken before the fix.
+
 ### The OpenWrt kernels, against their symbols
 
 OpenWrt publishes the `vmlinux` of each kernel it builds, with symbols

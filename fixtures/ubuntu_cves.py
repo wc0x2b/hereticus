@@ -14,8 +14,15 @@ security releases of a library, this downloads:
 Everything lands in ~/.cache/hereticus-ubuntu-cve, with `cases.json` that
 lists each pair. A second run reads the cache instead of the network.
 `examples/research_bench.rs --ubuntu` reads `cases.json`.
+
+The pairs are pinned in `ubuntu_cases.json` beside this script: each
+version, the functions its patches touched, and the SHA-256 of each file,
+because `tests/truth_ubuntu.rs` locks the counts they give. A plain run
+fetches exactly those and stops at a changed file. `--refresh` asks
+Launchpad for the security releases published since, and pins them anew.
 """
 
+import hashlib
 import io
 import json
 import re
@@ -29,6 +36,7 @@ import urllib.request
 from pathlib import Path
 
 CACHE = Path.home() / ".cache" / "hereticus-ubuntu-cve"
+PINNED = Path(__file__).resolve().parent / "ubuntu_cases.json"
 SERIES = "jammy"
 API = "https://api.launchpad.net/devel"
 FILES = "https://launchpad.net/ubuntu/+archive/primary/+files"
@@ -199,7 +207,63 @@ def touched_functions(patch: str) -> set[str]:
     return names
 
 
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def pin(cases: list[dict]) -> list[dict]:
+    """The cases as `ubuntu_cases.json` keeps them: paths under the cache,
+    and the SHA-256 of each file."""
+    pinned = []
+    for case in cases:
+        files = [[Path(path) for path in side] for side in case["files"]]
+        pinned.append(
+            {
+                "library": case["library"],
+                "arch": case["arch"],
+                "before": case["before"],
+                "after": case["after"],
+                "files": [
+                    [{"path": str(path.relative_to(CACHE)), "sha256": sha256(path)} for path in side]
+                    for side in files
+                ],
+                "patches": case["patches"],
+                "fixes": case["fixes"],
+            }
+        )
+    return pinned
+
+
+def fetch_pinned() -> list[dict]:
+    """The cases of `ubuntu_cases.json`, fetched and checked."""
+    shared_object = {binary: so for binary, _, so in LIBRARIES}
+    cases = []
+    for case in json.loads(PINNED.read_text()):
+        sides = []
+        for version, side in zip((case["before"], case["after"]), case["files"]):
+            pair = library(case["library"], version, case["arch"], shared_object[case["library"]])
+            if pair is None:
+                raise SystemExit(f"{case['library']} {version} {case['arch']}: not fetched")
+            for path, pinned in zip(pair, side):
+                if sha256(path) != pinned["sha256"]:
+                    raise SystemExit(f"{path}: SHA-256 is {sha256(path)}, expected {pinned['sha256']}")
+            sides.append([str(path) for path in pair])
+        cases.append({**case, "files": sides})
+    return cases
+
+
 def main() -> None:
+    if "--refresh" not in sys.argv[1:]:
+        cases = fetch_pinned()
+        CACHE.mkdir(parents=True, exist_ok=True)
+        (CACHE / "cases.json").write_text(json.dumps(cases, indent=1))
+        print(f"{len(cases)} pinned cases in {CACHE / 'cases.json'}", file=sys.stderr)
+        return
+    discover()
+
+
+def discover() -> None:
+    """Ask Launchpad for every pair of security releases, and pin them."""
     cases = []
     for binary, source, so in LIBRARIES:
         for arch in ARCHES:
@@ -238,7 +302,8 @@ def main() -> None:
                 print(f"  {before} -> {after}: {sorted(fixes)[:6]}", file=sys.stderr)
     CACHE.mkdir(parents=True, exist_ok=True)
     (CACHE / "cases.json").write_text(json.dumps(cases, indent=1))
-    print(f"{len(cases)} cases in {CACHE / 'cases.json'}", file=sys.stderr)
+    PINNED.write_text(json.dumps(pin(cases), indent=1) + "\n")
+    print(f"{len(cases)} cases in {CACHE / 'cases.json'}, pinned in {PINNED}", file=sys.stderr)
 
 
 if __name__ == "__main__":

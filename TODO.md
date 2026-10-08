@@ -182,9 +182,10 @@ backports and the Ubuntu updates worse, and five fixes are too few to say
 which is right. Add more advisories with shipped binaries before and
 after.
 
-`--ubuntu` reads 218 security updates in 81 seconds. Lock its tallies as
-a slow test, as `tests/cross_build.rs` locks the backports, with
-`fixtures/ubuntu_cves.py` pinning what it fetches.
+`tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 179
+wrong pairs left, 133 are byte-identical twins (see "Tell twins apart
+that no instruction separates"), and the fix shows on no changed row in
+42 updates.
 
 The CLI on an OpenWrt kernel takes 30 seconds built for musl, the target
 `.cargo/config.toml` picks, with `mimalloc`, and took 22 built for glibc
