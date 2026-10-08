@@ -10,7 +10,8 @@
 //! name in the `-dbgsym` debug files, and wrong when they share no name.
 //! The pairing does not use the names the libraries export, as for a
 //! stripped binary. The rank is the row of the first function the patches
-//! of the update touched, in the order `--sort added` shows.
+//! of the update touched, in the order `--sort added` shows, where any
+//! such function is in the library.
 //!
 //! The inputs are about 800 MB, so `just quick-test` skips this test.
 
@@ -47,6 +48,10 @@ struct Tally {
     wrong: usize,
     gone: usize,
     new: usize,
+    /// Cases where a function the fix touched is in the library at all.
+    /// A patch can touch only a tool or a test of the same source, as
+    /// `tiffcrop` of libtiff, which no row can show.
+    in_library: usize,
     /// Cases where a changed row holds a function the fix touched.
     found: usize,
     /// Over the found cases: the sum of the rank of the fix, from 1, and
@@ -63,6 +68,7 @@ impl core::ops::AddAssign<&Tally> for Tally {
         self.wrong += other.wrong;
         self.gone += other.gone;
         self.new += other.new;
+        self.in_library += other.in_library;
         self.found += other.found;
         self.rank_sum += other.rank_sum;
         self.top1 += other.top1;
@@ -195,6 +201,8 @@ fn measure(case: &Case) -> Tally {
         }
     }
 
+    let in_library = symbols.iter().flatten().any(|(_, _, name)| case.fixes.contains(name));
+    tally.in_library = usize::from(in_library);
     let is_fix = |pair: &&Match| {
         names(0, pair.before)
             .iter()
@@ -226,19 +234,30 @@ fn the_ubuntu_updates_checked_against_their_symbols_are_locked() {
     let mut out = String::new();
     writeln!(
         out,
-        "{:22} {:>5} {:>6} {:>5} {:>5} {:>5} | {:>5} {:>5} {:>4} {:>4}",
-        "library", "cases", "right", "wrong", "gone", "new", "found", "ranks", "top1", "top5"
+        "{:22} {:>5} {:>6} {:>5} {:>5} {:>5} | {:>5} {:>5} {:>5} {:>4} {:>4}",
+        "library",
+        "cases",
+        "right",
+        "wrong",
+        "gone",
+        "new",
+        "in lib",
+        "found",
+        "ranks",
+        "top1",
+        "top5"
     )
     .unwrap();
     for (library, tally) in libraries.iter().chain([(&"all".to_owned(), &all)]) {
         writeln!(
             out,
-            "{library:22} {:>5} {:>6} {:>5} {:>5} {:>5} | {:>5} {:>5} {:>4} {:>4}",
+            "{library:22} {:>5} {:>6} {:>5} {:>5} {:>5} | {:>5} {:>5} {:>5} {:>4} {:>4}",
             tally.cases,
             tally.right,
             tally.wrong,
             tally.gone,
             tally.new,
+            tally.in_library,
             tally.found,
             tally.rank_sum,
             tally.top1,

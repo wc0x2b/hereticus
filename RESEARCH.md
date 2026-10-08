@@ -718,6 +718,24 @@ code, identical shape or their order: functions alike to the byte, as
 `TIFFGetReadProc` and `TIFFGetWriteProc`, that nothing in the code can
 tell apart. The counts above this section were taken before the fix.
 
+Only 180 of the 218 updates touch a function that is in the library at
+all: the others patch a tool or a test of the same source, as
+`tiffcrop` of libtiff, `xmllint` of libxml2 or the test suite of libssh.
+The fix shows on a changed row in 176 of those 180. Of the 4 left, one
+is in liblzma on arm64: LTO inlined the patched `lzma_index_prealloc`
+into `index_decode`, which the report shows second, but which no patch
+names. The DWARF inline records would name it.
+
+Most rows of an arm64 update are `reordered`: LTO schedules the code of
+many functions another way in each build. In the libssh update
+0.9.6-2ubuntu0.22.04.5 they put the fix on row 66 of 122, where armhf
+shows one row. Sorting the reordered rows after every other row put it
+on row 28, and cut the rank sums from 3179 to 2921 on the backports and
+from 343 to 306 on the Ubuntu updates. But a fix can be a reordering:
+CVE-2023-28484 in libxml2 moves code, and fell from row 1 to row 7. The
+MRR rose 0.001 on the backports and fell 0.003 on the Ubuntu updates, so
+the order stays; the bench keeps it as `added, reordered last`.
+
 ### The OpenWrt kernels, against their symbols
 
 OpenWrt publishes the `vmlinux` of each kernel it builds, with symbols

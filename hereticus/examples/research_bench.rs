@@ -241,6 +241,8 @@ fn measure(project: &str, arch: &str, first: &str, second: &str, totals: &mut To
 /// What an order may read of one row.
 struct Features {
     edits: hereticus::matching::Edits,
+    /// The same instructions in another order: `Changed::Reordered`.
+    reordered: bool,
     score: f64,
     /// See `Match::rarity`.
     rarity: f64,
@@ -268,6 +270,9 @@ fn guards(f: &Features) -> f64 {
 
 const ORDERS: &[(&str, Order)] = &[
     ("added", |f| f.edits.added as f64 - f.score * 1e-3),
+    ("added, reordered last", |f| {
+        f.edits.added as f64 - f.score * 1e-3 - if f.reordered { 1e6 } else { 0.0 }
+    }),
     ("a+0.5idf", |f| f.edits.added as f64 + 0.5 * f.idf_added),
     ("a+1idf", |f| f.edits.added as f64 + f.idf_added),
     ("bm25 k0.5", |f| f.bm25[0]),
@@ -369,6 +374,7 @@ fn features_of(rows: &[&Match], stripped: &[Binary; 2]) -> Vec<Features> {
             let count = |flow: FlowShape| tokens.iter().filter(|t| t.1 == flow).count();
             Features {
                 edits: pair.edits,
+                reordered: pair.changed == Changed::Reordered,
                 score: pair.score,
                 rarity: pair.rarity,
                 idf_added: tokens.iter().map(|t| idf(df[&t.0])).sum(),
