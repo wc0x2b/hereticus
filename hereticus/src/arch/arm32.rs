@@ -71,8 +71,8 @@ pub enum Decoded {
     /// `it`, which makes up to four instructions after it conditional: the
     /// condition of the first, and the mask that says the rest.
     It { condition: u8, mask: u8 },
-    /// A VFP instruction this module reads.
-    Vfp(Vfp),
+    /// A VFP instruction this module reads, and its condition.
+    Vfp { vfp: Vfp, condition: ConditionCode },
     /// A NEON load or store this module reads.
     NeonAccess,
     /// NEON data processing, which nothing here reads.
@@ -99,13 +99,31 @@ pub enum Vfp {
     Load,
     /// `vstr`.
     Store,
-    /// `vmov` between core and VFP registers, or `vmrs`.
+    /// `vmov` between a core register and a single.
     Move,
-    /// `vldm`, `vstm`, `vpush` and `vpop`.
-    Multiple,
-    /// The arithmetic, the compares, the conversions and `vmov` of a
-    /// constant.
+    /// `vmov` between two core registers and a double.
+    MoveDouble,
+    /// `vmrs`, which moves the status register to a core register.
+    Status,
+    /// `vpush`.
+    Push,
+    /// `vpop`.
+    Pop,
+    /// `vldm` and `vstm`, which step through memory as `step` says.
+    Multiple(Step),
+    /// `vcmp` and `vcmpe`.
+    Compare,
+    /// The arithmetic, the conversions and `vmov` of a constant.
     Compute,
+}
+
+/// Which way a load or store of a list steps through memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// From the base up: `ia`.
+    IncrementAfter,
+    /// From below the base up to it: `db`.
+    DecrementBefore,
 }
 
 /// The conditions of A32, by the top four bits of a word.
@@ -194,10 +212,39 @@ fn printed_opcode(inst: &Instruction) -> Opcode {
 }
 
 /// What the decoder read for `insn`, where it read A32 or T32.
-pub(super) fn decoded(insn: &Insn) -> Option<Decoded> {
+pub(crate) fn decoded(insn: &Insn) -> Option<Decoded> {
     match insn.opcode {
         super::Opcode::Arm(decoded) => Some(decoded),
         _ => None,
+    }
+}
+
+/// The condition `insn` runs on, where it names one.
+pub(crate) fn condition(insn: &Insn) -> Option<ConditionCode> {
+    match decoded(insn)? {
+        Decoded::Core { condition, .. } | Decoded::Vfp { condition, .. } => Some(condition),
+        _ => None,
+    }
+}
+
+/// The suffix a mnemonic takes for `condition`.
+pub(crate) fn condition_name(condition: ConditionCode) -> &'static str {
+    match condition {
+        ConditionCode::EQ => "eq",
+        ConditionCode::NE => "ne",
+        ConditionCode::HS => "hs",
+        ConditionCode::LO => "lo",
+        ConditionCode::MI => "mi",
+        ConditionCode::PL => "pl",
+        ConditionCode::VS => "vs",
+        ConditionCode::VC => "vc",
+        ConditionCode::HI => "hi",
+        ConditionCode::LS => "ls",
+        ConditionCode::GE => "ge",
+        ConditionCode::LT => "lt",
+        ConditionCode::GT => "gt",
+        ConditionCode::LE => "le",
+        ConditionCode::AL => "",
     }
 }
 
@@ -1577,7 +1624,8 @@ pub(super) fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, 
     }
     if let Some(word) = VfpWord::of(word) {
         let (mnemonic, operands) = word.text();
-        return Some((format!("{mnemonic}{condition}"), operands, Decoded::Vfp(word.kind())));
+        let decoded = Decoded::Vfp { vfp: word.kind(), condition: condition_code };
+        return Some((format!("{mnemonic}{condition}"), operands, decoded));
     }
 
     // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
@@ -1601,7 +1649,7 @@ pub(super) fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, 
         return Some((
             format!("{operation}{condition}"),
             format!("{register}, {reference}"),
-            Decoded::Vfp(vfp),
+            Decoded::Vfp { vfp, condition: condition_code },
         ));
     }
     None
@@ -2374,10 +2422,19 @@ impl VfpWord {
 
     fn kind(self) -> Vfp {
         match self {
-            Self::MoveSingle { .. } | Self::MoveDouble { .. } | Self::StatusToCore { .. } => {
-                Vfp::Move
+            Self::MoveSingle { .. } => Vfp::Move,
+            Self::MoveDouble { .. } => Vfp::MoveDouble,
+            Self::StatusToCore { .. } => Vfp::Status,
+            // As `text` names them.
+            Self::Multiple { load: false, base: 13, write_back: true, before: true, .. } => {
+                Vfp::Push
             }
-            Self::Multiple { .. } => Vfp::Multiple,
+            Self::Multiple { load: true, base: 13, write_back: true, before: false, .. } => {
+                Vfp::Pop
+            }
+            Self::Multiple { before: true, .. } => Vfp::Multiple(Step::DecrementBefore),
+            Self::Multiple { before: false, .. } => Vfp::Multiple(Step::IncrementAfter),
+            Self::Compute { operation, .. } if operation.is_compare() => Vfp::Compare,
             Self::Compute { .. } | Self::MoveConstant { .. } => Vfp::Compute,
         }
     }
@@ -2680,7 +2737,7 @@ pub(super) fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted>
         } else {
             // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
             let (_, _, decoded) = decode_fallback(word, encoding)?;
-            if !matches!(decoded, Decoded::Vfp(Vfp::Load | Vfp::Store)) {
+            if !matches!(decoded, Decoded::Vfp { vfp: Vfp::Load | Vfp::Store, .. }) {
                 return None;
             }
             let double = field(8, 1) == 1;
@@ -2966,8 +3023,10 @@ pub(super) fn pool_loads(insns: &[Insn], pc: PcModel) -> Vec<(u64, u64)> {
     for insn in insns {
         let count = match decoded(insn) {
             Some(Decoded::Core { opcode: Opcode::LDR, .. }) => 1,
-            Some(Decoded::Vfp(Vfp::Load)) if insn.operands.starts_with('s') => 1,
-            Some(Decoded::Core { opcode: Opcode::LDRD, .. } | Decoded::Vfp(Vfp::Load)) => 2,
+            Some(Decoded::Vfp { vfp: Vfp::Load, .. }) if insn.operands.starts_with('s') => 1,
+            Some(
+                Decoded::Core { opcode: Opcode::LDRD, .. } | Decoded::Vfp { vfp: Vfp::Load, .. },
+            ) => 2,
             _ => continue,
         };
         let Some((_, reference)) = insn.operands.rsplit_once('[') else { continue };

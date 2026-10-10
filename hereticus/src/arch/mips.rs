@@ -45,7 +45,7 @@ pub enum Decoded {
 }
 
 /// What the decoder read for `insn`, where it read MIPS.
-pub(super) fn decoded(insn: &Insn) -> Option<Decoded> {
+pub(crate) fn decoded(insn: &Insn) -> Option<Decoded> {
     match insn.opcode {
         super::Opcode::Mips(decoded) => Some(decoded),
         _ => None,
@@ -1746,7 +1746,7 @@ pub(super) fn is_store(insn: &Insn) -> bool {
 }
 
 /// The opcode `rabbitizer` read for `insn`, where it read it.
-pub(super) fn rabbitizer_opcode(insn: &Insn) -> Option<Opcode> {
+pub(crate) fn rabbitizer_opcode(insn: &Insn) -> Option<Opcode> {
     match decoded(insn)? {
         Decoded::Rabbitizer(opcode) => Some(opcode),
         _ => None,
