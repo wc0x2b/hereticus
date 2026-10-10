@@ -179,33 +179,34 @@ wrong pairs left, 133 are byte-identical twins (see "Tell twins apart
 that no instruction separates"), and the fix shows on no changed row in
 42 updates.
 
-The CLI on the MIPS kernel of the VR200 takes 16 seconds built for musl,
-the target `.cargo/config.toml` picks; "Build less text for each
-instruction" below says where the time goes.
+The CLI on the MIPS kernel of the VR200 takes 13 seconds built for musl,
+the target `.cargo/config.toml` picks; "Make the matching faster" below
+says where the time goes.
 
-## Build less text for each instruction
+## Make the matching faster
 
 Every architecture decides by the opcode that `Insn::opcode` holds, not
-by the printed mnemonic. The scan decodes each region once, and four
-other fixes cut what each comparison computes again. Against
-`7bbfb6a`, with the reports the same byte for byte, the CLI takes 1.4 s
-in place of 3.4 s on `libgnutls` for arm64, 1.3 s in place of 4.3 s on
-`libarchive` for armhf, and 16 s in place of 35 s on the MIPS kernel of
-the VR200.
+by the printed mnemonic, and a run of fixes cut the work done twice.
+Against `7bbfb6a`, with each report the same byte for byte:
 
-Under callgrind, the decoders still print every instruction to text:
-on the kernel, `rabbitizer` formats for an eighth of the run, and
-`yaxpeax-arm` for as much on arm64. The normalized body and the test of
-`matching.rs` that compares as the normalizer does read that text, and
-`Prepared::body` decodes and normalizes a function again each time a pair
-needs it, which keeps a kernel in memory. Print only what a reader sees,
-and build the normalized body from the opcode and the operands.
+| Input | Before | Now |
+|---|---|---|
+| `libgnutls` for arm64 | 3.5 s, 168 MB | 1.3 s, 137 MB |
+| `libarchive` for armhf | 4.2 s, 137 MB | 1.1 s, 125 MB |
+| ARM kernel of the EX6100v2 | 27.5 s, 1040 MB | 11.6 s, 773 MB |
+| MIPS kernel of the VR200 | 35.6 s, 997 MB | 13.4 s, 707 MB |
+
+The text each decoder prints is now less than a tenth of the run on the
+ARM kernel. Most of it is the matching: `longest_common_subsequence` and
+`Cascade::assess` take a quarter of it, and `Prepared::body` normalizes a
+function again each time a pair needs it, which keeps a kernel in
+memory. Measure those before the text.
+
 `track_pages` of AArch64 reads typed operands decoded from the code
-bytes, not the text, which took 10% off libgnutls. Keeping the decoded
-operands in every `Insn` was tried and dropped: 237 MB peak in place of
-137 MB, and no faster. It still reads `w24` and `x24` as two registers,
-as the text did, though a write of `w24` clears `x24` too. Ending the
-page of `x24` there changed the texts of two functions of the
-libgnutls update and moved no truth test; find out whether those two
-show a real change before it ends them.
-
+bytes, which took 10% off libgnutls; keeping the decoded operands in
+every `Insn` took 237 MB in place of 137 MB and no time. MIPS compares
+register names packed into words. `track_pages` still reads `w24` and
+`x24` as two registers, as the text did, though a write of `w24` clears
+`x24` too. Ending the page of `x24` there changed the texts of two
+functions of the libgnutls update and moved no truth test; find out
+whether those two show a real change before it ends them.
