@@ -31,6 +31,32 @@ use rabbitizer::registers_meta::Register as _;
 /// Every MIPS32 instruction is 4 bytes wide.
 const INSN_WIDTH: usize = 4;
 
+/// What [`Insn::opcode`] holds for MIPS32 and MIPS16e.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decoded {
+    /// A word `rabbitizer` reads, by its opcode, whose name it prints. A
+    /// pseudo-instruction, such as `nop` or `beqz`, has an opcode of its
+    /// own.
+    Rabbitizer(Opcode),
+    /// A MIPS32 or Release 2 word [`super::mips32`] reads.
+    Mips32(super::mips32::Op),
+    /// A MIPS16e instruction with no MIPS32 twin.
+    Mips16(super::mips16::Op),
+}
+
+/// What the decoder read for `insn`, where it read MIPS.
+pub(super) fn decoded(insn: &Insn) -> Option<Decoded> {
+    match insn.opcode {
+        super::Opcode::Mips(decoded) => Some(decoded),
+        _ => None,
+    }
+}
+
+/// Whether `rabbitizer` read `insn` as `opcode`.
+pub(super) fn is(insn: &Insn, opcode: Opcode) -> bool {
+    decoded(insn) == Some(Decoded::Rabbitizer(opcode))
+}
+
 /// Mnemonic reported for bytes the decoder cannot read.
 const UNKNOWN_MNEMONIC: &str = "(unknown)";
 
@@ -97,7 +123,7 @@ impl Mips32 {
 
         body.iter()
             .enumerate()
-            .filter(|(_, insn)| insn.mnemonic == "addiu" || insn.mnemonic == "ori")
+            .filter(|(_, insn)| is(insn, Opcode::core_addiu) || is(insn, Opcode::core_ori))
             .filter_map(|(index, insn)| {
                 let (destination, source, low) = three_operands(insn)?;
                 // `t9` receives a callee, not data.
@@ -106,14 +132,14 @@ impl Mips32 {
                 }
                 let low = Mips32::LITTLE.constant_value(low)?;
                 let (at, written) = last_write(body, index, source)?;
-                let high = match written.mnemonic.as_str() {
+                let high = match rabbitizer_opcode(written)? {
                     // The `_gp_disp` halves are a distance, not an address.
-                    "lui" if is_gp_disp_preamble(&body[at..]) => return None,
-                    "lui" => upper_half(written)?.1,
-                    "lw" => slot_value(at, written)?,
+                    Opcode::core_lui if is_gp_disp_preamble(&body[at..]) => return None,
+                    Opcode::core_lui => upper_half(written)?.1,
+                    Opcode::core_lw => slot_value(at, written)?,
                     _ => return None,
                 };
-                Some((index, join_halves(&insn.mnemonic, high, low)))
+                Some((index, join_halves(LowerHalf::of(insn), high, low)))
             })
             .filter(|&(_, address)| space.contains_formed(address))
             .collect()
@@ -172,10 +198,10 @@ impl Arch for Mips32 {
                 return Ok(Insn {
                     address: insn_address,
                     bytes_len: INSN_WIDTH,
-                    mnemonic: word.mnemonic.to_string(),
+                    mnemonic: word.op.name().to_string(),
                     operands: word.operands,
                     kind: word.kind,
-                    opcode: super::Opcode::None,
+                    opcode: super::Opcode::Mips(Decoded::Mips32(word.op)),
                 });
             }
 
@@ -220,7 +246,7 @@ impl Arch for Mips32 {
             mnemonic,
             operands,
             kind,
-            opcode: super::Opcode::None,
+            opcode: super::Opcode::Mips(Decoded::Rabbitizer(inst.opcode())),
         })
     }
 
@@ -315,14 +341,18 @@ impl Arch for Mips32 {
         let operands = insn.operands.as_str();
         let first = operands.split(',').next().unwrap_or_default().trim();
 
-        match insn.mnemonic.as_str() {
+        match rabbitizer_opcode(insn) {
             // Moving the stack pointer, or setting up the frame pointer.
             // `or fp, sp, zero` is how a frame is established: this decoder
             // renders every register move as `or`, never as `move`.
-            "addiu" | "addu" | "subu" | "or" => self.is_stack_register(first),
+            Some(Opcode::core_addiu | Opcode::core_addu | Opcode::core_subu | Opcode::core_or) => {
+                self.is_stack_register(first)
+            }
 
             // Spilling to and reloading from the frame.
-            "sw" | "lw" | "swc1" | "lwc1" | "sd" | "ld" => self.mentions_stack_slot(operands),
+            Some(Opcode::core_sw | Opcode::core_lw | Opcode::core_swc1 | Opcode::core_lwc1) => {
+                self.mentions_stack_slot(operands)
+            }
 
             _ => false,
         }
@@ -411,7 +441,7 @@ impl Arch for Mips32 {
     /// `jr t9`: the ABI calls through `t9`, and a `switch` jumps through
     /// another register.
     fn is_tail_call(&self, insn: &Insn) -> bool {
-        insn.mnemonic == "jr" && insn.operands == "t9"
+        is(insn, Opcode::core_jr) && insn.operands == "t9"
     }
 
     /// A function that needs a frame opens by making room for it, so
@@ -425,7 +455,7 @@ impl Arch for Mips32 {
     /// against 13362, so it also catches a leaf that makes room without
     /// calling anything.
     fn is_prologue(&self, insn: &Insn) -> bool {
-        if insn.mnemonic != "addiu" {
+        if !is(insn, Opcode::core_addiu) {
             return false;
         }
 
@@ -474,7 +504,8 @@ impl Arch for Mips32 {
         // A zero word decodes as `nop` on MIPS, so unlike ARM one test covers
         // both the encoding a linker pads with and the named instruction.
         // LLD pads with a trap instead.
-        insn.mnemonic == "nop" || insn.mnemonic == super::mips32::SIGRIE
+        is(insn, Opcode::core_nop)
+            || decoded(insn) == Some(Decoded::Mips32(super::mips32::Op::Sigrie))
     }
 
     fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
@@ -573,7 +604,7 @@ impl Arch for Mips32 {
 
         let through_slot = |index: usize| {
             let (_, load) = last_write(insns, index, CALLEE_ADDRESS)?;
-            if load.mnemonic != "lw" {
+            if !is(load, Opcode::core_lw) {
                 return None;
             }
             let (offset, base) = load_operands(load)?;
@@ -609,7 +640,10 @@ impl Arch for Mips32 {
     /// taken, so that instruction belongs to the branch. An exception return
     /// is the exception: it leaves at once.
     fn delay_slots(&self, insn: &Insn) -> usize {
-        if super::mips32::is_exception_return(&insn.mnemonic) { 0 } else { 1 }
+        match decoded(insn) {
+            Some(Decoded::Mips32(op)) if super::mips32::is_exception_return(op) => 0,
+            _ => 1,
+        }
     }
 
     fn pointer_width(&self) -> usize {
@@ -630,7 +664,7 @@ impl Arch for Mips32 {
         let raw = self.order.read_word(word.try_into().ok()?);
         let flags = InstructionFlags::new(ISA);
         match Instruction::new_checked(raw, Vram::new(insn.address as u32), flags) {
-            Some(inst) => Some(lift(&inst, &insn.mnemonic)),
+            Some(inst) => Some(lift(&inst)),
             None => super::mips32::lift(raw),
         }
     }
@@ -674,7 +708,7 @@ impl Arch for Mips32 {
             formed[index] = Some(address);
         }
         for (index, insn) in body.iter().enumerate() {
-            if insn.mnemonic == "lw"
+            if is(insn, Opcode::core_lw)
                 && formed[index].is_none()
                 && let Some(slot) = self.slot_of(body, index, insn)
             {
@@ -742,7 +776,7 @@ fn split_mnemonic(text: &str) -> (String, String) {
 /// of a global exactly this way, so the caller must confirm what consumes the
 /// result. See [`is_gp_disp_preamble`].
 fn constant_pair_register<'a>(high: &'a Insn, low: &Insn) -> Option<&'a str> {
-    if high.mnemonic != "lui" || low.mnemonic != "addiu" {
+    if !is(high, Opcode::core_lui) || !is(low, Opcode::core_addiu) {
         return None;
     }
 
@@ -819,7 +853,7 @@ fn gp_disp_consumer(body: &[Insn]) -> Option<usize> {
         if joins_to_callee_address(insn, loaded) {
             return Some(index + 2);
         }
-        let writes_loaded = !is_store(&insn.mnemonic)
+        let writes_loaded = !is_store(insn)
             && insn.operands.split(',').next().is_some_and(|first| first.trim() == loaded);
         if writes_loaded {
             return None;
@@ -925,7 +959,7 @@ fn track_addresses<'a>(
                 // reaches the fields of a global through it as it would
                 // through the upper half.
                 Held::At(high) => {
-                    let address = join_halves(&insn.mnemonic, high, low);
+                    let address = join_halves(LowerHalf::of(insn), high, low);
                     if space.contains(address) {
                         kinds[index] = ConstantKind::Address;
                         upper.set(destination, Held::At(address));
@@ -957,7 +991,7 @@ fn track_addresses<'a>(
         } else if let Some((written, base, offset)) = memory_reference(insn, &upper) {
             let loaded = match base {
                 Held::At(high) => {
-                    if space.contains(join_halves("addiu", high, offset)) {
+                    if space.contains(join_halves(LowerHalf::Added, high, offset)) {
                         kinds[index] = ConstantKind::Address;
                     }
                     None
@@ -986,7 +1020,7 @@ fn track_addresses<'a>(
             }
         } else if let Some((destination, held)) = indexed_address(insn, &upper) {
             upper.set(destination, held);
-        } else if !is_store(&insn.mnemonic)
+        } else if !is_store(insn)
             && let Some(written) = insn.operands.split(',').next()
         {
             upper.forget(written.trim());
@@ -1026,14 +1060,14 @@ impl<'a> SavedRegisters<'a> {
     /// returns. That only undoes the function's own use of the register, so
     /// it is not counted.
     fn record(&mut self, insn: &'a Insn, upper: &HeldAddresses<'a>) {
-        if insn.kind != InsnKind::Normal || is_store(&insn.mnemonic) {
+        if insn.kind != InsnKind::Normal || is_store(insn) {
             return;
         }
         let Some(written) = insn.operands.split(',').next().map(str::trim) else { return };
         if !is_callee_saved(written) || written == "sp" {
             return;
         }
-        let restores = insn.mnemonic == "lw" && insn.operands.trim_end().ends_with("(sp)");
+        let restores = is(insn, Opcode::core_lw) && insn.operands.trim_end().ends_with("(sp)");
         if restores {
             self.restored.push(written);
         } else {
@@ -1111,15 +1145,15 @@ const MOST_CASE_DISTANCE: u64 = 0x1_0000;
 /// Read the table behind the `jr` at `insns[index]`.
 fn read_jump_table(image: &Image<'_>, insns: &[Insn], index: usize) -> Option<JumpTable> {
     let jump = &insns[index];
-    if jump.mnemonic != "jr" || jump.kind != (InsnKind::Jump { target: None }) {
+    if !is(jump, Opcode::core_jr) || jump.kind != (InsnKind::Jump { target: None }) {
         return None;
     }
     let target_register = jump.operands.trim();
 
     // The PIC shape adds the global pointer after the load.
     let (load_at, entries) = match last_write(insns, index, target_register)? {
-        (at, insn) if insn.mnemonic == "lw" => (at, Entries::Addresses),
-        (at, insn) if insn.mnemonic == "addu" => {
+        (at, insn) if is(insn, Opcode::core_lw) => (at, Entries::Addresses),
+        (at, insn) if is(insn, Opcode::core_addu) => {
             let (global_pointer, pointer_register) = global_pointer_before(insns, index)?;
             let (_, left, right) = three_operands(insn)?;
             let entry_register = match (left, right) {
@@ -1128,7 +1162,7 @@ fn read_jump_table(image: &Image<'_>, insns: &[Insn], index: usize) -> Option<Ju
                 _ => return None,
             };
             let (load_at, load) = last_write(insns, at, entry_register)?;
-            (load.mnemonic == "lw").then_some(())?;
+            is(load, Opcode::core_lw).then_some(())?;
             (load_at, Entries::FromGlobalPointer { global_pointer })
         }
         _ => return None,
@@ -1137,7 +1171,7 @@ fn read_jump_table(image: &Image<'_>, insns: &[Insn], index: usize) -> Option<Ju
     // `lw rX, lo(rA)`, where `rA` is the table plus the case number.
     let (offset, indexed) = load_operands(&insns[load_at])?;
     let (sum_at, sum) = last_write(insns, load_at, indexed)?;
-    if sum.mnemonic != "addu" {
+    if !is(sum, Opcode::core_addu) {
         return None;
     }
     let (_, left, right) = three_operands(sum)?;
@@ -1188,17 +1222,17 @@ fn table_address(
     if let Some((_, high)) = upper_half(insn) {
         return Some(high);
     }
-    match (insn.mnemonic.as_str(), entries) {
+    match (rabbitizer_opcode(insn)?, entries) {
         // The upper half from `lui`, or, as GCC writes PIC code, the page
         // from a slot of the global offset table.
-        ("addiu", _) => {
+        (Opcode::core_addiu, _) => {
             let (_, source, immediate) = three_operands(insn)?;
             let low = Mips32::LITTLE.constant_value(immediate)?;
             let (source_at, _) = last_write(insns, at, source)?;
             let high = table_address(image, insns, source_at + 1, source, entries)?;
-            Some(join_halves("addiu", high, low))
+            Some(join_halves(LowerHalf::Added, high, low))
         }
-        ("lw", Entries::FromGlobalPointer { global_pointer }) => {
+        (Opcode::core_lw, Entries::FromGlobalPointer { global_pointer }) => {
             let (offset, _) = load_operands(insn)?;
             let slot = u64::from((global_pointer as u32).wrapping_add(offset as u32));
             image.word(slot).map(u64::from)
@@ -1225,7 +1259,7 @@ fn last_write_within<'a>(
     let from = before.saturating_sub(distance);
     (from..before).rev().map(|at| (at, &insns[at])).find(|(_, insn)| {
         insn.kind == InsnKind::Normal
-            && !is_store(&insn.mnemonic)
+            && !is_store(insn)
             && insn.operands.split(',').next().map(str::trim) == Some(register)
     })
 }
@@ -1251,7 +1285,7 @@ fn load_operands(insn: &Insn) -> Option<(u64, &str)> {
 /// The number of cases, from the `sltiu rT, rX, n` that guards the table.
 fn case_count(insns: &[Insn], index: usize) -> Option<usize> {
     insns[index.saturating_sub(TABLE_LOOK_BACK)..index].iter().rev().find_map(|insn| {
-        let (_, _, bound) = (insn.mnemonic == "sltiu").then(|| three_operands(insn))??;
+        let (_, _, bound) = is(insn, Opcode::core_sltiu).then(|| three_operands(insn))??;
         usize::try_from(Mips32::LITTLE.constant_value(bound)?).ok().filter(|&n| n <= MOST_CASES)
     })
 }
@@ -1275,7 +1309,8 @@ fn global_pointer_before(insns: &[Insn], index: usize) -> Option<(u64, &str)> {
         let loaded = constant_pair_register(high, low)?;
         let (_, upper) = upper_half(high)?;
         let (_, _, immediate) = three_operands(low)?;
-        let distance = join_halves("addiu", upper, Mips32::LITTLE.constant_value(immediate)?);
+        let distance =
+            join_halves(LowerHalf::Added, upper, Mips32::LITTLE.constant_value(immediate)?);
         let global_pointer = u64::from((high.address as u32).wrapping_add(distance as u32));
         let register = insns[at + 2..]
             .iter()
@@ -1536,7 +1571,7 @@ fn is_callee_saved(register: &str) -> bool {
 
 /// Read `lui rX, hi` as the register and the value it loads.
 fn upper_half(insn: &Insn) -> Option<(&str, u64)> {
-    if insn.mnemonic != "lui" {
+    if !is(insn, Opcode::core_lui) {
         return None;
     }
     let mut operands = insn.operands.split(',').map(str::trim);
@@ -1561,7 +1596,7 @@ fn reach_of_upper_half(high: u64) -> core::ops::Range<u64> {
 /// Read `addiu rY, rX, lo` or `ori rY, rX, lo`, where `rX` holds an
 /// address, as the destination, what `rX` holds, and the lower half.
 fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str, Held, u64)> {
-    if insn.mnemonic != "addiu" && insn.mnemonic != "ori" {
+    if !is(insn, Opcode::core_addiu) && !is(insn, Opcode::core_ori) {
         return None;
     }
     let mut operands = insn.operands.split(',').map(str::trim);
@@ -1575,15 +1610,31 @@ fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str,
     Some((destination, held, low))
 }
 
-/// Join an upper half and a lower half as `mnemonic` joins them.
+/// How a lower half joins an upper half.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LowerHalf {
+    /// By `addiu`, which adds it signed.
+    Added,
+    /// By `ori`, which puts it in the low 16 bits.
+    Ored,
+}
+
+impl LowerHalf {
+    /// How `insn` joins its lower half: an `ori` puts it in, and anything
+    /// else adds it.
+    fn of(insn: &Insn) -> Self {
+        if is(insn, Opcode::core_ori) { Self::Ored } else { Self::Added }
+    }
+}
+
+/// Join an upper half and a lower half as `joined` says.
 ///
 /// A negative `addiu` immediate reads as a 64-bit two's complement, so
 /// wrapping arithmetic on 32 bits gives the address the processor forms.
-fn join_halves(mnemonic: &str, high: u64, low: u64) -> u64 {
-    if mnemonic == "ori" {
-        high | (low & 0xffff)
-    } else {
-        u64::from((high as u32).wrapping_add(low as u32))
+fn join_halves(joined: LowerHalf, high: u64, low: u64) -> u64 {
+    match joined {
+        LowerHalf::Ored => high | (low & 0xffff),
+        LowerHalf::Added => u64::from((high as u32).wrapping_add(low as u32)),
     }
 }
 
@@ -1600,7 +1651,7 @@ fn memory_reference<'a>(
     let held = upper.get(base.trim())?;
     let offset = Mips32::LITTLE.constant_value(offset)?;
 
-    let written = (!is_store(&insn.mnemonic)).then(|| first.trim());
+    let written = (!is_store(insn)).then(|| first.trim());
     Some((written, held, offset))
 }
 
@@ -1614,9 +1665,9 @@ enum SlotAccess {
 /// Read `sw rX, off(sp)` or `lw rX, off(sp)` as the register, the offset of
 /// the slot, and which way the word moves.
 fn stack_slot(insn: &Insn) -> Option<(&str, u64, SlotAccess)> {
-    let access = match insn.mnemonic.as_str() {
-        "sw" => SlotAccess::Store,
-        "lw" => SlotAccess::Load,
+    let access = match rabbitizer_opcode(insn)? {
+        Opcode::core_sw => SlotAccess::Store,
+        Opcode::core_lw => SlotAccess::Load,
         _ => return None,
     };
     let (register, reference) = insn.operands.split_once(',')?;
@@ -1637,7 +1688,7 @@ fn stack_slot(insn: &Insn) -> Option<(&str, u64, SlotAccess)> {
 ///
 /// Two addresses added make no address, and nor does a sum of two values.
 fn indexed_address<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str, Held)> {
-    if insn.mnemonic != "addu" {
+    if !is(insn, Opcode::core_addu) {
         return None;
     }
     let (destination, left, right) = three_operands(insn)?;
@@ -1656,13 +1707,13 @@ fn indexed_address<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a
 fn global_pointer_formed(insn: &Insn) -> Option<&str> {
     let (destination, sources) = insn.operands.split_once(',')?;
     let joins_t9 = sources.split(',').any(|source| source.trim() == "t9");
-    (insn.mnemonic == "addu" && joins_t9).then(|| destination.trim())
+    (is(insn, Opcode::core_addu) && joins_t9).then(|| destination.trim())
 }
 
 /// Read a register copy, `or rD, rS, zero` or `addu rD, rS, zero`, as `rD`
 /// and `rS`. The global pointer is restored after a call this way.
 fn register_copy(insn: &Insn) -> Option<(&str, &str)> {
-    if insn.mnemonic != "or" && insn.mnemonic != "addu" && insn.mnemonic != "move" {
+    if !is(insn, Opcode::core_or) && !is(insn, Opcode::core_addu) {
         return None;
     }
     let mut operands = insn.operands.split(',').map(str::trim);
@@ -1676,23 +1727,30 @@ fn register_copy(insn: &Insn) -> Option<(&str, &str)> {
 
 /// Report whether an instruction stores, which reads its first operand
 /// rather than writing it.
-pub(super) fn is_store(mnemonic: &str) -> bool {
+pub(super) fn is_store(insn: &Insn) -> bool {
     matches!(
-        mnemonic,
-        "sb" | "sh"
-            | "sw"
-            | "swl"
-            | "swr"
-            | "sc"
-            | "sd"
-            | "sdl"
-            | "sdr"
-            | "scd"
-            | "swc1"
-            | "sdc1"
-            | "swc2"
-            | "sdc2"
+        rabbitizer_opcode(insn),
+        Some(
+            Opcode::core_sb
+                | Opcode::core_sh
+                | Opcode::core_sw
+                | Opcode::core_swl
+                | Opcode::core_swr
+                | Opcode::core_sc
+                | Opcode::core_swc1
+                | Opcode::core_sdc1
+                | Opcode::core_swc2
+                | Opcode::core_sdc2
+        )
     )
+}
+
+/// The opcode `rabbitizer` read for `insn`, where it read it.
+pub(super) fn rabbitizer_opcode(insn: &Insn) -> Option<Opcode> {
+    match decoded(insn)? {
+        Decoded::Rabbitizer(opcode) => Some(opcode),
+        _ => None,
+    }
 }
 
 /// Report whether an instruction is `addu rD, loaded, t9` in either operand
@@ -1701,7 +1759,7 @@ fn joins_to_callee_address(insn: &Insn, loaded: &str) -> bool {
     /// The register the ABI leaves the callee address in.
     const CALLEE_ADDRESS: &str = "t9";
 
-    if insn.mnemonic != "addu" {
+    if !is(insn, Opcode::core_addu) {
         return false;
     }
 
@@ -1746,11 +1804,11 @@ fn is_pic_setup(insn: &Insn) -> bool {
     let mut operands = insn.operands.split(',').map(str::trim);
     let (first, second, third) = (operands.next(), operands.next(), operands.next());
 
-    match insn.mnemonic.as_str() {
+    match rabbitizer_opcode(insn) {
         // `addu rX, rY, t9` folds the callee address into the global pointer.
         // Reading `t9` is what marks it: the ABI supplies that value on entry,
         // so no computation from the source starts there.
-        "addu" => third == Some(CALLEE_ADDRESS) || second == Some(CALLEE_ADDRESS),
+        Some(Opcode::core_addu) => third == Some(CALLEE_ADDRESS) || second == Some(CALLEE_ADDRESS),
 
         // `lw t9, N(rX)` reads the callee address out of the GOT, which is how
         // PIC reaches a function a non-PIC build simply names in its `jal`. The
@@ -1767,13 +1825,13 @@ fn is_pic_setup(insn: &Insn) -> bool {
         // A reload of `t9` from the frame is frame work rather than a GOT read,
         // and the caller judges that on its own. Excluding it here keeps each
         // rule answering for what it actually recognizes.
-        "lw" => first == Some(CALLEE_ADDRESS) && !insn.operands.contains("(sp)"),
+        Some(Opcode::core_lw) => first == Some(CALLEE_ADDRESS) && !insn.operands.contains("(sp)"),
 
         // A move to or from the global pointer, which this decoder renders as
         // `or rX, rY, zero`. Either direction is the same bookkeeping: the
         // preamble parks the value in a callee-saved register and puts it back
         // around each call.
-        "or" if third == Some("zero") => {
+        Some(Opcode::core_or) if third == Some("zero") => {
             first == Some(GLOBAL_POINTER) || second == Some(GLOBAL_POINTER)
         }
 
@@ -1901,8 +1959,8 @@ const FP: u8 = 30;
 const WIDTH: il::Width = il::Width::Bits32;
 
 /// Lift one instruction `rabbitizer` decoded, from what its opcode says it
-/// reads, writes and accesses. `mnemonic` is the one it printed.
-fn lift(inst: &Instruction, mnemonic: &str) -> il::Lifted {
+/// reads, writes and accesses.
+fn lift(inst: &Instruction) -> il::Lifted {
     let opcode = inst.opcode();
     let field = inst.field();
     let general = |reg: Option<rabbitizer::registers::Gpr>| {
@@ -1948,7 +2006,7 @@ fn lift(inst: &Instruction, mnemonic: &str) -> il::Lifted {
     let memory =
         kind.map(|kind| il::MemoryAccess { kind, width: access_width(opcode.access_type()) });
 
-    let op = op_of(inst, mnemonic, kind);
+    let op = op_of(inst, kind);
     let operands = inst.valued_operands_iter().map(il_operand).collect();
     il::Lifted { op, reads, writes, memory, test: test_of(inst), operands }
 }
@@ -1988,9 +2046,9 @@ fn il_operand(operand: ValuedOperand) -> il::Operand {
     }
 }
 
-/// What a MIPS instruction computes. `mnemonic` is as `rabbitizer` prints
-/// it, with pseudo-instructions such as `move` and `beqz` resolved.
-fn op_of(inst: &Instruction, mnemonic: &str, access: Option<il::AccessKind>) -> il::Op {
+/// What a MIPS instruction computes. A pseudo-instruction, such as `not`
+/// or `beqz`, has an opcode of its own.
+fn op_of(inst: &Instruction, access: Option<il::AccessKind>) -> il::Op {
     use il::Op;
     match access {
         Some(il::AccessKind::Load) => return Op::Load,
@@ -2007,61 +2065,106 @@ fn op_of(inst: &Instruction, mnemonic: &str, access: Option<il::AccessKind>) -> 
     if inst.opcode().is_branch() || inst.opcode().is_branch_likely() {
         return if inst.is_unconditional_branch() { Op::Jump } else { Op::Branch };
     }
-    match mnemonic {
-        "j" | "jr" => Op::Jump,
-        "move" | "li" | "mfhi" | "mflo" | "mthi" | "mtlo" | "mfc1" | "mtc1" => Op::Move,
-        "lui" => Op::Address,
-        "add" | "addi" | "addu" | "addiu" => Op::Add,
-        "sub" | "subu" => Op::Subtract,
-        "neg" | "negu" => Op::Negate,
-        "mult" | "multu" | "mul" => Op::Multiply,
-        "madd" | "maddu" | "msub" | "msubu" => Op::MultiplyAdd,
-        "div" | "divu" => Op::Divide,
-        "and" | "andi" => Op::And,
-        "or" | "ori" => Op::Or,
-        "xor" | "xori" => Op::Xor,
-        "nor" | "not" => Op::Not,
-        "sll" | "sllv" => Op::ShiftLeft,
-        "srl" | "srlv" => Op::ShiftRight,
-        "sra" | "srav" => Op::ShiftRightArithmetic,
-        "rotr" | "rotrv" => Op::Rotate,
-        "seb" | "seh" => Op::Extend,
-        "ext" | "ins" => Op::BitField,
-        "clz" | "clo" | "wsbh" => Op::Bits,
-        "movn" | "movz" => Op::Select,
-        "slt" | "sltu" | "slti" | "sltiu" => Op::Compare,
-        "nop" | "syscall" | "break" | "sync" | "cache" | "pref" | "mfc0" | "mtc0" | "eret"
-        | "wait" | "sdbbp" | "teq" | "tne" | "tge" | "tgeu" | "tlt" | "tltu" | "ssnop" | "ehb" => {
-            Op::System
+    match inst.opcode() {
+        Opcode::core_j | Opcode::core_jr => Op::Jump,
+        Opcode::core_mfhi
+        | Opcode::core_mflo
+        | Opcode::core_mthi
+        | Opcode::core_mtlo
+        | Opcode::core_mfc1
+        | Opcode::core_mtc1 => Op::Move,
+        Opcode::core_lui => Op::Address,
+        Opcode::core_add | Opcode::core_addi | Opcode::core_addu | Opcode::core_addiu => Op::Add,
+        Opcode::core_sub | Opcode::core_subu => Op::Subtract,
+        Opcode::core_neg | Opcode::core_negu => Op::Negate,
+        Opcode::core_mult | Opcode::core_multu => Op::Multiply,
+        Opcode::core_div | Opcode::core_divu => Op::Divide,
+        Opcode::core_and | Opcode::core_andi => Op::And,
+        Opcode::core_or | Opcode::core_ori => Op::Or,
+        Opcode::core_xor | Opcode::core_xori => Op::Xor,
+        Opcode::core_nor | Opcode::core_not => Op::Not,
+        Opcode::core_sll | Opcode::core_sllv => Op::ShiftLeft,
+        Opcode::core_srl | Opcode::core_srlv => Op::ShiftRight,
+        Opcode::core_sra | Opcode::core_srav => Op::ShiftRightArithmetic,
+        Opcode::core_slt | Opcode::core_sltu | Opcode::core_slti | Opcode::core_sltiu => {
+            Op::Compare
         }
-        _ if mnemonic.ends_with(".s") || mnemonic.ends_with(".d") || mnemonic.ends_with(".w") => {
-            float_op(mnemonic)
-        }
-        _ => Op::Other,
+        Opcode::core_nop
+        | Opcode::core_syscall
+        | Opcode::core_break
+        | Opcode::core_sync
+        | Opcode::core_cache
+        | Opcode::core_mfc0
+        | Opcode::core_mtc0
+        | Opcode::core_teq
+        | Opcode::core_tne
+        | Opcode::core_tge
+        | Opcode::core_tgeu
+        | Opcode::core_tlt
+        | Opcode::core_tltu => Op::System,
+        opcode => float_op(opcode).unwrap_or(Op::Other),
     }
 }
 
-/// What a MIPS floating point instruction computes, from its stem: `div`
-/// of `div.d`. A conversion to an integer names its rounding: `floor.w.d`
-/// rounds down.
-fn float_op(mnemonic: &str) -> il::Op {
+/// What a MIPS floating point instruction computes, or `None` for one that
+/// is not floating point. A conversion to an integer names its rounding:
+/// `floor.w.d` rounds down.
+fn float_op(opcode: Opcode) -> Option<il::Op> {
     use il::Op;
-    match mnemonic.split('.').next().unwrap_or_default() {
-        "add" => Op::FloatAdd,
-        "sub" => Op::FloatSubtract,
-        "mul" => Op::FloatMultiply,
-        "madd" | "msub" | "nmadd" | "nmsub" => Op::FloatMultiplyAdd,
-        "div" => Op::FloatDivide,
-        "neg" | "abs" => Op::FloatSign,
-        "sqrt" => Op::FloatSquareRoot,
-        "mov" => Op::Move,
-        "floor" => Op::FloatRoundDown,
-        "ceil" => Op::FloatRoundUp,
-        "round" => Op::FloatRoundNearest,
-        "trunc" => Op::FloatRoundTowardZero,
-        "cvt" => Op::FloatConvert,
-        _ => Op::Float,
-    }
+    Some(match opcode {
+        Opcode::core_add_s | Opcode::core_add_d => Op::FloatAdd,
+        Opcode::core_sub_s | Opcode::core_sub_d => Op::FloatSubtract,
+        Opcode::core_mul_s | Opcode::core_mul_d => Op::FloatMultiply,
+        Opcode::core_div_s | Opcode::core_div_d => Op::FloatDivide,
+        Opcode::core_neg_s | Opcode::core_neg_d | Opcode::core_abs_s | Opcode::core_abs_d => {
+            Op::FloatSign
+        }
+        Opcode::core_sqrt_s | Opcode::core_sqrt_d => Op::FloatSquareRoot,
+        Opcode::core_mov_s | Opcode::core_mov_d => Op::Move,
+        Opcode::core_floor_w_s | Opcode::core_floor_w_d => Op::FloatRoundDown,
+        Opcode::core_ceil_w_s | Opcode::core_ceil_w_d => Op::FloatRoundUp,
+        Opcode::core_round_w_s | Opcode::core_round_w_d => Op::FloatRoundNearest,
+        Opcode::core_trunc_w_s | Opcode::core_trunc_w_d => Op::FloatRoundTowardZero,
+        Opcode::core_cvt_d_s
+        | Opcode::core_cvt_w_s
+        | Opcode::core_cvt_s_d
+        | Opcode::core_cvt_w_d
+        | Opcode::core_cvt_s_w
+        | Opcode::core_cvt_d_w => Op::FloatConvert,
+        Opcode::core_c_f_s
+        | Opcode::core_c_un_s
+        | Opcode::core_c_eq_s
+        | Opcode::core_c_ueq_s
+        | Opcode::core_c_olt_s
+        | Opcode::core_c_ult_s
+        | Opcode::core_c_ole_s
+        | Opcode::core_c_ule_s
+        | Opcode::core_c_sf_s
+        | Opcode::core_c_ngle_s
+        | Opcode::core_c_seq_s
+        | Opcode::core_c_ngl_s
+        | Opcode::core_c_lt_s
+        | Opcode::core_c_nge_s
+        | Opcode::core_c_le_s
+        | Opcode::core_c_ngt_s
+        | Opcode::core_c_f_d
+        | Opcode::core_c_un_d
+        | Opcode::core_c_eq_d
+        | Opcode::core_c_ueq_d
+        | Opcode::core_c_olt_d
+        | Opcode::core_c_ult_d
+        | Opcode::core_c_ole_d
+        | Opcode::core_c_ule_d
+        | Opcode::core_c_df_d
+        | Opcode::core_c_ngle_d
+        | Opcode::core_c_seq_d
+        | Opcode::core_c_ngl_d
+        | Opcode::core_c_lt_d
+        | Opcode::core_c_nge_d
+        | Opcode::core_c_le_d
+        | Opcode::core_c_ngt_d => Op::Float,
+        _ => return None,
+    })
 }
 
 fn access_width(access: Option<rabbitizer::access_type::AccessType>) -> Option<il::Width> {
@@ -3772,12 +3875,13 @@ mod tests {
 
     #[test]
     fn a_float_operation_names_what_it_computes() {
-        assert_eq!(float_op("div.d"), il::Op::FloatDivide);
-        assert_eq!(float_op("mul.s"), il::Op::FloatMultiply);
-        assert_eq!(float_op("floor.w.d"), il::Op::FloatRoundDown);
-        assert_eq!(float_op("ceil.w.s"), il::Op::FloatRoundUp);
-        assert_eq!(float_op("trunc.w.d"), il::Op::FloatRoundTowardZero);
-        assert_eq!(float_op("mov.d"), il::Op::Move);
-        assert_eq!(float_op("c.lt.d"), il::Op::Float);
+        assert_eq!(float_op(Opcode::core_div_d), Some(il::Op::FloatDivide));
+        assert_eq!(float_op(Opcode::core_mul_s), Some(il::Op::FloatMultiply));
+        assert_eq!(float_op(Opcode::core_floor_w_d), Some(il::Op::FloatRoundDown));
+        assert_eq!(float_op(Opcode::core_ceil_w_s), Some(il::Op::FloatRoundUp));
+        assert_eq!(float_op(Opcode::core_trunc_w_d), Some(il::Op::FloatRoundTowardZero));
+        assert_eq!(float_op(Opcode::core_mov_d), Some(il::Op::Move));
+        assert_eq!(float_op(Opcode::core_c_lt_d), Some(il::Op::Float));
+        assert_eq!(float_op(Opcode::core_addu), None, "no floating point");
     }
 }

@@ -17,11 +17,12 @@
 //! `rabbitizer` reads no MIPS16e, so this module decodes it from the
 //! encodings of the MIPS16e ASE manual.
 
-use super::mips::Mips32;
+use super::mips::{Decoded as MipsDecoded, Mips32, decoded, is};
 use super::{Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
 use compact_str::CompactString;
+use rabbitizer::opcodes::Opcode;
 
 /// The width of one halfword, the unit of MIPS16e code.
 const HALFWORD: usize = 2;
@@ -55,6 +56,29 @@ impl Mips16 {
     pub const BIG: Self = Self { base: Mips32::BIG };
 }
 
+/// A MIPS16e instruction with no MIPS32 twin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    /// `jalx`, which calls and switches to MIPS32.
+    Jalx,
+    /// `jrc`, a `jr` with no delay slot.
+    Jrc,
+    /// `jalrc`, a `jalr` with no delay slot.
+    Jalrc,
+    /// `save`, which makes the frame.
+    Save,
+    /// `restore`, which drops it.
+    Restore,
+}
+
+/// The MIPS16e operation `insn` does, where it has no MIPS32 twin.
+fn mips16_op(insn: &Insn) -> Option<Op> {
+    match decoded(insn)? {
+        MipsDecoded::Mips16(op) => Some(op),
+        _ => None,
+    }
+}
+
 /// What one MIPS16e instruction reads as.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Reading {
@@ -62,7 +86,13 @@ enum Reading {
     Word(u32),
     /// A transfer of control: its text, its kind, and the MIPS32 word that
     /// tests what it tests, where it tests anything.
-    Control { mnemonic: &'static str, operands: String, kind: InsnKind, test: Option<u32> },
+    Control {
+        mnemonic: &'static str,
+        decoded: MipsDecoded,
+        operands: String,
+        kind: InsnKind,
+        test: Option<u32>,
+    },
     /// A load of a word, or the forming of an address, relative to the
     /// program counter: `lw rx, imm(pc)` and `addiu rx, pc, imm`.
     PcRelative { load: bool, dest: u32, address: u64 },
@@ -131,7 +161,7 @@ impl FrameRegisters {
 }
 
 /// The decoded fields of one instruction, and its width.
-struct Decoded {
+struct Read {
     reading: Reading,
     width: usize,
 }
@@ -154,7 +184,7 @@ fn signed(value: u32, bits: u32) -> i64 {
 
 /// Decode the instruction `first`, with the halfword after it, `next`, at
 /// `address`.
-fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Decoded> {
+fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Read> {
     let op = u32::from(first >> 11);
     // `jal` and `jalx` take two halfwords: a 26-bit target, in words.
     if op == 0b00011 {
@@ -163,11 +193,15 @@ fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Decod
         let target26 = (first & 0x1f) << 21 | (first >> 5 & 0x1f) << 16 | second;
         let target = (address + 4) & !0x0fff_ffff | u64::from(target26) << 2;
         let exchange = first >> 10 & 1 == 1;
-        let mnemonic = if exchange { "jalx" } else { "jal" };
+        let (mnemonic, decoded) = if exchange {
+            ("jalx", MipsDecoded::Mips16(Op::Jalx))
+        } else {
+            ("jal", MipsDecoded::Rabbitizer(Opcode::core_jal))
+        };
         let operands = format!("{target:#x}");
         let kind = InsnKind::Call { target: Some(target) };
-        return Some(Decoded {
-            reading: Reading::Control { mnemonic, operands, kind, test: None },
+        return Some(Read {
+            reading: Reading::Control { mnemonic, decoded, operands, kind, test: None },
             width: 4,
         });
     }
@@ -176,9 +210,9 @@ fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Decod
         let insn = next?;
         let imm16 = (extend & 0x1f) << 11 | (extend >> 5 & 0x3f) << 5 | u32::from(insn) & 0x1f;
         let reading = read(insn, Some((extend, imm16)), address)?;
-        return Some(Decoded { reading, width: 4 });
+        return Some(Read { reading, width: 4 });
     }
-    Some(Decoded { reading: read(first, None, address)?, width: HALFWORD })
+    Some(Read { reading: read(first, None, address)?, width: HALFWORD })
 }
 
 /// Read one 16-bit instruction, widened by `extend` where an `extend`
@@ -198,7 +232,8 @@ fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Reading> 
     // A branch counts from the instruction after it, which is 2 bytes on,
     // or 4 with an `extend`.
     let next = address + if extend.is_some() { 4 } else { 2 };
-    let branch = |offset: i64, mnemonic: &'static str, test: Option<u32>, conditional: bool| {
+    let branch = |offset: i64, (mnemonic, opcode): (&'static str, Opcode), test: Option<u32>| {
+        let conditional = test.is_some();
         let target = next.wrapping_add_signed(offset << 1);
         let distance = target.wrapping_sub(address) as i64;
         let place =
@@ -210,7 +245,13 @@ fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Reading> 
             }
             _ => (place, InsnKind::Jump { target: Some(target) }),
         };
-        Reading::Control { mnemonic, operands, kind, test }
+        Reading::Control {
+            mnemonic,
+            decoded: MipsDecoded::Rabbitizer(opcode),
+            operands,
+            kind,
+            test,
+        }
     };
     // The 3-operand form of a 2-operand MIPS16e instruction.
     let word = |value: u32| Some(Reading::Word(value));
@@ -225,12 +266,16 @@ fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Reading> 
         }),
         0b00010 => {
             let offset = wide.unwrap_or_else(|| signed(h & 0x7ff, 11));
-            Some(branch(offset, "b", None, false))
+            Some(branch(offset, ("b", Opcode::core_b), None))
         }
         0b00100 | 0b00101 => {
             let offset = wide.unwrap_or_else(|| signed(imm8, 8));
-            let (mnemonic, opcode) = if op == 0b00100 { ("beqz", 0x04) } else { ("bnez", 0x05) };
-            Some(branch(offset, mnemonic, Some(immediate(opcode, rx, 0, 0)), true))
+            let (name, opcode) = if op == 0b00100 {
+                (("beqz", Opcode::core_beqz), 0x04)
+            } else {
+                (("bnez", Opcode::core_bnez), 0x05)
+            };
+            Some(branch(offset, name, Some(immediate(opcode, rx, 0, 0))))
         }
         0b00110 => {
             let sa = match extend {
@@ -265,9 +310,12 @@ fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Reading> 
         0b01100 => match h >> 8 & 7 {
             0b000 | 0b001 => {
                 let offset = wide.unwrap_or_else(|| signed(imm8, 8));
-                let (mnemonic, opcode) =
-                    if h >> 8 & 7 == 0 { ("beqz", 0x04) } else { ("bnez", 0x05) };
-                Some(branch(offset, mnemonic, Some(immediate(opcode, T, 0, 0)), true))
+                let (name, opcode) = if h >> 8 & 7 == 0 {
+                    (("beqz", Opcode::core_beqz), 0x04)
+                } else {
+                    (("bnez", Opcode::core_bnez), 0x05)
+                };
+                Some(branch(offset, name, Some(immediate(opcode, T, 0, 0))))
             }
             0b010 => word(immediate(0x2b, SP, RA, wide.unwrap_or(i64::from(imm8 << 2)))),
             0b011 => word(immediate(0x09, SP, SP, wide.unwrap_or_else(|| signed(imm8, 8) << 3))),
@@ -332,25 +380,25 @@ fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
             let (compact, link, from_ra) = (h >> 7 & 1 == 1, h >> 6 & 1 == 1, h >> 5 & 1 == 1);
             let target = if from_ra { RA } else { rx };
             let name = REGISTER_NAMES[target as usize];
-            let (mnemonic, operands, kind, test) = match (link, from_ra) {
-                (false, true) => {
-                    (if compact { "jrc" } else { "jr" }, name.to_string(), InsnKind::Return, None)
+            let jump = if compact {
+                ("jrc", MipsDecoded::Mips16(Op::Jrc))
+            } else {
+                ("jr", MipsDecoded::Rabbitizer(Opcode::core_jr))
+            };
+            let ((mnemonic, decoded), operands, kind) = match (link, from_ra) {
+                (false, true) => (jump, name.to_string(), InsnKind::Return),
+                (false, false) => (jump, name.to_string(), InsnKind::Jump { target: None }),
+                (true, false) => {
+                    let call = if compact {
+                        ("jalrc", MipsDecoded::Mips16(Op::Jalrc))
+                    } else {
+                        ("jalr", MipsDecoded::Rabbitizer(Opcode::core_jalr))
+                    };
+                    (call, format!("ra, {name}"), InsnKind::Call { target: None })
                 }
-                (false, false) => (
-                    if compact { "jrc" } else { "jr" },
-                    name.to_string(),
-                    InsnKind::Jump { target: None },
-                    None,
-                ),
-                (true, false) => (
-                    if compact { "jalrc" } else { "jalr" },
-                    format!("ra, {name}"),
-                    InsnKind::Call { target: None },
-                    None,
-                ),
                 (true, true) => return None,
             };
-            Some(Reading::Control { mnemonic, operands, kind, test })
+            Some(Reading::Control { mnemonic, decoded, operands, kind, test: None })
         }
         0b00001 => word(0x0000_000d),
         0b00010 => word(register(rx, ry, T, 0, 0x2a)),
@@ -397,7 +445,7 @@ impl Mips16 {
     }
 
     /// Decode at `offset`, with what it reads as.
-    fn decoded(&self, code: &[u8], offset: usize, address: u64) -> Option<Decoded> {
+    fn decoded(&self, code: &[u8], offset: usize, address: u64) -> Option<Read> {
         let first = self.halfword(code, offset)?;
         decode_halfwords(first, self.halfword(code, offset + HALFWORD), address)
     }
@@ -438,13 +486,13 @@ impl Arch for Mips16 {
                 insn.bytes_len = width;
                 insn
             }
-            Reading::Control { mnemonic, operands, kind, .. } => Insn {
+            Reading::Control { mnemonic, decoded, operands, kind, .. } => Insn {
                 address: insn_address,
                 bytes_len: width,
                 mnemonic: mnemonic.into(),
                 operands,
                 kind,
-                opcode: super::Opcode::None,
+                opcode: super::Opcode::Mips(decoded),
             },
             Reading::PcRelative { load, dest, address: at } => Insn {
                 address: insn_address,
@@ -456,7 +504,13 @@ impl Arch for Mips16 {
                     format!("{}, pc, {at:#x}", REGISTER_NAMES[dest as usize])
                 },
                 kind: InsnKind::Normal,
-                opcode: super::Opcode::None,
+                // A load or an add from `pc` does what the MIPS32 one does
+                // from another register.
+                opcode: super::Opcode::Mips(MipsDecoded::Rabbitizer(if load {
+                    Opcode::core_lw
+                } else {
+                    Opcode::core_addiu
+                })),
             },
             Reading::Frame { step, size, registers } => Insn {
                 address: insn_address,
@@ -468,7 +522,10 @@ impl Arch for Mips16 {
                 .into(),
                 operands: registers.operands(size),
                 kind: InsnKind::Normal,
-                opcode: super::Opcode::None,
+                opcode: super::Opcode::Mips(MipsDecoded::Mips16(match step {
+                    FrameStep::Save => Op::Save,
+                    FrameStep::Restore => Op::Restore,
+                })),
             },
         };
         Ok(insn)
@@ -508,7 +565,8 @@ impl Arch for Mips16 {
 
     /// `save` and `restore` make and drop the frame whole.
     fn is_frame_management(&self, insn: &Insn) -> bool {
-        matches!(insn.mnemonic.as_str(), "save" | "restore") || self.base.is_frame_management(insn)
+        matches!(mips16_op(insn), Some(Op::Save | Op::Restore))
+            || self.base.is_frame_management(insn)
     }
 
     /// The text of each instruction is that of MIPS32, so MIPS32 follows
@@ -631,7 +689,7 @@ impl Arch for Mips16 {
             let [_, reference] = two_operands(load)?;
             let (offset, base) = reference.strip_suffix(')')?.split_once('(')?;
             let offset = self.constant_value(offset)?;
-            if load.mnemonic != "lw" || !holds_global_pointer(insns, load_at, base) {
+            if !is(load, Opcode::core_lw) || !holds_global_pointer(insns, load_at, base) {
                 return None;
             }
             let global_pointer =
@@ -642,7 +700,7 @@ impl Arch for Mips16 {
             let register = insns[index].operands.rsplit(',').next()?.trim();
             let (written_at, written) = last_write(insns, index, register)?;
             match three_operands(written) {
-                Some([_, source, low]) if written.mnemonic == "addiu" => {
+                Some([_, source, low]) if is(written, Opcode::core_addiu) => {
                     let (load_at, load) = last_write(insns, written_at, source)?;
                     let slot = slot_of(load_at, load)?;
                     let offset = self.constant_value(low)?;
@@ -691,7 +749,7 @@ impl Arch for Mips16 {
     /// `save` makes the frame of almost every function that calls, and a
     /// leaf drops the stack pointer as MIPS32 does.
     fn is_prologue(&self, insn: &Insn) -> bool {
-        insn.mnemonic == "save" || self.base.is_prologue(insn)
+        mips16_op(insn) == Some(Op::Save) || self.base.is_prologue(insn)
     }
 
     fn is_tail_call(&self, insn: &Insn) -> bool {
@@ -702,7 +760,8 @@ impl Arch for Mips16 {
     /// the GCC builds of the tests, no instruction is a zero halfword: each
     /// is fill or a word of a literal pool.
     fn is_padding(&self, insn: &Insn) -> bool {
-        insn.mnemonic == "nop" || (insn.mnemonic == "addiu" && insn.operands == "s0, sp, 0x0")
+        is(insn, Opcode::core_nop)
+            || (is(insn, Opcode::core_addiu) && insn.operands == "s0, sp, 0x0")
     }
 
     /// Only whole halfwords at the end are removed: the `nop` and zero fill.
@@ -717,7 +776,14 @@ impl Arch for Mips16 {
     /// `jal`, `jalx`, `jr` and `jalr` run the instruction after them first;
     /// a branch and the compact jumps do not.
     fn delay_slots(&self, insn: &Insn) -> usize {
-        usize::from(matches!(insn.mnemonic.as_str(), "jal" | "jalx" | "jr" | "jalr"))
+        let has_slot = matches!(
+            decoded(insn),
+            Some(
+                MipsDecoded::Rabbitizer(Opcode::core_jal | Opcode::core_jr | Opcode::core_jalr)
+                    | MipsDecoded::Mips16(Op::Jalx)
+            )
+        );
+        usize::from(has_slot)
     }
 
     fn pointer_width(&self) -> usize {
@@ -816,24 +882,24 @@ fn read_jump_table(
     constant: impl Fn(&str) -> Option<u64>,
 ) -> Option<JumpTable> {
     let jump = &insns[index];
-    if !matches!(jump.mnemonic.as_str(), "jr" | "jrc")
+    if !(is(jump, Opcode::core_jr) || mips16_op(jump) == Some(Op::Jrc))
         || jump.kind != (InsnKind::Jump { target: None })
     {
         return None;
     }
     let (sum_at, sum) = last_write(insns, index, jump.operands.trim())?;
     let [_, left, right] = three_operands(sum)?;
-    if sum.mnemonic != "addu" {
+    if !is(sum, Opcode::core_addu) {
         return None;
     }
     let table = [(left, right), (right, left)].into_iter().find_map(|(base, offset)| {
         let (_, load) = last_write(insns, sum_at, offset)?;
-        if load.mnemonic != "lh" {
+        if !is(load, Opcode::core_lh) {
             return None;
         }
         let (_, la) = last_write(insns, sum_at, base)?;
         match three_operands(la)? {
-            [_, "pc", address] if la.mnemonic == "addiu" => constant(address),
+            [_, "pc", address] if is(la, Opcode::core_addiu) => constant(address),
             _ => None,
         }
     })?;
@@ -842,7 +908,7 @@ fn read_jump_table(
     // that holds it: GCC can put the dispatch after the code of a case.
     let bound_before = |at: usize| {
         insns[at.saturating_sub(TABLE_LOOK_BACK)..at].iter().rev().find_map(|insn| {
-            let [_, _, bound] = (insn.mnemonic == "sltiu").then(|| three_operands(insn))??;
+            let [_, _, bound] = is(insn, Opcode::core_sltiu).then(|| three_operands(insn))??;
             usize::try_from(constant(bound)?).ok().filter(|&cases| cases <= MOST_CASES)
         })
     };
@@ -881,7 +947,7 @@ fn last_write_within<'a>(
     let from = before.saturating_sub(distance);
     (from..before).rev().map(|at| (at, &insns[at])).find(|(_, insn)| {
         insn.kind == InsnKind::Normal
-            && !super::mips::is_store(&insn.mnemonic)
+            && !super::mips::is_store(insn)
             && insn.operands.split(',').next().map(str::trim) == Some(register)
     })
 }
@@ -946,7 +1012,7 @@ fn holds_global_pointer(insns: &[Insn], before: usize, register: &str) -> bool {
             return true;
         }
         match three_operands(write) {
-            Some([_, source, "zero"]) if write.mnemonic == "or" => {
+            Some([_, source, "zero"]) if is(write, Opcode::core_or) => {
                 (before, register) = (at, source);
             }
             _ => return false,
@@ -968,7 +1034,7 @@ impl Mips16 {
         let constant = |operand: &str| self.constant_value(operand);
         let [_, reference] = two_operands(load)?;
         let (offset, base) = reference.strip_suffix(')')?.split_once('(')?;
-        if load.mnemonic != "lw" || !holds_global_pointer(body, load_index, base) {
+        if !is(load, Opcode::core_lw) || !holds_global_pointer(body, load_index, base) {
             return None;
         }
         let global_pointer = global_pointer_before(body, load_index, constant)?;
@@ -991,7 +1057,7 @@ impl Mips16 {
         };
         body.iter()
             .enumerate()
-            .filter(|(_, insn)| insn.mnemonic == "addiu")
+            .filter(|(_, insn)| is(insn, Opcode::core_addiu))
             .filter_map(|(index, insn)| {
                 let address = match three_operands(insn)? {
                     // `t9` receives a callee, not data.
@@ -1041,10 +1107,10 @@ fn is_gp_preamble(body: &[Insn]) -> bool {
     else {
         return false;
     };
-    high.mnemonic == "ori"
-        && low.mnemonic == "addiu"
-        && shift.mnemonic == "sll"
-        && add.mnemonic == "addu"
+    is(high, Opcode::core_ori)
+        && is(low, Opcode::core_addiu)
+        && is(shift, Opcode::core_sll)
+        && is(add, Opcode::core_addu)
         && shifted == loaded
         && source == loaded
         && [left, right].contains(&loaded)

@@ -632,6 +632,8 @@ pub enum Opcode {
     Aarch64(aarch64::Decoded),
     /// A32 and T32.
     Arm(arm32::Decoded),
+    /// MIPS32 and MIPS16e.
+    Mips(mips::Decoded),
 }
 
 impl fmt::Display for Insn {

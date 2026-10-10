@@ -41,27 +41,111 @@ const PREF: u32 = 0x33;
 /// `rs` of the COP0 `mfmc0` group, which holds `di` and `ei`.
 const MFMC0: u32 = 0x0b;
 
+/// An operation this module reads, by the mnemonic `rabbitizer` would
+/// print for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    Synci,
+    Sigrie,
+    Pref,
+    Eret,
+    Deret,
+    JrHb,
+    JalrHb,
+    Movz,
+    Movn,
+    Rotr,
+    Rotrv,
+    Mfhi,
+    Mflo,
+    Mthi,
+    Mtlo,
+    Mult,
+    Multu,
+    Madd,
+    Maddu,
+    Mul,
+    Msub,
+    Msubu,
+    Clz,
+    Clo,
+    Ext,
+    Ins,
+    Wsbh,
+    Seb,
+    Seh,
+    Rdhwr,
+    Rddsp,
+    Wrdsp,
+    Mfc0,
+    Mtc0,
+    Di,
+    Ei,
+    Wait,
+}
+
+impl Op {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Synci => "synci",
+            Self::Sigrie => "sigrie",
+            Self::Pref => "pref",
+            Self::Eret => "eret",
+            Self::Deret => "deret",
+            Self::JrHb => "jr.hb",
+            Self::JalrHb => "jalr.hb",
+            Self::Movz => "movz",
+            Self::Movn => "movn",
+            Self::Rotr => "rotr",
+            Self::Rotrv => "rotrv",
+            Self::Mfhi => "mfhi",
+            Self::Mflo => "mflo",
+            Self::Mthi => "mthi",
+            Self::Mtlo => "mtlo",
+            Self::Mult => "mult",
+            Self::Multu => "multu",
+            Self::Madd => "madd",
+            Self::Maddu => "maddu",
+            Self::Mul => "mul",
+            Self::Msub => "msub",
+            Self::Msubu => "msubu",
+            Self::Clz => "clz",
+            Self::Clo => "clo",
+            Self::Ext => "ext",
+            Self::Ins => "ins",
+            Self::Wsbh => "wsbh",
+            Self::Seb => "seb",
+            Self::Seh => "seh",
+            Self::Rdhwr => "rdhwr",
+            Self::Rddsp => "rddsp",
+            Self::Wrdsp => "wrdsp",
+            Self::Mfc0 => "mfc0",
+            Self::Mtc0 => "mtc0",
+            Self::Di => "di",
+            Self::Ei => "ei",
+            Self::Wait => "wait",
+        }
+    }
+}
+
 /// One word this module reads.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Word {
-    pub(super) mnemonic: &'static str,
+    pub(super) op: Op,
     pub(super) operands: String,
     pub(super) kind: InsnKind,
 }
-
-/// The mnemonic of the trap that LLD pads with.
-pub(super) const SIGRIE: &str = "sigrie";
 
 /// `eret` and `deret`, which return from an exception and from a debug
 /// exception. Each is one fixed word.
 const ERET: u32 = 0x4200_0018;
 const DERET: u32 = 0x4200_001f;
 
-/// Report whether a mnemonic returns from an exception.
+/// Report whether `op` returns from an exception.
 ///
 /// Unlike every other MIPS jump, such a return has no delay slot.
-pub(super) fn is_exception_return(mnemonic: &str) -> bool {
-    matches!(mnemonic, "eret" | "deret")
+pub(super) fn is_exception_return(op: Op) -> bool {
+    matches!(op, Op::Eret | Op::Deret)
 }
 
 /// Read a MIPS32 or MIPS32r2 word.
@@ -74,7 +158,7 @@ pub(super) fn decode(word: u32) -> Option<Word> {
         return Some(found);
     }
 
-    let (mnemonic, operands) = match fields.opcode {
+    let (op, operands) = match fields.opcode {
         SPECIAL => special(&fields),
         SPECIAL2 => special2(&fields),
         SPECIAL3 => special3(&fields),
@@ -82,19 +166,19 @@ pub(super) fn decode(word: u32) -> Option<Word> {
         // `synci offset(base)` makes a written instruction visible. It sits
         // under REGIMM, in the `rt` MIPS II leaves reserved.
         REGIMM if fields.rt == 0x1f => {
-            Some(("synci", format!("{}({})", fields.offset(), fields.rs_name())))
+            Some((Op::Synci, format!("{}({})", fields.offset(), fields.rs_name())))
         }
         // `sigrie code` traps. Release 6 defines it, and LLD fills the gaps
         // between functions with `sigrie 1` on every release.
         REGIMM if fields.rt == 0x17 && fields.rs == 0 => {
-            Some((SIGRIE, format!("{:#x}", fields.immediate)))
+            Some((Op::Sigrie, format!("{:#x}", fields.immediate)))
         }
         PREF => {
-            Some(("pref", format!("{:#x}, {}({})", fields.rt, fields.offset(), fields.rs_name())))
+            Some((Op::Pref, format!("{:#x}, {}({})", fields.rt, fields.offset(), fields.rs_name())))
         }
         _ => None,
     }?;
-    Some(Word { mnemonic, operands, kind: InsnKind::Normal })
+    Some(Word { op, operands, kind: InsnKind::Normal })
 }
 
 /// The words that move control: the exception returns, and `jr` and `jalr`
@@ -110,16 +194,16 @@ fn control(word: u32, fields: &Fields) -> Option<Word> {
     const HAZARD_BARRIER: u32 = 0x10;
     const RA: u32 = 31;
 
-    let (mnemonic, operands, kind) = match word {
-        ERET => ("eret", String::new(), InsnKind::Return),
-        DERET => ("deret", String::new(), InsnKind::Return),
+    let (op, operands, kind) = match word {
+        ERET => (Op::Eret, String::new(), InsnKind::Return),
+        DERET => (Op::Deret, String::new(), InsnKind::Return),
         _ if fields.opcode != SPECIAL || fields.sa != HAZARD_BARRIER || fields.rt != 0 => {
             return None;
         }
         _ if fields.function == JR && fields.rd == 0 => {
             let kind =
                 if fields.rs == RA { InsnKind::Return } else { InsnKind::Jump { target: None } };
-            ("jr.hb", fields.rs_name().to_string(), kind)
+            (Op::JrHb, fields.rs_name().to_string(), kind)
         }
         // `jalr` names its link register only when it is not `ra`, as
         // `rabbitizer` writes `jalr`.
@@ -129,11 +213,11 @@ fn control(word: u32, fields: &Fields) -> Option<Word> {
             } else {
                 format!("{}, {}", fields.rd_name(), fields.rs_name())
             };
-            ("jalr.hb", operands, InsnKind::Call { target: None })
+            (Op::JalrHb, operands, InsnKind::Call { target: None })
         }
         _ => return None,
     };
-    Some(Word { mnemonic, operands, kind })
+    Some(Word { op, operands, kind })
 }
 
 /// The fields of an instruction word.
@@ -228,20 +312,20 @@ impl core::fmt::Display for Accumulator {
 }
 
 /// `movz`, `movn`, `rotr`, `rotrv`, and the DSP accumulator forms.
-fn special(fields: &Fields) -> Option<(&'static str, String)> {
+fn special(fields: &Fields) -> Option<(Op, String)> {
     if let Some(found) = special_accumulator(fields) {
         return Some(found);
     }
     match (fields.function, fields.rs, fields.sa) {
         // MIPS IV and MIPS32: a move on a condition.
-        (0x0a, _, 0) => Some(("movz", fields.three_registers())),
-        (0x0b, _, 0) => Some(("movn", fields.three_registers())),
+        (0x0a, _, 0) => Some((Op::Movz, fields.three_registers())),
+        (0x0b, _, 0) => Some((Op::Movn, fields.three_registers())),
         // Release 2 marks a rotate with a 1 in the field `srl` leaves zero.
         (0x02, 1, _) => {
-            Some(("rotr", format!("{}, {}, {}", fields.rd_name(), fields.rt_name(), fields.sa)))
+            Some((Op::Rotr, format!("{}, {}, {}", fields.rd_name(), fields.rt_name(), fields.sa)))
         }
         (0x06, _, 1) => Some((
-            "rotrv",
+            Op::Rotrv,
             format!("{}, {}, {}", fields.rd_name(), fields.rt_name(), fields.rs_name()),
         )),
         _ => None,
@@ -253,7 +337,7 @@ fn special(fields: &Fields) -> Option<(&'static str, String)> {
 /// The `ac0` forms are MIPS II, which `rabbitizer` has already read. Each
 /// form keeps the accumulator in a field MIPS II leaves zero, and the bits
 /// around it must still be zero.
-fn special_accumulator(fields: &Fields) -> Option<(&'static str, String)> {
+fn special_accumulator(fields: &Fields) -> Option<(Op, String)> {
     const MFHI: u32 = 0x10;
     const MTHI: u32 = 0x11;
     const MFLO: u32 = 0x12;
@@ -264,58 +348,58 @@ fn special_accumulator(fields: &Fields) -> Option<(&'static str, String)> {
     match fields.function {
         // `mfhi rd, ac`: the accumulator is in the low two bits of `rs`.
         MFHI | MFLO if fields.rs >> 2 == 0 && fields.rt == 0 && fields.sa == 0 => {
-            let mnemonic = if fields.function == MFHI { "mfhi" } else { "mflo" };
-            Some((mnemonic, format!("{}, {}", fields.rd_name(), Accumulator(fields.rs))))
+            let op = if fields.function == MFHI { Op::Mfhi } else { Op::Mflo };
+            Some((op, format!("{}, {}", fields.rd_name(), Accumulator(fields.rs))))
         }
         // `mthi rs, ac`: the accumulator is in the low two bits of `rd`.
         MTHI | MTLO if fields.rt == 0 => {
             let accumulator = fields.accumulator_in_rd()?;
-            let mnemonic = if fields.function == MTHI { "mthi" } else { "mtlo" };
-            Some((mnemonic, format!("{}, {accumulator}", fields.rs_name())))
+            let op = if fields.function == MTHI { Op::Mthi } else { Op::Mtlo };
+            Some((op, format!("{}, {accumulator}", fields.rs_name())))
         }
         MULT | MULTU => {
             let accumulator = fields.accumulator_in_rd()?;
-            let mnemonic = if fields.function == MULT { "mult" } else { "multu" };
-            Some((mnemonic, fields.sources_into(accumulator)))
+            let op = if fields.function == MULT { Op::Mult } else { Op::Multu };
+            Some((op, fields.sources_into(accumulator)))
         }
         _ => None,
     }
 }
 
 /// The MIPS32 multiply and count operations.
-fn special2(fields: &Fields) -> Option<(&'static str, String)> {
-    let mnemonic = match fields.function {
-        0x00 => "madd",
-        0x01 => "maddu",
-        0x02 => "mul",
-        0x04 => "msub",
-        0x05 => "msubu",
-        0x20 => "clz",
-        0x21 => "clo",
+fn special2(fields: &Fields) -> Option<(Op, String)> {
+    let op = match fields.function {
+        0x00 => Op::Madd,
+        0x01 => Op::Maddu,
+        0x02 => Op::Mul,
+        0x04 => Op::Msub,
+        0x05 => Op::Msubu,
+        0x20 => Op::Clz,
+        0x21 => Op::Clo,
         _ => return None,
     };
-    let operands = match mnemonic {
-        "mul" => fields.three_registers(),
-        "clz" | "clo" => format!("{}, {}", fields.rd_name(), fields.rs_name()),
+    let operands = match op {
+        Op::Mul => fields.three_registers(),
+        Op::Clz | Op::Clo => format!("{}, {}", fields.rd_name(), fields.rs_name()),
         // The DSP ASE names an accumulator in `rd`, which MIPS32 leaves zero.
         _ => fields.sources_into(fields.accumulator_in_rd()?),
     };
-    Some((mnemonic, operands))
+    Some((op, operands))
 }
 
 /// The Release 2 bit field and byte operations.
-fn special3(fields: &Fields) -> Option<(&'static str, String)> {
+fn special3(fields: &Fields) -> Option<(Op, String)> {
     match fields.function {
         // `ext rt, rs, pos, size`: `sa` holds the position and `rd` the size
         // less one.
         0x00 => Some((
-            "ext",
+            Op::Ext,
             format!("{}, {}, {}, {}", fields.rt_name(), fields.rs_name(), fields.sa, fields.rd + 1),
         )),
         // `ins rt, rs, pos, size`: `rd` holds the last bit, so the size is
         // what lies between it and the position.
         0x04 if fields.rd >= fields.sa => Some((
-            "ins",
+            Op::Ins,
             format!(
                 "{}, {}, {}, {}",
                 fields.rt_name(),
@@ -325,18 +409,18 @@ fn special3(fields: &Fields) -> Option<(&'static str, String)> {
             ),
         )),
         0x20 if fields.rs == 0 => {
-            let mnemonic = match fields.sa {
-                0x02 => "wsbh",
-                0x10 => "seb",
-                0x18 => "seh",
+            let op = match fields.sa {
+                0x02 => Op::Wsbh,
+                0x10 => Op::Seb,
+                0x18 => Op::Seh,
                 _ => return None,
             };
-            Some((mnemonic, format!("{}, {}", fields.rd_name(), fields.rt_name())))
+            Some((op, format!("{}, {}", fields.rd_name(), fields.rt_name())))
         }
         // GNU `as` writes the hardware register as `$29`, but a leading `$`
         // marks a branch target here, so it is named instead.
         0x3b if fields.rs == 0 => {
-            Some(("rdhwr", format!("{}, hwr{}", fields.rt_name(), fields.rd)))
+            Some((Op::Rdhwr, format!("{}, hwr{}", fields.rt_name(), fields.rd)))
         }
         0x38 => dsp_control(fields),
         _ => None,
@@ -346,7 +430,7 @@ fn special3(fields: &Fields) -> Option<(&'static str, String)> {
 /// `rddsp` and `wrdsp`, which move the DSP control register.
 ///
 /// The mask says which fields of the register move, one bit for each of six.
-fn dsp_control(fields: &Fields) -> Option<(&'static str, String)> {
+fn dsp_control(fields: &Fields) -> Option<(Op, String)> {
     const RDDSP: u32 = 0x12;
     const WRDSP: u32 = 0x13;
 
@@ -354,12 +438,12 @@ fn dsp_control(fields: &Fields) -> Option<(&'static str, String)> {
         // `rddsp rd, mask`: the mask fills `rs` and `rt`.
         RDDSP => {
             let mask = (fields.rs << 5) | fields.rt;
-            Some(("rddsp", format!("{}, {mask:#x}", fields.rd_name())))
+            Some((Op::Rddsp, format!("{}, {mask:#x}", fields.rd_name())))
         }
         // `wrdsp rs, mask`: the mask fills `rt` and `rd`.
         WRDSP => {
             let mask = (fields.rt << 5) | fields.rd;
-            Some(("wrdsp", format!("{}, {mask:#x}", fields.rs_name())))
+            Some((Op::Wrdsp, format!("{}, {mask:#x}", fields.rs_name())))
         }
         _ => None,
     }
@@ -370,24 +454,24 @@ const MFC0: u32 = 0x00;
 const MTC0: u32 = 0x04;
 
 /// `di`, `ei`, `wait`, and `mfc0` and `mtc0` with a select.
-fn cop0(fields: &Fields) -> Option<(&'static str, String)> {
+fn cop0(fields: &Fields) -> Option<(Op, String)> {
     // MIPS32 adds a select to the coprocessor 0 moves, in the low three bits.
     // `rabbitizer` reads only select 0, which it names, such as `Status`.
     // The others have no standard name, so the number and select are written.
     let select = fields.function & 0x7;
     if (fields.rs == MFC0 || fields.rs == MTC0) && fields.sa == 0 && fields.function & 0x38 == 0 {
-        let mnemonic = if fields.rs == MFC0 { "mfc0" } else { "mtc0" };
-        return Some((mnemonic, format!("{}, c0r{}, {select}", fields.rt_name(), fields.rd)));
+        let op = if fields.rs == MFC0 { Op::Mfc0 } else { Op::Mtc0 };
+        return Some((op, format!("{}, c0r{}, {select}", fields.rt_name(), fields.rd)));
     }
     // `mfmc0` names the status register, 12, and a fixed pattern below it.
     if fields.rs == MFMC0 && fields.rd == 12 && fields.sa == 0 && fields.function & 0x1f == 0 {
-        let mnemonic = if fields.function & 0x20 == 0 { "di" } else { "ei" };
+        let op = if fields.function & 0x20 == 0 { Op::Di } else { Op::Ei };
         let operands = if fields.rt == 0 { String::new() } else { fields.rt_name().to_string() };
-        return Some((mnemonic, operands));
+        return Some((op, operands));
     }
     // `wait` sets the coprocessor-operation bit, and its code field is free.
     if fields.rs & 0x10 != 0 && fields.function == 0x20 {
-        return Some(("wait", String::new()));
+        return Some((Op::Wait, String::new()));
     }
     None
 }
@@ -399,7 +483,7 @@ fn cop0(fields: &Fields) -> Option<(&'static str, String)> {
 pub(super) fn lift(word: u32) -> Option<il::Lifted> {
     use il::Op;
     let fields = Fields::of(word);
-    let mnemonic = decode(word)?.mnemonic;
+    let decoded = decode(word)?.op;
     let general = |number: u32| match number {
         0 => il::Operand::Zero,
         number => il::Operand::Reg(il::Reg::General(number as u8)),
@@ -407,24 +491,24 @@ pub(super) fn lift(word: u32) -> Option<il::Lifted> {
     let constant = |value: u32| il::Operand::Const(value.into());
     let (rs, rt, rd) = (general(fields.rs), general(fields.rt), general(fields.rd));
     let list = |operands: &[il::Operand]| -> il::Operands { operands.iter().copied().collect() };
-    let (op, operands, written) = match mnemonic {
-        "movz" | "movn" => (Op::Select, list(&[rd, rs, rt]), Some(rd)),
-        "rotr" => (Op::Rotate, list(&[rd, rt, constant(fields.sa)]), Some(rd)),
-        "rotrv" => (Op::Rotate, list(&[rd, rt, rs]), Some(rd)),
-        "mul" => (Op::Multiply, list(&[rd, rs, rt]), Some(rd)),
-        "clz" | "clo" => (Op::Bits, list(&[rd, rs]), Some(rd)),
-        "wsbh" => (Op::Bits, list(&[rd, rt]), Some(rd)),
-        "seb" | "seh" => (Op::Extend, list(&[rd, rt]), Some(rd)),
-        "ext" => {
+    let (op, operands, written) = match decoded {
+        self::Op::Movz | self::Op::Movn => (Op::Select, list(&[rd, rs, rt]), Some(rd)),
+        self::Op::Rotr => (Op::Rotate, list(&[rd, rt, constant(fields.sa)]), Some(rd)),
+        self::Op::Rotrv => (Op::Rotate, list(&[rd, rt, rs]), Some(rd)),
+        self::Op::Mul => (Op::Multiply, list(&[rd, rs, rt]), Some(rd)),
+        self::Op::Clz | self::Op::Clo => (Op::Bits, list(&[rd, rs]), Some(rd)),
+        self::Op::Wsbh => (Op::Bits, list(&[rd, rt]), Some(rd)),
+        self::Op::Seb | self::Op::Seh => (Op::Extend, list(&[rd, rt]), Some(rd)),
+        self::Op::Ext => {
             let size = constant(fields.rd + 1);
             (Op::BitField, list(&[rt, rs, constant(fields.sa), size]), Some(rt))
         }
-        "ins" => {
+        self::Op::Ins => {
             let size = constant(fields.rd - fields.sa + 1);
             (Op::BitField, list(&[rt, rs, constant(fields.sa), size]), Some(rt))
         }
         // Only `ac0`, which is `hi` and `lo`, is a register the IL names.
-        "madd" | "maddu" | "msub" | "msubu" if fields.rd == 0 => {
+        self::Op::Madd | self::Op::Maddu | self::Op::Msub | self::Op::Msubu if fields.rd == 0 => {
             (Op::MultiplyAdd, list(&[rs, rt]), None)
         }
         _ => return None,
@@ -437,11 +521,13 @@ pub(super) fn lift(word: u32) -> Option<il::Lifted> {
     let mut reads: il::RegSet =
         operands.iter().skip(usize::from(written.is_some())).filter_map(register).collect();
     let mut writes: il::RegSet = written.iter().filter_map(register).collect();
-    match mnemonic {
+    match decoded {
         // A move on a condition keeps the destination where the condition
         // fails, and an insert keeps the bits around its field.
-        "movz" | "movn" | "ins" => writes.iter().for_each(|reg| reads.insert(reg)),
-        "madd" | "maddu" | "msub" | "msubu" => {
+        self::Op::Movz | self::Op::Movn | self::Op::Ins => {
+            writes.iter().for_each(|reg| reads.insert(reg))
+        }
+        self::Op::Madd | self::Op::Maddu | self::Op::Msub | self::Op::Msubu => {
             for accumulator in [HI, LO] {
                 reads.insert(accumulator);
                 writes.insert(accumulator);
@@ -461,7 +547,8 @@ mod tests {
     use super::*;
 
     fn text(word: u32) -> Option<String> {
-        decode(word).map(|Word { mnemonic, operands, .. }| {
+        decode(word).map(|Word { op, operands, .. }| {
+            let mnemonic = op.name();
             if operands.is_empty() {
                 mnemonic.to_string()
             } else {
@@ -500,8 +587,8 @@ mod tests {
         assert_eq!(text(0x4200_001f).as_deref(), Some("deret"));
         assert_eq!(kind(0x4200_0018), Some(InsnKind::Return));
         assert_eq!(kind(0x4200_001f), Some(InsnKind::Return));
-        assert!(is_exception_return("eret") && is_exception_return("deret"));
-        assert!(!is_exception_return("jr"));
+        assert!(is_exception_return(Op::Eret) && is_exception_return(Op::Deret));
+        assert!(!is_exception_return(Op::JrHb));
     }
 
     /// `sigrie 1`, as LLD pads with.
