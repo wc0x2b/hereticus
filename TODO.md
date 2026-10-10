@@ -179,7 +179,7 @@ wrong pairs left, 133 are byte-identical twins (see "Tell twins apart
 that no instruction separates"), and the fix shows on no changed row in
 42 updates.
 
-The CLI on the MIPS kernel of the VR200 takes 13 seconds built for musl,
+The CLI on the MIPS kernel of the VR200 takes 12 seconds built for musl,
 the target `.cargo/config.toml` picks; "Make the matching faster" below
 says where the time goes.
 
@@ -191,18 +191,16 @@ Against `7bbfb6a`, with each report the same byte for byte:
 
 | Input | Before | Now |
 |---|---|---|
-| `libgnutls` for arm64 | 3.5 s, 168 MB | 1.3 s, 137 MB |
+| `libgnutls` for arm64 | 3.5 s, 168 MB | 1.1 s, 153 MB |
 | `libarchive` for armhf | 4.2 s, 137 MB | 1.0 s, 125 MB |
-| ARM kernel of the EX6100v2 | 27.8 s, 1097 MB | 9.9 s, 774 MB |
-| MIPS kernel of the VR200 | 36.0 s, 977 MB | 13.1 s, 703 MB |
+| ARM kernel of the EX6100v2 | 27.8 s, 1097 MB | 10.0 s, 741 MB |
+| MIPS kernel of the VR200 | 36.0 s, 977 MB | 12.0 s, 706 MB |
 
 The text each decoder prints is now less than a tenth of the run on the
 ARM kernel. An alignment numbers its items and holds its table as bits,
-and the lifted form of an instruction parses no operand text. What is
-left is mostly `Cascade::assess`: `Prepared::body` decodes and normalizes
-both sides of each changed pair again, and on the ARM kernel only 900 of
-38757 such calls repeat a function, so a cache would not help. Keeping
-each body from `prepare` would, at about 88 bytes an instruction.
+the lifted form of an instruction parses no operand text, and `prepare`
+keeps each normalized body for the pairs that read it. What is left is
+the matching stages themselves; measure them before anything else.
 
 `track_pages` of AArch64 reads typed operands decoded from the code
 bytes, which took 10% off libgnutls; keeping the decoded operands in
