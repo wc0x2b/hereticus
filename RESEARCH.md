@@ -894,6 +894,21 @@ A wrong pair counts as proven where a name of one side lives on in the
 other build, so that its true partner exists. 7927 of the 10223 wrong
 pairs are proven: a rename explains about a fifth of them, not most.
 
+A name that lives on does not prove the pair wrong, though: the code can
+move to a new function and leave the old name on a wrapper, as
+`sock_init_data` did to `sock_init_data_uid`. `tests/truth_kernels.rs`
+now judges a pair whose names differ by two things the tool never reads.
+The first is the names of its callers and callees: over the pairs that
+share a name, 91% have at least half of these in common, and 1% have
+none. The second is the function that holds each name on the other side,
+and whether it is closer in code than the pair is. Where both say the
+code went with the new name, the pair is renamed. Where that function
+has the same normalized instructions as the one paired, the pair is a
+twin, which only names can decide. Of the 6366 pairs wrong by the names,
+1182 are renamed, 940 are twins and 4244 stay wrong: 1.70% in place of
+2.56%. The pairs by callers, by place and by references keep most of the
+wrong, at 9%, 12% and 10%.
+
 Two more checks on the weak pairs did not help. Moving a pair by
 similarity, callers or place to a free function that ranks better by
 code, references and constants, once more pairs are known, cut 45 wrong

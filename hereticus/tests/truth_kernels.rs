@@ -6,9 +6,13 @@
 //! SHA-256, so the counts below tell how often the tool pairs a function of
 //! a shipped, stripped kernel with the right one.
 //!
-//! A pair is right when the two functions overlap a symbol of the same name,
-//! and wrong when they share no name. A function renamed between releases
-//! counts as wrong, so the wrong counts are an upper bound.
+//! Each pair gets a [`Verdict`]. A pair is right when the two functions
+//! overlap a symbol of the same name. A pair whose names differ is not wrong
+//! by that alone: between kernel releases, functions are renamed
+//! (`generic_make_request` became `submit_bio_noacct`), and code moves into
+//! a new function (`sock_init_data` into `sock_init_data_uid`). So the
+//! names of the callers and the callees, which the tool never reads, and the
+//! function that holds each name on the other side decide the rest.
 //!
 //! The inputs are about 800 MB, so `just quick-test` skips this test.
 
@@ -20,7 +24,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use hereticus::matching::{Options, UseNames, diff_with};
+use hereticus::arch::decode_all;
+use hereticus::callee::{Callee, callees};
+use hereticus::matching::{Match, Options, UseNames, diff_with, similarity};
+use hereticus::norm::{NormInsn, normalize_body_in};
 use hereticus::obj::{Binary, Isa};
 use rayon::prelude::*;
 
@@ -80,18 +87,51 @@ const RELEASES: &[(&str, &str, usize)] =
 /// A function symbol of a debug file: start, end and name.
 type Symbol = (u64, u64, String);
 
+/// What the symbols say of one pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Verdict {
+    /// The two functions share a name.
+    Right,
+    /// The names differ, but the code went with the new name: the callers
+    /// and callees agree by name, and no function that holds either name is
+    /// closer to the other side than the pair is.
+    Renamed,
+    /// The names differ, and the function that holds a name on the other
+    /// side has the same normalized instructions as the one paired. Only the
+    /// names tell the two apart, and the tool reads none.
+    Twin,
+    /// Anything else.
+    Wrong,
+}
+
+/// How many verdicts of each kind, indexed by [`Verdict`].
+type Counts = [usize; 4];
+
+/// The share of callers and callees, by name, two functions must have in
+/// common to count as renamed.
+///
+/// Over the pairs that share a name, 91% have at least half in common, and
+/// 1% have none.
+const SAME_NEIGHBOURS: f64 = 0.5;
+
+/// The fewest callers and callees, by name, over both functions, for their
+/// overlap to count.
+///
+/// An init function calls only a few common helpers, so two unrelated ones
+/// can share all their neighbours.
+const FEWEST_NEIGHBOURS: usize = 4;
+
 /// The pairs of one kernel upgrade, checked against the symbols.
 #[derive(Default)]
 struct Tally {
     /// Recovered functions that start where a symbol does, over both sides.
     starts_on_symbol: usize,
     functions: usize,
-    right: usize,
-    wrong: usize,
+    verdicts: Counts,
     gone: usize,
     new: usize,
-    /// Right and wrong, by the stage that paired them.
-    stages: BTreeMap<String, (usize, usize)>,
+    /// The verdicts, by the stage that paired them.
+    stages: BTreeMap<String, Counts>,
 }
 
 fn firmware() -> PathBuf {
@@ -142,6 +182,103 @@ fn names_in(symbols: &[Symbol], range: core::ops::Range<u64>) -> BTreeSet<&str> 
         .collect()
 }
 
+/// One kernel and what its debug file says of it.
+struct Side<'a> {
+    kernel: &'a Binary,
+    symbols: &'a [Symbol],
+    /// The index of the function that starts at each address.
+    by_start: BTreeMap<u64, usize>,
+    /// The names of the callers, as `<name`, and of the callees, as
+    /// `>name`, of each function.
+    neighbours: Vec<BTreeSet<String>>,
+}
+
+impl<'a> Side<'a> {
+    fn new(kernel: &'a Binary, symbols: &'a [Symbol]) -> Self {
+        let by_start =
+            kernel.functions.iter().enumerate().map(|(index, f)| (f.address, index)).collect();
+        let mut side = Self { kernel, symbols, by_start, neighbours: Vec::new() };
+        let calls: Vec<Vec<usize>> = kernel
+            .functions
+            .par_iter()
+            .map(|function| {
+                let arch = kernel.isa_of(function).arch();
+                callees(arch, &kernel.links, &kernel.functions, function)
+                    .into_iter()
+                    .filter_map(|callee| match callee {
+                        Callee::Function(index) => Some(index),
+                        Callee::Named(_) | Callee::Unknown => None,
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut neighbours = vec![BTreeSet::new(); kernel.functions.len()];
+        for (caller, called) in calls.iter().enumerate() {
+            for &callee in called {
+                if let Some(name) = side.name_at_start(callee) {
+                    neighbours[caller].insert(format!(">{name}"));
+                }
+                if let Some(name) = side.name_at_start(caller) {
+                    neighbours[callee].insert(format!("<{name}"));
+                }
+            }
+        }
+        side.neighbours = neighbours;
+        side
+    }
+
+    /// The names of the symbols that overlap a function.
+    fn names(&self, index: usize) -> BTreeSet<&'a str> {
+        let function = &self.kernel.functions[index];
+        names_in(self.symbols, function.address..function.address + function.code.len() as u64)
+    }
+
+    fn name_at_start(&self, index: usize) -> Option<&'a str> {
+        let start = self.kernel.functions[index].address;
+        names_in(self.symbols, start..start + 1).into_iter().next()
+    }
+
+    /// The function that starts on a symbol named one of `names`.
+    fn holder(&self, names: &BTreeSet<&str>) -> Option<usize> {
+        self.symbols
+            .iter()
+            .filter(|symbol| names.contains(symbol.2.as_str()))
+            .find_map(|symbol| self.by_start.get(&symbol.0).copied())
+    }
+
+    fn body(&self, index: usize) -> Vec<NormInsn> {
+        let function = &self.kernel.functions[index];
+        let arch = self.kernel.isa_of(function).arch();
+        let (insns, _) = decode_all(arch, &function.code, function.address);
+        normalize_body_in(arch, &function.code, &insns, &self.kernel.addresses)
+    }
+}
+
+/// Judge one pair of functions whose names are `names`, both known.
+fn judge(sides: &[Side; 2], pair: &Match, names: &[BTreeSet<&str>; 2]) -> Verdict {
+    if !names[0].is_disjoint(&names[1]) {
+        return Verdict::Right;
+    }
+    let indices = [pair.before, pair.after];
+    let bodies = [sides[0].body(pair.before), sides[1].body(pair.after)];
+    let paired = similarity(&bodies[0], &bodies[1]);
+    let mut followed_the_code = true;
+    for (from, to) in [(0, 1), (1, 0)] {
+        // The function on side `to` that holds the name of side `from`.
+        let Some(holder) = sides[to].holder(&names[from]) else { continue };
+        let held = sides[to].body(holder);
+        if held == bodies[to] {
+            return Verdict::Twin;
+        }
+        followed_the_code &= paired >= similarity(&bodies[from], &held);
+    }
+    let [before, after] = [0, 1].map(|side| &sides[side].neighbours[indices[side]]);
+    let all = before.union(after).count();
+    let common = before.intersection(after).count();
+    let same_neighbours = all >= FEWEST_NEIGHBOURS && common as f64 >= SAME_NEIGHBOURS * all as f64;
+    if followed_the_code && same_neighbours { Verdict::Renamed } else { Verdict::Wrong }
+}
+
 fn measure(board: &Board, older: &str, newer: &str) -> Tally {
     let kernels = [older, newer].map(|release| {
         let path = firmware().join(format!("{}-kernel-{release}.bin", board.name));
@@ -168,26 +305,50 @@ fn measure(board: &Board, older: &str, newer: &str) -> Tally {
     );
     tally.gone = diff.removed.len();
     tally.new = diff.added.len();
-    let names = |side: usize, index: usize| {
-        let function = &kernels[side].functions[index];
-        names_in(&symbols[side], function.address..function.address + function.code.len() as u64)
-    };
-    for pair in &diff.matched {
-        let (before, after) = (names(0, pair.before), names(1, pair.after));
-        // A function that overlaps no symbol has no answer to check.
-        if before.is_empty() || after.is_empty() {
-            continue;
-        }
-        let stage = tally.stages.entry(format!("{:?}", pair.confidence)).or_default();
-        if before.is_disjoint(&after) {
-            tally.wrong += 1;
-            stage.1 += 1;
-        } else {
-            tally.right += 1;
-            stage.0 += 1;
-        }
+    let sides = [Side::new(&kernels[0], &symbols[0]), Side::new(&kernels[1], &symbols[1])];
+    let judged: Vec<(String, Verdict)> = diff
+        .matched
+        .par_iter()
+        .filter_map(|pair| {
+            let names = [sides[0].names(pair.before), sides[1].names(pair.after)];
+            // A function that overlaps no symbol has no answer to check.
+            if names.iter().any(BTreeSet::is_empty) {
+                return None;
+            }
+            Some((format!("{:?}", pair.confidence), judge(&sides, pair, &names)))
+        })
+        .collect();
+    for (stage, verdict) in judged {
+        tally.verdicts[verdict as usize] += 1;
+        tally.stages.entry(stage).or_default()[verdict as usize] += 1;
     }
     tally
+}
+
+fn add(sum: &mut Counts, counts: &Counts) {
+    sum.iter_mut().zip(counts).for_each(|(sum, count)| *sum += count);
+}
+
+/// Write one row of counts: the verdicts, and the share of the wrong.
+fn row(out: &mut String, label: &str, counts: &Counts) {
+    let [right, renamed, twin, wrong] = *counts;
+    let judged: usize = counts.iter().sum();
+    writeln!(
+        out,
+        "{label:36} {right:>7} {renamed:>7} {twin:>5} {wrong:>6} {:>6.2}%",
+        percent(wrong, judged)
+    )
+    .unwrap();
+}
+
+/// The heading of the rows [`row`] writes.
+fn heading(out: &mut String, label: &str) {
+    writeln!(
+        out,
+        "\n{label:36} {:>7} {:>7} {:>5} {:>6} {:>7}",
+        "right", "renamed", "twin", "wrong", "wrong%"
+    )
+    .unwrap();
 }
 
 fn percent(part: usize, whole: usize) -> f64 {
@@ -204,59 +365,47 @@ fn the_kernel_pairs_checked_against_their_symbols_are_locked() {
         cases.par_iter().map(|&(board, older, newer)| measure(board, older, newer)).collect();
 
     let mut out = String::new();
-    writeln!(
-        out,
-        "{:36} {:>7} {:>7} {:>6} {:>7} {:>6} {:>6}",
-        "kernel", "starts", "right", "wrong", "wrong%", "gone", "new"
-    )
-    .unwrap();
-    let mut stages: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
-    let mut by_release: BTreeMap<(&str, &str), (usize, usize)> = BTreeMap::new();
-    for (&(board, older, newer), tally) in cases.iter().zip(&tallies) {
+    writeln!(out, "{:36} {:>7} {:>6} {:>6}", "kernel", "starts", "gone", "new").unwrap();
+    for (&(board, older, _), tally) in cases.iter().zip(&tallies) {
         // Most recovered functions start on a symbol only when the debug
         // file belongs to the same build.
         let starts = percent(tally.starts_on_symbol, tally.functions);
         assert!(starts > 95.0, "{} {older}: the debug file is of another build", board.name);
+    }
+    for (&(board, older, newer), tally) in cases.iter().zip(&tallies) {
+        let starts = percent(tally.starts_on_symbol, tally.functions);
         writeln!(
             out,
-            "{:36} {starts:>6.1}% {:>7} {:>6} {:>6.2}% {:>6} {:>6}",
+            "{:36} {starts:>6.1}% {:>6} {:>6}",
             format!("{} {older}/{newer}", board.name),
-            tally.right,
-            tally.wrong,
-            percent(tally.wrong, tally.right + tally.wrong),
             tally.gone,
             tally.new
         )
         .unwrap();
-        for (stage, &(right, wrong)) in &tally.stages {
-            let sum = stages.entry(stage).or_default();
-            sum.0 += right;
-            sum.1 += wrong;
+    }
+
+    heading(&mut out, "kernel");
+    let mut stages: BTreeMap<&str, Counts> = BTreeMap::new();
+    let mut by_release: BTreeMap<(&str, &str), Counts> = BTreeMap::new();
+    let mut all = Counts::default();
+    for (&(board, older, newer), tally) in cases.iter().zip(&tallies) {
+        row(&mut out, &format!("{} {older}/{newer}", board.name), &tally.verdicts);
+        for (stage, counts) in &tally.stages {
+            add(stages.entry(stage).or_default(), counts);
         }
-        let sum = by_release.entry((older, newer)).or_default();
-        sum.0 += tally.right;
-        sum.1 += tally.wrong;
+        add(by_release.entry((older, newer)).or_default(), &tally.verdicts);
+        add(&mut all, &tally.verdicts);
     }
 
-    writeln!(out, "\n{:36} {:>7} {:>6} {:>7}", "releases", "right", "wrong", "wrong%").unwrap();
-    let (mut right, mut wrong) = (0, 0);
-    for (&(older, newer), &(r, w)) in &by_release {
-        writeln!(
-            out,
-            "{:36} {r:>7} {w:>6} {:>6.2}%",
-            format!("{older}/{newer}"),
-            percent(w, r + w)
-        )
-        .unwrap();
-        right += r;
-        wrong += w;
+    heading(&mut out, "releases");
+    for (&(older, newer), counts) in &by_release {
+        row(&mut out, &format!("{older}/{newer}"), counts);
     }
-    writeln!(out, "{:36} {right:>7} {wrong:>6} {:>6.2}%", "all", percent(wrong, right + wrong))
-        .unwrap();
+    row(&mut out, "all", &all);
 
-    writeln!(out, "\n{:36} {:>7} {:>6} {:>7}", "stage", "right", "wrong", "wrong%").unwrap();
-    for (stage, &(r, w)) in &stages {
-        writeln!(out, "{stage:36} {r:>7} {w:>6} {:>6.2}%", percent(w, r + w)).unwrap();
+    heading(&mut out, "stage");
+    for (stage, counts) in &stages {
+        row(&mut out, stage, counts);
     }
     insta::assert_snapshot!(out);
 }
