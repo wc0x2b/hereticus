@@ -456,6 +456,13 @@ impl Arch for Mips32 {
     /// the frame cannot be preceded that way, and it appears 13426 times
     /// against 13362, so it also catches a leaf that makes room without
     /// calling anything.
+    /// `addiu sp, sp, imm`: opcode 9, with `sp`, 29, in both `rs` and `rt`.
+    fn may_be_prologue(&self, word: &[u8]) -> bool {
+        const ADDIU_SP_SP: u32 = 0x27bd_0000;
+        let Some(&[a, b, c, d]) = word.get(..INSN_WIDTH) else { return false };
+        self.order.read_word([a, b, c, d]) & 0xffff_0000 == ADDIU_SP_SP
+    }
+
     fn is_prologue(&self, insn: &Insn) -> bool {
         if !is(insn, Opcode::core_addiu) {
             return false;
@@ -3930,6 +3937,27 @@ mod tests {
         let stored = 0x8000_0000u32.to_be_bytes();
         assert_eq!(Mips32::BIG.read_pointer(&stored), 0x8000_0000);
         assert_ne!(Mips32::LITTLE.read_pointer(&stored), 0x8000_0000);
+    }
+
+    /// The bits `may_be_prologue` tests reject no word that opens a frame.
+    #[test]
+    fn a_word_the_bits_reject_opens_no_frame() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            for arch in [Mips32::LITTLE, Mips32::BIG] {
+                let bytes = match arch.order {
+                    ByteOrder::Little => word.to_le_bytes(),
+                    ByteOrder::Big => word.to_be_bytes(),
+                };
+                if !arch.may_be_prologue(&bytes)
+                    && let Ok(insn) = arch.decode(&bytes, 0, 0)
+                {
+                    assert!(!arch.is_prologue(&insn), "{insn}");
+                }
+            }
+        });
+        let addiu = 0x27bd_ffe0_u32.to_be_bytes(); // addiu sp, sp, -0x20
+        assert!(Mips32::BIG.may_be_prologue(&addiu));
+        assert!(Mips32::BIG.is_prologue(&Mips32::BIG.decode(&addiu, 0, 0).unwrap()));
     }
 
     #[test]

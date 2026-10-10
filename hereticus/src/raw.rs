@@ -301,7 +301,9 @@ impl Calls {
         // The address does not change whether an instruction opens a frame.
         let starts = (0..data.len() / width)
             .map(|index| {
-                arch.decode(data, index * width, 0).is_ok_and(|insn| arch.is_prologue(&insn))
+                let at = index * width;
+                arch.may_be_prologue(&data[at..])
+                    && arch.decode(data, at, 0).is_ok_and(|insn| arch.is_prologue(&insn))
             })
             .collect();
 
