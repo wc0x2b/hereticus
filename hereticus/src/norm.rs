@@ -770,23 +770,20 @@ mod tests {
     fn drops_a_whole_idiom_rather_than_one_word_of_it() {
         use crate::arch::mips::Mips32;
 
-        let mips = |mnemonic: &str, operands: &str| Insn {
-            address: 0,
-            bytes_len: 4,
-            mnemonic: mnemonic.to_string(),
-            operands: operands.to_string(),
-            kind: InsnKind::Normal,
-            opcode: crate::arch::Opcode::None,
+        let mips = |word: u32| {
+            Mips32::LITTLE.decode(&word.to_le_bytes(), 0, 0).expect("the word must decode")
         };
 
         let body = [
-            mips("lui", "v0, 0x0"),
-            mips("addiu", "v0, v0, 0x0"),
-            mips("addu", "gp, v0, t9"),
-            mips("addu", "v0, a0, a1"),
+            mips(0x3c02_0000), // lui v0, 0x0
+            mips(0x2442_0000), // addiu v0, v0, 0x0
+            mips(0x0059_e021), // addu gp, v0, t9
+            mips(0x0085_1021), // addu v0, a0, a1
         ];
         let normalized = normalize_body(&Mips32::LITTLE, &body);
 
+        let text: Vec<String> = body.iter().map(ToString::to_string).collect();
+        assert_eq!(text, ["lui v0, 0x0", "addiu v0, v0, 0x0", "addu gp, v0, t9", "addu v0, a0, a1"]);
         // The pair goes as an idiom and the `addu` into `gp` as frame work,
         // leaving only the arithmetic.
         assert_eq!(normalized.len(), 1, "got {normalized:?}");
@@ -798,19 +795,19 @@ mod tests {
     fn keeps_a_sequence_that_is_not_an_idiom() {
         use crate::arch::mips::Mips32;
 
-        let mips = |mnemonic: &str, operands: &str| Insn {
-            address: 0,
-            bytes_len: 4,
-            mnemonic: mnemonic.to_string(),
-            operands: operands.to_string(),
-            kind: InsnKind::Normal,
-            opcode: crate::arch::Opcode::None,
+        let mips = |word: u32| {
+            Mips32::LITTLE.decode(&word.to_le_bytes(), 0, 0).expect("the word must decode")
         };
 
         // The same two opening words, but nothing joins the result to `t9`, so
         // this builds the address of a global rather than the global pointer.
-        let body =
-            [mips("lui", "at, 0x0"), mips("addiu", "at, at, 0x0"), mips("lw", "v0, 0x0(at)")];
+        let body = [
+            mips(0x3c01_0000), // lui at, 0x0
+            mips(0x2421_0000), // addiu at, at, 0x0
+            mips(0x8c22_0000), // lw v0, 0x0(at)
+        ];
+        let text: Vec<String> = body.iter().map(ToString::to_string).collect();
+        assert_eq!(text, ["lui at, 0x0", "addiu at, at, 0x0", "lw v0, 0x0(at)"]);
 
         assert_eq!(
             normalize_body(&Mips32::LITTLE, &body).len(),
