@@ -253,6 +253,22 @@ pub fn normalize_body_in(
     let kinds = arch.constant_kinds(code, insns, space);
     let lifted = lift_all(arch, code, insns);
     let guards = find_guards(&lifted);
+    // The first guard that starts at each index, and the first whose branch
+    // after a compare sits there. A search of every guard at each index
+    // took a third of a comparison of a MIPS kernel, whose functions are
+    // long.
+    let mut starting: Vec<Option<usize>> = vec![None; insns.len()];
+    let mut branching: Vec<Option<usize>> = vec![None; insns.len()];
+    for (at, found) in guards.iter().enumerate() {
+        if let Some(slot) = starting.get_mut(found.compare.unwrap_or(found.branch)) {
+            slot.get_or_insert(at);
+        }
+        if found.compare.is_some()
+            && let Some(slot) = branching.get_mut(found.branch)
+        {
+            slot.get_or_insert(at);
+        }
+    }
     let is_address = |at: usize| {
         matches!(kinds.get(at), Some(ConstantKind::Address | ConstantKind::StoredAddress))
     };
@@ -273,9 +289,7 @@ pub fn normalize_body_in(
         // A guard reads as two: the test, where the compare is, and a plain
         // branch. `cbz` thus reads as `cmp` with `b.eq` does, and a guard
         // weighs as much in a score as the two instructions it most often is.
-        if let Some(found) =
-            guards.iter().find(|found| found.compare.unwrap_or(found.branch) == index)
-        {
+        if let Some(found) = starting[index].map(|at| &guards[at]) {
             let address = [found.compare, Some(found.branch)].into_iter().flatten().any(is_address);
             let guard = found.guard.canonical();
             out.push(normalize_test(&Test::of_guard(guard), address));
@@ -285,9 +299,7 @@ pub fn normalize_body_in(
             index += 1;
             continue;
         }
-        if let Some(found) =
-            guards.iter().find(|found| found.compare.is_some() && found.branch == index)
-        {
+        if let Some(found) = branching[index].map(|at| &guards[at]) {
             out.push(guard_branch(found.guard.canonical().cond));
             index += 1;
             continue;
