@@ -200,3 +200,12 @@ on the kernel, `rabbitizer` formats for an eighth of the run, and
 `Prepared::body` decodes and normalizes a function again each time a pair
 needs it, which keeps a kernel in memory. Print only what a reader sees,
 and build the normalized body from the opcode and the operands.
+`track_pages` of AArch64 reads typed operands decoded from the code
+bytes, not the text, which took 10% off libgnutls. Keeping the decoded
+operands in every `Insn` was tried and dropped: 237 MB peak in place of
+137 MB, and no faster. It still reads `w24` and `x24` as two registers,
+as the text did, though a write of `w24` clears `x24` too. Ending the
+page of `x24` there changed the texts of two functions of the
+libgnutls update and moved no truth test; find out whether those two
+show a real change before it ends them.
+
