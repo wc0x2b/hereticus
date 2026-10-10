@@ -896,9 +896,9 @@ pub(super) fn constant_kinds_in(
     track_addresses(arch, body, space, &first.invariant).kinds
 }
 
-fn track_addresses<'a>(
+fn track_addresses(
     arch: &dyn Arch,
-    body: &'a [Insn],
+    body: &[Insn],
     space: &AddressSpace,
     invariant: &HeldAddresses,
 ) -> Tracked {
@@ -1417,7 +1417,7 @@ enum Reach {
 /// in the code still has it. Measured on `core::fmt::Formatter::pad_integral`
 /// built by Rust for MIPS at `-O2`, a case loaded `s2` and the cases after it
 /// lost the global pointer.
-fn arrive<'a>(
+fn arrive(
     above: HeldAddresses,
     reach: Reach,
     branched: Option<HeldAddresses>,
@@ -1444,7 +1444,7 @@ fn arrive<'a>(
 }
 
 /// Merge the addresses held on a branch to `target` into those recorded.
-fn record_state<'a>(
+fn record_state(
     at_target: &mut BTreeMap<u64, HeldAddresses>,
     target: u64,
     upper: &HeldAddresses,
@@ -1458,7 +1458,7 @@ fn record_state<'a>(
 }
 
 /// Remove and return the addresses recorded for branches to `address`.
-fn take_state<'a>(
+fn take_state(
     at_target: &mut BTreeMap<u64, HeldAddresses>,
     address: u64,
 ) -> Option<HeldAddresses> {
