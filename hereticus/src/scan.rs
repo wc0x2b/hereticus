@@ -1022,7 +1022,7 @@ fn exception_index(file: &object::File<'_>, arch: &dyn Arch) -> Vec<IndexEntry> 
     let relocated = !matches!(file.kind(), object::ObjectKind::Relocatable);
 
     let mut out = Vec::new();
-    for (index, entry) in data.chunks_exact(EXIDX_ENTRY_LEN).enumerate() {
+    for (index, entry) in data.as_chunks::<EXIDX_ENTRY_LEN>().0.iter().enumerate() {
         let raw = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
         let unwinding = match u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]) {
             EXIDX_CANTUNWIND => Unwinding::CannotUnwind,

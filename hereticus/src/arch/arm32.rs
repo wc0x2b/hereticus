@@ -574,7 +574,9 @@ impl Arch for Arm32 {
         const FEWEST_WORDS: usize = 16;
 
         let words: Vec<u32> = code
-            .chunks_exact(INSN_WIDTH)
+            .as_chunks::<INSN_WIDTH>()
+            .0
+            .iter()
             .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
             .collect();
         if words.len() < FEWEST_WORDS {

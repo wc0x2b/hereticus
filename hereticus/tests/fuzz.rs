@@ -267,8 +267,12 @@ fn unreadable_bytes_are_marked_opaque() {
 /// left as it is.
 fn swap_words(data: &[u8]) -> Vec<u8> {
     let whole = data.len() - data.len() % 4;
-    let mut swapped: Vec<u8> =
-        data[..whole].chunks_exact(4).flat_map(|word| word.iter().rev().copied()).collect();
+    let mut swapped: Vec<u8> = data[..whole]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|word| word.iter().rev().copied())
+        .collect();
     swapped.extend_from_slice(&data[whole..]);
     swapped
 }

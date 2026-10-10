@@ -411,7 +411,9 @@ fn mips_global_slot_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
         if file.is_little_endian() { u32::from_le_bytes(bytes) } else { u32::from_be_bytes(bytes) }
     };
     let tag = |wanted: u32| {
-        data.chunks_exact(8)
+        data.as_chunks::<8>()
+            .0
+            .iter()
             .map(|entry| (word(&entry[..4]), word(&entry[4..])))
             .find(|&(tag, _)| tag == wanted)
             .map(|(_, value)| u64::from(value))
