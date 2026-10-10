@@ -26,9 +26,9 @@ use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operan
 
 use super::arm32::{
     Arm32, Decoded, Encoding, Extend, Flags, IntegerWord, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel,
-    UNKNOWN_MNEMONIC, UNWIND_SECTION, call_targets_through_thunks, classify, core_opcode,
-    decode_fallback, decoded_of, decoder_misreads, is_long_thunk, lift_with, parse_hex, pool_loads,
-    split_mnemonic, track_pool_words,
+    UNKNOWN_MNEMONIC, UNWIND_SECTION, call_targets_through_thunks, classify, condition_name,
+    core_opcode, decode_fallback, decoded_of, decoder_misreads, is_long_thunk, lift_with,
+    parse_hex, pool_loads, split_mnemonic, track_pool_words,
 };
 use super::{
     Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps, VectorTable,
@@ -404,12 +404,15 @@ impl Arch for Thumb2 {
                 if !base.ends_with(condition) {
                     insn.mnemonic = format!("{base}{condition}");
                 }
-                if let super::Opcode::Arm(Decoded::Core { condition, flags, .. }) = &mut insn.opcode
-                {
-                    *condition = code;
-                    if narrow {
-                        *flags = Flags::Kept;
+                match &mut insn.opcode {
+                    super::Opcode::Arm(Decoded::Core { condition, flags, .. }) => {
+                        *condition = code;
+                        if narrow {
+                            *flags = Flags::Kept;
+                        }
                     }
+                    super::Opcode::Arm(Decoded::Vfp { condition, .. }) => *condition = code,
+                    _ => {}
                 }
             } else if let super::Opcode::Arm(Decoded::It { condition, mask }) = insn.opcode {
                 conditions = it_conditions(condition, mask).unwrap_or_default();
@@ -976,27 +979,6 @@ fn it_conditions(condition: u8, mask: u8) -> Option<Vec<ConditionCode>> {
         if bit == condition & 1 { then } else { otherwise }
     });
     Some(core::iter::once(then).chain(rest).collect())
-}
-
-/// The suffix a mnemonic takes for `condition`.
-fn condition_name(condition: ConditionCode) -> &'static str {
-    match condition {
-        ConditionCode::EQ => "eq",
-        ConditionCode::NE => "ne",
-        ConditionCode::HS => "hs",
-        ConditionCode::LO => "lo",
-        ConditionCode::MI => "mi",
-        ConditionCode::PL => "pl",
-        ConditionCode::VS => "vs",
-        ConditionCode::VC => "vc",
-        ConditionCode::HI => "hi",
-        ConditionCode::LS => "ls",
-        ConditionCode::GE => "ge",
-        ConditionCode::LT => "lt",
-        ConditionCode::GT => "gt",
-        ConditionCode::LE => "le",
-        ConditionCode::AL => "",
-    }
 }
 
 /// Whether `insn` is an `it`.

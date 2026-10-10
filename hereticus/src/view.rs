@@ -13,9 +13,16 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::address::AddressSpace;
-use crate::arch::{Arch, Insn, is_branch_target};
+use crate::arch::arm32::{self, Step, Vfp};
+use crate::arch::mips::{self, Decoded as MipsDecoded};
+use crate::arch::mips16::Op as Mips16Op;
+use crate::arch::mips32::Op as Mips32Op;
+use crate::arch::{Arch, Insn, aarch64, is_branch_target};
 use crate::callee::Links;
 use crate::il::{AccessKind, Comparison, Cond, Lifted, Op, Operand, Reg, Test};
+use rabbitizer::opcodes::Opcode as MipsOpcode;
+use yaxpeax_arm::armv7::{ConditionCode, Opcode as ArmOpcode};
+use yaxpeax_arm::armv8::a64::Opcode as A64Opcode;
 
 /// What the binary around the code says, to name what the code points at.
 #[derive(Clone, Copy)]
@@ -217,7 +224,7 @@ fn instruction_lines(
         .enumerate()
         .map(|(index, (insn, formed))| {
             // A call can run on a condition, as `blne` does.
-            let conditional = |text: String, op| match a32_condition(arch, insn, op) {
+            let conditional = |text: String, op| match a32_condition(insn, op) {
                 Some(cond) => format!("if ({cond}) {text}"),
                 None => text,
             };
@@ -276,7 +283,9 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
         .iter()
         .enumerate()
         .filter(|&(index, insn)| {
-            matches!(insn.mnemonic.as_str(), "addiu" | "ori") && formed[index].is_some()
+            let opcode = mips::rabbitizer_opcode(insn);
+            matches!(opcode, Some(MipsOpcode::core_addiu | MipsOpcode::core_ori))
+                && formed[index].is_some()
         })
         .filter_map(|(index, insn)| {
             // The MIPS16e `addiu v0, 0x10` adds to the register it writes.
@@ -290,7 +299,8 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
                 matches!(earlier.kind, crate::arch::InsnKind::Call { .. })
                     || split_operands(&earlier.operands).first() == Some(&source)
             })?;
-            (insns[at].mnemonic == "lw" && formed[at].is_some()).then_some(at)
+            let loads = mips::rabbitizer_opcode(&insns[at]) == Some(MipsOpcode::core_lw);
+            (loads && formed[at].is_some()).then_some(at)
         })
         .collect()
 }
@@ -303,62 +313,111 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
 /// `float_condition` keeps the test of the last float compare, so a branch
 /// on it reads as `if (fv0 < fv1) goto $+0xc`.
 fn mips_statement(insn: &Insn, float_condition: &mut Option<String>) -> Option<String> {
+    use MipsDecoded::{Mips16, Mips32, Rabbitizer};
     let operands = split_operands(&insn.operands);
+    let decoded = mips::decoded(insn)?;
     // `multu` and `divu` read their operands unsigned, as `u>>` does.
-    let sign = if insn.mnemonic.ends_with('u') { "u" } else { "" };
-    let line = match (insn.mnemonic.as_str(), operands.as_slice()) {
-        ("mult" | "multu", [left, right]) => format!("hi:lo = {left} {sign}* {right}"),
-        ("madd" | "maddu", [left, right]) => {
+    let unsigned = matches!(
+        decoded,
+        Rabbitizer(MipsOpcode::core_multu | MipsOpcode::core_divu)
+            | Mips32(Mips32Op::Multu | Mips32Op::Maddu | Mips32Op::Msubu)
+    );
+    let sign = if unsigned { "u" } else { "" };
+    let line = match (decoded, operands.as_slice()) {
+        (
+            Rabbitizer(MipsOpcode::core_mult | MipsOpcode::core_multu)
+            | Mips32(Mips32Op::Mult | Mips32Op::Multu),
+            [left, right],
+        ) => format!("hi:lo = {left} {sign}* {right}"),
+        (Mips32(Mips32Op::Madd | Mips32Op::Maddu), [left, right]) => {
             format!("hi:lo = hi:lo + {left} {sign}* {right}")
         }
-        ("msub" | "msubu", [left, right]) => {
+        (Mips32(Mips32Op::Msub | Mips32Op::Msubu), [left, right]) => {
             format!("hi:lo = hi:lo - {left} {sign}* {right}")
         }
         // The assembler prints the `zero` that the encoding holds first.
-        ("div" | "divu", [left, right] | ["zero", left, right]) => {
-            format!("lo = {left} {sign}/ {right}; hi = {left} {sign}% {right}")
+        (
+            Rabbitizer(MipsOpcode::core_div | MipsOpcode::core_divu),
+            [left, right] | ["zero", left, right],
+        ) => format!("lo = {left} {sign}/ {right}; hi = {left} {sign}% {right}"),
+        (Mips16(step @ (Mips16Op::Save | Mips16Op::Restore)), _) => {
+            return frame_statement(step, &operands);
         }
-        ("save" | "restore", _) => return frame_statement(&insn.mnemonic, &operands),
-        ("mfhi", [dest]) => format!("{dest} = hi"),
-        ("mflo", [dest]) => format!("{dest} = lo"),
-        ("mthi", [source]) => format!("hi = {source}"),
-        ("mtlo", [source]) => format!("lo = {source}"),
-        ("bc1t", [target]) => {
+        (Rabbitizer(MipsOpcode::core_mfhi) | Mips32(Mips32Op::Mfhi), [dest]) => {
+            format!("{dest} = hi")
+        }
+        (Rabbitizer(MipsOpcode::core_mflo) | Mips32(Mips32Op::Mflo), [dest]) => {
+            format!("{dest} = lo")
+        }
+        (Rabbitizer(MipsOpcode::core_mthi) | Mips32(Mips32Op::Mthi), [source]) => {
+            format!("hi = {source}")
+        }
+        (Rabbitizer(MipsOpcode::core_mtlo) | Mips32(Mips32Op::Mtlo), [source]) => {
+            format!("lo = {source}")
+        }
+        (Rabbitizer(MipsOpcode::core_bc1t), [target]) => {
             let test = float_condition.as_deref().unwrap_or("fcc");
             format!("if ({test}) goto {target}")
         }
-        ("bc1f", [target]) => match float_condition.as_deref() {
+        (Rabbitizer(MipsOpcode::core_bc1f), [target]) => match float_condition.as_deref() {
             Some(test) if test.starts_with("!(") => {
                 format!("if ({}) goto {target}", &test[2..test.len() - 1])
             }
             Some(test) => format!("if (!({test})) goto {target}"),
             None => format!("if (!fcc) goto {target}"),
         },
-        (mnemonic, [left, right]) if mnemonic.starts_with("c.") => {
-            // Each operator is false on a NaN, so a compare that is true on
-            // one reads as the negation of its opposite: `c.ult` is
-            // `!(a >= b)`. The signaling forms test the same; `rabbitizer`
-            // spells `c.sf.d` as `c.df.d`.
-            let test = match mnemonic.split('.').nth(1)? {
-                "f" | "sf" | "df" => "0".to_string(),
-                "un" | "ngle" => format!("unordered({left}, {right})"),
-                "eq" | "seq" => format!("{left} == {right}"),
-                "ueq" | "ngl" => format!("!({left} < {right} || {left} > {right})"),
-                "olt" | "lt" => format!("{left} < {right}"),
-                "ult" | "nge" => format!("!({left} >= {right})"),
-                "ole" | "le" => format!("{left} <= {right}"),
-                "ule" | "ngt" => format!("!({left} > {right})"),
-                _ => {
-                    *float_condition = None;
-                    return None;
-                }
-            };
+        (Rabbitizer(opcode), [left, right]) if float_test(opcode, left, right).is_some() => {
+            let test = float_test(opcode, left, right)?;
             *float_condition = Some(test.clone());
             format!("fcc = {test}")
         }
         _ => return None,
     };
     Some(line)
+}
+
+/// What a MIPS float compare tests, as an expression of `left` and
+/// `right`. Each operator is false on a NaN, so a compare that is true on
+/// one reads as the negation of its opposite: `c.ult` is `!(a >= b)`. The
+/// signaling forms test the same; `rabbitizer` spells `c.sf.d` as `c.df.d`.
+fn float_test(opcode: MipsOpcode, left: &str, right: &str) -> Option<String> {
+    Some(match opcode {
+        MipsOpcode::core_c_f_s
+        | MipsOpcode::core_c_f_d
+        | MipsOpcode::core_c_sf_s
+        | MipsOpcode::core_c_df_d => "0".to_string(),
+        MipsOpcode::core_c_un_s
+        | MipsOpcode::core_c_un_d
+        | MipsOpcode::core_c_ngle_s
+        | MipsOpcode::core_c_ngle_d => format!("unordered({left}, {right})"),
+        MipsOpcode::core_c_eq_s
+        | MipsOpcode::core_c_eq_d
+        | MipsOpcode::core_c_seq_s
+        | MipsOpcode::core_c_seq_d => format!("{left} == {right}"),
+        MipsOpcode::core_c_ueq_s
+        | MipsOpcode::core_c_ueq_d
+        | MipsOpcode::core_c_ngl_s
+        | MipsOpcode::core_c_ngl_d => {
+            format!("!({left} < {right} || {left} > {right})")
+        }
+        MipsOpcode::core_c_olt_s
+        | MipsOpcode::core_c_olt_d
+        | MipsOpcode::core_c_lt_s
+        | MipsOpcode::core_c_lt_d => format!("{left} < {right}"),
+        MipsOpcode::core_c_ult_s
+        | MipsOpcode::core_c_ult_d
+        | MipsOpcode::core_c_nge_s
+        | MipsOpcode::core_c_nge_d => format!("!({left} >= {right})"),
+        MipsOpcode::core_c_ole_s
+        | MipsOpcode::core_c_ole_d
+        | MipsOpcode::core_c_le_s
+        | MipsOpcode::core_c_le_d => format!("{left} <= {right}"),
+        MipsOpcode::core_c_ule_s
+        | MipsOpcode::core_c_ule_d
+        | MipsOpcode::core_c_ngt_s
+        | MipsOpcode::core_c_ngt_d => format!("!({left} > {right})"),
+        _ => return None,
+    })
 }
 
 /// The line of a call that a name can say better than an address, and
@@ -386,7 +445,7 @@ fn named_line(
         _ => {
             if let Some(written) = written {
                 match address {
-                    Some(Pointed::Slot(name)) if insn.mnemonic.starts_with("ld") => {
+                    Some(Pointed::Slot(name)) if is_named_load(insn) => {
                         callees.insert(written, name.clone());
                     }
                     _ => {
@@ -397,6 +456,45 @@ fn named_line(
             None
         }
     }
+}
+
+/// Whether the decoder prints `insn` with `ld` first, as a load of a GOT
+/// slot is on AArch64 and A32.
+fn is_named_load(insn: &Insn) -> bool {
+    if let Some(decoded) = aarch64::decoded(insn) {
+        return aarch64::is_named_load(decoded);
+    }
+    if let Some(decoded) = mips::decoded(insn) {
+        return matches!(
+            decoded,
+            MipsDecoded::Rabbitizer(MipsOpcode::core_ldc1 | MipsOpcode::core_ldc2)
+        );
+    }
+    matches!(
+        arm32::core_opcode(insn),
+        Some(
+            ArmOpcode::LDR
+                | ArmOpcode::LDRB
+                | ArmOpcode::LDRH
+                | ArmOpcode::LDRSB
+                | ArmOpcode::LDRSH
+                | ArmOpcode::LDRSBT
+                | ArmOpcode::LDRSHT
+                | ArmOpcode::LDRD
+                | ArmOpcode::LDRT
+                | ArmOpcode::LDRBT
+                | ArmOpcode::LDRHT
+                | ArmOpcode::LDREX
+                | ArmOpcode::LDREXB
+                | ArmOpcode::LDREXH
+                | ArmOpcode::LDREXD
+                | ArmOpcode::LDM(..)
+                | ArmOpcode::LDC(_)
+                | ArmOpcode::LDCL(_)
+                | ArmOpcode::LDC2(_)
+                | ArmOpcode::LDC2L(_)
+        )
+    )
 }
 
 /// What an address the code forms points at.
@@ -451,31 +549,16 @@ impl Pointed {
 /// The condition an A32 instruction runs on, as the `ne` of `addne`, or a
 /// Thumb-2 one in an `it` block.
 ///
-/// The IL holds no such condition, so it is read from the mnemonic. A
-/// branch names its own, and `teq` is no conditional `t`. A conditional
-/// return or jump, as `bxne lr`, decodes as a branch too, but names no
-/// condition, so `op`, where the lift names one, and not the kind of `insn`
-/// decides.
-fn a32_condition<'i>(arch: &dyn Arch, insn: &'i Insn, op: Option<Op>) -> Option<&'i str> {
-    const CONDITIONS: [&str; 16] = [
-        "eq", "ne", "hs", "cs", "lo", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt",
-        "le",
-    ];
-    // Thumb-2 names the condition so inside an `it` block.
-    let triple = arch.triple();
-    let is_arm = triple.starts_with("arm") || triple.starts_with("thumb");
-    if !is_arm || op == Some(Op::Branch) {
+/// The IL holds no such condition, so it is read from the decoded
+/// instruction. A branch names its own. A conditional return or jump, as
+/// `bxne lr`, decodes as a branch too, but names no condition, so `op`,
+/// where the lift names one, and not the kind of `insn` decides.
+fn a32_condition(insn: &Insn, op: Option<Op>) -> Option<&'static str> {
+    if op == Some(Op::Branch) {
         return None;
     }
-    let mnemonic = insn.mnemonic.as_str();
-    // These end in the letters of a condition and name none.
-    const UNCONDITIONAL: [&str; 4] = ["mls", "vmls", "vnmls", "teq"];
-    if UNCONDITIONAL.contains(&mnemonic) || mnemonic.contains('.') {
-        return None;
-    }
-    let cond = CONDITIONS.iter().find(|cond| mnemonic.ends_with(*cond))?;
-    let base = &mnemonic[..mnemonic.len() - cond.len()];
-    (!base.is_empty() && base != "t").then(|| &mnemonic[base.len()..])
+    let condition = arm32::condition(insn).filter(|&condition| condition != ConditionCode::AL)?;
+    Some(arm32::condition_name(condition))
 }
 
 /// What the last compare compared, for the branches that follow it.
@@ -552,14 +635,14 @@ fn memory_text(token: &str) -> String {
 /// save    a0, 0x20, s0, ra   store.32 [sp] = a0; store.32 [sp - 8] = s0, ra; sp = sp - 0x20
 /// restore 0x20, s0, ra       s0, ra = load.32 [sp + 0x18]; sp = sp + 0x20
 /// ```
-fn frame_statement(mnemonic: &str, operands: &[&str]) -> Option<String> {
+fn frame_statement(step: Mips16Op, operands: &[&str]) -> Option<String> {
     let at = operands.iter().position(|operand| operand.starts_with("0x"))?;
     let (arguments, [size, kept @ ..]) = operands.split_at(at) else { return None };
     let size = u64::from_str_radix(size.strip_prefix("0x")?, 16).ok()?;
     let kept_size = 4 * kept.len() as u64;
     let mut parts = Vec::new();
-    match mnemonic {
-        "save" => {
+    match step {
+        Mips16Op::Save => {
             if !arguments.is_empty() {
                 parts.push(format!("store.32 [sp] = {}", arguments.join(", ")));
             }
@@ -587,10 +670,12 @@ fn frame_statement(mnemonic: &str, operands: &[&str]) -> Option<String> {
 /// pair with the printed ones: a conditional compare, a vector constant,
 /// and a move between a general register and a lane of a vector.
 fn aarch64_statement(
-    mnemonic: &str,
+    insn: &Insn,
     tokens: &[&str],
     last_compare: &mut Option<Compared>,
 ) -> Option<String> {
+    let opcode = aarch64::decoded(insn)?.opcode;
+    let mnemonic = insn.mnemonic.as_str();
     let immediate = |token: &str| {
         let token = token.trim_start_matches('#');
         token
@@ -599,19 +684,22 @@ fn aarch64_statement(
             .map_or_else(|| token.to_string(), constant_text)
     };
     let is_lane = |token: &str| token.contains('.') && token.ends_with(']');
-    let line = match (mnemonic, tokens) {
+    let line = match (opcode, tokens) {
         // `ccmp x1, x2, #4, eq` compares where its condition holds, and
         // else sets the flags to the constant it names. A branch after it
         // tests the flags, not one compare.
-        ("ccmp" | "ccmn" | "fccmp" | "fccmpe", [left, right, flags, cond]) => {
+        (
+            A64Opcode::CCMP | A64Opcode::CCMN | A64Opcode::FCCMP | A64Opcode::FCCMPE,
+            [left, right, flags, cond],
+        ) => {
             *last_compare = None;
             let right = immediate(right);
-            let right = if mnemonic == "ccmn" { format!("-{right}") } else { right };
+            let right = if opcode == A64Opcode::CCMN { format!("-{right}") } else { right };
             format!("flags = {cond} ? compare({left}, {right}) : nzcv({})", immediate(flags))
         }
-        ("movi", [dest, value]) => format!("{dest} = {}", immediate(value)),
-        ("mvni", [dest, value]) => format!("{dest} = ~{}", immediate(value)),
-        ("movi", [dest, value, shift]) | ("mvni", [dest, value, shift]) => {
+        (A64Opcode::MOVI, [dest, value]) => format!("{dest} = {}", immediate(value)),
+        (A64Opcode::MVNI, [dest, value]) => format!("{dest} = ~{}", immediate(value)),
+        (A64Opcode::MOVI | A64Opcode::MVNI, [dest, value, shift]) => {
             let (kind, amount) = shift.split_once(' ')?;
             let operator = match kind {
                 "lsl" => "<<",
@@ -620,15 +708,20 @@ fn aarch64_statement(
                 _ => return None,
             };
             let shifted = format!("{} {operator} {}", immediate(value), immediate(amount));
-            match mnemonic {
-                "mvni" => format!("{dest} = ~({shifted})"),
+            match opcode {
+                A64Opcode::MVNI => format!("{dest} = ~({shifted})"),
                 _ => format!("{dest} = {shifted}"),
             }
         }
-        ("mov" | "umov" | "ins", [dest, source]) if is_lane(dest) || is_lane(source) => {
+        // `ins`, `umov` and `dup` of a lane print as `mov`.
+        (A64Opcode::INS | A64Opcode::UMOV | A64Opcode::DUP, [dest, source])
+            if is_lane(dest) || is_lane(source) =>
+        {
             format!("{dest} = {source}")
         }
-        ("smov" | "dup", [dest, source]) => format!("{dest} = {mnemonic}({source})"),
+        (A64Opcode::SMOV | A64Opcode::DUP, [dest, source]) => {
+            format!("{dest} = {mnemonic}({source})")
+        }
         _ => return None,
     };
     Some(line)
@@ -638,32 +731,37 @@ fn aarch64_statement(
 /// `Float`: a compare, the move of its result to the flags, and a move of a
 /// double between two general registers, low half first.
 fn vfp_statement(
-    mnemonic: &str,
+    insn: &Insn,
     tokens: &[&str],
     last_compare: &mut Option<Compared>,
 ) -> Option<String> {
-    let base = mnemonic.split('.').next()?;
-    let line = match (base, tokens) {
+    let Some(arm32::Decoded::Vfp { vfp, .. }) = arm32::decoded(insn) else { return None };
+    let line = match (vfp, tokens) {
         // A branch after it tests the flags, not the operands: the flags of
         // a float compare mean other things than those of an integer one.
-        ("vcmp" | "vcmpe", [left, right]) => {
+        (Vfp::Compare, [left, right]) => {
             *last_compare = None;
             let right = if *right == "0x0" { "0" } else { right };
             format!("fpscr = compare({left}, {right})")
         }
-        ("vmrs", ["APSR_nzcv", "fpscr"]) => {
+        (Vfp::Status, ["APSR_nzcv", "fpscr"]) => {
             *last_compare = None;
             "flags = fpscr".to_string()
         }
-        ("vmov", [low, high, double]) if double.starts_with('d') => {
+        (Vfp::MoveDouble, [low, high, double]) if double.starts_with('d') => {
             format!("{high}:{low} = {double}")
         }
-        ("vmov", [double, low, high]) if double.starts_with('d') => {
+        (Vfp::MoveDouble, [double, low, high]) if double.starts_with('d') => {
             format!("{double} = {high}:{low}")
         }
         _ => return None,
     };
     Some(line)
+}
+
+/// The opcode of `insn`, where it is A64.
+fn aarch64_opcode(insn: &Insn) -> Option<A64Opcode> {
+    aarch64::decoded(insn).map(|decoded| decoded.opcode)
 }
 
 /// A constant as code reads it: small ones in decimal, a negative one with
@@ -829,26 +927,37 @@ enum WriteBack {
 }
 
 impl ListOrder {
-    /// The order a mnemonic names, as `ia` of `ldmia`, or `None` for one
-    /// that does not access a list. A condition can follow, as in `ldmne`.
-    fn of(mnemonic: &str) -> Option<(Self, WriteBack)> {
-        let mnemonic = mnemonic.strip_prefix('v').unwrap_or(mnemonic);
-        let mnemonic = mnemonic.split('.').next().unwrap_or(mnemonic);
-        if mnemonic.starts_with("push") {
-            return Some((Self::DecrementBefore, WriteBack::Yes));
-        }
-        if mnemonic.starts_with("pop") {
-            return Some((Self::IncrementAfter, WriteBack::Yes));
-        }
-        let suffix = mnemonic.strip_prefix("ldm").or_else(|| mnemonic.strip_prefix("stm"))?;
-        // `stmfd` and the other stack names are never printed.
-        let order = match suffix.get(..2) {
-            Some("ib") => Self::IncrementBefore,
-            Some("da") => Self::DecrementAfter,
-            Some("db") => Self::DecrementBefore,
-            _ => Self::IncrementAfter,
-        };
-        Some((order, WriteBack::No))
+    /// The order an access to a list goes in, as `ia` of `ldmia`, or
+    /// `None` for an instruction that accesses no list.
+    fn of(insn: &Insn) -> Option<(Self, WriteBack)> {
+        use arm32::Decoded::{Core, Vfp as VfpWord};
+        Some(match arm32::decoded(insn)? {
+            Core { opcode: ArmOpcode::PUSH, .. } | VfpWord { vfp: Vfp::Push, .. } => {
+                (Self::DecrementBefore, WriteBack::Yes)
+            }
+            Core { opcode: ArmOpcode::POP, .. } | VfpWord { vfp: Vfp::Pop, .. } => {
+                (Self::IncrementAfter, WriteBack::Yes)
+            }
+            Core {
+                opcode: ArmOpcode::LDM(up, before, ..) | ArmOpcode::STM(up, before, ..),
+                ..
+            } => {
+                let order = match (up, before) {
+                    (true, false) => Self::IncrementAfter,
+                    (true, true) => Self::IncrementBefore,
+                    (false, false) => Self::DecrementAfter,
+                    (false, true) => Self::DecrementBefore,
+                };
+                (order, WriteBack::No)
+            }
+            VfpWord { vfp: Vfp::Multiple(Step::IncrementAfter), .. } => {
+                (Self::IncrementAfter, WriteBack::No)
+            }
+            VfpWord { vfp: Vfp::Multiple(Step::DecrementBefore), .. } => {
+                (Self::DecrementBefore, WriteBack::No)
+            }
+            _ => return None,
+        })
     }
 
     /// The offset of the first register from the base, and the change of
@@ -869,7 +978,7 @@ impl ListOrder {
 ///
 /// It is read from the printed text, as the IL holds no list.
 fn list_statement(insn: &Insn, lifted: &Lifted) -> Option<String> {
-    let (order, mut write_back) = ListOrder::of(&insn.mnemonic)?;
+    let (order, mut write_back) = ListOrder::of(insn)?;
     let (before, list) = insn.operands.split_once('{')?;
     let registers: Vec<&str> =
         list.trim_end().strip_suffix('}')?.split(',').map(str::trim).collect();
@@ -951,10 +1060,10 @@ fn statement(
         Op::Jump => return Some(format!("goto {}", target.or(tokens.last().copied())?)),
         _ => {}
     }
-    if let Some(line) = aarch64_statement(&insn.mnemonic, &tokens, last_compare) {
+    if let Some(line) = aarch64_statement(insn, &tokens, last_compare) {
         return Some(line);
     }
-    if let Some(line) = vfp_statement(&insn.mnemonic, &tokens, last_compare) {
+    if let Some(line) = vfp_statement(insn, &tokens, last_compare) {
         return Some(line);
     }
     // `lsl` and `lsr` of AArch64 are aliases of a field move, which the IL
@@ -987,7 +1096,7 @@ fn statement(
             | Op::FloatSquareRoot
             | Op::FloatMinMax
             | Op::FloatMultiplyAdd
-    ) && !insn.mnemonic.starts_with("movt");
+    ) && arm32::core_opcode(insn) != Some(ArmOpcode::MOVT);
     if functional
         && !lifted.writes.is_empty()
         && let Some((dest, sources)) = tokens.split_first()
@@ -1073,12 +1182,16 @@ fn statement(
         // A page is half an address: the instruction that joins the offset
         // to it names what the two point at.
         Op::Address => match (operands.as_slice(), &address) {
-            ([dest, _], Some(_)) if insn.mnemonic == "adrp" => format!("{dest} = &page"),
+            ([dest, _], Some(_)) if aarch64_opcode(insn) == Some(A64Opcode::ADRP) => {
+                format!("{dest} = &page")
+            }
             // `lui` puts its constant in the upper half.
-            ([dest, _], None) if insn.mnemonic == "lui" => match canonical.operands.get(1) {
-                Some(Operand::Const(high)) => format!("{dest} = {}", constant(high << 16)),
-                _ => return None,
-            },
+            ([dest, _], None) if mips::rabbitizer_opcode(insn) == Some(MipsOpcode::core_lui) => {
+                match canonical.operands.get(1) {
+                    Some(Operand::Const(high)) => format!("{dest} = {}", constant(high << 16)),
+                    _ => return None,
+                }
+            }
             ([dest, _], Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
             // A distance that moves, as half of `_gp_disp`.
             ([dest, source], None) if moves => format!("{dest} = @{source}"),
@@ -1116,7 +1229,8 @@ fn statement(
                 && canonical.operands.get(1).is_some_and(is_zero)
                 && canonical.operands.get(2).is_some_and(is_zero) =>
         {
-            let one = if insn.mnemonic == "csetm" { "-1" } else { "1" };
+            // `csetm` is a `csinv` of the zero register, and `cset` a `csinc`.
+            let one = if aarch64_opcode(insn) == Some(A64Opcode::CSINV) { "-1" } else { "1" };
             format!("{} = {} ? {one} : 0", operands[0], operands[3])
         }
         // `csel x0, x1, x2, ls` picks on the condition it names last.
@@ -1192,7 +1306,7 @@ fn statement(
             None => {
                 *last_compare = None;
                 let [left, right] = operands.as_slice() else { return None };
-                match insn.mnemonic.starts_with("cmn") {
+                match arm32::core_opcode(insn) == Some(ArmOpcode::CMN) {
                     true => format!("flags = compare({left}, -{right})"),
                     false => format!("flags = compare({left}, {right})"),
                 }
@@ -1226,10 +1340,12 @@ fn statement(
             }
         }
         // `movt` sets the upper half and keeps the lower.
-        Op::BitField if insn.mnemonic.starts_with("movt") => match operands.as_slice() {
-            [dest, high] => format!("{dest} = {dest} & 0xffff | {high} << 16"),
-            _ => return None,
-        },
+        Op::BitField if arm32::core_opcode(insn) == Some(ArmOpcode::MOVT) => {
+            match operands.as_slice() {
+                [dest, high] => format!("{dest} = {dest} & 0xffff | {high} << 16"),
+                _ => return None,
+            }
+        }
         _ => return None,
     };
     Some(line)
@@ -1371,25 +1487,43 @@ mod tests {
 
     #[test]
     fn a_list_order_names_where_the_access_starts() {
-        assert_eq!(ListOrder::of("push.w"), Some((ListOrder::DecrementBefore, WriteBack::Yes)));
-        assert_eq!(ListOrder::of("vpop"), Some((ListOrder::IncrementAfter, WriteBack::Yes)));
-        assert_eq!(ListOrder::of("stmdb"), Some((ListOrder::DecrementBefore, WriteBack::No)));
-        assert_eq!(ListOrder::of("ldmne"), Some((ListOrder::IncrementAfter, WriteBack::No)));
-        assert_eq!(ListOrder::of("ldr"), None);
+        use crate::arch::arm32::Arm32;
+        use crate::arch::thumb::Thumb2;
+        let a32 = |word: u32| Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word decodes");
+        // push.w {r4, lr}
+        let push = Thumb2.decode(&[0x2d, 0xe9, 0x10, 0x40], 0, 0).expect("the word decodes");
+        assert_eq!(push.mnemonic, "push");
+        assert_eq!(ListOrder::of(&push), Some((ListOrder::DecrementBefore, WriteBack::Yes)));
+        let vpop = a32(0xecbd_8b02); // vpop {d8}
+        assert_eq!(vpop.mnemonic, "vpop");
+        assert_eq!(ListOrder::of(&vpop), Some((ListOrder::IncrementAfter, WriteBack::Yes)));
+        let stmdb = a32(0xe900_0002); // stmdb r0, {r1}
+        assert_eq!(ListOrder::of(&stmdb), Some((ListOrder::DecrementBefore, WriteBack::No)));
+        let ldmne = a32(0x1890_0002); // ldmne r0, {r1}
+        assert_eq!(ListOrder::of(&ldmne), Some((ListOrder::IncrementAfter, WriteBack::No)));
+        assert_eq!(ListOrder::of(&a32(0xe591_0000)), None, "ldr r0, [r1]");
         assert_eq!(ListOrder::IncrementAfter.offsets(8, 4), (0, 8));
         assert_eq!(ListOrder::IncrementBefore.offsets(8, 4), (4, 8));
         assert_eq!(ListOrder::DecrementAfter.offsets(8, 4), (-4, -8));
         assert_eq!(ListOrder::DecrementBefore.offsets(8, 4), (-8, -8));
     }
 
+    /// A MIPS instruction as the decoder would give it. MIPS16e prints an
+    /// `addiu` with two operands, which no MIPS32 word decodes to.
     fn mips(mnemonic: &str, operands: &str, kind: crate::arch::InsnKind) -> Insn {
+        let opcode = match mnemonic {
+            "lw" => MipsOpcode::core_lw,
+            "addiu" => MipsOpcode::core_addiu,
+            "jalr" => MipsOpcode::core_jalr,
+            _ => MipsOpcode::core_or,
+        };
         Insn {
             address: 0,
             bytes_len: 4,
             mnemonic: mnemonic.into(),
             operands: operands.into(),
             kind,
-            opcode: crate::arch::Opcode::None,
+            opcode: crate::arch::Opcode::Mips(MipsDecoded::Rabbitizer(opcode)),
         }
     }
 
@@ -1414,7 +1548,7 @@ mod tests {
         // something else.
         let insns = [
             mips("lw", "v0, -0x7fe0(gp)", Normal),
-            mips("move", "v0, a0", Normal),
+            mips("or", "v0, a0, zero", Normal),
             mips("addiu", "v0, v0, 0x10", Normal),
         ];
         assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
@@ -1539,20 +1673,16 @@ mod tests {
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         let shown = il_lines(&Arm32, &code, &insns);
         assert_eq!(shown[1], "if (ne) r6 = r4 + 1");
-        assert_eq!(
-            a32_condition(&Arm32, &insns[0], Some(Op::Compare)),
-            None,
-            "a compare that always runs"
-        );
-        let mls = Insn {
-            address: 0,
-            bytes_len: 4,
-            mnemonic: "mls".into(),
-            operands: "r0, r1, r2, r3".into(),
-            kind: crate::arch::InsnKind::Normal,
-            opcode: crate::arch::Opcode::None,
-        };
-        assert_eq!(a32_condition(&Arm32, &mls, Some(Op::MultiplyAdd)), None, "a multiply-subtract");
+        assert_eq!(a32_condition(&insns[0], Some(Op::Compare)), None, "a compare that always runs");
+        assert_eq!(a32_condition(&insns[1], Some(Op::Add)), Some("ne"));
+        // mls r0, r1, r2, r3 ends in the letters of a condition.
+        let mls = Arm32.decode(&0xe060_3291_u32.to_le_bytes(), 0, 0).expect("the word decodes");
+        assert_eq!(mls.mnemonic, "mls");
+        assert_eq!(a32_condition(&mls, Some(Op::MultiplyAdd)), None, "a multiply-subtract");
+        // adcs r0, r0, r1 ends in `cs` too, and runs always.
+        let adcs = Arm32.decode(&0xe0b0_0001_u32.to_le_bytes(), 0, 0).expect("the word decodes");
+        assert_eq!(adcs.mnemonic, "adcs");
+        assert_eq!(a32_condition(&adcs, Some(Op::Add)), None, "an add with carry");
     }
 
     #[test]
@@ -1637,8 +1767,12 @@ mod tests {
                 "a2, a3, s0, s1, ra = load.32 [sp + 0xc]; sp = sp + 0x20",
             ]
         );
-        assert_eq!(frame_statement("save", &["s0"]), None, "no size");
-        assert_eq!(frame_statement("restore", &["0x4", "s0", "ra"]), None, "a frame too small");
+        assert_eq!(frame_statement(Mips16Op::Save, &["s0"]), None, "no size");
+        assert_eq!(
+            frame_statement(Mips16Op::Restore, &["0x4", "s0", "ra"]),
+            None,
+            "a frame too small"
+        );
     }
 
     #[test]
