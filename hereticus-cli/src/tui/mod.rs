@@ -69,8 +69,8 @@ enum Screen {
     Table,
     /// The table, with the keys typing a filter on the names.
     Filter,
-    /// The diff of one pair.
-    Pair(Opened),
+    /// The diff of one pair. Boxed, as it is far larger than the rest.
+    Pair(Box<Opened>),
 }
 
 /// What a row of the table stands for.
@@ -440,7 +440,7 @@ impl<'a> App<'a> {
             starts: Vec::new(),
         };
         opened.relayout(self.layout);
-        self.screen = Screen::Pair(opened);
+        self.screen = Screen::Pair(Box::new(opened));
     }
 
     /// Show the open diff in the other view, from the same row. The two
