@@ -3964,8 +3964,18 @@ fn align<T: Eq + core::hash::Hash>(left: &[T], right: &[T]) -> Vec<Step> {
 /// [`align`], with the largest table to build given, so a test can reach
 /// the anchors with short sequences.
 fn align_within<T: Eq + core::hash::Hash>(left: &[T], right: &[T], largest: usize) -> Vec<Step> {
+    // Each item as a number, equal where the items are: the table compares
+    // up to every pair, and two numbers compare at once where two normalized
+    // instructions do not.
+    let mut ids: HashMap<&T, u32> = HashMap::with_capacity(left.len() + right.len());
+    let mut id_of = |item| {
+        let next = ids.len() as u32;
+        *ids.entry(item).or_insert(next)
+    };
+    let left: Vec<u32> = left.iter().map(&mut id_of).collect();
+    let right: Vec<u32> = right.iter().map(&mut id_of).collect();
     let mut steps = Vec::with_capacity(left.len().max(right.len()));
-    align_into(left, right, largest, &mut steps);
+    align_into(&left, &right, largest, &mut steps);
     steps
 }
 
@@ -4198,9 +4208,11 @@ fn longest_common_subsequence<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step
     let mut steps = vec![Step::Both; head];
     let (left, right) = (&left[head..], &right[head..]);
 
-    // `len[i * cols + j]`, in one allocation.
+    // `len[i * cols + j]`, in one allocation. A length is at most that of
+    // the shorter side, which the size of the table keeps far below 2^32,
+    // and a narrow cell halves the memory the table reads.
     let cols = right.len() + 1;
-    let mut len = vec![0usize; (left.len() + 1) * cols];
+    let mut len = vec![0u32; (left.len() + 1) * cols];
     for i in (0..left.len()).rev() {
         for j in (0..right.len()).rev() {
             len[i * cols + j] = if left[i] == right[j] {
