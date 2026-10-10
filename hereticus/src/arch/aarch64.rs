@@ -81,8 +81,8 @@ impl Arch for Aarch64 {
 
         let text = inst.to_string();
         let (mnemonic, operands) = split_mnemonic(&text);
-        let operands = extended_register(&mnemonic, operands);
-        let kind = classify(&inst, &mnemonic, insn_address);
+        let operands = extended_register(inst.opcode, operands);
+        let kind = classify(&inst, insn_address);
         Ok(Insn { address: insn_address, bytes_len: INSN_WIDTH, mnemonic, operands, kind })
     }
 
@@ -291,7 +291,7 @@ impl Arch for Aarch64 {
         }
         let mut inst = Instruction::default();
         InstDecoder::default().decode_into(&mut inst, &mut U8Reader::new(word)).ok()?;
-        Some(lift(&inst, &insn.mnemonic))
+        Some(lift(&inst))
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
@@ -313,7 +313,7 @@ impl Arch for Aarch64 {
 /// This runs on every instruction, so it searches for the comma, a single
 /// byte, and not for `", "`: a search for a string builds a searcher each
 /// time, which cost 8% of a whole comparison.
-fn extended_register(mnemonic: &str, operands: String) -> String {
+fn extended_register(opcode: Opcode, operands: String) -> String {
     let is_w = |name: &str| {
         name == "wzr" || (name.starts_with('w') && name[1..].bytes().all(|b| b.is_ascii_digit()))
     };
@@ -336,7 +336,8 @@ fn extended_register(mnemonic: &str, operands: String) -> String {
             operands
         };
     }
-    let extends = matches!(mnemonic, "add" | "adds" | "sub" | "subs" | "cmp" | "cmn");
+    // `cmp` and `cmn` are a `subs` and an `adds`.
+    let extends = matches!(opcode, Opcode::ADD | Opcode::ADDS | Opcode::SUB | Opcode::SUBS);
     if !extends || last_comma.is_none() {
         return operands;
     }
@@ -347,7 +348,7 @@ fn extended_register(mnemonic: &str, operands: String) -> String {
 /// How an instruction moves control. The pointer authentication forms of a
 /// return, a jump and a call, as `retaa`, `braa` and `blraa`, move it as the
 /// plain ones do.
-fn classify(inst: &Instruction, mnemonic: &str, address: u64) -> InsnKind {
+fn classify(inst: &Instruction, address: u64) -> InsnKind {
     let target = inst.operands.iter().find_map(|operand| match operand {
         Operand::PCOffset(offset) => address.checked_add_signed(*offset),
         _ => None,
@@ -355,14 +356,50 @@ fn classify(inst: &Instruction, mnemonic: &str, address: u64) -> InsnKind {
     match inst.opcode {
         Opcode::BL => InsnKind::Call { target },
         Opcode::B => InsnKind::Jump { target },
-        Opcode::Bcc(_) | Opcode::CBZ | Opcode::CBNZ | Opcode::TBZ | Opcode::TBNZ => {
-            InsnKind::Branch { target }
-        }
-        _ if mnemonic.starts_with("ret") || mnemonic.starts_with("eret") => InsnKind::Return,
-        _ if mnemonic.starts_with("blr") => InsnKind::Call { target: None },
-        _ if mnemonic.starts_with("br") => InsnKind::Jump { target: None },
+        Opcode::Bcc(_)
+        | Opcode::BCcc(_)
+        | Opcode::CBZ
+        | Opcode::CBNZ
+        | Opcode::TBZ
+        | Opcode::TBNZ => InsnKind::Branch { target },
+        opcode if is_return(opcode) || is_exception_return(opcode) => InsnKind::Return,
+        opcode if is_indirect_call(opcode) => InsnKind::Call { target: None },
+        opcode if is_indirect_jump(opcode) => InsnKind::Jump { target: None },
         _ => InsnKind::Normal,
     }
+}
+
+/// `ret`, and the forms that check a signed return address.
+fn is_return(opcode: Opcode) -> bool {
+    matches!(
+        opcode,
+        Opcode::RET
+            | Opcode::RETAA
+            | Opcode::RETAB
+            | Opcode::RETAASPPC
+            | Opcode::RETABSPPC
+            | Opcode::RETAASPPCR
+            | Opcode::RETABSPPCR
+    )
+}
+
+/// `eret`, which returns from an exception through `elr`, not the link
+/// register.
+fn is_exception_return(opcode: Opcode) -> bool {
+    matches!(opcode, Opcode::ERET | Opcode::ERETAA | Opcode::ERETAB)
+}
+
+fn is_indirect_call(opcode: Opcode) -> bool {
+    matches!(opcode, Opcode::BLR | Opcode::BLRAA | Opcode::BLRAAZ | Opcode::BLRAB | Opcode::BLRABZ)
+}
+
+/// `br` and its signed forms. `brk` traps, and control does not come back
+/// to the next instruction, so it ends the code as a jump does.
+fn is_indirect_jump(opcode: Opcode) -> bool {
+    matches!(
+        opcode,
+        Opcode::BR | Opcode::BRAA | Opcode::BRAAZ | Opcode::BRAB | Opcode::BRABZ | Opcode::BRK
+    )
 }
 
 /// The link register, which a call writes and a return reads.
@@ -376,8 +413,10 @@ const FRAME: Reg = Reg::General(29);
 enum Role {
     /// Writes its first operand from the others, as `add` does.
     Compute,
-    /// Reads every operand and writes none, as `str` and `br` do.
+    /// Reads every operand and writes none, as `br` and `ccmp` do.
     ReadOnly,
+    /// Reads every operand and writes memory, as `str` does.
+    Store,
     /// Loads its first operand, or its first two for a pair.
     Load { registers: usize },
     /// An exclusive store, which writes its status to the first operand.
@@ -387,9 +426,8 @@ enum Role {
     Atomic,
 }
 
-/// Lift one decoded A64 instruction. `mnemonic` is the one the decoder
-/// printed, with aliases such as `cmp` and `tst` resolved.
-fn lift(inst: &Instruction, mnemonic: &str) -> Lifted {
+/// Lift one decoded A64 instruction.
+fn lift(inst: &Instruction) -> Lifted {
     let operands: Vec<Operand> =
         inst.operands.iter().copied().take_while(|operand| *operand != Operand::Nothing).collect();
     let mut lifted = Lifted::default();
@@ -400,11 +438,11 @@ fn lift(inst: &Instruction, mnemonic: &str) -> Lifted {
         address_registers(*operand, &mut reads, &mut writes);
     }
 
-    let role = role_of(mnemonic);
+    let role = role_of(inst);
     for (index, operand) in operands.iter().enumerate() {
         let written = match role {
-            Role::Compute => index == 0 && !is_compare(mnemonic),
-            Role::ReadOnly => false,
+            Role::Compute => index == 0 && !is_compare(inst),
+            Role::ReadOnly | Role::Store => false,
             Role::Load { registers } => index < registers,
             Role::StoreExclusive => index == 0,
             Role::Atomic => index == 1,
@@ -412,7 +450,7 @@ fn lift(inst: &Instruction, mnemonic: &str) -> Lifted {
         let regs = value_registers(*operand);
         if written {
             regs.iter().for_each(|reg| writes.insert(reg));
-            if reads_destination(mnemonic) {
+            if reads_destination(inst.opcode) {
                 regs.iter().for_each(|reg| reads.insert(reg));
             }
         } else {
@@ -420,22 +458,23 @@ fn lift(inst: &Instruction, mnemonic: &str) -> Lifted {
         }
     }
 
-    if reads_flags(inst.opcode, mnemonic) {
+    if reads_flags(inst.opcode) {
         reads.insert(Reg::Flags);
     }
-    if writes_flags(mnemonic) {
+    if writes_flags(inst.opcode) {
         writes.insert(Reg::Flags);
     }
     match inst.opcode {
         Opcode::BL => writes.insert(LINK),
-        _ if mnemonic.starts_with("blr") => writes.insert(LINK),
-        _ if mnemonic.starts_with("ret") && operands.is_empty() => reads.insert(LINK),
+        opcode if is_indirect_call(opcode) => writes.insert(LINK),
+        // A plain `ret` names the link register as its operand.
+        opcode if is_return(opcode) && operands.is_empty() => reads.insert(LINK),
         _ => {}
     }
 
-    lifted.op = op_of(inst.opcode, mnemonic, role, &operands);
-    lifted.memory = memory_access(mnemonic, role, &operands);
-    lifted.test = test_of(inst, mnemonic, &operands);
+    lifted.op = op_of(inst, role, &operands);
+    lifted.memory = memory_access(inst.opcode, role, &operands);
+    lifted.test = test_of(inst, &operands);
     lifted.reads = reads;
     lifted.writes = writes;
     lifted.operands = operands.iter().map(|operand| il_operand(*operand)).collect();
@@ -482,24 +521,16 @@ fn il_operand(operand: Operand) -> il::Operand {
     }
 }
 
-/// What an A64 instruction computes. `mnemonic` has its aliases resolved,
-/// so `mov`, `cmp` and `lsl` arrive as such.
-fn op_of(opcode: Opcode, mnemonic: &str, role: Role, operands: &[Operand]) -> Op {
+/// What an A64 instruction computes. An alias the decoder prints in place
+/// of its instruction, as `cmp` for a `subs` into the zero register, or
+/// `lsl` for a `ubfm`, computes what the alias names.
+fn op_of(inst: &Instruction, role: Role, operands: &[Operand]) -> Op {
     match role {
-        Role::Load { .. } if mnemonic.starts_with("prf") => return Op::System,
-        Role::Load { .. } if is_exclusive_load(mnemonic) => return Op::Atomic,
+        Role::Load { .. } if is_exclusive_load(inst.opcode) => return Op::Atomic,
         Role::Load { .. } => return Op::Load,
         Role::Atomic | Role::StoreExclusive => return Op::Atomic,
-        Role::ReadOnly if mnemonic.starts_with("st") => return Op::Store,
+        Role::Store => return Op::Store,
         Role::ReadOnly | Role::Compute => {}
-    }
-    match opcode {
-        Opcode::B => return Op::Jump,
-        Opcode::Bcc(_) | Opcode::CBZ | Opcode::CBNZ | Opcode::TBZ | Opcode::TBNZ => {
-            return Op::Branch;
-        }
-        Opcode::BL => return Op::Call,
-        _ => {}
     }
     let is_vector = operands.iter().any(|operand| {
         matches!(
@@ -510,177 +541,502 @@ fn op_of(opcode: Opcode, mnemonic: &str, role: Role, operands: &[Operand]) -> Op
                 | Operand::SIMDRegisterGroup(..)
         )
     });
-    let stem = mnemonic.trim_end_matches(|c: char| c.is_ascii_digit());
-    match stem {
-        _ if mnemonic.starts_with("blr") => Op::Call,
-        _ if mnemonic.starts_with("br") => Op::Jump,
-        _ if mnemonic.starts_with("ret") => Op::Return,
+    let zero = |index: usize| is_zero_register(inst.operands[index]);
+    match inst.opcode {
+        Opcode::B => Op::Jump,
+        Opcode::Bcc(_)
+        | Opcode::BCcc(_)
+        | Opcode::CBZ
+        | Opcode::CBNZ
+        | Opcode::TBZ
+        | Opcode::TBNZ => Op::Branch,
+        Opcode::BL => Op::Call,
+        opcode if is_indirect_call(opcode) => Op::Call,
+        opcode if is_indirect_jump(opcode) => Op::Jump,
+        opcode if is_return(opcode) || is_exception_return(opcode) => Op::Return,
         _ if is_vector => Op::Vector,
-        "mov" | "movz" | "movn" | "movk" | "fmov" => Op::Move,
-        "adr" | "adrp" => Op::Address,
-        "add" | "adds" | "adc" | "adcs" => Op::Add,
-        "sub" | "subs" | "sbc" | "sbcs" => Op::Subtract,
-        "neg" | "negs" | "ngc" | "ngcs" => Op::Negate,
-        "mul" | "umulh" | "smulh" | "umull" | "smull" | "mneg" => Op::Multiply,
-        "madd" | "msub" | "umaddl" | "smaddl" | "umsubl" | "smsubl" => Op::MultiplyAdd,
-        "udiv" | "sdiv" => Op::Divide,
-        "and" | "ands" => Op::And,
-        "orr" => Op::Or,
-        "eor" | "eon" => Op::Xor,
-        "bic" | "bics" => Op::AndNot,
-        "orn" => Op::OrNot,
-        "mvn" => Op::Not,
-        "lsl" | "lslv" => Op::ShiftLeft,
-        "lsr" | "lsrv" => Op::ShiftRight,
-        "asr" | "asrv" => Op::ShiftRightArithmetic,
-        "ror" | "rorv" | "extr" => Op::Rotate,
-        "sxtb" | "sxth" | "sxtw" | "uxtb" | "uxth" | "uxtw" => Op::Extend,
-        "ubfx" | "sbfx" | "ubfiz" | "sbfiz" | "bfi" | "bfxil" | "bfm" | "ubfm" | "sbfm" | "bfc" => {
-            Op::BitField
+        _ if is_compare(inst) => Op::Compare,
+        Opcode::MOVZ | Opcode::MOVN | Opcode::MOVK | Opcode::FMOV => Op::Move,
+        Opcode::ORR if is_orr_move(inst) => Op::Move,
+        Opcode::ADD if is_add_move(inst) => Op::Move,
+        Opcode::ADR | Opcode::ADRP => Op::Address,
+        Opcode::ADD | Opcode::ADDS | Opcode::ADC | Opcode::ADCS => Op::Add,
+        // `neg`, `negs`, `ngc` and `ngcs` subtract from the zero register.
+        Opcode::SUB | Opcode::SUBS | Opcode::SBC | Opcode::SBCS if zero(1) => Op::Negate,
+        Opcode::SUB | Opcode::SUBS | Opcode::SBC | Opcode::SBCS => Op::Subtract,
+        Opcode::NEG => Op::Negate,
+        Opcode::MUL | Opcode::UMULH | Opcode::SMULH | Opcode::UMULL | Opcode::SMULL => Op::Multiply,
+        // `mul`, `mneg`, `smull` and the like add to the zero register.
+        Opcode::MADD
+        | Opcode::MSUB
+        | Opcode::UMADDL
+        | Opcode::SMADDL
+        | Opcode::UMSUBL
+        | Opcode::SMSUBL
+            if zero(3) =>
+        {
+            Op::Multiply
         }
-        "clz" | "cls" | "rbit" | "rev" | "cnt" => Op::Bits,
-        "csel" | "csinc" | "csinv" | "csneg" | "cset" | "csetm" | "cinc" | "cinv" | "cneg"
-        | "fcsel" => Op::Select,
-        "cmp" | "cmn" | "tst" | "ccmp" | "ccmn" | "fcmp" | "fcmpe" | "fccmp" | "fccmpe" => {
-            Op::Compare
-        }
-        _ if mnemonic.starts_with('f') || mnemonic.ends_with("cvtf") => float_op(mnemonic),
-        "nop" | "hint" | "dmb" | "dsb" | "isb" | "msr" | "mrs" | "svc" | "hvc" | "smc" | "brk"
-        | "hlt" | "udf" | "sys" | "sysl" | "yield" | "wfe" | "wfi" | "sev" | "sevl" | "clrex"
-        | "bti" | "paciasp" | "pacibsp" | "autiasp" | "autibsp" | "prfm" | "prfum" => Op::System,
-        _ => Op::Other,
+        Opcode::MADD
+        | Opcode::MSUB
+        | Opcode::UMADDL
+        | Opcode::SMADDL
+        | Opcode::UMSUBL
+        | Opcode::SMSUBL => Op::MultiplyAdd,
+        Opcode::UDIV | Opcode::SDIV => Op::Divide,
+        Opcode::AND | Opcode::ANDS => Op::And,
+        Opcode::ORR => Op::Or,
+        Opcode::EOR | Opcode::EON => Op::Xor,
+        Opcode::BIC | Opcode::BICS => Op::AndNot,
+        // `mvn` is an `orn` from the zero register.
+        Opcode::ORN if zero(1) => Op::Not,
+        Opcode::ORN => Op::OrNot,
+        Opcode::NOT => Op::Not,
+        Opcode::LSLV => Op::ShiftLeft,
+        Opcode::LSRV => Op::ShiftRight,
+        Opcode::ASRV => Op::ShiftRightArithmetic,
+        Opcode::RORV | Opcode::EXTR => Op::Rotate,
+        Opcode::UBFM => unsigned_bit_field_op(operands),
+        Opcode::SBFM => signed_bit_field_op(operands),
+        Opcode::BFM => Op::BitField,
+        Opcode::CLZ
+        | Opcode::CLS
+        | Opcode::RBIT
+        | Opcode::REV
+        | Opcode::REV16
+        | Opcode::REV32
+        | Opcode::REV64
+        | Opcode::CNT => Op::Bits,
+        Opcode::CSEL | Opcode::CSINC | Opcode::CSINV | Opcode::CSNEG | Opcode::FCSEL => Op::Select,
+        Opcode::CCMP
+        | Opcode::CCMN
+        | Opcode::FCMP
+        | Opcode::FCMPE
+        | Opcode::FCCMP
+        | Opcode::FCCMPE => Op::Compare,
+        Opcode::HINT
+        | Opcode::DMB(_)
+        | Opcode::DSB(_)
+        | Opcode::ISB
+        | Opcode::MSR
+        | Opcode::MRS
+        | Opcode::SVC
+        | Opcode::HVC
+        | Opcode::SMC
+        | Opcode::HLT
+        | Opcode::UDF
+        | Opcode::SYS(_)
+        | Opcode::SYSL(_)
+        | Opcode::CLREX
+        | Opcode::PACIASP
+        | Opcode::PACIBSP
+        | Opcode::AUTIASP
+        | Opcode::AUTIBSP
+        | Opcode::PRFM
+        | Opcode::PRFUM => Op::System,
+        opcode => float_op(opcode).unwrap_or(Op::Other),
     }
 }
 
-/// What an A64 floating point instruction computes. A conversion to an
-/// integer names its rounding: `fcvtms` rounds down, as `floor` does.
-fn float_op(mnemonic: &str) -> Op {
-    match mnemonic {
-        "fadd" => Op::FloatAdd,
-        "fsub" => Op::FloatSubtract,
-        "fmul" | "fnmul" => Op::FloatMultiply,
-        "fmadd" | "fmsub" | "fnmadd" | "fnmsub" => Op::FloatMultiplyAdd,
-        "fdiv" => Op::FloatDivide,
-        "fneg" | "fabs" => Op::FloatSign,
-        "fsqrt" => Op::FloatSquareRoot,
-        "fmin" | "fmax" | "fminnm" | "fmaxnm" => Op::FloatMinMax,
-        "frintm" => Op::FloatRoundDown,
-        "frintp" => Op::FloatRoundUp,
-        "frintz" => Op::FloatRoundTowardZero,
-        "frintn" | "frinta" | "frintx" | "frinti" => Op::FloatRoundNearest,
-        _ if mnemonic.starts_with("fcvtm") => Op::FloatRoundDown,
-        _ if mnemonic.starts_with("fcvtp") => Op::FloatRoundUp,
-        _ if mnemonic.starts_with("fcvtz") => Op::FloatRoundTowardZero,
-        _ if mnemonic.starts_with("fcvtn") || mnemonic.starts_with("fcvta") => {
-            Op::FloatRoundNearest
+/// Register 31 where it names the zero register, not the stack pointer.
+fn is_zero_register(operand: Operand) -> bool {
+    matches!(operand, Operand::Register(_, 31))
+}
+
+/// `cmp`, `cmn` and `tst`: a `subs`, an `adds` or an `ands` into the zero
+/// register, which writes only the flags. The first operand is the zero
+/// register, not a destination.
+fn is_compare(inst: &Instruction) -> bool {
+    matches!(inst.opcode, Opcode::SUBS | Opcode::ADDS | Opcode::ANDS)
+        && is_zero_register(inst.operands[0])
+}
+
+/// An `orr` that `yaxpeax-arm` prints as `mov`: from the zero register with
+/// no shift, or of a register with itself.
+fn is_orr_move(inst: &Instruction) -> bool {
+    match (inst.operands[1], inst.operands[2]) {
+        (Operand::Register(_, 31), Operand::RegShift(style, amount, ..)) => {
+            style == ShiftStyle::LSL && amount == 0
         }
-        _ if mnemonic.starts_with("fcvt") || mnemonic.ends_with("cvtf") => Op::FloatConvert,
-        _ => Op::Float,
+        (Operand::Register(_, 31), _) => true,
+        (first, second) => first == second,
     }
+}
+
+/// `mov` to or from the stack pointer, which is an `add` of zero.
+fn is_add_move(inst: &Instruction) -> bool {
+    let stack = |operand| matches!(operand, Operand::RegisterOrSP(_, 31));
+    inst.operands[2] == Operand::Immediate(0)
+        && (stack(inst.operands[0]) || stack(inst.operands[1]))
+}
+
+/// The bits a register holds, and the value an immediate gives.
+fn bit_field(operands: &[Operand]) -> Option<(u32, u32, u32)> {
+    let size = match operands.first()? {
+        Operand::Register(SizeCode::W, _) => 32,
+        Operand::Register(SizeCode::X, _) => 64,
+        _ => return None,
+    };
+    match (operands.get(2)?, operands.get(3)?) {
+        (Operand::Immediate(immr), Operand::Immediate(imms)) => Some((size, *immr, *imms)),
+        _ => None,
+    }
+}
+
+/// What a `ubfm` computes: `lsr`, `lsl`, `uxtb` and `uxth` are aliases of it,
+/// and so are `ubfx` and `ubfiz`.
+fn unsigned_bit_field_op(operands: &[Operand]) -> Op {
+    let is_w = matches!(operands.get(1), Some(Operand::Register(SizeCode::W, _)));
+    match bit_field(operands) {
+        Some((32, 0, 7 | 15)) if is_w => Op::Extend,
+        Some((size, _, imms)) if imms == size - 1 => Op::ShiftRight,
+        Some((_, immr, imms)) if imms + 1 == immr => Op::ShiftLeft,
+        _ => Op::BitField,
+    }
+}
+
+/// What an `sbfm` computes: `asr`, `sxtb`, `sxth` and `sxtw` are aliases of
+/// it, and so are `sbfx` and `sbfiz`.
+fn signed_bit_field_op(operands: &[Operand]) -> Op {
+    match bit_field(operands) {
+        Some((size, _, imms)) if imms == size - 1 => Op::ShiftRightArithmetic,
+        Some((_, 0, 7 | 15 | 31)) => Op::Extend,
+        _ => Op::BitField,
+    }
+}
+
+/// What an A64 floating point instruction computes, or `None` for one that
+/// is not floating point. A conversion to an integer names its rounding:
+/// `fcvtms` rounds down, as `floor` does.
+fn float_op(opcode: Opcode) -> Option<Op> {
+    Some(match opcode {
+        Opcode::FADD => Op::FloatAdd,
+        Opcode::FSUB => Op::FloatSubtract,
+        Opcode::FMUL | Opcode::FNMUL => Op::FloatMultiply,
+        Opcode::FMADD | Opcode::FMSUB | Opcode::FNMADD | Opcode::FNMSUB => Op::FloatMultiplyAdd,
+        Opcode::FDIV => Op::FloatDivide,
+        Opcode::FNEG | Opcode::FABS => Op::FloatSign,
+        Opcode::FSQRT => Op::FloatSquareRoot,
+        Opcode::FMIN | Opcode::FMAX | Opcode::FMINNM | Opcode::FMAXNM => Op::FloatMinMax,
+        Opcode::FRINTM | Opcode::FCVTMS | Opcode::FCVTMU => Op::FloatRoundDown,
+        Opcode::FRINTP | Opcode::FCVTPS | Opcode::FCVTPU => Op::FloatRoundUp,
+        Opcode::FRINTZ | Opcode::FCVTZS | Opcode::FCVTZU => Op::FloatRoundTowardZero,
+        Opcode::FRINTN
+        | Opcode::FRINTA
+        | Opcode::FRINTX
+        | Opcode::FRINTI
+        | Opcode::FCVTNS
+        | Opcode::FCVTNU
+        | Opcode::FCVTN
+        | Opcode::FCVTN2
+        | Opcode::FCVTAS
+        | Opcode::FCVTAU => Op::FloatRoundNearest,
+        Opcode::FCVT
+        | Opcode::FCVTL
+        | Opcode::FCVTL2
+        | Opcode::FCVTXN
+        | Opcode::FCVTXN2
+        | Opcode::SCVTF
+        | Opcode::UCVTF => Op::FloatConvert,
+        Opcode::FRINT32Z
+        | Opcode::FRINT32X
+        | Opcode::FRINT64Z
+        | Opcode::FRINT64X
+        | Opcode::FMULX
+        | Opcode::FMLSL
+        | Opcode::FMLSL2
+        | Opcode::FMLAL
+        | Opcode::FMLAL2
+        | Opcode::FCMLA
+        | Opcode::FMLA
+        | Opcode::FMLS
+        | Opcode::FCMEQ
+        | Opcode::FCMGE
+        | Opcode::FCMGT
+        | Opcode::FCMLT
+        | Opcode::FCMLE
+        | Opcode::FACGE
+        | Opcode::FACGT
+        | Opcode::FRECPS
+        | Opcode::FRECPE
+        | Opcode::FRECPX
+        | Opcode::FRSQRTE
+        | Opcode::FRSQRTS
+        | Opcode::FMAXNMP
+        | Opcode::FMINMNP
+        | Opcode::FMINNMP
+        | Opcode::FADDP
+        | Opcode::FMAXP
+        | Opcode::FMINP
+        | Opcode::FMAXNMV
+        | Opcode::FMINNMV
+        | Opcode::FMAXV
+        | Opcode::FMINV
+        | Opcode::FABD
+        | Opcode::FJCVTZS
+        | Opcode::FCADD => Op::Float,
+        _ => return None,
+    })
 }
 
 /// `ldxr`, `ldaxr`, `ldxp` and `ldaxp`, which open an exclusive access.
-fn is_exclusive_load(mnemonic: &str) -> bool {
-    ["ldxr", "ldaxr", "ldxp", "ldaxp"].iter().any(|stem| mnemonic.starts_with(stem))
+fn is_exclusive_load(opcode: Opcode) -> bool {
+    matches!(
+        opcode,
+        Opcode::LDXR
+            | Opcode::LDXRB
+            | Opcode::LDXRH
+            | Opcode::LDAXR
+            | Opcode::LDAXRB
+            | Opcode::LDAXRH
+            | Opcode::LDXP
+            | Opcode::LDAXP
+    )
 }
 
-fn role_of(mnemonic: &str) -> Role {
-    /// Atomic operations that load the old value into their second operand.
-    const ATOMIC: [&str; 10] =
-        ["swp", "ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax", "ldumin", "cas"];
-    if ATOMIC.iter().any(|stem| mnemonic.starts_with(stem)) {
-        return Role::Atomic;
-    }
-    if mnemonic.starts_with("ld") {
-        let pair = mnemonic.starts_with("ldp")
-            || mnemonic.starts_with("ldnp")
-            || mnemonic.starts_with("ldxp")
-            || mnemonic.starts_with("ldaxp");
-        return Role::Load { registers: if pair { 2 } else { 1 } };
-    }
-    if mnemonic.starts_with("stxr")
-        || mnemonic.starts_with("stlxr")
-        || mnemonic.starts_with("stxp")
-        || mnemonic.starts_with("stlxp")
-    {
-        return Role::StoreExclusive;
-    }
-    let reads_only = mnemonic.starts_with("st")
-        || mnemonic.starts_with("prfm")
-        || mnemonic.starts_with("prfum")
-        || mnemonic.starts_with('b')
-        || mnemonic.starts_with("ret")
-        || mnemonic.starts_with("cb")
-        || mnemonic.starts_with("tb")
-        || mnemonic.starts_with("msr")
-        || mnemonic.starts_with("fcmp")
-        || mnemonic.starts_with("fccmp")
-        || matches!(mnemonic, "ccmp" | "ccmn");
-    if reads_only && !mnemonic.starts_with("bic") && !mnemonic.starts_with("bf") {
-        Role::ReadOnly
-    } else {
-        Role::Compute
-    }
+/// An atomic operation that discards the old value, which `yaxpeax-arm`
+/// prints as a store: `ldadd w1, wzr, [x0]` is `stadd w1, [x0]`. Only the
+/// forms without acquire semantics have this alias.
+fn is_atomic_store(inst: &Instruction) -> bool {
+    let order = match inst.opcode {
+        Opcode::LDADD(order)
+        | Opcode::LDADDB(order)
+        | Opcode::LDADDH(order)
+        | Opcode::LDCLR(order)
+        | Opcode::LDCLRB(order)
+        | Opcode::LDCLRH(order)
+        | Opcode::LDEOR(order)
+        | Opcode::LDEORB(order)
+        | Opcode::LDEORH(order)
+        | Opcode::LDSET(order)
+        | Opcode::LDSETB(order)
+        | Opcode::LDSETH(order)
+        | Opcode::LDSMAX(order)
+        | Opcode::LDSMAXB(order)
+        | Opcode::LDSMAXH(order)
+        | Opcode::LDSMIN(order)
+        | Opcode::LDSMINB(order)
+        | Opcode::LDSMINH(order)
+        | Opcode::LDUMAX(order)
+        | Opcode::LDUMAXB(order)
+        | Opcode::LDUMAXH(order)
+        | Opcode::LDUMIN(order)
+        | Opcode::LDUMINB(order)
+        | Opcode::LDUMINH(order) => order,
+        _ => return false,
+    };
+    const ACQUIRE: u8 = 0b10;
+    order & ACQUIRE == 0 && is_zero_register(inst.operands[1])
 }
 
-/// `cmp`, `cmn` and `tst` write only the flags: their first operand is the
-/// value compared, not a destination.
-fn is_compare(mnemonic: &str) -> bool {
-    matches!(mnemonic, "cmp" | "cmn" | "tst")
+fn role_of(inst: &Instruction) -> Role {
+    if is_atomic_store(inst) {
+        return Role::Store;
+    }
+    match inst.opcode {
+        Opcode::SWP(_)
+        | Opcode::SWPB(_)
+        | Opcode::SWPH(_)
+        | Opcode::LDADD(_)
+        | Opcode::LDADDB(_)
+        | Opcode::LDADDH(_)
+        | Opcode::LDCLR(_)
+        | Opcode::LDCLRB(_)
+        | Opcode::LDCLRH(_)
+        | Opcode::LDEOR(_)
+        | Opcode::LDEORB(_)
+        | Opcode::LDEORH(_)
+        | Opcode::LDSET(_)
+        | Opcode::LDSETB(_)
+        | Opcode::LDSETH(_)
+        | Opcode::LDSMAX(_)
+        | Opcode::LDSMAXB(_)
+        | Opcode::LDSMAXH(_)
+        | Opcode::LDSMIN(_)
+        | Opcode::LDSMINB(_)
+        | Opcode::LDSMINH(_)
+        | Opcode::LDUMAX(_)
+        | Opcode::LDUMAXB(_)
+        | Opcode::LDUMAXH(_)
+        | Opcode::LDUMIN(_)
+        | Opcode::LDUMINB(_)
+        | Opcode::LDUMINH(_)
+        | Opcode::CAS(_)
+        | Opcode::CASB(_)
+        | Opcode::CASH(_)
+        | Opcode::CASP(_) => Role::Atomic,
+        Opcode::LDP | Opcode::LDPSW | Opcode::LDNP | Opcode::LDXP | Opcode::LDAXP => {
+            Role::Load { registers: 2 }
+        }
+        Opcode::LDAR
+        | Opcode::LDLAR
+        | Opcode::LDARB
+        | Opcode::LDLARB
+        | Opcode::LDARH
+        | Opcode::LDLARH
+        | Opcode::LDAXR
+        | Opcode::LDAXRB
+        | Opcode::LDAXRH
+        | Opcode::LDXR
+        | Opcode::LDXRB
+        | Opcode::LDXRH
+        | Opcode::LDR
+        | Opcode::LDRB
+        | Opcode::LDRH
+        | Opcode::LDRSB
+        | Opcode::LDRSH
+        | Opcode::LDRSW
+        | Opcode::LDTR
+        | Opcode::LDTRB
+        | Opcode::LDTRH
+        | Opcode::LDTRSB
+        | Opcode::LDTRSH
+        | Opcode::LDTRSW
+        | Opcode::LDUR
+        | Opcode::LDURB
+        | Opcode::LDURH
+        | Opcode::LDURSB
+        | Opcode::LDURSH
+        | Opcode::LDURSW
+        | Opcode::LDRAA
+        | Opcode::LDRAB
+        | Opcode::LDAPR
+        | Opcode::LDAPRB
+        | Opcode::LDAPRH
+        | Opcode::LDAPUR
+        | Opcode::LDAPURB
+        | Opcode::LDAPURH
+        | Opcode::LDAPURSB
+        | Opcode::LDAPURSH
+        | Opcode::LDAPURSW
+        | Opcode::LDG
+        | Opcode::LDGM
+        | Opcode::LD1
+        | Opcode::LD2
+        | Opcode::LD3
+        | Opcode::LD4
+        | Opcode::LD1R
+        | Opcode::LD2R
+        | Opcode::LD3R
+        | Opcode::LD4R => Role::Load { registers: 1 },
+        Opcode::STXR
+        | Opcode::STXRB
+        | Opcode::STXRH
+        | Opcode::STLXR
+        | Opcode::STLXRB
+        | Opcode::STLXRH
+        | Opcode::STXP
+        | Opcode::STLXP => Role::StoreExclusive,
+        Opcode::STR
+        | Opcode::STRB
+        | Opcode::STRH
+        | Opcode::STRW
+        | Opcode::STUR
+        | Opcode::STURB
+        | Opcode::STURH
+        | Opcode::STTR
+        | Opcode::STTRB
+        | Opcode::STTRH
+        | Opcode::STP
+        | Opcode::STNP
+        | Opcode::STLR
+        | Opcode::STLRB
+        | Opcode::STLRH
+        | Opcode::STLLR
+        | Opcode::STLLRB
+        | Opcode::STLLRH
+        | Opcode::STLUR
+        | Opcode::STLURB
+        | Opcode::STLURH
+        | Opcode::STG
+        | Opcode::STZG
+        | Opcode::ST2G
+        | Opcode::STZ2G
+        | Opcode::STGM
+        | Opcode::STZGM
+        | Opcode::ST1
+        | Opcode::ST2
+        | Opcode::ST3
+        | Opcode::ST4 => Role::Store,
+        Opcode::B
+        | Opcode::BL
+        | Opcode::Bcc(_)
+        | Opcode::BCcc(_)
+        | Opcode::CBZ
+        | Opcode::CBNZ
+        | Opcode::TBZ
+        | Opcode::TBNZ
+        | Opcode::MSR
+        | Opcode::PRFM
+        | Opcode::PRFUM
+        | Opcode::CCMP
+        | Opcode::CCMN
+        | Opcode::FCMP
+        | Opcode::FCMPE
+        | Opcode::FCCMP
+        | Opcode::FCCMPE => Role::ReadOnly,
+        opcode
+            if is_indirect_call(opcode)
+                || is_indirect_jump(opcode)
+                || is_return(opcode)
+                || is_exception_return(opcode) =>
+        {
+            Role::ReadOnly
+        }
+        _ => Role::Compute,
+    }
 }
 
 /// Instructions that keep part of their destination, so read it too.
-fn reads_destination(mnemonic: &str) -> bool {
-    matches!(mnemonic, "movk" | "bfi" | "bfxil" | "bfm" | "bfc" | "ins")
-}
-
-fn reads_flags(opcode: Opcode, mnemonic: &str) -> bool {
-    matches!(opcode, Opcode::Bcc(_))
-        || matches!(
-            mnemonic,
-            "csel"
-                | "csinc"
-                | "csinv"
-                | "csneg"
-                | "cset"
-                | "csetm"
-                | "cinc"
-                | "cinv"
-                | "cneg"
-                | "fcsel"
-                | "adc"
-                | "adcs"
-                | "sbc"
-                | "sbcs"
-                | "ngc"
-                | "ngcs"
-                | "ccmp"
-                | "ccmn"
-                | "fccmp"
-                | "fccmpe"
-        )
-}
-
-fn writes_flags(mnemonic: &str) -> bool {
+fn reads_destination(opcode: Opcode) -> bool {
     matches!(
-        mnemonic,
-        "cmp"
-            | "cmn"
-            | "tst"
-            | "adds"
-            | "subs"
-            | "ands"
-            | "bics"
-            | "adcs"
-            | "sbcs"
-            | "negs"
-            | "ngcs"
-            | "ccmp"
-            | "ccmn"
-            | "fcmp"
-            | "fcmpe"
-            | "fccmp"
-            | "fccmpe"
+        opcode,
+        Opcode::MOVK
+            | Opcode::BFM
+            | Opcode::INS
+            | Opcode::BSL
+            | Opcode::BIT
+            | Opcode::BIF
+            | Opcode::TBX
+    )
+}
+
+fn reads_flags(opcode: Opcode) -> bool {
+    matches!(
+        opcode,
+        Opcode::Bcc(_)
+            | Opcode::BCcc(_)
+            | Opcode::CSEL
+            | Opcode::CSINC
+            | Opcode::CSINV
+            | Opcode::CSNEG
+            | Opcode::FCSEL
+            | Opcode::ADC
+            | Opcode::ADCS
+            | Opcode::SBC
+            | Opcode::SBCS
+            | Opcode::CCMP
+            | Opcode::CCMN
+            | Opcode::FCCMP
+            | Opcode::FCCMPE
+    )
+}
+
+fn writes_flags(opcode: Opcode) -> bool {
+    matches!(
+        opcode,
+        Opcode::ADDS
+            | Opcode::SUBS
+            | Opcode::ANDS
+            | Opcode::BICS
+            | Opcode::ADCS
+            | Opcode::SBCS
+            | Opcode::CCMP
+            | Opcode::CCMN
+            | Opcode::FCMP
+            | Opcode::FCMPE
+            | Opcode::FCCMP
+            | Opcode::FCCMPE
     )
 }
 
@@ -752,33 +1108,92 @@ fn is_memory(operand: &Operand) -> bool {
     )
 }
 
-fn memory_access(mnemonic: &str, role: Role, operands: &[Operand]) -> Option<MemoryAccess> {
-    if !operands.iter().any(is_memory) || mnemonic.starts_with("prf") {
+fn memory_access(opcode: Opcode, role: Role, operands: &[Operand]) -> Option<MemoryAccess> {
+    if !operands.iter().any(is_memory) {
         return None;
     }
     let kind = match role {
         Role::Load { .. } => AccessKind::Load,
         Role::Atomic => AccessKind::LoadStore,
-        Role::ReadOnly | Role::StoreExclusive => AccessKind::Store,
-        Role::Compute => return None,
+        Role::Store | Role::StoreExclusive => AccessKind::Store,
+        // A prefetch reads no value.
+        Role::ReadOnly | Role::Compute => return None,
     };
-    Some(MemoryAccess { kind, width: access_width(mnemonic, operands) })
+    Some(MemoryAccess { kind, width: access_width(opcode, role, operands) })
 }
 
-/// The width of each value an access moves: the suffix of the mnemonic
-/// where it names one, else the width of the register moved.
-fn access_width(mnemonic: &str, operands: &[Operand]) -> Option<Width> {
-    let stem = mnemonic.trim_end_matches(|c: char| c.is_ascii_digit());
-    if stem.ends_with("sw") {
-        return Some(Width::Bits32);
+/// The width of each value an access moves: the one the instruction names,
+/// as `ldrb` and `ldrsw` do, else the width of the register moved.
+fn access_width(opcode: Opcode, role: Role, operands: &[Operand]) -> Option<Width> {
+    match opcode {
+        Opcode::LDRSW | Opcode::LDURSW | Opcode::LDTRSW | Opcode::LDAPURSW | Opcode::LDPSW => {
+            return Some(Width::Bits32);
+        }
+        Opcode::LDRB
+        | Opcode::LDRSB
+        | Opcode::LDURB
+        | Opcode::LDURSB
+        | Opcode::LDTRB
+        | Opcode::LDTRSB
+        | Opcode::LDARB
+        | Opcode::LDLARB
+        | Opcode::LDAXRB
+        | Opcode::LDXRB
+        | Opcode::LDAPRB
+        | Opcode::LDAPURB
+        | Opcode::LDAPURSB
+        | Opcode::STRB
+        | Opcode::STURB
+        | Opcode::STTRB
+        | Opcode::STLRB
+        | Opcode::STLLRB
+        | Opcode::STLXRB
+        | Opcode::STXRB
+        | Opcode::STLURB
+        | Opcode::SWPB(_)
+        | Opcode::CASB(_)
+        | Opcode::LDADDB(_)
+        | Opcode::LDCLRB(_)
+        | Opcode::LDEORB(_)
+        | Opcode::LDSETB(_)
+        | Opcode::LDSMAXB(_)
+        | Opcode::LDSMINB(_)
+        | Opcode::LDUMAXB(_)
+        | Opcode::LDUMINB(_) => return Some(Width::Bits8),
+        Opcode::LDRH
+        | Opcode::LDRSH
+        | Opcode::LDURH
+        | Opcode::LDURSH
+        | Opcode::LDTRH
+        | Opcode::LDTRSH
+        | Opcode::LDARH
+        | Opcode::LDLARH
+        | Opcode::LDAXRH
+        | Opcode::LDXRH
+        | Opcode::LDAPRH
+        | Opcode::LDAPURH
+        | Opcode::LDAPURSH
+        | Opcode::STRH
+        | Opcode::STURH
+        | Opcode::STTRH
+        | Opcode::STLRH
+        | Opcode::STLLRH
+        | Opcode::STLXRH
+        | Opcode::STXRH
+        | Opcode::STLURH
+        | Opcode::SWPH(_)
+        | Opcode::CASH(_)
+        | Opcode::LDADDH(_)
+        | Opcode::LDCLRH(_)
+        | Opcode::LDEORH(_)
+        | Opcode::LDSETH(_)
+        | Opcode::LDSMAXH(_)
+        | Opcode::LDSMINH(_)
+        | Opcode::LDUMAXH(_)
+        | Opcode::LDUMINH(_) => return Some(Width::Bits16),
+        _ => {}
     }
-    if stem.ends_with('b') {
-        return Some(Width::Bits8);
-    }
-    if stem.ends_with('h') {
-        return Some(Width::Bits16);
-    }
-    let register = match role_of(mnemonic) {
+    let register = match role {
         Role::Atomic | Role::StoreExclusive => operands.get(1),
         _ => operands.first(),
     };
@@ -834,12 +1249,14 @@ fn operation_width(operands: &[Operand]) -> Width {
         .unwrap_or(Width::Bits64)
 }
 
-fn test_of(inst: &Instruction, mnemonic: &str, operands: &[Operand]) -> Option<Test> {
+fn test_of(inst: &Instruction, operands: &[Operand]) -> Option<Test> {
     let width = operation_width(operands);
     let value = |index: usize| operands.get(index).map_or(Value::Other, |op| value_of(*op, width));
     let guard = |cond, right| Some(Test::Guard(Guard { cond, left: value(0), right, width }));
     match inst.opcode {
-        Opcode::Bcc(code) => return Some(Test::OnFlags(Cond::from_arm(code))),
+        Opcode::Bcc(code) | Opcode::BCcc(code) => {
+            return Some(Test::OnFlags(Cond::from_arm(code)));
+        }
         Opcode::CBZ => return guard(Cond::Equal, Value::Const(0)),
         Opcode::CBNZ => return guard(Cond::NotEqual, Value::Const(0)),
         Opcode::TBZ | Opcode::TBNZ => {
@@ -855,14 +1272,17 @@ fn test_of(inst: &Instruction, mnemonic: &str, operands: &[Operand]) -> Option<T
         _ => {}
     }
 
+    if !is_compare(inst) {
+        return None;
+    }
     // An alias names its operands from 1: the 0th is the zero register.
     let (left, right) = (value(1), value(2));
-    let comparison = match mnemonic {
-        "cmp" => Comparison::Subtract { left, right },
-        "tst" => Comparison::And { left, right },
+    let comparison = match inst.opcode {
+        Opcode::SUBS => Comparison::Subtract { left, right },
+        Opcode::ANDS => Comparison::And { left, right },
         // `cmn x, #k` sets the flags as `cmp x, #-k` does, for any `k` but
         // zero: both compare `x` with `-k`.
-        "cmn" => match right {
+        Opcode::ADDS => match right {
             Value::Const(constant) if constant != 0 => Comparison::Subtract {
                 left,
                 right: Value::Const(constant.wrapping_neg() & width.mask()),
@@ -1191,10 +1611,11 @@ mod extend_tests {
         assert_eq!(shown(0xcb3e_40dd), "sub x29, x6, w30, uxtw");
         assert_eq!(shown(0xeb2b_419f), "cmp x12, w11, uxtw");
         assert_eq!(shown(0x9b22_7c20), "smull x0, w1, w2");
-        assert_eq!(extended_register("add", "x0, x1, x2, lsl #3".into()), "x0, x1, x2, lsl #3");
-        assert_eq!(extended_register("add", "w0, w1, w2, lsl #3".into()), "w0, w1, w2, lsl #3");
-        assert_eq!(extended_register("smull", "x0, w1, w2".into()), "x0, w1, w2");
-        assert_eq!(extended_register("add", "x0, x1, w2, sxtw".into()), "x0, x1, w2, sxtw");
+        let extended = |opcode, operands: &str| extended_register(opcode, operands.into());
+        assert_eq!(extended(Opcode::ADD, "x0, x1, x2, lsl #3"), "x0, x1, x2, lsl #3");
+        assert_eq!(extended(Opcode::ADD, "w0, w1, w2, lsl #3"), "w0, w1, w2, lsl #3");
+        assert_eq!(extended(Opcode::SMADDL, "x0, w1, w2"), "x0, w1, w2");
+        assert_eq!(extended(Opcode::ADD, "x0, x1, w2, sxtw"), "x0, x1, w2, sxtw");
     }
 }
 
@@ -1546,6 +1967,77 @@ mod tests {
         for (word, op) in cases {
             assert_eq!(lift_one(word).op, op, "{word:#010x}");
         }
+    }
+
+    /// The decoder prints an alias in place of the instruction it stands
+    /// for, and the alias names what the instruction computes.
+    #[test]
+    fn an_alias_computes_what_it_names() {
+        let cases = [
+            (0x2a01_03e0_u32, Op::Move),             // mov w0, w1 (orr)
+            (0x9100_03e0, Op::Move),                 // mov x0, sp (add)
+            (0x4b01_03e0, Op::Negate),               // neg w0, w1 (sub)
+            (0xeb01_03e0, Op::Negate),               // negs x0, x1 (subs)
+            (0xda01_03e0, Op::Negate),               // ngc x0, x1 (sbc)
+            (0x2a21_03e0, Op::Not),                  // mvn w0, w1 (orn)
+            (0x9b02_7c20, Op::Multiply),             // mul x0, x1, x2 (madd)
+            (0x9b22_fc20, Op::Multiply),             // smnegl x0, w1, w2 (smsubl)
+            (0xd37f_f800, Op::ShiftLeft),            // lsl x0, x0, #1 (ubfm)
+            (0xd341_fc00, Op::ShiftRight),           // lsr x0, x0, #1 (ubfm)
+            (0x5300_1c00, Op::Extend),               // uxtb w0, w0 (ubfm)
+            (0xd344_1c00, Op::BitField),             // ubfx x0, x0, #4, #4 (ubfm)
+            (0x1300_1c00, Op::Extend),               // sxtb w0, w0 (sbfm)
+            (0x9340_7c00, Op::Extend),               // sxtw x0, w0 (sbfm)
+            (0x9340_fc00, Op::ShiftRightArithmetic), // asr x0, x0, #0 (sbfm)
+            (words::CMP_X1_X2, Op::Compare),         // cmp x1, x2 (subs)
+            (words::TST_W0_4, Op::Compare),          // tst w0, #4 (ands)
+            (words::SUBS_X0_X0_1, Op::Subtract),     // subs x0, x0, #1
+        ];
+        for (word, op) in cases {
+            assert_eq!(lift_one(word).op, op, "{word:#010x}");
+        }
+    }
+
+    /// `ldadd w1, wzr, [x0]` keeps no old value, and prints as `stadd`. An
+    /// acquiring form has no such alias, as it orders what comes after it.
+    #[test]
+    fn an_atomic_that_keeps_no_value_is_a_store() {
+        let store = lift_one(0xb821_001f); // stadd w1, [x0]
+        assert_eq!(store.op, Op::Store);
+        assert_eq!(store.memory.map(|access| access.kind), Some(AccessKind::Store));
+        assert!(store.writes.is_empty());
+        assert_eq!(lift_one(0xb8a1_001f).op, Op::Atomic); // ldadda w1, wzr, [x0]
+    }
+
+    /// Instructions that keep part of their destination read it.
+    #[test]
+    fn an_insert_reads_its_destination() {
+        let insert = lift_one(0x4e0c_1c20); // mov v0.s[1], w1 (ins)
+        assert!(insert.reads.contains(Reg::Vector(0)));
+        assert!(insert.writes.contains(Reg::Vector(0)));
+        let select = lift_one(0x6e62_1c20); // bsl v0.16b, v1.16b, v2.16b
+        assert!(select.reads.contains(Reg::Vector(0)));
+        assert!(select.writes.contains(Reg::Vector(0)));
+    }
+
+    /// `ldrab` loads a whole pointer, though its name ends in `b`.
+    #[test]
+    fn a_signed_pointer_load_moves_a_pointer() {
+        let load = lift_one(0xf8bf_0c20); // ldrab x0, [x1, #0xf80]!
+        assert_eq!(load.memory.and_then(|access| access.width), Some(Width::Bits64));
+    }
+
+    /// `bc.eq` branches as `b.eq` does, and `eret` returns.
+    #[test]
+    fn a_hinted_branch_and_an_exception_return_move_control() {
+        let branch = decode_one(0x5400_0010); // bc.eq
+        assert_eq!(branch.kind, InsnKind::Branch { target: Some(0x1000) });
+        let lifted = lift_one(0x5400_0010);
+        assert_eq!(lifted.test, Some(Test::OnFlags(Cond::Equal)));
+        assert!(lifted.reads.contains(Reg::Flags));
+        assert_eq!(decode_one(0xd69f_03e0).kind, InsnKind::Return);
+        assert_eq!(lift_one(0xd69f_03e0).op, Op::Return);
+        assert_eq!(lift_one(0xd503_229f).op, Op::System, "csdb");
     }
 
     /// A function that loads a pointer from a table points at what the
