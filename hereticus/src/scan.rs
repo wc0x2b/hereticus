@@ -1144,7 +1144,9 @@ fn pops_a_frame_it_did_not_make(arch: &dyn Arch, insns: &[Insn], target: u64) ->
         }
         match insn.kind {
             InsnKind::Return => {
-                return insn.mnemonic.starts_with("pop") && insn.operands.contains("pc");
+                return crate::arch::arm32::core_opcode(insn)
+                    == Some(yaxpeax_arm::armv7::Opcode::POP)
+                    && insn.operands.contains("pc");
             }
             InsnKind::Normal | InsnKind::Unknown => {}
             _ => return false,

@@ -202,7 +202,7 @@ pub(super) fn decoded(insn: &Insn) -> Option<Decoded> {
 }
 
 /// The integer operation `insn` does, whatever its condition and flags.
-pub(super) fn core_opcode(insn: &Insn) -> Option<Opcode> {
+pub(crate) fn core_opcode(insn: &Insn) -> Option<Opcode> {
     match decoded(insn)? {
         Decoded::Core { opcode, .. } => Some(opcode),
         _ => None,
@@ -1611,7 +1611,7 @@ pub(super) fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum IntegerWord {
     /// `uxtb rd, rm` and kin, which may add `rn` and rotate `rm` first.
-    Extend { name: &'static str, rd: u32, rn: Option<u32>, rm: u32, rotation: u32 },
+    Extend { kind: Extend, rd: u32, rn: Option<u32>, rm: u32, rotation: u32 },
     /// `bfi rd, rn, lsb, width`, or `bfc` with no `rn`.
     Insert { rd: u32, rn: Option<u32>, lsb: u32, width: u32 },
     /// `ubfx rd, rn, lsb, width` and `sbfx`.
@@ -1631,7 +1631,101 @@ pub(super) enum IntegerWord {
     },
     /// `ldrsb rt, [rn, imm]` and the other loads and stores of a halfword,
     /// a signed byte or a pair.
-    Halfword { name: &'static str, rt: u32, rn: u32, offset: i64, index: Indexing },
+    Halfword { access: HalfwordAccess, rt: u32, rn: u32, offset: i64, index: Indexing },
+}
+
+/// Which extend an [`IntegerWord::Extend`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Extend {
+    Sxtb16,
+    Sxtb,
+    Sxth,
+    Uxtb16,
+    Uxtb,
+    Uxth,
+}
+
+impl Extend {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Sxtb16 => "sxtb16",
+            Self::Sxtb => "sxtb",
+            Self::Sxth => "sxth",
+            Self::Uxtb16 => "uxtb16",
+            Self::Uxtb => "uxtb",
+            Self::Uxth => "uxth",
+        }
+    }
+
+    /// The opcode, or the one that adds `rn` after the extend, as `uxtab`.
+    fn opcode(self, adds: bool) -> Opcode {
+        match (self, adds) {
+            (Self::Sxtb16, false) => Opcode::SXTB16,
+            (Self::Sxtb16, true) => Opcode::SXTAB16,
+            (Self::Uxtb16, false) => Opcode::UXTB16,
+            (Self::Uxtb16, true) => Opcode::UXTAB16,
+            (Self::Sxtb, false) => Opcode::SXTB,
+            (Self::Sxtb, true) => Opcode::SXTAB,
+            (Self::Sxth, false) => Opcode::SXTH,
+            (Self::Sxth, true) => Opcode::SXTAH,
+            (Self::Uxtb, false) => Opcode::UXTB,
+            (Self::Uxtb, true) => Opcode::UXTAB,
+            (Self::Uxth, false) => Opcode::UXTH,
+            (Self::Uxth, true) => Opcode::UXTAH,
+        }
+    }
+}
+
+/// Which load or store an [`IntegerWord::Halfword`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HalfwordAccess {
+    Ldrh,
+    Ldrsb,
+    Ldrsh,
+    Strh,
+    Ldrd,
+    Strd,
+}
+
+impl HalfwordAccess {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ldrh => "ldrh",
+            Self::Ldrsb => "ldrsb",
+            Self::Ldrsh => "ldrsh",
+            Self::Strh => "strh",
+            Self::Ldrd => "ldrd",
+            Self::Strd => "strd",
+        }
+    }
+
+    fn opcode(self) -> Opcode {
+        match self {
+            Self::Ldrh => Opcode::LDRH,
+            Self::Ldrsb => Opcode::LDRSB,
+            Self::Ldrsh => Opcode::LDRSH,
+            Self::Strh => Opcode::STRH,
+            Self::Ldrd => Opcode::LDRD,
+            Self::Strd => Opcode::STRD,
+        }
+    }
+
+    fn is_load(self) -> bool {
+        !matches!(self, Self::Strh | Self::Strd)
+    }
+
+    /// `ldrd` and `strd`, which move two registers.
+    fn is_pair(self) -> bool {
+        matches!(self, Self::Ldrd | Self::Strd)
+    }
+
+    fn width(self) -> il::Width {
+        match self {
+            Self::Ldrsb => il::Width::Bits8,
+            Self::Ldrh | Self::Ldrsh | Self::Strh => il::Width::Bits16,
+            Self::Ldrd | Self::Strd => il::Width::Bits32,
+        }
+    }
 }
 
 /// How a load or store forms its address and moves its base.
@@ -1672,17 +1766,17 @@ impl IntegerWord {
             });
         }
         if field(23, 5) == 0b01101 && field(4, 4) == 0b0111 && field(8, 2) == 0 {
-            let name = match field(20, 3) {
-                0b000 => "sxtb16",
-                0b010 => "sxtb",
-                0b011 => "sxth",
-                0b100 => "uxtb16",
-                0b110 => "uxtb",
-                0b111 => "uxth",
+            let kind = match field(20, 3) {
+                0b000 => Extend::Sxtb16,
+                0b010 => Extend::Sxtb,
+                0b011 => Extend::Sxth,
+                0b100 => Extend::Uxtb16,
+                0b110 => Extend::Uxtb,
+                0b111 => Extend::Uxth,
                 _ => return None,
             };
             let rn = (rn != 15).then_some(rn);
-            return Some(Self::Extend { name, rd, rn, rm, rotation: field(10, 2) * 8 });
+            return Some(Self::Extend { kind, rd, rn, rm, rotation: field(10, 2) * 8 });
         }
         if field(21, 7) == 0b011_1110 && field(4, 3) == 0b001 {
             let (msb, lsb) = (field(16, 5), field(7, 5));
@@ -1710,13 +1804,13 @@ impl IntegerWord {
             });
         }
         if field(25, 3) == 0 && field(22, 1) == 1 && field(7, 1) == 1 && field(4, 1) == 1 {
-            let name = match (field(20, 1), field(5, 2)) {
-                (1, 0b01) => "ldrh",
-                (1, 0b10) => "ldrsb",
-                (1, 0b11) => "ldrsh",
-                (0, 0b01) => "strh",
-                (0, 0b10) => "ldrd",
-                (0, 0b11) => "strd",
+            let access = match (field(20, 1), field(5, 2)) {
+                (1, 0b01) => HalfwordAccess::Ldrh,
+                (1, 0b10) => HalfwordAccess::Ldrsb,
+                (1, 0b11) => HalfwordAccess::Ldrsh,
+                (0, 0b01) => HalfwordAccess::Strh,
+                (0, 0b10) => HalfwordAccess::Ldrd,
+                (0, 0b11) => HalfwordAccess::Strd,
                 _ => return None,
             };
             let magnitude = i64::from(field(8, 4) << 4 | field(0, 4));
@@ -1727,7 +1821,7 @@ impl IntegerWord {
                 (0, 0) => Indexing::PostIndex,
                 _ => return None,
             };
-            return Some(Self::Halfword { name, rt: rd, rn, offset, index });
+            return Some(Self::Halfword { access, rt: rd, rn, offset, index });
         }
         None
     }
@@ -1735,20 +1829,7 @@ impl IntegerWord {
     /// The opcode `yaxpeax-arm` names this operation by.
     pub(super) fn opcode(self) -> Opcode {
         match self {
-            Self::Extend { name, rn, .. } => match (name, rn.is_some()) {
-                ("sxtb16", false) => Opcode::SXTB16,
-                ("sxtb16", true) => Opcode::SXTAB16,
-                ("uxtb16", false) => Opcode::UXTB16,
-                ("uxtb16", true) => Opcode::UXTAB16,
-                ("sxtb", false) => Opcode::SXTB,
-                ("sxtb", true) => Opcode::SXTAB,
-                ("sxth", false) => Opcode::SXTH,
-                ("sxth", true) => Opcode::SXTAH,
-                ("uxtb", false) => Opcode::UXTB,
-                ("uxtb", true) => Opcode::UXTAB,
-                ("uxth", false) => Opcode::UXTH,
-                _ => Opcode::UXTAH,
-            },
+            Self::Extend { kind, rn, .. } => kind.opcode(rn.is_some()),
             Self::Insert { rn: Some(_), .. } => Opcode::BFI,
             Self::Insert { rn: None, .. } => Opcode::BFC,
             Self::Extract { signed: true, .. } => Opcode::SBFX,
@@ -1762,14 +1843,7 @@ impl IntegerWord {
                 HalfwordMultiply::WordMultiplyAdd => Opcode::SMLAW(top_m),
                 HalfwordMultiply::LongMultiplyAdd => Opcode::SMLAL_halfword(top_n, top_m),
             },
-            Self::Halfword { name, .. } => match name {
-                "ldrh" => Opcode::LDRH,
-                "ldrsb" => Opcode::LDRSB,
-                "ldrsh" => Opcode::LDRSH,
-                "strh" => Opcode::STRH,
-                "ldrd" => Opcode::LDRD,
-                _ => Opcode::STRD,
-            },
+            Self::Halfword { access, .. } => access.opcode(),
         }
     }
 
@@ -1782,9 +1856,12 @@ impl IntegerWord {
 
     pub(super) fn mnemonic(self) -> String {
         match self {
-            Self::Extend { name, rn: None, .. } => name.to_string(),
+            Self::Extend { kind, rn: None, .. } => kind.name().to_string(),
             // `uxtab` adds the extended value to `rn`.
-            Self::Extend { name, rn: Some(_), .. } => format!("{}a{}", &name[..3], &name[3..]),
+            Self::Extend { kind, rn: Some(_), .. } => {
+                let name = kind.name();
+                format!("{}a{}", &name[..3], &name[3..])
+            }
             Self::Insert { rn: Some(_), .. } => "bfi".into(),
             Self::Insert { rn: None, .. } => "bfc".into(),
             Self::Extract { signed: true, .. } => "sbfx".into(),
@@ -1804,7 +1881,7 @@ impl IntegerWord {
                     }
                 }
             }
-            Self::Halfword { name, .. } => name.into(),
+            Self::Halfword { access, .. } => access.name().into(),
         }
     }
 
@@ -1840,8 +1917,8 @@ impl IntegerWord {
                     HalfwordMultiply::LongMultiplyAdd => format!("{ra}, {rd}, {rn}, {rm}"),
                 }
             }
-            Self::Halfword { name: mnemonic, rt, rn, offset, index } => {
-                let pair = if mnemonic.ends_with('d') {
+            Self::Halfword { access, rt, rn, offset, index } => {
+                let pair = if access.is_pair() {
                     format!("{}, ", name((rt + 1) & 15))
                 } else {
                     String::new()
@@ -1942,14 +2019,10 @@ impl IntegerWord {
                 read_too.iter().for_each(|&number| read(&mut lifted, number));
                 written.iter().for_each(|&number| write(&mut lifted, number));
             }
-            Self::Halfword { name, rt, rn, offset, index } => {
-                let load = name.starts_with("ld");
-                let pair = name.ends_with('d');
-                let width = match name {
-                    "ldrsb" => il::Width::Bits8,
-                    "ldrh" | "ldrsh" | "strh" => il::Width::Bits16,
-                    _ => il::Width::Bits32,
-                };
+            Self::Halfword { access, rt, rn, offset, index } => {
+                let load = access.is_load();
+                let pair = access.is_pair();
+                let width = access.width();
                 let values: Vec<u32> = if pair { vec![rt, (rt + 1) & 15] } else { vec![rt] };
                 let at = match index {
                     Indexing::PostIndex => 0,
@@ -2036,9 +2109,102 @@ enum VfpWord {
     },
     /// The arithmetic, compares and conversions. A conversion names its
     /// sizes in `name`, as `vcvt.s32.f64`; the rest take `size`.
-    Compute { name: &'static str, size: &'static str, dest: Vector, sources: [Option<Vector>; 2] },
+    Compute {
+        operation: VfpOperation,
+        size: &'static str,
+        dest: Vector,
+        sources: [Option<Vector>; 2],
+    },
     /// `vmov.f32 s0, #1.0`: a constant of 8 bits, which a few floats fit.
     MoveConstant { dest: Vector, bits: u64 },
+}
+
+/// What a VFP data processing word computes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VfpOperation {
+    Vmla,
+    Vmls,
+    Vnmls,
+    Vnmla,
+    Vmul,
+    Vnmul,
+    Vadd,
+    Vsub,
+    Vdiv,
+    Vmov,
+    Vabs,
+    Vneg,
+    Vsqrt,
+    Vcmp,
+    Vcmpe,
+    /// `vcvt` and `vcvtr`. The name holds the sizes, as `vcvt.s32.f64`.
+    Convert {
+        name: &'static str,
+        rounding: Rounding,
+    },
+}
+
+/// How a VFP conversion rounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rounding {
+    /// Between `f32` and `f64`, or from an integer.
+    Exact,
+    /// To an integer, toward zero: `vcvt`.
+    TowardZero,
+    /// To an integer, as the status register says: `vcvtr`.
+    AsStatus,
+}
+
+impl VfpOperation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Vmla => "vmla",
+            Self::Vmls => "vmls",
+            Self::Vnmls => "vnmls",
+            Self::Vnmla => "vnmla",
+            Self::Vmul => "vmul",
+            Self::Vnmul => "vnmul",
+            Self::Vadd => "vadd",
+            Self::Vsub => "vsub",
+            Self::Vdiv => "vdiv",
+            Self::Vmov => "vmov",
+            Self::Vabs => "vabs",
+            Self::Vneg => "vneg",
+            Self::Vsqrt => "vsqrt",
+            Self::Vcmp => "vcmp",
+            Self::Vcmpe => "vcmpe",
+            Self::Convert { name, .. } => name,
+        }
+    }
+
+    fn is_compare(self) -> bool {
+        matches!(self, Self::Vcmp | Self::Vcmpe)
+    }
+
+    /// `vmla` and kin, which add to their destination.
+    fn adds_to_destination(self) -> bool {
+        matches!(self, Self::Vmla | Self::Vmls | Self::Vnmla | Self::Vnmls)
+    }
+
+    /// What this computes. `vcvt` to an integer rounds toward zero, and
+    /// `vcvtr` as the status register says.
+    fn op(self) -> il::Op {
+        use il::Op;
+        match self {
+            Self::Vmov => Op::Move,
+            Self::Vadd => Op::FloatAdd,
+            Self::Vsub => Op::FloatSubtract,
+            Self::Vmul | Self::Vnmul => Op::FloatMultiply,
+            Self::Vmla | Self::Vmls | Self::Vnmla | Self::Vnmls => Op::FloatMultiplyAdd,
+            Self::Vdiv => Op::FloatDivide,
+            Self::Vneg | Self::Vabs => Op::FloatSign,
+            Self::Vsqrt => Op::FloatSquareRoot,
+            Self::Vcmp | Self::Vcmpe => Op::Float,
+            Self::Convert { rounding: Rounding::AsStatus, .. } => Op::FloatRoundNearest,
+            Self::Convert { rounding: Rounding::TowardZero, .. } => Op::FloatRoundTowardZero,
+            Self::Convert { rounding: Rounding::Exact, .. } => Op::FloatConvert,
+        }
+    }
 }
 
 /// A VFP register: `d` where `double`, else `s`.
@@ -2118,18 +2284,18 @@ impl VfpWord {
             let both = [Some(sized(vn, n, is_double)), Some(sized(vm, m, is_double))];
             let one = [Some(sized(vm, m, is_double)), None];
             let size = if is_double { "f64" } else { "f32" };
-            let float =
-                |name: &'static str, sources| Some(Self::Compute { name, size, dest, sources });
+            let float = |operation, sources| Some(Self::Compute { operation, size, dest, sources });
+            let convert = |name, rounding| VfpOperation::Convert { name, rounding };
             return match (field(23, 1) << 2 | field(20, 2), field(6, 1)) {
-                (0b000, 0) => float("vmla", both),
-                (0b000, _) => float("vmls", both),
-                (0b001, 0) => float("vnmls", both),
-                (0b001, _) => float("vnmla", both),
-                (0b010, 0) => float("vmul", both),
-                (0b010, _) => float("vnmul", both),
-                (0b011, 0) => float("vadd", both),
-                (0b011, _) => float("vsub", both),
-                (0b100, 0) => float("vdiv", both),
+                (0b000, 0) => float(VfpOperation::Vmla, both),
+                (0b000, _) => float(VfpOperation::Vmls, both),
+                (0b001, 0) => float(VfpOperation::Vnmls, both),
+                (0b001, _) => float(VfpOperation::Vnmla, both),
+                (0b010, 0) => float(VfpOperation::Vmul, both),
+                (0b010, _) => float(VfpOperation::Vnmul, both),
+                (0b011, 0) => float(VfpOperation::Vadd, both),
+                (0b011, _) => float(VfpOperation::Vsub, both),
+                (0b100, 0) => float(VfpOperation::Vdiv, both),
                 (0b111, 0) => {
                     let constant = field(16, 4) << 4 | field(0, 4);
                     Some(Self::MoveConstant {
@@ -2138,19 +2304,19 @@ impl VfpWord {
                     })
                 }
                 (0b111, _) => match (field(16, 4), field(7, 1)) {
-                    (0b0000, 0) => float("vmov", one),
-                    (0b0000, _) => float("vabs", one),
-                    (0b0001, 0) => float("vneg", one),
-                    (0b0001, _) => float("vsqrt", one),
-                    (0b0100, 0) => float("vcmp", one),
-                    (0b0100, _) => float("vcmpe", one),
-                    (0b0101, 0) => float("vcmp", [None, None]),
-                    (0b0101, _) => float("vcmpe", [None, None]),
+                    (0b0000, 0) => float(VfpOperation::Vmov, one),
+                    (0b0000, _) => float(VfpOperation::Vabs, one),
+                    (0b0001, 0) => float(VfpOperation::Vneg, one),
+                    (0b0001, _) => float(VfpOperation::Vsqrt, one),
+                    (0b0100, 0) => float(VfpOperation::Vcmp, one),
+                    (0b0100, _) => float(VfpOperation::Vcmpe, one),
+                    (0b0101, 0) => float(VfpOperation::Vcmp, [None, None]),
+                    (0b0101, _) => float(VfpOperation::Vcmpe, [None, None]),
                     // Between `f32` and `f64`: the result is the other size.
                     (0b0111, 1) => {
                         let name = if is_double { "vcvt.f32.f64" } else { "vcvt.f64.f32" };
                         Some(Self::Compute {
-                            name,
+                            operation: convert(name, Rounding::Exact),
                             size: "",
                             dest: sized(vd, d, !is_double),
                             sources: one,
@@ -2165,7 +2331,8 @@ impl VfpWord {
                             (false, _) => "vcvt.f32.u32",
                         };
                         let source = [Some(sized(vm, m, false)), None];
-                        Some(Self::Compute { name, size: "", dest, sources: source })
+                        let operation = convert(name, Rounding::Exact);
+                        Some(Self::Compute { operation, size: "", dest, sources: source })
                     }
                     // To a 32-bit integer in an `s` register. A clear bit 7
                     // rounds as the status register says, which `vcvtr` names.
@@ -2180,8 +2347,13 @@ impl VfpWord {
                             (_, _, true) => "vcvtr.u32.f64",
                             (_, _, false) => "vcvtr.u32.f32",
                         };
+                        let rounding = if toward_zero == 1 {
+                            Rounding::TowardZero
+                        } else {
+                            Rounding::AsStatus
+                        };
                         Some(Self::Compute {
-                            name,
+                            operation: convert(name, rounding),
                             size: "",
                             dest: sized(vd, d, false),
                             sources: one,
@@ -2252,12 +2424,13 @@ impl VfpWord {
                 let size = if dest.double { "f64" } else { "f32" };
                 (format!("vmov.{size}"), format!("{}, #{value:?}", dest.text()))
             }
-            Self::Compute { name, size, dest, sources } => {
+            Self::Compute { operation, size, dest, sources } => {
                 let mut operands = vec![dest.text()];
                 operands.extend(sources.iter().flatten().map(|source| source.text()));
-                if name.starts_with("vcmp") && sources == [None, None] {
+                if operation.is_compare() && sources == [None, None] {
                     operands.push("0x0".into());
                 }
+                let name = operation.name();
                 let name =
                     if size.is_empty() { name.to_string() } else { format!("{name}.{size}") };
                 (name, operands.join(", "))
@@ -2322,12 +2495,12 @@ impl VfpWord {
                 let dest = il::Operand::Reg(vector(dest.number));
                 lifted.operands = [dest, il::Operand::Const(bits)].into_iter().collect();
             }
-            Self::Compute { dest, sources, name, .. } => {
-                lifted.op = vfp_op(name);
+            Self::Compute { dest, sources, operation, .. } => {
+                lifted.op = operation.op();
                 let vector = |register: Vector| il::Operand::Reg(vector(register.number));
                 let values = sources.iter().flatten().map(|&source| vector(source));
                 lifted.operands = [vector(dest)].into_iter().chain(values).collect();
-                if name.starts_with("vcmp") {
+                if operation.is_compare() {
                     if sources == [None, None] {
                         lifted.operands.push(il::Operand::Const(0));
                     }
@@ -2341,7 +2514,7 @@ impl VfpWord {
                     return lifted;
                 }
                 // `vmla` and kin add to their destination.
-                if matches!(name, "vmla" | "vmls" | "vnmla" | "vnmls") {
+                if operation.adds_to_destination() {
                     lifted.reads.insert(il::Reg::Vector(dest.number as u8));
                 }
             }
@@ -2375,28 +2548,6 @@ fn expand_float_constant(constant: u32, double: bool) -> u64 {
     let copies = if b == 1 { (1 << repeats) - 1 } else { 0 };
     let exponent = (b ^ 1) << (repeats + 2) | copies << 2 | low_exponent;
     sign << (width - 1) | exponent << (width - 1 - (repeats + 3)) | fraction << fraction_shift
-}
-
-/// What a VFP data processing word computes. `vcvt` to an integer rounds
-/// toward zero, and `vcvtr` as the status register says.
-fn vfp_op(name: &str) -> il::Op {
-    use il::Op;
-    match name {
-        "vmov" => Op::Move,
-        "vadd" => Op::FloatAdd,
-        "vsub" => Op::FloatSubtract,
-        "vmul" | "vnmul" => Op::FloatMultiply,
-        "vmla" | "vmls" | "vnmla" | "vnmls" => Op::FloatMultiplyAdd,
-        "vdiv" => Op::FloatDivide,
-        "vneg" | "vabs" => Op::FloatSign,
-        "vsqrt" => Op::FloatSquareRoot,
-        _ if name.starts_with("vcvtr.") && !name.starts_with("vcvtr.f") => Op::FloatRoundNearest,
-        _ if name.starts_with("vcvt.s32") || name.starts_with("vcvt.u32") => {
-            Op::FloatRoundTowardZero
-        }
-        _ if name.starts_with("vcvt") => Op::FloatConvert,
-        _ => Op::Float,
-    }
 }
 
 /// Which instruction set a word given as A32 came in. A T32 VFP or NEON

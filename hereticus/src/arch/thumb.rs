@@ -25,7 +25,7 @@ use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
 use super::arm32::{
-    Arm32, Decoded, Encoding, Flags, IntegerWord, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel,
+    Arm32, Decoded, Encoding, Extend, Flags, IntegerWord, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel,
     UNKNOWN_MNEMONIC, UNWIND_SECTION, call_targets_through_thunks, classify, core_opcode,
     decode_fallback, decoded_of, decoder_misreads, is_long_thunk, lift_with, parse_hex, pool_loads,
     split_mnemonic, track_pool_words,
@@ -693,18 +693,18 @@ impl WideWord {
             return Some(Self::Shift { kind, sets_flags, rd, rn, rm });
         }
         if first & 0xff80 == 0xfa00 && second & 0xf0c0 == 0xf080 {
-            let name = match field(first, 4, 3) {
-                0b000 => "sxth",
-                0b001 => "uxth",
-                0b010 => "sxtb16",
-                0b011 => "uxtb16",
-                0b100 => "sxtb",
-                0b101 => "uxtb",
+            let kind = match field(first, 4, 3) {
+                0b000 => Extend::Sxth,
+                0b001 => Extend::Uxth,
+                0b010 => Extend::Sxtb16,
+                0b011 => Extend::Uxtb16,
+                0b100 => Extend::Sxtb,
+                0b101 => Extend::Uxtb,
                 _ => return None,
             };
             let rn = (rn != 15).then_some(rn);
             let rotation = field(second, 4, 2) * 8;
-            return Some(Self::Integer(IntegerWord::Extend { name, rd, rn, rm, rotation }));
+            return Some(Self::Integer(IntegerWord::Extend { kind, rd, rn, rm, rotation }));
         }
         if first & 0xfff0 == 0xf360 && second & 0x8020 == 0 {
             let lsb = field(second, 12, 3) << 2 | field(second, 6, 2);

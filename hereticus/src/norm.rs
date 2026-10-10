@@ -783,7 +783,10 @@ mod tests {
         let normalized = normalize_body(&Mips32::LITTLE, &body);
 
         let text: Vec<String> = body.iter().map(ToString::to_string).collect();
-        assert_eq!(text, ["lui v0, 0x0", "addiu v0, v0, 0x0", "addu gp, v0, t9", "addu v0, a0, a1"]);
+        assert_eq!(
+            text,
+            ["lui v0, 0x0", "addiu v0, v0, 0x0", "addu gp, v0, t9", "addu v0, a0, a1"]
+        );
         // The pair goes as an idiom and the `addu` into `gp` as frame work,
         // leaving only the arithmetic.
         assert_eq!(normalized.len(), 1, "got {normalized:?}");
