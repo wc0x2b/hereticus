@@ -657,6 +657,23 @@ undone, its functions pair by place where they can, and it comes back
 where they do not. This paired 504 more right and 242 fewer wrong.
 Leaving the undone pairs unpaired lost 927 right pairs to save 207 wrong.
 
+Across a kernel upgrade, the undoing also broke right pairs. Code moves to
+another file or another place in its file, so its pair breaks the order;
+undone, its function paired by place with what sat in its old slot. Of
+the wrong pairs by place, 346 had left their true partner unpaired at a
+higher score, most more than five functions away: `put_mtd_device` lost
+its partner at 1.00 to `mtd_read` at 0.35. An undone pair that scores 0.8
+or more, and 0.2 more than the pair by place, now comes back in its
+place. This paired 401 more right and 160 fewer wrong over the kernels,
+and 26 more right and 2 fewer wrong over the backports. Protecting every
+undone pair that scores more paired 368 more right and 89 fewer wrong on
+the kernels, but 70 fewer right and 96 more wrong on the backports,
+where the undoing mostly fixes look-alikes.
+
+Keeping only the pairs of a gap of equal counts that the alignment by
+scores also makes, on top of that, saved 87 more wrong kernel pairs and
+7 wrong backport pairs, but cost 53 right backport pairs.
+
 The fixture tests that showed a function as gone and new, such as
 `factorial` from `-O1` to `-O2`, or `check_header` and `dispatch` in the
 MIPS firmware, now show it as changed, which the symbols confirm.

@@ -1162,7 +1162,9 @@ impl Cascade<'_> {
     /// A weak pair that breaks the order is undone first, so that its
     /// functions can pair by place, and comes back where neither does.
     /// Measured over the backports built two ways, this paired 504 more
-    /// right and 242 fewer wrong.
+    /// right and 242 fewer wrong. An undone pair whose code is close comes
+    /// back in place of a pair by place that scores well below it: see
+    /// [`LOWEST_MOVED_SIMILARITY`].
     ///
     /// See RESEARCH.md, entry 7: genome comparison calls this synteny, and
     /// uses conserved gene order to tell orthologs from look-alikes.
@@ -1208,6 +1210,23 @@ impl Cascade<'_> {
                 }
             }
         }
+        // A pair undone above can be close code that moved: its functions
+        // left the order when a release moved the code to another place.
+        // Such a pair outranks a pair by place that would take one of its
+        // functions.
+        let mut undone_score: (HashMap<usize, f64>, HashMap<usize, f64>) = Default::default();
+        for pair in &released {
+            undone_score.0.insert(pair.before, pair.score);
+            undone_score.1.insert(pair.after, pair.score);
+        }
+        let outranks = |undone: Option<&f64>, score: f64| {
+            undone.is_some_and(|&undone| {
+                undone >= LOWEST_MOVED_SIMILARITY && undone > score + MOVED_SIMILARITY_MARGIN
+            })
+        };
+        pairs.retain(|&(x, y, score)| {
+            !outranks(undone_score.0.get(&x), score) && !outranks(undone_score.1.get(&y), score)
+        });
         for (x, y, score) in pairs {
             self.take_pair(x, y, Confidence::SameLayout, score);
         }
@@ -3241,6 +3260,22 @@ fn constant_agreement(left: &[u64], right: &[u64]) -> f64 {
 /// Gaps whose counts differ, aligned by the scores, paired at 70%
 /// precision at best, so they are left alone.
 const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
+
+/// The lowest code similarity at which a pair that [`Cascade::pair_by_layout`]
+/// undid outranks a pair by place, where it also scores
+/// [`MOVED_SIMILARITY_MARGIN`] more.
+///
+/// Across a kernel upgrade, code moves to another file or another place in
+/// its file, and a pair of it breaks the order of the pairs around it. Undone
+/// and paired by place, `put_mtd_device` lost its partner at 1.00 to
+/// `mtd_read` at 0.35. Measured against the symbols, this paired 401 more
+/// right and 160 fewer wrong over the OpenWrt kernels, and 26 more right and
+/// 2 fewer wrong over the backports built two ways. A floor of 0.75 or 0.85,
+/// or a margin of 0.1 to 0.4, did less on one of the two.
+const LOWEST_MOVED_SIMILARITY: f64 = 0.8;
+
+/// See [`LOWEST_MOVED_SIMILARITY`].
+const MOVED_SIMILARITY_MARGIN: f64 = 0.2;
 
 /// How many times [`Cascade::pair_by_unique_references_until_settled`]
 /// runs the stage at most. Measured over the OpenWrt kernels, a second
@@ -5789,14 +5824,15 @@ mod tests {
     }
 
     /// A function that paired by similarity with a look-alike out of
-    /// order pairs again by its place.
+    /// order pairs again by its place, where the look-alike is not close.
     #[test]
     fn a_pair_out_of_order_pairs_again_by_place() {
         let anchors =
             [arm(&[ADC, SBC, RSB, BX_LR]), arm(&[MUL, MUL, ADC, BX_LR]), arm(&[RSB, RSB, BX_LR])];
         let before_code = arm(&[ADD, SUB, ORR, EOR, AND, BIC, BX_LR]);
         let rewritten = arm(&[ADD, MUL, MUL, MUL, MUL, MUL, BX_LR]);
-        let look_alike = arm(&[ADD, SUB, ORR, EOR, AND, BIC, ADC, BX_LR]);
+        // Scores 0.78, below `LOWEST_MOVED_SIMILARITY`.
+        let look_alike = arm(&[ADD, SUB, ORR, EOR, AND, BIC, ADC, SBC, BX_LR]);
         let [first, second, third] = &anchors;
         let before = binary_of(&[("", first), ("", &before_code), ("", second), ("", third)]);
         let after = binary_of(&[
@@ -5812,6 +5848,40 @@ mod tests {
         let pair = diff.matched.iter().find(|pair| pair.before == 1).expect("paired");
         assert_eq!((pair.after, pair.confidence), (1, Confidence::SameLayout));
         assert_eq!(diff.added, vec![4]);
+    }
+
+    /// A function whose close code moved to another place keeps its
+    /// partner there, over a function that scores well below in its old
+    /// place.
+    #[test]
+    fn close_code_that_moved_keeps_its_partner_over_its_place() {
+        let anchors = [
+            arm(&[ADC, SBC, RSB, BX_LR]),
+            arm(&[MUL, MUL, ADC, BX_LR]),
+            arm(&[RSB, RSB, BX_LR]),
+            arm(&[SBC, SBC, SBC, BX_LR]),
+        ];
+        let moved = arm(&[ADD, SUB, ORR, EOR, AND, BIC, ADC, SBC, RSB, BX_LR]);
+        let moved_and_edited = arm(&[ADD, SUB, ORR, EOR, AND, BIC, ADC, SBC, MUL, BX_LR]);
+        let in_its_place = arm(&[ADD, MUL, MUL, MUL, MUL, MUL, MUL, MUL, MUL, BX_LR]);
+        let [first, second, third, fourth] = &anchors;
+        let before =
+            binary_of(&[("", first), ("", &moved), ("", second), ("", third), ("", fourth)]);
+        let after = binary_of(&[
+            ("", first),
+            ("", &in_its_place),
+            ("", second),
+            ("", third),
+            ("", fourth),
+            ("", &moved_and_edited),
+        ]);
+
+        let diff =
+            diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+        let pair = diff.matched.iter().find(|pair| pair.before == 1).expect("paired");
+        assert!(pair.score >= LOWEST_MOVED_SIMILARITY, "{pair:?}");
+        assert_eq!((pair.after, pair.confidence), (5, Confidence::Similar));
+        assert_eq!(diff.added, vec![1]);
     }
 
     /// Two unrelated binaries pair nothing by place, though each function
