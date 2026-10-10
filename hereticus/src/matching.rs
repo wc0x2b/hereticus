@@ -3974,25 +3974,21 @@ fn align_within<T: Eq + core::hash::Hash>(left: &[T], right: &[T], largest: usiz
     };
     let left: Vec<u32> = left.iter().map(&mut id_of).collect();
     let right: Vec<u32> = right.iter().map(&mut id_of).collect();
+    let count = ids.len();
     let mut steps = Vec::with_capacity(left.len().max(right.len()));
-    align_into(&left, &right, largest, &mut steps);
+    align_into(&left, &right, count, largest, &mut steps);
     steps
 }
 
 /// [`align_within`], appending to `steps`.
-fn align_into<T: Eq + core::hash::Hash>(
-    left: &[T],
-    right: &[T],
-    largest: usize,
-    steps: &mut Vec<Step>,
-) {
+fn align_into(left: &[u32], right: &[u32], count: usize, largest: usize, steps: &mut Vec<Step>) {
     // A pair that fits takes the exact walk unchanged, so that its ties
     // break as they always have.
     let fits = |left: usize, right: usize| {
         left.saturating_add(1).saturating_mul(right.saturating_add(1)) <= largest
     };
     if fits(left.len(), right.len()) {
-        steps.extend(longest_common_subsequence(left, right));
+        steps.extend(longest_common_subsequence_of_numbers(left, right, count));
         return;
     }
     let head = left.iter().zip(right).take_while(|(a, b)| a == b).count();
@@ -4006,7 +4002,7 @@ fn align_into<T: Eq + core::hash::Hash>(
     let (left_gap, right_gap) = (&left[head..left.len() - tail], &right[head..right.len() - tail]);
 
     if fits(left_gap.len(), right_gap.len()) {
-        steps.extend(longest_common_subsequence(left_gap, right_gap));
+        steps.extend(longest_common_subsequence_of_numbers(left_gap, right_gap, count));
     } else {
         let anchors = chain_of_unique_items(left_gap, right_gap);
         if anchors.is_empty() {
@@ -4014,11 +4010,11 @@ fn align_into<T: Eq + core::hash::Hash>(
         } else {
             let (mut i, mut j) = (0, 0);
             for (x, y) in anchors {
-                align_into(&left_gap[i..x], &right_gap[j..y], largest, steps);
+                align_into(&left_gap[i..x], &right_gap[j..y], count, largest, steps);
                 steps.push(Step::Both);
                 (i, j) = (x + 1, y + 1);
             }
-            align_into(&left_gap[i..], &right_gap[j..], largest, steps);
+            align_into(&left_gap[i..], &right_gap[j..], count, largest, steps);
         }
     }
     steps.extend(core::iter::repeat_n(Step::Both, tail));
@@ -4189,7 +4185,8 @@ fn steps_by_position<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
     steps
 }
 
-/// Table of the classic longest-common-subsequence dynamic program.
+/// Table of the classic longest-common-subsequence dynamic program, the
+/// model [`longest_common_subsequence_of_numbers`] is tested against.
 ///
 /// `len[i][j]` is the length of the longest run of instructions shared by the
 /// tails `left[i..]` and `right[j..]`. Reading it back from the top left gives
@@ -4200,6 +4197,7 @@ fn steps_by_position<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
 /// for more memory than the machine has.
 ///
 /// See RESEARCH.md, A13.
+#[cfg(test)]
 fn longest_common_subsequence<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step> {
     // A shared head aligns with itself: the walk below takes each equal
     // pair as it meets it. Most changed functions share a long head, and the
@@ -4242,6 +4240,77 @@ fn longest_common_subsequence<T: PartialEq>(left: &[T], right: &[T]) -> Vec<Step
     steps
 }
 
+/// [`longest_common_subsequence`] of two runs of numbers below `count`,
+/// with each row of the table held as bits.
+///
+/// The walk of the table reads only whether `len[i + 1][j]` is at least
+/// `len[i][j + 1]`, so the same walk on the same lengths gives the same
+/// steps. The lengths come from the bit-parallel program of Hyyrö (2004),
+/// on both runs reversed, as `len` is of tails: after `k` items of the
+/// reversed left run, bit `b` of the row is clear where the length grows
+/// at item `b` of the reversed right run. A row is `right.len() / 64`
+/// words where the table row was `right.len()` cells, and each step of the
+/// program handles 64 cells at once.
+fn longest_common_subsequence_of_numbers(left: &[u32], right: &[u32], count: usize) -> Vec<Step> {
+    let head = left.iter().zip(right).take_while(|(a, b)| a == b).count();
+    let mut steps = vec![Step::Both; head];
+    let (left, right) = (&left[head..], &right[head..]);
+    let (rows, columns) = (left.len(), right.len());
+    let words = columns.div_ceil(64).max(1);
+
+    // Where each number sits in the reversed right run.
+    let mut matches = vec![0u64; count * words];
+    for (bit, &item) in right.iter().rev().enumerate() {
+        matches[item as usize * words + bit / 64] |= 1 << (bit % 64);
+    }
+    // `table[k]`: the row after `k` items of the reversed left run.
+    let mut table = vec![u64::MAX; (rows + 1) * words];
+    for (k, &item) in left.iter().rev().enumerate() {
+        let (done, next) = table.split_at_mut((k + 1) * words);
+        let (row, next) = (&done[k * words..], &mut next[..words]);
+        let mask = &matches[item as usize * words..][..words];
+        let (mut carry, mut borrow) = (false, false);
+        for word in 0..words {
+            let (v, u) = (row[word], row[word] & mask[word]);
+            let (sum, c1) = v.overflowing_add(u);
+            let (sum, c2) = sum.overflowing_add(u64::from(carry));
+            carry = c1 || c2;
+            let (difference, b1) = v.overflowing_sub(u);
+            let (difference, b2) = difference.overflowing_sub(u64::from(borrow));
+            borrow = b1 || b2;
+            next[word] = sum | difference;
+        }
+    }
+    // `len[i][j]`: the clear bits of the first `columns - j` of row
+    // `rows - i`.
+    let len = |i: usize, j: usize| {
+        let row = &table[(rows - i) * words..][..words];
+        let width = columns - j;
+        let (whole, rest) = (width / 64, width % 64);
+        let set: u32 = row[..whole].iter().map(|word| word.count_ones()).sum::<u32>()
+            + if rest == 0 { 0 } else { (row[whole] & ((1 << rest) - 1)).count_ones() };
+        width - set as usize
+    };
+
+    let (mut i, mut j) = (0, 0);
+    while i < rows && j < columns {
+        if left[i] == right[j] {
+            steps.push(Step::Both);
+            i += 1;
+            j += 1;
+        } else if len(i + 1, j) >= len(i, j + 1) {
+            steps.push(Step::Left);
+            i += 1;
+        } else {
+            steps.push(Step::Right);
+            j += 1;
+        }
+    }
+    steps.extend(core::iter::repeat_n(Step::Left, rows - i));
+    steps.extend(core::iter::repeat_n(Step::Right, columns - j));
+    steps
+}
+
 /// Turn an alignment into diff lines, reading the printed text for each side.
 ///
 /// A line the alignment kept on both sides is unchanged, targets aside.
@@ -4277,6 +4346,45 @@ fn lines_from_alignment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bit-parallel table walks as the table of cells does, ties and
+    /// all, on runs of every length across the edges of a word.
+    #[test]
+    fn the_bit_table_walks_as_the_cell_table() {
+        bolero::check!().with_type::<(Vec<u8>, Vec<u8>)>().for_each(|(left, right)| {
+            // Few distinct items, so that ties are many.
+            let left: Vec<u32> = left.iter().map(|&item| u32::from(item % 5)).collect();
+            let right: Vec<u32> = right.iter().map(|&item| u32::from(item % 5)).collect();
+            assert_eq!(
+                longest_common_subsequence_of_numbers(&left, &right, 5),
+                longest_common_subsequence(&left, &right),
+                "{left:?} {right:?}"
+            );
+        });
+        // Runs of up to 300 items, which span several words.
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = |below: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % below
+        };
+        for _ in 0..200 {
+            let (left_len, right_len) = (next(300), next(300));
+            let left: Vec<u32> = (0..left_len).map(|_| next(6)).collect();
+            let right: Vec<u32> = (0..right_len).map(|_| next(6)).collect();
+            assert_eq!(
+                longest_common_subsequence_of_numbers(&left, &right, 6),
+                longest_common_subsequence(&left, &right)
+            );
+        }
+        let long: Vec<u32> = (0..200).map(|index| index % 7).collect();
+        let other: Vec<u32> = (0..190).map(|index| (index * 3) % 7).collect();
+        assert_eq!(
+            longest_common_subsequence_of_numbers(&long, &other, 7),
+            longest_common_subsequence(&long, &other)
+        );
+    }
     use crate::arch::arm32::Arm32;
     use crate::arch::mips::Mips32;
     use crate::arch::{Insn, InsnKind};
