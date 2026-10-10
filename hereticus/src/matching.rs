@@ -492,9 +492,15 @@ struct Interner {
 
 impl Interner {
     /// The symbol for an instruction, assigning one when it is new.
-    fn intern(&mut self, insn: NormInsn) -> Symbol {
+    fn intern(&mut self, insn: &NormInsn) -> Symbol {
         let next = self.symbols.len() as Symbol;
-        *self.symbols.entry(insn).or_insert(next)
+        match self.symbols.get(insn) {
+            Some(&symbol) => symbol,
+            None => {
+                self.symbols.insert(insn.clone(), next);
+                next
+            }
+        }
     }
 
     /// How many distinct instructions have been numbered.
@@ -517,9 +523,8 @@ struct Prepared<'a> {
     ///
     /// Two functions of identical shape carry identical sequences, because a
     /// symbol stands for one distinct normalized instruction. That answers the
-    /// shape stage without keeping the instructions themselves: four bytes an
-    /// instruction rather than the eighty-eight a `NormInsn` costs, which is
-    /// what makes a whole kernel fit in memory.
+    /// shape stage by comparing four bytes an instruction, where a `NormInsn`
+    /// compares field by field.
     ordered: Vec<Symbol>,
     /// Which decoder read this function, so the printed form can be recovered.
     isa: Isa,
@@ -544,6 +549,9 @@ struct Prepared<'a> {
     /// The distinct constants of the body, sorted: see
     /// [`crate::norm::constant_signature`].
     constants: Vec<u64>,
+    /// The normalized body, kept so that a pair need not decode and
+    /// normalize it again.
+    body: Vec<NormInsn>,
 }
 
 /// What a function refers to that its normalized code does not show.
@@ -586,10 +594,8 @@ impl Prepared<'_> {
     /// instructions an image, so storing every normalized body costs over
     /// 160 MB a side and the pair could not be compared at all. Only a matched
     /// pair needs it, and matching itself reads nothing but the symbols.
-    fn body(&self) -> Vec<NormInsn> {
-        let arch = self.isa.arch();
-        let (insns, _) = decode_all(arch, &self.function.code, self.function.address);
-        normalize_body_in(arch, &self.function.code, &insns, self.addresses)
+    fn body(&self) -> &[NormInsn] {
+        &self.body
     }
 
     /// Report whether the two functions share a constant too large to be
@@ -687,9 +693,10 @@ fn prepare<'a>(
             let isa = binary.isa_of(function);
             let arch = isa.arch();
             let (insns, _) = decode_all(arch, &function.code, function.address);
-            // The body is interned and then dropped. Matching reads only the
-            // symbols, and the few pairs that need the instructions back
-            // normalize again on demand.
+            // The body is kept as well as interned. Each changed pair reads
+            // both bodies; normalizing them again for it took a sixth of a
+            // comparison of a kernel, and keeping them costs a twelfth of
+            // its peak memory.
             let body = normalize_body_in(arch, &function.code, &insns, &binary.addresses);
             let flow = flow_features_in(arch, &function.code, &insns, FLOW_DEPTH);
             let contents = arch.contents(&function.code, &insns, &binary.addresses);
@@ -729,7 +736,7 @@ fn prepare<'a>(
                 found.iter().filter(|&&(_, sure)| sure).map(|&(text, _)| text).collect();
 
             let constants: Vec<u64> = constant_signature(&body).into_iter().collect();
-            let ordered: Vec<Symbol> = body.into_iter().map(|insn| interner.intern(insn)).collect();
+            let ordered: Vec<Symbol> = body.iter().map(|insn| interner.intern(insn)).collect();
             let mut symbols = ordered.clone();
             symbols.sort_unstable();
 
@@ -746,6 +753,7 @@ fn prepare<'a>(
                 sure_texts,
                 flow,
                 constants,
+                body,
             }
         })
         .collect()
@@ -1452,16 +1460,14 @@ impl Cascade<'_> {
                 rarity: 0.0,
             };
         }
-        // Normalize each side once and share it between the two answers below;
-        // neither the cascade nor the scoring stage keeps a body around.
         let (left_body, right_body) = (left.body(), right.body());
-        let (edits, kinds) = count_edits(&left_body, &right_body);
+        let (edits, kinds) = count_edits(left_body, right_body);
         Match {
             before,
             after,
             confidence,
             score,
-            changed: classify_change(left, right, &left_body, &right_body),
+            changed: classify_change(left, right, left_body, right_body),
             edits,
             kinds,
             rarity: 0.0,
@@ -1812,7 +1818,7 @@ impl Cascade<'_> {
                 return false;
             }
             left.function.code == right.function.code
-                || (left.ordered == right.ordered && same_detail(&left.body(), &right.body()))
+                || (left.ordered == right.ordered && same_detail(left.body(), right.body()))
         };
         //
         // A forwarder, whose whole body is one call or jump, is the
@@ -2736,13 +2742,13 @@ impl Cascade<'_> {
         let mut pairs = Vec::new();
         for (shape, lefts) in &left_groups {
             let Some(rights) = right_groups.get(shape) else { continue };
-            let left_bodies: Vec<Vec<NormInsn>> =
+            let left_bodies: Vec<&[NormInsn]> =
                 lefts.iter().map(|&index| self.left[index].body()).collect();
-            let right_bodies: Vec<Vec<NormInsn>> =
+            let right_bodies: Vec<&[NormInsn]> =
                 rights.iter().map(|&index| self.right[index].body()).collect();
             let agree = |l: usize, r: usize| {
                 left_keys[lefts[l]] == right_keys[rights[r]]
-                    && same_detail(&left_bodies[l], &right_bodies[r])
+                    && same_detail(left_bodies[l], right_bodies[r])
             };
             for l in 0..lefts.len() {
                 let mut agreeing = (0..rights.len()).filter(|&r| agree(l, r));
@@ -6280,7 +6286,7 @@ mod tests {
             .iter()
             .map(|body| {
                 let mut symbols: Vec<Symbol> =
-                    body.iter().map(|insn| interner.intern(insn.clone())).collect();
+                    body.iter().map(|insn| interner.intern(insn)).collect();
                 symbols.sort_unstable();
                 symbols
             })
@@ -6339,12 +6345,12 @@ mod tests {
         let mut interner = Interner::default();
 
         let same_shape_other_constant = body(&[("mov", "r0, 0x1"), ("mov", "r0, 0x2")]);
-        let first = interner.intern(same_shape_other_constant[0].clone());
-        let second = interner.intern(same_shape_other_constant[1].clone());
+        let first = interner.intern(&same_shape_other_constant[0]);
+        let second = interner.intern(&same_shape_other_constant[1]);
         assert_eq!(first, second, "constants stay out of equality, so out of the symbol");
 
         let different = body(&[("ldr", "r0, [r1]")]);
-        let third = interner.intern(different[0].clone());
+        let third = interner.intern(&different[0]);
         assert_ne!(first, third, "a different operation needs a different symbol");
         assert_eq!(interner.len(), 2, "two distinct instructions were seen");
     }
