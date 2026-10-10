@@ -61,14 +61,6 @@ iOS and macOS keep most of their libraries only in the dyld shared cache.
 `object` reads one image of a cache, but its calls to other images go
 through stubs that the cache builder has bound or removed.
 
-## Cache the fixtures in CI
-
-The README shows a build badge, but the repository holds no workflow. Add
-one that runs `just test`, and cache `fixtures/build` in it, keyed on the
-pinned SHA-256 values and on `fixtures/`. `backports.sh` already keeps
-what it built while its inputs stay the same: locally a second run takes
-two seconds where the first takes eight minutes.
-
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
@@ -189,26 +181,15 @@ that no instruction separates"), and the fix shows on no changed row in
 
 The CLI on an OpenWrt kernel takes 28 seconds built for musl, the target
 `.cargo/config.toml` picks; the work left is mostly decoding and string
-handling, which "Do not decide by mnemonic text" below covers.
+handling, which "Build less text for each instruction" below covers.
 
-## Do not decide by mnemonic text
+## Build less text for each instruction
 
-Decide what an instruction does by the opcode the decoder gives, not by
-its printed mnemonic. Text is slow and wrong in ways an opcode is not:
-
-- Slow: under callgrind, a comparison of libxml2 for arm64 spends 17%
-  of its instructions in `Aarch64::lift`, where `op_of` holds 132 string
-  tests and `role_of` 54; the searches for `", "` and `.w` that this tree
-  already took out cost 8% and 16% of whole comparisons.
-- Wrong: much of the code of `arch/` only mends what `yaxpeax` prints, as
-  `strt` for a wide store, `lsl` for `uxtw`, or the `.w` of Thumb-2, and
-  a new release of a decoder that prints otherwise would change what
-  pairs, with no test of the decoder to say so.
-
-Keep the text for what a reader sees, and for the normalized body until
-a measure says the body may change. Move one architecture at a time, and
-keep each report the same: the operand test against llvm-objdump and the
-snapshots tell. Start with AArch64, whose `op_of` and `role_of` hold the
-most string tests. The musl build of the CLI runs about the same number of
-instructions as the glibc build, so its remaining gap is in how fast
-musl runs them, as in `memcmp`.
+Every architecture now decides by the opcode that `Insn::opcode` holds,
+not by the printed mnemonic, and the reports are the same byte for byte.
+The CLI is not faster: on `libgnutls` for arm64, `libarchive` for armhf
+and a MIPS kernel it took the same time as before, within the noise. The
+decoders still print every instruction to text, and the normalized body,
+`view.rs` and the test of `matching.rs` that compares as the normalizer
+does still read that text. Measure where the time goes now, and print
+only what a reader sees.
