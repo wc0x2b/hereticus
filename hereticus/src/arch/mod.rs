@@ -743,29 +743,99 @@ fn decode_in_one_set(
     code: &[u8],
     address: u64,
 ) -> (Vec<Insn>, Option<DecodeError>) {
-    let decoded = decode_linear(arch, code, address);
     if arch.data_among_code() == DataAmongCode::Never
         || arch.instruction_width() >= arch.pointer_width()
     {
-        return decoded;
+        return decode_linear(arch, code, address);
     }
     // Each pass reads the pool words from instructions in better step than
     // the pass before: a load read out of step names a word that is code.
     // Measured on Lua built by GCC for Thumb-2, one such word hid a `cbnz`
     // and split `setnodevector`. Two passes settle what is measured.
+    //
+    // An instruction decodes the same at an offset whatever the pool, so a
+    // pass takes each one the pass before decoded there: decoding each pass
+    // anew took a third of a comparison of libarchive for Thumb-2. What it
+    // takes is the instruction as decoded, before `after_decoding`.
     const MOST_PASSES: usize = 3;
-    let mut decoded = decoded;
     let mut pool = std::collections::BTreeSet::new();
+    let (mut raw, mut error) = decode_raw(arch, code, address, &pool, (&[], &pool));
+    let finished = |raw: &[Insn]| {
+        let mut insns = raw.to_vec();
+        arch.after_decoding(&mut insns);
+        insns
+    };
+    let mut decoded = finished(&raw);
     for _ in 0..MOST_PASSES {
         let named: std::collections::BTreeSet<u64> =
-            arch.literal_pool_words(&decoded.0).into_iter().collect();
+            arch.literal_pool_words(&decoded).into_iter().collect();
         if named == pool {
             break;
         }
+        (raw, error) = decode_raw(arch, code, address, &named, (&raw, &pool));
         pool = named;
-        decoded = decode_all_but(arch, code, address, &pool);
+        decoded = finished(&raw);
     }
-    decoded
+    (decoded, error)
+}
+
+/// The instructions of `code` as [`decode_all_but`] reads them, before
+/// [`Arch::after_decoding`], taking each one an earlier pass decoded at its
+/// address in place of decoding it again. `earlier` holds that pass, sorted
+/// by address, and the words it read as data, which decode nothing.
+fn decode_raw(
+    arch: &dyn Arch,
+    code: &[u8],
+    address: u64,
+    data: &std::collections::BTreeSet<u64>,
+    earlier: (&[Insn], &std::collections::BTreeSet<u64>),
+) -> (Vec<Insn>, Option<DecodeError>) {
+    let (earlier, earlier_data) = earlier;
+    let width = arch.pointer_width();
+    let mut out = Vec::with_capacity(earlier.len());
+    let mut offset = 0;
+    let mut error = None;
+    while offset < code.len() {
+        let at = address + offset as u64;
+        if data.contains(&at)
+            && let Some(bytes) = code.get(offset..offset + width)
+        {
+            out.push(data_word(at, bytes));
+            offset += width;
+            continue;
+        }
+        let known = (!earlier_data.contains(&at))
+            .then(|| earlier.binary_search_by_key(&at, |insn| insn.address).ok())
+            .flatten()
+            .map(|index| earlier[index].clone());
+        match known.map_or_else(|| arch.decode(code, offset, address), Ok) {
+            Ok(insn) if insn.bytes_len > 0 => {
+                offset += insn.bytes_len;
+                out.push(insn);
+            }
+            Ok(_) => {
+                error = Some(DecodeError::Invalid);
+                break;
+            }
+            Err(err) => {
+                error = Some(err);
+                break;
+            }
+        }
+    }
+    (out, error)
+}
+
+/// A word of data among code, as one instruction no decoder reads.
+fn data_word(at: u64, bytes: &[u8]) -> Insn {
+    Insn {
+        address: at,
+        bytes_len: bytes.len(),
+        mnemonic: ".word".to_string(),
+        operands: bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect(),
+        kind: InsnKind::Unknown,
+        opcode: Opcode::None,
+    }
 }
 
 /// Decode `code` one instruction after the next.
@@ -811,42 +881,7 @@ pub fn decode_all_but(
     address: u64,
     data: &std::collections::BTreeSet<u64>,
 ) -> (Vec<Insn>, Option<DecodeError>) {
-    let width = arch.pointer_width();
-    let mut out = Vec::new();
-    let mut offset = 0;
-    let mut error = None;
-    while offset < code.len() {
-        let at = address + offset as u64;
-        if data.contains(&at)
-            && let Some(bytes) = code.get(offset..offset + width)
-        {
-            let operands = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
-            out.push(Insn {
-                address: at,
-                bytes_len: width,
-                mnemonic: ".word".to_string(),
-                operands,
-                kind: InsnKind::Unknown,
-                opcode: Opcode::None,
-            });
-            offset += width;
-            continue;
-        }
-        match arch.decode(code, offset, address) {
-            Ok(insn) if insn.bytes_len > 0 => {
-                offset += insn.bytes_len;
-                out.push(insn);
-            }
-            Ok(_) => {
-                error = Some(DecodeError::Invalid);
-                break;
-            }
-            Err(err) => {
-                error = Some(err);
-                break;
-            }
-        }
-    }
+    let (mut out, error) = decode_raw(arch, code, address, data, (&[], data));
     arch.after_decoding(&mut out);
     (out, error)
 }
