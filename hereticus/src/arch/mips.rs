@@ -1444,11 +1444,7 @@ fn arrive(
 }
 
 /// Merge the addresses held on a branch to `target` into those recorded.
-fn record_state(
-    at_target: &mut BTreeMap<u64, HeldAddresses>,
-    target: u64,
-    upper: &HeldAddresses,
-) {
+fn record_state(at_target: &mut BTreeMap<u64, HeldAddresses>, target: u64, upper: &HeldAddresses) {
     match at_target.get_mut(&target) {
         Some(recorded) => *recorded = recorded.agreed_with(upper),
         None => {
@@ -1458,10 +1454,7 @@ fn record_state(
 }
 
 /// Remove and return the addresses recorded for branches to `address`.
-fn take_state(
-    at_target: &mut BTreeMap<u64, HeldAddresses>,
-    address: u64,
-) -> Option<HeldAddresses> {
+fn take_state(at_target: &mut BTreeMap<u64, HeldAddresses>, address: u64) -> Option<HeldAddresses> {
     at_target.remove(&address)
 }
 
