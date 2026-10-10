@@ -3181,13 +3181,22 @@ pub(super) fn track_pool_words(
             address
         };
 
-        // T32 writes `add rX, pc` for `add rX, rX, pc`.
-        let two_operand_add = format!("{destination}, {rest}");
-        let three = parse_three(rest).or_else(|| {
-            (opcode == Some(Opcode::ADD) && !rest.contains(','))
-                .then(|| parse_three(&two_operand_add))?
-        });
-        match (opcode, parse_reference(rest), three) {
+        // T32 writes `add rX, pc` for `add rX, rX, pc`. Only an `add` reads
+        // three operands, so only it parses them.
+        let two_operand_add;
+        let three = match opcode {
+            Some(Opcode::ADD) if !rest.contains(',') => {
+                two_operand_add = format!("{destination}, {rest}");
+                parse_three(&two_operand_add)
+            }
+            Some(Opcode::ADD) => parse_three(rest),
+            _ => None,
+        };
+        let reference = match opcode {
+            Some(Opcode::LDR) => parse_reference(rest),
+            _ => None,
+        };
+        match (opcode, reference, three) {
             // `ldr rX, [pc, imm]`: load a pool word.
             (Some(Opcode::LDR), Some(("pc", Offset::Immediate(offset))), _) => {
                 let pool = pc_model.of_literal_load(insn.address).wrapping_add(offset as u64);
