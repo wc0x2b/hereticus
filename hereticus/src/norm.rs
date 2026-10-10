@@ -438,22 +438,29 @@ fn shape_of(arch: &dyn Arch, operand: &str) -> Option<OperandShape> {
 /// Normalize one instruction, with its operands read from `lifted` where the
 /// lifter gives them, and parsed from the text where not.
 fn normalize_lifted(arch: &dyn Arch, insn: &Insn, lifted: Option<&Option<Lifted>>) -> NormInsn {
-    let mut normalized = normalize(arch, insn);
-    let Some(Some(lifted)) = lifted else { return normalized };
-    if normalized.flow == FlowShape::Opaque {
-        return normalized;
+    // The lift names the operands and constants, so the text gives only the
+    // name: parsing every operand to throw the shapes away took a twelfth
+    // of a comparison of an ARM kernel.
+    let (Some(Some(lifted)), false) = (lifted, insn.kind == InsnKind::Unknown) else {
+        return normalize(arch, insn);
+    };
+    NormInsn {
+        operation: arch.normalize_operation(&insn.mnemonic),
+        operands: lifted
+            .operands
+            .iter()
+            .flat_map(|operand| lifted_shapes(arch, *operand))
+            .collect(),
+        flow: insn.kind.into(),
+        constants: lifted
+            .operands
+            .iter()
+            .filter_map(|operand| match operand {
+                il::Operand::Const(value) => Some(*value),
+                _ => None,
+            })
+            .collect(),
     }
-    normalized.operands =
-        lifted.operands.iter().flat_map(|operand| lifted_shapes(arch, *operand)).collect();
-    normalized.constants = lifted
-        .operands
-        .iter()
-        .filter_map(|operand| match operand {
-            il::Operand::Const(value) => Some(*value),
-            _ => None,
-        })
-        .collect();
-    normalized
 }
 
 /// The shapes of a lifted operand, as [`shape_of`] gives for a printed one.
