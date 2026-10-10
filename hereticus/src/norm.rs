@@ -725,15 +725,20 @@ mod tests {
         assert_ne!(spill, load, "a frame slot is not the same as a data load");
     }
 
+    /// One A32 word, as the decoder reads it.
+    fn a32(word: u32) -> Insn {
+        Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word must decode")
+    }
+
     #[test]
     fn drops_frame_management() {
         let body = [
-            insn("push", "{fp, lr}", InsnKind::Normal),
-            insn("mov", "fp, sp", InsnKind::Normal),
-            insn("sub", "sp, sp, 0xc", InsnKind::Normal),
-            insn("str", "r0, [fp, -0x4]", InsnKind::Normal),
-            insn("add", "r0, r0, r1", InsnKind::Normal),
-            insn("bx", "lr", InsnKind::Return),
+            a32(0xe92d_4800), // push {fp, lr}
+            a32(0xe1a0_b00d), // mov fp, sp
+            a32(0xe24d_d00c), // sub sp, sp, 0xc
+            a32(0xe50b_0004), // str r0, [fp, -0x4]
+            a32(0xe080_0001), // add r0, r0, r1
+            a32(0xe12f_ff1e), // bx lr
         ];
         let normalized = normalize_body(&Arm32, &body);
 
@@ -745,13 +750,14 @@ mod tests {
     /// `pop {fp, pc}` both restores the frame and returns, so it must stay.
     #[test]
     fn keeps_a_pop_that_returns() {
-        let body = [insn("pop", "{fp, pc}", InsnKind::Return)];
+        let body = [a32(0xe8bd_8800)];
+        assert_eq!(body[0].kind, InsnKind::Return);
         assert_eq!(normalize_body(&Arm32, &body).len(), 1);
     }
 
     #[test]
     fn keeps_loads_that_are_not_spills() {
-        let body = [insn("ldr", "r0, [r1, 0x8]", InsnKind::Normal)];
+        let body = [a32(0xe591_0008)]; // ldr r0, [r1, 0x8]
         assert_eq!(normalize_body(&Arm32, &body).len(), 1, "a data load is real work");
     }
 

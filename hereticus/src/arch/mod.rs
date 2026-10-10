@@ -628,7 +628,10 @@ pub enum Opcode {
     /// instruction made by hand.
     #[default]
     None,
+    /// A64.
     Aarch64(aarch64::Decoded),
+    /// A32 and T32.
+    Arm(arm32::Decoded),
 }
 
 impl fmt::Display for Insn {

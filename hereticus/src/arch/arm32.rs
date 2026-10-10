@@ -61,6 +61,161 @@ const REG_SP: u16 = 13;
 /// The frame pointer, as the A32 procedure call standard names it.
 const FRAME: il::Reg = il::Reg::General(11);
 
+/// What [`Insn::opcode`] holds for A32 and T32.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decoded {
+    /// An integer instruction, by the opcode `yaxpeax-arm` names, whether it
+    /// or this module reads the word. A store or a load of the stack that
+    /// it prints as `push` or `pop` has that opcode.
+    Core { opcode: Opcode, condition: ConditionCode, flags: Flags },
+    /// `it`, which makes up to four instructions after it conditional: the
+    /// condition of the first, and the mask that says the rest.
+    It { condition: u8, mask: u8 },
+    /// A VFP instruction this module reads.
+    Vfp(Vfp),
+    /// A NEON load or store this module reads.
+    NeonAccess,
+    /// NEON data processing, which nothing here reads.
+    NeonData,
+}
+
+/// Whether an instruction sets the flags, as the `s` of `adds` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flags {
+    Kept,
+    Set,
+}
+
+impl Flags {
+    pub(super) fn of(sets_flags: bool) -> Self {
+        if sets_flags { Self::Set } else { Self::Kept }
+    }
+}
+
+/// Which VFP instruction this module read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vfp {
+    /// `vldr`.
+    Load,
+    /// `vstr`.
+    Store,
+    /// `vmov` between core and VFP registers, or `vmrs`.
+    Move,
+    /// `vldm`, `vstm`, `vpush` and `vpop`.
+    Multiple,
+    /// The arithmetic, the compares, the conversions and `vmov` of a
+    /// constant.
+    Compute,
+}
+
+/// The conditions of A32, by the top four bits of a word.
+const CONDITION_CODES: [ConditionCode; 15] = [
+    ConditionCode::EQ,
+    ConditionCode::NE,
+    ConditionCode::HS,
+    ConditionCode::LO,
+    ConditionCode::MI,
+    ConditionCode::PL,
+    ConditionCode::VS,
+    ConditionCode::VC,
+    ConditionCode::HI,
+    ConditionCode::LS,
+    ConditionCode::GE,
+    ConditionCode::LT,
+    ConditionCode::GT,
+    ConditionCode::LE,
+    ConditionCode::AL,
+];
+
+/// The condition the top four bits of an A32 `word` name, or `None` for the
+/// words that have none.
+pub(super) fn condition_of(word: u32) -> Option<ConditionCode> {
+    CONDITION_CODES.get((word >> 28) as usize).copied()
+}
+
+/// What `inst` holds, as [`Insn::opcode`] keeps it.
+pub(super) fn decoded_of(inst: &Instruction) -> Decoded {
+    if inst.opcode == Opcode::IT
+        && let [Operand::Imm32(condition), Operand::Imm32(mask), ..] = inst.operands
+    {
+        return Decoded::It { condition: condition as u8, mask: mask as u8 };
+    }
+    Decoded::Core {
+        opcode: printed_opcode(inst),
+        condition: inst.condition,
+        flags: Flags::of(inst.s()),
+    }
+}
+
+/// The opcode of `inst`, or `push` or `pop` where `yaxpeax-arm` 0.4 prints
+/// it so: a store of one register before `sp` that moves `sp`, a load of
+/// one after it, and a store or a load of a list on `sp` that moves it.
+fn printed_opcode(inst: &Instruction) -> Opcode {
+    let is_sp = |reg: Reg| u16::from(reg.number()) == REG_SP;
+    match (inst.opcode, inst.operands) {
+        (
+            Opcode::LDR,
+            [
+                Operand::Reg(_),
+                Operand::RegDerefPostindexOffset(base, 4, true, false),
+                Operand::Nothing,
+                Operand::Nothing,
+            ],
+        ) if is_sp(base) => Opcode::POP,
+        (
+            Opcode::STR,
+            [
+                Operand::Reg(_),
+                Operand::RegDerefPreindexOffset(base, 4, false, true),
+                Operand::Nothing,
+                Operand::Nothing,
+            ],
+        ) if is_sp(base) => Opcode::PUSH,
+        (
+            Opcode::LDM(true, false, false, _),
+            [
+                Operand::RegWBack(base, true),
+                Operand::RegList(_),
+                Operand::Nothing,
+                Operand::Nothing,
+            ],
+        ) if is_sp(base) => Opcode::POP,
+        (
+            Opcode::STM(false, true, false, _),
+            [
+                Operand::RegWBack(base, true),
+                Operand::RegList(_),
+                Operand::Nothing,
+                Operand::Nothing,
+            ],
+        ) if is_sp(base) => Opcode::PUSH,
+        (opcode, _) => opcode,
+    }
+}
+
+/// What the decoder read for `insn`, where it read A32 or T32.
+pub(super) fn decoded(insn: &Insn) -> Option<Decoded> {
+    match insn.opcode {
+        super::Opcode::Arm(decoded) => Some(decoded),
+        _ => None,
+    }
+}
+
+/// The integer operation `insn` does, whatever its condition and flags.
+pub(super) fn core_opcode(insn: &Insn) -> Option<Opcode> {
+    match decoded(insn)? {
+        Decoded::Core { opcode, .. } => Some(opcode),
+        _ => None,
+    }
+}
+
+/// Whether `insn` does `opcode` always and keeps the flags: the form its
+/// plain mnemonic names, as `add` and not `addeq` or `adds`.
+pub(super) fn is_plain(insn: &Insn, opcode: Opcode) -> bool {
+    decoded(insn)
+        == Some(Decoded::Core { opcode, condition: ConditionCode::AL, flags: Flags::Kept })
+}
+
 /// ARM32 in A32 (not Thumb) mode.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Arm32;
@@ -91,14 +246,14 @@ impl Arch for Arm32 {
             // The raw word goes in the operand field. Without it every
             // unreadable instruction would look like every other one, and an
             // edit inside a NEON loop would be reported as no change at all.
-            if let Some((mnemonic, operands)) = decode_fallback(word, Encoding::A32) {
+            if let Some((mnemonic, operands, decoded)) = decode_fallback(word, Encoding::A32) {
                 return Ok(Insn {
                     address: insn_address,
                     bytes_len: INSN_WIDTH,
                     mnemonic,
                     operands,
                     kind: InsnKind::Normal,
-                    opcode: super::Opcode::None,
+                    opcode: super::Opcode::Arm(decoded),
                 });
             }
             return Ok(Insn {
@@ -107,7 +262,7 @@ impl Arch for Arm32 {
                 mnemonic: unread_mnemonic(word).to_string(),
                 operands: format!("{word:#010x}"),
                 kind: InsnKind::Unknown,
-                opcode: super::Opcode::None,
+                opcode: unread_opcode(word),
             });
         }
 
@@ -128,7 +283,7 @@ impl Arch for Arm32 {
             mnemonic,
             operands,
             kind: classify(&inst, branch_target(&inst, insn_address)),
-            opcode: super::Opcode::None,
+            opcode: super::Opcode::Arm(decoded_of(&inst)),
         })
     }
 
@@ -223,21 +378,25 @@ impl Arch for Arm32 {
     }
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
-        let operation = self.normalize_operation(&insn.mnemonic);
+        let Some(opcode) = core_opcode(insn) else { return false };
         let operands = insn.operands.as_str();
         let first = operands.split(',').next().unwrap_or_default();
 
-        match operation.as_str() {
+        match opcode {
             // Saving and restoring registers. A `pop` that loads the program
             // counter also returns, so it must stay.
-            "push" => true,
-            "pop" => insn.kind != InsnKind::Return,
+            Opcode::PUSH => true,
+            Opcode::POP => insn.kind != InsnKind::Return,
 
             // Moving the stack pointer, or setting up the frame pointer.
-            "sub" | "add" | "mov" => self.is_stack_register(first),
+            Opcode::SUB | Opcode::ADD | Opcode::MOV => self.is_stack_register(first),
 
-            // Spilling to and reloading from the frame.
-            "ldr" | "str" | "ldm" | "stm" => self.mentions_stack_slot(operands),
+            // Spilling to and reloading from the frame, by `ldr`, `str`,
+            // `ldm` and `stm`, which go up from the base.
+            Opcode::LDR
+            | Opcode::STR
+            | Opcode::LDM(true, false, ..)
+            | Opcode::STM(true, false, ..) => self.mentions_stack_slot(operands),
 
             _ => false,
         }
@@ -251,7 +410,7 @@ impl Arch for Arm32 {
     /// A leaf function has no prologue at all, which is why the scanner treats
     /// this as one source among several.
     fn is_prologue(&self, insn: &Insn) -> bool {
-        (insn.mnemonic.starts_with("push") || insn.mnemonic.starts_with("stm"))
+        matches!(core_opcode(insn), Some(Opcode::PUSH | Opcode::STM(..)))
             && insn.operands.contains("lr")
     }
 
@@ -265,8 +424,8 @@ impl Arch for Arm32 {
         /// Zero words, which some linkers use to pad instead.
         const ZERO: &str = "0x00000000";
 
-        insn.mnemonic.starts_with("nop")
-            || (insn.mnemonic == "mov" && insn.operands == "r0, r0")
+        core_opcode(insn) == Some(Opcode::NOP)
+            || (is_plain(insn, Opcode::MOV) && insn.operands == "r0, r0")
             || (insn.kind == InsnKind::Unknown && (insn.operands == NOP || insn.operands == ZERO))
     }
 
@@ -340,7 +499,7 @@ impl Arch for Arm32 {
     /// `bx` through a register other than `lr`. A `switch` jumps with `add pc`
     /// or `ldr pc` instead.
     fn is_tail_call(&self, insn: &Insn) -> bool {
-        insn.mnemonic == "bx" && insn.kind == (InsnKind::Jump { target: None })
+        is_plain(insn, Opcode::BX) && insn.kind == (InsnKind::Jump { target: None })
     }
 
     /// A variadic function reserves room for its register arguments before it
@@ -350,8 +509,8 @@ impl Arch for Arm32 {
     /// one-word fragment that no release could pair.
     fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
         let Some(last) = earlier.last() else { return 0 };
-        let reserves_stack = self.normalize_operation(&last.mnemonic) == "sub"
-            && last.operands.starts_with("sp, sp, ");
+        let reserves_stack =
+            core_opcode(last) == Some(Opcode::SUB) && last.operands.starts_with("sp, sp, ");
         usize::from(reserves_stack)
     }
 
@@ -401,7 +560,7 @@ impl Arch for Arm32 {
     }
 
     fn is_unread_extension(&self, insn: &Insn) -> bool {
-        insn.mnemonic == NEON_MNEMONIC
+        decoded(insn) == Some(Decoded::NeonData)
     }
 
     /// See [`is_long_thunk`].
@@ -446,7 +605,9 @@ impl Arch for Arm32 {
         let high = parse_hex(first.operands.strip_prefix("ip, pc, ")?)?;
         let middle = parse_hex(second.operands.strip_prefix("ip, ip, ")?)?;
         let low = parse_hex(third.operands.strip_prefix("pc, [ip, ")?.strip_suffix("]!")?)?;
-        let shape = first.mnemonic == "adr" && second.mnemonic == "add" && third.mnemonic == "ldr";
+        let shape = is_plain(first, Opcode::ADR)
+            && is_plain(second, Opcode::ADD)
+            && is_plain(third, Opcode::LDR);
         shape.then(|| address + PC_AHEAD + high + middle + low)
     }
 
@@ -1114,7 +1275,7 @@ fn read_jump_table(
     if let Some(table) = read_offset_table(memory, code, earlier, jump) {
         return Some(table);
     }
-    if jump.mnemonic != "add" || jump.kind != (InsnKind::Jump { target: None }) {
+    if !is_plain(jump, Opcode::ADD) || jump.kind != (InsnKind::Jump { target: None }) {
         return None;
     }
     let mut operands = jump.operands.split(',').map(str::trim);
@@ -1136,7 +1297,7 @@ fn read_jump_table(
     // `ldr rX, [rB, rI, lsl 2]`: one word of the table.
     let load = last_write(offset_register)?;
     let expected = format!("{offset_register}, [{table_register}, ");
-    if load.mnemonic != "ldr"
+    if !is_plain(load, Opcode::LDR)
         || !load.operands.starts_with(&expected)
         || !load.operands.ends_with(", lsl 2]")
     {
@@ -1146,7 +1307,7 @@ fn read_jump_table(
     // `adr rB, pc, imm`: the address of the table.
     let address = last_write(table_register)?;
     let immediate = address.operands.strip_prefix(&format!("{table_register}, pc, "))?;
-    if address.mnemonic != "adr" {
+    if !is_plain(address, Opcode::ADR) {
         return None;
     }
     let table = address.address.checked_add(8)?.checked_add(parse_hex(immediate)?)?;
@@ -1196,9 +1357,8 @@ fn read_branch_table(memory: &Memory<'_>, code: &Range<u64>, jump: &Insn) -> Opt
 
     let is_jump =
         matches!(jump.kind, InsnKind::Jump { target: None } | InsnKind::Branch { target: None });
-    let operation = Arm32.normalize_operation(&jump.mnemonic);
     let shape = jump.operands.starts_with("pc, pc, ") && jump.operands.ends_with(", lsl 2");
-    if operation != "add" || !is_jump || !shape {
+    if core_opcode(jump) != Some(Opcode::ADD) || !is_jump || !shape {
         return None;
     }
 
@@ -1248,7 +1408,7 @@ fn read_offset_table(
 
     let is_jump =
         matches!(jump.kind, InsnKind::Jump { target: None } | InsnKind::Branch { target: None });
-    if Arm32.normalize_operation(&jump.mnemonic) != "add" || !is_jump {
+    if core_opcode(jump) != Some(Opcode::ADD) || !is_jump {
         return None;
     }
     let offset_register = jump.operands.strip_prefix("pc, pc, ")?.strip_suffix(", lsl 2")?;
@@ -1256,16 +1416,16 @@ fn read_offset_table(
     let window = || earlier.iter().rev().take(LOOK_BACK);
     // A compare names `r0` first but writes nothing, so it is no write.
     let writes = |insn: &Insn, register: &str| {
-        writes_first_operand(&Arm32.normalize_operation(&insn.mnemonic))
+        writes_first_operand(insn)
             && insn.operands.split(',').next().map(str::trim) == Some(register)
     };
     let last_write = |register: &str| window().find(|insn| writes(insn, register));
 
     // `ldrb rX, [rB, rI]`: one entry of the table.
     let load = last_write(offset_register)?;
-    let width = match Arm32.normalize_operation(&load.mnemonic).as_str() {
-        "ldrb" => 1,
-        "ldrh" => 2,
+    let width = match core_opcode(load)? {
+        Opcode::LDRB => 1,
+        Opcode::LDRH => 2,
         _ => return None,
     };
     let (_, reference) = load.operands.split_once(',')?;
@@ -1284,7 +1444,7 @@ fn read_offset_table(
         .take(TABLE_LOOK_BACK)
         .find(|insn| writes(insn, table_register))?;
     let expected = format!("{table_register}, pc, {table_register}");
-    if Arm32.normalize_operation(&add.mnemonic) != "add" || add.operands != expected {
+    if core_opcode(add) != Some(Opcode::ADD) || add.operands != expected {
         return None;
     }
     let pool_load = earlier
@@ -1312,7 +1472,7 @@ fn read_offset_table(
         }
     }
     let (_, bound) = window()
-        .filter(|insn| Arm32.normalize_operation(&insn.mnemonic) == "cmp")
+        .filter(|insn| core_opcode(insn) == Some(Opcode::CMP))
         .filter_map(compared)
         .find(|&(register, _)| register == index_register)?;
     let last_case = parse_hex(bound)?;
@@ -1381,27 +1541,38 @@ fn parse_number(text: &str) -> Option<i64> {
 /// know the pool is data. Measured on tinyxml2 built by GCC for ARM,
 /// `vldr d16, [pc, 0x90]` did not decode, its offset changed whenever an
 /// alignment `nop` moved the pool, and that read as an edit.
-pub(super) fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, String)> {
+pub(super) fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, String, Decoded)> {
     const CONDITIONS: [&str; 15] =
         ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", ""];
     if word >> 24 == NEON_LOAD_STORE {
-        return decode_neon_load_store(word);
+        let (mnemonic, operands) = decode_neon_load_store(word)?;
+        return Some((mnemonic, operands, Decoded::NeonAccess));
     }
 
     let condition = *CONDITIONS.get((word >> 28) as usize)?;
+    let condition_code = condition_of(word)?;
+    let core = |opcode, flags| Decoded::Core { opcode, condition: condition_code, flags };
 
     // The hints: `nop`, `yield`, `wfe`, `wfi` and `sev`.
     if word & 0x0fff_ff00 == 0x0320_f000 {
-        let hint = ["nop", "yield", "wfe", "wfi", "sev"].get((word & 0xff) as usize)?;
-        return Some((format!("{hint}{condition}"), String::new()));
+        const HINTS: [(&str, Opcode); 5] = [
+            ("nop", Opcode::NOP),
+            ("yield", Opcode::YIELD),
+            ("wfe", Opcode::WFE),
+            ("wfi", Opcode::WFI),
+            ("sev", Opcode::SEV),
+        ];
+        let (hint, opcode) = HINTS.get((word & 0xff) as usize)?;
+        return Some((format!("{hint}{condition}"), String::new(), core(*opcode, Flags::Kept)));
     }
 
     if let Some(word) = IntegerWord::of(word).filter(|_| encoding == Encoding::A32) {
-        return Some((format!("{}{condition}", word.mnemonic()), word.operands()));
+        let decoded = core(word.opcode(), word.flags());
+        return Some((format!("{}{condition}", word.mnemonic()), word.operands(), decoded));
     }
     if let Some(word) = VfpWord::of(word) {
         let (mnemonic, operands) = word.text();
-        return Some((format!("{mnemonic}{condition}"), operands));
+        return Some((format!("{mnemonic}{condition}"), operands, Decoded::Vfp(word.kind())));
     }
 
     // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
@@ -1421,8 +1592,12 @@ pub(super) fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, 
             (_, true) => format!("[{base}, {offset:#x}]"),
             (_, false) => format!("[{base}, -{offset:#x}]"),
         };
-        let operation = if load { "vldr" } else { "vstr" };
-        return Some((format!("{operation}{condition}"), format!("{register}, {reference}")));
+        let (operation, vfp) = if load { ("vldr", Vfp::Load) } else { ("vstr", Vfp::Store) };
+        return Some((
+            format!("{operation}{condition}"),
+            format!("{register}, {reference}"),
+            Decoded::Vfp(vfp),
+        ));
     }
     None
 }
@@ -1555,6 +1730,54 @@ impl IntegerWord {
             return Some(Self::Halfword { name, rt: rd, rn, offset, index });
         }
         None
+    }
+
+    /// The opcode `yaxpeax-arm` names this operation by.
+    pub(super) fn opcode(self) -> Opcode {
+        match self {
+            Self::Extend { name, rn, .. } => match (name, rn.is_some()) {
+                ("sxtb16", false) => Opcode::SXTB16,
+                ("sxtb16", true) => Opcode::SXTAB16,
+                ("uxtb16", false) => Opcode::UXTB16,
+                ("uxtb16", true) => Opcode::UXTAB16,
+                ("sxtb", false) => Opcode::SXTB,
+                ("sxtb", true) => Opcode::SXTAB,
+                ("sxth", false) => Opcode::SXTH,
+                ("sxth", true) => Opcode::SXTAH,
+                ("uxtb", false) => Opcode::UXTB,
+                ("uxtb", true) => Opcode::UXTAB,
+                ("uxth", false) => Opcode::UXTH,
+                _ => Opcode::UXTAH,
+            },
+            Self::Insert { rn: Some(_), .. } => Opcode::BFI,
+            Self::Insert { rn: None, .. } => Opcode::BFC,
+            Self::Extract { signed: true, .. } => Opcode::SBFX,
+            Self::Extract { signed: false, .. } => Opcode::UBFX,
+            Self::ShiftByRegister { not: true, .. } => Opcode::MVN,
+            Self::ShiftByRegister { not: false, .. } => Opcode::MOV,
+            Self::HalfwordMultiply { kind, top_n, top_m, .. } => match kind {
+                HalfwordMultiply::Multiply => Opcode::SMUL(top_n, top_m),
+                HalfwordMultiply::MultiplyAdd => Opcode::SMLA(top_n, top_m),
+                HalfwordMultiply::WordMultiply => Opcode::SMULW(top_m),
+                HalfwordMultiply::WordMultiplyAdd => Opcode::SMLAW(top_m),
+                HalfwordMultiply::LongMultiplyAdd => Opcode::SMLAL_halfword(top_n, top_m),
+            },
+            Self::Halfword { name, .. } => match name {
+                "ldrh" => Opcode::LDRH,
+                "ldrsb" => Opcode::LDRSB,
+                "ldrsh" => Opcode::LDRSH,
+                "strh" => Opcode::STRH,
+                "ldrd" => Opcode::LDRD,
+                _ => Opcode::STRD,
+            },
+        }
+    }
+
+    pub(super) fn flags(self) -> Flags {
+        match self {
+            Self::ShiftByRegister { sets_flags, .. } => Flags::of(sets_flags),
+            _ => Flags::Kept,
+        }
     }
 
     pub(super) fn mnemonic(self) -> String {
@@ -1972,6 +2195,16 @@ impl VfpWord {
         None
     }
 
+    fn kind(self) -> Vfp {
+        match self {
+            Self::MoveSingle { .. } | Self::MoveDouble { .. } | Self::StatusToCore { .. } => {
+                Vfp::Move
+            }
+            Self::Multiple { .. } => Vfp::Multiple,
+            Self::Compute { .. } | Self::MoveConstant { .. } => Vfp::Compute,
+        }
+    }
+
     fn text(self) -> (String, String) {
         let vector = |double: bool, number: u32| {
             if double { format!("d{number}") } else { format!("s{number}") }
@@ -2186,7 +2419,17 @@ pub(super) const NEON_LOAD_STORE: u32 = 0xf4;
 /// The name for an A32 `word` the decoder cannot read: [`NEON_MNEMONIC`]
 /// for NEON data processing, `1111 001U`, else [`UNKNOWN_MNEMONIC`].
 pub(super) fn unread_mnemonic(word: u32) -> &'static str {
-    if word >> 25 == 0b111_1001 { NEON_MNEMONIC } else { UNKNOWN_MNEMONIC }
+    if is_neon_data(word) { NEON_MNEMONIC } else { UNKNOWN_MNEMONIC }
+}
+
+/// What [`Insn::opcode`] holds for an A32 `word` the decoder cannot read.
+fn unread_opcode(word: u32) -> super::Opcode {
+    if is_neon_data(word) { super::Opcode::Arm(Decoded::NeonData) } else { super::Opcode::None }
+}
+
+/// NEON data processing, `1111 001U`.
+fn is_neon_data(word: u32) -> bool {
+    word >> 25 == 0b111_1001
 }
 
 /// Read an A32 NEON element or structure load or store:
@@ -2280,8 +2523,8 @@ pub(super) fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted>
             (access.load, width, il::Operand::RegisterList, memory)
         } else {
             // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
-            let (name, _) = decode_fallback(word, encoding)?;
-            if !name.starts_with("vldr") && !name.starts_with("vstr") {
+            let (_, _, decoded) = decode_fallback(word, encoding)?;
+            if !matches!(decoded, Decoded::Vfp(Vfp::Load | Vfp::Store)) {
                 return None;
             }
             let double = field(8, 1) == 1;
@@ -2509,13 +2752,13 @@ impl PcModel {
 /// Thumb-2 holds both kinds.
 pub(super) fn is_long_thunk(body: &[Insn]) -> bool {
     let [movw, movt, add, bx, ..] = body else { return false };
-    movw.mnemonic == "mov"
+    is_plain(movw, Opcode::MOV)
         && movw.operands.starts_with("ip, 0x")
-        && movt.mnemonic == "movt"
+        && is_plain(movt, Opcode::MOVT)
         && movt.operands.starts_with("ip, ")
-        && add.mnemonic == "add"
+        && is_plain(add, Opcode::ADD)
         && matches!(add.operands.as_str(), "ip, pc" | "ip, ip, pc")
-        && bx.mnemonic == "bx"
+        && is_plain(bx, Opcode::BX)
         && bx.operands == "ip"
 }
 
@@ -2565,11 +2808,10 @@ pub(super) fn pool_words_loaded(insns: &[Insn], pc: PcModel) -> Vec<u64> {
 pub(super) fn pool_loads(insns: &[Insn], pc: PcModel) -> Vec<(u64, u64)> {
     let mut loads = Vec::new();
     for insn in insns {
-        let operation = Arm32.normalize_operation(&insn.mnemonic);
-        let count = match operation.as_str() {
-            "ldr" => 1,
-            "vldr" if insn.operands.starts_with('s') => 1,
-            "ldrd" | "vldr" => 2,
+        let count = match decoded(insn) {
+            Some(Decoded::Core { opcode: Opcode::LDR, .. }) => 1,
+            Some(Decoded::Vfp(Vfp::Load)) if insn.operands.starts_with('s') => 1,
+            Some(Decoded::Core { opcode: Opcode::LDRD, .. } | Decoded::Vfp(Vfp::Load)) => 2,
             _ => continue,
         };
         let Some((_, reference)) = insn.operands.rsplit_once('[') else { continue };
@@ -2633,31 +2875,31 @@ pub(super) fn track_pool_words(
     };
 
     for (index, insn) in body.iter().enumerate() {
-        let operation = Arm32.normalize_operation(&insn.mnemonic);
+        let opcode = core_opcode(insn);
         let Some((destination, rest)) = insn.operands.split_once(',') else { continue };
         let (destination, rest) = (destination.trim(), rest.trim());
         let pc = pc_model.of(insn.address);
 
         // `movw rX, lo` then `movt rX, hi`: a 32-bit value in two halves.
         // Any other write ends it, but for the `add rX, pc` that uses it.
-        let builds_halves = matches!(operation.as_str(), "mov" | "movw" | "movt");
+        let builds_halves = matches!(opcode, Some(Opcode::MOV | Opcode::MOVT));
         // A32 writes the `add` with three operands.
-        let adds_pc = operation == "add"
+        let adds_pc = opcode == Some(Opcode::ADD)
             && (rest == "pc"
                 || rest.strip_prefix(destination).and_then(|rest| rest.strip_prefix(", "))
                     == Some("pc"));
         let uses_halves = adds_pc;
-        if writes_first_operand(&operation) && !builds_halves && !uses_halves {
+        if writes_first_operand(insn) && !builds_halves && !uses_halves {
             halves.retain(|(held, ..)| *held != destination);
         }
-        match operation.as_str() {
-            "mov" | "movw" if !rest.contains(',') => {
+        match opcode {
+            Some(Opcode::MOV) if !rest.contains(',') => {
                 halves.retain(|(held, ..)| *held != destination);
                 if let Some(low) = parse_hex(rest).filter(|&low| low <= 0xffff) {
                     halves.push((destination, [index, index], low as u32));
                 }
             }
-            "movt" => {
+            Some(Opcode::MOVT) => {
                 let high = parse_hex(rest).filter(|&high| high <= 0xffff);
                 match (high, halves.iter_mut().find(|(held, ..)| *held == destination)) {
                     (Some(high), Some((_, at, value))) => {
@@ -2679,7 +2921,7 @@ pub(super) fn track_pool_words(
                 continue;
             }
             // `add rX, pc` of a value in both halves forms an address.
-            "add" if adds_pc => {
+            Some(Opcode::ADD) if adds_pc => {
                 let whole =
                     halves.iter().find(|(held, at, _)| *held == destination && at[0] != at[1]);
                 if let Some(&(_, at, value)) = whole {
@@ -2727,11 +2969,12 @@ pub(super) fn track_pool_words(
         // T32 writes `add rX, pc` for `add rX, rX, pc`.
         let two_operand_add = format!("{destination}, {rest}");
         let three = parse_three(rest).or_else(|| {
-            (operation == "add" && !rest.contains(',')).then(|| parse_three(&two_operand_add))?
+            (opcode == Some(Opcode::ADD) && !rest.contains(','))
+                .then(|| parse_three(&two_operand_add))?
         });
-        match (operation.as_str(), parse_reference(rest), three) {
+        match (opcode, parse_reference(rest), three) {
             // `ldr rX, [pc, imm]`: load a pool word.
-            ("ldr", Some(("pc", Offset::Immediate(offset))), _) => {
+            (Some(Opcode::LDR), Some(("pc", Offset::Immediate(offset))), _) => {
                 let pool = pc_model.of_literal_load(insn.address).wrapping_add(offset as u64);
                 forget(&mut literal, &mut relative, destination);
                 if let Some(value) = word_at(pool) {
@@ -2745,7 +2988,7 @@ pub(super) fn track_pool_words(
             // `mov rY, rX`: a copy holds what its source holds. GCC
             // copies the address of the global offset table so before it
             // reads a slot through it.
-            ("mov", _, _) if !rest.contains(',') => {
+            (Some(Opcode::MOV), _, _) if !rest.contains(',') => {
                 let copied_address = base_of(rest).filter(|_| rest != "pc");
                 let copied_word = literal_of(rest);
                 forget(&mut literal, &mut relative, destination);
@@ -2758,13 +3001,13 @@ pub(super) fn track_pool_words(
                 continue;
             }
             // `ldr rY, [base, rX]`: read at a distance from a base.
-            ("ldr", Some((base, Offset::Register(index))), _) => {
+            (Some(Opcode::LDR), Some((base, Offset::Register(index))), _) => {
                 if let (Some(base), Some(word)) = (base_of(base), literal_of(index)) {
                     join(base, word);
                 }
             }
             // `add rY, base, rX`, either order: build an address.
-            ("add", _, Some((left, right))) => {
+            (Some(Opcode::ADD), _, Some((left, right))) => {
                 let joined =
                     match (base_of(left), literal_of(right), base_of(right), literal_of(left)) {
                         (Some(base), Some(word), ..) | (.., Some(base), Some(word)) => {
@@ -2782,7 +3025,7 @@ pub(super) fn track_pool_words(
             _ => {}
         }
 
-        if writes_first_operand(&operation) {
+        if writes_first_operand(insn) {
             forget(&mut literal, &mut relative, destination);
         }
     }
@@ -2809,26 +3052,28 @@ fn forget(literal: &mut Vec<(&str, u64, u32)>, relative: &mut Vec<(&str, u64)>, 
     relative.retain(|(held, _)| *held != register);
 }
 
-/// Report whether an operation writes its first operand. Stores, compares
-/// and branches read it.
-fn writes_first_operand(operation: &str) -> bool {
+/// Report whether `insn` writes its first operand. Stores, compares and
+/// branches read it.
+fn writes_first_operand(insn: &Insn) -> bool {
     !matches!(
-        operation,
-        "str"
-            | "strb"
-            | "strh"
-            | "strd"
-            | "push"
-            | "stm"
-            | "stmdb"
-            | "cmp"
-            | "cmn"
-            | "tst"
-            | "teq"
-            | "b"
-            | "bl"
-            | "bx"
-            | "blx"
+        core_opcode(insn),
+        Some(
+            Opcode::STR
+                | Opcode::STRB
+                | Opcode::STRH
+                | Opcode::STRD
+                | Opcode::PUSH
+                | Opcode::STM(true, false, ..)
+                | Opcode::STM(false, true, ..)
+                | Opcode::CMP
+                | Opcode::CMN
+                | Opcode::TST
+                | Opcode::TEQ
+                | Opcode::B
+                | Opcode::BL
+                | Opcode::BX
+                | Opcode::BLX
+        )
     )
 }
 
@@ -4018,7 +4263,7 @@ mod tests {
     }
 
     fn fallback_text(word: u32) -> Option<String> {
-        decode_fallback(word, Encoding::A32).map(|(name, operands)| format!("{name} {operands}"))
+        decode_fallback(word, Encoding::A32).map(|(name, operands, _)| format!("{name} {operands}"))
     }
 
     /// Words `yaxpeax` 0.4 refuses, as `llvm-mc` reads them.
