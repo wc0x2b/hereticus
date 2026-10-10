@@ -428,8 +428,10 @@ impl Arch for Mips32 {
 
         let unreadable = insns.iter().filter(|insn| insn.kind == InsnKind::Unknown).count();
         let pointers = code
-            .chunks_exact(INSN_WIDTH)
-            .filter(|word| space.contains(self.read_pointer(word)))
+            .as_chunks::<INSN_WIDTH>()
+            .0
+            .iter()
+            .filter(|word| space.contains(self.read_pointer(*word)))
             .count();
         let zeros = insns.iter().filter(|insn| self.is_padding(insn)).count();
 

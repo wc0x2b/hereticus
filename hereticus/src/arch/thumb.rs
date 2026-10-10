@@ -306,7 +306,9 @@ impl Arch for Thumb2 {
         let end = base + code.len() as u64;
         let inside = |address: u64| (base..end).contains(&address);
         let mut words = code
-            .chunks_exact(WORD)
+            .as_chunks::<WORD>()
+            .0
+            .iter()
             .map(|word| u64::from(u32::from_le_bytes([word[0], word[1], word[2], word[3]])));
         let stack = words.next()?;
         if inside(stack) || !stack.is_multiple_of(WORD as u64) {
@@ -1078,7 +1080,7 @@ mod tests {
         bolero::check!().with_type::<Vec<u8>>().for_each(|picks| {
             let text: String =
                 picks.iter().map(|pick| ['.', 'w', 'n', 'b', 'e'][*pick as usize % 5]).collect();
-            for letter in [b'w', b'n'] {
+            for letter in *b"wn" {
                 let pattern = format!(".{}", letter as char);
                 assert_eq!(without_suffix(&text, letter), text.replace(&pattern, ""), "{text:?}");
             }
