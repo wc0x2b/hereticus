@@ -865,12 +865,12 @@ fn gp_disp_consumer(body: &[Insn]) -> Option<usize> {
 }
 
 /// What reading a function for its addresses found.
-struct Tracked<'a> {
+struct Tracked {
     kinds: Vec<ConstantKind>,
     /// How many instructions no known branch reached.
     unreached_arrivals: usize,
     /// The saved registers that hold one address throughout the function.
-    invariant: HeldAddresses<'a>,
+    invariant: HeldAddresses,
 }
 
 /// Read `body` for the constants that are parts of addresses.
@@ -900,8 +900,8 @@ fn track_addresses<'a>(
     arch: &dyn Arch,
     body: &'a [Insn],
     space: &AddressSpace,
-    invariant: &HeldAddresses<'a>,
-) -> Tracked<'a> {
+    invariant: &HeldAddresses,
+) -> Tracked {
     let mut kinds = vec![ConstantKind::Value; body.len()];
 
     // The `_gp_disp` halves are the distance from the function to its
@@ -924,12 +924,12 @@ fn track_addresses<'a>(
     let mut reachable = Reach::FromAbove;
     // The addresses held on arrival at each forward branch target seen so
     // far.
-    let mut at_target: BTreeMap<u64, HeldAddresses<'_>> = BTreeMap::new();
+    let mut at_target: BTreeMap<u64, HeldAddresses> = BTreeMap::new();
     let mut unreached_arrivals = 0;
     let mut saved = SavedRegisters::default();
     // What was held at the last computed jump, which the cases of a jump
     // table start from.
-    let mut dispatched: Option<HeldAddresses<'_>> = None;
+    let mut dispatched: Option<HeldAddresses> = None;
     // What each stack slot holds, where a register that held an address was
     // stored there. GCC stores the global pointer after its preamble, as
     // `.cprestore` asks, and loads it back after every call.
@@ -1047,33 +1047,36 @@ fn track_addresses<'a>(
 
 /// What each saved register is set to across a function.
 #[derive(Default)]
-struct SavedRegisters<'a> {
+struct SavedRegisters {
     /// Each value a saved register was set to, `None` for a value that is no
     /// address, apart from the restores of an epilogue.
-    assigned: Vec<(&'a str, Option<Held>)>,
+    assigned: Vec<(Name, Option<Held>)>,
     /// The saved registers an epilogue restores from the stack.
-    restored: Vec<&'a str>,
+    restored: Vec<Name>,
 }
 
-impl<'a> SavedRegisters<'a> {
+impl SavedRegisters {
     /// Note what `insn` wrote to a saved register, as `upper` holds it now.
     ///
     /// An epilogue restores each saved register from the stack before it
     /// returns. That only undoes the function's own use of the register, so
     /// it is not counted.
-    fn record(&mut self, insn: &'a Insn, upper: &HeldAddresses<'a>) {
+    fn record(&mut self, insn: &Insn, upper: &HeldAddresses) {
         if insn.kind != InsnKind::Normal || is_store(insn) {
             return;
         }
-        let Some(written) = insn.operands.split(',').next().map(str::trim) else { return };
-        if !is_callee_saved(written) || written == "sp" {
+        let Some(written) = insn.operands.split(',').next().map(str::trim).and_then(Name::of)
+        else {
+            return;
+        };
+        if !is_callee_saved(written) || written == Name::known("sp") {
             return;
         }
         let restores = is(insn, Opcode::core_lw) && insn.operands.trim_end().ends_with("(sp)");
         if restores {
             self.restored.push(written);
         } else {
-            self.assigned.push((written, upper.get(written)));
+            self.assigned.push((written, upper.get_name(written)));
         }
     }
 
@@ -1084,7 +1087,7 @@ impl<'a> SavedRegisters<'a> {
     /// obliges of a function that uses it. Without that, code a scan glued
     /// on after the return can be another function, where the register
     /// holds the caller's value.
-    fn invariant(&self) -> HeldAddresses<'a> {
+    fn invariant(&self) -> HeldAddresses {
         let mut invariant = HeldAddresses::default();
         for &(register, held) in &self.assigned {
             if !self.restored.contains(&register) {
@@ -1096,7 +1099,7 @@ impl<'a> SavedRegisters<'a> {
                 .filter(|(other, _)| *other == register)
                 .all(|(_, other)| *other == held);
             if let (Some(held), true) = (held, all_alike) {
-                invariant.set(register, held);
+                invariant.set_name(register, held);
             }
         }
         invariant
@@ -1362,14 +1365,14 @@ impl AfterSlot {
 }
 
 /// What [`track_addresses`] knows of control flow at one instruction.
-struct Flow<'a> {
-    upper: HeldAddresses<'a>,
-    at_target: BTreeMap<u64, HeldAddresses<'a>>,
+struct Flow {
+    upper: HeldAddresses,
+    at_target: BTreeMap<u64, HeldAddresses>,
     reachable: Reach,
-    dispatched: Option<HeldAddresses<'a>>,
+    dispatched: Option<HeldAddresses>,
 }
 
-impl Flow<'_> {
+impl Flow {
     /// Move control as `after_slot` says.
     fn transfer(&mut self, after_slot: AfterSlot) {
         match after_slot {
@@ -1415,12 +1418,12 @@ enum Reach {
 /// built by Rust for MIPS at `-O2`, a case loaded `s2` and the cases after it
 /// lost the global pointer.
 fn arrive<'a>(
-    above: HeldAddresses<'a>,
+    above: HeldAddresses,
     reach: Reach,
-    branched: Option<HeldAddresses<'a>>,
-    dispatched: Option<&HeldAddresses<'a>>,
-    invariant: &HeldAddresses<'a>,
-) -> HeldAddresses<'a> {
+    branched: Option<HeldAddresses>,
+    dispatched: Option<&HeldAddresses>,
+    invariant: &HeldAddresses,
+) -> HeldAddresses {
     match (reach, branched) {
         (Reach::FromAbove, None) => above,
         (Reach::FromAbove, Some(branched)) => above.agreed_with(&branched),
@@ -1428,12 +1431,12 @@ fn arrive<'a>(
         (Reach::OnlyByBranch, None) => {
             let mut held = above.global_pointers_only();
             for &(register, value) in dispatched.map_or(&[][..], |at| &at.held[..]) {
-                if value.may_be_global_pointer() && held.get(register).is_none() {
-                    held.set(register, value);
+                if value.may_be_global_pointer() && held.get_name(register).is_none() {
+                    held.set_name(register, value);
                 }
             }
             for &(register, value) in &invariant.held {
-                held.set(register, value);
+                held.set_name(register, value);
             }
             held
         }
@@ -1442,9 +1445,9 @@ fn arrive<'a>(
 
 /// Merge the addresses held on a branch to `target` into those recorded.
 fn record_state<'a>(
-    at_target: &mut BTreeMap<u64, HeldAddresses<'a>>,
+    at_target: &mut BTreeMap<u64, HeldAddresses>,
     target: u64,
-    upper: &HeldAddresses<'a>,
+    upper: &HeldAddresses,
 ) {
     match at_target.get_mut(&target) {
         Some(recorded) => *recorded = recorded.agreed_with(upper),
@@ -1456,9 +1459,9 @@ fn record_state<'a>(
 
 /// Remove and return the addresses recorded for branches to `address`.
 fn take_state<'a>(
-    at_target: &mut BTreeMap<u64, HeldAddresses<'a>>,
+    at_target: &mut BTreeMap<u64, HeldAddresses>,
     address: u64,
-) -> Option<HeldAddresses<'a>> {
+) -> Option<HeldAddresses> {
     at_target.remove(&address)
 }
 
@@ -1503,18 +1506,57 @@ enum Held {
     PerhapsGlobalPointer,
 }
 
+/// A register as its operand names it, packed into one word, as `"sp"` is.
+///
+/// Every MIPS register name is four bytes or fewer, so two names are equal
+/// where their words are: comparing the text took a third of
+/// [`track_addresses`] on a MIPS kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Name(u32);
+
+impl Name {
+    /// `name` packed, or `None` for an operand too long to name a register.
+    const fn of(name: &str) -> Option<Self> {
+        let bytes = name.as_bytes();
+        if bytes.len() > 4 {
+            return None;
+        }
+        let mut word = [0; 4];
+        let mut at = 0;
+        while at < bytes.len() {
+            word[at] = bytes[at];
+            at += 1;
+        }
+        Some(Self(u32::from_le_bytes(word)))
+    }
+
+    /// `name` packed, for a name known to be short enough.
+    const fn known(name: &str) -> Self {
+        match Self::of(name) {
+            Some(packed) => packed,
+            None => panic!("a register name is four bytes or fewer"),
+        }
+    }
+}
+
 /// The registers that hold an address, and what each holds.
 ///
 /// A function holds a handful at a time, so a list beats a map.
 #[derive(Clone, Debug, Default)]
-struct HeldAddresses<'a> {
-    held: Vec<(&'a str, Held)>,
+struct HeldAddresses {
+    held: Vec<(Name, Held)>,
 }
 
-impl<'a> HeldAddresses<'a> {
-    fn set(&mut self, register: &'a str, value: Held) {
-        self.forget(register);
-        self.held.push((register, value));
+impl HeldAddresses {
+    fn set(&mut self, register: &str, value: Held) {
+        if let Some(name) = Name::of(register) {
+            self.set_name(name, value);
+        }
+    }
+
+    fn set_name(&mut self, name: Name, value: Held) {
+        self.forget_name(name);
+        self.held.push((name, value));
     }
 
     fn is_empty(&self) -> bool {
@@ -1522,15 +1564,25 @@ impl<'a> HeldAddresses<'a> {
     }
 
     fn get(&self, register: &str) -> Option<Held> {
-        self.held.iter().find(|(held, _)| *held == register).map(|&(_, value)| value)
+        self.get_name(Name::of(register)?)
+    }
+
+    fn get_name(&self, name: Name) -> Option<Held> {
+        self.held.iter().find(|(held, _)| *held == name).map(|&(_, value)| value)
     }
 
     fn forget(&mut self, register: &str) {
-        self.held.retain(|(held, _)| *held != register);
+        if let Some(name) = Name::of(register) {
+            self.forget_name(name);
+        }
     }
 
-    fn keep_only(&mut self, survives: fn(&str) -> bool) {
-        self.held.retain(|(held, _)| survives(held));
+    fn forget_name(&mut self, name: Name) {
+        self.held.retain(|(held, _)| *held != name);
+    }
+
+    fn keep_only(&mut self, survives: fn(Name) -> bool) {
+        self.held.retain(|&(held, _)| survives(held));
     }
 
     fn global_pointers_only(mut self) -> Self {
@@ -1546,16 +1598,16 @@ impl<'a> HeldAddresses<'a> {
         let mut agreed = Self::default();
         let registers = self.held.iter().chain(&other.held).map(|&(register, _)| register);
         for register in registers {
-            if agreed.get(register).is_some() {
+            if agreed.get_name(register).is_some() {
                 continue;
             }
-            match (self.get(register), other.get(register)) {
-                (Some(left), Some(right)) if left == right => agreed.set(register, left),
+            match (self.get_name(register), other.get_name(register)) {
+                (Some(left), Some(right)) if left == right => agreed.set_name(register, left),
                 (left, right)
                     if left.is_some_and(Held::may_be_global_pointer)
                         || right.is_some_and(Held::may_be_global_pointer) =>
                 {
-                    agreed.set(register, Held::PerhapsGlobalPointer);
+                    agreed.set_name(register, Held::PerhapsGlobalPointer);
                 }
                 _ => {}
             }
@@ -1565,11 +1617,22 @@ impl<'a> HeldAddresses<'a> {
 }
 
 /// Report whether the o32 ABI makes a callee restore a register.
-fn is_callee_saved(register: &str) -> bool {
-    matches!(
-        register,
-        "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "s7" | "gp" | "sp" | "fp" | "s8"
-    )
+fn is_callee_saved(register: Name) -> bool {
+    const SAVED: [Name; 12] = [
+        Name::known("s0"),
+        Name::known("s1"),
+        Name::known("s2"),
+        Name::known("s3"),
+        Name::known("s4"),
+        Name::known("s5"),
+        Name::known("s6"),
+        Name::known("s7"),
+        Name::known("gp"),
+        Name::known("sp"),
+        Name::known("fp"),
+        Name::known("s8"),
+    ];
+    SAVED.contains(&register)
 }
 
 /// Read `lui rX, hi` as the register and the value it loads.
@@ -1598,7 +1661,7 @@ fn reach_of_upper_half(high: u64) -> core::ops::Range<u64> {
 
 /// Read `addiu rY, rX, lo` or `ori rY, rX, lo`, where `rX` holds an
 /// address, as the destination, what `rX` holds, and the lower half.
-fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str, Held, u64)> {
+fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses) -> Option<(&'a str, Held, u64)> {
     if !is(insn, Opcode::core_addiu) && !is(insn, Opcode::core_ori) {
         return None;
     }
@@ -1647,7 +1710,7 @@ fn join_halves(joined: LowerHalf, high: u64, low: u64) -> u64 {
 /// A store writes no register, so it gives `None` for the first.
 fn memory_reference<'a>(
     insn: &'a Insn,
-    upper: &HeldAddresses<'_>,
+    upper: &HeldAddresses,
 ) -> Option<(Option<&'a str>, Held, u64)> {
     let (first, reference) = insn.operands.split_once(',')?;
     let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
@@ -1690,7 +1753,7 @@ fn stack_slot(insn: &Insn) -> Option<(&str, u64, SlotAccess)> {
 /// pointer, plus an index is an address the code does not show.
 ///
 /// Two addresses added make no address, and nor does a sum of two values.
-fn indexed_address<'a>(insn: &'a Insn, upper: &HeldAddresses<'_>) -> Option<(&'a str, Held)> {
+fn indexed_address<'a>(insn: &'a Insn, upper: &HeldAddresses) -> Option<(&'a str, Held)> {
     if !is(insn, Opcode::core_addu) {
         return None;
     }
