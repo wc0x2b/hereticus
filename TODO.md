@@ -179,17 +179,24 @@ wrong pairs left, 133 are byte-identical twins (see "Tell twins apart
 that no instruction separates"), and the fix shows on no changed row in
 42 updates.
 
-The CLI on an OpenWrt kernel takes 28 seconds built for musl, the target
-`.cargo/config.toml` picks; the work left is mostly decoding and string
-handling, which "Build less text for each instruction" below covers.
+The CLI on the MIPS kernel of the VR200 takes 16 seconds built for musl,
+the target `.cargo/config.toml` picks; "Build less text for each
+instruction" below says where the time goes.
 
 ## Build less text for each instruction
 
-Every architecture now decides by the opcode that `Insn::opcode` holds,
-not by the printed mnemonic, and the reports are the same byte for byte.
-The CLI is not faster: on `libgnutls` for arm64, `libarchive` for armhf
-and a MIPS kernel it took the same time as before, within the noise. The
-decoders still print every instruction to text, and the normalized body,
-`view.rs` and the test of `matching.rs` that compares as the normalizer
-does still read that text. Measure where the time goes now, and print
-only what a reader sees.
+Every architecture decides by the opcode that `Insn::opcode` holds, not
+by the printed mnemonic. The scan decodes each region once, and four
+other fixes cut what each comparison computes again. Against
+`7bbfb6a`, with the reports the same byte for byte, the CLI takes 1.4 s
+in place of 3.4 s on `libgnutls` for arm64, 1.3 s in place of 4.3 s on
+`libarchive` for armhf, and 16 s in place of 35 s on the MIPS kernel of
+the VR200.
+
+Under callgrind, the decoders still print every instruction to text:
+on the kernel, `rabbitizer` formats for an eighth of the run, and
+`yaxpeax-arm` for as much on arm64. The normalized body and the test of
+`matching.rs` that compares as the normalizer does read that text, and
+`Prepared::body` decodes and normalizes a function again each time a pair
+needs it, which keeps a kernel in memory. Print only what a reader sees,
+and build the normalized body from the opcode and the operands.
