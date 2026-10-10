@@ -300,6 +300,21 @@ pub enum Regions {
     CodeAndData,
 }
 
+/// A region of code, with its instructions decoded once for every pass of
+/// the scan. A pass that decoded the region itself made the scan of a
+/// library decode each instruction about eight times.
+struct Region<'a> {
+    base: u64,
+    code: &'a [u8],
+    insns: Vec<Insn>,
+}
+
+impl<'a> Region<'a> {
+    fn decode(arch: &dyn Arch, base: u64, code: &'a [u8]) -> Self {
+        Self { base, code, insns: decode_all(arch, code, base).0 }
+    }
+}
+
 /// Find the functions in code that is already located, where `memory` holds
 /// everything else the binary loads, for the tables the code reads, and
 /// `linked` what an object file says about its functions.
@@ -336,6 +351,8 @@ pub fn recover_in_memory(
         }
     }
     let regions = split.as_slice();
+    let decoded: Vec<Region<'_>> =
+        regions.iter().map(|&(base, code)| Region::decode(arch, base, code)).collect();
     // An exported function is exact at both ends, and what follows it starts
     // another function, or padding that is trimmed away.
     for range in &linked.exported {
@@ -357,7 +374,8 @@ pub fn recover_in_memory(
     if !exception_index.is_empty() {
         let mut blind = cannot_unwind_ranges(exception_index);
         let described = described_ranges(exception_index);
-        for (base, code) in regions {
+        for region in &decoded {
+            let (base, code) = (&region.base, region.code);
             // Code before the first entry of a region is listed by nothing,
             // so it is searched as a region with no index.
             let end = base + code.len() as u64;
@@ -377,44 +395,43 @@ pub fn recover_in_memory(
             // unwind index lists only starts, so it proves no such thing.
             // Measured on tinyxml2 for MIPS at -O3 as a raw image, one cut a
             // template function short, and its caller then read as changed.
-            let taken =
-                taken_addresses(arch, regions, contents, &linked.pointers, code, *base, memory);
-            let local = slot_call_targets(arch, code, *base, memory);
-            for address in call_targets(arch, code, *base).into_iter().chain(taken).chain(local) {
+            let taken = taken_addresses(arch, regions, contents, &linked.pointers, region, memory);
+            let local = slot_call_targets(arch, region, memory);
+            for address in call_targets(arch, region).into_iter().chain(taken).chain(local) {
                 if !described.iter().any(|range| range.start < address && range.contains(&address))
                 {
                     starts.insert((address, Source::CallTarget));
                 }
             }
-            for address in starts_after_returns_in(arch, code, *base, memory, linked) {
+            for address in starts_after_returns_in(arch, region, memory, linked) {
                 if blind.iter().any(|range| range.contains(&address)) {
                     starts.insert((address, Source::AfterReturn));
                 }
             }
         }
         let starts =
-            outside_pool_spans(within_exports(starts, &linked.exported), arch, regions, memory);
+            outside_pool_spans(within_exports(starts, &linked.exported), arch, &decoded, memory);
         return build_functions(&starts, regions, arch);
     }
 
-    for (base, code) in regions {
-        let taken = taken_addresses(arch, regions, contents, &linked.pointers, code, *base, memory);
-        let local = slot_call_targets(arch, code, *base, memory);
-        for address in call_targets(arch, code, *base).into_iter().chain(taken).chain(local) {
+    for region in &decoded {
+        let taken = taken_addresses(arch, regions, contents, &linked.pointers, region, memory);
+        let local = slot_call_targets(arch, region, memory);
+        for address in call_targets(arch, region).into_iter().chain(taken).chain(local) {
             starts.insert((address, Source::CallTarget));
         }
-        for address in function_entries(arch, code, *base) {
+        for address in function_entries(arch, &region.insns) {
             starts.insert((address, Source::Entry));
         }
-        for address in starts_after_returns_in(arch, code, *base, memory, linked) {
+        for address in starts_after_returns_in(arch, region, memory, linked) {
             starts.insert((address, Source::AfterReturn));
         }
         // A region begins with a function unless something says otherwise.
-        starts.insert((*base, Source::AfterReturn));
+        starts.insert((region.base, Source::AfterReturn));
     }
 
     let starts =
-        outside_pool_spans(within_exports(starts, &linked.exported), arch, regions, memory);
+        outside_pool_spans(within_exports(starts, &linked.exported), arch, &decoded, memory);
     build_functions(&starts, regions, arch)
 }
 
@@ -434,16 +451,16 @@ const WORD_WIDTH: u64 = 4;
 fn outside_pool_spans(
     starts: BTreeSet<(u64, Source)>,
     arch: &dyn Arch,
-    regions: &[(u64, &[u8])],
+    regions: &[Region<'_>],
     memory: &Memory<'_>,
 ) -> BTreeSet<(u64, Source)> {
     let mut spans: Vec<(u64, u64)> = regions
         .iter()
-        .flat_map(|&(base, code)| {
-            let (insns, _) = decode_all(arch, code, base);
+        .flat_map(|region| {
+            let (base, code, insns) = (region.base, region.code, region.insns.as_slice());
             // A pool word or a jump table can decode as a load from a pool,
             // which reaches nothing.
-            let data = data_words(arch, memory, base..base + code.len() as u64, &insns);
+            let data = data_words(arch, memory, base..base + code.len() as u64, insns);
             let is_data = |address: u64| {
                 data.range(address.saturating_sub(WORD_WIDTH - 1)..=address).next().is_some()
             };
@@ -463,7 +480,7 @@ fn outside_pool_spans(
                 let first = unreadable.partition_point(|&address| address <= from);
                 unreadable.get(first).is_none_or(|&address| address >= to)
             };
-            arch.literal_pool_loads(&insns)
+            arch.literal_pool_loads(insns)
                 .into_iter()
                 .filter(|&(load, word)| load < word && !is_data(load) && reads_whole(load, word))
                 .collect::<Vec<_>>()
@@ -568,10 +585,10 @@ fn calls_that_never_return(
 /// the releases built for the tests, Lua's `luaZ_init` is called only so,
 /// after a function that ends with a jump back, and this found 12 more
 /// function starts and invented none.
-fn slot_call_targets(arch: &dyn Arch, code: &[u8], base: u64, memory: &Memory<'_>) -> Vec<u64> {
-    let (insns, _) = decode_all(arch, code, base);
+fn slot_call_targets(arch: &dyn Arch, region: &Region<'_>, memory: &Memory<'_>) -> Vec<u64> {
+    let (base, code, insns) = (region.base, region.code, region.insns.as_slice());
     let end = base + code.len() as u64;
-    arch.call_targets(&insns)
+    arch.call_targets(insns)
         .into_iter()
         .filter_map(|(_, target)| match target? {
             CallTarget::Slot(slot) => memory
@@ -605,16 +622,15 @@ fn taken_addresses(
     regions: &[(u64, &[u8])],
     contents: Regions,
     pointers: &[u64],
-    code: &[u8],
-    base: u64,
+    region: &Region<'_>,
     memory: &Memory<'_>,
 ) -> Vec<u64> {
-    let (insns, _) = decode_all(arch, code, base);
+    let (base, code, insns) = (region.base, region.code, region.insns.as_slice());
     let in_code = AddressSpace::from_ranges(
         regions.iter().map(|(start, bytes)| *start..*start + bytes.len() as u64),
     );
     let width = arch.instruction_width() as u64;
-    let pool = data_words(arch, memory, base..base + code.len() as u64, &insns);
+    let pool = data_words(arch, memory, base..base + code.len() as u64, insns);
     // A function starts where the one before it ended. A label inside a
     // function, or a constant that happens to fall in the code, follows code
     // that runs on into it.
@@ -638,7 +654,7 @@ fn taken_addresses(
     let end = base + code.len() as u64;
     let formed = match contents {
         Regions::CodeOnly => {
-            let formed = arch.data_addresses(code, &insns, &in_code, memory);
+            let formed = arch.data_addresses(code, insns, &in_code, memory);
             // Where a pointer to code says that it is one, as on Thumb, an
             // address without the tag is a label inside a function: clang for
             // ARMv6-M, which has no `tbb`, loads the cases of a `switch` from
@@ -654,7 +670,7 @@ fn taken_addresses(
     };
     let tagged = match contents {
         Regions::CodeOnly => Vec::new(),
-        Regions::CodeAndData => tagged_functions(arch, regions, &arch.distance_words(code, &insns))
+        Regions::CodeAndData => tagged_functions(arch, regions, &arch.distance_words(code, insns))
             .into_iter()
             .filter(|&address| {
                 let opens_with_work = insns
@@ -662,7 +678,7 @@ fn taken_addresses(
                     .is_ok_and(|index| !arch.is_padding(&insns[index]));
                 opens_with_work
                     && !points_at_text(memory, address + 1)
-                    && !lies_inside_a_body(&insns, address)
+                    && !lies_inside_a_body(insns, address)
             })
             .collect(),
     };
@@ -1060,8 +1076,7 @@ fn sign_extend_31(value: u32) -> i64 {
 /// no call to name it, and one after a call that does not return, such as
 /// `_Unwind_Resume`, follows no return. Measured on tinyxml2 for MIPS, both
 /// joined two functions into one.
-fn function_entries(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
-    let (insns, _) = decode_all(arch, code, base);
+fn function_entries(arch: &dyn Arch, insns: &[Insn]) -> Vec<u64> {
     (0..insns.len())
         .filter(|&index| arch.is_function_entry(&insns[index..]))
         .map(|index| insns[index].address)
@@ -1077,13 +1092,13 @@ fn function_entries(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
 /// linker has not filled in the target yet, so every such call encodes the
 /// placeholder `bl .-8`, which reads back as the call site. Believing those
 /// would make a function start at every call.
-fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
-    let (insns, _) = decode_all(arch, code, base);
+fn call_targets(arch: &dyn Arch, region: &Region<'_>) -> Vec<u64> {
+    let (base, code, insns) = (region.base, region.code, region.insns.as_slice());
     let end = base + code.len() as u64;
 
     // A pool word that decodes as a call names a target made of data bits.
     let regions = [(base, code)];
-    let pool = data_words(arch, &Memory::new(&regions), base..end, &insns);
+    let pool = data_words(arch, &Memory::new(&regions), base..end, insns);
 
     // A string decodes as instructions too, and on ARM it often reads as a
     // conditional call: `blvs` is `k` in its top byte. Measured on Lua for
@@ -1121,7 +1136,7 @@ fn call_targets(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
         .map(|(_, target)| target)
         // A call out of this section goes somewhere this pass cannot see.
         .filter(|target| *target >= base && *target < end)
-        .filter(|&target| !pops_a_frame_it_did_not_make(arch, &insns, target))
+        .filter(|&target| !pops_a_frame_it_did_not_make(arch, insns, target))
         .collect()
 }
 
@@ -1174,24 +1189,24 @@ fn pops_a_frame_it_did_not_make(arch: &dyn Arch, insns: &[Insn], target: u64) ->
 #[cfg(test)]
 fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
     let regions = [(base, code)];
-    starts_after_returns_in(arch, code, base, &Memory::new(&regions), &Linked::default())
+    let region = Region::decode(arch, base, code);
+    starts_after_returns_in(arch, &region, &Memory::new(&regions), &Linked::default())
 }
 
 /// [`starts_after_returns`], where `memory` holds what else the binary loads.
 fn starts_after_returns_in(
     arch: &dyn Arch,
-    code: &[u8],
-    base: u64,
+    region: &Region<'_>,
     memory: &Memory<'_>,
     linked: &Linked,
 ) -> Vec<u64> {
-    let (insns, _) = decode_all(arch, code, base);
-    let never_returns = calls_that_never_return(arch, &insns, memory, &linked.slot_names);
+    let (base, code, insns) = (region.base, region.code, region.insns.as_slice());
+    let never_returns = calls_that_never_return(arch, insns, memory, &linked.slot_names);
     let end = base + code.len() as u64;
 
     // Pool words are data. Read as code they are a random return or branch,
     // which moves with their values from one release to the next.
-    let pool = data_words(arch, memory, base..end, &insns);
+    let pool = data_words(arch, memory, base..end, insns);
     let is_code = |insn: &&Insn| !pool.contains(&insn.address);
 
     // Every branch, as (from, to, how). A jump through a table picks one
@@ -1204,7 +1219,7 @@ fn starts_after_returns_in(
         InsnKind::Jump { target: Some(target) } => Some((insn.address, target, Transfer::Always)),
         _ => None,
     });
-    let tables = arch.jump_tables(memory, base..end, &insns);
+    let tables = arch.jump_tables(memory, base..end, insns);
     let table_jumps: BTreeSet<u64> = tables.iter().map(|table| table.jump).collect();
     let through_tables = tables.into_iter().flat_map(|table| {
         table.targets.into_iter().map(move |target| (table.jump, target, Transfer::Conditional))
@@ -1234,10 +1249,8 @@ fn starts_after_returns_in(
     // A frame that a conditional branch runs into is made late, on the path
     // that needs it, as `luaC_linkupval` in Lua for MIPS does after its
     // early return. It is inside a function, so it is no sure start.
-    let sure_starts: BTreeSet<u64> = call_targets(arch, code, base)
-        .into_iter()
-        .chain(function_entries(arch, code, base))
-        .collect();
+    let sure_starts: BTreeSet<u64> =
+        call_targets(arch, region).into_iter().chain(function_entries(arch, insns)).collect();
     let is_sure_start = |address: u64| sure_starts.contains(&address);
     let may_open = |address: u64| {
         usize::try_from(address - base)
@@ -1377,7 +1390,7 @@ fn starts_after_returns_in(
                 && (past_pool || !sources_of.contains_key(&following.address))
                 && !is_inside_a_function(next)
             {
-                out.push(start_of(&insns, next, arch));
+                out.push(start_of(insns, next, arch));
             }
         }
         // Only code that does not fall through can be followed by a new
@@ -1515,7 +1528,7 @@ fn starts_after_returns_in(
         // an error path that jumps backwards over the end of its own function
         // would otherwise hide the function that follows.
         if arch.is_prologue(following) {
-            out.push(start_of(&insns, next, arch));
+            out.push(start_of(insns, next, arch));
             continue;
         }
 
@@ -1528,7 +1541,7 @@ fn starts_after_returns_in(
         // it. Look a short way ahead, stopping at any further terminator so the
         // scan cannot cross into real control flow.
         if let Some(prologue) = prologue_past_pool(
-            &insns,
+            insns,
             next,
             &reached_here,
             &|address| pool.contains(&address),
@@ -1918,10 +1931,11 @@ mod tests {
 
     fn pool_span_survivors(code: &[u8], starts: &[(u64, Source)]) -> Vec<u64> {
         let regions = [(0x1000, code)];
+        let arch = &crate::arch::thumb::Thumb2;
         let kept = outside_pool_spans(
             starts.iter().copied().collect(),
-            &crate::arch::thumb::Thumb2,
-            &regions,
+            arch,
+            &[Region::decode(arch, 0x1000, code)],
             &Memory::new(&regions),
         );
         kept.into_iter().map(|(address, _)| address).collect()
@@ -1969,7 +1983,8 @@ mod tests {
         let code = loads_over(&LANDING);
         let regions = [(0x1000, code.as_slice())];
         let starts: BTreeSet<(u64, Source)> = [(0x1004, Source::AfterReturn)].into();
-        let kept = outside_pool_spans(starts.clone(), &Arm32, &regions, &Memory::new(&regions));
+        let decoded = [Region::decode(&Arm32, 0x1000, &code)];
+        let kept = outside_pool_spans(starts.clone(), &Arm32, &decoded, &Memory::new(&regions));
         assert_eq!(kept, starts);
     }
 
@@ -2071,7 +2086,10 @@ mod tests {
         let code = halfwords(&[
             0xb510, 0xf000, 0xf803, 0xf000, 0xf803, 0x2000, 0xb002, 0xbd10, 0xb510, 0xbd10,
         ]);
-        let targets = call_targets(&crate::arch::thumb::Thumb2, &code, 0x1000);
+        let targets = call_targets(
+            &crate::arch::thumb::Thumb2,
+            &Region::decode(&crate::arch::thumb::Thumb2, 0x1000, &code),
+        );
         assert_eq!(targets, [0x1010], "the epilogue at 0x100c is no function");
     }
 
@@ -2188,7 +2206,7 @@ mod tests {
     fn a_call_to_itself_is_not_a_function_start() {
         // bl .-8, the placeholder a linker has yet to fill in.
         let code = [0xfe, 0xff, 0xff, 0xeb];
-        assert!(call_targets(&Arm32, &code, 0x1000).is_empty());
+        assert!(call_targets(&Arm32, &Region::decode(&Arm32, 0x1000, &code)).is_empty());
     }
 
     #[test]
@@ -2198,7 +2216,11 @@ mod tests {
         // encoding is written out directly. A zero offset field means "two
         // words ahead", because the encoding carries the pipeline bias.
         let code = [0x00, 0x00, 0x00, 0xeb, 0x1e, 0xff, 0x2f, 0xe1, 0x00, 0x00, 0x81, 0xe0];
-        assert_eq!(call_targets(&Arm32, &code, 0), vec![0x8], "the call target starts a function");
+        assert_eq!(
+            call_targets(&Arm32, &Region::decode(&Arm32, 0, &code)),
+            vec![0x8],
+            "the call target starts a function"
+        );
     }
 
     #[test]
@@ -2610,11 +2632,11 @@ mod tests {
             Arm32.decode(&text, 4, 0).map(|insn| insn.kind),
             Ok(InsnKind::Call { target: Some(0x13948) })
         );
-        assert!(call_targets(&Arm32, &text, 0).is_empty());
+        assert!(call_targets(&Arm32, &Region::decode(&Arm32, 0, &text)).is_empty());
 
         // bl 0x13948: the same target, from a word that is not text.
         let call = with_word_at_4(0xeb00_4e4f);
-        assert_eq!(call_targets(&Arm32, &call, 0), vec![0x13948]);
+        assert_eq!(call_targets(&Arm32, &Region::decode(&Arm32, 0, &call)), vec![0x13948]);
     }
 
     /// A branch crosses a return inside its own function only. One from
@@ -2728,7 +2750,8 @@ mod tests {
             0x03e0_0008,     // 0x14 jr ra
             0x0000_0000_u32, // 0x18 nop
         ]);
-        assert_eq!(function_entries(&Mips32::LITTLE, &code, 0), vec![0x08]);
+        let (insns, _) = decode_all(&Mips32::LITTLE, &code, 0);
+        assert_eq!(function_entries(&Mips32::LITTLE, &insns), vec![0x08]);
         let starts: Vec<u64> = recover_from_regions(&[(0, &code)], &[], &Mips32::LITTLE)
             .iter()
             .map(|found| found.function.address)
