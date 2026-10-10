@@ -25,9 +25,10 @@ use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
 use super::arm32::{
-    Arm32, Encoding, IntegerWord, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel, UNKNOWN_MNEMONIC,
-    UNWIND_SECTION, call_targets_through_thunks, classify, decode_fallback, decoder_misreads,
-    is_long_thunk, lift_with, parse_hex, pool_loads, split_mnemonic, track_pool_words,
+    Arm32, Decoded, Encoding, Flags, IntegerWord, NEON_LOAD_STORE, NEON_MNEMONIC, PcModel,
+    UNKNOWN_MNEMONIC, UNWIND_SECTION, call_targets_through_thunks, classify, core_opcode,
+    decode_fallback, decoded_of, decoder_misreads, is_long_thunk, lift_with, parse_hex, pool_loads,
+    split_mnemonic, track_pool_words,
 };
 use super::{
     Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps, VectorTable,
@@ -92,14 +93,14 @@ impl Arch for Thumb2 {
                 _ => None,
             };
             let fallback = word.and_then(|word| decode_fallback(as_a32(word), Encoding::T32));
-            if let Some((mnemonic, operands)) = fallback {
+            if let Some((mnemonic, operands, decoded)) = fallback {
                 return Ok(Insn {
                     address: insn_address,
                     bytes_len: width,
                     mnemonic,
                     operands,
                     kind: InsnKind::Normal,
-                    opcode: super::Opcode::None,
+                    opcode: super::Opcode::Arm(decoded),
                 });
             }
             // The width comes from the first halfword, so stepping over an
@@ -107,14 +108,18 @@ impl Arch for Thumb2 {
             // the operands, so that an edit to it still shows.
             let operands = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
             let is_neon = word.is_some_and(|word| matches!(word >> 24, 0xef | 0xff));
-            let mnemonic = if is_neon { NEON_MNEMONIC } else { UNKNOWN_MNEMONIC };
+            let (mnemonic, opcode) = if is_neon {
+                (NEON_MNEMONIC, super::Opcode::Arm(Decoded::NeonData))
+            } else {
+                (UNKNOWN_MNEMONIC, super::Opcode::None)
+            };
             return Ok(Insn {
                 address: insn_address,
                 bytes_len: width,
                 mnemonic: mnemonic.to_string(),
                 operands,
                 kind: InsnKind::Unknown,
-                opcode: super::Opcode::None,
+                opcode,
             });
         }
 
@@ -129,26 +134,33 @@ impl Arch for Thumb2 {
         } else {
             mnemonic
         };
-        let (mnemonic, operands) = match *bytes {
+        let decoded = decoded_of(&inst);
+        let (mnemonic, operands, decoded) = match *bytes {
             [low, high, second_low, second_high] => {
                 let (first, second) = (
                     u16::from_le_bytes([low, high]),
                     u16::from_le_bytes([second_low, second_high]),
                 );
                 let fixed = wide_move_operands(first, second)
-                    .map(|operands| (mnemonic.clone(), operands))
+                    .map(|operands| (mnemonic.clone(), operands, decoded))
                     .or_else(|| {
-                        wide_store(first, second)
-                            .map(|store| (store.mnemonic().to_string(), store.operands()))
+                        wide_store(first, second).map(|store| {
+                            (store.mnemonic().to_string(), store.operands(), store.decoded())
+                        })
                     });
                 match (table_branch(first, second), WideWord::of(first, second), fixed) {
-                    (Some((mnemonic, operands)), ..) => (mnemonic.to_string(), operands),
-                    (None, Some(word), _) => word.text(),
+                    (Some((mnemonic, operands, opcode)), ..) => {
+                        (mnemonic.to_string(), operands, always(opcode, Flags::Kept))
+                    }
+                    (None, Some(word), _) => {
+                        let (mnemonic, operands) = word.text();
+                        (mnemonic, operands, word.decoded())
+                    }
                     (None, None, Some(fixed)) => fixed,
-                    (None, None, None) => (mnemonic, shift_of_32(first, second, operands)),
+                    (None, None, None) => (mnemonic, shift_of_32(first, second, operands), decoded),
                 }
             }
-            _ => (mnemonic, operands),
+            _ => (mnemonic, operands, decoded),
         };
         let target = branch_target(&inst, insn_address, width);
         let operands = match target {
@@ -168,7 +180,7 @@ impl Arch for Thumb2 {
             mnemonic,
             operands,
             kind,
-            opcode: super::Opcode::None,
+            opcode: super::Opcode::Arm(decoded),
         })
     }
 
@@ -273,7 +285,7 @@ impl Arch for Thumb2 {
     }
 
     fn is_unread_extension(&self, insn: &Insn) -> bool {
-        insn.mnemonic == NEON_MNEMONIC
+        Arm32.is_unread_extension(insn)
     }
 
     /// `tbb [pc, rI]` and `tbh [pc, rI, lsl 1]` read a table of distances
@@ -371,10 +383,11 @@ impl Arch for Thumb2 {
     /// its condition fails, so it is a branch.
     fn after_decoding(&self, insns: &mut [Insn]) {
         // The conditions of the instructions an `it` covers, next first.
-        let mut conditions: Vec<&'static str> = Vec::new();
+        let mut conditions: Vec<ConditionCode> = Vec::new();
         for insn in insns {
             if !conditions.is_empty() {
-                let condition = conditions.remove(0);
+                let code = conditions.remove(0);
+                let condition = condition_name(code);
                 insn.kind = match insn.kind {
                     InsnKind::Return => InsnKind::Branch { target: None },
                     InsnKind::Jump { target } => InsnKind::Branch { target },
@@ -383,15 +396,23 @@ impl Arch for Thumb2 {
                 // `yaxpeax-arm` prints no condition inside the block, so
                 // `movgt r0, #0` read as `movs r0, 0x0`. A 16-bit form that
                 // sets the flags outside a block does not inside one.
-                let base = match insn.bytes_len == HALFWORD && insn.mnemonic.len() > 2 {
+                let narrow = insn.bytes_len == HALFWORD;
+                let base = match narrow && insn.mnemonic.len() > 2 {
                     true => insn.mnemonic.strip_suffix('s').unwrap_or(&insn.mnemonic),
                     false => &insn.mnemonic,
                 };
                 if !base.ends_with(condition) {
                     insn.mnemonic = format!("{base}{condition}");
                 }
-            } else if let Some(covered) = it_conditions(&insn.mnemonic, &insn.operands) {
-                conditions = covered;
+                if let super::Opcode::Arm(Decoded::Core { condition, flags, .. }) = &mut insn.opcode
+                {
+                    *condition = code;
+                    if narrow {
+                        *flags = Flags::Kept;
+                    }
+                }
+            } else if let super::Opcode::Arm(Decoded::It { condition, mask }) = insn.opcode {
+                conditions = it_conditions(condition, mask).unwrap_or_default();
             }
         }
     }
@@ -399,12 +420,15 @@ impl Arch for Thumb2 {
     /// A zero halfword reads as `lsls r0, r0, 0`, which changes nothing but
     /// the flags, and fills the gap before a word-aligned pool.
     fn is_padding(&self, insn: &Insn) -> bool {
-        insn.mnemonic == "nop"
-            || (insn.mnemonic == "mov" && insn.operands == "r8, r8")
-            || (insn.mnemonic == "lsls" && insn.operands == "r0, r0, 0x0")
+        let is = |opcode, condition, flags| {
+            insn.opcode == super::Opcode::Arm(Decoded::Core { opcode, condition, flags })
+        };
+        is(Opcode::NOP, ConditionCode::AL, Flags::Kept)
+            || (is(Opcode::MOV, ConditionCode::AL, Flags::Kept) && insn.operands == "r8, r8")
+            || (is(Opcode::LSL, ConditionCode::AL, Flags::Set) && insn.operands == "r0, r0, 0x0")
             // LLD's fill, `0xd4d4`, reads as this branch back. No compiler
             // branches back into the middle of the fill before a function.
-            || (insn.mnemonic == "bmi" && insn.operands == "$-0x54")
+            || (is(Opcode::B, ConditionCode::MI, Flags::Kept) && insn.operands == "$-0x54")
             || (insn.kind == InsnKind::Unknown && insn.operands == "0000")
     }
 
@@ -551,6 +575,15 @@ impl WideStore {
         }
     }
 
+    fn decoded(self) -> Decoded {
+        let opcode = match self.width {
+            crate::il::Width::Bits8 => Opcode::STRB,
+            crate::il::Width::Bits16 => Opcode::STRH,
+            _ => Opcode::STR,
+        };
+        always(opcode, Flags::Kept)
+    }
+
     /// The operands as the decoder prints those of a load.
     fn operands(self) -> String {
         let (value, base) =
@@ -682,6 +715,17 @@ impl WideWord {
         None
     }
 
+    fn decoded(self) -> Decoded {
+        match self {
+            Self::NotConstant { sets_flags, .. } => always(Opcode::MVN, Flags::of(sets_flags)),
+            Self::Shift { kind, sets_flags, .. } => {
+                let opcode = [Opcode::LSL, Opcode::LSR, Opcode::ASR, Opcode::ROR][kind as usize];
+                always(opcode, Flags::of(sets_flags))
+            }
+            Self::Integer(word) => always(word.opcode(), word.flags()),
+        }
+    }
+
     /// The mnemonic and the operands, as the decoder prints them.
     fn text(self) -> (String, String) {
         let name = |number: u32| REGISTER_NAMES[number as usize];
@@ -775,7 +819,7 @@ fn shift_of_32(first: u16, second: u16, operands: String) -> String {
 /// `yaxpeax-arm` 0.4 reads `tbh [pc, r2, lsl 1]` as `tbb [pc, r2, lsl r0]`,
 /// so a table of halfwords read as one of bytes. Measured on Lua built by GCC
 /// at `-Os` for Thumb-2, the `tbh` of `luaV_execute` cut it in 19 pieces.
-fn table_branch(first: u16, second: u16) -> Option<(&'static str, String)> {
+fn table_branch(first: u16, second: u16) -> Option<(&'static str, String, Opcode)> {
     const TABLE_BRANCH: u16 = 0xe8d0;
     if first & 0xfff0 != TABLE_BRANCH || second & 0xffe0 != 0xf000 {
         return None;
@@ -783,9 +827,14 @@ fn table_branch(first: u16, second: u16) -> Option<(&'static str, String)> {
     let base = REGISTER_NAMES[usize::from(first & 0xf)];
     let index = REGISTER_NAMES[usize::from(second & 0xf)];
     Some(match second >> 4 & 1 {
-        0 => ("tbb", format!("[{base}, {index}]")),
-        _ => ("tbh", format!("[{base}, {index}, lsl 0x1]")),
+        0 => ("tbb", format!("[{base}, {index}]"), Opcode::TBB),
+        _ => ("tbh", format!("[{base}, {index}, lsl 0x1]"), Opcode::TBH),
     })
+}
+
+/// `opcode`, with no condition: an `it` before it gives one later.
+fn always(opcode: Opcode, flags: Flags) -> Decoded {
+    Decoded::Core { opcode, condition: ConditionCode::AL, flags }
 }
 
 /// The names of the general registers, as `yaxpeax-arm` prints them.
@@ -892,45 +941,84 @@ fn with_target_text(operands: &str, address: u64, target: u64) -> String {
     format!("{}${sign}{:#x}{}", &operands[..start], distance.unsigned_abs(), &operands[end..])
 }
 
-/// How many instructions after an `it` it makes conditional, if `mnemonic`
-/// is one: one, and one more for each `t` or `e` after `it`.
-/// The condition of each instruction an `it` covers, in order: `t` takes
-/// the condition of the block, and `e` its opposite.
-fn it_conditions(mnemonic: &str, condition: &str) -> Option<Vec<&'static str>> {
-    const PAIRS: [(&str, &str); 7] = [
-        ("eq", "ne"),
-        ("hs", "lo"),
-        ("mi", "pl"),
-        ("vs", "vc"),
-        ("hi", "ls"),
-        ("ge", "lt"),
-        ("gt", "le"),
+/// The condition of each instruction an `it` covers, in order, from the
+/// condition of the first and the mask of the rest. Each bit of the mask
+/// above its lowest set bit covers one more: as bit 0 of the condition,
+/// `t`, it takes the condition, and else its opposite, `e`. `None` where
+/// the condition has no opposite.
+fn it_conditions(condition: u8, mask: u8) -> Option<Vec<ConditionCode>> {
+    /// The conditions by number. 14 is always, and has no opposite.
+    const CODES: [ConditionCode; 14] = [
+        ConditionCode::EQ,
+        ConditionCode::NE,
+        ConditionCode::HS,
+        ConditionCode::LO,
+        ConditionCode::MI,
+        ConditionCode::PL,
+        ConditionCode::VS,
+        ConditionCode::VC,
+        ConditionCode::HI,
+        ConditionCode::LS,
+        ConditionCode::GE,
+        ConditionCode::LT,
+        ConditionCode::GT,
+        ConditionCode::LE,
     ];
-    let condition = condition.trim();
-    let (then, otherwise) = PAIRS.iter().find_map(|&(a, b)| {
-        (condition == a).then_some((a, b)).or((condition == b).then_some((b, a)))
-    })?;
-    it_block_length(mnemonic)?;
-    let pattern = &mnemonic[2..];
-    let rest = pattern.chars().map(|letter| if letter == 't' { then } else { otherwise });
+    let then = *CODES.get(usize::from(condition))?;
+    let otherwise = CODES[usize::from(condition ^ 1)];
+    let mask = mask & 0xf;
+    if mask == 0 {
+        return None;
+    }
+    let covered = 4 - mask.trailing_zeros();
+    let rest = (1..covered).map(|slot| {
+        let bit = mask >> (4 - slot) & 1;
+        if bit == condition & 1 { then } else { otherwise }
+    });
     Some(core::iter::once(then).chain(rest).collect())
 }
 
-/// How many instructions the `it` of `mnemonic` covers, or `None` where
-/// `mnemonic` is no `it`.
-pub(crate) fn it_block_length(mnemonic: &str) -> Option<usize> {
-    let pattern = mnemonic.strip_prefix("it")?;
-    (pattern.len() <= 3 && pattern.chars().all(|letter| letter == 't' || letter == 'e'))
-        .then_some(pattern.len() + 1)
+/// The suffix a mnemonic takes for `condition`.
+fn condition_name(condition: ConditionCode) -> &'static str {
+    match condition {
+        ConditionCode::EQ => "eq",
+        ConditionCode::NE => "ne",
+        ConditionCode::HS => "hs",
+        ConditionCode::LO => "lo",
+        ConditionCode::MI => "mi",
+        ConditionCode::PL => "pl",
+        ConditionCode::VS => "vs",
+        ConditionCode::VC => "vc",
+        ConditionCode::HI => "hi",
+        ConditionCode::LS => "ls",
+        ConditionCode::GE => "ge",
+        ConditionCode::LT => "lt",
+        ConditionCode::GT => "gt",
+        ConditionCode::LE => "le",
+        ConditionCode::AL => "",
+    }
+}
+
+/// Whether `insn` is an `it`.
+pub(crate) fn is_it(insn: &Insn) -> bool {
+    matches!(insn.opcode, super::Opcode::Arm(Decoded::It { .. }))
 }
 
 /// The bytes of the table a `tbb` or `tbh` at `insns[index]` jumps
 /// through, and the width of an entry, from the instructions alone.
 fn table_extent(insns: &[Insn], index: usize) -> Option<(Range<u64>, usize)> {
     let jump = &insns[index];
-    let width = match jump.mnemonic.as_str() {
-        "tbb" => 1,
-        "tbh" => 2,
+    let width = match jump.opcode {
+        super::Opcode::Arm(Decoded::Core {
+            opcode: Opcode::TBB,
+            condition: ConditionCode::AL,
+            ..
+        }) => 1,
+        super::Opcode::Arm(Decoded::Core {
+            opcode: Opcode::TBH,
+            condition: ConditionCode::AL,
+            ..
+        }) => 2,
         _ => return None,
     };
     let inner = jump.operands.strip_prefix("[pc, ")?;
@@ -940,8 +1028,10 @@ fn table_extent(insns: &[Insn], index: usize) -> Option<(Range<u64>, usize)> {
     let bound =
         insns[index.saturating_sub(TABLE_LOOK_BACK)..index].iter().rev().find_map(|insn| {
             let operands: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
-            match (Arm32.normalize_operation(&insn.mnemonic).as_str(), operands.as_slice()) {
-                ("cmp", [.., register, bound]) if *register == index_register => parse_hex(bound),
+            match (core_opcode(insn), operands.as_slice()) {
+                (Some(Opcode::CMP), [.., register, bound]) if *register == index_register => {
+                    parse_hex(bound)
+                }
                 _ => None,
             }
         })?;
@@ -1243,8 +1333,17 @@ mod tests {
         let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
         let mnemonics: Vec<&str> = insns.iter().map(|insn| insn.mnemonic.as_str()).collect();
         assert_eq!(mnemonics, ["ite", "movgt", "movle", "adds"]);
-        assert_eq!(it_conditions("itet", "eq"), Some(vec!["eq", "ne", "eq"]));
-        assert_eq!(it_conditions("it", "al"), None, "no condition to name");
+        let condition = |insn: &Insn| match insn.opcode {
+            super::super::Opcode::Arm(Decoded::Core { condition, flags, .. }) => (condition, flags),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(condition(&insns[1]), (ConditionCode::GT, Flags::Kept));
+        assert_eq!(condition(&insns[2]), (ConditionCode::LE, Flags::Kept));
+        assert_eq!(condition(&insns[3]), (ConditionCode::AL, Flags::Set));
+        // itet eq
+        let eq_ne_eq = vec![ConditionCode::EQ, ConditionCode::NE, ConditionCode::EQ];
+        assert_eq!(it_conditions(0, 0b1010), Some(eq_ne_eq));
+        assert_eq!(it_conditions(14, 0b1000), None, "no condition to name");
     }
 
     #[test]
@@ -1398,14 +1497,29 @@ mod tests {
         assert_eq!(kinds[4], InsnKind::Return);
     }
 
+    /// Each `it` covers the conditions its mnemonic and its operand print:
+    /// `t` the condition, and `e` its opposite.
     #[test]
-    fn it_blocks_cover_up_to_four() {
-        assert_eq!(it_block_length("it"), Some(1));
-        assert_eq!(it_block_length("ite"), Some(2));
-        assert_eq!(it_block_length("ittee"), Some(4));
-        assert_eq!(it_block_length("itteet"), None);
-        assert_eq!(it_block_length("iteq"), None);
-        assert_eq!(it_block_length("mov"), None);
+    fn it_blocks_cover_what_they_print() {
+        for condition in 0..14_u16 {
+            for mask in 1..16_u16 {
+                let insn = decode_one(&[0xbf00 | condition << 4 | mask]);
+                assert!(is_it(&insn), "{insn}");
+                let then = insn.operands.trim();
+                let names: Vec<&str> = it_conditions(condition as u8, mask as u8)
+                    .expect("a condition with an opposite")
+                    .into_iter()
+                    .map(condition_name)
+                    .collect();
+                let pattern = &insn.mnemonic[2..];
+                assert_eq!(names.len(), pattern.len() + 1, "{insn}");
+                assert_eq!(names[0], then, "{insn}");
+                for (name, letter) in names[1..].iter().zip(pattern.chars()) {
+                    assert_eq!(letter == 't', *name == then, "{insn}");
+                }
+            }
+        }
+        assert!(!is_it(&decode_one(&[0xbf00])), "nop");
     }
 
     /// `tbb` reads the byte table after itself, bounded by the `cmp` before.

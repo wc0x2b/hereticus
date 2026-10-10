@@ -156,7 +156,7 @@ enum Fold {
 fn folds(arch: &dyn Arch, insns: &[Insn]) -> Vec<Fold> {
     let mut folds = vec![Fold::Own; insns.len()];
     for index in 0..insns.len() {
-        if crate::arch::thumb::it_block_length(&insns[index].mnemonic).is_some() {
+        if crate::arch::thumb::is_it(&insns[index]) {
             folds[index] = Fold::Hidden;
         }
         let Some(setup) = arch.global_pointer_setup(&insns[index..]) else { continue };
