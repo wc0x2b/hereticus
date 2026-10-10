@@ -160,6 +160,10 @@ fn fixture_objects() -> Vec<PathBuf> {
 /// of failing on a machine without it.
 fn objdump_function(object: &Path, triple: &str, symbol: &str) -> Option<Vec<ObjdumpInsn>> {
     let output = Command::new("llvm-objdump")
+        // With a debuginfod server set, `llvm-objdump` asks it over the
+        // network about each file: measured, the test took 464 s in place of
+        // 18 s.
+        .env_remove("DEBUGINFOD_URLS")
         .arg("-d")
         .arg(format!("--triple={triple}"))
         .arg(format!("--disassemble-symbols={symbol}"))
