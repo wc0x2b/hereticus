@@ -4288,6 +4288,7 @@ mod tests {
                         mnemonic: mnemonic.to_string(),
                         operands: operands.to_string(),
                         kind: InsnKind::Normal,
+                        opcode: crate::arch::Opcode::None,
                     },
                 )
             })

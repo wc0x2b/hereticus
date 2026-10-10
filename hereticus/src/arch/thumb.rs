@@ -99,6 +99,7 @@ impl Arch for Thumb2 {
                     mnemonic,
                     operands,
                     kind: InsnKind::Normal,
+                    opcode: super::Opcode::None,
                 });
             }
             // The width comes from the first halfword, so stepping over an
@@ -113,6 +114,7 @@ impl Arch for Thumb2 {
                 mnemonic: mnemonic.to_string(),
                 operands,
                 kind: InsnKind::Unknown,
+                opcode: super::Opcode::None,
             });
         }
 
@@ -160,7 +162,14 @@ impl Arch for Thumb2 {
             _ => classify(&inst, target),
         };
 
-        Ok(Insn { address: insn_address, bytes_len: width, mnemonic, operands, kind })
+        Ok(Insn {
+            address: insn_address,
+            bytes_len: width,
+            mnemonic,
+            operands,
+            kind,
+            opcode: super::Opcode::None,
+        })
     }
 
     fn triple(&self) -> &'static str {

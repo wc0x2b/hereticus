@@ -1389,6 +1389,7 @@ mod tests {
             mnemonic: mnemonic.into(),
             operands: operands.into(),
             kind,
+            opcode: crate::arch::Opcode::None,
         }
     }
 
@@ -1549,6 +1550,7 @@ mod tests {
             mnemonic: "mls".into(),
             operands: "r0, r1, r2, r3".into(),
             kind: crate::arch::InsnKind::Normal,
+            opcode: crate::arch::Opcode::None,
         };
         assert_eq!(a32_condition(&Arm32, &mls, Some(Op::MultiplyAdd)), None, "a multiply-subtract");
     }

@@ -76,6 +76,7 @@ impl Arch for Aarch64 {
                 mnemonic: UNKNOWN_MNEMONIC.to_string(),
                 operands: format!("{word:#010x}"),
                 kind: InsnKind::Unknown,
+                opcode: super::Opcode::None,
             });
         }
 
@@ -83,7 +84,9 @@ impl Arch for Aarch64 {
         let (mnemonic, operands) = split_mnemonic(&text);
         let operands = extended_register(inst.opcode, operands);
         let kind = classify(&inst, insn_address);
-        Ok(Insn { address: insn_address, bytes_len: INSN_WIDTH, mnemonic, operands, kind })
+        let opcode =
+            super::Opcode::Aarch64(Decoded { opcode: inst.opcode, alias: alias_of(&inst) });
+        Ok(Insn { address: insn_address, bytes_len: INSN_WIDTH, mnemonic, operands, kind, opcode })
     }
 
     fn triple(&self) -> &'static str {
@@ -143,17 +146,23 @@ impl Arch for Aarch64 {
     }
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
-        let operation = self.normalize_operation(&insn.mnemonic);
+        let Some(Decoded { opcode, alias }) = decoded(insn) else { return false };
         let operands = insn.operands.as_str();
         let first = operands.split(',').next().unwrap_or_default();
-        match operation.as_str() {
+        match (opcode, alias) {
             // Saving and restoring the frame and the registers it keeps.
-            "stp" | "ldp" | "str" | "ldr" => self.mentions_stack_slot(operands),
+            (Opcode::STP | Opcode::LDP | Opcode::STR | Opcode::LDR, _) => {
+                self.mentions_stack_slot(operands)
+            }
             // Moving the stack pointer, or setting up the frame pointer.
-            "sub" | "add" | "mov" => self.is_stack_register(first),
+            (_, Alias::Move)
+            | (Opcode::SUB | Opcode::ADD | Opcode::MOVZ | Opcode::MOVN, Alias::None) => {
+                self.is_stack_register(first)
+            }
             // Signing and checking the return address, and marking a branch
             // target, change nothing a function computes.
-            "paciasp" | "pacibsp" | "autiasp" | "autibsp" | "bti" => true,
+            (Opcode::PACIASP | Opcode::PACIBSP | Opcode::AUTIASP | Opcode::AUTIBSP, _)
+            | (_, Alias::BranchTarget) => true,
             _ => false,
         }
     }
@@ -163,21 +172,28 @@ impl Arch for Aarch64 {
     /// needs no frame has no prologue, which is why the scan treats this as
     /// one source among several.
     fn is_prologue(&self, insn: &Insn) -> bool {
-        (insn.mnemonic == "stp" && insn.operands.starts_with("x29, x30, [sp"))
-            || (insn.mnemonic == "str"
-                && insn.operands.starts_with("x30, [sp")
-                && insn.operands.ends_with('!'))
+        match opcode_of(insn) {
+            Some(Opcode::STP) => insn.operands.starts_with("x29, x30, [sp"),
+            Some(Opcode::STR) => {
+                insn.operands.starts_with("x30, [sp") && insn.operands.ends_with('!')
+            }
+            _ => false,
+        }
     }
 
     /// A signed return address, or a branch target mark, can come before
     /// the frame is made.
     fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
-        let Some(last) = earlier.last() else { return 0 };
-        usize::from(matches!(last.mnemonic.as_str(), "paciasp" | "pacibsp" | "bti"))
+        let Some(last) = earlier.last().and_then(decoded) else { return 0 };
+        usize::from(matches!(
+            (last.opcode, last.alias),
+            (Opcode::PACIASP | Opcode::PACIBSP, _) | (_, Alias::BranchTarget)
+        ))
     }
 
     fn is_padding(&self, insn: &Insn) -> bool {
-        insn.mnemonic == "nop" || (insn.kind == InsnKind::Unknown && insn.operands == "0x00000000")
+        decoded(insn).is_some_and(|decoded| decoded.alias == Alias::Nop)
+            || (insn.kind == InsnKind::Unknown && insn.operands == "0x00000000")
     }
 
     /// Only whole words at the end are removed, and only the two encodings a
@@ -268,9 +284,9 @@ impl Arch for Aarch64 {
             None if reference.is_empty() => 0,
             None => return None,
         };
-        let shape = load.mnemonic == "ldr"
+        let shape = opcode_of(load) == Some(Opcode::LDR)
             && add.operands.starts_with("x16, x16, ")
-            && jump.mnemonic == "br"
+            && opcode_of(jump) == Some(Opcode::BR)
             && jump.operands == "x17";
         shape.then_some(page + low)
     }
@@ -278,7 +294,7 @@ impl Arch for Aarch64 {
     /// `br x16` and `br x17`: the ABI keeps these two for a jump the linker
     /// adds, a PLT stub or a veneer. A `switch` jumps through another.
     fn is_tail_call(&self, insn: &Insn) -> bool {
-        insn.mnemonic == "br" && matches!(insn.operands.as_str(), "x16" | "x17")
+        opcode_of(insn) == Some(Opcode::BR) && matches!(insn.operands.as_str(), "x16" | "x17")
     }
 
     fn pointer_width(&self) -> usize {
@@ -438,10 +454,11 @@ fn lift(inst: &Instruction) -> Lifted {
         address_registers(*operand, &mut reads, &mut writes);
     }
 
-    let role = role_of(inst);
+    let alias = alias_of(inst);
+    let role = role_of(inst.opcode, alias);
     for (index, operand) in operands.iter().enumerate() {
         let written = match role {
-            Role::Compute => index == 0 && !is_compare(inst),
+            Role::Compute => index == 0 && alias != Alias::Compare,
             Role::ReadOnly | Role::Store => false,
             Role::Load { registers } => index < registers,
             Role::StoreExclusive => index == 0,
@@ -472,9 +489,9 @@ fn lift(inst: &Instruction) -> Lifted {
         _ => {}
     }
 
-    lifted.op = op_of(inst, role, &operands);
+    lifted.op = op_of(inst, alias, role, &operands);
     lifted.memory = memory_access(inst.opcode, role, &operands);
-    lifted.test = test_of(inst, &operands);
+    lifted.test = test_of(inst, alias, &operands);
     lifted.reads = reads;
     lifted.writes = writes;
     lifted.operands = operands.iter().map(|operand| il_operand(*operand)).collect();
@@ -524,7 +541,7 @@ fn il_operand(operand: Operand) -> il::Operand {
 /// What an A64 instruction computes. An alias the decoder prints in place
 /// of its instruction, as `cmp` for a `subs` into the zero register, or
 /// `lsl` for a `ubfm`, computes what the alias names.
-fn op_of(inst: &Instruction, role: Role, operands: &[Operand]) -> Op {
+fn op_of(inst: &Instruction, alias: Alias, role: Role, operands: &[Operand]) -> Op {
     match role {
         Role::Load { .. } if is_exclusive_load(inst.opcode) => return Op::Atomic,
         Role::Load { .. } => return Op::Load,
@@ -541,7 +558,6 @@ fn op_of(inst: &Instruction, role: Role, operands: &[Operand]) -> Op {
                 | Operand::SIMDRegisterGroup(..)
         )
     });
-    let zero = |index: usize| is_zero_register(inst.operands[index]);
     match inst.opcode {
         Opcode::B => Op::Jump,
         Opcode::Bcc(_)
@@ -555,28 +571,33 @@ fn op_of(inst: &Instruction, role: Role, operands: &[Operand]) -> Op {
         opcode if is_indirect_jump(opcode) => Op::Jump,
         opcode if is_return(opcode) || is_exception_return(opcode) => Op::Return,
         _ if is_vector => Op::Vector,
-        _ if is_compare(inst) => Op::Compare,
+        _ => match alias {
+            Alias::Compare => Op::Compare,
+            Alias::Move => Op::Move,
+            Alias::Negate => Op::Negate,
+            Alias::Not => Op::Not,
+            Alias::Multiply => Op::Multiply,
+            Alias::ShiftLeft => Op::ShiftLeft,
+            Alias::ShiftRight => Op::ShiftRight,
+            Alias::ShiftRightArithmetic => Op::ShiftRightArithmetic,
+            Alias::Extend => Op::Extend,
+            Alias::None | Alias::AtomicStore | Alias::Nop | Alias::BranchTarget => {
+                plain_op(inst.opcode)
+            }
+        },
+    }
+}
+
+/// What an A64 instruction computes, where it prints as no alias of other
+/// work.
+fn plain_op(opcode: Opcode) -> Op {
+    match opcode {
         Opcode::MOVZ | Opcode::MOVN | Opcode::MOVK | Opcode::FMOV => Op::Move,
-        Opcode::ORR if is_orr_move(inst) => Op::Move,
-        Opcode::ADD if is_add_move(inst) => Op::Move,
         Opcode::ADR | Opcode::ADRP => Op::Address,
         Opcode::ADD | Opcode::ADDS | Opcode::ADC | Opcode::ADCS => Op::Add,
-        // `neg`, `negs`, `ngc` and `ngcs` subtract from the zero register.
-        Opcode::SUB | Opcode::SUBS | Opcode::SBC | Opcode::SBCS if zero(1) => Op::Negate,
         Opcode::SUB | Opcode::SUBS | Opcode::SBC | Opcode::SBCS => Op::Subtract,
         Opcode::NEG => Op::Negate,
         Opcode::MUL | Opcode::UMULH | Opcode::SMULH | Opcode::UMULL | Opcode::SMULL => Op::Multiply,
-        // `mul`, `mneg`, `smull` and the like add to the zero register.
-        Opcode::MADD
-        | Opcode::MSUB
-        | Opcode::UMADDL
-        | Opcode::SMADDL
-        | Opcode::UMSUBL
-        | Opcode::SMSUBL
-            if zero(3) =>
-        {
-            Op::Multiply
-        }
         Opcode::MADD
         | Opcode::MSUB
         | Opcode::UMADDL
@@ -588,17 +609,13 @@ fn op_of(inst: &Instruction, role: Role, operands: &[Operand]) -> Op {
         Opcode::ORR => Op::Or,
         Opcode::EOR | Opcode::EON => Op::Xor,
         Opcode::BIC | Opcode::BICS => Op::AndNot,
-        // `mvn` is an `orn` from the zero register.
-        Opcode::ORN if zero(1) => Op::Not,
         Opcode::ORN => Op::OrNot,
         Opcode::NOT => Op::Not,
         Opcode::LSLV => Op::ShiftLeft,
         Opcode::LSRV => Op::ShiftRight,
         Opcode::ASRV => Op::ShiftRightArithmetic,
         Opcode::RORV | Opcode::EXTR => Op::Rotate,
-        Opcode::UBFM => unsigned_bit_field_op(operands),
-        Opcode::SBFM => signed_bit_field_op(operands),
-        Opcode::BFM => Op::BitField,
+        Opcode::UBFM | Opcode::SBFM | Opcode::BFM => Op::BitField,
         Opcode::CLZ
         | Opcode::CLS
         | Opcode::RBIT
@@ -638,23 +655,105 @@ fn op_of(inst: &Instruction, role: Role, operands: &[Operand]) -> Op {
     }
 }
 
+/// What [`Insn::opcode`] holds for A64: the opcode, and the alias that
+/// `yaxpeax-arm` prints in place of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Decoded {
+    pub opcode: Opcode,
+    pub alias: Alias,
+}
+
+// `yaxpeax-arm` derives no `Eq` for `Opcode`, though it holds no float.
+impl Eq for Decoded {}
+
+/// An alias the decoder prints in place of an instruction, where the alias
+/// names other work than the instruction does, or names one case of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Alias {
+    /// The instruction prints as itself, or as an alias for the same work.
+    None,
+    /// `cmp`, `cmn` and `tst`: a `subs`, an `adds` or an `ands` into the
+    /// zero register, which writes only the flags. The first operand is
+    /// the zero register, not a destination.
+    Compare,
+    /// `mov`: an `orr` from the zero register with no shift, or of a
+    /// register with itself, or an `add` of zero to or from the stack
+    /// pointer.
+    Move,
+    /// `neg`, `negs`, `ngc` and `ngcs`: a subtract from the zero register.
+    Negate,
+    /// `mvn`: an `orn` from the zero register.
+    Not,
+    /// `mul`, `mneg`, `smull` and the like: a multiply that adds to the
+    /// zero register.
+    Multiply,
+    /// `lsl`, which is a `ubfm`.
+    ShiftLeft,
+    /// `lsr`, which is a `ubfm`.
+    ShiftRight,
+    /// `asr`, which is an `sbfm`.
+    ShiftRightArithmetic,
+    /// `uxtb`, `sxtw` and the like, which are a `ubfm` or an `sbfm`.
+    Extend,
+    /// `stadd` and the like: an atomic operation that keeps no old value,
+    /// as `ldadd w1, wzr, [x0]`. Only the forms without acquire semantics
+    /// have this alias.
+    AtomicStore,
+    /// `nop`, which is hint 0.
+    Nop,
+    /// `bti`, which marks where an indirect branch may land: hints 32, 34,
+    /// 36 and 38.
+    BranchTarget,
+}
+
+/// The alias `inst` prints as, by the rules of `yaxpeax-arm` 0.4.
+fn alias_of(inst: &Instruction) -> Alias {
+    let operands = &inst.operands;
+    let zero = |index: usize| is_zero_register(operands[index]);
+    match inst.opcode {
+        Opcode::SUBS | Opcode::ADDS | Opcode::ANDS if zero(0) => Alias::Compare,
+        Opcode::ORR if is_orr_move(operands) => Alias::Move,
+        Opcode::ADD if is_add_move(operands) => Alias::Move,
+        Opcode::SUB | Opcode::SUBS | Opcode::SBC | Opcode::SBCS if zero(1) => Alias::Negate,
+        Opcode::ORN if zero(1) => Alias::Not,
+        Opcode::MADD
+        | Opcode::MSUB
+        | Opcode::UMADDL
+        | Opcode::SMADDL
+        | Opcode::UMSUBL
+        | Opcode::SMSUBL
+            if zero(3) =>
+        {
+            Alias::Multiply
+        }
+        Opcode::UBFM => unsigned_bit_field_alias(operands),
+        Opcode::SBFM => signed_bit_field_alias(operands),
+        Opcode::HINT => match hint_number(operands) {
+            Some(0) => Alias::Nop,
+            Some(32 | 34 | 36 | 38) => Alias::BranchTarget,
+            _ => Alias::None,
+        },
+        _ if is_atomic_store(inst) => Alias::AtomicStore,
+        _ => Alias::None,
+    }
+}
+
 /// Register 31 where it names the zero register, not the stack pointer.
 fn is_zero_register(operand: Operand) -> bool {
     matches!(operand, Operand::Register(_, 31))
 }
 
-/// `cmp`, `cmn` and `tst`: a `subs`, an `adds` or an `ands` into the zero
-/// register, which writes only the flags. The first operand is the zero
-/// register, not a destination.
-fn is_compare(inst: &Instruction) -> bool {
-    matches!(inst.opcode, Opcode::SUBS | Opcode::ADDS | Opcode::ANDS)
-        && is_zero_register(inst.operands[0])
+/// The number of a `hint`, from its two fields.
+fn hint_number(operands: &[Operand]) -> Option<u16> {
+    match (operands[0], operands[1]) {
+        (Operand::ControlReg(crm), Operand::Immediate(op2)) => Some(crm << 3 | op2 as u16),
+        _ => None,
+    }
 }
 
-/// An `orr` that `yaxpeax-arm` prints as `mov`: from the zero register with
-/// no shift, or of a register with itself.
-fn is_orr_move(inst: &Instruction) -> bool {
-    match (inst.operands[1], inst.operands[2]) {
+/// An `orr` that prints as `mov`.
+fn is_orr_move(operands: &[Operand]) -> bool {
+    match (operands[1], operands[2]) {
         (Operand::Register(_, 31), Operand::RegShift(style, amount, ..)) => {
             style == ShiftStyle::LSL && amount == 0
         }
@@ -663,45 +762,45 @@ fn is_orr_move(inst: &Instruction) -> bool {
     }
 }
 
-/// `mov` to or from the stack pointer, which is an `add` of zero.
-fn is_add_move(inst: &Instruction) -> bool {
+/// An `add` that prints as `mov`.
+fn is_add_move(operands: &[Operand]) -> bool {
     let stack = |operand| matches!(operand, Operand::RegisterOrSP(_, 31));
-    inst.operands[2] == Operand::Immediate(0)
-        && (stack(inst.operands[0]) || stack(inst.operands[1]))
+    operands[2] == Operand::Immediate(0) && (stack(operands[0]) || stack(operands[1]))
 }
 
-/// The bits a register holds, and the value an immediate gives.
+/// The width of the register a bit field instruction writes, and its
+/// `immr` and `imms` fields.
 fn bit_field(operands: &[Operand]) -> Option<(u32, u32, u32)> {
-    let size = match operands.first()? {
+    let size = match operands[0] {
         Operand::Register(SizeCode::W, _) => 32,
         Operand::Register(SizeCode::X, _) => 64,
         _ => return None,
     };
-    match (operands.get(2)?, operands.get(3)?) {
-        (Operand::Immediate(immr), Operand::Immediate(imms)) => Some((size, *immr, *imms)),
+    match (operands[2], operands[3]) {
+        (Operand::Immediate(immr), Operand::Immediate(imms)) => Some((size, immr, imms)),
         _ => None,
     }
 }
 
-/// What a `ubfm` computes: `lsr`, `lsl`, `uxtb` and `uxth` are aliases of it,
-/// and so are `ubfx` and `ubfiz`.
-fn unsigned_bit_field_op(operands: &[Operand]) -> Op {
-    let is_w = matches!(operands.get(1), Some(Operand::Register(SizeCode::W, _)));
+/// `lsr`, `lsl`, `uxtb` and `uxth` are aliases of `ubfm`. `ubfx` and
+/// `ubfiz` are too, but for the same work.
+fn unsigned_bit_field_alias(operands: &[Operand]) -> Alias {
+    let is_w = matches!(operands[1], Operand::Register(SizeCode::W, _));
     match bit_field(operands) {
-        Some((32, 0, 7 | 15)) if is_w => Op::Extend,
-        Some((size, _, imms)) if imms == size - 1 => Op::ShiftRight,
-        Some((_, immr, imms)) if imms + 1 == immr => Op::ShiftLeft,
-        _ => Op::BitField,
+        Some((32, 0, 7 | 15)) if is_w => Alias::Extend,
+        Some((size, _, imms)) if imms == size - 1 => Alias::ShiftRight,
+        Some((_, immr, imms)) if imms + 1 == immr => Alias::ShiftLeft,
+        _ => Alias::None,
     }
 }
 
-/// What an `sbfm` computes: `asr`, `sxtb`, `sxth` and `sxtw` are aliases of
-/// it, and so are `sbfx` and `sbfiz`.
-fn signed_bit_field_op(operands: &[Operand]) -> Op {
+/// `asr`, `sxtb`, `sxth` and `sxtw` are aliases of `sbfm`. `sbfx` and
+/// `sbfiz` are too, but for the same work.
+fn signed_bit_field_alias(operands: &[Operand]) -> Alias {
     match bit_field(operands) {
-        Some((size, _, imms)) if imms == size - 1 => Op::ShiftRightArithmetic,
-        Some((_, 0, 7 | 15 | 31)) => Op::Extend,
-        _ => Op::BitField,
+        Some((size, _, imms)) if imms == size - 1 => Alias::ShiftRightArithmetic,
+        Some((_, 0, 7 | 15 | 31)) => Alias::Extend,
+        _ => Alias::None,
     }
 }
 
@@ -794,9 +893,7 @@ fn is_exclusive_load(opcode: Opcode) -> bool {
     )
 }
 
-/// An atomic operation that discards the old value, which `yaxpeax-arm`
-/// prints as a store: `ldadd w1, wzr, [x0]` is `stadd w1, [x0]`. Only the
-/// forms without acquire semantics have this alias.
+/// See [`Alias::AtomicStore`].
 fn is_atomic_store(inst: &Instruction) -> bool {
     let order = match inst.opcode {
         Opcode::LDADD(order)
@@ -829,11 +926,11 @@ fn is_atomic_store(inst: &Instruction) -> bool {
     order & ACQUIRE == 0 && is_zero_register(inst.operands[1])
 }
 
-fn role_of(inst: &Instruction) -> Role {
-    if is_atomic_store(inst) {
+fn role_of(opcode: Opcode, alias: Alias) -> Role {
+    if alias == Alias::AtomicStore {
         return Role::Store;
     }
-    match inst.opcode {
+    match opcode {
         Opcode::SWP(_)
         | Opcode::SWPB(_)
         | Opcode::SWPH(_)
@@ -1249,7 +1346,7 @@ fn operation_width(operands: &[Operand]) -> Width {
         .unwrap_or(Width::Bits64)
 }
 
-fn test_of(inst: &Instruction, operands: &[Operand]) -> Option<Test> {
+fn test_of(inst: &Instruction, alias: Alias, operands: &[Operand]) -> Option<Test> {
     let width = operation_width(operands);
     let value = |index: usize| operands.get(index).map_or(Value::Other, |op| value_of(*op, width));
     let guard = |cond, right| Some(Test::Guard(Guard { cond, left: value(0), right, width }));
@@ -1272,7 +1369,7 @@ fn test_of(inst: &Instruction, operands: &[Operand]) -> Option<Test> {
         _ => {}
     }
 
-    if !is_compare(inst) {
+    if alias != Alias::Compare {
         return None;
     }
     // An alias names its operands from 1: the 0th is the zero register.
@@ -1294,6 +1391,32 @@ fn test_of(inst: &Instruction, operands: &[Operand]) -> Option<Test> {
     Some(Test::Compare { comparison, width })
 }
 
+/// What the decoder read for `insn`, where it read A64.
+fn decoded(insn: &Insn) -> Option<Decoded> {
+    match insn.opcode {
+        super::Opcode::Aarch64(decoded) => Some(decoded),
+        _ => None,
+    }
+}
+
+fn opcode_of(insn: &Insn) -> Option<Opcode> {
+    decoded(insn).map(|decoded| decoded.opcode)
+}
+
+/// A load, a store or an atomic access of memory.
+fn accesses_memory(decoded: Decoded) -> bool {
+    !matches!(role_of(decoded.opcode, decoded.alias), Role::Compute | Role::ReadOnly)
+}
+
+/// Whether `insn` may write the register its operands name first. A store
+/// names first a register it reads, and a compare the value it compares.
+fn may_write_first(insn: &Insn) -> bool {
+    decoded(insn).is_none_or(|decoded| {
+        decoded.alias != Alias::Compare
+            && !matches!(role_of(decoded.opcode, decoded.alias), Role::Store | Role::StoreExclusive)
+    })
+}
+
 /// The page an `adrp` names, or the address an `adr` does.
 fn page_of(insn: &Insn) -> Option<u64> {
     let distance = insn.operands.split_once(", $")?.1;
@@ -1302,9 +1425,9 @@ fn page_of(insn: &Insn) -> Option<u64> {
         None => (false, distance.strip_prefix('+')?),
     };
     let offset = u64::from_str_radix(digits.strip_prefix("0x")?, 16).ok()?;
-    let base = match insn.mnemonic.as_str() {
-        "adrp" => insn.address & !(PAGE - 1),
-        "adr" => insn.address,
+    let base = match opcode_of(insn)? {
+        Opcode::ADRP => insn.address & !(PAGE - 1),
+        Opcode::ADR => insn.address,
         _ => return None,
     };
     Some(if negative { base.wrapping_sub(offset) } else { base.wrapping_add(offset) })
@@ -1356,27 +1479,29 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
         }
         let operands: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
         let Some(&destination) = operands.first() else { continue };
-        match (insn.mnemonic.as_str(), operands.as_slice()) {
+        let decoded = decoded(insn);
+        let opcode = decoded.map(|decoded| decoded.opcode);
+        match (opcode, operands.as_slice()) {
             // The distance from `pc` to a page or to data moves whenever the
             // code or the data does.
-            ("adrp" | "adr", _) => {
+            (Some(Opcode::ADRP | Opcode::ADR), _) => {
                 kinds[index] = ConstantKind::Address;
                 held.retain(|(name, _)| *name != destination);
                 pages.forget(destination);
                 if let Some(value) = page_of(insn) {
                     formed_at[index] = Some(value);
-                    if insn.mnemonic == "adr" && space.contains_formed(value) {
+                    if opcode == Some(Opcode::ADR) && space.contains_formed(value) {
                         addresses.push(value);
                     }
                     held.push((destination, value));
-                    if insn.mnemonic == "adrp" {
+                    if opcode == Some(Opcode::ADRP) {
                         pages.take(destination, value);
                     }
                 }
                 continue;
             }
             // `add xD, xP, #lo12`: the address on the page.
-            ("add", [_, source, low]) if low.starts_with('#') => {
+            (Some(Opcode::ADD), [_, source, low]) if low.starts_with('#') => {
                 let address =
                     Aarch64.constant_value(low).and_then(|low| formed(&held, &pages, source, low));
                 // An address outside what the image holds, as the data of a
@@ -1399,8 +1524,8 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                 }
             }
             // `ldr xD, [xP, #lo12]` and stores: data on the page.
-            (mnemonic, [.., reference, low])
-                if (mnemonic.starts_with("ld") || mnemonic.starts_with("st"))
+            (_, [.., reference, low])
+                if decoded.is_some_and(accesses_memory)
                     && reference.starts_with('[')
                     && low.ends_with(']') =>
             {
@@ -1422,7 +1547,7 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
                 // `ldr x0, [x8, #lo12]` reads a whole pointer, as from a slot
                 // of the GOT or a table of texts.
                 if let Some(address) = address
-                    && insn.mnemonic == "ldr"
+                    && opcode == Some(Opcode::LDR)
                     && destination.starts_with('x')
                 {
                     pointer_loads.push(address);
@@ -1430,9 +1555,8 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
             }
             _ => {}
         }
-        // Any other write of the register ends what it held. A store names
-        // the register it reads first.
-        if !insn.mnemonic.starts_with("st") && !insn.mnemonic.starts_with("cmp") {
+        // Any other write of the register ends what it held.
+        if may_write_first(insn) {
             held.retain(|(name, _)| *name != destination);
             pages.forget(destination);
         }
@@ -1514,14 +1638,13 @@ fn read_jump_table(
     index: usize,
 ) -> Option<JumpTable> {
     let jump = &insns[index];
-    if jump.mnemonic != "br" {
+    if opcode_of(jump) != Some(Opcode::BR) {
         return None;
     }
     let earlier = &insns[index.saturating_sub(TABLE_LOOK_BACK)..index];
     let last_write = |register: &str, before: u64| {
         earlier.iter().rev().filter(|insn| insn.address < before).find(|insn| {
-            !insn.mnemonic.starts_with("st")
-                && !insn.mnemonic.starts_with("cmp")
+            may_write_first(insn)
                 && insn.operands.split(',').next().map(str::trim) == Some(register)
         })
     };
@@ -1530,7 +1653,7 @@ fn read_jump_table(
     let parts: Vec<&str> = add.operands.split(',').map(str::trim).collect();
     let [_, base_register, entry_register, extend] = parts.as_slice() else { return None };
     let signed = extend.starts_with("sxt");
-    if add.mnemonic != "add" || !extend.ends_with("#2") {
+    if opcode_of(add) != Some(Opcode::ADD) || !extend.ends_with("#2") {
         return None;
     }
     let base = page_of(last_write(base_register, add.address)?)?;
@@ -1538,19 +1661,19 @@ fn read_jump_table(
     // `ldrb wE, [xTab, xI, lsl #1]` and the like: one entry.
     let entry_name = format!("w{}", &entry_register[1..]);
     let load = last_write(&entry_name, add.address)?;
-    let width = match load.mnemonic.as_str() {
-        "ldrb" | "ldrsb" => 1,
-        "ldrh" | "ldrsh" => 2,
-        "ldr" | "ldrsw" => 4,
+    let width = match opcode_of(load)? {
+        Opcode::LDRB | Opcode::LDRSB => 1,
+        Opcode::LDRH | Opcode::LDRSH => 2,
+        Opcode::LDR | Opcode::LDRSW => 4,
         _ => return None,
     };
     let reference = load.operands.split_once('[')?.1;
     let mut fields = reference.split([',', ']']).map(str::trim);
     let (table_register, index_register) = (fields.next()?, fields.next()?);
     let table_insn = last_write(table_register, load.address)?;
-    let table = match table_insn.mnemonic.as_str() {
-        "adr" => page_of(table_insn)?,
-        "add" => {
+    let table = match opcode_of(table_insn)? {
+        Opcode::ADR => page_of(table_insn)?,
+        Opcode::ADD => {
             let parts: Vec<&str> = table_insn.operands.split(',').map(str::trim).collect();
             let [_, page_register, low] = parts.as_slice() else { return None };
             let page = page_of(last_write(page_register, table_insn.address)?)?;
@@ -1563,8 +1686,11 @@ fn read_jump_table(
     let index_number = &index_register[1..];
     let bound = earlier.iter().rev().find_map(|insn| {
         let parts: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
-        match (insn.mnemonic.as_str(), parts.as_slice()) {
-            ("cmp", [register, bound]) if register.get(1..) == Some(index_number) => {
+        let is_cmp = decoded(insn).is_some_and(|decoded| {
+            decoded.opcode == Opcode::SUBS && decoded.alias == Alias::Compare
+        });
+        match parts.as_slice() {
+            [register, bound] if is_cmp && register.get(1..) == Some(index_number) => {
                 Aarch64.constant_value(bound)
             }
             _ => None,
@@ -1926,6 +2052,19 @@ mod tests {
         // starts its page: `ldr x17, [x16]`.
         let at_page = code(&[0xd000_0110, 0xf940_0211, 0x9100_0210, 0xd61f_0220]);
         assert_eq!(Aarch64.stub_slot(&at_page, 0x36710), Some(0x58000));
+    }
+
+    /// `bti` marks where an indirect branch may land, and comes before the
+    /// frame is made. `yaxpeax-arm` 0.4 prints it as `hint #0x22`.
+    #[test]
+    fn a_branch_target_mark_comes_before_the_prologue() {
+        let bti_c = decode_one(0xd503_245f);
+        assert_eq!(Aarch64.preamble_before_prologue(core::slice::from_ref(&bti_c)), 1);
+        assert!(Aarch64.is_frame_management(&bti_c));
+        let paciasp = decode_one(0xd503_233f);
+        assert_eq!(Aarch64.preamble_before_prologue(&[paciasp]), 1);
+        let nop = decode_one(0xd503_201f);
+        assert_eq!(Aarch64.preamble_before_prologue(&[nop]), 0);
     }
 
     #[test]

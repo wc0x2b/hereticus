@@ -175,6 +175,7 @@ impl Arch for Mips32 {
                     mnemonic: word.mnemonic.to_string(),
                     operands: word.operands,
                     kind: word.kind,
+                    opcode: super::Opcode::None,
                 });
             }
 
@@ -188,6 +189,7 @@ impl Arch for Mips32 {
                 mnemonic: UNKNOWN_MNEMONIC.to_string(),
                 operands: format!("{raw:#010x}"),
                 kind: InsnKind::Unknown,
+                opcode: super::Opcode::None,
             });
         };
 
@@ -212,7 +214,14 @@ impl Arch for Mips32 {
             operands = with_target(&operands, target.wrapping_sub(insn_address) as i64);
         }
 
-        Ok(Insn { address: insn_address, bytes_len: INSN_WIDTH, mnemonic, operands, kind })
+        Ok(Insn {
+            address: insn_address,
+            bytes_len: INSN_WIDTH,
+            mnemonic,
+            operands,
+            kind,
+            opcode: super::Opcode::None,
+        })
     }
 
     fn triple(&self) -> &'static str {
