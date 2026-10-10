@@ -21,7 +21,7 @@ use rayon::prelude::*;
 
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::arch::{Arch, Insn, InsnKind, Memory, decode_all, is_branch_target};
-use crate::callee::{Callee, callees, callees_in};
+use crate::callee::{Callee, callees_in};
 use crate::norm::{
     FlowShape, NormInsn, OperandShape, constant_signature, flow_features_in, normalize_body_in,
 };
@@ -529,6 +529,10 @@ struct Prepared<'a> {
     contents: Contents,
     /// The callee of each call, in order.
     calls: Vec<Callee>,
+    /// The callee of each call as the binary names it, where that is not
+    /// [`Self::calls`]: without names, a callee the symbol table names is
+    /// known only as the function it is. See [`Self::linked_calls`].
+    linked_calls: Option<Vec<Callee>>,
     /// The texts the function points at, sorted.
     texts: Vec<&'a str>,
     /// Those of [`Self::texts`] sure enough that a change to one is
@@ -601,6 +605,12 @@ impl Prepared<'_> {
     fn anchors(&self) -> &[u64] {
         let first = self.constants.partition_point(|&value| value <= LARGEST_PLAIN_CONSTANT);
         &self.constants[first..]
+    }
+
+    /// The callee of each call as the binary names it, as
+    /// [`crate::callee::callees`] gives them.
+    fn linked_calls(&self) -> &[Callee] {
+        self.linked_calls.as_deref().unwrap_or(&self.calls)
     }
 
     /// How many functions this one calls, each once.
@@ -683,8 +693,10 @@ fn prepare<'a>(
             let body = normalize_body_in(arch, &function.code, &insns, &binary.addresses);
             let flow = flow_features_in(arch, &function.code, &insns, FLOW_DEPTH);
             let contents = arch.contents(&function.code, &insns, &binary.addresses);
-            let calls = callees_in(arch, &binary.links, &binary.functions, &insns)
-                .into_iter()
+            let linked_calls = callees_in(arch, &binary.links, &binary.functions, &insns);
+            let calls: Vec<Callee> = linked_calls
+                .iter()
+                .cloned()
                 .map(|callee| match callee {
                     Callee::Named(name) => match own_names.get(name.as_str()) {
                         Some(&index) => Callee::Function(index),
@@ -701,6 +713,7 @@ fn prepare<'a>(
                     other => other,
                 })
                 .collect();
+            let linked_calls = (linked_calls != calls).then_some(linked_calls);
 
             let mut found: Vec<(&str, bool)> = arch
                 .data_addresses(&function.code, &insns, &binary.addresses, &memory)
@@ -728,6 +741,7 @@ fn prepare<'a>(
                 addresses: &binary.addresses,
                 contents,
                 calls,
+                linked_calls,
                 texts,
                 sure_texts,
                 flow,
@@ -844,7 +858,7 @@ pub fn diff_reporting(
     cascade.match_twins_in_order();
     // The stubs first too, so the similarity stage knows which import each
     // call reaches.
-    cascade.align_stubs(before, after);
+    cascade.align_stubs();
     // Twins that differ in a constant, before similarity pairs them in the
     // order it finds them, and again once their callees are known.
     cascade.pair_leftover_twins();
@@ -855,18 +869,18 @@ pub fn diff_reporting(
     cascade.options.threshold = threshold;
     cascade.match_by_similarity(progress);
 
-    cascade.align_stubs(before, after);
+    cascade.align_stubs();
     cascade.repair_twins_by_callees();
     cascade.uncross_by_callees();
     cascade.pair_by_unique_references_until_settled();
-    cascade.pair_by_callers(before, after);
+    cascade.pair_by_callers();
     cascade.realign_by_context();
     cascade.pair_by_layout();
     // Again, now that the callers and the order paired more of the callees
     // that tell two callers apart.
     cascade.pair_by_unique_references_until_settled();
     cascade.pair_leftover_twins();
-    cascade.compare_callees(before, after);
+    cascade.compare_callees();
     cascade.compare_texts();
     cascade.finish(progress)
 }
@@ -1456,27 +1470,15 @@ impl Cascade<'_> {
 
     /// The callees of each pair whose code agrees, so that its calls line up
     /// one for one, by the index of the pair.
-    fn aligned_callees(
-        &self,
-        before: &Binary,
-        after: &Binary,
-    ) -> Vec<(usize, Vec<Callee>, Vec<Callee>)> {
+    fn aligned_callees(&self) -> Vec<(usize, Vec<Callee>, Vec<Callee>)> {
         self.matched
             .iter()
             .enumerate()
             .filter(|(_, pair)| matches!(pair.changed, Changed::No | Changed::InDetail))
             .filter_map(|(index, pair)| {
-                let [left, right] =
-                    [(before, pair.before), (after, pair.after)].map(|(binary, function)| {
-                        let function = &binary.functions[function];
-                        callees(
-                            binary.isa_of(function).arch(),
-                            &binary.links,
-                            &binary.functions,
-                            function,
-                        )
-                    });
-                (left.len() == right.len()).then_some((index, left, right))
+                let left = self.left[pair.before].linked_calls();
+                let right = self.right[pair.after].linked_calls();
+                (left.len() == right.len()).then(|| (index, left.to_vec(), right.to_vec()))
             })
             .collect()
     }
@@ -1500,7 +1502,7 @@ impl Cascade<'_> {
     /// out went or came.
     ///
     /// See RESEARCH.md, A5.
-    fn align_stubs(&mut self, before: &Binary, after: &Binary) {
+    fn align_stubs(&mut self) {
         /// What one caller weighs against one pair kept in order.
         const CALLER_WEIGHT: usize = 2;
 
@@ -1522,7 +1524,7 @@ impl Cascade<'_> {
         }
 
         let mut voters: BTreeSet<(usize, usize, usize)> = BTreeSet::new();
-        for (caller, calls_before, calls_after) in self.aligned_callees(before, after) {
+        for (caller, calls_before, calls_after) in self.aligned_callees() {
             for pair in calls_before.iter().zip(&calls_after) {
                 if let (Callee::Function(x), Callee::Function(y)) = pair {
                     voters.insert((*x, *y, caller));
@@ -1604,7 +1606,7 @@ impl Cascade<'_> {
     /// [`Self::is_near_tie`].
     ///
     /// See RESEARCH.md, A10.
-    fn pair_by_callers(&mut self, before: &Binary, after: &Binary) {
+    fn pair_by_callers(&mut self) {
         /// Each round moves a pairing that is off by one along a run of
         /// twins by one place: a new PLT stub puts every stub after it one
         /// place off. Rounds cost only the votes, so a long run can settle.
@@ -1616,7 +1618,7 @@ impl Cascade<'_> {
         // votes are counted once. A swapped pair is a callee, and hardly
         // ever a caller whose code agrees, so its own vote stays as it was.
         let mut voters: BTreeSet<(usize, usize, usize)> = BTreeSet::new();
-        for (caller, left, right) in self.aligned_callees(before, after) {
+        for (caller, left, right) in self.aligned_callees() {
             for pair in left.iter().zip(&right) {
                 if let (Callee::Function(x), Callee::Function(y)) = pair {
                     voters.insert((*x, *y, caller));
@@ -1785,7 +1787,7 @@ impl Cascade<'_> {
     /// for one.
     ///
     /// See RESEARCH.md, A11.
-    fn compare_callees(&mut self, before: &Binary, after: &Binary) {
+    fn compare_callees(&mut self) {
         let partner_of_before: HashMap<usize, usize> =
             self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
         let partner_of_after: HashMap<usize, usize> =
@@ -1845,22 +1847,14 @@ impl Cascade<'_> {
             } else {
                 Unpaired::SayNothing
             };
-            let [left, right] =
-                [(before, pair.before), (after, pair.after)].map(|(binary, index)| {
-                    let function = &binary.functions[index];
-                    callees(
-                        binary.isa_of(function).arch(),
-                        &binary.links,
-                        &binary.functions,
-                        function,
-                    )
-                });
+            let (left, right) =
+                (left_side[pair.before].linked_calls(), right_side[pair.after].linked_calls());
             if left.len() != right.len() {
                 continue;
             }
             let changed = left
                 .iter()
-                .zip(&right)
+                .zip(right)
                 .filter(|(left, right)| differ(left, right, unpaired))
                 .count();
             if changed > 0 {
