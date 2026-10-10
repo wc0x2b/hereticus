@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # `just quick-test`, not `just test`: the `truth_*` tests read about 1.6 GB,
+  # and the Apple binaries among them come only from an IPSW with the `ipsw`
+  # tool.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The C part of mimalloc builds for the musl target that
+      # `.cargo/config.toml` picks.
+      - name: Install musl
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup show
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The fixtures take eight minutes to build. The scripts in `fixtures/`
+      # pin each download by its SHA-256, and the Dockerfile pins the
+      # compilers, so the key changes when an input of the build does.
+      # `backports.sh` rebuilds only when its own inputs changed.
+      - name: Cache the fixtures
+        uses: actions/cache@v4
+        with:
+          path: fixtures/build
+          key: fixtures-${{ hashFiles('justfile', 'fixtures/**', '!fixtures/build/**', '!fixtures/**/__pycache__/**') }}
+          restore-keys: fixtures-
+
+      - name: Test
+        run: just quick-test
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Check the format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
