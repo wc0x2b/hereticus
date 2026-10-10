@@ -39,6 +39,11 @@ const POINTER_WIDTH: usize = 8;
 /// A page, as `adrp` counts them.
 const PAGE: u64 = 0x1000;
 
+/// The bits that make a word `adr` or `adrp`: `x 0 0 1 0 0 0 0` at the top,
+/// where `x` tells them apart.
+const ADR_MASK: u32 = 0x1f00_0000;
+const ADR_BITS: u32 = 0x1000_0000;
+
 /// Mnemonic reported for bytes the decoder cannot read.
 const UNKNOWN_MNEMONIC: &str = "(unknown)";
 
@@ -274,6 +279,12 @@ impl Arch for Aarch64 {
     /// br   x17
     /// ```
     fn stub_slot(&self, code: &[u8], address: u64) -> Option<u64> {
+        // The scan asks at the target of every jump, so a word that is no
+        // `adrp` or `adr` ends the question before anything decodes.
+        let first = u32::from_le_bytes(code.get(..INSN_WIDTH)?.try_into().ok()?);
+        if first & ADR_MASK != ADR_BITS {
+            return None;
+        }
         let (insns, _) = super::decode_all(self, code.get(..4 * INSN_WIDTH)?, address);
         let [adrp, load, add, jump] = insns.as_slice() else { return None };
         let page = page_of(adrp)?;
@@ -2040,6 +2051,16 @@ mod tests {
         let kinds = Aarch64.constant_kinds(&[], &insns, &space);
         assert_eq!(kinds[1], ConstantKind::Address, "through the page");
         assert_eq!(kinds[2], ConstantKind::Value, "through a register with no page");
+    }
+
+    /// The bits `stub_slot` tests first are those of `adr` and `adrp`.
+    #[test]
+    fn the_address_bits_are_adr_and_adrp() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            let opcode = opcode_of(&decode_one(word));
+            let is_address = matches!(opcode, Some(Opcode::ADR | Opcode::ADRP));
+            assert_eq!(word & ADR_MASK == ADR_BITS, is_address, "{word:#010x}");
+        });
     }
 
     /// The PLT stub of LLD for AArch64, from zlib.

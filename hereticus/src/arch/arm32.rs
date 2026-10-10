@@ -600,6 +600,11 @@ impl Arch for Arm32 {
     fn stub_slot(&self, code: &[u8], address: u64) -> Option<u64> {
         const PC_AHEAD: u64 = 8;
 
+        // The scan asks at the target of every jump, so a first word that is
+        // no `adr` ends the question before the rest decode.
+        if !is_plain(&self.decode(code, 0, address).ok()?, Opcode::ADR) {
+            return None;
+        }
         let (insns, _) = super::decode_all(self, code.get(..3 * INSN_WIDTH)?, address);
         let [first, second, third] = insns.as_slice() else { return None };
         let high = parse_hex(first.operands.strip_prefix("ip, pc, ")?)?;
