@@ -319,6 +319,13 @@ pub trait Arch {
     /// invents a function. Answer only for a shape that reliably begins one.
     fn is_prologue(&self, insn: &Insn) -> bool;
 
+    /// Report whether the instruction `word` starts with could be one
+    /// [`Arch::is_prologue`] accepts, from its bits alone, so that a scan of
+    /// every word decodes only those. `false` must mean it is none.
+    fn may_be_prologue(&self, _word: &[u8]) -> bool {
+        true
+    }
+
     /// The operands before a reference to memory at a distance from the
     /// program counter, as a load from a literal pool makes, or `None` for
     /// operands with no such reference.
