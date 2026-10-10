@@ -107,8 +107,18 @@ impl RegSet {
     }
 
     /// The registers in the set, in the order of [`Reg`].
+    ///
+    /// This steps from one set bit to the next: a test of all 128 bits
+    /// took a fifth of a whole comparison, as a set holds a few registers.
     pub fn iter(self) -> impl Iterator<Item = Reg> {
-        (0..128).filter(move |&bit| self.0 & (1 << bit) != 0).map(Reg::of_bit)
+        let mut left = self.0;
+        core::iter::from_fn(move || {
+            let bit = left.trailing_zeros();
+            (bit < u128::BITS).then(|| {
+                left &= left - 1;
+                Reg::of_bit(bit)
+            })
+        })
     }
 }
 
@@ -837,6 +847,19 @@ fn guard_of(comparison: Comparison, cond: Cond, width: Width) -> Option<Guard> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The set gives its registers as a test of each bit in turn would.
+    #[test]
+    fn a_set_gives_each_register_it_holds_in_order() {
+        bolero::check!().with_type::<(u64, u64)>().for_each(|&(high, low)| {
+            let set = RegSet(u128::from(high) << 64 | u128::from(low));
+            let each_bit: Vec<Reg> =
+                (0..128).filter(|&bit| set.0 & (1 << bit) != 0).map(Reg::of_bit).collect();
+            assert_eq!(set.iter().collect::<Vec<_>>(), each_bit);
+            assert_eq!(set.iter().count(), set.len());
+        });
+        assert_eq!(RegSet::EMPTY.iter().next(), None);
+    }
 
     fn compare(left: Value, right: Value) -> Option<Lifted> {
         Some(Lifted {
