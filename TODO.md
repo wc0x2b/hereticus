@@ -192,15 +192,17 @@ Against `7bbfb6a`, with each report the same byte for byte:
 | Input | Before | Now |
 |---|---|---|
 | `libgnutls` for arm64 | 3.5 s, 168 MB | 1.3 s, 137 MB |
-| `libarchive` for armhf | 4.2 s, 137 MB | 1.1 s, 125 MB |
-| ARM kernel of the EX6100v2 | 27.5 s, 1040 MB | 11.6 s, 773 MB |
-| MIPS kernel of the VR200 | 35.6 s, 997 MB | 13.4 s, 707 MB |
+| `libarchive` for armhf | 4.2 s, 137 MB | 1.0 s, 125 MB |
+| ARM kernel of the EX6100v2 | 27.8 s, 1097 MB | 9.9 s, 774 MB |
+| MIPS kernel of the VR200 | 36.0 s, 977 MB | 13.1 s, 703 MB |
 
 The text each decoder prints is now less than a tenth of the run on the
-ARM kernel. Most of it is the matching: `longest_common_subsequence` and
-`Cascade::assess` take a quarter of it, and `Prepared::body` normalizes a
-function again each time a pair needs it, which keeps a kernel in
-memory. Measure those before the text.
+ARM kernel. An alignment numbers its items and holds its table as bits,
+and the lifted form of an instruction parses no operand text. What is
+left is mostly `Cascade::assess`: `Prepared::body` decodes and normalizes
+both sides of each changed pair again, and on the ARM kernel only 900 of
+38757 such calls repeat a function, so a cache would not help. Keeping
+each body from `prepare` would, at about 88 bytes an instruction.
 
 `track_pages` of AArch64 reads typed operands decoded from the code
 bytes, which took 10% off libgnutls; keeping the decoded operands in
