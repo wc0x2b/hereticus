@@ -421,6 +421,7 @@ impl Arch for Mips16 {
                 mnemonic: "(unknown)".into(),
                 operands: raw,
                 kind: InsnKind::Unknown,
+                opcode: super::Opcode::None,
             }
         };
         let Some(decoded) = self.decoded(code, offset, insn_address) else {
@@ -443,6 +444,7 @@ impl Arch for Mips16 {
                 mnemonic: mnemonic.into(),
                 operands,
                 kind,
+                opcode: super::Opcode::None,
             },
             Reading::PcRelative { load, dest, address: at } => Insn {
                 address: insn_address,
@@ -454,6 +456,7 @@ impl Arch for Mips16 {
                     format!("{}, pc, {at:#x}", REGISTER_NAMES[dest as usize])
                 },
                 kind: InsnKind::Normal,
+                opcode: super::Opcode::None,
             },
             Reading::Frame { step, size, registers } => Insn {
                 address: insn_address,
@@ -465,6 +468,7 @@ impl Arch for Mips16 {
                 .into(),
                 operands: registers.operands(size),
                 kind: InsnKind::Normal,
+                opcode: super::Opcode::None,
             },
         };
         Ok(insn)

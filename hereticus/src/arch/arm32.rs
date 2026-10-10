@@ -98,6 +98,7 @@ impl Arch for Arm32 {
                     mnemonic,
                     operands,
                     kind: InsnKind::Normal,
+                    opcode: super::Opcode::None,
                 });
             }
             return Ok(Insn {
@@ -106,6 +107,7 @@ impl Arch for Arm32 {
                 mnemonic: unread_mnemonic(word).to_string(),
                 operands: format!("{word:#010x}"),
                 kind: InsnKind::Unknown,
+                opcode: super::Opcode::None,
             });
         }
 
@@ -126,6 +128,7 @@ impl Arch for Arm32 {
             mnemonic,
             operands,
             kind: classify(&inst, branch_target(&inst, insn_address)),
+            opcode: super::Opcode::None,
         })
     }
 

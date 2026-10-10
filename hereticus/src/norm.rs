@@ -633,6 +633,7 @@ mod tests {
             mnemonic: mnemonic.to_string(),
             operands: operands.to_string(),
             kind,
+            opcode: crate::arch::Opcode::None,
         }
     }
 
@@ -769,6 +770,7 @@ mod tests {
             mnemonic: mnemonic.to_string(),
             operands: operands.to_string(),
             kind: InsnKind::Normal,
+            opcode: crate::arch::Opcode::None,
         };
 
         let body = [
@@ -796,6 +798,7 @@ mod tests {
             mnemonic: mnemonic.to_string(),
             operands: operands.to_string(),
             kind: InsnKind::Normal,
+            opcode: crate::arch::Opcode::None,
         };
 
         // The same two opening words, but nothing joins the result to `t9`, so

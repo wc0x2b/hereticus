@@ -614,6 +614,21 @@ pub struct Insn {
     pub operands: String,
     /// How this instruction moves control, which the CFG builder needs.
     pub kind: InsnKind,
+    /// The operation the decoder read. Code that decides what an
+    /// instruction does reads this, not [`Insn::mnemonic`]: the text is for
+    /// a reader, it changes when a decoder prints otherwise, and a test of
+    /// it is slow.
+    pub opcode: Opcode,
+}
+
+/// The operation one instruction does, as its architecture names it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Opcode {
+    /// No decoder named an operation: bytes it cannot read, or an
+    /// instruction made by hand.
+    #[default]
+    None,
+    Aarch64(aarch64::Decoded),
 }
 
 impl fmt::Display for Insn {
@@ -807,6 +822,7 @@ pub fn decode_all_but(
                 mnemonic: ".word".to_string(),
                 operands,
                 kind: InsnKind::Unknown,
+                opcode: Opcode::None,
             });
             offset += width;
             continue;
@@ -844,6 +860,7 @@ mod tests {
                 mnemonic: "nop".into(),
                 operands: String::new(),
                 kind: InsnKind::Normal,
+                opcode: crate::arch::Opcode::None,
             })
             .collect()
     }
