@@ -14,6 +14,8 @@
 //!    `jal` hold an address rather than a distance. `rabbitizer` resolves
 //!    both, so neither correction is made here.
 
+use std::collections::BTreeMap;
+
 use compact_str::CompactString;
 use rabbitizer::{
     Instruction, InstructionDisplayFlags, InstructionFlags, IsaVersion, Vram, opcodes::Opcode,
@@ -922,7 +924,7 @@ fn track_addresses<'a>(
     let mut reachable = Reach::FromAbove;
     // The addresses held on arrival at each forward branch target seen so
     // far.
-    let mut at_target: Vec<(u64, HeldAddresses<'_>)> = Vec::new();
+    let mut at_target: BTreeMap<u64, HeldAddresses<'_>> = BTreeMap::new();
     let mut unreached_arrivals = 0;
     let mut saved = SavedRegisters::default();
     // What was held at the last computed jump, which the cases of a jump
@@ -1362,7 +1364,7 @@ impl AfterSlot {
 /// What [`track_addresses`] knows of control flow at one instruction.
 struct Flow<'a> {
     upper: HeldAddresses<'a>,
-    at_target: Vec<(u64, HeldAddresses<'a>)>,
+    at_target: BTreeMap<u64, HeldAddresses<'a>>,
     reachable: Reach,
     dispatched: Option<HeldAddresses<'a>>,
 }
@@ -1440,23 +1442,24 @@ fn arrive<'a>(
 
 /// Merge the addresses held on a branch to `target` into those recorded.
 fn record_state<'a>(
-    at_target: &mut Vec<(u64, HeldAddresses<'a>)>,
+    at_target: &mut BTreeMap<u64, HeldAddresses<'a>>,
     target: u64,
     upper: &HeldAddresses<'a>,
 ) {
-    match at_target.iter_mut().find(|(address, _)| *address == target) {
-        Some((_, recorded)) => *recorded = recorded.agreed_with(upper),
-        None => at_target.push((target, upper.clone())),
+    match at_target.get_mut(&target) {
+        Some(recorded) => *recorded = recorded.agreed_with(upper),
+        None => {
+            at_target.insert(target, upper.clone());
+        }
     }
 }
 
 /// Remove and return the addresses recorded for branches to `address`.
 fn take_state<'a>(
-    at_target: &mut Vec<(u64, HeldAddresses<'a>)>,
+    at_target: &mut BTreeMap<u64, HeldAddresses<'a>>,
     address: u64,
 ) -> Option<HeldAddresses<'a>> {
-    let position = at_target.iter().position(|(target, _)| *target == address)?;
-    Some(at_target.swap_remove(position).1)
+    at_target.remove(&address)
 }
 
 impl Held {
