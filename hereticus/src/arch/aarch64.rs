@@ -14,7 +14,6 @@
 //! and a `switch` jumps through a table of distances in `.rodata`.
 
 use core::ops::Range;
-use std::collections::HashMap;
 
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, U8Reader};
@@ -218,21 +217,21 @@ impl Arch for Aarch64 {
     /// of an address, and moves with the data it names.
     fn constant_kinds(
         &self,
-        _code: &[u8],
+        code: &[u8],
         body: &[Insn],
         space: &AddressSpace,
     ) -> Vec<ConstantKind> {
-        track_pages(body, space).kinds
+        track_pages(code, body, space).kinds
     }
 
     fn formed_addresses(
         &self,
-        _code: &[u8],
+        code: &[u8],
         body: &[Insn],
         space: &AddressSpace,
         _memory: &Memory<'_>,
     ) -> Vec<Option<u64>> {
-        track_pages(body, space).formed
+        track_pages(code, body, space).formed
     }
 
     /// The addresses a function forms from a page, and the pointers it
@@ -242,12 +241,12 @@ impl Arch for Aarch64 {
     /// applied, as [`crate::callee::Links`] does.
     fn data_addresses(
         &self,
-        _code: &[u8],
+        code: &[u8],
         body: &[Insn],
         space: &AddressSpace,
         memory: &Memory<'_>,
     ) -> Vec<u64> {
-        let pages = track_pages(body, space);
+        let pages = track_pages(code, body, space);
         let loaded = pages.pointer_loads.iter().filter_map(|&address| {
             let pointer = u64::from_le_bytes(memory.bytes(address, 8)?.try_into().ok()?);
             (pointer != address && space.contains_formed(pointer)).then_some(pointer)
@@ -1476,26 +1475,28 @@ struct Pages {
 
 /// Follow each register that holds a page from `adrp`, or an address from
 /// `adr`, to the `add` or the load that joins an offset to it.
-fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
+fn track_pages(code: &[u8], body: &[Insn], space: &AddressSpace) -> Pages {
     let mut kinds = vec![ConstantKind::Value; body.len()];
     let mut formed_at = vec![None; body.len()];
     let mut addresses = Vec::new();
     let mut pointer_loads = Vec::new();
+    let Some(start) = body.first().map(|insn| insn.address) else {
+        return Pages { kinds, formed: formed_at, addresses, pointer_loads };
+    };
     // Registers holding a page, or an address.
-    let mut held: Vec<(&str, u64)> = Vec::new();
+    let mut held: Vec<(Tracked, u64)> = Vec::new();
     // The page each register last took from `adrp`. An `add` to itself
     // keeps it: on another path through the function, the register still
     // holds the page. GCC's `inflate_table` for AArch64 at `-Os` adds the
     // same offset to one page register on two paths.
     let mut pages = PageRegisters::default();
-    let values_of = |list: &[(&str, u64)], register: &str| -> Vec<u64> {
-        list.iter().filter(|(name, _)| *name == register).map(|&(_, value)| value).collect()
-    };
+    fn values_of(list: &[(Tracked, u64)], register: Tracked) -> impl Iterator<Item = u64> + '_ {
+        list.iter().filter(move |(held, _)| *held == register).map(|&(_, value)| value)
+    }
     // The address a base register and an offset form, if what the register
     // holds, or a page it may hold, lands in the image.
-    let formed = |held: &[(&str, u64)], pages: &PageRegisters<'_>, base: &str, low: u64| {
+    let formed = |held: &[(Tracked, u64)], pages: &PageRegisters, base: Tracked, low: u64| {
         values_of(held, base)
-            .into_iter()
             .chain(pages.values(base).iter().copied())
             .map(|value| value.wrapping_add(low))
             .find(|&address| space.contains_formed(address))
@@ -1507,91 +1508,170 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
         if after_an_end {
             pages.after_an_end();
         }
-        let operands: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
-        let Some(&destination) = operands.first() else { continue };
-        let decoded = decoded(insn);
-        let opcode = decoded.map(|decoded| decoded.opcode);
-        match (opcode, operands.as_slice()) {
+        // The operands as the decoder read them, from the word itself: the
+        // text would have to be split and parsed again for each.
+        let Some(decoded) = decoded(insn) else { continue };
+        let Some(inst) = usize::try_from(insn.address - start)
+            .ok()
+            .and_then(|offset| code.get(offset..offset + INSN_WIDTH))
+            .and_then(|word| {
+                let mut inst = Instruction::default();
+                InstDecoder::default().decode_into(&mut inst, &mut U8Reader::new(word)).ok()?;
+                Some(inst)
+            })
+        else {
+            continue;
+        };
+        let operands = &inst.operands;
+        let destination = Tracked::of(operands[0]);
+        match (decoded.opcode, decoded.alias, operands) {
             // The distance from `pc` to a page or to data moves whenever the
             // code or the data does.
-            (Some(Opcode::ADRP | Opcode::ADR), _) => {
+            (Opcode::ADRP | Opcode::ADR, ..) => {
                 kinds[index] = ConstantKind::Address;
-                held.retain(|(name, _)| *name != destination);
+                let Some(destination) = destination else { continue };
+                held.retain(|(held, _)| *held != destination);
                 pages.forget(destination);
                 if let Some(value) = page_of(insn) {
                     formed_at[index] = Some(value);
-                    if opcode == Some(Opcode::ADR) && space.contains_formed(value) {
+                    if decoded.opcode == Opcode::ADR && space.contains_formed(value) {
                         addresses.push(value);
                     }
                     held.push((destination, value));
-                    if opcode == Some(Opcode::ADRP) {
+                    if decoded.opcode == Opcode::ADRP {
                         pages.take(destination, value);
                     }
                 }
                 continue;
             }
             // `add xD, xP, #lo12`: the address on the page.
-            (Some(Opcode::ADD), [_, source, low]) if low.starts_with('#') => {
-                let address =
-                    Aarch64.constant_value(low).and_then(|low| formed(&held, &pages, source, low));
+            // A 32-bit add, as `add w20, w20, #0x1`, counts: it forms no
+            // address, though it writes the register.
+            (
+                Opcode::ADD,
+                Alias::None,
+                [
+                    Operand::RegisterOrSP(SizeCode::X, _),
+                    source @ Operand::RegisterOrSP(SizeCode::X, _),
+                    Operand::Immediate(low),
+                    Operand::Nothing,
+                ],
+            ) => {
+                let (Some(destination), Some(source)) = (destination, Tracked::of(*source)) else {
+                    continue;
+                };
+                let low = u64::from(*low);
+                let address = formed(&held, &pages, source, low);
                 // An address outside what the image holds, as the data of a
                 // kext linked apart, is still one to show.
                 if address.is_none() {
-                    formed_at[index] = Aarch64.constant_value(low).and_then(|low| {
-                        pages.values(source).first().map(|page| page.wrapping_add(low))
-                    });
+                    formed_at[index] =
+                        pages.values(source).first().map(|page| page.wrapping_add(low));
                 }
                 if let Some(address) = address {
                     kinds[index] = ConstantKind::Address;
                     formed_at[index] = Some(address);
                     addresses.push(address);
-                    held.retain(|(name, _)| *name != destination);
+                    held.retain(|(held, _)| *held != destination);
                     held.push((destination, address));
-                    if destination != *source {
+                    if destination != source {
                         pages.forget(destination);
                     }
                     continue;
                 }
             }
-            // `ldr xD, [xP, #lo12]` and stores: data on the page.
-            (_, [.., reference, low])
-                if decoded.is_some_and(accesses_memory)
-                    && reference.starts_with('[')
-                    && low.ends_with(']') =>
-            {
-                let base = reference.trim_start_matches('[');
-                let low = low.trim_end_matches(']').trim_end_matches('!');
-                // A page outside the image, as the GOT can be, still moves.
-                let on_a_page = !pages.values(base).is_empty();
-                let address =
-                    Aarch64.constant_value(low).and_then(|low| formed(&held, &pages, base, low));
-                if on_a_page || address.is_some() {
-                    kinds[index] = ConstantKind::Address;
-                }
-                // A page outside the image, as the GOT of a kext can be,
-                // still names a slot.
-                formed_at[index] = address.or_else(|| {
-                    let low = Aarch64.constant_value(low)?;
-                    pages.values(base).first().map(|page| page.wrapping_add(low))
-                });
-                // `ldr x0, [x8, #lo12]` reads a whole pointer, as from a slot
-                // of the GOT or a table of texts.
-                if let Some(address) = address
-                    && opcode == Some(Opcode::LDR)
-                    && destination.starts_with('x')
+            // `ldr xD, [xP, #lo12]` and stores: data on the page. An index
+            // register names no offset, but the page still moves.
+            _ if accesses_memory(decoded) => {
+                if let Some((base, low)) = operands.iter().find_map(|&operand| page_offset(operand))
                 {
-                    pointer_loads.push(address);
+                    // A page outside the image, as the GOT can be, still moves.
+                    let on_a_page = !pages.values(base).is_empty();
+                    let address = low.and_then(|low| formed(&held, &pages, base, low));
+                    if on_a_page || address.is_some() {
+                        kinds[index] = ConstantKind::Address;
+                    }
+                    // A page outside the image, as the GOT of a kext can be,
+                    // still names a slot.
+                    formed_at[index] = address.or_else(|| {
+                        let low = low?;
+                        pages.values(base).first().map(|page| page.wrapping_add(low))
+                    });
+                    // `ldr x0, [x8, #lo12]` reads a whole pointer, as from a
+                    // slot of the GOT or a table of texts.
+                    if let Some(address) = address
+                        && decoded.opcode == Opcode::LDR
+                        && matches!(operands[0], Operand::Register(SizeCode::X, _))
+                    {
+                        pointer_loads.push(address);
+                    }
                 }
             }
             _ => {}
         }
-        // Any other write of the register ends what it held.
-        if may_write_first(insn) {
-            held.retain(|(name, _)| *name != destination);
+        // Any other write of the register ends what it held. A write of
+        // the low half, as `mov w24, w0`, clears the high half too, so it
+        // ends it as well in truth; the text this replaced read `w24` and
+        // `x24` as two registers, and that is kept until a measure says
+        // which reads better (TODO.md).
+        let writes_whole = matches!(
+            operands[0],
+            Operand::Register(SizeCode::X, _) | Operand::RegisterOrSP(SizeCode::X, _)
+        );
+        if let Some(destination) = destination
+            && writes_whole
+            && may_write_first(insn)
+        {
+            held.retain(|(held, _)| *held != destination);
             pages.forget(destination);
         }
     }
     Pages { kinds, formed: formed_at, addresses, pointer_loads }
+}
+
+/// A register [`track_pages`] follows: a general register by its number,
+/// whichever width names it, or the stack pointer, as 31. The zero
+/// register holds nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Tracked(u8);
+
+impl Tracked {
+    /// How many registers there are to follow.
+    const COUNT: usize = 32;
+
+    fn of(operand: Operand) -> Option<Self> {
+        match operand {
+            Operand::Register(_, 31) => None,
+            Operand::Register(_, number) | Operand::RegisterOrSP(_, number) => {
+                Some(Self(number.min(31) as u8))
+            }
+            _ => None,
+        }
+    }
+
+    fn index(self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+/// The base register of a memory operand that names an offset in a page,
+/// and the offset, `None` for an index register. An offset of zero, as in
+/// `[x8]`, joins no page. Nor does a load that writes its base back, as
+/// `ldr w2, [x3, #0x48]!`: on libgnutls for arm64 that is a field of a
+/// structure, and reading it as an address reported texts that are none.
+fn page_offset(operand: Operand) -> Option<(Tracked, Option<u64>)> {
+    let base = |number: u16| Tracked(number.min(31) as u8);
+    match operand {
+        Operand::RegPreIndex(number, offset, false) if offset != 0 => {
+            Some((base(number), Some(i64::from(offset) as u64)))
+        }
+        // `[x1, x2]`. One that shifts or extends the index, as
+        // `[x1, x14, lsl #2]`, indexes a table of its own.
+        Operand::RegRegOffset(number, _, SizeCode::X, ShiftStyle::LSL, 0) => {
+            Some((base(number), None))
+        }
+        _ => None,
+    }
 }
 
 /// The pages each register may hold, as [`track_pages`] reads on.
@@ -1608,13 +1688,17 @@ fn track_pages(body: &[Insn], space: &AddressSpace) -> Pages {
 /// a register after an end holds a count of its pages, not a copy. Only the
 /// first page of a register that forms an address counts, so each page is
 /// kept once, in the order it came.
-#[derive(Default)]
-struct PageRegisters<'a> {
+struct PageRegisters {
     /// Every page each register took, each once, the first first.
-    ever: HashMap<&'a str, Vec<u64>>,
-    /// What each register holds on the path read now. A register missing
-    /// here holds no page.
-    now: HashMap<&'a str, MayHold>,
+    ever: [Vec<u64>; Tracked::COUNT],
+    /// What each register holds on the path read now. `None` holds no page.
+    now: [Option<MayHold>; Tracked::COUNT],
+}
+
+impl Default for PageRegisters {
+    fn default() -> Self {
+        Self { ever: core::array::from_fn(|_| Vec::new()), now: [None; Tracked::COUNT] }
+    }
 }
 
 /// The pages a register may hold.
@@ -1626,37 +1710,35 @@ enum MayHold {
     One(u64),
 }
 
-impl<'a> PageRegisters<'a> {
+impl PageRegisters {
     /// The pages `register` may hold, the most likely first.
-    fn values(&self, register: &str) -> &[u64] {
-        match self.now.get(register) {
-            Some(MayHold::AnyOf(count)) => &self.ever[register][..*count],
+    fn values(&self, register: Tracked) -> &[u64] {
+        match &self.now[register.index()] {
+            Some(MayHold::AnyOf(count)) => &self.ever[register.index()][..*count],
             Some(MayHold::One(page)) => core::slice::from_ref(page),
             None => &[],
         }
     }
 
     /// `register` takes `page` from `adrp`.
-    fn take(&mut self, register: &'a str, page: u64) {
-        self.now.insert(register, MayHold::One(page));
-        let taken = self.ever.entry(register).or_default();
+    fn take(&mut self, register: Tracked, page: u64) {
+        self.now[register.index()] = Some(MayHold::One(page));
+        let taken = &mut self.ever[register.index()];
         if !taken.contains(&page) {
             taken.push(page);
         }
     }
 
     /// `register` holds no page any more.
-    fn forget(&mut self, register: &str) {
-        self.now.remove(register);
+    fn forget(&mut self, register: Tracked) {
+        self.now[register.index()] = None;
     }
 
     /// Past a jump or a return, each register may hold any page it took.
     fn after_an_end(&mut self) {
-        self.now = self
-            .ever
-            .iter()
-            .map(|(&register, taken)| (register, MayHold::AnyOf(taken.len())))
-            .collect();
+        for (now, taken) in self.now.iter_mut().zip(&self.ever) {
+            *now = (!taken.is_empty()).then_some(MayHold::AnyOf(taken.len()));
+        }
     }
 }
 
@@ -1785,25 +1867,25 @@ mod tests {
     #[test]
     fn a_register_after_an_end_may_hold_any_page_it_took() {
         let mut pages = PageRegisters::default();
-        pages.take("x8", 0x1000);
-        pages.take("x8", 0x2000);
-        pages.take("x8", 0x1000);
-        pages.take("x9", 0x3000);
-        assert_eq!(pages.values("x8"), [0x1000]);
-        pages.forget("x9");
-        assert!(pages.values("x9").is_empty());
+        pages.take(Tracked(8), 0x1000);
+        pages.take(Tracked(8), 0x2000);
+        pages.take(Tracked(8), 0x1000);
+        pages.take(Tracked(9), 0x3000);
+        assert_eq!(pages.values(Tracked(8)), [0x1000]);
+        pages.forget(Tracked(9));
+        assert!(pages.values(Tracked(9)).is_empty());
 
         pages.after_an_end();
-        assert_eq!(pages.values("x8"), [0x1000, 0x2000]);
-        assert_eq!(pages.values("x9"), [0x3000]);
-        assert!(pages.values("x10").is_empty());
+        assert_eq!(pages.values(Tracked(8)), [0x1000, 0x2000]);
+        assert_eq!(pages.values(Tracked(9)), [0x3000]);
+        assert!(pages.values(Tracked(10)).is_empty());
 
         // A page taken later is not one this path may hold.
-        pages.take("x9", 0x4000);
-        pages.forget("x9");
-        assert_eq!(pages.values("x8"), [0x1000, 0x2000]);
+        pages.take(Tracked(9), 0x4000);
+        pages.forget(Tracked(9));
+        assert_eq!(pages.values(Tracked(8)), [0x1000, 0x2000]);
         pages.after_an_end();
-        assert_eq!(pages.values("x9"), [0x3000, 0x4000]);
+        assert_eq!(pages.values(Tracked(9)), [0x3000, 0x4000]);
     }
 
     fn code(words: &[u32]) -> Vec<u8> {
@@ -2050,8 +2132,11 @@ mod tests {
         ];
         let (insns, _) = decode_all(&Aarch64, &code(&words), 0x1000);
         let space = AddressSpace::from_ranges(core::iter::once(0x1000..0x20000));
-        assert_eq!(Aarch64.data_addresses(&[], &insns, &space, &Memory::new(&[])), [0x11028]);
-        let kinds = Aarch64.constant_kinds(&[], &insns, &space);
+        assert_eq!(
+            Aarch64.data_addresses(&code(&words), &insns, &space, &Memory::new(&[])),
+            [0x11028]
+        );
+        let kinds = Aarch64.constant_kinds(&code(&words), &insns, &space);
         assert_eq!(kinds[..2], [ConstantKind::Address, ConstantKind::Address]);
     }
 
@@ -2067,7 +2152,7 @@ mod tests {
         ];
         let (insns, _) = decode_all(&Aarch64, &code(&words), 0x1000);
         let space = AddressSpace::from_ranges(core::iter::once(0x1000..0x2000));
-        let kinds = Aarch64.constant_kinds(&[], &insns, &space);
+        let kinds = Aarch64.constant_kinds(&code(&words), &insns, &space);
         assert_eq!(kinds[1], ConstantKind::Address, "through the page");
         assert_eq!(kinds[2], ConstantKind::Value, "through a register with no page");
     }
@@ -2234,7 +2319,7 @@ mod tests {
             let mut data = vec![0u8; 0x20];
             data[0x10..0x18].copy_from_slice(&pointer.to_le_bytes());
             let regions = [(0x11000, data.as_slice())];
-            Aarch64.data_addresses(&[], &insns, &space, &Memory::new(&regions))
+            Aarch64.data_addresses(&code(&words), &insns, &space, &Memory::new(&regions))
         };
         assert!(addresses(0x12345).contains(&0x12345), "a pointer into the image");
         assert!(!addresses(0).contains(&0), "an unrelocated slot holds nothing");
