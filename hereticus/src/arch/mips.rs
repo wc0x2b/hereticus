@@ -3,8 +3,8 @@
 //! Three details shape this module, and the rest of `hereticus` sees none of
 //! them:
 //!
-//! 1. `rabbitizer` renders registers with a `$` sigil and pads the mnemonic
-//!    to a column. Both are stripped here, because `hereticus` reserves a
+//! 1. `rabbitizer` renders registers with a `$` sigil and pads the name of
+//!    the operation to a column. Both are stripped here, because `hereticus` reserves a
 //!    leading `$` for a branch target and compares operand text directly.
 //! 2. MIPS ships in both byte orders and a whole image is one of them, so
 //!    [`Mips32`] carries which. Reading at the wrong order does not fail:
@@ -24,7 +24,7 @@ use rabbitizer::{
 
 use super::{
     AbsoluteCall, Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable,
-    Memory,
+    Memory, split_printed,
 };
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
@@ -59,8 +59,8 @@ pub(super) fn is(insn: &Insn, opcode: Opcode) -> bool {
     decoded(insn) == Some(Decoded::Rabbitizer(opcode))
 }
 
-/// Mnemonic reported for bytes the decoder cannot read.
-const UNKNOWN_MNEMONIC: &str = "(unknown)";
+/// The text of bytes the decoder cannot read.
+const UNKNOWN_TEXT: &str = "(unknown)";
 
 /// The instruction set this decoder reads.
 ///
@@ -175,6 +175,33 @@ impl Mips32 {
 }
 
 impl Arch for Mips32 {
+    /// MIPS puts no condition or flag-setting suffix on an operation: the
+    /// compare is part of it, as in `beq` against `bne`, which differ in
+    /// the test they apply and so stay apart.
+    ///
+    /// The exception is the unconditional jump, which MIPS spells two ways.
+    /// `j` holds an absolute address and `b` a distance from here, and a
+    /// compiler picks between them on grounds that have nothing to do with
+    /// the source: a PIC build must stay position independent, so it emits
+    /// `b` where the same code built without PIC emits `j`. Measured on the
+    /// PIC corpus the two account for six jumps each way, and they normalize
+    /// alike in every other respect, so only the name kept them apart.
+    ///
+    /// A word that [`super::mips32`] or [`super::mips16`] reads takes the
+    /// name `rabbitizer` gives the same instruction.
+    fn operation_name(&self, insn: &Insn) -> CompactString {
+        match decoded(insn) {
+            Some(Decoded::Rabbitizer(Opcode::core_j | Opcode::core_b)) => "jump".into(),
+            Some(Decoded::Rabbitizer(opcode)) => {
+                let name = compact_str::format_compact!("{opcode:?}");
+                name.strip_prefix("core_").unwrap_or(&name).into()
+            }
+            Some(Decoded::Mips32(op)) => op.name().into(),
+            Some(Decoded::Mips16(op)) => op.name().into(),
+            None => UNKNOWN_TEXT.into(),
+        }
+    }
+
     fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
         let bytes = code.get(offset..).ok_or(DecodeError::Truncated)?;
         if bytes.len() < INSN_WIDTH {
@@ -197,33 +224,34 @@ impl Arch for Mips32 {
             // `rabbitizer` stops at MIPS IV, so a MIPS32 word it refuses may
             // still be one this crate reads.
             if let Some(word) = super::mips32::decode(raw) {
-                return Ok(Insn {
-                    address: insn_address,
-                    bytes_len: INSN_WIDTH,
-                    mnemonic: word.op.name().to_string(),
-                    operands: word.operands,
-                    kind: word.kind,
-                    opcode: super::Opcode::Mips(Decoded::Mips32(word.op)),
-                });
+                return Ok(Insn::new(
+                    insn_address,
+                    INSN_WIDTH,
+                    &format!("{} {}", word.op.name(), word.operands),
+                    word.kind,
+                    super::Opcode::Mips(Decoded::Mips32(word.op)),
+                ));
             }
 
             // Stepping over an unreadable word keeps everything after it
             // aligned, because every instruction is the same width. The raw
             // word goes in the operand field so that two unreadable words
             // still compare as different.
-            return Ok(Insn {
-                address: insn_address,
-                bytes_len: INSN_WIDTH,
-                mnemonic: UNKNOWN_MNEMONIC.to_string(),
-                operands: format!("{raw:#010x}"),
-                kind: InsnKind::Unknown,
-                opcode: super::Opcode::None,
-            });
+            return Ok(Insn::new(
+                insn_address,
+                INSN_WIDTH,
+                &format!("{UNKNOWN_TEXT} {raw:#010x}"),
+                InsnKind::Unknown,
+                super::Opcode::None,
+            ));
         };
 
-        let text =
+        let printed =
             inst.display::<&str>(&InstructionDisplayFlags::new_gnu_as(), None, 0).to_string();
-        let (mnemonic, mut operands) = split_mnemonic(&text);
+        let (name, operands) = split_printed(&printed);
+        // `rabbitizer` writes registers as `$a0`; the rest of `hereticus`
+        // reads them as `a0`.
+        let mut operands = operands.replace('$', "");
         let kind = classify(&inst);
 
         // `rabbitizer` names a jump target as a label, such as
@@ -242,14 +270,13 @@ impl Arch for Mips32 {
             operands = with_target(&operands, target.wrapping_sub(insn_address) as i64);
         }
 
-        Ok(Insn {
-            address: insn_address,
-            bytes_len: INSN_WIDTH,
-            mnemonic,
-            operands,
+        Ok(Insn::new(
+            insn_address,
+            INSN_WIDTH,
+            &format!("{name} {operands}"),
             kind,
-            opcode: super::Opcode::Mips(Decoded::Rabbitizer(inst.opcode())),
-        })
+            super::Opcode::Mips(Decoded::Rabbitizer(inst.opcode())),
+        ))
     }
 
     fn triple(&self) -> &'static str {
@@ -311,27 +338,6 @@ impl Arch for Mips32 {
         Some(if negative { (value as i64).wrapping_neg() as u64 } else { value })
     }
 
-    /// MIPS mnemonics carry no condition or flag-setting suffix: the compare is
-    /// part of the operation, as in `beq` against `bne`. So a name mostly passes
-    /// through unchanged.
-    ///
-    /// The exception is the unconditional jump, which MIPS spells two ways. `j`
-    /// holds an absolute address and `b` a distance from here, and a compiler
-    /// picks between them on grounds that have nothing to do with the source: a
-    /// PIC build must stay position independent, so it emits `b` where the same
-    /// code built without PIC emits `j`. Measured on the PIC corpus the two
-    /// account for six jumps each way, and they normalize alike in every other
-    /// respect — one operand, `Jump` flow — so only the name kept them apart.
-    ///
-    /// A conditional branch is untouched. `beq` and `bne` differ in the test
-    /// they apply, which is the source's decision and must keep them apart.
-    fn normalize_operation(&self, mnemonic: &str) -> CompactString {
-        match mnemonic.trim() {
-            "j" | "b" => "jump".into(),
-            other => other.into(),
-        }
-    }
-
     fn is_frame_management(&self, insn: &Insn) -> bool {
         // The PIC preamble is bookkeeping in the same sense frame work is: the
         // ABI obliges it, the source never asked for it, and it appears in
@@ -340,7 +346,7 @@ impl Arch for Mips32 {
             return true;
         }
 
-        let operands = insn.operands.as_str();
+        let operands = insn.operands();
         let first = operands.split(',').next().unwrap_or_default().trim();
 
         match rabbitizer_opcode(insn) {
@@ -374,7 +380,7 @@ impl Arch for Mips32 {
 
     fn global_pointer_setup(&self, body: &[Insn]) -> Option<GlobalPointerSetup> {
         let consumer = gp_disp_consumer(body)?;
-        let register = body[consumer].operands.split(',').next()?.trim().to_string();
+        let register = body[consumer].operands().split(',').next()?.trim().to_string();
         Some(GlobalPointerSetup { parts: vec![0, 1, consumer], register })
     }
 
@@ -445,7 +451,7 @@ impl Arch for Mips32 {
     /// `jr t9`: the ABI calls through `t9`, and a `switch` jumps through
     /// another register.
     fn is_tail_call(&self, insn: &Insn) -> bool {
-        is(insn, Opcode::core_jr) && insn.operands == "t9"
+        is(insn, Opcode::core_jr) && insn.operands() == "t9"
     }
 
     /// A function that needs a frame opens by making room for it, so
@@ -473,7 +479,7 @@ impl Arch for Mips32 {
         // `addiu sp, sp, -N`: the stack pointer is both the destination and
         // the source, and the immediate is negative. A positive immediate is
         // the matching unwind at the end of a function.
-        let mut operands = insn.operands.split(',').map(str::trim);
+        let mut operands = insn.operands().split(',').map(str::trim);
         let (Some("sp"), Some("sp"), Some(immediate)) =
             (operands.next(), operands.next(), operands.next())
         else {
@@ -631,12 +637,12 @@ impl Arch for Mips32 {
                 InsnKind::Call { target: Some(target) } => {
                     Some((index, Some(CallTarget::Address(target))))
                 }
-                InsnKind::Call { target: None } if insn.operands.ends_with(CALLEE_ADDRESS) => {
+                InsnKind::Call { target: None } if insn.operands().ends_with(CALLEE_ADDRESS) => {
                     Some((index, through_slot(index).map(CallTarget::Slot)))
                 }
                 InsnKind::Call { target: None } => Some((index, None)),
                 // A tail call jumps through `t9` as a call does.
-                InsnKind::Jump { target: None } if insn.operands == CALLEE_ADDRESS => {
+                InsnKind::Jump { target: None } if insn.operands() == CALLEE_ADDRESS => {
                     Some((index, through_slot(index).map(CallTarget::Slot)))
                 }
                 InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
@@ -757,18 +763,6 @@ fn with_target(operands: &str, distance: i64) -> String {
     }
 }
 
-/// Split rendered instruction text into the mnemonic and the rest.
-///
-/// `rabbitizer` pads the mnemonic to a fixed column and writes every register
-/// with a `$` sigil. The padding is noise, and the sigil would collide with
-/// the `$+0x24` that `hereticus` reserves for a branch target, so both go.
-fn split_mnemonic(text: &str) -> (String, String) {
-    match text.split_once(char::is_whitespace) {
-        Some((head, tail)) => (head.to_string(), tail.trim().replace('$', "")),
-        None => (text.to_string(), String::new()),
-    }
-}
-
 /// The register a `lui`/`addiu` pair builds a link-time constant in, if the two
 /// instructions are such a pair.
 ///
@@ -791,7 +785,7 @@ fn constant_pair_register<'a>(high: &'a Insn, low: &Insn) -> Option<&'a str> {
         return None;
     }
 
-    let mut high_operands = high.operands.split(',').map(str::trim);
+    let mut high_operands = high.operands().split(',').map(str::trim);
     let (Some(loaded), Some(_), None) =
         (high_operands.next(), high_operands.next(), high_operands.next())
     else {
@@ -800,7 +794,7 @@ fn constant_pair_register<'a>(high: &'a Insn, low: &Insn) -> Option<&'a str> {
 
     // `addiu rX, rX, lo` must add into the very register `lui` just wrote,
     // or the two words are unrelated.
-    let mut low_operands = low.operands.split(',').map(str::trim);
+    let mut low_operands = low.operands().split(',').map(str::trim);
     let (Some(destination), Some(source), Some(_), None) =
         (low_operands.next(), low_operands.next(), low_operands.next(), low_operands.next())
     else {
@@ -865,7 +859,7 @@ fn gp_disp_consumer(body: &[Insn]) -> Option<usize> {
             return Some(index + 2);
         }
         let writes_loaded = !is_store(insn)
-            && insn.operands.split(',').next().is_some_and(|first| first.trim() == loaded);
+            && insn.operands().split(',').next().is_some_and(|first| first.trim() == loaded);
         if writes_loaded {
             return None;
         }
@@ -1032,7 +1026,7 @@ fn track_addresses(
         } else if let Some((destination, held)) = indexed_address(insn, &upper) {
             upper.set(destination, held);
         } else if !is_store(insn)
-            && let Some(written) = insn.operands.split(',').next()
+            && let Some(written) = insn.operands().split(',').next()
         {
             upper.forget(written.trim());
         }
@@ -1074,14 +1068,14 @@ impl SavedRegisters {
         if insn.kind != InsnKind::Normal || is_store(insn) {
             return;
         }
-        let Some(written) = insn.operands.split(',').next().map(str::trim).and_then(Name::of)
+        let Some(written) = insn.operands().split(',').next().map(str::trim).and_then(Name::of)
         else {
             return;
         };
         if !is_callee_saved(written) || written == Name::known("sp") {
             return;
         }
-        let restores = is(insn, Opcode::core_lw) && insn.operands.trim_end().ends_with("(sp)");
+        let restores = is(insn, Opcode::core_lw) && insn.operands().trim_end().ends_with("(sp)");
         if restores {
             self.restored.push(written);
         } else {
@@ -1162,7 +1156,7 @@ fn read_jump_table(image: &Image<'_>, insns: &[Insn], index: usize) -> Option<Ju
     if !is(jump, Opcode::core_jr) || jump.kind != (InsnKind::Jump { target: None }) {
         return None;
     }
-    let target_register = jump.operands.trim();
+    let target_register = jump.operands().trim();
 
     // The PIC shape adds the global pointer after the load.
     let (load_at, entries) = match last_write(insns, index, target_register)? {
@@ -1274,13 +1268,13 @@ fn last_write_within<'a>(
     (from..before).rev().map(|at| (at, &insns[at])).find(|(_, insn)| {
         insn.kind == InsnKind::Normal
             && !is_store(insn)
-            && insn.operands.split(',').next().map(str::trim) == Some(register)
+            && insn.operands().split(',').next().map(str::trim) == Some(register)
     })
 }
 
 /// Read `op rD, rS, x` as its three operands.
 fn three_operands(insn: &Insn) -> Option<(&str, &str, &str)> {
-    let mut operands = insn.operands.split(',').map(str::trim);
+    let mut operands = insn.operands().split(',').map(str::trim);
     let (Some(first), Some(second), Some(third), None) =
         (operands.next(), operands.next(), operands.next(), operands.next())
     else {
@@ -1291,7 +1285,7 @@ fn three_operands(insn: &Insn) -> Option<(&str, &str, &str)> {
 
 /// Read `lw rX, offset(rA)` as the offset and `rA`.
 fn load_operands(insn: &Insn) -> Option<(u64, &str)> {
-    let (_, reference) = insn.operands.split_once(',')?;
+    let (_, reference) = insn.operands().split_once(',')?;
     let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
     Some((Mips32::LITTLE.constant_value(offset)?, base.trim()))
 }
@@ -1330,7 +1324,7 @@ fn global_pointer_before(insns: &[Insn], index: usize) -> Option<(u64, &str)> {
             .iter()
             .take(TABLE_LOOK_BACK)
             .find(|insn| joins_to_callee_address(insn, loaded))
-            .and_then(|insn| insn.operands.split(',').next())?
+            .and_then(|insn| insn.operands().split(',').next())?
             .trim();
         Some((global_pointer, register))
     })
@@ -1642,7 +1636,7 @@ fn upper_half(insn: &Insn) -> Option<(&str, u64)> {
     if !is(insn, Opcode::core_lui) {
         return None;
     }
-    let mut operands = insn.operands.split(',').map(str::trim);
+    let mut operands = insn.operands().split(',').map(str::trim);
     let (Some(register), Some(immediate), None) =
         (operands.next(), operands.next(), operands.next())
     else {
@@ -1667,7 +1661,7 @@ fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses) -> Option<(&'a str, Hel
     if !is(insn, Opcode::core_addiu) && !is(insn, Opcode::core_ori) {
         return None;
     }
-    let mut operands = insn.operands.split(',').map(str::trim);
+    let mut operands = insn.operands().split(',').map(str::trim);
     let (Some(destination), Some(source), Some(immediate), None) =
         (operands.next(), operands.next(), operands.next(), operands.next())
     else {
@@ -1714,7 +1708,7 @@ fn memory_reference<'a>(
     insn: &'a Insn,
     upper: &HeldAddresses,
 ) -> Option<(Option<&'a str>, Held, u64)> {
-    let (first, reference) = insn.operands.split_once(',')?;
+    let (first, reference) = insn.operands().split_once(',')?;
     let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
     let held = upper.get(base.trim())?;
     let offset = Mips32::LITTLE.constant_value(offset)?;
@@ -1738,7 +1732,7 @@ fn stack_slot(insn: &Insn) -> Option<(&str, u64, SlotAccess)> {
         Opcode::core_lw => SlotAccess::Load,
         _ => return None,
     };
-    let (register, reference) = insn.operands.split_once(',')?;
+    let (register, reference) = insn.operands().split_once(',')?;
     let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
     (base.trim() == "sp")
         .then(|| Some((register.trim(), Mips32::LITTLE.constant_value(offset)?, access)))
@@ -1773,7 +1767,7 @@ fn indexed_address<'a>(insn: &'a Insn, upper: &HeldAddresses) -> Option<(&'a str
 
 /// Read `addu rD, rX, t9`, which forms the PIC global pointer, as `rD`.
 fn global_pointer_formed(insn: &Insn) -> Option<&str> {
-    let (destination, sources) = insn.operands.split_once(',')?;
+    let (destination, sources) = insn.operands().split_once(',')?;
     let joins_t9 = sources.split(',').any(|source| source.trim() == "t9");
     (is(insn, Opcode::core_addu) && joins_t9).then(|| destination.trim())
 }
@@ -1784,7 +1778,7 @@ fn register_copy(insn: &Insn) -> Option<(&str, &str)> {
     if !is(insn, Opcode::core_or) && !is(insn, Opcode::core_addu) {
         return None;
     }
-    let mut operands = insn.operands.split(',').map(str::trim);
+    let mut operands = insn.operands().split(',').map(str::trim);
     match (operands.next(), operands.next(), operands.next(), operands.next()) {
         (Some(destination), Some(source), None, None) => Some((destination, source)),
         (Some(destination), Some(source), Some("zero"), None) => Some((destination, source)),
@@ -1831,7 +1825,7 @@ fn joins_to_callee_address(insn: &Insn, loaded: &str) -> bool {
         return false;
     }
 
-    let mut operands = insn.operands.split(',').map(str::trim);
+    let mut operands = insn.operands().split(',').map(str::trim);
     let (_destination, Some(left), Some(right), None) =
         (operands.next(), operands.next(), operands.next(), operands.next())
     else {
@@ -1869,7 +1863,7 @@ fn is_pic_setup(insn: &Insn) -> bool {
     /// The global pointer the preamble computes.
     const GLOBAL_POINTER: &str = "gp";
 
-    let mut operands = insn.operands.split(',').map(str::trim);
+    let mut operands = insn.operands().split(',').map(str::trim);
     let (first, second, third) = (operands.next(), operands.next(), operands.next());
 
     match rabbitizer_opcode(insn) {
@@ -1893,7 +1887,7 @@ fn is_pic_setup(insn: &Insn) -> bool {
         // A reload of `t9` from the frame is frame work rather than a GOT read,
         // and the caller judges that on its own. Excluding it here keeps each
         // rule answering for what it actually recognizes.
-        Some(Opcode::core_lw) => first == Some(CALLEE_ADDRESS) && !insn.operands.contains("(sp)"),
+        Some(Opcode::core_lw) => first == Some(CALLEE_ADDRESS) && !insn.operands().contains("(sp)"),
 
         // A move to or from the global pointer, which this decoder renders as
         // `or rX, rY, zero`. Either direction is the same bookkeeping: the
@@ -2466,8 +2460,8 @@ mod tests {
     #[test]
     fn decodes_simple_arithmetic() {
         let insn = decode_one(0x0085_1021);
-        assert_eq!(insn.mnemonic, "addu");
-        assert_eq!(insn.operands, "v0, a0, a1");
+        assert_eq!(crate::arch::split_printed(&insn.text).0, "addu");
+        assert_eq!(insn.operands(), "v0, a0, a1");
         assert_eq!(insn.bytes_len, 4);
         assert_eq!(insn.kind, InsnKind::Normal);
     }
@@ -2877,7 +2871,7 @@ mod tests {
     #[test]
     fn a_zero_word_is_padding() {
         let nop = decode_one(0x0000_0000);
-        assert_eq!(nop.mnemonic, "nop");
+        assert_eq!(crate::arch::split_printed(&nop.text).0, "nop");
         assert!(Mips32::LITTLE.is_padding(&nop));
         assert!(Mips32::LITTLE.trim_padding(&[0; 4]).is_empty());
     }
@@ -3205,8 +3199,8 @@ mod tests {
         fn a_jump_target_prints_as_a_resolved_target() {
             let code = jal(0x8000_4000).to_be_bytes();
             let insn = Mips32::BIG.decode(&code, 0, BASE).unwrap();
-            assert_eq!(insn.operands, "$+0x4000");
-            assert!(crate::arch::is_branch_target(&insn.operands));
+            assert_eq!(insn.operands(), "$+0x4000");
+            assert!(crate::arch::is_branch_target(insn.operands()));
         }
 
         fn contents_of(words: &[u32], space: &AddressSpace) -> crate::address::Contents {
@@ -3787,39 +3781,40 @@ mod tests {
         }
     }
 
-    /// MIPS puts the comparison in the mnemonic, so nothing is stripped and
-    /// two different branches must stay different.
+    /// The name of the operation of the MIPS32 `word`.
+    fn operation_of(word: u32) -> CompactString {
+        Mips32::LITTLE.operation_name(&decode_one(word))
+    }
+
+    /// MIPS puts the comparison in the operation, so two different branches
+    /// stay different.
     #[test]
-    fn normalizing_an_operation_keeps_distinct_branches_apart() {
-        assert_eq!(Mips32::LITTLE.normalize_operation("addu"), "addu");
-        assert_ne!(
-            Mips32::LITTLE.normalize_operation("beq"),
-            Mips32::LITTLE.normalize_operation("bne")
-        );
+    fn distinct_branches_are_distinct_operations() {
+        // addu v0, a0, a1; beq a0, a1; bne a0, a1.
+        assert_eq!(operation_of(0x0085_1021), "addu");
+        assert_ne!(operation_of(0x1085_0002), operation_of(0x1485_0002));
     }
 
     /// `b` and `j` are one jump spelled two ways, and which one a compiler picks
     /// follows from PIC rather than from the source.
     #[test]
-    fn the_two_spellings_of_a_jump_normalize_alike() {
+    fn the_two_spellings_of_a_jump_are_one_operation() {
         assert_eq!(
-            Mips32::LITTLE.normalize_operation("j"),
-            Mips32::LITTLE.normalize_operation("b"),
+            operation_of(0x0800_0004),
+            operation_of(0x1000_0002),
             "a PIC build emits `b` where a non-PIC build emits `j`"
         );
     }
 
-    /// Merging the jumps must not reach the conditional branches that start with
-    /// the same letter, nor the calling forms.
+    /// Merging the jumps must not reach the conditional branches, nor the
+    /// calling forms.
     #[test]
     fn merging_the_jumps_leaves_everything_else_apart() {
-        let jump = Mips32::LITTLE.normalize_operation("j");
-        for other in ["beq", "bne", "bgez", "blez", "bltz", "jal", "jalr", "jr"] {
-            assert_ne!(
-                Mips32::LITTLE.normalize_operation(other),
-                jump,
-                "{other} is not a plain unconditional jump"
-            );
+        let jump = operation_of(0x0800_0004);
+        // beq, bne, bgez, blez and bltz on a0, jal, jalr t9 and jr ra.
+        let others = [0x1085_0002, 0x1485_0002, 0x0481_0002, 0x1880_0002, 0x0480_0002, 0x0c00_0004];
+        for word in others.into_iter().chain([0x0320_f809, 0x03e0_0008]) {
+            assert_ne!(operation_of(word), jump, "{word:#010x} is not a plain jump");
         }
     }
 
@@ -3832,8 +3827,8 @@ mod tests {
         // b, which is `beq zero, zero, offset`, and j to an absolute address.
         let relative = decode_one(0x1000_0002);
         let absolute = decode_one(0x0800_0010);
-        assert_eq!(relative.mnemonic, "b");
-        assert_eq!(absolute.mnemonic, "j");
+        assert_eq!(crate::arch::split_printed(&relative.text).0, "b");
+        assert_eq!(crate::arch::split_printed(&absolute.text).0, "j");
 
         let arch = &Mips32::LITTLE;
         assert_eq!(normalize(arch, &relative), normalize(arch, &absolute));
@@ -3849,7 +3844,7 @@ mod tests {
         // beq a0, v0, offset: a real test, not `b`.
         let conditional = decode_one(0x1082_0005);
         let unconditional = decode_one(0x1000_0002);
-        assert_eq!(conditional.mnemonic, "beq");
+        assert_eq!(crate::arch::split_printed(&conditional.text).0, "beq");
         assert_ne!(
             normalize(arch, &conditional),
             normalize(arch, &unconditional),
@@ -3909,10 +3904,14 @@ mod tests {
         let stored = 0x0085_1021u32.to_be_bytes();
 
         let big = Mips32::BIG.decode(&stored, 0, 0).unwrap();
-        assert_eq!(big.mnemonic, "addu");
+        assert_eq!(crate::arch::split_printed(&big.text).0, "addu");
 
         let little = Mips32::LITTLE.decode(&stored, 0, 0).unwrap();
-        assert_ne!(little.mnemonic, "addu", "the wrong order reads another instruction");
+        assert_ne!(
+            crate::arch::split_printed(&little.text).0,
+            "addu",
+            "the wrong order reads another instruction"
+        );
     }
 
     /// A big-endian image decodes exactly as a little-endian one does once

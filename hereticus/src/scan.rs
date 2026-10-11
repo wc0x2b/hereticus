@@ -1161,7 +1161,7 @@ fn pops_a_frame_it_did_not_make(arch: &dyn Arch, insns: &[Insn], target: u64) ->
             InsnKind::Return => {
                 return crate::arch::arm32::core_opcode(insn)
                     == Some(yaxpeax_arm::armv7::Opcode::POP)
-                    && insn.operands.contains("pc");
+                    && insn.operands().contains("pc");
             }
             InsnKind::Normal | InsnKind::Unknown => {}
             _ => return false,
@@ -1796,14 +1796,7 @@ mod tests {
 
     /// A two-byte Thumb instruction at `address` that moves control as `kind`.
     fn thumb_insn(address: u64, kind: InsnKind) -> Insn {
-        Insn {
-            address,
-            bytes_len: 2,
-            mnemonic: String::new(),
-            operands: String::new(),
-            kind,
-            opcode: crate::arch::Opcode::None,
-        }
+        Insn::new(address, 2, "", kind, crate::arch::Opcode::None)
     }
 
     /// Instructions from 0x1000 up to 0x1100, all but `branches` plain.

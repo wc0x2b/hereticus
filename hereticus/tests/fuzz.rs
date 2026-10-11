@@ -254,10 +254,10 @@ fn unreadable_bytes_are_marked_opaque() {
         // that one unreadable instruction can be told from another.
         if insn.kind == InsnKind::Unknown {
             assert_eq!(insn.bytes_len, 4);
-            assert!(!insn.operands.is_empty(), "opaque bytes must carry their raw word");
+            assert!(!insn.operands().is_empty(), "opaque bytes must carry their raw word");
 
             let word = u32::from_le_bytes(*bytes);
-            assert_eq!(insn.operands, format!("{word:#010x}"), "the raw word must be reported");
+            assert_eq!(insn.operands(), format!("{word:#010x}"), "the raw word must be reported");
         }
     });
 }

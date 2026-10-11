@@ -20,7 +20,9 @@ pub use crate::view::PairedLabels;
 use rayon::prelude::*;
 
 use crate::address::{AddressSpace, ConstantKind, Contents};
-use crate::arch::{Arch, Insn, InsnKind, Memory, decode_all, is_branch_target};
+use compact_str::CompactString;
+
+use crate::arch::{Arch, Insn, InsnKind, Memory, decode_all, is_branch_target, split_printed};
 use crate::callee::{Callee, callees_in};
 use crate::norm::{
     FlowShape, NormInsn, OperandShape, constant_signature, flow_features_in, normalize_body_in,
@@ -2219,14 +2221,13 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
         // A load from a pool reads at a distance that says only where the
         // pool sits, so what comes before the reference is all to compare.
         let (left_operands, right_operands) = match (
-            before_arch.before_pc_reference(&left.operands),
-            after_arch.before_pc_reference(&right.operands),
+            before_arch.before_pc_reference(left.operands()),
+            after_arch.before_pc_reference(right.operands()),
         ) {
             (Some(left), Some(right)) => (left, right),
-            _ => (left.operands.as_str(), right.operands.as_str()),
+            _ => (left.operands(), right.operands()),
         };
-        before_arch.normalize_operation(&left.mnemonic)
-            == after_arch.normalize_operation(&right.mnemonic)
+        before_arch.operation_name(left) == after_arch.operation_name(right)
             && operands_are_interchangeable(
                 before_arch,
                 left_operands,
@@ -3758,7 +3759,7 @@ pub fn similarity(left: &[NormInsn], right: &[NormInsn]) -> f64 {
 ///
 /// The counts in [`Match::edits`] say *how much* changed; this says *what*.
 /// The text is the instruction as the decoder printed it, so a reader sees the
-/// real mnemonic and operands, not the normalized form the matcher compares.
+/// real instruction, not the normalized form the matcher compares.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffLine {
     /// The same instruction on both sides.
@@ -4029,7 +4030,20 @@ pub fn instruction_diff(
 
     let steps = align(&before_keys, &after_keys);
     let lines = lines_from_alignment(&steps, &before_insns, &after_insns);
-    coalesce_changed_constants(before_arch, lines)
+    let operations =
+        operations_by_text(&[(before_arch, &before_insns), (after_arch, &after_insns)]);
+    coalesce_changed_constants(before_arch, lines, &operations)
+}
+
+/// The operation each printed instruction does, by its text, for
+/// [`coalesce_changed_constants`], which sees only the text.
+fn operations_by_text(sides: &[(&dyn Arch, &Vec<Insn>)]) -> HashMap<String, CompactString> {
+    sides
+        .iter()
+        .flat_map(|(arch, insns)| {
+            insns.iter().map(|insn| (insn.to_string(), arch.operation_name(insn)))
+        })
+        .collect()
 }
 
 /// The text two instructions must share to align, with targets removed.
@@ -4039,14 +4053,14 @@ pub fn instruction_diff(
 /// alignment. Everything else, the constant included, stays: a changed value is
 /// a real difference the reader came to see.
 fn diff_key(insn: &Insn) -> String {
-    let operands = insn
-        .operands
+    let (name, operands) = split_printed(&insn.text);
+    let operands = operands
         .split(',')
         .map(str::trim)
         .map(|operand| if is_branch_target(operand) { "$" } else { operand })
         .collect::<Vec<_>>()
         .join(", ");
-    format!("{} {operands}", insn.mnemonic)
+    format!("{name} {operands}")
 }
 
 /// Fold an adjacent remove-then-add of the same instruction into one line.
@@ -4058,7 +4072,11 @@ fn diff_key(insn: &Insn) -> String {
 /// always adjacent, because the alignment keeps the order.
 ///
 /// See RESEARCH.md, A13.
-fn coalesce_changed_constants(arch: &dyn Arch, lines: Vec<DiffLine>) -> Vec<DiffLine> {
+fn coalesce_changed_constants(
+    arch: &dyn Arch,
+    lines: Vec<DiffLine>,
+    operations: &HashMap<String, CompactString>,
+) -> Vec<DiffLine> {
     let mut folded: Vec<DiffLine> = Vec::with_capacity(lines.len());
     for line in lines {
         let pair = match (folded.last(), &line) {
@@ -4072,7 +4090,7 @@ fn coalesce_changed_constants(arch: &dyn Arch, lines: Vec<DiffLine>) -> Vec<Diff
             // The two share the operation and operand shapes, so they are the
             // same instruction. A moved register or branch target is a free
             // choice, so that is no change; a changed constant is a real one.
-            Some((before, after)) if same_operation(arch, &before, &after) => {
+            Some((before, after)) if same_operation(arch, operations, &before, &after) => {
                 folded.pop();
                 folded.push(if only_free_choices_differ(arch, &before, &after) {
                     DiffLine::Same(after)
@@ -4104,17 +4122,24 @@ fn only_free_choices_differ(arch: &dyn Arch, before: &str, after: &str) -> bool 
     })
 }
 
-/// Report whether two printed instructions share operation and operand shapes.
+/// Report whether two printed instructions share operation and operand shapes,
+/// where `operations` names the operation of each.
 ///
 /// This is the printed-text mirror of what the matcher normalizes to: the two
 /// agree once a register name or a branch target is allowed to differ. It tells
 /// a changed constant, which keeps the same shape, from an unrelated pairing.
-fn same_operation(arch: &dyn Arch, before: &str, after: &str) -> bool {
-    let (before_op, before_args) = before.split_once(' ').unwrap_or((before, ""));
-    let (after_op, after_args) = after.split_once(' ').unwrap_or((after, ""));
-    if arch.normalize_operation(before_op) != arch.normalize_operation(after_op) {
-        return false;
+fn same_operation(
+    arch: &dyn Arch,
+    operations: &HashMap<String, CompactString>,
+    before: &str,
+    after: &str,
+) -> bool {
+    match (operations.get(before), operations.get(after)) {
+        (Some(before), Some(after)) if before == after => {}
+        _ => return false,
     }
+    let (_, before_args) = split_printed(before);
+    let (_, after_args) = split_printed(after);
 
     let mut before = before_args.split(',').map(str::trim);
     let mut after = after_args.split(',').map(str::trim);
@@ -4603,26 +4628,16 @@ mod tests {
             longest_common_subsequence(&long, &other)
         );
     }
+    use crate::arch::InsnKind;
     use crate::arch::arm32::Arm32;
     use crate::arch::mips::Mips32;
-    use crate::arch::{Insn, InsnKind};
     use crate::norm::normalize;
 
     fn body(operations: &[(&str, &str)]) -> Vec<NormInsn> {
         operations
             .iter()
-            .map(|(mnemonic, operands)| {
-                normalize(
-                    &Arm32,
-                    &Insn {
-                        address: 0,
-                        bytes_len: 4,
-                        mnemonic: mnemonic.to_string(),
-                        operands: operands.to_string(),
-                        kind: InsnKind::Normal,
-                        opcode: crate::arch::Opcode::None,
-                    },
-                )
+            .map(|(name, operands)| {
+                normalize(&Arm32, &crate::arch::arm32::test_insn(name, operands, InsnKind::Normal))
             })
             .collect()
     }
@@ -4830,7 +4845,11 @@ mod tests {
     /// reporting it as a change cried wolf on the test corpus.
     #[test]
     fn a_changed_condition_is_not_a_change() {
-        assert_eq!(Arm32.normalize_operation("movwlt"), Arm32.normalize_operation("movwlo"));
+        let decode = |word: u32| Arm32.decode(&word.to_le_bytes(), 0, 0).expect("decodes");
+        // movwlt r0, #1 and movwlo r0, #1.
+        let (signed, unsigned) = (decode(0xb300_0001), decode(0x3300_0001));
+        assert_ne!(signed.text, unsigned.text);
+        assert_eq!(Arm32.operation_name(&signed), Arm32.operation_name(&unsigned));
     }
 
     #[test]
@@ -6647,7 +6666,18 @@ mod tests {
             DiffLine::Removed("push {lr}".to_string()),
             DiffLine::Added("mul r0, r0, r1".to_string()),
         ];
-        let folded = coalesce_changed_constants(&Arm32, lines);
+        let operations: HashMap<String, CompactString> = [
+            ("bl $+0x40", "b"),
+            ("bl $+0x80", "b"),
+            ("mov r1, 0x25", "mov"),
+            ("mov r1, 0x29", "mov"),
+            ("push {lr}", "push"),
+            ("mul r0, r0, r1", "mul"),
+        ]
+        .into_iter()
+        .map(|(text, operation)| (text.to_string(), operation.into()))
+        .collect();
+        let folded = coalesce_changed_constants(&Arm32, lines, &operations);
         assert_eq!(
             folded,
             vec![

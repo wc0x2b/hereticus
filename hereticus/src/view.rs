@@ -17,7 +17,7 @@ use crate::arch::arm32::{self, Step, Vfp};
 use crate::arch::mips::{self, Decoded as MipsDecoded};
 use crate::arch::mips16::Op as Mips16Op;
 use crate::arch::mips32::Op as Mips32Op;
-use crate::arch::{Arch, Insn, aarch64, is_branch_target};
+use crate::arch::{Arch, Insn, aarch64, is_branch_target, split_printed};
 use crate::callee::Links;
 use crate::il::{AccessKind, Comparison, Cond, Lifted, Op, Operand, Reg, Test};
 use rabbitizer::opcodes::Opcode as MipsOpcode;
@@ -241,7 +241,7 @@ fn instruction_lines(
             }
             if pages.contains(&index)
                 && matches!(address, Some(Pointed::Address(_)))
-                && let Some(dest) = split_operands(&insn.operands).first()
+                && let Some(dest) = split_operands(insn.operands()).first()
             {
                 return format!("{dest} = &page");
             }
@@ -289,7 +289,7 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
         })
         .filter_map(|(index, insn)| {
             // The MIPS16e `addiu v0, 0x10` adds to the register it writes.
-            let source = match split_operands(&insn.operands).as_slice() {
+            let source = match split_operands(insn.operands()).as_slice() {
                 [_, source, _] => *source,
                 [dest, _] => *dest,
                 _ => return None,
@@ -297,7 +297,7 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
             let at = (index.saturating_sub(LOOK_BACK)..index).rev().find(|&at| {
                 let earlier = &insns[at];
                 matches!(earlier.kind, crate::arch::InsnKind::Call { .. })
-                    || split_operands(&earlier.operands).first() == Some(&source)
+                    || split_operands(earlier.operands()).first() == Some(&source)
             })?;
             let loads = mips::rabbitizer_opcode(&insns[at]) == Some(MipsOpcode::core_lw);
             (loads && formed[at].is_some()).then_some(at)
@@ -314,7 +314,7 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
 /// on it reads as `if (fv0 < fv1) goto $+0xc`.
 fn mips_statement(insn: &Insn, float_condition: &mut Option<String>) -> Option<String> {
     use MipsDecoded::{Mips16, Mips32, Rabbitizer};
-    let operands = split_operands(&insn.operands);
+    let operands = split_operands(insn.operands());
     let decoded = mips::decoded(insn)?;
     // `multu` and `divu` read their operands unsigned, as `u>>` does.
     let unsigned = matches!(
@@ -429,7 +429,7 @@ fn named_line(
     context: Option<Context<'_>>,
     callees: &mut HashMap<String, String>,
 ) -> Option<String> {
-    let written = split_operands(&insn.operands).first().map(|first| first.to_string());
+    let written = split_operands(insn.operands()).first().map(|first| first.to_string());
     match insn.kind {
         crate::arch::InsnKind::Call { target: Some(target) } => {
             Some(format!("call {}", context?.callee_at(arch, target)?))
@@ -439,7 +439,7 @@ fn named_line(
             Some(format!("goto {}", context?.callee_at(arch, target)?))
         }
         crate::arch::InsnKind::Call { target: None } => {
-            let register = split_operands(&insn.operands).last()?.to_string();
+            let register = split_operands(insn.operands()).last()?.to_string();
             Some(format!("call {}", callees.get(&register)?))
         }
         _ => {
@@ -675,7 +675,8 @@ fn aarch64_statement(
     last_compare: &mut Option<Compared>,
 ) -> Option<String> {
     let opcode = aarch64::decoded(insn)?.opcode;
-    let mnemonic = insn.mnemonic.as_str();
+    // As printed, for the reader.
+    let (printed_name, _) = split_printed(&insn.text);
     let immediate = |token: &str| {
         let token = token.trim_start_matches('#');
         token
@@ -720,7 +721,7 @@ fn aarch64_statement(
             format!("{dest} = {source}")
         }
         (A64Opcode::SMOV | A64Opcode::DUP, [dest, source]) => {
-            format!("{dest} = {mnemonic}({source})")
+            format!("{dest} = {printed_name}({source})")
         }
         _ => return None,
     };
@@ -739,7 +740,7 @@ fn vfp_statement(
     let line = match (vfp, tokens) {
         // A branch after it tests the flags, not the operands: the flags of
         // a float compare mean other things than those of an integer one.
-        (Vfp::Compare, [left, right]) => {
+        (Vfp::Compare { .. }, [left, right]) => {
             *last_compare = None;
             let right = if *right == "0x0" { "0" } else { right };
             format!("fpscr = compare({left}, {right})")
@@ -950,10 +951,10 @@ impl ListOrder {
                 };
                 (order, WriteBack::No)
             }
-            VfpWord { vfp: Vfp::Multiple(Step::IncrementAfter), .. } => {
+            VfpWord { vfp: Vfp::Multiple(Step::IncrementAfter, _), .. } => {
                 (Self::IncrementAfter, WriteBack::No)
             }
-            VfpWord { vfp: Vfp::Multiple(Step::DecrementBefore), .. } => {
+            VfpWord { vfp: Vfp::Multiple(Step::DecrementBefore, _), .. } => {
                 (Self::DecrementBefore, WriteBack::No)
             }
             _ => return None,
@@ -979,7 +980,7 @@ impl ListOrder {
 /// It is read from the printed text, as the IL holds no list.
 fn list_statement(insn: &Insn, lifted: &Lifted) -> Option<String> {
     let (order, mut write_back) = ListOrder::of(insn)?;
-    let (before, list) = insn.operands.split_once('{')?;
+    let (before, list) = insn.operands().split_once('{')?;
     let registers: Vec<&str> =
         list.trim_end().strip_suffix('}')?.split(',').map(str::trim).collect();
     if registers.iter().any(|register| register.is_empty() || register.contains('-')) {
@@ -1032,7 +1033,7 @@ fn statement(
     let constant = |value: u64| {
         if moves { format!("@{value:#x}") } else { constant_text(value) }
     };
-    let mut tokens = split_operands(&insn.operands);
+    let mut tokens = split_operands(insn.operands());
     // The A32 decoder prints a register before the two a compare compares,
     // as `cmps r0, r3, 0x0`, which is no operand of it.
     if lifted.op == Op::Compare && tokens.len() == lifted.operands.len() + 1 {
@@ -1102,7 +1103,10 @@ fn statement(
         && let Some((dest, sources)) = tokens.split_first()
         && !sources.is_empty()
     {
-        let name = insn.mnemonic.split('.').next().unwrap_or(&insn.mnemonic);
+        // As printed, for the reader, without the size: `vsqrt` of
+        // `vsqrt.f64`.
+        let (printed_name, _) = split_printed(&insn.text);
+        let name = printed_name.split('.').next().unwrap_or(printed_name);
         let sources: Vec<String> =
             sources.iter().map(|source| source.trim_start_matches('#').to_string()).collect();
         return Some(format!("{dest} = {name}({})", sources.join(", ")));
@@ -1492,10 +1496,10 @@ mod tests {
         let a32 = |word: u32| Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word decodes");
         // push.w {r4, lr}
         let push = Thumb2.decode(&[0x2d, 0xe9, 0x10, 0x40], 0, 0).expect("the word decodes");
-        assert_eq!(push.mnemonic, "push");
+        assert_eq!(crate::arch::split_printed(&push.text).0, "push");
         assert_eq!(ListOrder::of(&push), Some((ListOrder::DecrementBefore, WriteBack::Yes)));
         let vpop = a32(0xecbd_8b02); // vpop {d8}
-        assert_eq!(vpop.mnemonic, "vpop");
+        assert_eq!(crate::arch::split_printed(&vpop.text).0, "vpop");
         assert_eq!(ListOrder::of(&vpop), Some((ListOrder::IncrementAfter, WriteBack::Yes)));
         let stmdb = a32(0xe900_0002); // stmdb r0, {r1}
         assert_eq!(ListOrder::of(&stmdb), Some((ListOrder::DecrementBefore, WriteBack::No)));
@@ -1510,21 +1514,20 @@ mod tests {
 
     /// A MIPS instruction as the decoder would give it. MIPS16e prints an
     /// `addiu` with two operands, which no MIPS32 word decodes to.
-    fn mips(mnemonic: &str, operands: &str, kind: crate::arch::InsnKind) -> Insn {
-        let opcode = match mnemonic {
+    fn mips(name: &str, operands: &str, kind: crate::arch::InsnKind) -> Insn {
+        let opcode = match name {
             "lw" => MipsOpcode::core_lw,
             "addiu" => MipsOpcode::core_addiu,
             "jalr" => MipsOpcode::core_jalr,
             _ => MipsOpcode::core_or,
         };
-        Insn {
-            address: 0,
-            bytes_len: 4,
-            mnemonic: mnemonic.into(),
-            operands: operands.into(),
+        Insn::new(
+            0,
+            4,
+            &format!("{name} {operands}"),
             kind,
-            opcode: crate::arch::Opcode::Mips(MipsDecoded::Rabbitizer(opcode)),
-        }
+            crate::arch::Opcode::Mips(MipsDecoded::Rabbitizer(opcode)),
+        )
     }
 
     #[test]
@@ -1677,11 +1680,11 @@ mod tests {
         assert_eq!(a32_condition(&insns[1], Some(Op::Add)), Some("ne"));
         // mls r0, r1, r2, r3 ends in the letters of a condition.
         let mls = Arm32.decode(&0xe060_3291_u32.to_le_bytes(), 0, 0).expect("the word decodes");
-        assert_eq!(mls.mnemonic, "mls");
+        assert_eq!(crate::arch::split_printed(&mls.text).0, "mls");
         assert_eq!(a32_condition(&mls, Some(Op::MultiplyAdd)), None, "a multiply-subtract");
         // adcs r0, r0, r1 ends in `cs` too, and runs always.
         let adcs = Arm32.decode(&0xe0b0_0001_u32.to_le_bytes(), 0, 0).expect("the word decodes");
-        assert_eq!(adcs.mnemonic, "adcs");
+        assert_eq!(crate::arch::split_printed(&adcs.text).0, "adcs");
         assert_eq!(a32_condition(&adcs, Some(Op::Add)), None, "an add with carry");
     }
 
