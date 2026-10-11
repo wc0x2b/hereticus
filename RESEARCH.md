@@ -634,6 +634,14 @@ neighbour each is now enough to undo a pair out of place: 57 right and
 wrong over the backports. Out of place and with no paired neighbour,
 447 pairs were right and 201 wrong, so place alone undoes nothing.
 
+The pairs by callers out of place are wrong 20% of the time, and how much
+of their context agrees tells which: where under 0.3 of their paired
+callers and callees agree, 20 were right and 156 wrong. Undoing those
+undid 17 right and 159 wrong over the kernels, to 1.14%, and 2 right and
+11 wrong over the backports, with the fixes ranked a little higher. At
+0.4 the backport fixes ranked lower. In place, no share told the two
+apart, and the pairs by references out of place split too evenly to undo.
+
 ### 4: constants
 
 `norm::constant_signature` had measured pairing on constants alone as

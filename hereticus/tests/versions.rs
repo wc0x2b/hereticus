@@ -194,14 +194,14 @@ fn tally_all(project: &str, versions: [&str; 2], reading: Reading) -> Tally {
 
 #[rstest]
 #[case::zlib_1_2_11("zlib", ["1.2.11", "1.2.12"], Tally { right: 1216, wrong: 2, gone: 34, new: 55, missed: 0 },
-        Tally { right: 1198, wrong: 2, gone: 86, new: 103, missed: 0 })]
+        Tally { right: 1198, wrong: 2, gone: 87, new: 104, missed: 0 })]
 #[case::zlib_1_2_12("zlib", ["1.2.12", "1.2.13"], Tally { right: 1268, wrong: 0, gone: 1, new: 0, missed: 0 }, Tally { right: 1247, wrong: 3, gone: 2, new: 3, missed: 0 })]
 #[case::zlib_1_2_13("zlib", ["1.2.13", "1.3"], Tally { right: 1268, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 1250, wrong: 0, gone: 3, new: 6, missed: 0 })]
 #[case::lua_5_1("lua", ["5.1.4", "5.1.5"], Tally { right: 4927, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 4916, wrong: 0, gone: 2, new: 1, missed: 0 })]
 #[case::lua_5_3("lua", ["5.3.5", "5.3.6"], Tally { right: 5725, wrong: 0, gone: 1, new: 2, missed: 0 },
-        Tally { right: 5711, wrong: 1, gone: 45, new: 66, missed: 0 })]
+        Tally { right: 5711, wrong: 1, gone: 55, new: 76, missed: 0 })]
 #[case::tinyxml2_8("tinyxml2", ["8.0.0", "9.0.0"], Tally { right: 2474, wrong: 2, gone: 135, new: 173, missed: 0 },
-        Tally { right: 2406, wrong: 7, gone: 230, new: 288, missed: 0 })]
+        Tally { right: 2406, wrong: 7, gone: 233, new: 291, missed: 0 })]
 #[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 2, new: 27, missed: 0 }, Tally { right: 2547, wrong: 25, gone: 78, new: 100, missed: 0 })]
 #[case::expat_2_4_4("expat", ["2.4.4", "2.4.5"], Tally { right: 2928, wrong: 0, gone: 10, new: 0, missed: 0 },
         Tally { right: 2879, wrong: 0, gone: 43, new: 21, missed: 0 })]
