@@ -155,14 +155,15 @@ it `Vector` only.
 `tests/truth_kernels.rs` checks the pairs of the OpenWrt kernels against
 the symbols and the source files in the DWARF of their builds, so a
 renamed function, a twin and two static functions of one name each count
-apart. Over the kernels, 1.31% of the pairs are wrong, and at most 1.52%
-where the 537 pairs only the source file calls renamed are wrong too.
-Across a kernel upgrade it is 2% to 5%. Most wrong pairs join a function
+apart. Over the kernels, 1.14% of the pairs are wrong, and at most 1.35%
+where the 528 pairs only the source file calls renamed are wrong too.
+Across a kernel upgrade it is 1.6% to 3.2%. Most wrong pairs join a function
 the upgrade deleted to one of similar code from another source file, with
 no paired caller or callee to say otherwise; a score floor or a move to a
 closer free function costs more right pairs than it saves
-(`RESEARCH.md`). The pairs by callers and by references are wrong 9% and
-11% of the time.
+(`RESEARCH.md`). The pairs by callers and by references are wrong 7% and
+11% of the time; the pairs by references out of place split too evenly
+on their context to undo.
 
 ## Measure on more published fixes, and faster
 
