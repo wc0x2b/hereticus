@@ -136,14 +136,16 @@ worth reading.
 ## Weigh instructions by how rare they are
 
 Ghidra's BSim weighs each feature by how rare it is across a corpus.
-Measured over the cross builds, a Jaccard weighted by the rarity of each
-normalized instruction in the two binaries pairs more right for each
-wrong pair than the plain one at every threshold: at 0.55 weighted, 736
-more right and 256 more wrong, where the plain one at 0.6 paired 624
-more right and 332 more wrong. At the present precision the gain is
-small, 14 more right and 3 fewer wrong at 0.63, and the change would move
-every score a report shows and the meaning of `--threshold`. Revisit it
-with the threshold.
+Measured again against the source files in the DWARF, with each
+instruction weighed by its inverse document frequency over the functions
+of both binaries: weighing every code score, or only the scores the
+similarity stage chooses by, at a threshold of 0.55 to 0.65, never beat
+the plain score on the backports, and always ranked the fixes lower
+(top 1 from 64 to 61 to 63). On the kernels, choosing by the weighed
+score at 0.6 paired 223 more right and 35 more wrong, a better trade than
+the plain score at 0.6 (365 and 203), but the backports paired 10 fewer
+right and 26 more wrong. It would also move every score a report shows.
+Leave it unless a new corpus favours it.
 
 ## Show the last instructions as IL
 
