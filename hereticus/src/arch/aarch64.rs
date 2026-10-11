@@ -562,9 +562,11 @@ fn lift(inst: &Instruction) -> Lifted {
 /// value and the stack pointer as a base.
 fn il_operand(operand: Operand) -> il::Operand {
     let general = |number: u16| il::Operand::Reg(Reg::General(number as u8));
-    let base = |number: u16, offset: Option<i64>| il::Operand::Memory {
-        base: Some(if number == 31 { Reg::Stack } else { Reg::General(number as u8) }),
-        offset,
+    let base = |number: u16, offset: Option<i64>| {
+        il::Operand::memory(
+            Some(if number == 31 { Reg::Stack } else { Reg::General(number as u8) }),
+            offset,
+        )
     };
     match operand {
         Operand::Register(_, 31) | Operand::RegShift(_, _, _, 31) => il::Operand::Zero,
@@ -2221,13 +2223,12 @@ mod tests {
 
     #[test]
     fn a_memory_operand_names_its_base_and_offset() {
-        use il::Operand::Memory;
         let memory = |word| *lift_one(word).operands.last().expect("a memory operand");
-        assert_eq!(memory(words::LDR_X1_X2_8), Memory { base: Some(x(2)), offset: Some(8) });
-        assert_eq!(memory(words::STR_W3_X4_X5), Memory { base: Some(x(4)), offset: None });
+        assert_eq!(memory(words::LDR_X1_X2_8), il::Operand::memory(Some(x(2)), Some(8)));
+        assert_eq!(memory(words::STR_W3_X4_X5), il::Operand::memory(Some(x(4)), None));
         assert_eq!(
             memory(words::LDP_X29_X30_SP_POST),
-            Memory { base: Some(Reg::Stack), offset: Some(16) }
+            il::Operand::memory(Some(Reg::Stack), Some(16))
         );
     }
 

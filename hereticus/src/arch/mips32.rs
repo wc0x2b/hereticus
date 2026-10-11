@@ -495,8 +495,7 @@ pub(super) fn lift(word: u32) -> Option<il::Lifted> {
         0 => None,
         number => Some(il::Reg::General(number as u8)),
     };
-    let memory =
-        il::Operand::Memory { base, offset: Some(i64::from(fields.immediate as u16 as i16)) };
+    let memory = il::Operand::memory(base, Some(i64::from(fields.immediate as u16 as i16)));
     let (op, operands, written) = match decoded {
         self::Op::Movz | self::Op::Movn => (Op::Select, list(&[rd, rs, rt]), Some(rd)),
         self::Op::Rotr => (Op::Rotate, list(&[rd, rt, constant(fields.sa)]), Some(rd)),
