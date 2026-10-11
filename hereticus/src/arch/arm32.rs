@@ -1081,12 +1081,17 @@ fn shifted(reg: Reg, style: ShiftStyle, amount: u8) -> il::Operand {
 
 /// The index of an access, where it shifts its register left by a
 /// constant, as `[r1, r2, lsl #2]`. Another shift scales no index.
+///
+/// No access shifts its index by a register. `yaxpeax-arm` 0.4 builds the
+/// index of `tbh [pc, rI, lsl #1]` with the bit that, read back, says it
+/// does, so that form is `tbh`'s shift by one.
 fn shifted_index(shift: RegShift) -> Option<(il::Reg, u8)> {
     match shift.into_shift() {
         RegShiftStyle::RegImm(shift) if shift.stype() == ShiftStyle::LSL => {
             Some((operand_reg(shift.shiftee()), shift.imm()))
         }
-        _ => None,
+        RegShiftStyle::RegReg(shift) => Some((operand_reg(shift.shiftee()), 1)),
+        RegShiftStyle::RegImm(_) => None,
     }
 }
 
@@ -1770,11 +1775,6 @@ fn read_offset_table(
     }
     let words = table..table + (cases * width) as u64;
     Some(JumpTable { jump: jump.address, words, targets })
-}
-
-/// Read a hexadecimal immediate as the decoder prints it, such as `0x4`.
-pub(super) fn parse_hex(text: &str) -> Option<u64> {
-    u64::from_str_radix(text.strip_prefix("0x")?, 16).ok()
 }
 
 /// Read the words `yaxpeax` refuses that this crate knows: the hints, and
