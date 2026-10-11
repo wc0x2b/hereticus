@@ -152,17 +152,17 @@ it `Vector` only.
 
 ## Pair better across a kernel upgrade
 
-`examples/research_bench.rs --kernels` checks the pairs of the OpenWrt
-kernels against the symbols of their builds (`RESEARCH.md`, "The OpenWrt
-kernels, against their symbols"), and `tests/truth_kernels.rs` locks
-the counts. Across a kernel upgrade, 3% to 8% of the pairs are wrong,
-and the pairs by callers and by place are right 87% of the time, where
-the rest is right 98%. About three in four wrong pairs are proven wrong: the true partner
-exists by name. `BENCH_WHERE=1` shows where it went. List the wrong pairs with `BENCH_WRONG=1` and the
-right ones with `BENCH_RIGHT=1`, one kernel with `BENCH_ONLY`, and find
-what tells them apart. The length of the gap does not (`RESEARCH.md`).
-A pair wrong by the names can be a renamed function; a list of the
-renames between the kernel versions would make the count exact.
+`tests/truth_kernels.rs` checks the pairs of the OpenWrt kernels against
+the symbols and the source files in the DWARF of their builds, so a
+renamed function, a twin and two static functions of one name each count
+apart. Over the kernels, 1.31% of the pairs are wrong, and at most 1.52%
+where the 537 pairs only the source file calls renamed are wrong too.
+Across a kernel upgrade it is 2% to 5%. Most wrong pairs join a function
+the upgrade deleted to one of similar code from another source file, with
+no paired caller or callee to say otherwise; a score floor or a move to a
+closer free function costs more right pairs than it saves
+(`RESEARCH.md`). The pairs by callers and by references are wrong 9% and
+11% of the time.
 
 ## Measure on more published fixes, and faster
 
@@ -174,8 +174,8 @@ backports and the Ubuntu updates worse, and five fixes are too few to say
 which is right. Add more advisories with shipped binaries before and
 after.
 
-`tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 179
-wrong pairs left, 133 are byte-identical twins (see "Tell twins apart
+`tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 159
+wrong pairs left, many are byte-identical twins (see "Tell twins apart
 that no instruction separates"), and the fix shows on no changed row in
 42 updates.
 
