@@ -49,7 +49,67 @@ pub enum Decoded {
 /// What the decoder read for `insn`, where it read MIPS.
 pub(crate) fn decoded(insn: &Insn) -> Option<Decoded> {
     match insn.opcode {
-        super::Opcode::Mips(decoded) => Some(decoded),
+        super::Opcode::Mips(decoded, _) | super::Opcode::Mips16(decoded, _) => Some(decoded),
+        _ => None,
+    }
+}
+
+/// `insn` lifted in the instruction set and the byte order that decoded
+/// it, MIPS32 or MIPS16e. A rule both read can take either.
+pub(super) fn lifted(insn: &Insn) -> Option<il::Lifted> {
+    match insn.opcode {
+        super::Opcode::Mips(_, order) => Mips32::of(order).lift(insn),
+        super::Opcode::Mips16(_, order) => super::mips16::Mips16::of(Mips32::of(order)).lift(insn),
+        _ => None,
+    }
+}
+
+/// The operands of `insn`, lifted: see [`lifted`].
+fn operands_of(insn: &Insn) -> il::Operands {
+    lifted(insn).map(|lifted| lifted.operands).unwrap_or_default()
+}
+
+/// The register the ABI calls through, `t9`.
+const T9: il::Reg = il::Reg::General(25);
+/// The global pointer, `gp`.
+const GP: il::Reg = il::Reg::General(28);
+/// The stack pointer, `sp`.
+const SP_REG: il::Reg = il::Reg::General(SP);
+
+/// The register `operand` names. The `zero` register names none.
+fn register(operand: &il::Operand) -> Option<il::Reg> {
+    match operand {
+        il::Operand::Reg(reg) => Some(*reg),
+        _ => None,
+    }
+}
+
+/// The value of a constant operand. A negative one is in two's complement.
+fn constant(operand: &il::Operand) -> Option<u64> {
+    match operand {
+        il::Operand::Const(value) => Some(*value),
+        _ => None,
+    }
+}
+
+/// The name the ABI gives a general register, as `gp` for 28.
+fn register_name(register: il::Reg) -> Option<&'static str> {
+    match register {
+        il::Reg::General(number) => super::mips32::REGISTERS.get(usize::from(number)).copied(),
+        _ => None,
+    }
+}
+
+/// The register the first operand of `insn` names.
+fn first_register(insn: &Insn) -> Option<il::Reg> {
+    operands_of(insn).first().and_then(register)
+}
+
+/// The base and offset of an access `offset(base)`. A base of `zero` is
+/// none.
+fn access(operand: &il::Operand) -> Option<(Option<il::Reg>, u64)> {
+    match operand {
+        il::Operand::Memory { base, offset: Some(offset), .. } => Some((*base, *offset as u64)),
         _ => None,
     }
 }
@@ -104,7 +164,7 @@ impl Mips32 {
     fn slot_of(&self, body: &[Insn], load_index: usize, load: &Insn) -> Option<u64> {
         let (offset, base) = load_operands(load)?;
         let (global_pointer, register) = global_pointer_before(body, load_index)?;
-        if base != register && base != "gp" {
+        if base != register && base != GP {
             return None;
         }
         Some(u64::from((global_pointer as u32).wrapping_add(offset as u32)))
@@ -127,12 +187,15 @@ impl Mips32 {
             .enumerate()
             .filter(|(_, insn)| is(insn, Opcode::core_addiu) || is(insn, Opcode::core_ori))
             .filter_map(|(index, insn)| {
-                let (destination, source, low) = three_operands(insn)?;
+                let operands = operands_of(insn);
+                let [destination, il::Operand::Reg(source), low] = operands.as_slice() else {
+                    return None;
+                };
                 // `t9` receives a callee, not data.
-                if destination == "t9" {
+                if register(destination) == Some(T9) {
                     return None;
                 }
-                let low = Mips32::LITTLE.constant_value(low)?;
+                let (source, low) = (*source, constant(low)?);
                 let (at, written) = last_write(body, index, source)?;
                 let high = match rabbitizer_opcode(written)? {
                     // The `_gp_disp` halves are a distance, not an address.
@@ -151,6 +214,16 @@ impl Mips32 {
     pub const LITTLE: Self = Self { order: ByteOrder::Little };
     /// The decoder for a big-endian image, which most firmware is.
     pub const BIG: Self = Self { order: ByteOrder::Big };
+
+    /// The decoder for `order`.
+    pub fn of(order: ByteOrder) -> Self {
+        Self { order }
+    }
+
+    /// The byte order this decoder reads.
+    pub fn order(self) -> ByteOrder {
+        self.order
+    }
 
     /// The bytes of `word`, stored in this byte order.
     pub(super) fn word_bytes(self, word: u32) -> [u8; INSN_WIDTH] {
@@ -229,7 +302,7 @@ impl Arch for Mips32 {
                     &bytes[..INSN_WIDTH],
                     &format!("{} {}", word.op.name(), word.operands),
                     word.kind,
-                    super::Opcode::Mips(Decoded::Mips32(word.op)),
+                    super::Opcode::Mips(Decoded::Mips32(word.op), self.order),
                 ));
             }
 
@@ -275,7 +348,7 @@ impl Arch for Mips32 {
             word,
             &format!("{name} {operands}"),
             kind,
-            super::Opcode::Mips(Decoded::Rabbitizer(inst.opcode())),
+            super::Opcode::Mips(Decoded::Rabbitizer(inst.opcode()), self.order),
         ))
     }
 
@@ -346,20 +419,21 @@ impl Arch for Mips32 {
             return true;
         }
 
-        let operands = insn.operands();
-        let first = operands.split(',').next().unwrap_or_default().trim();
-
+        let operands = operands_of(insn);
         match rabbitizer_opcode(insn) {
             // Moving the stack pointer, or setting up the frame pointer.
             // `or fp, sp, zero` is how a frame is established: this decoder
             // renders every register move as `or`, never as `move`.
             Some(Opcode::core_addiu | Opcode::core_addu | Opcode::core_subu | Opcode::core_or) => {
-                self.is_stack_register(first)
+                operands.first().and_then(register).is_some_and(|reg| self.is_frame_register(reg))
             }
 
             // Spilling to and reloading from the frame.
             Some(Opcode::core_sw | Opcode::core_lw | Opcode::core_swc1 | Opcode::core_lwc1) => {
-                self.mentions_stack_slot(operands)
+                operands
+                    .iter()
+                    .filter_map(access)
+                    .any(|(base, _)| base.is_some_and(|base| self.is_frame_register(base)))
             }
 
             _ => false,
@@ -380,7 +454,7 @@ impl Arch for Mips32 {
 
     fn global_pointer_setup(&self, body: &[Insn]) -> Option<GlobalPointerSetup> {
         let consumer = gp_disp_consumer(body)?;
-        let register = body[consumer].operands().split(',').next()?.trim().to_string();
+        let register = register_name(first_register(&body[consumer])?)?.to_string();
         Some(GlobalPointerSetup { parts: vec![0, 1, consumer], register })
     }
 
@@ -451,7 +525,7 @@ impl Arch for Mips32 {
     /// `jr t9`: the ABI calls through `t9`, and a `switch` jumps through
     /// another register.
     fn is_tail_call(&self, insn: &Insn) -> bool {
-        is(insn, Opcode::core_jr) && insn.operands() == "t9"
+        is(insn, Opcode::core_jr) && operands_of(insn).as_slice() == [il::Operand::Reg(T9)]
     }
 
     /// A function that needs a frame opens by making room for it, so
@@ -479,14 +553,11 @@ impl Arch for Mips32 {
         // `addiu sp, sp, -N`: the stack pointer is both the destination and
         // the source, and the immediate is negative. A positive immediate is
         // the matching unwind at the end of a function.
-        let mut operands = insn.operands().split(',').map(str::trim);
-        let (Some("sp"), Some("sp"), Some(immediate)) =
-            (operands.next(), operands.next(), operands.next())
-        else {
-            return false;
-        };
-
-        immediate.starts_with('-')
+        matches!(
+            operands_of(insn).as_slice(),
+            [il::Operand::Reg(SP_REG), il::Operand::Reg(SP_REG), il::Operand::Const(immediate)]
+                if (*immediate as i64) < 0
+        )
     }
 
     /// PIC code forms the global pointer from `t9`, which holds the address
@@ -616,19 +687,18 @@ impl Arch for Mips32 {
     /// The global pointer comes from the `_gp_disp` preamble of the function,
     /// so `insns` must be one whole function for a slot to be found.
     fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
-        /// The register the ABI calls through.
-        const CALLEE_ADDRESS: &str = "t9";
-
         let through_slot = |index: usize| {
-            let (_, load) = last_write(insns, index, CALLEE_ADDRESS)?;
+            let (_, load) = last_write(insns, index, T9)?;
             if !is(load, Opcode::core_lw) {
                 return None;
             }
             let (offset, base) = load_operands(load)?;
             let (global_pointer, register) = global_pointer_before(insns, index)?;
-            (base == register || base == "gp")
+            (base == register || base == GP)
                 .then(|| u64::from((global_pointer as u32).wrapping_add(offset as u32)))
         };
+        let calls_through_t9 =
+            |insn: &Insn| operands_of(insn).last().and_then(register) == Some(T9);
 
         insns
             .iter()
@@ -637,12 +707,14 @@ impl Arch for Mips32 {
                 InsnKind::Call { target: Some(target) } => {
                     Some((index, Some(CallTarget::Address(target))))
                 }
-                InsnKind::Call { target: None } if insn.operands().ends_with(CALLEE_ADDRESS) => {
+                InsnKind::Call { target: None } if calls_through_t9(insn) => {
                     Some((index, through_slot(index).map(CallTarget::Slot)))
                 }
                 InsnKind::Call { target: None } => Some((index, None)),
                 // A tail call jumps through `t9` as a call does.
-                InsnKind::Jump { target: None } if insn.operands() == CALLEE_ADDRESS => {
+                InsnKind::Jump { target: None }
+                    if operands_of(insn).as_slice() == [il::Operand::Reg(T9)] =>
+                {
                     Some((index, through_slot(index).map(CallTarget::Slot)))
                 }
                 InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
@@ -781,28 +853,24 @@ fn with_target(operands: &str, distance: i64) -> String {
 /// That shape alone does **not** mean PIC: a non-PIC build loads the address
 /// of a global exactly this way, so the caller must confirm what consumes the
 /// result. See [`is_gp_disp_preamble`].
-fn constant_pair_register<'a>(high: &'a Insn, low: &Insn) -> Option<&'a str> {
+fn constant_pair_register(high: &Insn, low: &Insn) -> Option<il::Reg> {
     if !is(high, Opcode::core_lui) || !is(low, Opcode::core_addiu) {
         return None;
     }
-
-    let mut high_operands = high.operands().split(',').map(str::trim);
-    let (Some(loaded), Some(_), None) =
-        (high_operands.next(), high_operands.next(), high_operands.next())
-    else {
-        return None;
+    let loaded = match operands_of(high).as_slice() {
+        [il::Operand::Reg(loaded), _] => *loaded,
+        _ => return None,
     };
-
     // `addiu rX, rX, lo` must add into the very register `lui` just wrote,
     // or the two words are unrelated.
-    let mut low_operands = low.operands().split(',').map(str::trim);
-    let (Some(destination), Some(source), Some(_), None) =
-        (low_operands.next(), low_operands.next(), low_operands.next(), low_operands.next())
-    else {
-        return None;
-    };
-
-    (destination == loaded && source == loaded).then_some(loaded)
+    match operands_of(low).as_slice() {
+        [il::Operand::Reg(destination), il::Operand::Reg(source), _]
+            if *destination == loaded && *source == loaded =>
+        {
+            Some(loaded)
+        }
+        _ => None,
+    }
 }
 
 /// Report whether `body` opens with the `_gp_disp` preamble of a PIC function.
@@ -859,8 +927,7 @@ fn gp_disp_consumer(body: &[Insn]) -> Option<usize> {
         if joins_to_callee_address(insn, loaded) {
             return Some(index + 2);
         }
-        let writes_loaded = !is_store(insn)
-            && insn.operands().split(',').next().is_some_and(|first| first.trim() == loaded);
+        let writes_loaded = !is_store(insn) && first_register(insn) == Some(loaded);
         if writes_loaded {
             return None;
         }
@@ -921,7 +988,7 @@ fn track_addresses(
     // code, where it reaches the small data, and the one the preamble
     // rebuilds in PIC code.
     let mut upper = HeldAddresses::default();
-    upper.set("gp", Held::GlobalPointer);
+    upper.set(GP, Held::GlobalPointer);
     // What runs after the current delay slot, as the previous instruction
     // decided.
     let mut after_slot = AfterSlot::FallThrough;
@@ -1027,9 +1094,9 @@ fn track_addresses(
         } else if let Some((destination, held)) = indexed_address(insn, &upper) {
             upper.set(destination, held);
         } else if !is_store(insn)
-            && let Some(written) = insn.operands().split(',').next()
+            && let Some(written) = first_register(insn)
         {
-            upper.forget(written.trim());
+            upper.forget(written);
         }
 
         // The delay slot runs before control moves, and compilers put the
@@ -1054,9 +1121,9 @@ fn track_addresses(
 struct SavedRegisters {
     /// Each value a saved register was set to, `None` for a value that is no
     /// address, apart from the restores of an epilogue.
-    assigned: Vec<(Name, Option<Held>)>,
+    assigned: Vec<(il::Reg, Option<Held>)>,
     /// The saved registers an epilogue restores from the stack.
-    restored: Vec<Name>,
+    restored: Vec<il::Reg>,
 }
 
 impl SavedRegisters {
@@ -1069,18 +1136,17 @@ impl SavedRegisters {
         if insn.kind != InsnKind::Normal || is_store(insn) {
             return;
         }
-        let Some(written) = insn.operands().split(',').next().map(str::trim).and_then(Name::of)
-        else {
-            return;
-        };
-        if !is_callee_saved(written) || written == Name::known("sp") {
+        let operands = operands_of(insn);
+        let Some(written) = operands.first().and_then(register) else { return };
+        if !is_callee_saved(written) || written == SP_REG {
             return;
         }
-        let restores = is(insn, Opcode::core_lw) && insn.operands().trim_end().ends_with("(sp)");
+        let restores = is(insn, Opcode::core_lw)
+            && operands.last().and_then(access).is_some_and(|(base, _)| base == Some(SP_REG));
         if restores {
             self.restored.push(written);
         } else {
-            self.assigned.push((written, upper.get_name(written)));
+            self.assigned.push((written, upper.get(written)));
         }
     }
 
@@ -1103,7 +1169,7 @@ impl SavedRegisters {
                 .filter(|(other, _)| *other == register)
                 .all(|(_, other)| *other == held);
             if let (Some(held), true) = (held, all_alike) {
-                invariant.set_name(register, held);
+                invariant.set(register, held);
             }
         }
         invariant
@@ -1157,14 +1223,17 @@ fn read_jump_table(image: &Image<'_>, insns: &[Insn], index: usize) -> Option<Ju
     if !is(jump, Opcode::core_jr) || jump.kind != (InsnKind::Jump { target: None }) {
         return None;
     }
-    let target_register = jump.operands().trim();
+    let target_register = match operands_of(jump).as_slice() {
+        [il::Operand::Reg(target)] => *target,
+        _ => return None,
+    };
 
     // The PIC shape adds the global pointer after the load.
     let (load_at, entries) = match last_write(insns, index, target_register)? {
         (at, insn) if is(insn, Opcode::core_lw) => (at, Entries::Addresses),
         (at, insn) if is(insn, Opcode::core_addu) => {
             let (global_pointer, pointer_register) = global_pointer_before(insns, index)?;
-            let (_, left, right) = three_operands(insn)?;
+            let (_, left, right) = three_registers(insn)?;
             let entry_register = match (left, right) {
                 (left, entry) if left == pointer_register => entry,
                 (entry, right) if right == pointer_register => entry,
@@ -1183,7 +1252,7 @@ fn read_jump_table(image: &Image<'_>, insns: &[Insn], index: usize) -> Option<Ju
     if !is(sum, Opcode::core_addu) {
         return None;
     }
-    let (_, left, right) = three_operands(sum)?;
+    let (_, left, right) = three_registers(sum)?;
     let table_base = table_address(image, insns, sum_at, left, entries)
         .or_else(|| table_address(image, insns, sum_at, right, entries))?;
     let table = u64::from((table_base as u32).wrapping_add(offset as u32));
@@ -1219,7 +1288,7 @@ fn table_address(
     image: &Image<'_>,
     insns: &[Insn],
     before: usize,
-    register: &str,
+    register: il::Reg,
     entries: Entries,
 ) -> Option<u64> {
     /// How far back the table's address may be made. A `switch` in a loop
@@ -1235,8 +1304,11 @@ fn table_address(
         // The upper half from `lui`, or, as GCC writes PIC code, the page
         // from a slot of the global offset table.
         (Opcode::core_addiu, _) => {
-            let (_, source, immediate) = three_operands(insn)?;
-            let low = Mips32::LITTLE.constant_value(immediate)?;
+            let operands = operands_of(insn);
+            let [_, il::Operand::Reg(source), immediate] = operands.as_slice() else {
+                return None;
+            };
+            let (source, low) = (*source, constant(immediate)?);
             let (source_at, _) = last_write(insns, at, source)?;
             let high = table_address(image, insns, source_at + 1, source, entries)?;
             Some(join_halves(LowerHalf::Added, high, low))
@@ -1254,48 +1326,53 @@ fn table_address(
 /// its index, within [`TABLE_LOOK_BACK`] instructions.
 ///
 /// A branch names a register it only reads, so it is stepped over.
-fn last_write<'a>(insns: &'a [Insn], before: usize, register: &str) -> Option<(usize, &'a Insn)> {
+fn last_write(insns: &[Insn], before: usize, register: il::Reg) -> Option<(usize, &Insn)> {
     last_write_within(insns, before, register, TABLE_LOOK_BACK)
 }
 
 /// [`last_write`], within `distance` instructions.
-fn last_write_within<'a>(
-    insns: &'a [Insn],
+fn last_write_within(
+    insns: &[Insn],
     before: usize,
-    register: &str,
+    register: il::Reg,
     distance: usize,
-) -> Option<(usize, &'a Insn)> {
+) -> Option<(usize, &Insn)> {
     let from = before.saturating_sub(distance);
     (from..before).rev().map(|at| (at, &insns[at])).find(|(_, insn)| {
-        insn.kind == InsnKind::Normal
-            && !is_store(insn)
-            && insn.operands().split(',').next().map(str::trim) == Some(register)
+        insn.kind == InsnKind::Normal && !is_store(insn) && first_register(insn) == Some(register)
     })
 }
 
-/// Read `op rD, rS, x` as its three operands.
-fn three_operands(insn: &Insn) -> Option<(&str, &str, &str)> {
-    let mut operands = insn.operands().split(',').map(str::trim);
-    let (Some(first), Some(second), Some(third), None) =
-        (operands.next(), operands.next(), operands.next(), operands.next())
-    else {
-        return None;
-    };
-    Some((first, second, third))
+/// Read `op rD, rS, rT` as its three registers.
+fn three_registers(insn: &Insn) -> Option<(il::Reg, il::Reg, il::Reg)> {
+    match operands_of(insn).as_slice() {
+        [first, second, third] => Some((register(first)?, register(second)?, register(third)?)),
+        _ => None,
+    }
 }
 
 /// Read `lw rX, offset(rA)` as the offset and `rA`.
-fn load_operands(insn: &Insn) -> Option<(u64, &str)> {
-    let (_, reference) = insn.operands().split_once(',')?;
-    let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
-    Some((Mips32::LITTLE.constant_value(offset)?, base.trim()))
+fn load_operands(insn: &Insn) -> Option<(u64, il::Reg)> {
+    match operands_of(insn).as_slice() {
+        [_, reference] => match access(reference)? {
+            (Some(base), offset) => Some((offset, base)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The number of cases, from the `sltiu rT, rX, n` that guards the table.
 fn case_count(insns: &[Insn], index: usize) -> Option<usize> {
     insns[index.saturating_sub(TABLE_LOOK_BACK)..index].iter().rev().find_map(|insn| {
-        let (_, _, bound) = is(insn, Opcode::core_sltiu).then(|| three_operands(insn))??;
-        usize::try_from(Mips32::LITTLE.constant_value(bound)?).ok().filter(|&n| n <= MOST_CASES)
+        if !is(insn, Opcode::core_sltiu) {
+            return None;
+        }
+        let bound = match operands_of(insn).as_slice() {
+            [_, _, bound] => constant(bound)?,
+            _ => return None,
+        };
+        usize::try_from(bound).ok().filter(|&n| n <= MOST_CASES)
     })
 }
 
@@ -1304,7 +1381,7 @@ fn case_count(insns: &[Insn], index: usize) -> Option<usize> {
 ///
 /// The preamble adds the distance to the global pointer to `t9`, which holds
 /// the address of the function, and that is the address of its `lui`.
-fn global_pointer_before(insns: &[Insn], index: usize) -> Option<(u64, &str)> {
+fn global_pointer_before(insns: &[Insn], index: usize) -> Option<(u64, il::Reg)> {
     /// How far back the start of a function may lie. A `switch` sits deep in
     /// a long function more often than not.
     const MOST_WORDS_TO_START: usize = 4096;
@@ -1317,16 +1394,17 @@ fn global_pointer_before(insns: &[Insn], index: usize) -> Option<(u64, &str)> {
         let (high, low) = (&insns[at], &insns[at + 1]);
         let loaded = constant_pair_register(high, low)?;
         let (_, upper) = upper_half(high)?;
-        let (_, _, immediate) = three_operands(low)?;
-        let distance =
-            join_halves(LowerHalf::Added, upper, Mips32::LITTLE.constant_value(immediate)?);
+        let immediate = match operands_of(low).as_slice() {
+            [_, _, immediate] => constant(immediate)?,
+            _ => return None,
+        };
+        let distance = join_halves(LowerHalf::Added, upper, immediate);
         let global_pointer = u64::from((high.address as u32).wrapping_add(distance as u32));
         let register = insns[at + 2..]
             .iter()
             .take(TABLE_LOOK_BACK)
             .find(|insn| joins_to_callee_address(insn, loaded))
-            .and_then(|insn| insn.operands().split(',').next())?
-            .trim();
+            .and_then(first_register)?;
         Some((global_pointer, register))
     })
 }
@@ -1435,12 +1513,12 @@ fn arrive(
         (Reach::OnlyByBranch, None) => {
             let mut held = above.global_pointers_only();
             for &(register, value) in dispatched.map_or(&[][..], |at| &at.held[..]) {
-                if value.may_be_global_pointer() && held.get_name(register).is_none() {
-                    held.set_name(register, value);
+                if value.may_be_global_pointer() && held.get(register).is_none() {
+                    held.set(register, value);
                 }
             }
             for &(register, value) in &invariant.held {
-                held.set_name(register, value);
+                held.set(register, value);
             }
             held
         }
@@ -1503,82 +1581,33 @@ enum Held {
     PerhapsGlobalPointer,
 }
 
-/// A register as its operand names it, packed into one word, as `"sp"` is.
-///
-/// Every MIPS register name is four bytes or fewer, so two names are equal
-/// where their words are: comparing the text took a third of
-/// [`track_addresses`] on a MIPS kernel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Name(u32);
-
-impl Name {
-    /// `name` packed, or `None` for an operand too long to name a register.
-    const fn of(name: &str) -> Option<Self> {
-        let bytes = name.as_bytes();
-        if bytes.len() > 4 {
-            return None;
-        }
-        let mut word = [0; 4];
-        let mut at = 0;
-        while at < bytes.len() {
-            word[at] = bytes[at];
-            at += 1;
-        }
-        Some(Self(u32::from_le_bytes(word)))
-    }
-
-    /// `name` packed, for a name known to be short enough.
-    const fn known(name: &str) -> Self {
-        match Self::of(name) {
-            Some(packed) => packed,
-            None => panic!("a register name is four bytes or fewer"),
-        }
-    }
-}
-
 /// The registers that hold an address, and what each holds.
 ///
 /// A function holds a handful at a time, so a list beats a map.
 #[derive(Clone, Debug, Default)]
 struct HeldAddresses {
-    held: Vec<(Name, Held)>,
+    held: Vec<(il::Reg, Held)>,
 }
 
 impl HeldAddresses {
-    fn set(&mut self, register: &str, value: Held) {
-        if let Some(name) = Name::of(register) {
-            self.set_name(name, value);
-        }
-    }
-
-    fn set_name(&mut self, name: Name, value: Held) {
-        self.forget_name(name);
-        self.held.push((name, value));
+    fn set(&mut self, register: il::Reg, value: Held) {
+        self.forget(register);
+        self.held.push((register, value));
     }
 
     fn is_empty(&self) -> bool {
         self.held.is_empty()
     }
 
-    fn get(&self, register: &str) -> Option<Held> {
-        self.get_name(Name::of(register)?)
+    fn get(&self, register: il::Reg) -> Option<Held> {
+        self.held.iter().find(|(held, _)| *held == register).map(|&(_, value)| value)
     }
 
-    fn get_name(&self, name: Name) -> Option<Held> {
-        self.held.iter().find(|(held, _)| *held == name).map(|&(_, value)| value)
+    fn forget(&mut self, register: il::Reg) {
+        self.held.retain(|(held, _)| *held != register);
     }
 
-    fn forget(&mut self, register: &str) {
-        if let Some(name) = Name::of(register) {
-            self.forget_name(name);
-        }
-    }
-
-    fn forget_name(&mut self, name: Name) {
-        self.held.retain(|(held, _)| *held != name);
-    }
-
-    fn keep_only(&mut self, survives: fn(Name) -> bool) {
+    fn keep_only(&mut self, survives: fn(il::Reg) -> bool) {
         self.held.retain(|&(held, _)| survives(held));
     }
 
@@ -1595,16 +1624,16 @@ impl HeldAddresses {
         let mut agreed = Self::default();
         let registers = self.held.iter().chain(&other.held).map(|&(register, _)| register);
         for register in registers {
-            if agreed.get_name(register).is_some() {
+            if agreed.get(register).is_some() {
                 continue;
             }
-            match (self.get_name(register), other.get_name(register)) {
-                (Some(left), Some(right)) if left == right => agreed.set_name(register, left),
+            match (self.get(register), other.get(register)) {
+                (Some(left), Some(right)) if left == right => agreed.set(register, left),
                 (left, right)
                     if left.is_some_and(Held::may_be_global_pointer)
                         || right.is_some_and(Held::may_be_global_pointer) =>
                 {
-                    agreed.set_name(register, Held::PerhapsGlobalPointer);
+                    agreed.set(register, Held::PerhapsGlobalPointer);
                 }
                 _ => {}
             }
@@ -1614,37 +1643,20 @@ impl HeldAddresses {
 }
 
 /// Report whether the o32 ABI makes a callee restore a register.
-fn is_callee_saved(register: Name) -> bool {
-    const SAVED: [Name; 12] = [
-        Name::known("s0"),
-        Name::known("s1"),
-        Name::known("s2"),
-        Name::known("s3"),
-        Name::known("s4"),
-        Name::known("s5"),
-        Name::known("s6"),
-        Name::known("s7"),
-        Name::known("gp"),
-        Name::known("sp"),
-        Name::known("fp"),
-        Name::known("s8"),
-    ];
-    SAVED.contains(&register)
+fn is_callee_saved(register: il::Reg) -> bool {
+    // `s0` to `s7`, `gp`, `sp` and `fp`, which is also `s8`.
+    matches!(register, il::Reg::General(16..=23 | 28 | 29 | 30))
 }
 
 /// Read `lui rX, hi` as the register and the value it loads.
-fn upper_half(insn: &Insn) -> Option<(&str, u64)> {
+fn upper_half(insn: &Insn) -> Option<(il::Reg, u64)> {
     if !is(insn, Opcode::core_lui) {
         return None;
     }
-    let mut operands = insn.operands().split(',').map(str::trim);
-    let (Some(register), Some(immediate), None) =
-        (operands.next(), operands.next(), operands.next())
-    else {
-        return None;
-    };
-    let high = Mips32::LITTLE.constant_value(immediate)?;
-    Some((register, (high & 0xffff) << 16))
+    match operands_of(insn).as_slice() {
+        [il::Operand::Reg(register), high] => Some((*register, (constant(high)? & 0xffff) << 16)),
+        _ => None,
+    }
 }
 
 /// The addresses a `lui` can start, once any lower half is added.
@@ -1658,19 +1670,16 @@ fn reach_of_upper_half(high: u64) -> core::ops::Range<u64> {
 
 /// Read `addiu rY, rX, lo` or `ori rY, rX, lo`, where `rX` holds an
 /// address, as the destination, what `rX` holds, and the lower half.
-fn lower_half<'a>(insn: &'a Insn, upper: &HeldAddresses) -> Option<(&'a str, Held, u64)> {
+fn lower_half(insn: &Insn, upper: &HeldAddresses) -> Option<(il::Reg, Held, u64)> {
     if !is(insn, Opcode::core_addiu) && !is(insn, Opcode::core_ori) {
         return None;
     }
-    let mut operands = insn.operands().split(',').map(str::trim);
-    let (Some(destination), Some(source), Some(immediate), None) =
-        (operands.next(), operands.next(), operands.next(), operands.next())
-    else {
-        return None;
-    };
-    let held = upper.get(source)?;
-    let low = Mips32::LITTLE.constant_value(immediate)?;
-    Some((destination, held, low))
+    match operands_of(insn).as_slice() {
+        [il::Operand::Reg(destination), il::Operand::Reg(source), low] => {
+            Some((*destination, upper.get(*source)?, constant(low)?))
+        }
+        _ => None,
+    }
 }
 
 /// How a lower half joins an upper half.
@@ -1705,16 +1714,12 @@ fn join_halves(joined: LowerHalf, high: u64, low: u64) -> u64 {
 /// register the load writes, what the base register holds, and the offset.
 ///
 /// A store writes no register, so it gives `None` for the first.
-fn memory_reference<'a>(
-    insn: &'a Insn,
-    upper: &HeldAddresses,
-) -> Option<(Option<&'a str>, Held, u64)> {
-    let (first, reference) = insn.operands().split_once(',')?;
-    let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
-    let held = upper.get(base.trim())?;
-    let offset = Mips32::LITTLE.constant_value(offset)?;
-
-    let written = (!is_store(insn)).then(|| first.trim());
+fn memory_reference(insn: &Insn, upper: &HeldAddresses) -> Option<(Option<il::Reg>, Held, u64)> {
+    let operands = operands_of(insn);
+    let [first, reference] = operands.as_slice() else { return None };
+    let (base, offset) = access(reference)?;
+    let held = upper.get(base?)?;
+    let written = if is_store(insn) { None } else { register(first) };
     Some((written, held, offset))
 }
 
@@ -1727,17 +1732,19 @@ enum SlotAccess {
 
 /// Read `sw rX, off(sp)` or `lw rX, off(sp)` as the register, the offset of
 /// the slot, and which way the word moves.
-fn stack_slot(insn: &Insn) -> Option<(&str, u64, SlotAccess)> {
-    let access = match rabbitizer_opcode(insn)? {
+fn stack_slot(insn: &Insn) -> Option<(il::Reg, u64, SlotAccess)> {
+    let access_kind = match rabbitizer_opcode(insn)? {
         Opcode::core_sw => SlotAccess::Store,
         Opcode::core_lw => SlotAccess::Load,
         _ => return None,
     };
-    let (register, reference) = insn.operands().split_once(',')?;
-    let (offset, base) = reference.trim().strip_suffix(')')?.split_once('(')?;
-    (base.trim() == "sp")
-        .then(|| Some((register.trim(), Mips32::LITTLE.constant_value(offset)?, access)))
-        .flatten()
+    match operands_of(insn).as_slice() {
+        [il::Operand::Reg(register), reference] => match access(reference)? {
+            (Some(SP_REG), offset) => Some((*register, offset, access_kind)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Read `addu rD, rX, rY`, where one source holds an address and the other
@@ -1750,11 +1757,11 @@ fn stack_slot(insn: &Insn) -> Option<(&str, u64, SlotAccess)> {
 /// pointer, plus an index is an address the code does not show.
 ///
 /// Two addresses added make no address, and nor does a sum of two values.
-fn indexed_address<'a>(insn: &'a Insn, upper: &HeldAddresses) -> Option<(&'a str, Held)> {
+fn indexed_address(insn: &Insn, upper: &HeldAddresses) -> Option<(il::Reg, Held)> {
     if !is(insn, Opcode::core_addu) {
         return None;
     }
-    let (destination, left, right) = three_operands(insn)?;
+    let (destination, left, right) = three_registers(insn)?;
     let held = match (upper.get(left), upper.get(right)) {
         (Some(held), None) | (None, Some(held)) => held,
         _ => return None,
@@ -1767,23 +1774,26 @@ fn indexed_address<'a>(insn: &'a Insn, upper: &HeldAddresses) -> Option<(&'a str
 }
 
 /// Read `addu rD, rX, t9`, which forms the PIC global pointer, as `rD`.
-fn global_pointer_formed(insn: &Insn) -> Option<&str> {
-    let (destination, sources) = insn.operands().split_once(',')?;
-    let joins_t9 = sources.split(',').any(|source| source.trim() == "t9");
-    (is(insn, Opcode::core_addu) && joins_t9).then(|| destination.trim())
+fn global_pointer_formed(insn: &Insn) -> Option<il::Reg> {
+    if !is(insn, Opcode::core_addu) {
+        return None;
+    }
+    let operands = operands_of(insn);
+    let (destination, sources) = operands.split_first()?;
+    sources.contains(&il::Operand::Reg(T9)).then(|| register(destination)).flatten()
 }
 
 /// Read a register copy, `or rD, rS, zero` or `addu rD, rS, zero`, as `rD`
 /// and `rS`. The global pointer is restored after a call this way.
-fn register_copy(insn: &Insn) -> Option<(&str, &str)> {
+fn register_copy(insn: &Insn) -> Option<(il::Reg, il::Reg)> {
     if !is(insn, Opcode::core_or) && !is(insn, Opcode::core_addu) {
         return None;
     }
-    let mut operands = insn.operands().split(',').map(str::trim);
-    match (operands.next(), operands.next(), operands.next(), operands.next()) {
-        (Some(destination), Some(source), None, None) => Some((destination, source)),
-        (Some(destination), Some(source), Some("zero"), None) => Some((destination, source)),
-        (Some(destination), Some("zero"), Some(source), None) => Some((destination, source)),
+    use il::Operand::{Reg, Zero};
+    match operands_of(insn).as_slice() {
+        [Reg(destination), Reg(source)]
+        | [Reg(destination), Reg(source), Zero]
+        | [Reg(destination), Zero, Reg(source)] => Some((*destination, *source)),
         _ => None,
     }
 }
@@ -1818,22 +1828,14 @@ pub(crate) fn rabbitizer_opcode(insn: &Insn) -> Option<Opcode> {
 
 /// Report whether an instruction is `addu rD, loaded, t9` in either operand
 /// order, which is what forms the PIC global pointer.
-fn joins_to_callee_address(insn: &Insn, loaded: &str) -> bool {
-    /// The register the ABI leaves the callee address in.
-    const CALLEE_ADDRESS: &str = "t9";
-
+fn joins_to_callee_address(insn: &Insn, loaded: il::Reg) -> bool {
     if !is(insn, Opcode::core_addu) {
         return false;
     }
-
-    let mut operands = insn.operands().split(',').map(str::trim);
-    let (_destination, Some(left), Some(right), None) =
-        (operands.next(), operands.next(), operands.next(), operands.next())
-    else {
-        return false;
-    };
-
-    (left == loaded && right == CALLEE_ADDRESS) || (left == CALLEE_ADDRESS && right == loaded)
+    matches!(
+        three_registers(insn),
+        Some((_, left, right)) if (left == loaded && right == T9) || (left == T9 && right == loaded)
+    )
 }
 
 /// Report whether an instruction only establishes the PIC global pointer.
@@ -1859,19 +1861,14 @@ fn joins_to_callee_address(insn: &Insn, loaded: &str) -> bool {
 /// work: a non-PIC build spells the same call `jal`, and a source edit that adds
 /// or removes a call must still show.
 fn is_pic_setup(insn: &Insn) -> bool {
-    /// The register the ABI leaves the callee address in.
-    const CALLEE_ADDRESS: &str = "t9";
-    /// The global pointer the preamble computes.
-    const GLOBAL_POINTER: &str = "gp";
-
-    let mut operands = insn.operands().split(',').map(str::trim);
-    let (first, second, third) = (operands.next(), operands.next(), operands.next());
+    let operands = operands_of(insn);
+    let at = |index: usize| operands.get(index).and_then(register);
 
     match rabbitizer_opcode(insn) {
         // `addu rX, rY, t9` folds the callee address into the global pointer.
         // Reading `t9` is what marks it: the ABI supplies that value on entry,
         // so no computation from the source starts there.
-        Some(Opcode::core_addu) => third == Some(CALLEE_ADDRESS) || second == Some(CALLEE_ADDRESS),
+        Some(Opcode::core_addu) => at(2) == Some(T9) || at(1) == Some(T9),
 
         // `lw t9, N(rX)` reads the callee address out of the GOT, which is how
         // PIC reaches a function a non-PIC build simply names in its `jal`. The
@@ -1888,14 +1885,17 @@ fn is_pic_setup(insn: &Insn) -> bool {
         // A reload of `t9` from the frame is frame work rather than a GOT read,
         // and the caller judges that on its own. Excluding it here keeps each
         // rule answering for what it actually recognizes.
-        Some(Opcode::core_lw) => first == Some(CALLEE_ADDRESS) && !insn.operands().contains("(sp)"),
+        Some(Opcode::core_lw) => {
+            at(0) == Some(T9)
+                && operands.last().and_then(access).is_some_and(|(base, _)| base != Some(SP_REG))
+        }
 
         // A move to or from the global pointer, which this decoder renders as
         // `or rX, rY, zero`. Either direction is the same bookkeeping: the
         // preamble parks the value in a callee-saved register and puts it back
         // around each call.
-        Some(Opcode::core_or) if third == Some("zero") => {
-            first == Some(GLOBAL_POINTER) || second == Some(GLOBAL_POINTER)
+        Some(Opcode::core_or) if operands.get(2) == Some(&il::Operand::Zero) => {
+            at(0) == Some(GP) || at(1) == Some(GP)
         }
 
         _ => false,

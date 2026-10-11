@@ -18,10 +18,7 @@
 //! encodings of the MIPS16e ASE manual.
 
 use super::mips::{Decoded as MipsDecoded, Mips32, decoded, is};
-use super::{
-    Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory,
-    split_printed,
-};
+use super::{Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
 use compact_str::CompactString;
@@ -50,6 +47,18 @@ pub struct Mips16 {
     /// The MIPS32 decoder of the same byte order, which reads what each
     /// instruction translates to.
     base: Mips32,
+}
+
+/// `t9`, the register the MIPS32 preamble joins to the global pointer.
+const T9: u32 = 25;
+/// The function field of the MIPS32 `addu`.
+const ADDU: u32 = 0x21;
+
+impl Mips16 {
+    /// MIPS16e in the byte order of `base`.
+    pub(super) fn of(base: Mips32) -> Self {
+        Self { base }
+    }
 }
 
 impl Mips16 {
@@ -505,7 +514,7 @@ impl Arch for Mips16 {
                 &code[offset..offset + width],
                 &format!("{name} {operands}"),
                 kind,
-                super::Opcode::Mips(decoded),
+                super::Opcode::Mips(decoded, self.base.order()),
             ),
             Reading::PcRelative { load, dest, address: at } => {
                 let register = REGISTER_NAMES[dest as usize];
@@ -522,7 +531,7 @@ impl Arch for Mips16 {
                     &code[offset..offset + width],
                     &text,
                     InsnKind::Normal,
-                    super::Opcode::Mips(MipsDecoded::Rabbitizer(opcode)),
+                    super::Opcode::Mips(MipsDecoded::Rabbitizer(opcode), self.base.order()),
                 )
             }
             Reading::Frame { step, size, registers } => {
@@ -535,11 +544,17 @@ impl Arch for Mips16 {
                     &code[offset..offset + width],
                     &format!("{} {}", op.name(), registers.operands(size)),
                     InsnKind::Normal,
-                    super::Opcode::Mips(MipsDecoded::Mips16(op)),
+                    super::Opcode::Mips(MipsDecoded::Mips16(op), self.base.order()),
                 )
             }
         };
-        Ok(insn)
+        // Every instruction says MIPS16e decoded it, so a rule that MIPS32
+        // shares lifts it as MIPS16e.
+        let opcode = match insn.opcode {
+            super::Opcode::Mips(decoded, order) => super::Opcode::Mips16(decoded, order),
+            other => other,
+        };
+        Ok(Insn { opcode, ..insn })
     }
 
     fn triple(&self) -> &'static str {
@@ -597,10 +612,18 @@ impl Arch for Mips16 {
         let mut as_mips32 = body.to_vec();
         for &index in &preambles {
             let add = &mut as_mips32[index + GP_PREAMBLE_LENGTH - 1];
-            if let Some((destination, _)) = add.operands().split_once(',') {
-                let (name, _) = split_printed(&add.text);
-                let text = format!("{name} {destination}, {destination}, t9");
-                *add = add.clone().with_text(&text);
+            let destination = self.lift(add).and_then(|lifted| match lifted.operands.first() {
+                Some(il::Operand::Reg(il::Reg::General(number))) => Some(u32::from(*number)),
+                _ => None,
+            });
+            // `addu rD, rD, t9`, the MIPS32 instruction that joins the
+            // distance to the global pointer.
+            let joined = destination.and_then(|rd| {
+                let word = rd << 21 | T9 << 16 | rd << 11 | ADDU;
+                self.base.decode(&self.base.word_bytes(word), 0, add.address).ok()
+            });
+            if let Some(joined) = joined {
+                *add = joined;
             }
         }
 
@@ -609,7 +632,8 @@ impl Arch for Mips16 {
             kinds[index] = ConstantKind::Address;
         }
         for (index, insn) in body.iter().enumerate() {
-            if insn.operands().contains("(pc)") || insn.operands().contains(", pc,") {
+            let reading = self.decoded(insn.bytes(), 0, insn.address).map(|found| found.reading);
+            if matches!(reading, Some(Reading::PcRelative { .. })) {
                 kinds[index] = ConstantKind::Address;
             }
         }
@@ -841,7 +865,7 @@ impl Arch for Mips16 {
                         kind: il::AccessKind::Load,
                         width: Some(il::Width::Bits32),
                     });
-                    il::Operand::memory(None, None)
+                    il::Operand::memory(Some(il::Reg::ProgramCounter), None)
                 } else {
                     il::Operand::Target
                 };

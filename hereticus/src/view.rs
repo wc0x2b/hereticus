@@ -1526,7 +1526,10 @@ mod tests {
             &[0; 4],
             &format!("{name} {operands}"),
             kind,
-            crate::arch::Opcode::Mips(MipsDecoded::Rabbitizer(opcode)),
+            crate::arch::Opcode::Mips(
+                MipsDecoded::Rabbitizer(opcode),
+                crate::arch::mips::ByteOrder::Little,
+            ),
         )
     }
 
