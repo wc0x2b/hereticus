@@ -41,7 +41,6 @@ expression: report
 0x8020917c -> 0x802090d0 Yes score=0.829 edits=Edits { added: 1, removed: 1, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 1, memory: 0, other: 3, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=Similar
 0x80209200 -> 0x8020921c Yes score=0.918 edits=Edits { added: 100, removed: 101, edited: 28 } kinds=EditKinds { branches: 9, calls: 3, jumps: 7, memory: 78, other: 132, opaque: 0, constants: 3, callees: 0, texts: 0 } confidence=Similar
 0x80209b04 -> 0x80209b08 Yes score=0.956 edits=Edits { added: 97, removed: 109, edited: 18 } kinds=EditKinds { branches: 12, calls: 0, jumps: 10, memory: 96, other: 106, opaque: 0, constants: 2, callees: 0, texts: 0 } confidence=Similar
-0x8020a364 -> 0x8020a338 Yes score=0.250 edits=Edits { added: 8, removed: 24, edited: 11 } kinds=EditKinds { branches: 4, calls: 0, jumps: 3, memory: 16, other: 20, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=SameLayout
 0x8020a424 -> 0x8020a3bc Yes score=0.672 edits=Edits { added: 313, removed: 253, edited: 102 } kinds=EditKinds { branches: 68, calls: 7, jumps: 23, memory: 284, other: 286, opaque: 0, constants: 13, callees: 0, texts: 0 } confidence=Similar
 0x8020b33c -> 0x8020b1f8 Yes score=0.966 edits=Edits { added: 8, removed: 9, edited: 3 } kinds=EditKinds { branches: 0, calls: 2, jumps: 0, memory: 4, other: 14, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=Similar
 0x8020b4dc -> 0x8020b39c No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
@@ -67,8 +66,10 @@ expression: report
 0x8020bb68 -> 0x8020ba08 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
 0x8020bb70 -> 0x8020ba10 Data score=0.951 edits=Edits { added: 2, removed: 0, edited: 2 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 4, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=Similar
 gone 0x80208c6c
+gone 0x8020a364
 gone 0x8020b6e0
 gone 0x8020b7fc
 new  0x80209154
+new  0x8020a338
 new  0x8020b5a4
 new  0x8020b5d0
