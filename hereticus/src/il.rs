@@ -58,8 +58,8 @@ pub enum Reg {
     Flags,
     /// The program counter, where an operand names it, as the base of a
     /// load from a literal pool or the target of `pop {pc}`. It is no value
-    /// a function computes, so no [`RegSet`] holds it, and the data flow of
-    /// [`flow_features`] reads it as no register.
+    /// a function computes, so the data flow of [`flow_features`] reads it
+    /// as no register. Only the register list of a `pop` holds it.
     ProgramCounter,
 }
 
