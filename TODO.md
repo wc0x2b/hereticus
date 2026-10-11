@@ -14,15 +14,24 @@ too, and add a report to `real-life-reports/` for each.
 `il` reads a compare and the branch on it as one guard on AArch64, A32,
 Thumb-2 and MIPS32. Measured against the symbols, that paired 231 more
 functions right and 61 more wrong over the cross builds, mostly twins
-such as `math_max` and `math_min`. Still read as plain work:
+such as `math_max` and `math_min`. A compiler picks a branch or a select
+freely, so a select should read as the branch of a guard. Measured again
+against the source files in the DWARF:
 
-- A compare whose result a `cset`, a `csel` or a conditional instruction
-  of A32 uses, in place of a branch. Naming the condition in the select,
-  either way, was measured: on A64 it paired 8 fewer right, and on the
-  conditional instructions of A32, 79 fewer right and 10 fewer wrong,
-  over the cross builds. A compiler picks a branch or a select freely, so
-  this wants a guard that reads both as one, not a name that splits them.
-- A chain of `ccmp`, which tests two conditions with one branch.
+- A `csel`, `cset`, `csinc` or `csneg` of A64 as the branch of the
+  guard its compare starts, with or without its own token: 5 or 6 more
+  right and 2 to 4 more wrong over the backports, with one fix fewer
+  ranked first, and the Ubuntu fixes ranked a little higher.
+- The conditional instructions of A32 the same way: 28 fewer right and
+  23 more wrong over the kernels, and 10 more wrong over the backports.
+- A `ccmp` as the branch of the guard before it and the compare of the
+  guard after it, so that a chain reads as two guards: 3 more right and
+  none wrong over the backports, and the Ubuntu fixes ranked 4 places
+  lower in sum. With the A64 selects: 12 more right and 2 more wrong,
+  and one fix fewer ranked first.
+
+None of these is clearly better, so none is kept. A select reads as a
+plain `select`, and the compare before it as a guard's test.
 
 ## Tell twins apart that no instruction separates
 
