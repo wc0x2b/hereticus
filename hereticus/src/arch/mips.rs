@@ -65,19 +65,19 @@ pub(super) fn lifted(insn: &Insn) -> Option<il::Lifted> {
 }
 
 /// The operands of `insn`, lifted: see [`lifted`].
-fn operands_of(insn: &Insn) -> il::Operands {
+pub(super) fn operands_of(insn: &Insn) -> il::Operands {
     lifted(insn).map(|lifted| lifted.operands).unwrap_or_default()
 }
 
 /// The register the ABI calls through, `t9`.
-const T9: il::Reg = il::Reg::General(25);
+pub(super) const T9: il::Reg = il::Reg::General(25);
 /// The global pointer, `gp`.
-const GP: il::Reg = il::Reg::General(28);
+pub(super) const GP: il::Reg = il::Reg::General(28);
 /// The stack pointer, `sp`.
-const SP_REG: il::Reg = il::Reg::General(SP);
+pub(super) const SP_REG: il::Reg = il::Reg::General(SP);
 
 /// The register `operand` names. The `zero` register names none.
-fn register(operand: &il::Operand) -> Option<il::Reg> {
+pub(super) fn register(operand: &il::Operand) -> Option<il::Reg> {
     match operand {
         il::Operand::Reg(reg) => Some(*reg),
         _ => None,
@@ -85,7 +85,7 @@ fn register(operand: &il::Operand) -> Option<il::Reg> {
 }
 
 /// The value of a constant operand. A negative one is in two's complement.
-fn constant(operand: &il::Operand) -> Option<u64> {
+pub(super) fn constant(operand: &il::Operand) -> Option<u64> {
     match operand {
         il::Operand::Const(value) => Some(*value),
         _ => None,
@@ -93,7 +93,7 @@ fn constant(operand: &il::Operand) -> Option<u64> {
 }
 
 /// The name the ABI gives a general register, as `gp` for 28.
-fn register_name(register: il::Reg) -> Option<&'static str> {
+pub(super) fn register_name(register: il::Reg) -> Option<&'static str> {
     match register {
         il::Reg::General(number) => super::mips32::REGISTERS.get(usize::from(number)).copied(),
         _ => None,
@@ -101,13 +101,13 @@ fn register_name(register: il::Reg) -> Option<&'static str> {
 }
 
 /// The register the first operand of `insn` names.
-fn first_register(insn: &Insn) -> Option<il::Reg> {
+pub(super) fn first_register(insn: &Insn) -> Option<il::Reg> {
     operands_of(insn).first().and_then(register)
 }
 
 /// The base and offset of an access `offset(base)`. A base of `zero` is
 /// none.
-fn access(operand: &il::Operand) -> Option<(Option<il::Reg>, u64)> {
+pub(super) fn access(operand: &il::Operand) -> Option<(Option<il::Reg>, u64)> {
     match operand {
         il::Operand::Memory { base, offset: Some(offset), .. } => Some((*base, *offset as u64)),
         _ => None,

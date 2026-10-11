@@ -17,7 +17,10 @@
 //! `rabbitizer` reads no MIPS16e, so this module decodes it from the
 //! encodings of the MIPS16e ASE manual.
 
-use super::mips::{Decoded as MipsDecoded, Mips32, decoded, is};
+use super::mips::{
+    Decoded as MipsDecoded, GP, Mips32, SP_REG, T9, access, constant, decoded, first_register, is,
+    operands_of, register_name,
+};
 use super::{Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
@@ -49,8 +52,6 @@ pub struct Mips16 {
     base: Mips32,
 }
 
-/// `t9`, the register the MIPS32 preamble joins to the global pointer.
-const T9: u32 = 25;
 /// The function field of the MIPS32 `addu`.
 const ADDU: u32 = 0x21;
 
@@ -109,13 +110,15 @@ fn mips16_op(insn: &Insn) -> Option<Op> {
 enum Reading {
     /// The MIPS32 instruction that does the same work.
     Word(u32),
-    /// A transfer of control: its text, its kind, and the MIPS32 word that
-    /// tests what it tests, where it tests anything.
+    /// A transfer of control: its text, its kind, the register it goes
+    /// through, where it goes through one, and the MIPS32 word that tests
+    /// what it tests, where it tests anything.
     Control {
         name: &'static str,
         decoded: MipsDecoded,
         operands: String,
         kind: InsnKind,
+        through: Option<u32>,
         test: Option<u32>,
     },
     /// A load of a word, or the forming of an address, relative to the
@@ -226,7 +229,7 @@ fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Read>
         let operands = format!("{target:#x}");
         let kind = InsnKind::Call { target: Some(target) };
         return Some(Read {
-            reading: Reading::Control { name, decoded, operands, kind, test: None },
+            reading: Reading::Control { name, decoded, operands, kind, through: None, test: None },
             width: 4,
         });
     }
@@ -270,7 +273,14 @@ fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Reading> 
             }
             _ => (place, InsnKind::Jump { target: Some(target) }),
         };
-        Reading::Control { name, decoded: MipsDecoded::Rabbitizer(opcode), operands, kind, test }
+        Reading::Control {
+            name,
+            decoded: MipsDecoded::Rabbitizer(opcode),
+            operands,
+            kind,
+            through: None,
+            test,
+        }
     };
     // The 3-operand form of a 2-operand MIPS16e instruction.
     let word = |value: u32| Some(Reading::Word(value));
@@ -417,7 +427,14 @@ fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
                 }
                 (true, true) => return None,
             };
-            Some(Reading::Control { name, decoded, operands, kind, test: None })
+            Some(Reading::Control {
+                name,
+                decoded,
+                operands,
+                kind,
+                through: Some(target),
+                test: None,
+            })
         }
         0b00001 => word(0x0000_000d),
         0b00010 => word(register(rx, ry, T, 0, 0x2a)),
@@ -619,7 +636,8 @@ impl Arch for Mips16 {
             // `addu rD, rD, t9`, the MIPS32 instruction that joins the
             // distance to the global pointer.
             let joined = destination.and_then(|rd| {
-                let word = rd << 21 | T9 << 16 | rd << 11 | ADDU;
+                // `t9` is register 25.
+                let word = register(rd, 25, rd, 0, ADDU);
                 self.base.decode(&self.base.word_bytes(word), 0, add.address).ok()
             });
             if let Some(joined) = joined {
@@ -655,9 +673,7 @@ impl Arch for Mips16 {
             Some(self.base.read_halfword([bytes[0], bytes[1]]) as i16)
         };
         (0..insns.len())
-            .filter_map(|index| {
-                read_jump_table(insns, index, &code, &entry, |operand| self.constant_value(operand))
-            })
+            .filter_map(|index| read_jump_table(self, insns, index, &code, &entry))
             .collect()
     }
 
@@ -719,25 +735,22 @@ impl Arch for Mips16 {
     /// slot holds, and its offset in that page.
     fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
         let slot_of = |load_at: usize, load: &Insn| {
-            let [_, reference] = two_operands(load)?;
-            let (offset, base) = reference.strip_suffix(')')?.split_once('(')?;
-            let offset = self.constant_value(offset)?;
+            let (offset, base) = load_reference(load)?;
             if !is(load, Opcode::core_lw) || !holds_global_pointer(insns, load_at, base) {
                 return None;
             }
-            let global_pointer =
-                global_pointer_before(insns, load_at, |operand| self.constant_value(operand))?;
+            let global_pointer = global_pointer_before(self, insns, load_at)?;
             Some(u64::from((global_pointer as u32).wrapping_add(offset as u32)))
         };
         let through_slot = |index: usize| {
-            let register = insns[index].operands().rsplit(',').next()?.trim();
+            let register = operands_of(&insns[index]).last().and_then(super::mips::register)?;
             let (written_at, written) = last_write(insns, index, register)?;
-            match three_operands(written) {
-                Some([_, source, low]) if is(written, Opcode::core_addiu) => {
-                    let (load_at, load) = last_write(insns, written_at, source)?;
+            let operands = operands_of(written);
+            match operands.as_slice() {
+                [_, il::Operand::Reg(source), low] if is(written, Opcode::core_addiu) => {
+                    let (load_at, load) = last_write(insns, written_at, *source)?;
                     let slot = slot_of(load_at, load)?;
-                    let offset = self.constant_value(low)?;
-                    Some(CallTarget::PageOffset { slot, offset })
+                    Some(CallTarget::PageOffset { slot, offset: constant(low)? })
                 }
                 _ => slot_of(written_at, written).map(CallTarget::Slot),
             }
@@ -764,7 +777,7 @@ impl Arch for Mips16 {
 
     fn global_pointer_setup(&self, body: &[Insn]) -> Option<GlobalPointerSetup> {
         let preamble = body.get(..GP_PREAMBLE_LENGTH).filter(|run| is_gp_preamble(run))?;
-        let register = preamble.last()?.operands().split(',').next()?.trim().to_string();
+        let register = register_name(first_register(preamble.last()?)?)?.to_string();
         Some(GlobalPointerSetup { parts: (0..GP_PREAMBLE_LENGTH).collect(), register })
     }
 
@@ -794,7 +807,13 @@ impl Arch for Mips16 {
     /// is fill or a word of a literal pool.
     fn is_padding(&self, insn: &Insn) -> bool {
         is(insn, Opcode::core_nop)
-            || (is(insn, Opcode::core_addiu) && insn.operands() == "s0, sp, 0x0")
+            || (is(insn, Opcode::core_addiu)
+                && operands_of(insn).as_slice()
+                    == [
+                        il::Operand::Reg(il::Reg::General(16)),
+                        il::Operand::Reg(SP_REG),
+                        il::Operand::Const(0),
+                    ])
     }
 
     /// Only whole halfwords at the end are removed: the `nop` and zero fill.
@@ -842,7 +861,7 @@ impl Arch for Mips16 {
                 let translated = self.as_mips32(word, insn.address)?;
                 self.base.lift(&translated)
             }
-            Reading::Control { kind, .. } => {
+            Reading::Control { kind, through, .. } => {
                 let op = match kind {
                     InsnKind::Call { .. } => il::Op::Call,
                     InsnKind::Return => il::Op::Return,
@@ -852,7 +871,16 @@ impl Arch for Mips16 {
                 if matches!(kind, InsnKind::Call { .. }) {
                     lifted.writes.insert(il::Reg::General(RA as u8));
                 }
-                lifted.operands = [il::Operand::Target].into_iter().collect();
+                // `jr`, `jalr` and their compact forms go through a register.
+                let target = match through {
+                    Some(number) => {
+                        let reg = il::Reg::General(number as u8);
+                        lifted.reads.insert(reg);
+                        il::Operand::Reg(reg)
+                    }
+                    None => il::Operand::Target,
+                };
+                lifted.operands = [target].into_iter().collect();
                 Some(lifted)
             }
             Reading::PcRelative { load, dest, .. } => {
@@ -909,11 +937,11 @@ const MOST_CASES: usize = 1024;
 /// with bit 0 set, as an address of MIPS16e code has. `entry` reads one,
 /// and `constant` reads the bound.
 fn read_jump_table(
+    arch: &Mips16,
     insns: &[Insn],
     index: usize,
     code: &core::ops::Range<u64>,
     entry: &dyn Fn(u64) -> Option<i16>,
-    constant: impl Fn(&str) -> Option<u64>,
 ) -> Option<JumpTable> {
     let jump = &insns[index];
     if !(is(jump, Opcode::core_jr) || mips16_op(jump) == Some(Op::Jrc))
@@ -921,8 +949,15 @@ fn read_jump_table(
     {
         return None;
     }
-    let (sum_at, sum) = last_write(insns, index, jump.operands().trim())?;
-    let [_, left, right] = three_operands(sum)?;
+    let target = match operands_of(jump).as_slice() {
+        [il::Operand::Reg(target)] => *target,
+        _ => return None,
+    };
+    let (sum_at, sum) = last_write(insns, index, target)?;
+    let (left, right) = match operands_of(sum).as_slice() {
+        [_, il::Operand::Reg(left), il::Operand::Reg(right)] => (*left, *right),
+        _ => return None,
+    };
     if !is(sum, Opcode::core_addu) {
         return None;
     }
@@ -932,18 +967,21 @@ fn read_jump_table(
             return None;
         }
         let (_, la) = last_write(insns, sum_at, base)?;
-        match three_operands(la)? {
-            [_, "pc", address] if is(la, Opcode::core_addiu) => constant(address),
-            _ => None,
-        }
+        is(la, Opcode::core_addiu).then(|| arch.address_from_pc(la)).flatten()
     })?;
 
     // The bound comes before the jump, or before the branch to the block
     // that holds it: GCC can put the dispatch after the code of a case.
     let bound_before = |at: usize| {
         insns[at.saturating_sub(TABLE_LOOK_BACK)..at].iter().rev().find_map(|insn| {
-            let [_, _, bound] = is(insn, Opcode::core_sltiu).then(|| three_operands(insn))??;
-            usize::try_from(constant(bound)?).ok().filter(|&cases| cases <= MOST_CASES)
+            if !is(insn, Opcode::core_sltiu) {
+                return None;
+            }
+            let bound = match operands_of(insn).as_slice() {
+                [_, _, bound] => constant(bound)?,
+                _ => return None,
+            };
+            usize::try_from(bound).ok().filter(|&cases| cases <= MOST_CASES)
         })
     };
     let block = insns[..index]
@@ -967,40 +1005,45 @@ fn read_jump_table(
 
 /// The last instruction before `insns[before]`, and its index, that writes
 /// `register`.
-fn last_write<'a>(insns: &'a [Insn], before: usize, register: &str) -> Option<(usize, &'a Insn)> {
+fn last_write(insns: &[Insn], before: usize, register: il::Reg) -> Option<(usize, &Insn)> {
     last_write_within(insns, before, register, TABLE_LOOK_BACK)
 }
 
 /// [`last_write`], within `distance` instructions.
-fn last_write_within<'a>(
-    insns: &'a [Insn],
+fn last_write_within(
+    insns: &[Insn],
     before: usize,
-    register: &str,
+    register: il::Reg,
     distance: usize,
-) -> Option<(usize, &'a Insn)> {
+) -> Option<(usize, &Insn)> {
     let from = before.saturating_sub(distance);
     (from..before).rev().map(|at| (at, &insns[at])).find(|(_, insn)| {
         insn.kind == InsnKind::Normal
             && !super::mips::is_store(insn)
-            && insn.operands().split(',').next().map(str::trim) == Some(register)
+            && first_register(insn) == Some(register)
     })
 }
 
-/// The two operands of `op a, b`.
-fn two_operands(insn: &Insn) -> Option<[&str; 2]> {
-    let operands: Vec<&str> = insn.operands().split(',').map(str::trim).collect();
-    operands.try_into().ok()
+/// The offset and the base of `lw rX, offset(rA)`.
+fn load_reference(insn: &Insn) -> Option<(u64, il::Reg)> {
+    match operands_of(insn).as_slice() {
+        [_, reference] => match access(reference)? {
+            (Some(base), offset) => Some((offset, base)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Report whether a call soon after `insns[index]` goes through `register`.
-fn is_called(insns: &[Insn], index: usize, register: &str) -> bool {
+fn is_called(insns: &[Insn], index: usize, register: il::Reg) -> bool {
     /// GCC puts the `jalr` right after the address it calls, or one
     /// instruction later.
     const MOST_INSTRUCTIONS_TO_CALL: usize = 3;
 
     insns.iter().skip(index + 1).take(MOST_INSTRUCTIONS_TO_CALL).any(|insn| {
         matches!(insn.kind, InsnKind::Call { target: None })
-            && insn.operands().rsplit(',').next().map(str::trim) == Some(register)
+            && operands_of(insn).last().and_then(super::mips::register) == Some(register)
     })
 }
 
@@ -1012,30 +1055,29 @@ fn is_gp_preamble_at(insns: &[Insn], at: usize) -> bool {
 /// The global pointer that the last preamble before `insns[index]` makes:
 /// the upper half it loads, shifted, plus the address it takes from the
 /// program counter.
-fn global_pointer_before(
-    insns: &[Insn],
-    index: usize,
-    constant: impl Fn(&str) -> Option<u64>,
-) -> Option<u64> {
+fn global_pointer_before(arch: &Mips16, insns: &[Insn], index: usize) -> Option<u64> {
     let start = (0..index.saturating_sub(GP_PREAMBLE_LENGTH - 1))
         .rev()
         .find(|&at| is_gp_preamble(&insns[at..at + GP_PREAMBLE_LENGTH]))?;
     let preamble = &insns[start..start + GP_PREAMBLE_LENGTH];
-    let [_, _, high] = three_operands(&preamble[0])?;
-    let [_, _, low] = three_operands(&preamble[1])?;
-    let joined = (constant(high)? as u32).wrapping_shl(16).wrapping_add(constant(low)? as u32);
+    let high = match operands_of(&preamble[0]).as_slice() {
+        [_, _, high] => constant(high)?,
+        _ => return None,
+    };
+    let low = arch.address_from_pc(&preamble[1])?;
+    let joined = (high as u32).wrapping_shl(16).wrapping_add(low as u32);
     Some(u64::from(joined))
 }
 
 /// Report whether `register` holds the global pointer at `insns[before]`:
 /// it is `gp`, a copy of it, or what the preamble made.
-fn holds_global_pointer(insns: &[Insn], before: usize, register: &str) -> bool {
+fn holds_global_pointer(insns: &[Insn], before: usize, register: il::Reg) -> bool {
     /// Copies of copies, as `move gp, v0` then `move s0, gp`.
     const MOST_COPIES: usize = 4;
 
     let (mut before, mut register) = (before, register);
     for _ in 0..=MOST_COPIES {
-        if register == "gp" {
+        if register == GP {
             return true;
         }
         let Some((at, write)) = last_write_within(insns, before, register, before) else {
@@ -1045,9 +1087,9 @@ fn holds_global_pointer(insns: &[Insn], before: usize, register: &str) -> bool {
         if preamble_start.is_some_and(|start| is_gp_preamble(&insns[start..=at])) {
             return true;
         }
-        match three_operands(write) {
-            Some([_, source, "zero"]) if is(write, Opcode::core_or) => {
-                (before, register) = (at, source);
+        match operands_of(write).as_slice() {
+            [_, il::Operand::Reg(source), il::Operand::Zero] if is(write, Opcode::core_or) => {
+                (before, register) = (at, *source);
             }
             _ => return false,
         }
@@ -1055,24 +1097,32 @@ fn holds_global_pointer(insns: &[Insn], before: usize, register: &str) -> bool {
     false
 }
 
-/// The three operands of `op a, b, c`.
-fn three_operands(insn: &Insn) -> Option<[&str; 3]> {
-    let operands: Vec<&str> = insn.operands().split(',').map(str::trim).collect();
-    operands.try_into().ok()
+/// The byte order an instruction of MIPS16e was read in.
+fn order_of(insn: &Insn) -> super::mips::ByteOrder {
+    match insn.opcode {
+        super::Opcode::Mips16(_, order) | super::Opcode::Mips(_, order) => order,
+        _ => super::mips::ByteOrder::Big,
+    }
 }
 
 impl Mips16 {
+    /// The address an `addiu rX, pc, imm` forms, from where `insn` is.
+    fn address_from_pc(&self, insn: &Insn) -> Option<u64> {
+        match self.decoded(insn.bytes(), 0, insn.address)?.reading {
+            Reading::PcRelative { load: false, address, .. } => Some(address),
+            _ => None,
+        }
+    }
+
     /// The slot of the global offset table that the `lw` at `load_index`
     /// of `body` reads through the global pointer or a copy of it.
     fn slot_of(&self, body: &[Insn], load_index: usize, load: &Insn) -> Option<u64> {
-        let constant = |operand: &str| self.constant_value(operand);
-        let [_, reference] = two_operands(load)?;
-        let (offset, base) = reference.strip_suffix(')')?.split_once('(')?;
+        let (offset, base) = load_reference(load)?;
         if !is(load, Opcode::core_lw) || !holds_global_pointer(body, load_index, base) {
             return None;
         }
-        let global_pointer = global_pointer_before(body, load_index, constant)?;
-        Some(u64::from((global_pointer as u32).wrapping_add(constant(offset)? as u32)))
+        let global_pointer = global_pointer_before(self, body, load_index)?;
+        Some(u64::from((global_pointer as u32).wrapping_add(offset as u32)))
     }
 
     /// Each address `body` forms, with the index of the instruction that
@@ -1083,7 +1133,6 @@ impl Mips16 {
         space: &AddressSpace,
         memory: &Memory<'_>,
     ) -> Vec<(usize, u64)> {
-        let constant = |operand: &str| self.constant_value(operand);
         let page = |load_at: usize, load: &Insn| {
             let slot = self.slot_of(body, load_at, load)?;
             let bytes = memory.bytes(slot, 4)?;
@@ -1093,19 +1142,23 @@ impl Mips16 {
             .enumerate()
             .filter(|(_, insn)| is(insn, Opcode::core_addiu))
             .filter_map(|(index, insn)| {
-                let address = match three_operands(insn)? {
+                let operands = operands_of(insn);
+                let destination = operands.first().and_then(super::mips::register)?;
+                let from_pc = self.address_from_pc(insn);
+                let address = match (from_pc, operands.as_slice()) {
                     // `t9` receives a callee, not data.
-                    ["t9", ..] => None,
+                    _ if destination == T9 => None,
                     // The preamble's is half of `_gp_disp`, a distance.
-                    [_, "pc", _] if index > 0 && is_gp_preamble_at(body, index - 1) => None,
-                    [_, "pc", address] => constant(address),
+                    (Some(_), _) if index > 0 && is_gp_preamble_at(body, index - 1) => None,
+                    (Some(address), _) => Some(address),
                     // An address that is called is code, not data.
-                    [destination, ..] if is_called(body, index, destination) => None,
-                    [_, source, low] => {
-                        let (at, written) = last_write(body, index, source)?;
+                    _ if is_called(body, index, destination) => None,
+                    (None, [_, il::Operand::Reg(source), low]) => {
+                        let (at, written) = last_write(body, index, *source)?;
                         let address = page(at, written)?.wrapping_add(constant(low)? as u32);
                         Some(u64::from(address))
                     }
+                    _ => None,
                 }?;
                 Some((index, address))
             })
@@ -1130,25 +1183,28 @@ const GP_PREAMBLE_LENGTH: usize = 4;
 ///
 /// Only the entry of a function runs it.
 fn is_gp_preamble(body: &[Insn]) -> bool {
-    fn operands(insn: &Insn) -> Vec<&str> {
-        insn.operands().split(',').map(str::trim).collect()
-    }
+    use il::Operand::{Const, Reg, Zero};
     let [high, low, shift, add] = body else { return false };
-    let (high_ops, low_ops, shift_ops, add_ops) =
-        (operands(high), operands(low), operands(shift), operands(add));
-    let (&[loaded, "zero", _], &[from_pc, "pc", _], &[shifted, source, "16"], &[_, left, right]) =
-        (high_ops.as_slice(), low_ops.as_slice(), shift_ops.as_slice(), add_ops.as_slice())
-    else {
+    let (Some(loaded), Some(from_pc)) = (first_register(high), first_register(low)) else {
         return false;
     };
+    let shape = matches!(operands_of(high).as_slice(), [_, Zero, Const(_)])
+        && matches!(operands_of(shift).as_slice(), [Reg(shifted), Reg(source), Const(16)]
+            if *shifted == loaded && *source == loaded)
+        && matches!(operands_of(add).as_slice(), [_, Reg(left), Reg(right)]
+            if [*left, *right].contains(&loaded) && [*left, *right].contains(&from_pc));
+    // The `addiu` from the program counter reads as an address, which only
+    // the reading tells apart from another `addiu`.
+    let low_from_pc = matches!(
+        Mips16::of(super::mips::Mips32::of(order_of(low))).decoded(low.bytes(), 0, low.address),
+        Some(Read { reading: Reading::PcRelative { load: false, .. }, .. })
+    );
     is(high, Opcode::core_ori)
         && is(low, Opcode::core_addiu)
         && is(shift, Opcode::core_sll)
         && is(add, Opcode::core_addu)
-        && shifted == loaded
-        && source == loaded
-        && [left, right].contains(&loaded)
-        && [left, right].contains(&from_pc)
+        && shape
+        && low_from_pc
 }
 
 #[cfg(test)]
