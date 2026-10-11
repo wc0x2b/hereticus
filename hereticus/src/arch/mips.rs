@@ -2097,7 +2097,7 @@ fn il_operand(operand: ValuedOperand) -> il::Operand {
         ValuedOperand::core_imm_i16(value) => il::Operand::Const(i64::from(value) as u64),
         ValuedOperand::core_imm_u16(value) => il::Operand::Const(value.into()),
         ValuedOperand::core_label(_) | ValuedOperand::core_branch_target_label(_) => {
-            il::Operand::Target
+            il::Operand::Target(None)
         }
         ValuedOperand::core_imm_rs(offset, base) => il::Operand::memory(
             Some(base.as_index())
@@ -2343,7 +2343,7 @@ mod tests {
         let operands = |word| lift_one(word).operands.into_vec();
         assert_eq!(operands(words::ADDU_V0_A0_A1), [reg(2), reg(4), reg(5)]);
         assert_eq!(operands(words::SLTIU_T0_A0_MINUS_1), [reg(8), reg(4), Const(u64::MAX)]);
-        assert_eq!(operands(words::BEQZ_A0), [reg(4), Target]);
+        assert_eq!(operands(words::BEQZ_A0), [reg(4), Target(None)]);
     }
 
     #[test]

@@ -557,8 +557,10 @@ pub enum Operand {
         index: Option<(Reg, u8)>,
         update: Update,
     },
-    /// A branch or address target, without the address, which moves.
-    Target,
+    /// A branch or address target, by the distance its encoding holds,
+    /// where the decoder gives it. The address moves with the code, so
+    /// normalizing keeps neither.
+    Target(Option<i64>),
     /// A list of registers, as `push` and `ldm` take.
     RegisterList(RegSet),
     /// Anything else, as a condition or a system register.
@@ -734,7 +736,7 @@ impl Flow {
                     .filter(|&base| base != Reg::ProgramCounter)
                     .map_or([MEMORY; FLOW_ROUNDS], |base| self.label_of(base))
                     .map(|label| mix(MEMORY, label)),
-                Operand::Target | Operand::RegisterList(_) | Operand::Other => continue,
+                Operand::Target(_) | Operand::RegisterList(_) | Operand::Other => continue,
             };
             inputs.push(input);
         }
@@ -1289,7 +1291,7 @@ mod tests {
     fn a_call_ends_what_registers_held() {
         let call = Some(Lifted {
             op: Op::Call,
-            operands: [Operand::Target].into_iter().collect(),
+            operands: [Operand::Target(None)].into_iter().collect(),
             ..Lifted::default()
         });
         let mut before = sample(0);

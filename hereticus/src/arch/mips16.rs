@@ -878,12 +878,12 @@ impl Arch for Mips16 {
                         lifted.reads.insert(reg);
                         il::Operand::Reg(reg)
                     }
-                    None => il::Operand::Target,
+                    None => il::Operand::Target(None),
                 };
                 lifted.operands = [target].into_iter().collect();
                 Some(lifted)
             }
-            Reading::PcRelative { load, dest, .. } => {
+            Reading::PcRelative { load, dest, address } => {
                 let mut lifted = il::Lifted::default();
                 let dest = il::Reg::General(dest as u8);
                 lifted.writes.insert(dest);
@@ -895,7 +895,7 @@ impl Arch for Mips16 {
                     });
                     il::Operand::memory(Some(il::Reg::ProgramCounter), None)
                 } else {
-                    il::Operand::Target
+                    il::Operand::Target(Some(address.wrapping_sub(insn.address) as i64))
                 };
                 lifted.operands = [il::Operand::Reg(dest), source].into_iter().collect();
                 Some(lifted)

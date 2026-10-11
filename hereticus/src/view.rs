@@ -1155,7 +1155,7 @@ fn statement(
                 Operand::Zero => "0".to_string(),
                 Operand::Const(value) => constant(*value),
                 Operand::Memory { .. } => memory_text(memory?),
-                Operand::Target => target?.to_string(),
+                Operand::Target(_) => target?.to_string(),
                 Operand::RegisterList(_) | Operand::Other => return None,
             })
         };

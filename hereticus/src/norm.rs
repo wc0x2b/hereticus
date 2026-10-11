@@ -478,7 +478,7 @@ fn lifted_shapes(arch: &dyn Arch, operand: il::Operand) -> impl Iterator<Item = 
             OperandShape::Memory,
             offset.map(|offset| OperandShape::Immediate(Magnitude::of(offset.unsigned_abs()))),
         ),
-        il::Operand::Target => (OperandShape::Target, None),
+        il::Operand::Target(_) => (OperandShape::Target, None),
         il::Operand::RegisterList(_) => (OperandShape::RegisterList, None),
         il::Operand::Other => (OperandShape::Other, None),
     };

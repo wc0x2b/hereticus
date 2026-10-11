@@ -1041,7 +1041,10 @@ fn il_operand(operand: Operand) -> il::Operand {
         }
         Operand::Imm12(value) => il::Operand::Const(value.into()),
         Operand::Imm32(value) => il::Operand::Const(value.into()),
-        Operand::BranchOffset(_) | Operand::BranchThumbOffset(_) => il::Operand::Target,
+        Operand::BranchOffset(words) => il::Operand::Target(Some(i64::from(words) * 4)),
+        Operand::BranchThumbOffset(halfwords) => {
+            il::Operand::Target(Some(i64::from(halfwords) * 2))
+        }
         _ => il::Operand::Other,
     }
 }
@@ -3774,7 +3777,10 @@ mod tests {
         let saved = [il::Reg::General(4), il::Reg::General(14)].into_iter().collect();
         let push = [il::Operand::Reg(il::Reg::Stack), RegisterList(saved)];
         assert_eq!(operands(words::PUSH_R4_LR), push, "the list names what it saves");
-        assert_eq!(operands(words::BL), [Target]);
+        assert!(
+            matches!(operands(words::BL).as_slice(), [Target(Some(_))]),
+            "a call names its distance"
+        );
     }
 
     #[test]
