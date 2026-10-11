@@ -193,17 +193,15 @@ impl Arch for Aarch64 {
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
         let Some(Decoded { opcode, alias }) = decoded(insn) else { return false };
-        let operands = insn.operands();
-        let first = operands.split(',').next().unwrap_or_default();
         match (opcode, alias) {
             // Saving and restoring the frame and the registers it keeps.
             (Opcode::STP | Opcode::LDP | Opcode::STR | Opcode::LDR, _) => {
-                self.mentions_stack_slot(operands)
+                operands_of(insn).iter().any(|&operand| reaches_frame(operand))
             }
             // Moving the stack pointer, or setting up the frame pointer.
             (_, Alias::Move)
             | (Opcode::SUB | Opcode::ADD | Opcode::MOVZ | Opcode::MOVN, Alias::None) => {
-                self.is_stack_register(first)
+                operands_of(insn).first().is_some_and(|&operand| is_stack_or_frame(operand))
             }
             // Signing and checking the return address, and marking a branch
             // target, change nothing a function computes.
@@ -218,11 +216,13 @@ impl Arch for Aarch64 {
     /// needs no frame has no prologue, which is why the scan treats this as
     /// one source among several.
     fn is_prologue(&self, insn: &Insn) -> bool {
-        match opcode_of(insn) {
-            Some(Opcode::STP) => insn.operands().starts_with("x29, x30, [sp"),
-            Some(Opcode::STR) => {
-                insn.operands().starts_with("x30, [sp") && insn.operands().ends_with('!')
-            }
+        const X29: Operand = Operand::Register(SizeCode::X, 29);
+        const X30: Operand = Operand::Register(SizeCode::X, 30);
+        let operands = operands_of(insn);
+        match (opcode_of(insn), operands.as_slice()) {
+            (Some(Opcode::STP), [X29, X30, slot, ..]) => memory_base(*slot) == Some(SP),
+            // Only the form that moves `sp` first, as `str x30, [sp, #-16]!`.
+            (Some(Opcode::STR), [X30, Operand::RegPreIndex(SP, _, true), ..]) => true,
             _ => false,
         }
     }
@@ -239,7 +239,7 @@ impl Arch for Aarch64 {
 
     fn is_padding(&self, insn: &Insn) -> bool {
         decoded(insn).is_some_and(|decoded| decoded.alias == Alias::Nop)
-            || (insn.kind == InsnKind::Unknown && insn.operands() == "0x00000000")
+            || (insn.kind == InsnKind::Unknown && insn.bytes() == [0; INSN_WIDTH])
     }
 
     /// Only whole words at the end are removed, and only the two encodings a
@@ -329,24 +329,31 @@ impl Arch for Aarch64 {
         let (insns, _) = super::decode_all(self, code.get(..4 * INSN_WIDTH)?, address);
         let [adrp, load, add, jump] = insns.as_slice() else { return None };
         let page = page_of(adrp)?;
-        // An offset of 0 prints as `[x16]`, with none.
-        let reference = load.operands().strip_prefix("x17, [x16")?.strip_suffix(']')?;
-        let low = match reference.strip_prefix(", ") {
-            Some(offset) => self.constant_value(offset)?,
-            None if reference.is_empty() => 0,
-            None => return None,
+        let low = match operands_of(load).as_slice() {
+            [x17, Operand::RegPreIndex(16, offset, false)] if is_x(*x17, 17) => {
+                i64::from(*offset) as u64
+            }
+            _ => return None,
         };
+        let adds_to_x16 = matches!(
+            operands_of(add).as_slice(),
+            [dest, source, ..] if is_x(*dest, 16) && is_x(*source, 16)
+        );
+        let jumps_through_x17 =
+            matches!(operands_of(jump).as_slice(), [target] if is_x(*target, 17));
         let shape = opcode_of(load) == Some(Opcode::LDR)
-            && add.operands().starts_with("x16, x16, ")
+            && opcode_of(add) == Some(Opcode::ADD)
+            && adds_to_x16
             && opcode_of(jump) == Some(Opcode::BR)
-            && jump.operands() == "x17";
+            && jumps_through_x17;
         shape.then_some(page + low)
     }
 
     /// `br x16` and `br x17`: the ABI keeps these two for a jump the linker
     /// adds, a PLT stub or a veneer. A `switch` jumps through another.
     fn is_tail_call(&self, insn: &Insn) -> bool {
-        opcode_of(insn) == Some(Opcode::BR) && matches!(insn.operands(), "x16" | "x17")
+        opcode_of(insn) == Some(Opcode::BR)
+            && matches!(operands_of(insn).as_slice(), [target] if is_x(*target, 16) || is_x(*target, 17))
     }
 
     fn pointer_width(&self) -> usize {
@@ -1476,6 +1483,76 @@ fn test_of(inst: &Instruction, alias: Alias, operands: &[Operand]) -> Option<Tes
     Some(Test::Compare { comparison, width })
 }
 
+/// The operands of `insn`, as the decoder reads them from its bytes.
+fn operands_of(insn: &Insn) -> Vec<Operand> {
+    let mut inst = Instruction::default();
+    if InstDecoder::default().decode_into(&mut inst, &mut U8Reader::new(insn.bytes())).is_err() {
+        return Vec::new();
+    }
+    inst.operands.into_iter().take_while(|operand| *operand != Operand::Nothing).collect()
+}
+
+/// The number the A64 encodings give the stack pointer where it is the base
+/// of an access, or the destination of `add` and `mov`.
+const SP: u16 = 31;
+
+/// The frame pointer, `x29`.
+const X29_NUMBER: u16 = 29;
+
+/// The base register of an access, by number, where `operand` is one.
+fn memory_base(operand: Operand) -> Option<u16> {
+    match operand {
+        Operand::RegPreIndex(base, ..)
+        | Operand::RegPostIndex(base, _)
+        | Operand::RegPostIndexReg(base, _)
+        | Operand::RegRegOffset(base, ..) => Some(base),
+        _ => None,
+    }
+}
+
+/// Whether `operand` reaches into the frame: an access through `sp` or
+/// `x29`.
+fn reaches_frame(operand: Operand) -> bool {
+    matches!(memory_base(operand), Some(SP | X29_NUMBER))
+}
+
+/// A general register by its width and number, as `w8` is `(W, 8)`.
+type Named = (SizeCode, u16);
+
+/// The general register `operand` names.
+fn named(operand: Operand) -> Option<Named> {
+    match operand {
+        Operand::Register(size, number) | Operand::RegisterOrSP(size, number) => {
+            Some((size, number))
+        }
+        _ => None,
+    }
+}
+
+/// The value of a constant operand, shifted where it names a shift.
+fn immediate(operand: Operand) -> Option<u64> {
+    match operand {
+        Operand::Immediate(value) => Some(value.into()),
+        Operand::ImmShift(value, shift) => Some(u64::from(value) << shift),
+        _ => None,
+    }
+}
+
+/// Whether `operand` is the 64-bit register `number`, as `x16`.
+fn is_x(operand: Operand, number: u16) -> bool {
+    matches!(operand, Operand::Register(SizeCode::X, n) | Operand::RegisterOrSP(SizeCode::X, n) if n == number)
+}
+
+/// Whether `operand` is `sp`, `wsp` or `x29`.
+fn is_stack_or_frame(operand: Operand) -> bool {
+    matches!(
+        operand,
+        Operand::RegisterOrSP(_, SP)
+            | Operand::Register(SizeCode::X, X29_NUMBER)
+            | Operand::RegisterOrSP(SizeCode::X, X29_NUMBER)
+    )
+}
+
 /// What the decoder read for `insn`, where it read A64.
 pub(crate) fn decoded(insn: &Insn) -> Option<Decoded> {
     match insn.opcode {
@@ -1523,18 +1600,13 @@ fn may_write_first(insn: &Insn) -> bool {
 
 /// The page an `adrp` names, or the address an `adr` does.
 fn page_of(insn: &Insn) -> Option<u64> {
-    let distance = insn.operands().split_once(", $")?.1;
-    let (negative, digits) = match distance.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, distance.strip_prefix('+')?),
-    };
-    let offset = u64::from_str_radix(digits.strip_prefix("0x")?, 16).ok()?;
+    let Some(&Operand::PCOffset(offset)) = operands_of(insn).get(1) else { return None };
     let base = match opcode_of(insn)? {
         Opcode::ADRP => insn.address & !(PAGE - 1),
         Opcode::ADR => insn.address,
         _ => return None,
     };
-    Some(if negative { base.wrapping_sub(offset) } else { base.wrapping_add(offset) })
+    Some(base.wrapping_add(offset as u64))
 }
 
 /// What reading a function for its pages found.
@@ -1829,56 +1901,62 @@ fn read_jump_table(
         return None;
     }
     let earlier = &insns[index.saturating_sub(TABLE_LOOK_BACK)..index];
-    let last_write = |register: &str, before: u64| {
+    let last_write = |register: Named, before: u64| {
         earlier.iter().rev().filter(|insn| insn.address < before).find(|insn| {
             may_write_first(insn)
-                && insn.operands().split(',').next().map(str::trim) == Some(register)
+                && operands_of(insn).first().and_then(|&op| named(op)) == Some(register)
         })
     };
     // `add xT, xB, xE, lsl #2`, or GCC's `add xT, xB, wE, sxth #2`.
-    let add = last_write(jump.operands().trim(), jump.address)?;
-    let parts: Vec<&str> = add.operands().split(',').map(str::trim).collect();
-    let [_, base_register, entry_register, extend] = parts.as_slice() else { return None };
-    let signed = extend.starts_with("sxt");
-    if opcode_of(add) != Some(Opcode::ADD) || !extend.ends_with("#2") {
+    let target = operands_of(jump).first().and_then(|&op| named(op))?;
+    let add = last_write(target, jump.address)?;
+    let (base_register, entry, style) = match operands_of(add).as_slice() {
+        [_, base, Operand::RegShift(style, 2, _, entry)] => (named(*base)?, *entry, *style),
+        _ => return None,
+    };
+    if opcode_of(add) != Some(Opcode::ADD) {
         return None;
     }
+    let signed =
+        matches!(style, ShiftStyle::SXTB | ShiftStyle::SXTH | ShiftStyle::SXTW | ShiftStyle::SXTX);
     let base = page_of(last_write(base_register, add.address)?)?;
 
     // `ldrb wE, [xTab, xI, lsl #1]` and the like: one entry.
-    let entry_name = format!("w{}", &entry_register[1..]);
-    let load = last_write(&entry_name, add.address)?;
+    let load = last_write((SizeCode::W, entry), add.address)?;
     let width = match opcode_of(load)? {
         Opcode::LDRB | Opcode::LDRSB => 1,
         Opcode::LDRH | Opcode::LDRSH => 2,
         Opcode::LDR | Opcode::LDRSW => 4,
         _ => return None,
     };
-    let reference = load.operands().split_once('[')?.1;
-    let mut fields = reference.split([',', ']']).map(str::trim);
-    let (table_register, index_register) = (fields.next()?, fields.next()?);
-    let table_insn = last_write(table_register, load.address)?;
+    let (table_number, index_number) = match operands_of(load).as_slice() {
+        [_, Operand::RegRegOffset(table, index, ..)] => (*table, *index),
+        _ => return None,
+    };
+    let table_insn = last_write((SizeCode::X, table_number), load.address)?;
     let table = match opcode_of(table_insn)? {
         Opcode::ADR => page_of(table_insn)?,
         Opcode::ADD => {
-            let parts: Vec<&str> = table_insn.operands().split(',').map(str::trim).collect();
-            let [_, page_register, low] = parts.as_slice() else { return None };
+            let (page_register, low) = match operands_of(table_insn).as_slice() {
+                [_, page, low] => (named(*page)?, immediate(*low)?),
+                _ => return None,
+            };
             let page = page_of(last_write(page_register, table_insn.address)?)?;
-            page.wrapping_add(Aarch64.constant_value(low)?)
+            page.wrapping_add(low)
         }
         _ => return None,
     };
 
     // `cmp wI, #n`: the cases run from 0 to n.
-    let index_number = &index_register[1..];
     let bound = earlier.iter().rev().find_map(|insn| {
-        let parts: Vec<&str> = insn.operands().split(',').map(str::trim).collect();
         let is_cmp = decoded(insn).is_some_and(|decoded| {
             decoded.opcode == Opcode::SUBS && decoded.alias == Alias::Compare
         });
-        match parts.as_slice() {
-            [register, bound] if is_cmp && register.get(1..) == Some(index_number) => {
-                Aarch64.constant_value(bound)
+        match operands_of(insn).as_slice() {
+            [_, register, bound]
+                if is_cmp && named(*register).map(|(_, n)| n) == Some(index_number) =>
+            {
+                immediate(*bound)
             }
             _ => None,
         }
