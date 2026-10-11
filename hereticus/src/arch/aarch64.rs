@@ -583,7 +583,7 @@ fn il_operand(operand: Operand) -> il::Operand {
         | Operand::SIMDRegisterGroupLane(number, _, _, _) => {
             il::Operand::Reg(Reg::Vector((number % 32) as u8))
         }
-        Operand::PCOffset(_) => il::Operand::Target,
+        Operand::PCOffset(offset) => il::Operand::Target(Some(offset)),
         Operand::Immediate(value) => il::Operand::Const(value.into()),
         Operand::Imm16(value) => il::Operand::Const(value.into()),
         Operand::Imm64(value) => il::Operand::Const(value),
@@ -2217,7 +2217,10 @@ mod tests {
         let operands = |word| lift_one(word).operands.into_vec();
         assert_eq!(operands(words::SUBS_X0_X0_1), [reg(0), reg(0), Const(1)]);
         assert_eq!(operands(words::CSEL_X8_XZR_X8_EQ), [reg(8), Zero, reg(8), Other]);
-        assert_eq!(operands(words::BL), [Target]);
+        assert!(
+            matches!(operands(words::BL).as_slice(), [Target(Some(_))]),
+            "a call names its distance"
+        );
         assert_eq!(operands(words::RET), [reg(30)], "the link register");
     }
 
