@@ -623,6 +623,17 @@ identical shape the same way moved fewer than 15 pairs. Moving a weak
 pair to a free function that scores 0.25 more cost 79 right and 79 more
 wrong on the backports, and more wrong on the kernels.
 
+Code that stays in its source file stays between the same pairs, and a
+function deleted and paired with a look-alike of another file does not.
+A pair is out of place where its second side does not sit between the
+partners of the pairs around its first side. Out of place, the pairs by
+similarity with one paired neighbour each, and none that agree, were
+right 53 times and wrong 266 over the kernels; in place, 86 and 15. One
+neighbour each is now enough to undo a pair out of place: 57 right and
+269 wrong pairs undone over the kernels, from 1.31% wrong to 1.20%, and 5
+wrong over the backports. Out of place and with no paired neighbour,
+447 pairs were right and 201 wrong, so place alone undoes nothing.
+
 ### 4: constants
 
 `norm::constant_signature` had measured pairing on constants alone as
