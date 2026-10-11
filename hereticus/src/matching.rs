@@ -888,6 +888,8 @@ pub fn diff_reporting(
     // that tell two callers apart.
     cascade.pair_by_unique_references_until_settled();
     cascade.pair_leftover_twins();
+    // Last, so that every pair that can serve as context has paired.
+    cascade.unpair_without_context();
     cascade.compare_callees();
     cascade.compare_texts();
     cascade.finish(progress)
@@ -940,6 +942,79 @@ impl Cascade<'_> {
     /// already paired. Others say nothing yet. Every text counts.
     fn reference_keys(&self) -> (Vec<Vec<ReferenceKey>>, Vec<Vec<ReferenceKey>>) {
         self.reference_keys_where(Only::Free)
+    }
+
+    /// Undo a pair by similarity or by place where its callers and callees
+    /// that paired all paired with functions its partner has no call edge
+    /// with.
+    ///
+    /// A function deleted in a release often pairs with a new one of
+    /// similar code, as `cpuidle_enter_state` with `skb_expand_head`. The
+    /// code of the two agrees, but nothing around them does. A pair is
+    /// undone where each side has [`FEWEST_PAIRED_NEIGHBOURS`] or more
+    /// callers and callees that paired, and no two of them are a pair.
+    /// Stronger reasons stand, and a pair by callers or by references has
+    /// its context already.
+    ///
+    /// Measured against the symbols, this undid 25 right pairs and 482
+    /// wrong over the OpenWrt kernels, and 1 right and 1 wrong over the
+    /// backports built two ways, with the fixes ranked as before. With one
+    /// neighbour each, it undid 276 right and 919 wrong over the kernels,
+    /// and ranked the fixes of the backports lower.
+    ///
+    /// See RESEARCH.md, entry 1: the callers and callees are the context of
+    /// a function.
+    fn unpair_without_context(&mut self) {
+        // The functions each function calls or is called by, itself left
+        // out.
+        let neighbours = |side: &[Prepared<'_>]| {
+            let mut sets = vec![BTreeSet::new(); side.len()];
+            for (caller, prepared) in side.iter().enumerate() {
+                for callee in &prepared.calls {
+                    if let Callee::Function(callee) = *callee
+                        && callee != caller
+                        && callee < side.len()
+                    {
+                        sets[caller].insert(callee);
+                        sets[callee].insert(caller);
+                    }
+                }
+            }
+            sets
+        };
+        let (left, right) = (neighbours(&self.left), neighbours(&self.right));
+        let partner: HashMap<usize, usize> =
+            self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
+        let undone: Vec<bool> = self
+            .matched
+            .iter()
+            .map(|pair| {
+                if !matches!(pair.confidence, Confidence::Similar | Confidence::SameLayout) {
+                    return false;
+                }
+                let partners_of_left: BTreeSet<usize> = left[pair.before]
+                    .iter()
+                    .filter_map(|neighbour| partner.get(neighbour).copied())
+                    .collect();
+                let paired_right = right[pair.after]
+                    .iter()
+                    .filter(|&&neighbour| !self.right_free[neighbour])
+                    .count();
+                partners_of_left.len() >= FEWEST_PAIRED_NEIGHBOURS
+                    && paired_right >= FEWEST_PAIRED_NEIGHBOURS
+                    && partners_of_left.is_disjoint(&right[pair.after])
+            })
+            .collect();
+        let mut index = 0;
+        self.matched.retain(|pair| {
+            let keep = !undone[index];
+            index += 1;
+            if !keep {
+                self.left_free[pair.before] = true;
+                self.right_free[pair.after] = true;
+            }
+            keep
+        });
     }
 
     /// The callers of each function that already paired, as indices into
@@ -3261,6 +3336,10 @@ fn constant_agreement(left: &[u64], right: &[u64]) -> f64 {
 /// precision at best, so they are left alone.
 const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
 
+/// How many callers and callees that paired each side of a pair needs for
+/// [`Cascade::unpair_without_context`] to judge it.
+const FEWEST_PAIRED_NEIGHBOURS: usize = 2;
+
 /// The lowest code similarity at which a pair that [`Cascade::pair_by_layout`]
 /// undid outranks a pair by place, where it also scores
 /// [`MOVED_SIMILARITY_MARGIN`] more.
@@ -5439,6 +5518,40 @@ mod tests {
             assert_eq!(caller.kinds.callees, 1, "names {names:?}");
             assert!(caller.kinds.touches_control_flow());
         }
+    }
+
+    /// Four leaves at 0x0 to 0x300 that pair by their bytes, and at 0x400 a
+    /// function that calls the two at `callees`, then runs `work`.
+    fn calling_two_leaves(callees: [u64; 2], work: &[u32]) -> crate::obj::Binary {
+        let caller: Vec<u8> = [bl(0x400, callees[0]), bl(0x404, callees[1])]
+            .into_iter()
+            .flatten()
+            .chain(work.iter().flat_map(|word| word.to_le_bytes()))
+            .collect();
+        let leaves = [returns(1), returns(2), returns(3), returns(4)];
+        let [one, two, three, four] = &leaves;
+        binary_of(&[("", one), ("", two), ("", three), ("", four), ("", &caller)])
+    }
+
+    /// A function whose callees all paired with what its look-alike does not
+    /// call pairs with nothing; one that calls their partners pairs.
+    #[test]
+    fn a_pair_whose_paired_neighbours_disagree_is_undone() {
+        let blind = Options { use_names: UseNames::No, ..Default::default() };
+        let before = calling_two_leaves([0x000, 0x100], &[ADD, SUB, ORR, EOR, AND, BX_LR]);
+        let edited = [ADD, SUB, ORR, EOR, BIC, BX_LR];
+
+        let elsewhere = calling_two_leaves([0x200, 0x300], &edited);
+        let diff = diff_with(&before, &elsewhere, blind);
+        assert_eq!(
+            (diff.removed.as_slice(), diff.added.as_slice()),
+            ([4].as_slice(), [4].as_slice())
+        );
+
+        let same_callees = calling_two_leaves([0x000, 0x100], &edited);
+        let diff = diff_with(&before, &same_callees, blind);
+        let pair = diff.matched.iter().find(|pair| pair.before == 4).expect("paired");
+        assert_eq!((pair.after, pair.confidence), (4, Confidence::Similar));
     }
 
     /// `b target` from `from`, little endian.

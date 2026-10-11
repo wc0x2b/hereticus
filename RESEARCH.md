@@ -603,6 +603,16 @@ The release comparisons of `tests/versions.rs` paired 57 more right and
 15 more wrong. The OpenWrt kernels, which have no symbols to check
 against, pair 59 to 981 more functions each.
 
+Context also says where a pair is wrong. Across a kernel upgrade, a
+function deleted pairs with a new one of similar code, and nothing around
+the two agrees. Over the kernels, of the pairs by similarity or by place
+where each side has two or more callers and callees that paired, and no
+two of them are a pair, 26 were right and 482 wrong. Undoing those pairs
+last, once all context has paired, cut the kernels from 1.64% wrong to
+1.45%, and moved the backports by 1 right and 1 wrong. With one paired
+neighbour each, it undid 276 right and 919 wrong on the kernels and
+ranked the backport fixes lower; with three, it undid less of both.
+
 ### 4: constants
 
 `norm::constant_signature` had measured pairing on constants alone as
