@@ -952,9 +952,14 @@ impl Cascade<'_> {
     /// similar code, as `cpuidle_enter_state` with `skb_expand_head`. The
     /// code of the two agrees, but nothing around them does. A pair is
     /// undone where each side has [`FEWEST_PAIRED_NEIGHBOURS`] or more
-    /// callers and callees that paired, and no two of them are a pair; for
-    /// a pair that scores under [`WEAK_PAIR_SIMILARITY`], one each is
-    /// enough.
+    /// callers and callees that paired, and no two of them are a pair. One
+    /// each is enough for a pair that scores under
+    /// [`WEAK_PAIR_SIMILARITY`], and for one out of place: its sides do not
+    /// sit between the same pairs, as code that stayed in its source file
+    /// does. Out of place, 83% of the pairs by similarity with one paired
+    /// neighbour that disagrees were wrong over the kernels; undoing them
+    /// undid 57 right pairs and 269 wrong there, and 5 wrong over the
+    /// backports.
     /// Stronger reasons stand, and a pair by callers or by references has
     /// its context already.
     ///
@@ -987,6 +992,28 @@ impl Cascade<'_> {
         let (left, right) = (neighbours(&self.left), neighbours(&self.right));
         let partner: HashMap<usize, usize> =
             self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
+        let layout = self.layout();
+        // The place of each pair on the second side, by its place on the
+        // first.
+        let places: BTreeMap<usize, usize> = self
+            .matched
+            .iter()
+            .map(|pair| (layout.left_place[pair.before], layout.right_place[pair.after]))
+            .collect();
+        // Whether a pair sits between the pairs that sit around it on the
+        // first side, as code that stayed in its source file does.
+        let in_place = |pair: &Match| {
+            if layout.is_unanchored() {
+                return true;
+            }
+            let (left, right) = (layout.left_place[pair.before], layout.right_place[pair.after]);
+            let previous = places.range(..left).next_back().map(|(_, &place)| place);
+            let next = places.range(left + 1..).next().map(|(_, &place)| place);
+            match (previous, next) {
+                (Some(previous), Some(next)) => previous < right && right < next,
+                _ => true,
+            }
+        };
         let undone: Vec<bool> = self
             .matched
             .iter()
@@ -1002,7 +1029,7 @@ impl Cascade<'_> {
                     .iter()
                     .filter(|&&neighbour| !self.right_free[neighbour])
                     .count();
-                let fewest = if pair.score < WEAK_PAIR_SIMILARITY {
+                let fewest = if pair.score < WEAK_PAIR_SIMILARITY || !in_place(pair) {
                     FEWEST_PAIRED_NEIGHBOURS_OF_A_WEAK_PAIR
                 } else {
                     FEWEST_PAIRED_NEIGHBOURS
@@ -5615,6 +5642,56 @@ mod tests {
         assert_eq!(
             (diff.removed.as_slice(), diff.added.as_slice()),
             ([5].as_slice(), [5].as_slice())
+        );
+    }
+
+    /// Two leaves at 0x0 and 0x100, four anchors, and a function that calls
+    /// the leaf at `callee`, then runs `work`: after the first anchor where
+    /// `moved` is false, and after the last where it is true.
+    fn similar_pair_calling(callee: u64, work: &[u32], moved: bool) -> crate::obj::Binary {
+        let place: u64 = if moved { 6 } else { 3 };
+        let caller: Vec<u8> = bl(place * 0x100, callee)
+            .into_iter()
+            .chain(work.iter().flat_map(|word| word.to_le_bytes()))
+            .collect();
+        let mut functions = vec![
+            returns(1),
+            returns(2),
+            arm(&[ADC, SBC, RSB, BX_LR]),
+            arm(&[MUL, MUL, ADC, BX_LR]),
+            arm(&[RSB, RSB, BX_LR]),
+            arm(&[SBC, SBC, SBC, BX_LR]),
+        ];
+        functions.insert(place as usize, caller);
+        let named: Vec<(&str, &[u8])> =
+            functions.iter().map(|code| ("", code.as_slice())).collect();
+        binary_of(&named)
+    }
+
+    /// A pair by similarity whose sides sit in different places, and whose
+    /// one paired callee pairs with what its partner does not call, pairs
+    /// with nothing. In its place, or with the callee agreeing, it pairs.
+    #[test]
+    fn a_pair_out_of_place_whose_one_paired_neighbour_disagrees_is_undone() {
+        let blind = Options { use_names: UseNames::No, ..Default::default() };
+        let before = similar_pair_calling(0x000, &[ADD, SUB, ORR, EOR, AND, BX_LR], false);
+        let edited = [ADD, SUB, ORR, EOR, BIC, BX_LR];
+        let pair_of_caller = |after: &crate::obj::Binary| {
+            let diff = diff_with(&before, after, blind);
+            diff.matched
+                .iter()
+                .find(|pair| pair.before == 3)
+                .map(|pair| (pair.after, pair.confidence))
+        };
+
+        assert_eq!(pair_of_caller(&similar_pair_calling(0x100, &edited, true)), None);
+        assert_eq!(
+            pair_of_caller(&similar_pair_calling(0x000, &edited, true)),
+            Some((6, Confidence::Similar))
+        );
+        assert_eq!(
+            pair_of_caller(&similar_pair_calling(0x100, &edited, false)),
+            Some((3, Confidence::Similar))
         );
     }
 
