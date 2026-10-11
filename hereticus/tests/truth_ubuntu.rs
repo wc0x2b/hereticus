@@ -7,7 +7,9 @@
 //! cases that `fixtures/ubuntu_cases.json` pins, each file by its SHA-256.
 //!
 //! A pair is right when the two functions overlap a symbol of the same
-//! name in the `-dbgsym` debug files, and wrong when they share no name.
+//! name in the `-dbgsym` debug files, from the same source file as their
+//! DWARF says. It is a homonym when the files differ, as two static
+//! functions of one name do, and wrong when the two share no name.
 //! The pairing does not use the names the libraries export, as for a
 //! stripped binary. The rank is the row of the first function the patches
 //! of the update touched, in the order `--sort added` shows, where any
@@ -21,15 +23,16 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use hereticus::matching::{Changed, Diff, Match, Options, UseNames, diff_with};
-use hereticus::obj::Binary;
+use hereticus::obj::{Binary, Function};
 use rayon::prelude::*;
 
 /// See `ALLOCATOR` in `hereticus-cli/src/main.rs`.
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// A function symbol of a debug file: start, end and name.
-type Symbol = (u64, u64, String);
+#[path = "common/dwarf.rs"]
+mod dwarf;
+use dwarf::{FileMoves, Symbol, source_files};
 
 /// One security update, as `fixtures/ubuntu_cases.json` pins it.
 struct Case {
@@ -46,6 +49,9 @@ struct Case {
 struct Tally {
     cases: usize,
     right: usize,
+    /// Pairs that share a name, of functions from source files that do not
+    /// correspond.
+    homonyms: usize,
     wrong: usize,
     gone: usize,
     new: usize,
@@ -69,6 +75,7 @@ impl core::ops::AddAssign<&Tally> for Tally {
     fn add_assign(&mut self, other: &Tally) {
         self.cases += other.cases;
         self.right += other.right;
+        self.homonyms += other.homonyms;
         self.wrong += other.wrong;
         self.gone += other.gone;
         self.new += other.new;
@@ -255,6 +262,17 @@ fn rows(diff: &Diff) -> Vec<&Match> {
     shown
 }
 
+/// The names of the ranges of `found` that overlap `function`.
+fn overlapping<'a>(found: &'a [Symbol], function: &Function) -> BTreeSet<&'a str> {
+    let start = function.address & !1;
+    let end = start + function.code.len() as u64;
+    found
+        .iter()
+        .filter(|(low, high, _)| *low < end && *high > start)
+        .map(|(_, _, name)| name.as_str())
+        .collect()
+}
+
 fn measure(case: &Case) -> Tally {
     let binaries = case.files.each_ref().map(|[library, _]| {
         let data = std::fs::read(library)
@@ -267,16 +285,12 @@ fn measure(case: &Case) -> Tally {
         &binaries[1],
         Options { use_names: UseNames::No, ..Default::default() },
     );
-    let names = |side: usize, index: usize| -> BTreeSet<&str> {
-        let function = &binaries[side].functions[index];
-        let start = function.address & !1;
-        let end = start + function.code.len() as u64;
-        symbols[side]
-            .iter()
-            .filter(|(low, high, _)| *low < end && *high > start)
-            .map(|(_, _, name)| name.as_str())
-            .collect()
-    };
+    let sources = case.files.each_ref().map(|[_, debug]| source_files(debug));
+    let moves = FileMoves::new(&symbols, &sources);
+    let names =
+        |side: usize, index: usize| overlapping(&symbols[side], &binaries[side].functions[index]);
+    let files =
+        |side: usize, index: usize| overlapping(&sources[side], &binaries[side].functions[index]);
 
     let mut tally =
         Tally { cases: 1, gone: diff.removed.len(), new: diff.added.len(), ..Tally::default() };
@@ -285,8 +299,13 @@ fn measure(case: &Case) -> Tally {
         if before.is_empty() || after.is_empty() {
             continue;
         }
+        let files = [files(0, pair.before), files(1, pair.after)];
+        let homonym = files.iter().all(|files| !files.is_empty())
+            && !files[0].iter().any(|&b| files[1].iter().any(|&a| moves.corresponds(b, a)));
         if before.is_disjoint(&after) {
             tally.wrong += 1;
+        } else if homonym {
+            tally.homonyms += 1;
         } else {
             tally.right += 1;
         }
@@ -339,10 +358,11 @@ fn the_ubuntu_updates_checked_against_their_symbols_are_locked() {
     let mut out = String::new();
     writeln!(
         out,
-        "{:22} {:>5} {:>6} {:>5} {:>5} {:>5} | {:>5} {:>5} {:>6} {:>5} {:>4} {:>4}",
+        "{:22} {:>5} {:>6} {:>4} {:>5} {:>5} {:>5} | {:>5} {:>5} {:>6} {:>5} {:>4} {:>4}",
         "library",
         "cases",
         "right",
+        "homo",
         "wrong",
         "gone",
         "new",
@@ -357,9 +377,10 @@ fn the_ubuntu_updates_checked_against_their_symbols_are_locked() {
     for (library, tally) in libraries.iter().chain([(&"all".to_owned(), &all)]) {
         writeln!(
             out,
-            "{library:22} {:>5} {:>6} {:>5} {:>5} {:>5} | {:>5} {:>5} {:>6} {:>5} {:>4} {:>4}",
+            "{library:22} {:>5} {:>6} {:>4} {:>5} {:>5} {:>5} | {:>5} {:>5} {:>6} {:>5} {:>4} {:>4}",
             tally.cases,
             tally.right,
+            tally.homonyms,
             tally.wrong,
             tally.gone,
             tally.new,

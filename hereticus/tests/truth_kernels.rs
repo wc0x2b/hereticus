@@ -31,6 +31,10 @@ use hereticus::callee::{Callee, callees};
 use hereticus::matching::{Match, Options, UseNames, diff_with, similarity};
 use hereticus::norm::{NormInsn, normalize_body_in};
 use hereticus::obj::{Binary, Isa};
+
+#[path = "common/dwarf.rs"]
+mod dwarf;
+use dwarf::{FileMoves, source_files};
 use rayon::prelude::*;
 
 /// A board of `tests/openwrt.rs`: the name its files carry, the target whose
@@ -183,100 +187,6 @@ fn debug_symbols(path: &Path) -> Vec<Symbol> {
     symbols
 }
 
-/// The source file that declares each function a debug file describes, as
-/// a [`Symbol`] whose name is the file, sorted by its start.
-///
-/// The file is read from `DW_AT_decl_file` of each `DW_TAG_subprogram`
-/// with code, or of the inline function an out-of-line copy comes from,
-/// and the path is cut to what follows the kernel's source directory.
-fn source_files(path: &Path) -> Vec<Symbol> {
-    use gimli::{AttributeValue, EndianSlice, RunTimeEndian};
-    use object::{Object, ObjectSection};
-    let data = std::fs::read(path)
-        .unwrap_or_else(|err| panic!("{}: {err}; run `just test`", path.display()));
-    let file = object::File::parse(&*data).expect("the debug file parses");
-    let endian = if file.is_little_endian() { RunTimeEndian::Little } else { RunTimeEndian::Big };
-    let dwarf = gimli::Dwarf::load(|id| -> Result<_, gimli::Error> {
-        let bytes = file.section_by_name(id.name()).and_then(|section| section.data().ok());
-        Ok(EndianSlice::new(bytes.unwrap_or_default(), endian))
-    })
-    .expect("the DWARF loads");
-
-    let mut files = Vec::new();
-    let mut headers = dwarf.units();
-    while let Some(header) = headers.next().expect("a unit header reads") {
-        let unit = dwarf.unit(header).expect("a unit reads");
-        let Some(program) = &unit.line_program else { continue };
-        let line_header = program.header();
-        let file_name = |index: u64| -> Option<String> {
-            let entry = line_header.file(index)?;
-            let name = dwarf.attr_string(&unit, entry.path_name()).ok()?;
-            let directory = entry
-                .directory(line_header)
-                .and_then(|directory| dwarf.attr_string(&unit, directory).ok());
-            let joined = match directory {
-                Some(directory) => {
-                    format!("{}/{}", directory.to_string_lossy(), name.to_string_lossy())
-                }
-                None => name.to_string_lossy().into_owned(),
-            };
-            Some(source_relative(&joined).to_owned())
-        };
-        let mut entries = unit.entries();
-        while let Some(entry) = entries.next_dfs().expect("an entry reads") {
-            if entry.tag() != gimli::DW_TAG_subprogram {
-                continue;
-            }
-            let Some(low) = entry
-                .attr_value(gimli::DW_AT_low_pc)
-                .and_then(|value| dwarf.attr_address(&unit, value).ok().flatten())
-            else {
-                continue;
-            };
-            let high = match entry.attr_value(gimli::DW_AT_high_pc) {
-                Some(AttributeValue::Udata(size)) => low + size,
-                Some(value) => match dwarf.attr_address(&unit, value).ok().flatten() {
-                    Some(high) => high,
-                    None => continue,
-                },
-                None => continue,
-            };
-            let decl_file = |entry: &gimli::DebuggingInformationEntry<_>| match entry
-                .attr_value(gimli::DW_AT_decl_file)
-            {
-                Some(AttributeValue::FileIndex(index) | AttributeValue::Udata(index)) => {
-                    Some(index)
-                }
-                _ => None,
-            };
-            let index = decl_file(entry).or_else(|| {
-                let Some(AttributeValue::UnitRef(origin)) =
-                    entry.attr_value(gimli::DW_AT_abstract_origin)
-                else {
-                    return None;
-                };
-                decl_file(&unit.entry(origin).ok()?)
-            });
-            if let Some(name) = index.and_then(file_name) {
-                // A Thumb function has its low bit set.
-                let start = low & !1;
-                files.push((start, high & !1, name));
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
-/// A path cut to what follows the kernel's source directory, as
-/// `mm/filemap.c` from `.../linux-5.10.146/mm/filemap.c`.
-fn source_relative(path: &str) -> &str {
-    let path = path.strip_prefix("./").unwrap_or(path);
-    let Some(at) = path.rfind("/linux-") else { return path };
-    let rest = &path[at + 1..];
-    rest.find('/').map_or(path, |slash| &rest[slash + 1..])
-}
-
 /// The names of the symbols that overlap `range`.
 fn names_in(symbols: &[Symbol], range: core::ops::Range<u64>) -> BTreeSet<&str> {
     let first = symbols.partition_point(|symbol| symbol.0 <= range.start).saturating_sub(1);
@@ -366,56 +276,6 @@ impl<'a> Side<'a> {
         let arch = self.kernel.isa_of(function).arch();
         let (insns, _) = decode_all(arch, &function.code, function.address);
         normalize_body_in(arch, &function.code, &insns, &self.kernel.addresses)
-    }
-}
-
-/// Which source files of the earlier release went on as which of the later.
-///
-/// Between kernel releases, code moves to other files: `kernel/futex.c`
-/// became `kernel/futex/core.c`, and `net/core/ethtool.c` became
-/// `net/ethtool/ioctl.c`. Two files correspond where they share a path, or
-/// where [`FEWEST_MOVED_NAMES`] or more function names that each release
-/// holds once live in the one file before and in the other after.
-struct FileMoves<'a> {
-    moved: BTreeSet<(&'a str, &'a str)>,
-}
-
-/// See [`FileMoves`]: one name alone can be a homonym.
-const FEWEST_MOVED_NAMES: usize = 2;
-
-impl<'a> FileMoves<'a> {
-    fn new(symbols: &'a [Vec<Symbol>; 2], sources: &'a [Vec<Symbol>; 2]) -> Self {
-        // The file of each name that one function of the release holds.
-        let files_by_name = |side: usize| {
-            let file_at: BTreeMap<u64, &str> =
-                sources[side].iter().map(|source| (source.0, source.2.as_str())).collect();
-            let mut by_name: BTreeMap<&str, Option<&str>> = BTreeMap::new();
-            for symbol in &symbols[side] {
-                let Some(&file) = file_at.get(&symbol.0) else { continue };
-                by_name
-                    .entry(symbol.2.as_str())
-                    .and_modify(|seen| *seen = None)
-                    .or_insert(Some(file));
-            }
-            by_name
-        };
-        let [before, after] = [files_by_name(0), files_by_name(1)];
-        let mut shared: BTreeMap<(&str, &str), usize> = BTreeMap::new();
-        for (name, &file) in &before {
-            if let (Some(file), Some(Some(other))) = (file, after.get(name)) {
-                *shared.entry((file, other)).or_default() += 1;
-            }
-        }
-        let moved = shared
-            .into_iter()
-            .filter(|&(_, count)| count >= FEWEST_MOVED_NAMES)
-            .map(|(files, _)| files)
-            .collect();
-        Self { moved }
-    }
-
-    fn corresponds(&self, before: &str, after: &str) -> bool {
-        before == after || self.moved.contains(&(before, after))
     }
 }
 
