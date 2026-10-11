@@ -2099,12 +2099,12 @@ fn il_operand(operand: ValuedOperand) -> il::Operand {
         ValuedOperand::core_label(_) | ValuedOperand::core_branch_target_label(_) => {
             il::Operand::Target
         }
-        ValuedOperand::core_imm_rs(offset, base) => il::Operand::Memory {
-            offset: Some(offset.into()),
-            base: Some(base.as_index())
+        ValuedOperand::core_imm_rs(offset, base) => il::Operand::memory(
+            Some(base.as_index())
                 .filter(|&index| index != 0)
                 .map(|index| il::Reg::General(index as u8)),
-        },
+            Some(offset.into()),
+        ),
         _ => il::Operand::Other,
     }
 }
@@ -2348,14 +2348,13 @@ mod tests {
 
     #[test]
     fn a_memory_operand_names_its_base_and_offset() {
-        use il::Operand::Memory;
         let general = |number| Some(il::Reg::General(number));
         let memory = |word| *lift_one(word).operands.last().expect("a memory operand");
         // `lw t0, -8(a0)`
         const LW_T0_A0_MINUS_8: u32 = 0x8c88_fff8;
-        assert_eq!(memory(words::LW_T0_SP_4), Memory { base: general(29), offset: Some(4) });
-        assert_eq!(memory(LW_T0_A0_MINUS_8), Memory { base: general(4), offset: Some(-8) });
-        assert_eq!(memory(words::SB_T1_A0), Memory { base: general(4), offset: Some(0) });
+        assert_eq!(memory(words::LW_T0_SP_4), il::Operand::memory(general(29), Some(4)));
+        assert_eq!(memory(LW_T0_A0_MINUS_8), il::Operand::memory(general(4), Some(-8)));
+        assert_eq!(memory(words::SB_T1_A0), il::Operand::memory(general(4), Some(0)));
     }
 
     #[test]

@@ -56,6 +56,11 @@ pub enum Reg {
     Stack,
     /// The condition flags, which a compare writes and a branch reads.
     Flags,
+    /// The program counter, where an operand names it, as the base of a
+    /// load from a literal pool or the target of `pop {pc}`. It is no value
+    /// a function computes, so no [`RegSet`] holds it, and the data flow of
+    /// [`flow_features`] reads it as no register.
+    ProgramCounter,
 }
 
 impl Reg {
@@ -68,6 +73,7 @@ impl Reg {
             Self::Vector(number) => VECTOR + u32::from(number % 32),
             Self::Stack => 126,
             Self::Flags => 127,
+            Self::ProgramCounter => 125,
         }
     }
 
@@ -75,6 +81,7 @@ impl Reg {
     fn of_bit(bit: u32) -> Self {
         match bit {
             0..64 => Self::General(bit as u8),
+            125 => Self::ProgramCounter,
             126 => Self::Stack,
             127 => Self::Flags,
             _ => Self::Vector((bit - 64) as u8),
@@ -533,19 +540,60 @@ pub enum Operand {
     Zero,
     /// A constant, with a negative one in two's complement.
     Const(u64),
-    /// A memory reference, through `base` plus `offset`. A base the IL does
-    /// not name, as the program counter, is `None`, and so is an offset in a
-    /// register.
+    /// A register shifted left, right or round by a constant, as the second
+    /// source of `add r0, r1, r2, lsl #2`. It reads the register.
+    Shifted {
+        reg: Reg,
+        shift: Shift,
+        amount: u8,
+    },
+    /// A memory reference, through `base` plus `offset`, or plus `index`
+    /// shifted left by its amount. A base the IL does not name is `None`,
+    /// and so is an offset in a register. `update` says whether the access
+    /// writes the address it formed back to `base`.
     Memory {
         base: Option<Reg>,
         offset: Option<i64>,
+        index: Option<(Reg, u8)>,
+        update: Update,
     },
     /// A branch or address target, without the address, which moves.
     Target,
     /// A list of registers, as `push` and `ldm` take.
-    RegisterList,
+    RegisterList(RegSet),
     /// Anything else, as a condition or a system register.
     Other,
+}
+
+impl Operand {
+    /// An access through `base` plus `offset`, with no index, which writes
+    /// nothing back.
+    pub fn memory(base: Option<Reg>, offset: Option<i64>) -> Self {
+        Self::Memory { base, offset, index: None, update: Update::None }
+    }
+}
+
+/// How a register is shifted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Shift {
+    Left,
+    Right,
+    RightArithmetic,
+    Rotate,
+    /// A rotate right by one, through the carry, as A32 `rrx` does.
+    RotateExtended,
+}
+
+/// Whether an access writes the address it formed back to its base.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Update {
+    /// It does not.
+    #[default]
+    None,
+    /// Before the access, as `ldr r0, [r1, #4]!` does.
+    Before,
+    /// After the access, as `ldr r0, [r1], #4` does.
+    After,
 }
 
 /// Operands held without a heap allocation. An instruction names four at
@@ -677,13 +725,16 @@ impl Flow {
                 {
                     continue;
                 }
+                Operand::Reg(Reg::ProgramCounter) => continue,
                 Operand::Reg(reg) => self.label_of(reg),
                 Operand::Zero => [ZERO; FLOW_ROUNDS],
                 Operand::Const(value) => [constant_label(value); FLOW_ROUNDS],
+                Operand::Shifted { reg, .. } => self.label_of(reg),
                 Operand::Memory { base, .. } => base
+                    .filter(|&base| base != Reg::ProgramCounter)
                     .map_or([MEMORY; FLOW_ROUNDS], |base| self.label_of(base))
                     .map(|label| mix(MEMORY, label)),
-                Operand::Target | Operand::RegisterList | Operand::Other => continue,
+                Operand::Target | Operand::RegisterList(_) | Operand::Other => continue,
             };
             inputs.push(input);
         }
@@ -1189,12 +1240,9 @@ mod tests {
             reads: [Reg::General(base)].into_iter().collect(),
             writes: [Reg::General(base + 2)].into_iter().collect(),
             memory: Some(MemoryAccess { kind: AccessKind::Load, width: Some(Width::Bits32) }),
-            operands: [
-                r(base + 2),
-                Operand::Memory { base: Some(Reg::General(base)), offset: Some(8) },
-            ]
-            .into_iter()
-            .collect(),
+            operands: [r(base + 2), Operand::memory(Some(Reg::General(base)), Some(8))]
+                .into_iter()
+                .collect(),
             ..Lifted::default()
         });
         vec![

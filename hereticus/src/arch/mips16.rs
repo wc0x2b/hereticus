@@ -841,7 +841,7 @@ impl Arch for Mips16 {
                         kind: il::AccessKind::Load,
                         width: Some(il::Width::Bits32),
                     });
-                    il::Operand::Memory { base: None, offset: None }
+                    il::Operand::memory(None, None)
                 } else {
                     il::Operand::Target
                 };

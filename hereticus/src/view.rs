@@ -1150,12 +1150,13 @@ fn statement(
     } else {
         let text = |operand: &Operand| -> Option<String> {
             Some(match operand {
-                Operand::Reg(reg) => (*names.get(reg)?).to_string(),
+                Operand::Reg(Reg::ProgramCounter) => return None,
+                Operand::Reg(reg) | Operand::Shifted { reg, .. } => (*names.get(reg)?).to_string(),
                 Operand::Zero => "0".to_string(),
                 Operand::Const(value) => constant(*value),
                 Operand::Memory { .. } => memory_text(memory?),
                 Operand::Target => target?.to_string(),
-                Operand::RegisterList | Operand::Other => return None,
+                Operand::RegisterList(_) | Operand::Other => return None,
             })
         };
         canonical.operands.iter().map(text).collect::<Option<_>>()?

@@ -10,7 +10,8 @@
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
 use yaxpeax_arm::armv7::{
-    ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg, RegShiftStyle, ShiftStyle,
+    ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg, RegShift, RegShiftStyle,
+    ShiftStyle,
 };
 
 use core::ops::Range;
@@ -952,33 +953,92 @@ fn is_binary(op: il::Op) -> bool {
 
 /// An operand as the IL names it.
 fn il_operand(operand: Operand) -> il::Operand {
-    let register = |reg: Reg| il_reg(reg).map_or(il::Operand::Other, il::Operand::Reg);
+    let register = |reg: Reg| il::Operand::Reg(operand_reg(reg));
+    let memory = |base: Reg, offset, index, update| il::Operand::Memory {
+        base: Some(operand_reg(base)),
+        offset,
+        index,
+        update,
+    };
+    // `wback` of a pre-indexed access says whether it writes the base back;
+    // a post-indexed one always does.
+    let before = |write_back: bool| if write_back { il::Update::Before } else { il::Update::None };
     match operand {
         Operand::Reg(reg) | Operand::RegWBack(reg, _) => register(reg),
         Operand::RegShift(shift) => match shift.into_shift() {
-            RegShiftStyle::RegImm(shift) => register(shift.shiftee()),
+            RegShiftStyle::RegImm(shift) => shifted(shift.shiftee(), shift.stype(), shift.imm()),
             RegShiftStyle::RegReg(shift) => register(shift.shiftee()),
         },
-        Operand::RegList(_) => il::Operand::RegisterList,
-        Operand::RegDeref(base) => il::Operand::Memory { base: il_reg(base), offset: Some(0) },
-        Operand::RegDerefPostindexOffset(base, offset, add, _)
-        | Operand::RegDerefPreindexOffset(base, offset, add, _) => {
+        Operand::RegList(list) => il::Operand::RegisterList(register_list(list)),
+        Operand::RegDeref(base) => memory(base, Some(0), None, il::Update::None),
+        Operand::RegDerefPreindexOffset(base, offset, add, write_back) => {
             let offset = i64::from(offset);
-            il::Operand::Memory {
-                base: il_reg(base),
-                offset: Some(if add { offset } else { -offset }),
-            }
+            memory(base, Some(if add { offset } else { -offset }), None, before(write_back))
         }
-        Operand::RegDerefPostindexRegShift(base, ..)
-        | Operand::RegDerefPreindexRegShift(base, ..)
-        | Operand::RegDerefPostindexReg(base, ..)
-        | Operand::RegDerefPreindexReg(base, ..) => {
-            il::Operand::Memory { base: il_reg(base), offset: None }
+        Operand::RegDerefPostindexOffset(base, offset, add, _) => {
+            let offset = i64::from(offset);
+            memory(base, Some(if add { offset } else { -offset }), None, il::Update::After)
+        }
+        Operand::RegDerefPreindexReg(base, index, _, write_back) => {
+            memory(base, None, Some((operand_reg(index), 0)), before(write_back))
+        }
+        Operand::RegDerefPostindexReg(base, index, ..) => {
+            memory(base, None, Some((operand_reg(index), 0)), il::Update::After)
+        }
+        Operand::RegDerefPreindexRegShift(base, shift, _, write_back) => {
+            memory(base, None, shifted_index(shift), before(write_back))
+        }
+        Operand::RegDerefPostindexRegShift(base, shift, ..) => {
+            memory(base, None, shifted_index(shift), il::Update::After)
         }
         Operand::Imm12(value) => il::Operand::Const(value.into()),
         Operand::Imm32(value) => il::Operand::Const(value.into()),
         Operand::BranchOffset(_) | Operand::BranchThumbOffset(_) => il::Operand::Target,
         _ => il::Operand::Other,
+    }
+}
+
+/// The register an operand names, where the program counter has a name of
+/// its own.
+fn operand_reg(reg: Reg) -> il::Reg {
+    il_reg(reg).unwrap_or(il::Reg::ProgramCounter)
+}
+
+/// The general register `number`, as an operand names it.
+fn operand_general(number: u32) -> il::Reg {
+    operand_reg(Reg::from_u8(number as u8))
+}
+
+/// The registers of a list, as the bits of `push` and `ldm` name them.
+fn register_list(list: u16) -> il::RegSet {
+    (0..16)
+        .filter(|bit| list & (1 << bit) != 0)
+        .map(|bit| operand_reg(Reg::from_u8(bit as u8)))
+        .collect()
+}
+
+/// `reg` shifted by the constant `amount` in `style`. A left shift by zero
+/// is the register itself, and a rotate by zero is `rrx`.
+fn shifted(reg: Reg, style: ShiftStyle, amount: u8) -> il::Operand {
+    let shift = match (style, amount) {
+        (ShiftStyle::LSL, 0) => return il::Operand::Reg(operand_reg(reg)),
+        (ShiftStyle::LSL, _) => il::Shift::Left,
+        (ShiftStyle::LSR, _) => il::Shift::Right,
+        (ShiftStyle::ASR, _) => il::Shift::RightArithmetic,
+        (ShiftStyle::ROR, 0) => il::Shift::RotateExtended,
+        (ShiftStyle::ROR, _) => il::Shift::Rotate,
+    };
+    il::Operand::Shifted { reg: operand_reg(reg), shift, amount }
+}
+
+/// The index of an access, where it shifts its register left by a
+/// constant, as `[r1, r2, lsl #2]`. Another shift scales no index.
+fn shifted_index(shift: RegShift) -> Option<(il::Reg, u8)> {
+    match shift.into_shift() {
+        RegShiftStyle::RegImm(shift) if shift.stype() == ShiftStyle::LSL => {
+            Some((operand_reg(shift.shiftee()), shift.imm()))
+        }
+        _ => None,
     }
 }
 
@@ -2166,7 +2226,7 @@ impl IntegerWord {
                     Indexing::PostIndex => 0,
                     Indexing::Offset | Indexing::PreIndex => offset,
                 };
-                let memory = il::Operand::Memory { base: general(rn), offset: Some(at) };
+                let memory = il::Operand::memory(Some(operand_general(rn)), Some(at));
                 lifted.op = if load { Op::Load } else { Op::Store };
                 lifted.operands =
                     values.iter().map(|&number| value(number)).chain([memory]).collect();
@@ -2634,8 +2694,15 @@ impl VfpWord {
                 lifted.op = if load { Op::Load } else { Op::Store };
                 let offset =
                     if before { -i64::from(count * if double { 8 } else { 4 }) } else { 0 };
-                let memory = il::Operand::Memory { base: general(base), offset: Some(offset) };
-                lifted.operands = [il::Operand::RegisterList, memory].into_iter().collect();
+                let update = if write_back { il::Update::Before } else { il::Update::None };
+                let memory = il::Operand::Memory {
+                    base: Some(operand_general(base)),
+                    offset: Some(offset),
+                    index: None,
+                    update,
+                };
+                let list = (first..first + count).map(vector).collect();
+                lifted.operands = [il::Operand::RegisterList(list), memory].into_iter().collect();
                 let kind = if load { il::AccessKind::Load } else { il::AccessKind::Store };
                 let width = if double { il::Width::Bits64 } else { il::Width::Bits32 };
                 lifted.memory = Some(il::MemoryAccess { kind, width: Some(width) });
@@ -2836,8 +2903,14 @@ pub(super) fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted>
                 2 => il::Width::Bits32,
                 _ => il::Width::Bits64,
             };
-            let memory = il::Operand::Memory { base, offset };
-            (access.load, width, il::Operand::RegisterList, memory)
+            let memory = il::Operand::Memory {
+                base: Some(operand_general(access.base)),
+                offset,
+                index: None,
+                update: if access.index == 0b1111 { il::Update::None } else { il::Update::After },
+            };
+            let list = access.registers().map(|number| il::Reg::Vector(number as u8)).collect();
+            (access.load, width, il::Operand::RegisterList(list), memory)
         } else {
             // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
             let (_, _, decoded) = decode_fallback(word, encoding)?;
@@ -2858,7 +2931,7 @@ pub(super) fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted>
             let offset = i64::from(field(0, 8) * 4);
             let offset = if field(23, 1) == 1 { offset } else { -offset };
             let width = if double { il::Width::Bits64 } else { il::Width::Bits32 };
-            let memory = il::Operand::Memory { base, offset: Some(offset) };
+            let memory = il::Operand::memory(Some(operand_general(field(16, 4))), Some(offset));
             (load, width, il::Operand::Reg(register), memory)
         };
     if word >> 28 != 0b1110 && word >> 24 != NEON_LOAD_STORE {
@@ -3607,23 +3680,30 @@ mod tests {
         let operands = |bytes| lift_one(bytes).operands.into_vec();
         assert_eq!(operands(words::ADD_R0_R1_R2), [reg(0), reg(1), reg(2)]);
         assert_eq!(operands(words::CMP_R0_1), [reg(0), Const(1)], "no unused destination");
-        assert_eq!(operands(words::PUSH_R4_LR), [il::Operand::Reg(il::Reg::Stack), RegisterList]);
+        let saved = [il::Reg::General(4), il::Reg::General(14)].into_iter().collect();
+        let push = [il::Operand::Reg(il::Reg::Stack), RegisterList(saved)];
+        assert_eq!(operands(words::PUSH_R4_LR), push, "the list names what it saves");
         assert_eq!(operands(words::BL), [Target]);
     }
 
     #[test]
     fn a_memory_operand_names_its_base_and_offset() {
-        use il::Operand::Memory;
         let general = |number| Some(il::Reg::General(number));
         let memory = |bytes| *lift_one(bytes).operands.last().expect("a memory operand");
         // `ldr r1, [r2, #-8]`
         const LDR_R1_R2_MINUS_8: [u8; 4] = [0x08, 0x10, 0x12, 0xe5];
-        assert_eq!(memory(words::LDR_R1_R2_8), Memory { base: general(2), offset: Some(8) });
-        assert_eq!(memory(LDR_R1_R2_MINUS_8), Memory { base: general(2), offset: Some(-8) });
-        assert_eq!(memory(words::STR_R3_R4_R5), Memory { base: general(4), offset: None });
+        assert_eq!(memory(words::LDR_R1_R2_8), il::Operand::memory(general(2), Some(8)));
+        assert_eq!(memory(LDR_R1_R2_MINUS_8), il::Operand::memory(general(2), Some(-8)));
+        let indexed = il::Operand::Memory {
+            base: general(4),
+            offset: None,
+            index: Some((il::Reg::General(5), 0)),
+            update: il::Update::None,
+        };
+        assert_eq!(memory(words::STR_R3_R4_R5), indexed, "the index names its register");
         assert_eq!(
             memory(words::LDRD_R2_R3_SP),
-            Memory { base: Some(il::Reg::Stack), offset: Some(8) }
+            il::Operand::memory(Some(il::Reg::Stack), Some(8))
         );
     }
 
@@ -4560,19 +4640,33 @@ mod tests {
 
     /// `yaxpeax` reads no VFP or NEON load or store, so they lift from the
     /// fields [`decode_fallback`] reads.
+    /// A register less or exclusive-or itself is zero, but not shifted:
+    /// `eor r0, r1, r1, lsl #2` is `r1 ^ (r1 << 2)`. The lift once dropped
+    /// the shift and read it as a move of zero.
+    #[test]
+    fn a_shifted_register_is_not_itself() {
+        // eor r0, r1, r1, lsl #2 and eor r0, r1, r1.
+        let shifted = lift_one(0xe021_0101_u32.to_le_bytes());
+        let shift =
+            il::Operand::Shifted { reg: il::Reg::General(1), shift: il::Shift::Left, amount: 2 };
+        assert_eq!(shifted.operands[2], shift);
+        assert_eq!(shifted.canonical().op, il::Op::Xor);
+        assert_eq!(lift_one(0xe021_0001_u32.to_le_bytes()).canonical().op, il::Op::Move);
+    }
+
     #[test]
     fn a_vfp_load_and_store_lift() {
         // `vldr d16, [pc, 0x90]`, as GCC loads a double from its pool.
         let load = lift_fallback(0xeddf_0b24, Encoding::A32).expect("vldr lifts");
         assert_eq!(load.op, il::Op::Load);
         assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits64));
-        let pool = il::Operand::Memory { base: None, offset: Some(0x90) };
+        let pool = il::Operand::memory(Some(il::Reg::ProgramCounter), Some(0x90));
         assert_eq!(load.operands.as_slice(), [il::Operand::Reg(il::Reg::Vector(16)), pool]);
         assert_eq!(load.writes, [il::Reg::Vector(16)].into_iter().collect());
         // `vstr s0, [sp, -0x4]`
         let store = lift_fallback(0xed0d_0a01, Encoding::A32).expect("vstr lifts");
         assert_eq!(store.op, il::Op::Store);
-        let slot = il::Operand::Memory { base: Some(il::Reg::Stack), offset: Some(-4) };
+        let slot = il::Operand::memory(Some(il::Reg::Stack), Some(-4));
         assert_eq!(store.operands[1], slot);
         assert_eq!(store.reads, [il::Reg::Stack, il::Reg::Vector(0)].into_iter().collect());
         assert!(store.writes.is_empty());
@@ -4584,8 +4678,14 @@ mod tests {
         let load = lift_fallback(0xf460_0a0d, Encoding::A32).expect("vld1 lifts");
         assert_eq!(load.op, il::Op::Load);
         assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits8));
-        let base = il::Operand::Memory { base: Some(il::Reg::General(0)), offset: Some(0) };
-        assert_eq!(load.operands.as_slice(), [il::Operand::RegisterList, base]);
+        let base = il::Operand::Memory {
+            base: Some(il::Reg::General(0)),
+            offset: Some(0),
+            index: None,
+            update: il::Update::After,
+        };
+        let list = [il::Reg::Vector(16), il::Reg::Vector(17)].into_iter().collect();
+        assert_eq!(load.operands.as_slice(), [il::Operand::RegisterList(list), base]);
         let written = [il::Reg::General(0), il::Reg::Vector(16), il::Reg::Vector(17)];
         assert_eq!(load.writes, written.into_iter().collect());
     }
@@ -4659,7 +4759,7 @@ mod tests {
         );
         let load = lift(0xe1d2_20d0);
         assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits8));
-        let at = il::Operand::Memory { base: Some(il::Reg::General(2)), offset: Some(0) };
+        let at = il::Operand::memory(Some(il::Reg::General(2)), Some(0));
         assert_eq!(load.operands.as_slice(), [general(2), at]);
     }
 
@@ -4857,8 +4957,14 @@ mod tests {
         // `vpush {d8, d9}` stores below `sp` and moves it.
         let push = lift(0xed2d_8b04);
         assert_eq!(push.op, il::Op::Store);
-        let below = il::Operand::Memory { base: Some(il::Reg::Stack), offset: Some(-16) };
-        assert_eq!(push.operands.as_slice(), [il::Operand::RegisterList, below]);
+        let below = il::Operand::Memory {
+            base: Some(il::Reg::Stack),
+            offset: Some(-16),
+            index: None,
+            update: il::Update::Before,
+        };
+        let list = regs(&[vector(8), vector(9)]);
+        assert_eq!(push.operands.as_slice(), [il::Operand::RegisterList(list), below]);
         assert_eq!(push.reads, regs(&[il::Reg::Stack, vector(8), vector(9)]));
         assert_eq!(push.writes, regs(&[il::Reg::Stack]));
         // `vcvt.s32.f64 s0, d16` converts into the single register.

@@ -462,9 +462,16 @@ fn normalize_lifted(arch: &dyn Arch, insn: &Insn, lifted: Option<&Lifted>) -> No
 fn lifted_shapes(arch: &dyn Arch, operand: il::Operand) -> impl Iterator<Item = OperandShape> {
     let in_frame = |reg: Option<Reg>| reg.is_some_and(|reg| arch.is_frame_register(reg));
     let (shape, offset) = match operand {
-        il::Operand::Reg(reg) if in_frame(Some(reg)) => (OperandShape::StackPointer, None),
-        il::Operand::Reg(Reg::Vector(_)) => (OperandShape::VectorRegister, None),
-        il::Operand::Reg(_) | il::Operand::Zero => (OperandShape::Register, None),
+        il::Operand::Reg(Reg::ProgramCounter) => (OperandShape::Other, None),
+        il::Operand::Reg(reg) | il::Operand::Shifted { reg, .. } if in_frame(Some(reg)) => {
+            (OperandShape::StackPointer, None)
+        }
+        il::Operand::Reg(Reg::Vector(_)) | il::Operand::Shifted { reg: Reg::Vector(_), .. } => {
+            (OperandShape::VectorRegister, None)
+        }
+        il::Operand::Reg(_) | il::Operand::Shifted { .. } | il::Operand::Zero => {
+            (OperandShape::Register, None)
+        }
         il::Operand::Const(value) => (OperandShape::Immediate(Magnitude::of(value)), None),
         il::Operand::Memory { base, .. } if in_frame(base) => (OperandShape::StackSlot, None),
         il::Operand::Memory { offset, .. } => (
@@ -472,7 +479,7 @@ fn lifted_shapes(arch: &dyn Arch, operand: il::Operand) -> impl Iterator<Item = 
             offset.map(|offset| OperandShape::Immediate(Magnitude::of(offset.unsigned_abs()))),
         ),
         il::Operand::Target => (OperandShape::Target, None),
-        il::Operand::RegisterList => (OperandShape::RegisterList, None),
+        il::Operand::RegisterList(_) => (OperandShape::RegisterList, None),
         il::Operand::Other => (OperandShape::Other, None),
     };
     core::iter::once(shape).chain(offset)
@@ -533,9 +540,7 @@ fn frame_addressed(arch: &dyn Arch, mut lifted: Lifted) -> Lifted {
     }
     let offset = *offset as i64;
     let offset = if lifted.op == il::Op::Subtract { offset.wrapping_neg() } else { offset };
-    lifted.operands = [*dest, il::Operand::Memory { base: Some(*base), offset: Some(offset) }]
-        .into_iter()
-        .collect();
+    lifted.operands = [*dest, il::Operand::memory(Some(*base), Some(offset))].into_iter().collect();
     lifted.op = il::Op::Address;
     lifted
 }
@@ -896,13 +901,13 @@ mod tests {
     /// A frame slot moves with every spill, so its offset says nothing.
     #[test]
     fn a_frame_slot_gives_no_offset() {
-        let slot = il::Operand::Memory { base: Some(Reg::Stack), offset: Some(0x400) };
+        let slot = il::Operand::memory(Some(Reg::Stack), Some(0x400));
         assert_eq!(shapes(slot), [OperandShape::StackSlot]);
     }
 
     #[test]
     fn a_memory_reference_gives_the_size_of_its_offset() {
-        let at = |offset| il::Operand::Memory { base: Some(Reg::General(2)), offset };
+        let at = |offset| il::Operand::memory(Some(Reg::General(2)), offset);
         let sized = |magnitude| [OperandShape::Memory, OperandShape::Immediate(magnitude)];
         assert_eq!(shapes(at(Some(0))), sized(Magnitude::Zero));
         assert_eq!(shapes(at(Some(8))), sized(Magnitude::Small));
@@ -910,7 +915,7 @@ mod tests {
         assert_eq!(shapes(at(Some(0x400))), sized(Magnitude::Large));
         assert_eq!(shapes(at(Some(i64::MIN))), sized(Magnitude::Large));
         assert_eq!(shapes(at(None)), [OperandShape::Memory], "an offset in a register");
-        let unnamed = il::Operand::Memory { base: None, offset: Some(8) };
+        let unnamed = il::Operand::memory(None, Some(8));
         assert_eq!(shapes(unnamed), sized(Magnitude::Small), "a literal pool load");
     }
 

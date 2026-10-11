@@ -617,7 +617,7 @@ impl WideStore {
         lifted.reads.insert(reg(self.base));
         lifted.operands = [
             Operand::Reg(reg(self.value)),
-            Operand::Memory { base: Some(reg(self.base)), offset: Some(i64::from(self.offset)) },
+            Operand::memory(Some(reg(self.base)), Some(i64::from(self.offset))),
         ]
         .into_iter()
         .collect();
@@ -1357,10 +1357,7 @@ mod tests {
         assert_eq!(lifted.op, crate::il::Op::Store);
         assert_eq!(
             lifted.operands.last(),
-            Some(&crate::il::Operand::Memory {
-                base: Some(crate::il::Reg::General(5)),
-                offset: Some(4)
-            })
+            Some(&crate::il::Operand::memory(Some(crate::il::Reg::General(5)), Some(4)))
         );
     }
 
