@@ -21,7 +21,7 @@ use yaxpeax_arm::armv8::a64::{
     InstDecoder, Instruction, Opcode, Operand, SIMDSizeCode, ShiftStyle, SizeCode,
 };
 
-use super::arm32::split_mnemonic;
+use super::split_printed;
 use super::{Arch, DecodeError, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind};
 use crate::il::{
@@ -43,8 +43,8 @@ const PAGE: u64 = 0x1000;
 const ADR_MASK: u32 = 0x1f00_0000;
 const ADR_BITS: u32 = 0x1000_0000;
 
-/// Mnemonic reported for bytes the decoder cannot read.
-const UNKNOWN_MNEMONIC: &str = "(unknown)";
+/// The text of bytes the decoder cannot read.
+const UNKNOWN_TEXT: &str = "(unknown)";
 
 /// The A64 `nop` encoding, little endian.
 const NOP_BYTES: [u8; 4] = [0x1f, 0x20, 0x03, 0xd5];
@@ -63,6 +63,58 @@ const MOST_CASES: usize = 4096;
 pub struct Aarch64;
 
 impl Arch for Aarch64 {
+    /// The condition of `b.ne` is dropped, so a branch on any condition is
+    /// one operation. A32 keeps it: see `TODO.md`. An alias the decoder
+    /// prints names the operation it stands for: a `madd` into the zero
+    /// register is `mul`, and a `subs` into it is `cmp`.
+    fn operation_name(&self, insn: &Insn) -> CompactString {
+        let Some(Decoded { opcode, alias }) = decoded(insn) else {
+            return UNKNOWN_TEXT.into();
+        };
+        let name = match (opcode, alias) {
+            (Opcode::B | Opcode::Bcc(_), _) => "b",
+            (Opcode::BCcc(code), _) => return compact_str::format_compact!("bc{code}"),
+            (Opcode::SUBS, Alias::Compare) => "cmp",
+            (Opcode::ADDS, Alias::Compare) => "cmn",
+            (Opcode::ANDS, Alias::Compare) => "tst",
+            (_, Alias::Move) | (Opcode::MOVZ | Opcode::MOVN, _) => "mov",
+            (Opcode::SUB, Alias::Negate) | (Opcode::NEG, _) => "neg",
+            (Opcode::SUBS, Alias::Negate) => "negs",
+            (Opcode::SBC, Alias::Negate) => "ngc",
+            (Opcode::SBCS, Alias::Negate) => "ngcs",
+            (Opcode::ORN, Alias::Not) | (Opcode::NOT, _) => "mvn",
+            (Opcode::MADD, Alias::Multiply) | (Opcode::MUL, _) => "mul",
+            (Opcode::MSUB, Alias::Multiply) => "mneg",
+            (Opcode::SMADDL, Alias::Multiply) | (Opcode::SMULL, _) => "smull",
+            (Opcode::SMSUBL, Alias::Multiply) => "smnegl",
+            (Opcode::UMADDL, Alias::Multiply) | (Opcode::UMULL, _) => "umull",
+            (Opcode::UMSUBL, Alias::Multiply) => "umnegl",
+            (_, Alias::ShiftLeft) | (Opcode::LSLV, _) => "lsl",
+            (_, Alias::ShiftRight) | (Opcode::LSRV, _) => "lsr",
+            (_, Alias::ShiftRightArithmetic) | (Opcode::ASRV, _) => "asr",
+            (Opcode::RORV, _) => "ror",
+            (Opcode::SBFM, Alias::Extend(bits)) => {
+                return compact_str::format_compact!("sxt{bits}");
+            }
+            (_, Alias::Extend(bits)) => return compact_str::format_compact!("uxt{bits}"),
+            (_, Alias::BitField(form)) => {
+                return compact_str::format_compact!("{opcode:?}-{form:?}").to_ascii_lowercase();
+            }
+            (_, Alias::Hint(number)) => return compact_str::format_compact!("hint{number}"),
+            (_, Alias::Nop) => "nop",
+            (_, Alias::BranchTarget) => "bti",
+            // A barrier's option or a system register is an operand.
+            (Opcode::DMB(_) | Opcode::DSB(_) | Opcode::SYS(_), _) => {
+                let name = compact_str::format_compact!("{opcode:?}");
+                return name.split('(').next().unwrap_or_default().to_ascii_lowercase().into();
+            }
+            _ => {
+                return compact_str::format_compact!("{opcode:?}").to_ascii_lowercase();
+            }
+        };
+        name.into()
+    }
+
     fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
         let bytes = code.get(offset..offset + INSN_WIDTH).ok_or(DecodeError::Truncated)?;
         let insn_address = address + offset as u64;
@@ -74,23 +126,22 @@ impl Arch for Aarch64 {
             // one keeps the rest aligned. Its word goes in the operands, so
             // that an edit to it still shows.
             let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            return Ok(Insn {
-                address: insn_address,
-                bytes_len: INSN_WIDTH,
-                mnemonic: UNKNOWN_MNEMONIC.to_string(),
-                operands: format!("{word:#010x}"),
-                kind: InsnKind::Unknown,
-                opcode: super::Opcode::None,
-            });
+            return Ok(Insn::new(
+                insn_address,
+                INSN_WIDTH,
+                &format!("{UNKNOWN_TEXT} {word:#010x}"),
+                InsnKind::Unknown,
+                super::Opcode::None,
+            ));
         }
 
-        let text = inst.to_string();
-        let (mnemonic, operands) = split_mnemonic(&text);
-        let operands = extended_register(inst.opcode, operands);
+        let printed = inst.to_string();
+        let (name, operands) = split_printed(&printed);
+        let operands = extended_register(inst.opcode, operands.to_string());
         let kind = classify(&inst, insn_address);
         let opcode =
             super::Opcode::Aarch64(Decoded { opcode: inst.opcode, alias: alias_of(&inst) });
-        Ok(Insn { address: insn_address, bytes_len: INSN_WIDTH, mnemonic, operands, kind, opcode })
+        Ok(Insn::new(insn_address, INSN_WIDTH, &format!("{name} {operands}"), kind, opcode))
     }
 
     fn triple(&self) -> &'static str {
@@ -140,18 +191,9 @@ impl Arch for Aarch64 {
         Some(if negative { value.wrapping_neg() } else { value })
     }
 
-    /// The condition of `b.ne` is dropped, as A32 drops it from `bne`.
-    fn normalize_operation(&self, mnemonic: &str) -> CompactString {
-        let mnemonic = mnemonic.trim();
-        match mnemonic.split_once('.') {
-            Some((stem, _)) if stem == "b" => stem.into(),
-            _ => mnemonic.into(),
-        }
-    }
-
     fn is_frame_management(&self, insn: &Insn) -> bool {
         let Some(Decoded { opcode, alias }) = decoded(insn) else { return false };
-        let operands = insn.operands.as_str();
+        let operands = insn.operands();
         let first = operands.split(',').next().unwrap_or_default();
         match (opcode, alias) {
             // Saving and restoring the frame and the registers it keeps.
@@ -177,9 +219,9 @@ impl Arch for Aarch64 {
     /// one source among several.
     fn is_prologue(&self, insn: &Insn) -> bool {
         match opcode_of(insn) {
-            Some(Opcode::STP) => insn.operands.starts_with("x29, x30, [sp"),
+            Some(Opcode::STP) => insn.operands().starts_with("x29, x30, [sp"),
             Some(Opcode::STR) => {
-                insn.operands.starts_with("x30, [sp") && insn.operands.ends_with('!')
+                insn.operands().starts_with("x30, [sp") && insn.operands().ends_with('!')
             }
             _ => false,
         }
@@ -197,7 +239,7 @@ impl Arch for Aarch64 {
 
     fn is_padding(&self, insn: &Insn) -> bool {
         decoded(insn).is_some_and(|decoded| decoded.alias == Alias::Nop)
-            || (insn.kind == InsnKind::Unknown && insn.operands == "0x00000000")
+            || (insn.kind == InsnKind::Unknown && insn.operands() == "0x00000000")
     }
 
     /// Only whole words at the end are removed, and only the two encodings a
@@ -288,23 +330,23 @@ impl Arch for Aarch64 {
         let [adrp, load, add, jump] = insns.as_slice() else { return None };
         let page = page_of(adrp)?;
         // An offset of 0 prints as `[x16]`, with none.
-        let reference = load.operands.strip_prefix("x17, [x16")?.strip_suffix(']')?;
+        let reference = load.operands().strip_prefix("x17, [x16")?.strip_suffix(']')?;
         let low = match reference.strip_prefix(", ") {
             Some(offset) => self.constant_value(offset)?,
             None if reference.is_empty() => 0,
             None => return None,
         };
         let shape = opcode_of(load) == Some(Opcode::LDR)
-            && add.operands.starts_with("x16, x16, ")
+            && add.operands().starts_with("x16, x16, ")
             && opcode_of(jump) == Some(Opcode::BR)
-            && jump.operands == "x17";
+            && jump.operands() == "x17";
         shape.then_some(page + low)
     }
 
     /// `br x16` and `br x17`: the ABI keeps these two for a jump the linker
     /// adds, a PLT stub or a veneer. A `switch` jumps through another.
     fn is_tail_call(&self, insn: &Insn) -> bool {
-        opcode_of(insn) == Some(Opcode::BR) && matches!(insn.operands.as_str(), "x16" | "x17")
+        opcode_of(insn) == Some(Opcode::BR) && matches!(insn.operands(), "x16" | "x17")
     }
 
     fn pointer_width(&self) -> usize {
@@ -590,10 +632,13 @@ fn op_of(inst: &Instruction, alias: Alias, role: Role, operands: &[Operand]) -> 
             Alias::ShiftLeft => Op::ShiftLeft,
             Alias::ShiftRight => Op::ShiftRight,
             Alias::ShiftRightArithmetic => Op::ShiftRightArithmetic,
-            Alias::Extend => Op::Extend,
-            Alias::None | Alias::AtomicStore | Alias::Nop | Alias::BranchTarget => {
-                plain_op(inst.opcode)
-            }
+            Alias::Extend(_) => Op::Extend,
+            Alias::None
+            | Alias::BitField(_)
+            | Alias::Hint(_)
+            | Alias::AtomicStore
+            | Alias::Nop
+            | Alias::BranchTarget => plain_op(inst.opcode),
         },
     }
 }
@@ -703,8 +748,15 @@ pub enum Alias {
     ShiftRight,
     /// `asr`, which is an `sbfm`.
     ShiftRightArithmetic,
-    /// `uxtb`, `sxtw` and the like, which are a `ubfm` or an `sbfm`.
-    Extend,
+    /// `uxtb`, `sxtw` and the like, which are a `ubfm` or an `sbfm`, from
+    /// a value of this many bits.
+    Extend(u8),
+    /// `ubfx`, `sbfiz`, `bfi`, `bfc` and the like: one form of a `ubfm`,
+    /// an `sbfm` or a `bfm` that the others are not.
+    BitField(BitFieldForm),
+    /// A `hint` by its number, other than `nop` and `bti`, as `yield`,
+    /// `wfe` and `sev` are.
+    Hint(u16),
     /// `stadd` and the like: an atomic operation that keeps no old value,
     /// as `ldadd w1, wzr, [x0]`. Only the forms without acquire semantics
     /// have this alias.
@@ -714,6 +766,22 @@ pub enum Alias {
     /// `bti`, which marks where an indirect branch may land: hints 32, 34,
     /// 36 and 38.
     BranchTarget,
+}
+
+/// What a bit field instruction does with its field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitFieldForm {
+    /// Copies a field to the low bits, as `ubfx` and `bfxil` do.
+    Extract,
+    /// Copies the low bits to a field, as `ubfiz` and `bfi` do.
+    Insert,
+    /// Clears a field, as `bfc` does.
+    Clear,
+}
+
+/// The form of a bit field instruction from its `immr` and `imms`.
+fn bit_field_form(immr: u32, imms: u32) -> BitFieldForm {
+    if imms < immr { BitFieldForm::Insert } else { BitFieldForm::Extract }
 }
 
 /// The alias `inst` prints as, by the rules of `yaxpeax-arm` 0.4.
@@ -738,10 +806,14 @@ fn alias_of(inst: &Instruction) -> Alias {
         }
         Opcode::UBFM => unsigned_bit_field_alias(operands),
         Opcode::SBFM => signed_bit_field_alias(operands),
+        Opcode::BFM if zero(1) => Alias::BitField(BitFieldForm::Clear),
+        Opcode::BFM => bit_field(operands)
+            .map_or(Alias::None, |(_, immr, imms)| Alias::BitField(bit_field_form(immr, imms))),
         Opcode::HINT => match hint_number(operands) {
             Some(0) => Alias::Nop,
             Some(32 | 34 | 36 | 38) => Alias::BranchTarget,
-            _ => Alias::None,
+            Some(number) => Alias::Hint(number),
+            None => Alias::None,
         },
         _ if is_atomic_store(inst) => Alias::AtomicStore,
         _ => Alias::None,
@@ -797,10 +869,11 @@ fn bit_field(operands: &[Operand]) -> Option<(u32, u32, u32)> {
 fn unsigned_bit_field_alias(operands: &[Operand]) -> Alias {
     let is_w = matches!(operands[1], Operand::Register(SizeCode::W, _));
     match bit_field(operands) {
-        Some((32, 0, 7 | 15)) if is_w => Alias::Extend,
+        Some((32, 0, imms @ (7 | 15))) if is_w => Alias::Extend(imms as u8 + 1),
         Some((size, _, imms)) if imms == size - 1 => Alias::ShiftRight,
         Some((_, immr, imms)) if imms + 1 == immr => Alias::ShiftLeft,
-        _ => Alias::None,
+        Some((_, immr, imms)) => Alias::BitField(bit_field_form(immr, imms)),
+        None => Alias::None,
     }
 }
 
@@ -809,8 +882,9 @@ fn unsigned_bit_field_alias(operands: &[Operand]) -> Alias {
 fn signed_bit_field_alias(operands: &[Operand]) -> Alias {
     match bit_field(operands) {
         Some((size, _, imms)) if imms == size - 1 => Alias::ShiftRightArithmetic,
-        Some((_, 0, 7 | 15 | 31)) => Alias::Extend,
-        _ => Alias::None,
+        Some((_, 0, imms @ (7 | 15 | 31))) => Alias::Extend(imms as u8 + 1),
+        Some((_, immr, imms)) => Alias::BitField(bit_field_form(immr, imms)),
+        None => Alias::None,
     }
 }
 
@@ -1448,7 +1522,7 @@ fn may_write_first(insn: &Insn) -> bool {
 
 /// The page an `adrp` names, or the address an `adr` does.
 fn page_of(insn: &Insn) -> Option<u64> {
-    let distance = insn.operands.split_once(", $")?.1;
+    let distance = insn.operands().split_once(", $")?.1;
     let (negative, digits) = match distance.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, distance.strip_prefix('+')?),
@@ -1757,12 +1831,12 @@ fn read_jump_table(
     let last_write = |register: &str, before: u64| {
         earlier.iter().rev().filter(|insn| insn.address < before).find(|insn| {
             may_write_first(insn)
-                && insn.operands.split(',').next().map(str::trim) == Some(register)
+                && insn.operands().split(',').next().map(str::trim) == Some(register)
         })
     };
     // `add xT, xB, xE, lsl #2`, or GCC's `add xT, xB, wE, sxth #2`.
-    let add = last_write(jump.operands.trim(), jump.address)?;
-    let parts: Vec<&str> = add.operands.split(',').map(str::trim).collect();
+    let add = last_write(jump.operands().trim(), jump.address)?;
+    let parts: Vec<&str> = add.operands().split(',').map(str::trim).collect();
     let [_, base_register, entry_register, extend] = parts.as_slice() else { return None };
     let signed = extend.starts_with("sxt");
     if opcode_of(add) != Some(Opcode::ADD) || !extend.ends_with("#2") {
@@ -1779,14 +1853,14 @@ fn read_jump_table(
         Opcode::LDR | Opcode::LDRSW => 4,
         _ => return None,
     };
-    let reference = load.operands.split_once('[')?.1;
+    let reference = load.operands().split_once('[')?.1;
     let mut fields = reference.split([',', ']']).map(str::trim);
     let (table_register, index_register) = (fields.next()?, fields.next()?);
     let table_insn = last_write(table_register, load.address)?;
     let table = match opcode_of(table_insn)? {
         Opcode::ADR => page_of(table_insn)?,
         Opcode::ADD => {
-            let parts: Vec<&str> = table_insn.operands.split(',').map(str::trim).collect();
+            let parts: Vec<&str> = table_insn.operands().split(',').map(str::trim).collect();
             let [_, page_register, low] = parts.as_slice() else { return None };
             let page = page_of(last_write(page_register, table_insn.address)?)?;
             page.wrapping_add(Aarch64.constant_value(low)?)
@@ -1797,7 +1871,7 @@ fn read_jump_table(
     // `cmp wI, #n`: the cases run from 0 to n.
     let index_number = &index_register[1..];
     let bound = earlier.iter().rev().find_map(|insn| {
-        let parts: Vec<&str> = insn.operands.split(',').map(str::trim).collect();
+        let parts: Vec<&str> = insn.operands().split(',').map(str::trim).collect();
         let is_cmp = decoded(insn).is_some_and(|decoded| {
             decoded.opcode == Opcode::SUBS && decoded.alias == Alias::Compare
         });
@@ -1839,7 +1913,7 @@ mod extend_tests {
         let shown = |words: u32| {
             let code = words.to_le_bytes();
             let insn = Aarch64.decode(&code, 0, 0).expect("decodes");
-            format!("{} {}", insn.mnemonic, insn.operands)
+            format!("{} {}", crate::arch::split_printed(&insn.text).0, insn.operands())
         };
         // From `llvm-mc --triple=aarch64`.
         assert_eq!(shown(0x8b21_5061), "add x1, x3, w1, uxtw #4");

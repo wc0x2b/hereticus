@@ -41,8 +41,7 @@ const PREF: u32 = 0x33;
 /// `rs` of the COP0 `mfmc0` group, which holds `di` and `ei`.
 const MFMC0: u32 = 0x0b;
 
-/// An operation this module reads, by the mnemonic `rabbitizer` would
-/// print for it.
+/// An operation this module reads, named as `rabbitizer` would print it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     Synci,
@@ -548,12 +547,8 @@ mod tests {
 
     fn text(word: u32) -> Option<String> {
         decode(word).map(|Word { op, operands, .. }| {
-            let mnemonic = op.name();
-            if operands.is_empty() {
-                mnemonic.to_string()
-            } else {
-                format!("{mnemonic} {operands}")
-            }
+            let name = op.name();
+            if operands.is_empty() { name.to_string() } else { format!("{name} {operands}") }
         })
     }
 

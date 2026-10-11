@@ -41,6 +41,11 @@ struct ObjdumpInsn {
 ///
 /// Keep this list short and justified. Each entry hides a real difference, so
 /// a wrong entry hides a real bug.
+/// The name `insn` prints with, which this test checks against objdump's.
+fn printed_name(insn: &hereticus::arch::Insn) -> &str {
+    insn.text.split_once(' ').map_or(insn.text.as_str(), |(name, _)| name)
+}
+
 fn canonical_mnemonic(mnemonic: &str) -> String {
     // Fold spellings before stripping, because `movs` ends in `vs`, which is
     // also the overflow-set condition. Fold again after, because a condition
@@ -284,7 +289,7 @@ fn decoder_agrees_with_objdump() {
                 }
 
                 assert_eq!(
-                    canonical(&ours.mnemonic),
+                    canonical(printed_name(ours)),
                     canonical(&theirs.mnemonic),
                     "{where_}: mnemonic differs at {:#x}",
                     theirs.address
@@ -709,11 +714,11 @@ fn operands_agree_with_objdump() {
             for insn in decoded.iter().filter(|insn| insn.kind != InsnKind::Unknown) {
                 let Some((mnemonic, operands)) = theirs.get(&insn.address) else { continue };
                 checked += 1;
-                let ours = folded(isa, insn.address, &insn.mnemonic, &insn.operands);
+                let ours = folded(isa, insn.address, printed_name(insn), insn.operands());
                 let them = folded(isa, insn.address, mnemonic, operands);
                 if ours != them {
                     *disagree.entry(format!("{isa:?}")).or_default() += 1;
-                    let kind = format!("{isa:?} {}", insn.mnemonic);
+                    let kind = format!("{isa:?} {}", printed_name(insn));
                     if !examples.iter().any(|example| example.starts_with(&format!("{kind} "))) {
                         examples.push(format!("{kind} {ours}  |  {them}"));
                     }

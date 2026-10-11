@@ -5,8 +5,8 @@
 //! do not change when the decoder does.
 //!
 //! [`Arch`] carries more than decoding, because more than decoding is
-//! architecture specific. Which operand names a register, which mnemonic opens
-//! a function, which word a linker pads with: the modules above cannot answer
+//! architecture specific. Which operand names a register, which instruction
+//! opens a function, which word a linker pads with: the modules above cannot answer
 //! any of those without knowing the architecture, so they ask here. Adding an
 //! architecture means writing one file in this directory and nothing outside
 //! it.
@@ -108,12 +108,14 @@ pub trait Arch {
     /// as a leading `#`.
     fn constant_value(&self, operand: &str) -> Option<u64>;
 
-    /// Strip whatever decorates a mnemonic without changing what it computes.
+    /// The name of the operation `insn` does, from its decoded opcode.
     ///
-    /// A compiler picks between a flag-setting form and a plain one, or
-    /// between a branch and a conditional move, for reasons that do not change
-    /// the work. Reducing both to one name is what lets them compare equal.
-    fn normalize_operation(&self, mnemonic: &str) -> CompactString;
+    /// What only decorates the work is left out: a compiler picks between a
+    /// flag-setting form and a plain one, or puts a condition on an
+    /// instruction, for reasons that do not change what it computes. One
+    /// name for both is what lets them compare equal. Two names never
+    /// meet across architectures, so each picks its own.
+    fn operation_name(&self, insn: &Insn) -> CompactString;
 
     /// Report whether an instruction only maintains the stack frame.
     ///
@@ -604,28 +606,58 @@ pub fn is_branch_target(operand: &str) -> bool {
 
 /// One decoded instruction, in the only detail the rest of `hereticus` needs.
 ///
-/// This deliberately holds the mnemonic as text and the operands as one
-/// string. The normalizer works from [`Insn::kind`] and the operand text, not
-/// from a full operand tree, because similarity scoring does not need exact
-/// semantics. [`Insn::bytes_len`] must be right, though: a wrong length
-/// desynchronizes every instruction that follows.
+/// [`Insn::opcode`] says what the instruction does, and everything that
+/// decides by the operation reads it. [`Insn::text`] is the instruction as
+/// the decoder prints it, for a reader: a decoder can print one operation
+/// several ways, as `cset` for a `csinc`, and a test of text is slow. The
+/// operands are still read from the text where no lift names them.
+/// [`Insn::bytes_len`] must be right: a wrong length desynchronizes every
+/// instruction that follows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Insn {
     /// Virtual address of this instruction.
     pub address: u64,
     /// Width in bytes. Fixed on some architectures, variable on others.
     pub bytes_len: usize,
-    /// Mnemonic, lowercase, without operands. For example `ldr`.
-    pub mnemonic: String,
-    /// Operands as printed, for example `r0, [sp, 0x4]`. May be empty.
-    pub operands: String,
+    /// The instruction as printed, with one space before the operands, as
+    /// `ldr r0, [sp, 0x4]`.
+    pub text: String,
+    /// Where the operands start in [`Insn::text`].
+    operands_at: usize,
     /// How this instruction moves control, which the CFG builder needs.
     pub kind: InsnKind,
-    /// The operation the decoder read. Code that decides what an
-    /// instruction does reads this, not [`Insn::mnemonic`]: the text is for
-    /// a reader, it changes when a decoder prints otherwise, and a test of
-    /// it is slow.
+    /// The operation the decoder read.
     pub opcode: Opcode,
+}
+
+impl Insn {
+    /// An instruction printed as `text`. Space around the operands is
+    /// trimmed to one before them.
+    pub fn new(address: u64, bytes_len: usize, text: &str, kind: InsnKind, opcode: Opcode) -> Self {
+        let text = text.trim();
+        let (text, operands_at) = match text.split_once(char::is_whitespace) {
+            Some((head, tail)) => {
+                let tail = tail.trim();
+                if tail.is_empty() {
+                    (head.to_string(), head.len())
+                } else {
+                    (format!("{head} {tail}"), head.len() + 1)
+                }
+            }
+            None => (text.to_string(), text.len()),
+        };
+        Self { address, bytes_len, text, operands_at, kind, opcode }
+    }
+
+    /// The operands as printed, as `r0, [sp, 0x4]`. May be empty.
+    pub fn operands(&self) -> &str {
+        &self.text[self.operands_at..]
+    }
+
+    /// The same instruction printed as `text`.
+    pub fn with_text(self, text: &str) -> Self {
+        Self::new(self.address, self.bytes_len, text, self.kind, self.opcode)
+    }
 }
 
 /// The operation one instruction does, as its architecture names it.
@@ -645,11 +677,7 @@ pub enum Opcode {
 
 impl fmt::Display for Insn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.operands.is_empty() {
-            write!(f, "{}", self.mnemonic)
-        } else {
-            write!(f, "{} {}", self.mnemonic, self.operands)
-        }
+        f.write_str(&self.text)
     }
 }
 
@@ -833,16 +861,21 @@ fn decode_raw(
     (out, error)
 }
 
+/// Printed text split at its first space, into the name and the operands.
+///
+/// Only to put text back together, as a decoder rewrites its operands:
+/// nothing decides by the name.
+pub(crate) fn split_printed(text: &str) -> (&str, &str) {
+    match text.split_once(char::is_whitespace) {
+        Some((head, tail)) => (head, tail.trim()),
+        None => (text, ""),
+    }
+}
+
 /// A word of data among code, as one instruction no decoder reads.
 fn data_word(at: u64, bytes: &[u8]) -> Insn {
-    Insn {
-        address: at,
-        bytes_len: bytes.len(),
-        mnemonic: ".word".to_string(),
-        operands: bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect(),
-        kind: InsnKind::Unknown,
-        opcode: Opcode::None,
-    }
+    let word: String = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
+    Insn::new(at, bytes.len(), &format!(".word {word}"), InsnKind::Unknown, Opcode::None)
 }
 
 /// Decode `code` one instruction after the next.
@@ -901,13 +934,8 @@ mod tests {
     /// `count` four-byte instructions from `start` on.
     fn nops(start: u64, count: u64) -> Vec<Insn> {
         (0..count)
-            .map(|index| Insn {
-                address: start + 4 * index,
-                bytes_len: 4,
-                mnemonic: "nop".into(),
-                operands: String::new(),
-                kind: InsnKind::Normal,
-                opcode: crate::arch::Opcode::None,
+            .map(|index| {
+                Insn::new(start + 4 * index, 4, "nop", InsnKind::Normal, crate::arch::Opcode::None)
             })
             .collect()
     }

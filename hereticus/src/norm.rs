@@ -50,11 +50,13 @@ pub type Constants = SmallVec<[u64; 2]>;
 /// [`NormInsn::differs_in_detail`].
 #[derive(Clone, Debug, Eq)]
 pub struct NormInsn {
-    /// Operation name, with the flag-setting suffix and condition removed.
+    /// The name of the operation, from the IL operation where the lifter
+    /// names one and from the decoded opcode where not: see
+    /// [`Arch::operation_name`].
     ///
-    /// A mnemonic is two or three characters, so it sits inline. An
-    /// unreadable word carries its raw bits in the name instead and can reach
-    /// twenty, which still fits the inline limit.
+    /// A name is a few characters, so it sits inline. An unreadable word
+    /// carries its printed bits in the name instead and can reach twenty,
+    /// which still fits the inline limit.
     pub operation: CompactString,
     /// Shape of each operand, in order.
     pub operands: Operands,
@@ -200,16 +202,16 @@ pub fn normalize(arch: &dyn Arch, insn: &Insn) -> NormInsn {
     // reported as no change.
     if insn.kind == InsnKind::Unknown {
         return NormInsn {
-            operation: format_compact!("{}{}", insn.mnemonic, insn.operands),
+            operation: insn.text.as_str().into(),
             operands: Operands::new(),
             flow: FlowShape::Opaque,
             constants: Constants::new(),
         };
     }
 
-    let fields = insn.operands.split(',');
+    let fields = insn.operands().split(',');
     NormInsn {
-        operation: arch.normalize_operation(&insn.mnemonic),
+        operation: arch.operation_name(insn),
         operands: fields.clone().filter_map(|field| shape_of(arch, field)).collect(),
         flow: insn.kind.into(),
         constants: fields.filter_map(|field| arch.constant_value(field)).collect(),
@@ -445,7 +447,7 @@ fn normalize_lifted(arch: &dyn Arch, insn: &Insn, lifted: Option<&Option<Lifted>
         return normalize(arch, insn);
     };
     NormInsn {
-        operation: arch.normalize_operation(&insn.mnemonic),
+        operation: arch.operation_name(insn),
         operands: lifted
             .operands
             .iter()
@@ -645,15 +647,13 @@ mod tests {
     use crate::arch::aarch64::Aarch64;
     use crate::arch::arm32::Arm32;
 
-    fn insn(mnemonic: &str, operands: &str, kind: InsnKind) -> Insn {
-        Insn {
-            address: 0,
-            bytes_len: 4,
-            mnemonic: mnemonic.to_string(),
-            operands: operands.to_string(),
-            kind,
-            opcode: crate::arch::Opcode::None,
-        }
+    fn insn(name: &str, operands: &str, kind: InsnKind) -> Insn {
+        crate::arch::arm32::test_insn(name, operands, kind)
+    }
+
+    /// The A32 `word`, as the decoder reads it.
+    fn decoded(word: u32) -> Insn {
+        Arm32.decode(&word.to_le_bytes(), 0, 0).expect("every word decodes or is unknown")
     }
 
     #[test]
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn opaque_bytes_stay_opaque() {
-        let body = [insn("(unknown)", "0xf2600680", InsnKind::Unknown)];
+        let body = [decoded(0xf260_0680)];
         assert_eq!(normalize_body(&Arm32, &body)[0].flow, FlowShape::Opaque);
     }
 
@@ -951,15 +951,15 @@ mod tests {
     /// the change would be reported as no change at all.
     #[test]
     fn different_opaque_words_do_not_normalize_alike() {
-        let first = normalize(&Arm32, &insn("(unknown)", "0xf2600680", InsnKind::Unknown));
-        let second = normalize(&Arm32, &insn("(unknown)", "0xf2200680", InsnKind::Unknown));
+        let first = normalize(&Arm32, &decoded(0xf260_0680));
+        let second = normalize(&Arm32, &decoded(0xf220_0680));
         assert_ne!(first, second, "an edit inside unreadable bytes must stay visible");
     }
 
     #[test]
     fn matching_opaque_words_normalize_alike() {
-        let first = normalize(&Arm32, &insn("(unknown)", "0xf2600680", InsnKind::Unknown));
-        let second = normalize(&Arm32, &insn("(unknown)", "0xf2600680", InsnKind::Unknown));
+        let first = normalize(&Arm32, &decoded(0xf260_0680));
+        let second = normalize(&Arm32, &decoded(0xf260_0680));
         assert_eq!(first, second);
     }
 
