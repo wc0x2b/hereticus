@@ -28,7 +28,7 @@ use super::arm32::{
     Arm32, Decoded, Encoding, Extend, Flags, IntegerWord, NEON_LOAD_STORE, NEON_TEXT, PcModel,
     UNKNOWN_TEXT, UNWIND_SECTION, call_targets_through_thunks, classify, condition_name,
     core_opcode, decode_fallback, decoded_of, decoder_misreads, is_long_thunk, lift_with,
-    parse_hex, pool_loads, track_pool_words,
+    pool_loads, track_pool_words,
 };
 use super::{
     Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps, VectorTable,
@@ -429,13 +429,22 @@ impl Arch for Thumb2 {
         let is = |opcode, condition, flags| {
             insn.opcode == super::Opcode::Thumb(Decoded::Core { opcode, condition, flags })
         };
+        let operands = || self.lift(insn).map(|lifted| lifted.operands).unwrap_or_default();
+        let r = |number| crate::il::Operand::Reg(crate::il::Reg::General(number));
+        let branches_back = |distance: u64| {
+            insn.kind == (InsnKind::Branch { target: Some(insn.address.wrapping_sub(distance)) })
+        };
         is(Opcode::NOP, ConditionCode::AL, Flags::Kept)
-            || (is(Opcode::MOV, ConditionCode::AL, Flags::Kept) && insn.operands() == "r8, r8")
-            || (is(Opcode::LSL, ConditionCode::AL, Flags::Set) && insn.operands() == "r0, r0, 0x0")
+            || (is(Opcode::MOV, ConditionCode::AL, Flags::Kept)
+                && operands().as_slice() == [r(8), r(8)])
+            || (is(Opcode::LSL, ConditionCode::AL, Flags::Set)
+                && operands().as_slice() == [r(0), r(0), crate::il::Operand::Const(0)])
             // LLD's fill, `0xd4d4`, reads as this branch back. No compiler
             // branches back into the middle of the fill before a function.
-            || (is(Opcode::B, ConditionCode::MI, Flags::Kept) && insn.operands() == "$-0x54")
-            || (insn.kind == InsnKind::Unknown && insn.operands() == "0000")
+            || (is(Opcode::B, ConditionCode::MI, Flags::Kept) && branches_back(0x54))
+            || (insn.kind == InsnKind::Unknown
+                && insn.opcode != super::Opcode::Data
+                && insn.bytes() == [0, 0])
     }
 
     /// Only whole halfwords at the end are removed, and only those a linker
@@ -1007,20 +1016,28 @@ fn table_extent(insns: &[Insn], index: usize) -> Option<(Range<u64>, usize)> {
         }) => 2,
         _ => return None,
     };
-    let inner = jump.operands().strip_prefix("[pc, ")?;
-    let index_register = inner.split([',', ']']).next()?.trim();
+    let operands =
+        |insn: &Insn| Thumb2.lift(insn).map(|lifted| lifted.operands).unwrap_or_default();
+    // `tbb [pc, rI]` and `tbh [pc, rI, lsl #1]`.
+    let index_register = operands(jump).iter().find_map(|operand| match operand {
+        crate::il::Operand::Memory {
+            base: Some(crate::il::Reg::ProgramCounter),
+            index: Some((index, _)),
+            ..
+        } => Some(*index),
+        _ => None,
+    })?;
 
     // `cmp rI, n`: the cases run from 0 to n.
-    let bound =
-        insns[index.saturating_sub(TABLE_LOOK_BACK)..index].iter().rev().find_map(|insn| {
-            let operands: Vec<&str> = insn.operands().split(',').map(str::trim).collect();
-            match (core_opcode(insn), operands.as_slice()) {
-                (Some(Opcode::CMP), [.., register, bound]) if *register == index_register => {
-                    parse_hex(bound)
-                }
-                _ => None,
-            }
-        })?;
+    let bound = insns[index.saturating_sub(TABLE_LOOK_BACK)..index].iter().rev().find_map(
+        |insn| match (core_opcode(insn), operands(insn).as_slice()) {
+            (
+                Some(Opcode::CMP),
+                [.., crate::il::Operand::Reg(register), crate::il::Operand::Const(bound)],
+            ) if *register == index_register => Some(*bound),
+            _ => None,
+        },
+    )?;
     let cases = usize::try_from(bound).ok()?.checked_add(1).filter(|&cases| cases <= MOST_CASES)?;
     let table = jump.address + WORD as u64;
     Some((table..table + (cases * width) as u64, width))
