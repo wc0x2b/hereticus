@@ -220,14 +220,14 @@ impl From<InsnKind> for FlowShape {
     }
 }
 
-/// Normalize one instruction, whose bytes are `word`.
-pub fn normalize(arch: &dyn Arch, insn: &Insn, word: &[u8]) -> NormInsn {
-    let lifted = arch.lift(insn, word).map(|lifted| frame_addressed(arch, lifted.canonical()));
-    named_by_op(normalize_lifted(arch, insn, word, lifted.as_ref()), lifted.as_ref())
+/// Normalize one instruction.
+pub fn normalize(arch: &dyn Arch, insn: &Insn) -> NormInsn {
+    let lifted = arch.lift(insn).map(|lifted| frame_addressed(arch, lifted.canonical()));
+    named_by_op(normalize_lifted(arch, insn, lifted.as_ref()), lifted.as_ref())
 }
 
-/// The bytes of `word` as one number, for [`Operation::Unreadable`]. A word
-/// is at most eight bytes on every architecture read here.
+/// The bytes of `word` as one number, for [`Operation::Unreadable`]. An
+/// instruction holds eight bytes at most.
 fn bytes_key(word: &[u8]) -> u64 {
     word.iter().take(8).fold(0, |key, &byte| key << 8 | u64::from(byte))
 }
@@ -255,9 +255,8 @@ fn text_key(text: &str) -> u64 {
 /// instructions that are scaffolding *together* and real work apart, so
 /// [`Arch::idiom_length`] is asked about each remaining position and the whole
 /// run it reports is skipped.
-/// `code` holds the body from its first byte.
-pub fn normalize_body(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<NormInsn> {
-    normalize_body_in(arch, code, insns, &AddressSpace::none())
+pub fn normalize_body(arch: &dyn Arch, insns: &[Insn]) -> Vec<NormInsn> {
+    normalize_body_in(arch, &[], insns, &AddressSpace::none())
 }
 
 /// Normalize a function body that lives in `space`.
@@ -276,7 +275,7 @@ pub fn normalize_body_in(
     space: &AddressSpace,
 ) -> Vec<NormInsn> {
     let kinds = arch.constant_kinds(code, insns, space);
-    let lifted = lift_all(arch, code, insns);
+    let lifted = lift_all(arch, insns);
     let guards = find_guards(&lifted);
     // The first guard that starts at each index, and the first whose branch
     // after a compare sits there. A search of every guard at each index
@@ -352,8 +351,7 @@ pub fn normalize_body_in(
             // grew, and crossed from one size to the next.
             Some(ConstantKind::Address) => {
                 let lifted = lifted.get(index).and_then(Option::as_ref);
-                let mut normalized =
-                    normalize_lifted(arch, &insns[index], word_at(code, insns, index), lifted);
+                let mut normalized = normalize_lifted(arch, &insns[index], lifted);
                 normalized.constants.clear();
                 for shape in &mut normalized.operands {
                     if matches!(shape, OperandShape::Immediate(_)) {
@@ -364,8 +362,7 @@ pub fn normalize_body_in(
             }
             Some(ConstantKind::Value) | None => {
                 let lifted = lifted.get(index).and_then(Option::as_ref);
-                let normalized =
-                    normalize_lifted(arch, &insns[index], word_at(code, insns, index), lifted);
+                let normalized = normalize_lifted(arch, &insns[index], lifted);
                 out.push(named_by_op(normalized, lifted));
             }
         }
@@ -422,17 +419,12 @@ pub fn constant_signature(body: &[NormInsn]) -> BTreeSet<u64> {
         .collect()
 }
 
-/// Normalize one instruction, whose bytes are `word`, with its operands
-/// read from `lifted`. An instruction the lifter does not read has none.
-fn normalize_lifted(
-    arch: &dyn Arch,
-    insn: &Insn,
-    word: &[u8],
-    lifted: Option<&Lifted>,
-) -> NormInsn {
+/// Normalize one instruction, with its operands read from `lifted`. An
+/// instruction the lifter does not read has none.
+fn normalize_lifted(arch: &dyn Arch, insn: &Insn, lifted: Option<&Lifted>) -> NormInsn {
     if insn.kind == InsnKind::Unknown {
         return NormInsn {
-            operation: Operation::Unreadable(bytes_key(word)),
+            operation: Operation::Unreadable(bytes_key(insn.bytes())),
             operands: Operands::new(),
             flow: FlowShape::Opaque,
             constants: Constants::new(),
@@ -512,32 +504,17 @@ fn named_by_op(mut normalized: NormInsn, lifted: Option<&Lifted>) -> NormInsn {
     normalized
 }
 
-/// The data-flow features of a body that lives in `space`: see
-/// [`il::flow_features`]. Frame work and idioms stay in, as a value can
-/// pass through them.
-pub fn flow_features_in(arch: &dyn Arch, code: &[u8], insns: &[Insn], depth: usize) -> Vec<u64> {
-    il::flow_features(&lift_all(arch, code, insns), depth)
+/// The data-flow features of a body: see [`il::flow_features`]. Frame work
+/// and idioms stay in, as a value can pass through them.
+pub fn flow_features(arch: &dyn Arch, insns: &[Insn], depth: usize) -> Vec<u64> {
+    il::flow_features(&lift_all(arch, insns), depth)
 }
 
-/// The bytes of instruction `index` of `insns`, which `code` holds from its
-/// first byte, or none where `code` does not hold them.
-fn word_at<'a>(code: &'a [u8], insns: &[Insn], index: usize) -> &'a [u8] {
-    let (Some(first), Some(insn)) = (insns.first(), insns.get(index)) else { return &[] };
-    let start = usize::try_from(insn.address.wrapping_sub(first.address)).unwrap_or(usize::MAX);
-    code.get(start..start.saturating_add(insn.bytes_len)).unwrap_or_default()
-}
-
-/// Lift each instruction of `insns`, which `code` holds from its first
-/// byte. Without the code, nothing is lifted.
-fn lift_all(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<Option<Lifted>> {
-    let Some(first) = insns.first() else { return Vec::new() };
+/// Lift each instruction of `insns`.
+fn lift_all(arch: &dyn Arch, insns: &[Insn]) -> Vec<Option<Lifted>> {
     insns
         .iter()
-        .map(|insn| {
-            let offset = usize::try_from(insn.address.checked_sub(first.address)?).ok()?;
-            let word = code.get(offset..offset.checked_add(insn.bytes_len)?)?;
-            arch.lift(insn, word).map(|lifted| frame_addressed(arch, lifted.canonical()))
-        })
+        .map(|insn| arch.lift(insn).map(|lifted| frame_addressed(arch, lifted.canonical())))
         .collect()
 }
 
@@ -652,14 +629,14 @@ mod tests {
 
     /// One A32 word, normalized.
     fn word(word: u32) -> NormInsn {
-        normalize(&Arm32, &a32(word), &word.to_le_bytes())
+        normalize(&Arm32, &a32(word))
     }
 
     /// A body of A32 words, normalized.
     fn body(words: &[u32]) -> Vec<NormInsn> {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
         let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0);
-        normalize_body(&Arm32, &code, &insns)
+        normalize_body(&Arm32, &insns)
     }
 
     const ADD: Operation = Operation::Lifted { op: il::Op::Add, width: None };
@@ -771,7 +748,7 @@ mod tests {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
         let (insns, _) = crate::arch::decode_all(&Mips32::LITTLE, &code, 0);
         let text = insns.iter().map(ToString::to_string).collect();
-        (text, normalize_body(&Mips32::LITTLE, &code, &insns))
+        (text, normalize_body(&Mips32::LITTLE, &insns))
     }
 
     /// An architecture can name a run of instructions as one idiom, and the
@@ -1000,7 +977,7 @@ mod tests {
             let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
             let (insns, _) = crate::arch::decode_all(&Aarch64, &code, 0x1000);
             for depth in 0..4 {
-                let features = flow_features_in(&Aarch64, &code, &insns, depth);
+                let features = flow_features(&Aarch64, &insns, depth);
                 assert!(features.len() <= insns.len());
                 assert!(features.is_sorted());
             }

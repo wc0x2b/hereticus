@@ -183,7 +183,9 @@ fn instruction_lines(
     insns: &[Insn],
     context: Option<Context<'_>>,
 ) -> Vec<String> {
-    let Some(first) = insns.first() else { return Vec::new() };
+    if insns.is_empty() {
+        return Vec::new();
+    }
     // The constants that are part of an address, which move with what
     // they reach.
     let moving: Vec<bool> = match context {
@@ -248,10 +250,7 @@ fn instruction_lines(
             if is_mips && let Some(text) = mips_statement(insn, &mut float_condition) {
                 return text;
             }
-            let word = usize::try_from(insn.address - first.address)
-                .ok()
-                .and_then(|offset| code.get(offset..offset.checked_add(insn.bytes_len)?));
-            let lifted = word.and_then(|word| arch.lift(insn, word));
+            let lifted = arch.lift(insn);
             let moves = moving.get(index).copied().unwrap_or(false);
             let shown = lifted.and_then(|lifted| {
                 let text = statement(insn, &lifted, address, moves, &mut last_compare)?;
@@ -1523,7 +1522,7 @@ mod tests {
         };
         Insn::new(
             0,
-            4,
+            &[0; 4],
             &format!("{name} {operands}"),
             kind,
             crate::arch::Opcode::Mips(MipsDecoded::Rabbitizer(opcode)),

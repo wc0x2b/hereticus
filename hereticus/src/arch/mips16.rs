@@ -479,7 +479,7 @@ impl Arch for Mips16 {
                 code[offset..offset + width].iter().map(|byte| format!("{byte:02x}")).collect();
             Insn::new(
                 insn_address,
-                width,
+                &code[offset..offset + width],
                 &format!("(unknown) {raw}"),
                 InsnKind::Unknown,
                 super::Opcode::None,
@@ -495,13 +495,14 @@ impl Arch for Mips16 {
         let width = decoded.width;
         let insn = match decoded.reading {
             Reading::Word(word) => {
-                let mut insn = self.as_mips32(word, insn_address).ok_or(DecodeError::Truncated)?;
-                insn.bytes_len = width;
-                insn
+                // The text and the opcode are those of the MIPS32 twin, and
+                // the bytes are the MIPS16e ones, which the lift reads.
+                let insn = self.as_mips32(word, insn_address).ok_or(DecodeError::Truncated)?;
+                insn.with_bytes(&code[offset..offset + width])
             }
             Reading::Control { name, decoded, operands, kind, .. } => Insn::new(
                 insn_address,
-                width,
+                &code[offset..offset + width],
                 &format!("{name} {operands}"),
                 kind,
                 super::Opcode::Mips(decoded),
@@ -518,7 +519,7 @@ impl Arch for Mips16 {
                 let opcode = if load { Opcode::core_lw } else { Opcode::core_addiu };
                 Insn::new(
                     insn_address,
-                    width,
+                    &code[offset..offset + width],
                     &text,
                     InsnKind::Normal,
                     super::Opcode::Mips(MipsDecoded::Rabbitizer(opcode)),
@@ -531,7 +532,7 @@ impl Arch for Mips16 {
                 };
                 Insn::new(
                     insn_address,
-                    width,
+                    &code[offset..offset + width],
                     &format!("{} {}", op.name(), registers.operands(size)),
                     InsnKind::Normal,
                     super::Opcode::Mips(MipsDecoded::Mips16(op)),
@@ -802,7 +803,8 @@ impl Arch for Mips16 {
         self.base.read_pointer(bytes)
     }
 
-    fn lift(&self, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
+    fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
+        let word = insn.bytes();
         if insn.kind == InsnKind::Unknown {
             return None;
         }
@@ -810,11 +812,11 @@ impl Arch for Mips16 {
         match decoded.reading {
             Reading::Word(word) => {
                 let translated = self.as_mips32(word, insn.address)?;
-                self.base.lift(&translated, &self.base.word_bytes(word))
+                self.base.lift(&translated)
             }
             Reading::Control { test: Some(word), .. } => {
                 let translated = self.as_mips32(word, insn.address)?;
-                self.base.lift(&translated, &self.base.word_bytes(word))
+                self.base.lift(&translated)
             }
             Reading::Control { kind, .. } => {
                 let op = match kind {
@@ -1391,7 +1393,7 @@ mod tests {
         let lift = |values: &[u16], address: u64| {
             let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
             let insn = Mips16::BIG.decode(&code, 0, address).expect("decodes");
-            Some(Mips16::BIG.lift(&insn, &code).expect("lifts"))
+            Some(Mips16::BIG.lift(&insn).expect("lifts"))
         };
         // sltiu a2,16 then btnez
         let body = [lift(&[0x5e10], 0), lift(&[0x6105], 2)];
@@ -1407,7 +1409,7 @@ mod tests {
             for arch in [Mips16::BIG, Mips16::LITTLE] {
                 let insn = arch.decode(&code, 0, 0x1000).expect("two halfwords decode");
                 assert!(insn.bytes_len == 2 || insn.bytes_len == 4);
-                let _ = arch.lift(&insn, &code[..insn.bytes_len]);
+                let _ = arch.lift(&insn);
             }
         });
     }

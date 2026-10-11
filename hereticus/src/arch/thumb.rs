@@ -101,7 +101,7 @@ impl Arch for Thumb2 {
             if let Some((name, operands, decoded)) = fallback {
                 return Ok(Insn::new(
                     insn_address,
-                    width,
+                    bytes,
                     &format!("{name} {operands}"),
                     InsnKind::Normal,
                     super::Opcode::Arm(decoded),
@@ -119,7 +119,7 @@ impl Arch for Thumb2 {
             };
             return Ok(Insn::new(
                 insn_address,
-                width,
+                bytes,
                 &format!("{name} {operands}"),
                 InsnKind::Unknown,
                 opcode,
@@ -179,7 +179,7 @@ impl Arch for Thumb2 {
 
         Ok(Insn::new(
             insn_address,
-            width,
+            bytes,
             &format!("{name} {operands}"),
             kind,
             super::Opcode::Arm(decoded),
@@ -456,7 +456,8 @@ impl Arch for Thumb2 {
         WORD
     }
 
-    fn lift(&self, insn: &Insn, word: &[u8]) -> Option<crate::il::Lifted> {
+    fn lift(&self, insn: &Insn) -> Option<crate::il::Lifted> {
+        let word = insn.bytes();
         if let [low, high, second_low, second_high] = *word
             && let Some(store) = wide_store(
                 u16::from_le_bytes([low, high]),
@@ -1122,7 +1123,7 @@ mod tests {
         }
         let lift = |first, second| {
             let bytes = halfwords(&[first, second]);
-            Thumb2.lift(&Thumb2.decode(&bytes, 0, 0).unwrap(), &bytes).expect("the word lifts")
+            Thumb2.lift(&Thumb2.decode(&bytes, 0, 0).unwrap()).expect("the word lifts")
         };
         // `mvn r0, #2` puts `~2` in `r0`.
         let not = lift(0xf06f, 0x0002);
@@ -1194,8 +1195,7 @@ mod tests {
     }
 
     fn lift_one(values: &[u16]) -> crate::il::Lifted {
-        let bytes = halfwords(values);
-        Thumb2.lift(&decode_one(values), &bytes).expect("the halfwords must lift")
+        Thumb2.lift(&decode_one(values)).expect("the halfwords must lift")
     }
 
     fn guard_of(code: &[&[u16]]) -> Option<crate::il::Guard> {
@@ -1249,7 +1249,7 @@ mod tests {
         bolero::check!().with_type::<(u16, u16)>().for_each(|&(first, second)| {
             let bytes = halfwords(&[first, second]);
             let Ok(insn) = Thumb2.decode(&bytes, 0, 0x1000) else { return };
-            let _ = Thumb2.lift(&insn, &bytes[..insn.bytes_len]);
+            let _ = Thumb2.lift(&insn);
         });
     }
 

@@ -134,7 +134,8 @@ pub(super) fn operation_name(decoded: Decoded) -> CompactString {
 }
 
 /// An A32 instruction printed as `name` and `operands`, with the opcode
-/// `name` has, for a test that writes instructions by hand.
+/// `name` has, for a test that writes instructions by hand. It holds no
+/// bytes, so it lifts to nothing.
 #[cfg(test)]
 pub(crate) fn test_insn(name: &str, operands: &str, kind: InsnKind) -> Insn {
     let opcode = match name {
@@ -152,7 +153,7 @@ pub(crate) fn test_insn(name: &str, operands: &str, kind: InsnKind) -> Insn {
         other => panic!("no opcode for {other}"),
     };
     let decoded = Decoded::Core { opcode, condition: ConditionCode::AL, flags: Flags::Kept };
-    Insn::new(0, INSN_WIDTH, &format!("{name} {operands}"), kind, super::Opcode::Arm(decoded))
+    Insn::new(0, &[], &format!("{name} {operands}"), kind, super::Opcode::Arm(decoded))
 }
 
 /// How a load or store of a list steps, as the suffix of `ldmia` says.
@@ -426,7 +427,7 @@ impl Arch for Arm32 {
             if let Some((name, operands, decoded)) = decode_fallback(word, Encoding::A32) {
                 return Ok(Insn::new(
                     insn_address,
-                    INSN_WIDTH,
+                    &bytes[..INSN_WIDTH],
                     &format!("{name} {operands}"),
                     InsnKind::Normal,
                     super::Opcode::Arm(decoded),
@@ -434,7 +435,7 @@ impl Arch for Arm32 {
             }
             return Ok(Insn::new(
                 insn_address,
-                INSN_WIDTH,
+                &bytes[..INSN_WIDTH],
                 &format!("{} {word:#010x}", unread_text(word)),
                 InsnKind::Unknown,
                 unread_opcode(word),
@@ -449,7 +450,7 @@ impl Arch for Arm32 {
 
         Ok(Insn::new(
             insn_address,
-            INSN_WIDTH,
+            &bytes[..INSN_WIDTH],
             &printed(&inst),
             classify(&inst, branch_target(&inst, insn_address)),
             super::Opcode::Arm(decoded_of(&inst)),
@@ -769,7 +770,8 @@ impl Arch for Arm32 {
         u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
-    fn lift(&self, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
+    fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
+        let word = insn.bytes();
         let a32 = word.try_into().ok().map(u32::from_le_bytes);
         lift_with(InstDecoder::default(), insn, word, a32.map(|a32| (a32, Encoding::A32)))
     }
@@ -3581,7 +3583,7 @@ mod tests {
     }
 
     fn lift_one(bytes: [u8; 4]) -> il::Lifted {
-        Arm32.lift(&decode_one(bytes), &bytes).expect("the word must lift")
+        Arm32.lift(&decode_one(bytes)).expect("the word must lift")
     }
 
     #[test]
@@ -3713,7 +3715,7 @@ mod tests {
         bolero::check!().with_type::<u32>().for_each(|&word| {
             let bytes = word.to_le_bytes();
             let insn = Arm32.decode(&bytes, 0, 0).expect("every word decodes or is unknown");
-            if let Some(lifted) = Arm32.lift(&insn, &bytes)
+            if let Some(lifted) = Arm32.lift(&insn)
                 && let Some(il::Test::Guard(_) | il::Test::OnFlags(_)) = lifted.test
             {
                 assert!(
@@ -4703,7 +4705,7 @@ mod tests {
         }
         let lift = |word: u32| {
             let bytes = word.to_le_bytes();
-            Arm32.lift(&Arm32.decode(&bytes, 0, 0).unwrap(), &bytes).expect("the word lifts")
+            Arm32.lift(&Arm32.decode(&bytes, 0, 0).unwrap()).expect("the word lifts")
         };
         let general = il::Reg::General;
         // `smulwb r7, r2, r1` multiplies and adds nothing.
@@ -4792,10 +4794,7 @@ mod tests {
             }
         }
         let constant = Arm32
-            .lift(
-                &Arm32.decode(&0xeef7_0a00_u32.to_le_bytes(), 0, 0).unwrap(),
-                &0xeef7_0a00_u32.to_le_bytes(),
-            )
+            .lift(&Arm32.decode(&0xeef7_0a00_u32.to_le_bytes(), 0, 0).unwrap())
             .expect("the word lifts");
         assert_eq!(constant.op, il::Op::Move);
         assert_eq!(

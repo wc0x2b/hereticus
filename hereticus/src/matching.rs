@@ -25,7 +25,7 @@ use compact_str::CompactString;
 use crate::arch::{Arch, Insn, InsnKind, Memory, decode_all, is_branch_target, split_printed};
 use crate::callee::{Callee, callees_in};
 use crate::norm::{
-    FlowShape, NormInsn, OperandShape, constant_signature, flow_features_in, normalize_body_in,
+    FlowShape, NormInsn, OperandShape, constant_signature, flow_features, normalize_body_in,
 };
 use crate::obj::{Binary, FoundBy, Function, Isa};
 
@@ -700,7 +700,7 @@ fn prepare<'a>(
             // comparison of a kernel, and keeping them costs a twelfth of
             // its peak memory.
             let body = normalize_body_in(arch, &function.code, &insns, &binary.addresses);
-            let flow = flow_features_in(arch, &function.code, &insns, FLOW_DEPTH);
+            let flow = flow_features(arch, &insns, FLOW_DEPTH);
             let contents = arch.contents(&function.code, &insns, &binary.addresses);
             let linked_calls = callees_in(arch, &binary.links, &binary.functions, &insns);
             let calls: Vec<Callee> = linked_calls
@@ -4640,7 +4640,7 @@ mod tests {
             .iter()
             .map(|(name, operands)| {
                 let insn = crate::arch::arm32::test_insn(name, operands, InsnKind::Normal);
-                normalize(&Arm32, &insn, &[])
+                normalize(&Arm32, &insn)
             })
             .collect()
     }
