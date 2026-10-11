@@ -22,8 +22,11 @@ use rayon::prelude::*;
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use compact_str::CompactString;
 
-use crate::arch::{Arch, Insn, InsnKind, Memory, decode_all, is_branch_target, split_printed};
+use crate::arch::{
+    Arch, DataAmongCode, Insn, InsnKind, Memory, decode_all, is_branch_target, split_printed,
+};
 use crate::callee::{Callee, callees_in};
+use crate::il;
 use crate::norm::{
     FlowShape, NormInsn, OperandShape, constant_signature, flow_features, normalize_body_in,
 };
@@ -2216,28 +2219,45 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
             return true;
         }
         // Compare the operation the way the normalizer does, so a condition
-        // code the compiler chose differently — `movwlt` against `movwlo` —
-        // stays the free choice it is rather than reading as an edit.
+        // code the compiler chose differently, as `movwlt` against
+        // `movwlo`, stays the free choice it is rather than reading as an
+        // edit.
+        if before_arch.operation_name(left) != after_arch.operation_name(right) {
+            return false;
+        }
+        // What no lift reads is compared by its bytes.
+        let (Some(left_lift), Some(right_lift)) = (before_arch.lift(left), after_arch.lift(right))
+        else {
+            return left.bytes() == right.bytes();
+        };
+        let (mut left_operands, mut right_operands) =
+            (left_lift.operands.as_slice(), right_lift.operands.as_slice());
         // A load from a pool reads at a distance that says only where the
         // pool sits, so what comes before the reference is all to compare.
-        let (left_operands, right_operands) = match (
-            before_arch.before_pc_reference(left.operands()),
-            after_arch.before_pc_reference(right.operands()),
-        ) {
-            (Some(left), Some(right)) => (left, right),
-            _ => (left.operands(), right.operands()),
-        };
-        before_arch.operation_name(left) == after_arch.operation_name(right)
-            && operands_are_interchangeable(
-                before_arch,
-                left_operands,
-                right_operands,
-                // A `$...` operand is a free choice only on an instruction
-                // that truly branches. Both sides agree on the operation by
-                // now, so either one answers.
-                TargetMoves::from(transfers_control(left.kind) && transfers_control(right.kind)),
-                AddressMoves::from(kinds),
-            )
+        if before_arch.data_among_code() == DataAmongCode::LiteralPools
+            && let (Some(left_at), Some(right_at)) =
+                (pool_reference(left_operands), pool_reference(right_operands))
+        {
+            (left_operands, right_operands) =
+                (&left_operands[..left_at], &right_operands[..right_at]);
+        }
+        operands_are_interchangeable(
+            left_operands,
+            right_operands,
+            // A moved target is a free choice only on an instruction that
+            // truly branches. Both sides agree on the operation by now, so
+            // either one answers.
+            TargetMoves::from(transfers_control(left.kind) && transfers_control(right.kind)),
+            AddressMoves::from(kinds),
+        )
+    })
+}
+
+/// Where the reference to memory at a distance from the program counter
+/// sits among `operands`, as a load from a literal pool makes.
+fn pool_reference(operands: &[il::Operand]) -> Option<usize> {
+    operands.iter().position(|operand| {
+        matches!(operand, il::Operand::Memory { base: Some(il::Reg::ProgramCounter), .. })
     })
 }
 
@@ -2260,32 +2280,6 @@ impl From<(&ConstantKind, &ConstantKind)> for AddressMoves {
     }
 }
 
-/// Report whether two operands differ only in the part of an address the
-/// linker chose: a constant, or the offset of a memory reference through the
-/// same register.
-fn is_moved_address(arch: &dyn Arch, left: &str, right: &str) -> bool {
-    if arch.constant_value(left).is_some() && arch.constant_value(right).is_some() {
-        return true;
-    }
-    // A distance from `pc` to data, as A64 `adr` and `adrp` print it.
-    if is_branch_target(left) && is_branch_target(right) {
-        return true;
-    }
-    // The offset that ends a memory reference, as A64 prints the part of an
-    // address in a page: `[x22, #0x608]`.
-    let offset = |operand: &str| {
-        let inner = operand.strip_suffix('!').unwrap_or(operand).strip_suffix(']')?;
-        arch.constant_value(inner)
-    };
-    if offset(left).is_some() && offset(right).is_some() {
-        return true;
-    }
-    match (left.split_once('('), right.split_once('(')) {
-        (Some((_, left_base)), Some((_, right_base))) => left_base == right_base,
-        _ => false,
-    }
-}
-
 /// Whether a differing branch target counts as a free choice.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TargetMoves {
@@ -2302,22 +2296,58 @@ impl From<bool> for TargetMoves {
 }
 
 /// Compare two operand lists, allowing the differences that carry no meaning.
+///
+/// A register is a free choice, but not where it is the base of an access:
+/// an address may move, but not the register it is read through. A shift
+/// is no free choice either: a word of data that decodes as `eoreq r0, fp,
+/// r8, lsr 17` changed when its shift did.
 fn operands_are_interchangeable(
-    arch: &dyn Arch,
-    left: &str,
-    right: &str,
+    left: &[il::Operand],
+    right: &[il::Operand],
     targets: TargetMoves,
     addresses: AddressMoves,
 ) -> bool {
-    let left = left.split(',').map(str::trim);
-    let right = right.split(',').map(str::trim);
+    use il::Operand::{Const, Memory, Reg, RegisterList, Shifted, Target, Zero};
+    let moves = addresses == AddressMoves::Freely;
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(a, b)| {
+            a == b
+                || match (a, b) {
+                    (Reg(_) | Zero, Reg(_) | Zero) => true,
+                    (
+                        Shifted { shift: left_shift, amount: left_amount, .. },
+                        Shifted { shift: right_shift, amount: right_amount, .. },
+                    ) => left_shift == right_shift && left_amount == right_amount,
+                    // Which registers a `push` saves is the allocator's
+                    // choice, but not whether a `pop` loads the program
+                    // counter, as that returns.
+                    (RegisterList(left_list), RegisterList(right_list)) => {
+                        left_list.len() == right_list.len()
+                            && special_registers(*left_list) == special_registers(*right_list)
+                    }
+                    (Target(_), Target(_)) => targets == TargetMoves::Freely || moves,
+                    (Const(_), Const(_)) => moves,
+                    // The offset an address adds to its base, as A64 adds
+                    // the part of an address in a page: `[x22, #0x608]`.
+                    (
+                        Memory { base: left_base, index: left_index, update: left_update, .. },
+                        Memory {
+                            base: right_base, index: right_index, update: right_update, ..
+                        },
+                    ) => {
+                        moves
+                            && left_base == right_base
+                            && left_index == right_index
+                            && left_update == right_update
+                    }
+                    _ => false,
+                }
+        })
+}
 
-    left.zip(right).all(|(a, b)| {
-        a == b
-            || (arch.is_register(a) && arch.is_register(b))
-            || (targets == TargetMoves::Freely && is_branch_target(a) && is_branch_target(b))
-            || (addresses == AddressMoves::Freely && is_moved_address(arch, a, b))
-    })
+/// The registers in `list` that are no general register.
+fn special_registers(list: il::RegSet) -> il::RegSet {
+    list.iter().filter(|reg| !matches!(reg, il::Reg::General(_))).collect()
 }
 
 /// Work out whether a matched pair differs.
@@ -4630,7 +4660,6 @@ mod tests {
     }
     use crate::arch::InsnKind;
     use crate::arch::arm32::Arm32;
-    use crate::arch::mips::Mips32;
     use crate::norm::normalize;
 
     /// Instructions written by hand, with no bytes: each normalizes by its
@@ -4696,15 +4725,16 @@ mod tests {
     /// changes were missed that way.
     #[test]
     fn a_changed_data_word_is_not_called_unchanged() {
-        // The two encodings of that kernel size field, as they decode.
-        let before = [("eoreq".to_string(), "r0, fp, r8, lsr 17".to_string())];
-        let after = [("eoreq".to_string(), "r3, fp, r8, asr 24".to_string())];
-
+        // The two encodings of that kernel size field, as they lift:
+        // `eoreq r0, fp, r8, lsr 17` and `eoreq r3, fp, r8, asr 24`.
+        let lift = |word: u32| {
+            Arm32.lift(&Arm32.decode(&word.to_le_bytes(), 0, 0).expect("decodes")).expect("lifts")
+        };
+        let (before, after) = (lift(0x002b_08a8), lift(0x002b_3c48));
         assert!(
             !operands_are_interchangeable(
-                &Arm32,
-                &before[0].1,
-                &after[0].1,
+                &before.operands,
+                &after.operands,
                 TargetMoves::Never,
                 AddressMoves::Never
             ),
@@ -4712,20 +4742,16 @@ mod tests {
         );
     }
 
+    fn r(number: u8) -> il::Operand {
+        il::Operand::Reg(il::Reg::General(number))
+    }
+
     /// A register the compiler picked differently is not an edit.
     #[test]
     fn a_changed_register_is_not_a_change() {
         assert!(operands_are_interchangeable(
-            &Arm32,
-            "r0, r1, r2",
-            "r4, r5, r6",
-            TargetMoves::Never,
-            AddressMoves::Never
-        ));
-        assert!(operands_are_interchangeable(
-            &Arm32,
-            "r0, fp, r8",
-            "r3, fp, r8",
+            &[r(0), r(1), r(2)],
+            &[r(4), r(5), r(6)],
             TargetMoves::Never,
             AddressMoves::Never
         ));
@@ -4738,22 +4764,20 @@ mod tests {
     #[test]
     fn a_moved_branch_target_is_not_a_change() {
         assert!(operands_are_interchangeable(
-            &Arm32,
-            "$+0x50a734",
-            "$+0x50b2d4",
+            &[il::Operand::Target(Some(0x50_a734))],
+            &[il::Operand::Target(Some(0x50_b2d4))],
             TargetMoves::Freely,
             AddressMoves::Never
         ));
     }
 
-    /// A `$...` operand on an instruction that does not branch is data, and a
-    /// changed data word must stay visible.
+    /// A target on an instruction that does not branch is data, as an
+    /// address `adr` forms, and a changed one must stay visible.
     #[test]
     fn a_target_that_is_not_a_branch_stays_a_change() {
         assert!(!operands_are_interchangeable(
-            &Arm32,
-            "$+0x50a734",
-            "$+0x50b2d4",
+            &[il::Operand::Target(Some(0x50_a734))],
+            &[il::Operand::Target(Some(0x50_b2d4))],
             TargetMoves::Never,
             AddressMoves::Never
         ));
@@ -4763,30 +4787,31 @@ mod tests {
     #[test]
     fn a_branch_still_reports_its_other_operands() {
         assert!(!operands_are_interchangeable(
-            &Arm32,
-            "r0, 0x10",
-            "r0, 0x20",
+            &[r(0), il::Operand::Const(0x10)],
+            &[r(0), il::Operand::Const(0x20)],
             TargetMoves::Freely,
             AddressMoves::Never
         ));
+    }
+
+    /// An access through `base` plus `offset`.
+    fn at(base: u8, offset: i64) -> il::Operand {
+        il::Operand::memory(Some(il::Reg::General(base)), Some(offset))
     }
 
     /// A constant that is part of an address on both sides moves with the
     /// linker, so it is not an edit.
     #[test]
     fn a_moved_address_is_not_a_change() {
-        let mips = &Mips32::BIG;
         assert!(operands_are_interchangeable(
-            mips,
-            "v0, 0x806F",
-            "v0, 0x8070",
+            &[r(2), il::Operand::Const(0x806f)],
+            &[r(2), il::Operand::Const(0x8070)],
             TargetMoves::Never,
             AddressMoves::Freely
         ));
         assert!(operands_are_interchangeable(
-            mips,
-            "a3, 0x1AA0(s0)",
-            "a3, -0x4560(s0)",
+            &[r(7), at(16, 0x1aa0)],
+            &[r(7), at(16, -0x4560)],
             TargetMoves::Never,
             AddressMoves::Freely
         ));
@@ -4795,18 +4820,15 @@ mod tests {
     /// The same constants, when either side is a value, stay a change.
     #[test]
     fn a_changed_value_is_still_a_change() {
-        let mips = &Mips32::BIG;
         assert!(!operands_are_interchangeable(
-            mips,
-            "v0, 0x806F",
-            "v0, 0x8070",
+            &[r(2), il::Operand::Const(0x806f)],
+            &[r(2), il::Operand::Const(0x8070)],
             TargetMoves::Never,
             AddressMoves::Never
         ));
         assert!(!operands_are_interchangeable(
-            mips,
-            "v0, 0x3C0(v0)",
-            "v0, 0x3C8(v0)",
+            &[r(2), at(2, 0x3c0)],
+            &[r(2), at(2, 0x3c8)],
             TargetMoves::Never,
             AddressMoves::Never
         ));
@@ -4816,12 +4838,43 @@ mod tests {
     #[test]
     fn a_moved_address_through_another_register_is_a_change() {
         assert!(!operands_are_interchangeable(
-            &Mips32::BIG,
-            "a3, 0x1AA0(s0)",
-            "a3, 0x1AA0(s1)",
+            &[r(7), at(16, 0x1aa0)],
+            &[r(7), at(17, 0x1aa0)],
             TargetMoves::Never,
             AddressMoves::Freely
         ));
+    }
+
+    /// Two lists of operands of different lengths are different work.
+    #[test]
+    fn a_changed_count_of_operands_is_a_change() {
+        assert!(!operands_are_interchangeable(
+            &[r(0), r(1)],
+            &[r(0), r(1), r(2)],
+            TargetMoves::Freely,
+            AddressMoves::Freely
+        ));
+    }
+
+    /// A list the allocator filled with other registers is the same work,
+    /// but a list that now loads the program counter returns.
+    #[test]
+    fn a_register_list_is_a_free_choice_but_not_its_return() {
+        let list = |regs: &[il::Reg]| il::Operand::RegisterList(regs.iter().copied().collect());
+        let (r4, r5, r6, r7) =
+            (il::Reg::General(4), il::Reg::General(5), il::Reg::General(6), il::Reg::General(7));
+        let pc = il::Reg::ProgramCounter;
+        let interchangeable = |left: &[il::Reg], right: &[il::Reg]| {
+            operands_are_interchangeable(
+                &[list(left)],
+                &[list(right)],
+                TargetMoves::Never,
+                AddressMoves::Never,
+            )
+        };
+        assert!(interchangeable(&[r4, r6, r7, pc], &[r4, r5, r6, pc]));
+        assert!(!interchangeable(&[r4, r6, r7, pc], &[r4, r5, r6, r7]));
+        assert!(!interchangeable(&[r4, r6, pc], &[r4, r5, r6, pc]));
     }
 
     /// Only one side being an address is not enough to let it move.
