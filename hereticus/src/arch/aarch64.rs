@@ -128,7 +128,7 @@ impl Arch for Aarch64 {
             let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             return Ok(Insn::new(
                 insn_address,
-                INSN_WIDTH,
+                bytes,
                 &format!("{UNKNOWN_TEXT} {word:#010x}"),
                 InsnKind::Unknown,
                 super::Opcode::None,
@@ -141,7 +141,7 @@ impl Arch for Aarch64 {
         let kind = classify(&inst, insn_address);
         let opcode =
             super::Opcode::Aarch64(Decoded { opcode: inst.opcode, alias: alias_of(&inst) });
-        Ok(Insn::new(insn_address, INSN_WIDTH, &format!("{name} {operands}"), kind, opcode))
+        Ok(Insn::new(insn_address, bytes, &format!("{name} {operands}"), kind, opcode))
     }
 
     fn triple(&self) -> &'static str {
@@ -353,7 +353,8 @@ impl Arch for Aarch64 {
         POINTER_WIDTH
     }
 
-    fn lift(&self, insn: &Insn, word: &[u8]) -> Option<Lifted> {
+    fn lift(&self, insn: &Insn) -> Option<Lifted> {
+        let word = insn.bytes();
         if insn.kind == InsnKind::Unknown {
             return None;
         }
@@ -1998,7 +1999,7 @@ mod tests {
     }
 
     fn lift_one(word: u32) -> Lifted {
-        Aarch64.lift(&decode_one(word), &word.to_le_bytes()).expect("the word must lift")
+        Aarch64.lift(&decode_one(word)).expect("the word must lift")
     }
 
     fn regs(regs: &[Reg]) -> RegSet {
@@ -2165,7 +2166,7 @@ mod tests {
         bolero::check!().with_type::<u32>().for_each(|&word| {
             let bytes = word.to_le_bytes();
             let insn = Aarch64.decode(&bytes, 0, 0x1000).expect("every word decodes or is unknown");
-            if let Some(lifted) = Aarch64.lift(&insn, &bytes)
+            if let Some(lifted) = Aarch64.lift(&insn)
                 && let Some(Test::Guard(_) | Test::OnFlags(_)) = lifted.test
             {
                 assert!(

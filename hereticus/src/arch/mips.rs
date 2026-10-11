@@ -226,7 +226,7 @@ impl Arch for Mips32 {
             if let Some(word) = super::mips32::decode(raw) {
                 return Ok(Insn::new(
                     insn_address,
-                    INSN_WIDTH,
+                    &bytes[..INSN_WIDTH],
                     &format!("{} {}", word.op.name(), word.operands),
                     word.kind,
                     super::Opcode::Mips(Decoded::Mips32(word.op)),
@@ -239,7 +239,7 @@ impl Arch for Mips32 {
             // still compare as different.
             return Ok(Insn::new(
                 insn_address,
-                INSN_WIDTH,
+                word,
                 &format!("{UNKNOWN_TEXT} {raw:#010x}"),
                 InsnKind::Unknown,
                 super::Opcode::None,
@@ -272,7 +272,7 @@ impl Arch for Mips32 {
 
         Ok(Insn::new(
             insn_address,
-            INSN_WIDTH,
+            word,
             &format!("{name} {operands}"),
             kind,
             super::Opcode::Mips(Decoded::Rabbitizer(inst.opcode())),
@@ -674,7 +674,8 @@ impl Arch for Mips32 {
     /// What `rabbitizer` reads is lifted from its decoded fields, and the
     /// MIPS32 words that [`super::mips32`] reads in its place by that
     /// module, where they compute a value.
-    fn lift(&self, insn: &Insn, word: &[u8]) -> Option<il::Lifted> {
+    fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
+        let word = insn.bytes();
         if insn.kind == InsnKind::Unknown {
             return None;
         }
@@ -2329,9 +2330,8 @@ mod tests {
 
     /// Lift a word in both byte orders, and check that they agree.
     fn lift_one(word: u32) -> il::Lifted {
-        let big = Mips32::BIG
-            .lift(&Mips32::BIG.decode(&word.to_be_bytes(), 0, 0).unwrap(), &word.to_be_bytes());
-        let little = Mips32::LITTLE.lift(&decode_one(word), &word.to_le_bytes());
+        let big = Mips32::BIG.lift(&Mips32::BIG.decode(&word.to_be_bytes(), 0, 0).unwrap());
+        let little = Mips32::LITTLE.lift(&decode_one(word));
         assert_eq!(big, little, "{word:#010x}: both byte orders lift alike");
         big.expect("the word must lift")
     }
@@ -2449,7 +2449,7 @@ mod tests {
         bolero::check!().with_type::<u32>().for_each(|&word| {
             let bytes = word.to_be_bytes();
             let Ok(insn) = Mips32::BIG.decode(&bytes, 0, 0) else { return };
-            if let Some(lifted) = Mips32::BIG.lift(&insn, &bytes)
+            if let Some(lifted) = Mips32::BIG.lift(&insn)
                 && let Some(il::Test::Guard(_)) = lifted.test
             {
                 assert!(matches!(insn.kind, InsnKind::Branch { .. }), "{insn}: a guard branches");
@@ -3723,7 +3723,7 @@ mod tests {
         let normalized = |words: &[u32]| {
             let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
             let (insns, _) = crate::arch::decode_all(arch, &code, 0);
-            normalize_body(arch, &code, &insns)
+            normalize_body(arch, &insns)
         };
         let without = [0x0085_1021]; // addu v0, a0, a1
         let with = [
@@ -3832,10 +3832,7 @@ mod tests {
         assert_eq!(crate::arch::split_printed(&absolute.text).0, "j");
 
         let arch = &Mips32::LITTLE;
-        assert_eq!(
-            normalize(arch, &relative, &0x1000_0002_u32.to_le_bytes()),
-            normalize(arch, &absolute, &0x0800_0010_u32.to_le_bytes())
-        );
+        assert_eq!(normalize(arch, &relative), normalize(arch, &absolute));
     }
 
     /// A conditional branch must still differ from an unconditional jump, or a
@@ -3850,8 +3847,8 @@ mod tests {
         let unconditional = decode_one(0x1000_0002);
         assert_eq!(crate::arch::split_printed(&conditional.text).0, "beq");
         assert_ne!(
-            normalize(arch, &conditional, &0x1082_0005_u32.to_le_bytes()),
-            normalize(arch, &unconditional, &0x1000_0002_u32.to_le_bytes()),
+            normalize(arch, &conditional),
+            normalize(arch, &unconditional),
             "a test that can fall through is not a jump"
         );
     }

@@ -390,7 +390,7 @@ pub trait Arch {
     ///
     /// Defaults to `None`, for the architectures with no lifter yet. A
     /// caller treats `None` as "nothing known", never as "does nothing".
-    fn lift(&self, _insn: &Insn, _word: &[u8]) -> Option<crate::il::Lifted> {
+    fn lift(&self, _insn: &Insn) -> Option<crate::il::Lifted> {
         None
     }
 
@@ -619,6 +619,11 @@ pub struct Insn {
     pub address: u64,
     /// Width in bytes. Fixed on some architectures, variable on others.
     pub bytes_len: usize,
+    /// The bytes, in the order memory holds them, from the first:
+    /// [`Insn::bytes`] gives the [`Insn::bytes_len`] of them. An
+    /// instruction is four bytes at most, and a word of data among code
+    /// eight.
+    bytes: [u8; 8],
     /// The instruction as printed, with one space before the operands, as
     /// `ldr r0, [sp, 0x4]`.
     pub text: String,
@@ -631,9 +636,14 @@ pub struct Insn {
 }
 
 impl Insn {
-    /// An instruction printed as `text`. Space around the operands is
-    /// trimmed to one before them.
-    pub fn new(address: u64, bytes_len: usize, text: &str, kind: InsnKind, opcode: Opcode) -> Self {
+    /// An instruction of `bytes`, printed as `text`. Space around the
+    /// operands is trimmed to one before them. Past eight bytes, only the
+    /// first eight are kept.
+    pub fn new(address: u64, bytes: &[u8], text: &str, kind: InsnKind, opcode: Opcode) -> Self {
+        let bytes_len = bytes.len();
+        let mut kept = [0; 8];
+        let held = bytes_len.min(kept.len());
+        kept[..held].copy_from_slice(&bytes[..held]);
         let text = text.trim();
         let (text, operands_at) = match text.split_once(char::is_whitespace) {
             Some((head, tail)) => {
@@ -646,7 +656,12 @@ impl Insn {
             }
             None => (text.to_string(), text.len()),
         };
-        Self { address, bytes_len, text, operands_at, kind, opcode }
+        Self { address, bytes_len, bytes: kept, text, operands_at, kind, opcode }
+    }
+
+    /// The bytes of the instruction, in the order memory holds them.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.bytes_len.min(self.bytes.len())]
     }
 
     /// The operands as printed, as `r0, [sp, 0x4]`. May be empty.
@@ -656,7 +671,12 @@ impl Insn {
 
     /// The same instruction printed as `text`.
     pub fn with_text(self, text: &str) -> Self {
-        Self::new(self.address, self.bytes_len, text, self.kind, self.opcode)
+        Self::new(self.address, self.bytes(), text, self.kind, self.opcode)
+    }
+
+    /// The same instruction, read from `bytes`.
+    pub fn with_bytes(self, bytes: &[u8]) -> Self {
+        Self::new(self.address, bytes, &self.text, self.kind, self.opcode)
     }
 }
 
@@ -875,7 +895,7 @@ pub(crate) fn split_printed(text: &str) -> (&str, &str) {
 /// A word of data among code, as one instruction no decoder reads.
 fn data_word(at: u64, bytes: &[u8]) -> Insn {
     let word: String = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
-    Insn::new(at, bytes.len(), &format!(".word {word}"), InsnKind::Unknown, Opcode::None)
+    Insn::new(at, bytes, &format!(".word {word}"), InsnKind::Unknown, Opcode::None)
 }
 
 /// Decode `code` one instruction after the next.
@@ -935,7 +955,13 @@ mod tests {
     fn nops(start: u64, count: u64) -> Vec<Insn> {
         (0..count)
             .map(|index| {
-                Insn::new(start + 4 * index, 4, "nop", InsnKind::Normal, crate::arch::Opcode::None)
+                Insn::new(
+                    start + 4 * index,
+                    &[0; 4],
+                    "nop",
+                    InsnKind::Normal,
+                    crate::arch::Opcode::None,
+                )
             })
             .collect()
     }

@@ -247,7 +247,7 @@ fn a_real_address_load_survives_normalizing() {
     };
 
     let (insns, _) = decode_all(arch, &reader.code, reader.address);
-    let body = normalize_body(arch, &reader.code, &insns);
+    let body = normalize_body(arch, &insns);
 
     // The function is `lui`, `addiu`, `andi`, `sll`, `addu`, `lw`, `jr`, `nop`.
     // Nothing here is frame work, so normalizing must keep all of it bar the
@@ -298,7 +298,7 @@ fn pic_costs_the_comparison_nothing(pic_build: &str, nopic_build: &str) {
             .iter()
             .map(|function| {
                 let (insns, _) = decode_all(arch, &function.code, function.address);
-                normalize_body(arch, &function.code, &insns)
+                normalize_body(arch, &insns)
             })
             .collect();
 
@@ -355,11 +355,7 @@ fn the_pic_rules_do_not_depend_on_byte_order() {
             .iter()
             .map(|function| {
                 let (insns, _) = decode_all(arch, &function.code, function.address);
-                (
-                    function.name.clone(),
-                    insns.len(),
-                    normalize_body(arch, &function.code, &insns).len(),
-                )
+                (function.name.clone(), insns.len(), normalize_body(arch, &insns).len())
             })
             .collect()
     };
