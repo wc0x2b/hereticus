@@ -195,7 +195,7 @@ pub struct MemoryAccess {
 ///
 /// The names read as the test on the values, not on the flags: after
 /// `cmp a, b`, [`Cond::UnsignedLess`] holds where `a < b` as unsigned.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Cond {
     Equal,
     NotEqual,

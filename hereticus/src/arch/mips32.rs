@@ -475,10 +475,10 @@ fn cop0(fields: &Fields) -> Option<(Op, String)> {
     None
 }
 
-/// Lift a word [`decode`] reads, where it computes a value: the moves on a
-/// condition, the multiplies, the counts, the rotates and the bit field and
-/// byte operations. The rest, as the barriers and the coprocessor moves,
-/// lift to nothing.
+/// Lift a word [`decode`] reads. A DSP accumulator other than `ac0`, which
+/// is `hi` and `lo`, is a register the IL does not name: a move to or from
+/// one names it as another operand, and a multiply into one lifts to
+/// nothing.
 pub(super) fn lift(word: u32) -> Option<il::Lifted> {
     use il::Op;
     let fields = Fields::of(word);
@@ -490,6 +490,13 @@ pub(super) fn lift(word: u32) -> Option<il::Lifted> {
     let constant = |value: u32| il::Operand::Const(value.into());
     let (rs, rt, rd) = (general(fields.rs), general(fields.rt), general(fields.rd));
     let list = |operands: &[il::Operand]| -> il::Operands { operands.iter().copied().collect() };
+    let select = constant(fields.function & 0x7);
+    let base = match fields.rs {
+        0 => None,
+        number => Some(il::Reg::General(number as u8)),
+    };
+    let memory =
+        il::Operand::Memory { base, offset: Some(i64::from(fields.immediate as u16 as i16)) };
     let (op, operands, written) = match decoded {
         self::Op::Movz | self::Op::Movn => (Op::Select, list(&[rd, rs, rt]), Some(rd)),
         self::Op::Rotr => (Op::Rotate, list(&[rd, rt, constant(fields.sa)]), Some(rd)),
@@ -510,6 +517,32 @@ pub(super) fn lift(word: u32) -> Option<il::Lifted> {
         self::Op::Madd | self::Op::Maddu | self::Op::Msub | self::Op::Msubu if fields.rd == 0 => {
             (Op::MultiplyAdd, list(&[rs, rt]), None)
         }
+        self::Op::Mult | self::Op::Multu if fields.rd == 0 => (Op::Multiply, list(&[rs, rt]), None),
+        self::Op::Mfhi if fields.rs == 0 => (Op::Move, list(&[rd, il::Operand::Reg(HI)]), Some(rd)),
+        self::Op::Mflo if fields.rs == 0 => (Op::Move, list(&[rd, il::Operand::Reg(LO)]), Some(rd)),
+        self::Op::Mthi if fields.rd == 0 => {
+            (Op::Move, list(&[il::Operand::Reg(HI), rs]), Some(il::Operand::Reg(HI)))
+        }
+        self::Op::Mtlo if fields.rd == 0 => {
+            (Op::Move, list(&[il::Operand::Reg(LO), rs]), Some(il::Operand::Reg(LO)))
+        }
+        // An accumulator past `ac0` is no register the IL names.
+        self::Op::Mfhi | self::Op::Mflo => (Op::Move, list(&[rd, il::Operand::Other]), Some(rd)),
+        self::Op::Mthi | self::Op::Mtlo => (Op::Move, list(&[il::Operand::Other, rs]), None),
+        // A move to or from coprocessor 0 names its register and select,
+        // which the IL does not track.
+        self::Op::Mfc0 => (Op::System, list(&[rt, il::Operand::Other, select]), Some(rt)),
+        self::Op::Mtc0 => (Op::System, list(&[rt, il::Operand::Other, select]), None),
+        // `di` and `ei` write the old status to `rt`, where it names one.
+        self::Op::Di | self::Op::Ei if fields.rt == 0 => (Op::System, list(&[]), None),
+        self::Op::Di | self::Op::Ei => (Op::System, list(&[rt]), Some(rt)),
+        self::Op::Wait | self::Op::Eret | self::Op::Deret => (Op::System, list(&[]), None),
+        self::Op::Sigrie => (Op::System, list(&[constant(fields.immediate)]), None),
+        self::Op::Pref => (Op::System, list(&[constant(fields.rt), memory]), None),
+        self::Op::Synci => (Op::System, list(&[memory]), None),
+        self::Op::Rdhwr => (Op::Move, list(&[rt, il::Operand::Other]), Some(rt)),
+        self::Op::JrHb => (Op::Jump, list(&[rs]), None),
+        self::Op::JalrHb => (Op::Call, list(&[rd, rs]), Some(rd)),
         _ => return None,
     };
 
@@ -532,6 +565,11 @@ pub(super) fn lift(word: u32) -> Option<il::Lifted> {
                 writes.insert(accumulator);
             }
         }
+        self::Op::Mult | self::Op::Multu => {
+            writes.insert(HI);
+            writes.insert(LO);
+        }
+
         _ => {}
     }
     Some(il::Lifted { op, reads, writes, memory: None, test: None, operands })
@@ -554,6 +592,36 @@ mod tests {
 
     fn kind(word: u32) -> Option<InsnKind> {
         decode(word).map(|word| word.kind)
+    }
+
+    /// The words a kernel holds lift with typed operands: what they write,
+    /// and a coprocessor register or an accumulator past `ac0` as another
+    /// operand.
+    #[test]
+    fn the_kernel_words_lift() {
+        use il::{Op as IlOp, Operand, Reg};
+        let t0 = Operand::Reg(Reg::General(8));
+        let lifted = |word: u32| lift(word).unwrap_or_else(|| panic!("{word:#010x} lifts"));
+
+        // mfc0 t0, c0r12, 0
+        let mfc0 = lifted(0x4008_6000);
+        assert_eq!(mfc0.op, IlOp::System);
+        assert_eq!(mfc0.operands.as_slice(), [t0, Operand::Other, Operand::Const(0)]);
+        assert!(mfc0.writes.contains(Reg::General(8)));
+
+        // di t0 writes the old status; di alone writes nothing.
+        assert!(lifted(0x4168_6000).writes.contains(Reg::General(8)));
+        assert!(lifted(0x4160_6000).operands.is_empty());
+
+        // mfhi v0, ac1 and mthi a0, ac1.
+        let from = lifted(0x0020_1010);
+        assert_eq!((from.op, from.operands[1]), (IlOp::Move, Operand::Other));
+        assert!(from.writes.contains(Reg::General(2)));
+        let to = lifted(0x0080_0811);
+        assert!(to.reads.contains(Reg::General(4)) && to.writes.is_empty());
+
+        // wait
+        assert_eq!(lifted(0x4200_0020).op, IlOp::System);
     }
 
     /// `jr.hb $ra`, `jr.hb $3` and `jalr.hb $25`, as LLVM assembles them.

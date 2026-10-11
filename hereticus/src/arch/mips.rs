@@ -3720,19 +3720,20 @@ mod tests {
         use crate::norm::normalize_body;
 
         let arch = &Mips32::LITTLE;
-        let without = [decode_one(0x0085_1021)]; // addu v0, a0, a1
+        let normalized = |words: &[u32]| {
+            let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+            let (insns, _) = crate::arch::decode_all(arch, &code, 0);
+            normalize_body(arch, &code, &insns)
+        };
+        let without = [0x0085_1021]; // addu v0, a0, a1
         let with = [
-            decode_one(0x8f99_0000), // lw t9, 0x0(gp), dropped
-            decode_one(0x0320_f809), // jalr t9, kept
-            decode_one(0x0085_1021), // addu v0, a0, a1
+            0x8f99_0000, // lw t9, 0x0(gp), dropped
+            0x0320_f809, // jalr t9, kept
+            0x0085_1021, // addu v0, a0, a1
         ];
 
-        assert_eq!(normalize_body(arch, &without).len(), 1);
-        assert_eq!(
-            normalize_body(arch, &with).len(),
-            2,
-            "the call must remain once its GOT read is dropped"
-        );
+        assert_eq!(normalized(&without).len(), 1);
+        assert_eq!(normalized(&with).len(), 2, "the call must remain once its GOT read is dropped");
     }
 
     #[test]
@@ -3831,7 +3832,10 @@ mod tests {
         assert_eq!(crate::arch::split_printed(&absolute.text).0, "j");
 
         let arch = &Mips32::LITTLE;
-        assert_eq!(normalize(arch, &relative), normalize(arch, &absolute));
+        assert_eq!(
+            normalize(arch, &relative, &0x1000_0002_u32.to_le_bytes()),
+            normalize(arch, &absolute, &0x0800_0010_u32.to_le_bytes())
+        );
     }
 
     /// A conditional branch must still differ from an unconditional jump, or a
@@ -3846,8 +3850,8 @@ mod tests {
         let unconditional = decode_one(0x1000_0002);
         assert_eq!(crate::arch::split_printed(&conditional.text).0, "beq");
         assert_ne!(
-            normalize(arch, &conditional),
-            normalize(arch, &unconditional),
+            normalize(arch, &conditional, &0x1082_0005_u32.to_le_bytes()),
+            normalize(arch, &unconditional, &0x1000_0002_u32.to_le_bytes()),
             "a test that can fall through is not a jump"
         );
     }

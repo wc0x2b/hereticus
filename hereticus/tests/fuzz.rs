@@ -162,10 +162,11 @@ fn short_input_reports_truncation() {
 fn normalizing_never_panics() {
     check!().with_type::<Vec<u8>>().for_each(|code| {
         let (insns, _) = decode_all(&Arm32, code, 0);
-        let normalized = normalize_body(&Arm32, &insns);
+        let normalized = normalize_body(&Arm32, code, &insns);
 
-        // Dropping frame management can only remove instructions.
-        assert!(normalized.len() <= insns.len(), "normalizing invented instructions");
+        // Dropping frame management can only remove instructions, and a
+        // guard in one instruction, as `cbz`, reads as two.
+        assert!(normalized.len() <= 2 * insns.len(), "normalizing invented instructions");
     });
 }
 
@@ -177,7 +178,7 @@ fn normalizing_never_panics() {
 fn normalizing_is_deterministic() {
     check!().with_type::<Vec<u8>>().for_each(|code| {
         let (insns, _) = decode_all(&Arm32, code, 0);
-        assert_eq!(normalize_body(&Arm32, &insns), normalize_body(&Arm32, &insns));
+        assert_eq!(normalize_body(&Arm32, code, &insns), normalize_body(&Arm32, code, &insns));
     });
 }
 
@@ -193,12 +194,14 @@ fn normalizing_mips_never_panics_and_always_advances() {
     let arch = &Mips32::LITTLE;
     check!().with_type::<Vec<u8>>().for_each(|code| {
         let (insns, _) = decode_all(arch, code, 0);
-        let normalized = normalize_body(arch, &insns);
+        let normalized = normalize_body(arch, code, &insns);
 
-        // Dropping bookkeeping can only remove instructions. Reaching this line
-        // at all proves the loop terminated.
-        assert!(normalized.len() <= insns.len(), "normalizing invented instructions");
-        assert_eq!(normalized, normalize_body(arch, &insns), "normalizing is unstable");
+        // Dropping bookkeeping can only remove instructions, and a guard in
+        // one instruction, as `bltz`, reads as its test and its branch, as
+        // a compare and a branch do. Reaching this line at all proves the
+        // loop terminated.
+        assert!(normalized.len() <= 2 * insns.len(), "normalizing invented instructions");
+        assert_eq!(normalized, normalize_body(arch, code, &insns), "normalizing is unstable");
     });
 }
 
@@ -211,7 +214,7 @@ fn normalizing_mips_never_panics_and_always_advances() {
 fn normalized_instructions_equal_themselves() {
     check!().with_type::<[u8; 4]>().for_each(|bytes| {
         let Ok(insn) = Arm32.decode(bytes, 0, 0) else { return };
-        let normalized = normalize(&Arm32, &insn);
+        let normalized = normalize(&Arm32, &insn, bytes);
 
         assert_eq!(normalized, normalized.clone(), "a normalized instruction differed from itself");
         assert!(
@@ -236,8 +239,8 @@ fn normalizing_ignores_position() {
         };
 
         assert_eq!(
-            normalize(&Arm32, &first),
-            normalize(&Arm32, &second),
+            normalize(&Arm32, &first, bytes),
+            normalize(&Arm32, &second, bytes),
             "position changed the normalized form"
         );
     });
@@ -493,8 +496,12 @@ fn mips_normalizing_ignores_position(arch: &'static Mips32) {
             return;
         };
 
-        let normalized = normalize(arch, &first);
-        assert_eq!(normalized, normalize(arch, &second), "position changed the normalized form");
+        let normalized = normalize(arch, &first, bytes);
+        assert_eq!(
+            normalized,
+            normalize(arch, &second, bytes),
+            "position changed the normalized form"
+        );
         assert!(!normalized.differs_in_detail(&normalized.clone()));
     });
 }
@@ -515,10 +522,11 @@ fn normalizing_big_endian_mips_never_panics_and_always_advances() {
     let arch = &Mips32::BIG;
     check!().with_type::<Vec<u8>>().for_each(|code| {
         let (insns, _) = decode_all(arch, code, 0);
-        let normalized = normalize_body(arch, &insns);
+        let normalized = normalize_body(arch, code, &insns);
 
-        assert!(normalized.len() <= insns.len(), "normalizing invented instructions");
-        assert_eq!(normalized, normalize_body(arch, &insns), "normalizing is unstable");
+        // A guard in one instruction reads as two.
+        assert!(normalized.len() <= 2 * insns.len(), "normalizing invented instructions");
+        assert_eq!(normalized, normalize_body(arch, code, &insns), "normalizing is unstable");
     });
 }
 
