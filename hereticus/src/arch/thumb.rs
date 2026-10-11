@@ -37,7 +37,7 @@ use super::{
 use crate::address::{AddressSpace, ConstantKind};
 
 /// The narrow T32 instruction, and the alignment of every one.
-const HALFWORD: usize = 2;
+pub(super) const HALFWORD: usize = 2;
 
 /// The wide T32 instruction.
 const WORD: usize = 4;
@@ -104,7 +104,7 @@ impl Arch for Thumb2 {
                     bytes,
                     &format!("{name} {operands}"),
                     InsnKind::Normal,
-                    super::Opcode::Arm(decoded),
+                    super::Opcode::Thumb(decoded),
                 ));
             }
             // The width comes from the first halfword, so stepping over an
@@ -113,7 +113,7 @@ impl Arch for Thumb2 {
             let operands: String = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
             let is_neon = word.is_some_and(|word| matches!(word >> 24, 0xef | 0xff));
             let (name, opcode) = if is_neon {
-                (NEON_TEXT, super::Opcode::Arm(Decoded::NeonData))
+                (NEON_TEXT, super::Opcode::Thumb(Decoded::NeonData))
             } else {
                 (UNKNOWN_TEXT, super::Opcode::None)
             };
@@ -182,7 +182,7 @@ impl Arch for Thumb2 {
             bytes,
             &format!("{name} {operands}"),
             kind,
-            super::Opcode::Arm(decoded),
+            super::Opcode::Thumb(decoded),
         ))
     }
 
@@ -408,16 +408,16 @@ impl Arch for Thumb2 {
                     *insn = insn.clone().with_text(&text);
                 }
                 match &mut insn.opcode {
-                    super::Opcode::Arm(Decoded::Core { condition, flags, .. }) => {
+                    super::Opcode::Thumb(Decoded::Core { condition, flags, .. }) => {
                         *condition = code;
                         if narrow {
                             *flags = Flags::Kept;
                         }
                     }
-                    super::Opcode::Arm(Decoded::Vfp { condition, .. }) => *condition = code,
+                    super::Opcode::Thumb(Decoded::Vfp { condition, .. }) => *condition = code,
                     _ => {}
                 }
-            } else if let super::Opcode::Arm(Decoded::It { condition, mask }) = insn.opcode {
+            } else if let super::Opcode::Thumb(Decoded::It { condition, mask }) = insn.opcode {
                 conditions = it_conditions(condition, mask).unwrap_or_default();
             }
         }
@@ -427,7 +427,7 @@ impl Arch for Thumb2 {
     /// the flags, and fills the gap before a word-aligned pool.
     fn is_padding(&self, insn: &Insn) -> bool {
         let is = |opcode, condition, flags| {
-            insn.opcode == super::Opcode::Arm(Decoded::Core { opcode, condition, flags })
+            insn.opcode == super::Opcode::Thumb(Decoded::Core { opcode, condition, flags })
         };
         is(Opcode::NOP, ConditionCode::AL, Flags::Kept)
             || (is(Opcode::MOV, ConditionCode::AL, Flags::Kept) && insn.operands() == "r8, r8")
@@ -987,7 +987,7 @@ fn it_conditions(condition: u8, mask: u8) -> Option<Vec<ConditionCode>> {
 
 /// Whether `insn` is an `it`.
 pub(crate) fn is_it(insn: &Insn) -> bool {
-    matches!(insn.opcode, super::Opcode::Arm(Decoded::It { .. }))
+    matches!(insn.opcode, super::Opcode::Thumb(Decoded::It { .. }))
 }
 
 /// The bytes of the table a `tbb` or `tbh` at `insns[index]` jumps
@@ -995,12 +995,12 @@ pub(crate) fn is_it(insn: &Insn) -> bool {
 fn table_extent(insns: &[Insn], index: usize) -> Option<(Range<u64>, usize)> {
     let jump = &insns[index];
     let width = match jump.opcode {
-        super::Opcode::Arm(Decoded::Core {
+        super::Opcode::Thumb(Decoded::Core {
             opcode: Opcode::TBB,
             condition: ConditionCode::AL,
             ..
         }) => 1,
-        super::Opcode::Arm(Decoded::Core {
+        super::Opcode::Thumb(Decoded::Core {
             opcode: Opcode::TBH,
             condition: ConditionCode::AL,
             ..
@@ -1329,7 +1329,9 @@ mod tests {
             insns.iter().map(|insn| crate::arch::split_printed(&insn.text).0).collect();
         assert_eq!(names, ["ite", "movgt", "movle", "adds"]);
         let condition = |insn: &Insn| match insn.opcode {
-            super::super::Opcode::Arm(Decoded::Core { condition, flags, .. }) => (condition, flags),
+            super::super::Opcode::Thumb(Decoded::Core { condition, flags, .. }) => {
+                (condition, flags)
+            }
             other => panic!("{other:?}"),
         };
         assert_eq!(condition(&insns[1]), (ConditionCode::GT, Flags::Kept));

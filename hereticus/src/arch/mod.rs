@@ -689,8 +689,13 @@ pub enum Opcode {
     None,
     /// A64.
     Aarch64(aarch64::Decoded),
-    /// A32 and T32.
+    /// A word of data among code, as a literal pool holds, which no decoder
+    /// reads as an instruction.
+    Data,
+    /// A32.
     Arm(arm32::Decoded),
+    /// T32, which names its operations as A32 does.
+    Thumb(arm32::Decoded),
     /// MIPS32 and MIPS16e.
     Mips(mips::Decoded),
 }
@@ -895,7 +900,7 @@ pub(crate) fn split_printed(text: &str) -> (&str, &str) {
 /// A word of data among code, as one instruction no decoder reads.
 fn data_word(at: u64, bytes: &[u8]) -> Insn {
     let word: String = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
-    Insn::new(at, bytes, &format!(".word {word}"), InsnKind::Unknown, Opcode::None)
+    Insn::new(at, bytes, &format!(".word {word}"), InsnKind::Unknown, Opcode::Data)
 }
 
 /// Decode `code` one instruction after the next.
