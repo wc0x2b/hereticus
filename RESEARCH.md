@@ -613,6 +613,16 @@ last, once all context has paired, cut the kernels from 1.64% wrong to
 neighbour each, it undid 276 right and 919 wrong on the kernels and
 ranked the backport fixes lower; with three, it undid less of both.
 
+A pair that scores under 0.4 has little but its place for it, and one
+paired neighbour each is enough to undo it. Checked against the source
+files in the DWARF, that undid 16 right and 103 wrong pairs over the
+kernels, and 1 right and 7 wrong over the backports, with the fixes
+ranked a little higher; tinyxml2 8 to 9, read as raw images, lost 8 right
+pairs. Undoing pairs by references, by callers, by twin order or by
+identical shape the same way moved fewer than 15 pairs. Moving a weak
+pair to a free function that scores 0.25 more cost 79 right and 79 more
+wrong on the backports, and more wrong on the kernels.
+
 ### 4: constants
 
 `norm::constant_signature` had measured pairing on constants alone as

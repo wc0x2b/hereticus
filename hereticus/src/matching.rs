@@ -952,7 +952,9 @@ impl Cascade<'_> {
     /// similar code, as `cpuidle_enter_state` with `skb_expand_head`. The
     /// code of the two agrees, but nothing around them does. A pair is
     /// undone where each side has [`FEWEST_PAIRED_NEIGHBOURS`] or more
-    /// callers and callees that paired, and no two of them are a pair.
+    /// callers and callees that paired, and no two of them are a pair; for
+    /// a pair that scores under [`WEAK_PAIR_SIMILARITY`], one each is
+    /// enough.
     /// Stronger reasons stand, and a pair by callers or by references has
     /// its context already.
     ///
@@ -1000,8 +1002,13 @@ impl Cascade<'_> {
                     .iter()
                     .filter(|&&neighbour| !self.right_free[neighbour])
                     .count();
-                partners_of_left.len() >= FEWEST_PAIRED_NEIGHBOURS
-                    && paired_right >= FEWEST_PAIRED_NEIGHBOURS
+                let fewest = if pair.score < WEAK_PAIR_SIMILARITY {
+                    FEWEST_PAIRED_NEIGHBOURS_OF_A_WEAK_PAIR
+                } else {
+                    FEWEST_PAIRED_NEIGHBOURS
+                };
+                partners_of_left.len() >= fewest
+                    && paired_right >= fewest
                     && partners_of_left.is_disjoint(&right[pair.after])
             })
             .collect();
@@ -3340,6 +3347,19 @@ const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
 /// [`Cascade::unpair_without_context`] to judge it.
 const FEWEST_PAIRED_NEIGHBOURS: usize = 2;
 
+/// The code similarity under which a pair has little but its place for it,
+/// so that [`FEWEST_PAIRED_NEIGHBOURS_OF_A_WEAK_PAIR`] applies.
+///
+/// Measured against the symbols and the source files in the DWARF, this
+/// undid 16 right pairs and 103 wrong over the OpenWrt kernels, and 1 right
+/// and 7 wrong over the backports built two ways, with the fixes ranked a
+/// little higher. At 0.5 to 0.65 it undid more of both, and at 0.7 it
+/// ranked the backport fixes lower.
+const WEAK_PAIR_SIMILARITY: f64 = 0.4;
+
+/// See [`WEAK_PAIR_SIMILARITY`].
+const FEWEST_PAIRED_NEIGHBOURS_OF_A_WEAK_PAIR: usize = 1;
+
 /// The lowest code similarity at which a pair that [`Cascade::pair_by_layout`]
 /// undid outranks a pair by place, where it also scores
 /// [`MOVED_SIMILARITY_MARGIN`] more.
@@ -5552,6 +5572,50 @@ mod tests {
         let diff = diff_with(&before, &same_callees, blind);
         let pair = diff.matched.iter().find(|pair| pair.before == 4).expect("paired");
         assert_eq!((pair.after, pair.confidence), (4, Confidence::Similar));
+    }
+
+    /// Two leaves at 0x0 and 0x100, three anchors from 0x200, and at 0x500,
+    /// between the second and the third anchor, a function that calls the
+    /// leaf at `callee`, then runs `work`.
+    fn weak_pair_calling(callee: u64, work: &[u32]) -> crate::obj::Binary {
+        let caller: Vec<u8> = bl(0x500, callee)
+            .into_iter()
+            .chain(work.iter().flat_map(|word| word.to_le_bytes()))
+            .collect();
+        let functions = [
+            returns(1),
+            returns(2),
+            arm(&[ADC, SBC, RSB, BX_LR]),
+            arm(&[MUL, MUL, ADC, BX_LR]),
+            arm(&[RSB, RSB, BX_LR]),
+            caller,
+            arm(&[SBC, SBC, SBC, BX_LR]),
+        ];
+        let named: Vec<(&str, &[u8])> =
+            functions.iter().map(|code| ("", code.as_slice())).collect();
+        binary_of(&named)
+    }
+
+    /// A pair by place that scores low, whose one paired callee pairs with
+    /// what its partner does not call, pairs with nothing.
+    #[test]
+    fn a_weak_pair_whose_one_paired_neighbour_disagrees_is_undone() {
+        let blind = Options { use_names: UseNames::No, ..Default::default() };
+        let before = weak_pair_calling(0x000, &[ADD, SUB, ORR, EOR, AND, BIC, BX_LR]);
+        let rewritten = [ADD, MUL, MUL, MUL, MUL, MUL, BX_LR];
+
+        let same_callee = weak_pair_calling(0x000, &rewritten);
+        let diff = diff_with(&before, &same_callee, blind);
+        let pair = diff.matched.iter().find(|pair| pair.before == 5).expect("paired");
+        assert_eq!((pair.after, pair.confidence), (5, Confidence::SameLayout));
+        assert!(pair.score < WEAK_PAIR_SIMILARITY, "{pair:?}");
+
+        let other_callee = weak_pair_calling(0x100, &rewritten);
+        let diff = diff_with(&before, &other_callee, blind);
+        assert_eq!(
+            (diff.removed.as_slice(), diff.added.as_slice()),
+            ([5].as_slice(), [5].as_slice())
+        );
     }
 
     /// `b target` from `from`, little endian.
