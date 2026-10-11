@@ -49,7 +49,7 @@ fn normalized(level: &str, object: &str, function: &str) -> Option<Vec<NormInsn>
     let found = binary.functions.iter().find(|candidate| candidate.name == function)?;
     let arch = binary.isa.arch();
     let (insns, _) = decode_all(arch, &found.code, found.address);
-    Some(normalize_body(arch, &insns))
+    Some(normalize_body(arch, &found.code, &insns))
 }
 
 /// Similarity of two normalized bodies, from 0.0 to 1.0.

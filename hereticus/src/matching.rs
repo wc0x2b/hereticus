@@ -4633,11 +4633,14 @@ mod tests {
     use crate::arch::mips::Mips32;
     use crate::norm::normalize;
 
+    /// Instructions written by hand, with no bytes: each normalizes by its
+    /// opcode alone, which is all these tests compare.
     fn body(operations: &[(&str, &str)]) -> Vec<NormInsn> {
         operations
             .iter()
             .map(|(name, operands)| {
-                normalize(&Arm32, &crate::arch::arm32::test_insn(name, operands, InsnKind::Normal))
+                let insn = crate::arch::arm32::test_insn(name, operands, InsnKind::Normal);
+                normalize(&Arm32, &insn, &[])
             })
             .collect()
     }

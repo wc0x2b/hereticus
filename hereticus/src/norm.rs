@@ -21,11 +21,10 @@
 
 use std::collections::BTreeSet;
 
-use compact_str::{CompactString, format_compact};
 use smallvec::SmallVec;
 
 use crate::address::{AddressSpace, ConstantKind};
-use crate::arch::{Arch, Insn, InsnKind, is_branch_target};
+use crate::arch::{Arch, Insn, InsnKind};
 use crate::il::{self, Comparison, Cond, Guard, Lifted, Reg, Value, find_guards};
 
 /// Operands held without a heap allocation.
@@ -41,6 +40,40 @@ pub type Operands = SmallVec<[OperandShape; 4]>;
 /// more than two.
 pub type Constants = SmallVec<[u64; 2]>;
 
+/// The operation a normalized instruction does.
+///
+/// Two spellings of one operation get one value: `add`, `adds` and `addu`
+/// are all [`il::Op::Add`], and `cbz x8` tests as `cmp x8, #0` does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Operation {
+    /// What the lifter names, with the width of a memory access.
+    Lifted { op: il::Op, width: Option<u8> },
+    /// The test of a guard, or a lone compare.
+    Test(TestKind),
+    /// The branch of a guard, by its condition either way: a compiler can
+    /// branch on the opposite condition and swap the code after it.
+    GuardBranch(Cond),
+    /// An instruction the lifter names no operation for, by a key of the
+    /// operation its opcode does: see [`Arch::operation_name`].
+    Decoded(u64),
+    /// Bytes no decoder reads, by the bytes. Without them, a NEON `vmax`
+    /// and a NEON `vmin` would normalize alike, and an edit between them
+    /// would read as no change.
+    Unreadable(u64),
+}
+
+/// What a test computes, as the ARM compares name it on every
+/// architecture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TestKind {
+    /// `left - right`, as `cmp` computes.
+    Compare,
+    /// `left & right`, as `tst` computes.
+    BitTest,
+    /// `left + right`, as `cmn` computes.
+    CompareNegative,
+}
+
 /// An instruction with the build-specific detail removed.
 ///
 /// Equality ignores [`NormInsn::constants`], so two instructions that do the
@@ -50,14 +83,8 @@ pub type Constants = SmallVec<[u64; 2]>;
 /// [`NormInsn::differs_in_detail`].
 #[derive(Clone, Debug, Eq)]
 pub struct NormInsn {
-    /// The name of the operation, from the IL operation where the lifter
-    /// names one and from the decoded opcode where not: see
-    /// [`Arch::operation_name`].
-    ///
-    /// A name is a few characters, so it sits inline. An unreadable word
-    /// carries its printed bits in the name instead and can reach twenty,
-    /// which still fits the inline limit.
-    pub operation: CompactString,
+    /// The operation.
+    pub operation: Operation,
     /// Shape of each operand, in order.
     pub operands: Operands,
     /// How the instruction moves control.
@@ -193,29 +220,24 @@ impl From<InsnKind> for FlowShape {
     }
 }
 
-/// Normalize one instruction.
-pub fn normalize(arch: &dyn Arch, insn: &Insn) -> NormInsn {
-    // Bytes the decoder cannot read carry their raw word as the operand.
-    // Keeping that word in the operation name is what separates one
-    // unreadable instruction from another: without it, a NEON `vmax` and a
-    // NEON `vmin` would normalize alike and an edit between them would be
-    // reported as no change.
-    if insn.kind == InsnKind::Unknown {
-        return NormInsn {
-            operation: insn.text.as_str().into(),
-            operands: Operands::new(),
-            flow: FlowShape::Opaque,
-            constants: Constants::new(),
-        };
-    }
+/// Normalize one instruction, whose bytes are `word`.
+pub fn normalize(arch: &dyn Arch, insn: &Insn, word: &[u8]) -> NormInsn {
+    let lifted = arch.lift(insn, word).map(|lifted| frame_addressed(arch, lifted.canonical()));
+    named_by_op(normalize_lifted(arch, insn, word, lifted.as_ref()), lifted.as_ref())
+}
 
-    let fields = insn.operands().split(',');
-    NormInsn {
-        operation: arch.operation_name(insn),
-        operands: fields.clone().filter_map(|field| shape_of(arch, field)).collect(),
-        flow: insn.kind.into(),
-        constants: fields.filter_map(|field| arch.constant_value(field)).collect(),
-    }
+/// The bytes of `word` as one number, for [`Operation::Unreadable`]. A word
+/// is at most eight bytes on every architecture read here.
+fn bytes_key(word: &[u8]) -> u64 {
+    word.iter().take(8).fold(0, |key, &byte| key << 8 | u64::from(byte))
+}
+
+/// A 64-bit FNV-1a hash of `text`, as a key that does not change from run
+/// to run.
+fn text_key(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// Normalize a function body, dropping the instructions that only manage the
@@ -233,8 +255,9 @@ pub fn normalize(arch: &dyn Arch, insn: &Insn) -> NormInsn {
 /// instructions that are scaffolding *together* and real work apart, so
 /// [`Arch::idiom_length`] is asked about each remaining position and the whole
 /// run it reports is skipped.
-pub fn normalize_body(arch: &dyn Arch, insns: &[Insn]) -> Vec<NormInsn> {
-    normalize_body_in(arch, &[], insns, &AddressSpace::none())
+/// `code` holds the body from its first byte.
+pub fn normalize_body(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<NormInsn> {
+    normalize_body_in(arch, code, insns, &AddressSpace::none())
 }
 
 /// Normalize a function body that lives in `space`.
@@ -328,18 +351,22 @@ pub fn normalize_body_in(
             // offset in a page went from 0xf8 to 0x108 when data before it
             // grew, and crossed from one size to the next.
             Some(ConstantKind::Address) => {
-                let mut normalized = normalize_lifted(arch, &insns[index], lifted.get(index));
+                let lifted = lifted.get(index).and_then(Option::as_ref);
+                let mut normalized =
+                    normalize_lifted(arch, &insns[index], word_at(code, insns, index), lifted);
                 normalized.constants.clear();
                 for shape in &mut normalized.operands {
                     if matches!(shape, OperandShape::Immediate(_)) {
                         *shape = OperandShape::Target;
                     }
                 }
-                out.push(named_by_op(normalized, lifted.get(index)));
+                out.push(named_by_op(normalized, lifted));
             }
             Some(ConstantKind::Value) | None => {
-                let normalized = normalize_lifted(arch, &insns[index], lifted.get(index));
-                out.push(named_by_op(normalized, lifted.get(index)));
+                let lifted = lifted.get(index).and_then(Option::as_ref);
+                let normalized =
+                    normalize_lifted(arch, &insns[index], word_at(code, insns, index), lifted);
+                out.push(named_by_op(normalized, lifted));
             }
         }
         index += 1;
@@ -395,67 +422,36 @@ pub fn constant_signature(body: &[NormInsn]) -> BTreeSet<u64> {
         .collect()
 }
 
-/// Classify one operand from its printed form.
-///
-/// The architecture answers what each form means; the ordering of the
-/// questions is the same whatever answers them, because a memory reference
-/// must be recognized before the constant inside it, and a frame slot before
-/// a plain memory reference.
-fn shape_of(arch: &dyn Arch, operand: &str) -> Option<OperandShape> {
-    let operand = operand.trim();
-    if operand.is_empty() {
-        return None;
+/// Normalize one instruction, whose bytes are `word`, with its operands
+/// read from `lifted`. An instruction the lifter does not read has none.
+fn normalize_lifted(
+    arch: &dyn Arch,
+    insn: &Insn,
+    word: &[u8],
+    lifted: Option<&Lifted>,
+) -> NormInsn {
+    if insn.kind == InsnKind::Unknown {
+        return NormInsn {
+            operation: Operation::Unreadable(bytes_key(word)),
+            operands: Operands::new(),
+            flow: FlowShape::Opaque,
+            constants: Constants::new(),
+        };
     }
-
-    if arch.is_register_list(operand) {
-        return Some(OperandShape::RegisterList);
-    }
-
-    // Memory references print inside brackets.
-    if operand.contains('[') || operand.contains(']') {
-        return Some(if arch.mentions_stack_slot(operand) {
-            OperandShape::StackSlot
-        } else {
-            OperandShape::Memory
-        });
-    }
-
-    if is_branch_target(operand) {
-        return Some(OperandShape::Target);
-    }
-
-    if let Some(value) = arch.constant_value(operand) {
-        return Some(OperandShape::Immediate(Magnitude::of(value)));
-    }
-
-    Some(if arch.is_stack_register(operand) {
-        OperandShape::StackPointer
-    } else if arch.is_register(operand) {
-        OperandShape::Register
-    } else {
-        OperandShape::Other
-    })
-}
-
-/// Normalize one instruction, with its operands read from `lifted` where the
-/// lifter gives them, and parsed from the text where not.
-fn normalize_lifted(arch: &dyn Arch, insn: &Insn, lifted: Option<&Option<Lifted>>) -> NormInsn {
-    // The lift names the operands and constants, so the text gives only the
-    // name: parsing every operand to throw the shapes away took a twelfth
-    // of a comparison of an ARM kernel.
-    let (Some(Some(lifted)), false) = (lifted, insn.kind == InsnKind::Unknown) else {
-        return normalize(arch, insn);
+    let operands = lifted.map_or(&[][..], |lifted| lifted.operands.as_slice());
+    // [`named_by_op`] names what the lifter names; only the rest needs the
+    // name of its opcode.
+    let operation = match lifted {
+        Some(lifted) if lifted.op != il::Op::Other => {
+            Operation::Lifted { op: lifted.op, width: None }
+        }
+        _ => Operation::Decoded(text_key(&arch.operation_name(insn))),
     };
     NormInsn {
-        operation: arch.operation_name(insn),
-        operands: lifted
-            .operands
-            .iter()
-            .flat_map(|operand| lifted_shapes(arch, *operand))
-            .collect(),
+        operation,
+        operands: operands.iter().flat_map(|operand| lifted_shapes(arch, *operand)).collect(),
         flow: insn.kind.into(),
-        constants: lifted
-            .operands
+        constants: operands
             .iter()
             .filter_map(|operand| match operand {
                 il::Operand::Const(value) => Some(*value),
@@ -465,7 +461,7 @@ fn normalize_lifted(arch: &dyn Arch, insn: &Insn, lifted: Option<&Option<Lifted>
     }
 }
 
-/// The shapes of a lifted operand, as [`shape_of`] gives for a printed one.
+/// The shapes of a lifted operand.
 ///
 /// A memory reference outside the frame also gives the size of its offset:
 /// a field at 4 and one at 0x400 are different work. Measured over the
@@ -493,8 +489,8 @@ fn lifted_shapes(arch: &dyn Arch, operand: il::Operand) -> impl Iterator<Item = 
 /// `normalized`, named by the operation its lifted form computes, where the
 /// lifter names one. `add`, `adds` and `addu` then compare equal, and so do
 /// `ldr` and `lw` of one width.
-fn named_by_op(mut normalized: NormInsn, lifted: Option<&Option<Lifted>>) -> NormInsn {
-    let Some(Some(lifted)) = lifted else { return normalized };
+fn named_by_op(mut normalized: NormInsn, lifted: Option<&Lifted>) -> NormInsn {
+    let Some(lifted) = lifted else { return normalized };
     if lifted.op == il::Op::Other || normalized.flow == FlowShape::Opaque {
         return normalized;
     }
@@ -503,15 +499,15 @@ fn named_by_op(mut normalized: NormInsn, lifted: Option<&Option<Lifted>>) -> Nor
         // A compare and a branch no guard took read as a guard's do: A32
         // predicates a chain of compares, as `cmp` then `cmpne` then `bne`,
         // where another build branches after each.
-        (il::Op::Compare, _) => "cmp".into(),
+        (il::Op::Compare, _) => Operation::Test(TestKind::Compare),
         (il::Op::Branch, _) => match lifted.test {
             Some(il::Test::OnFlags(cond)) => guard_branch(cond).operation,
-            _ => lifted.op.name().into(),
+            _ => Operation::Lifted { op: lifted.op, width: None },
         },
-        (il::Op::Load | il::Op::Store | il::Op::Atomic, Some(width)) => {
-            format_compact!("{}.{}", lifted.op.name(), width.bits())
+        (op @ (il::Op::Load | il::Op::Store | il::Op::Atomic), Some(width)) => {
+            Operation::Lifted { op, width: Some(width.bits() as u8) }
         }
-        (op, _) => op.name().into(),
+        (op, _) => Operation::Lifted { op, width: None },
     };
     normalized
 }
@@ -521,6 +517,14 @@ fn named_by_op(mut normalized: NormInsn, lifted: Option<&Option<Lifted>>) -> Nor
 /// pass through them.
 pub fn flow_features_in(arch: &dyn Arch, code: &[u8], insns: &[Insn], depth: usize) -> Vec<u64> {
     il::flow_features(&lift_all(arch, code, insns), depth)
+}
+
+/// The bytes of instruction `index` of `insns`, which `code` holds from its
+/// first byte, or none where `code` does not hold them.
+fn word_at<'a>(code: &'a [u8], insns: &[Insn], index: usize) -> &'a [u8] {
+    let (Some(first), Some(insn)) = (insns.first(), insns.get(index)) else { return &[] };
+    let start = usize::try_from(insn.address.wrapping_sub(first.address)).unwrap_or(usize::MAX);
+    code.get(start..start.saturating_add(insn.bytes_len)).unwrap_or_default()
 }
 
 /// Lift each instruction of `insns`, which `code` holds from its first
@@ -562,19 +566,9 @@ fn frame_addressed(arch: &dyn Arch, mut lifted: Lifted) -> Lifted {
 /// The branch of a guard, with its condition either way: a compiler can
 /// branch on the opposite condition and swap the code after it.
 fn guard_branch(cond: Cond) -> NormInsn {
-    let operation = match cond.either_way() {
-        Cond::Equal => "b.eq",
-        Cond::UnsignedGreaterOrEqual => "b.hs",
-        Cond::Negative => "b.mi",
-        Cond::Overflow => "b.vs",
-        Cond::UnsignedGreater => "b.hi",
-        Cond::SignedGreaterOrEqual => "b.ge",
-        Cond::SignedGreater => "b.gt",
-        Cond::BitsClear => "b.bits",
-        _ => "b",
-    };
+    let operation = Operation::GuardBranch(cond.either_way());
     NormInsn {
-        operation: operation.into(),
+        operation,
         operands: [OperandShape::Target].into_iter().collect(),
         flow: FlowShape::Branch,
         constants: Constants::new(),
@@ -585,7 +579,7 @@ fn guard_branch(cond: Cond) -> NormInsn {
 /// architecture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Test {
-    operation: &'static str,
+    operation: TestKind,
     left: Value,
     right: Value,
 }
@@ -593,9 +587,13 @@ struct Test {
 impl Test {
     fn of_comparison(comparison: Comparison) -> Self {
         match comparison {
-            Comparison::Subtract { left, right } => Self { operation: "cmp", left, right },
-            Comparison::And { left, right } => Self { operation: "tst", left, right },
-            Comparison::Add { left, right } => Self { operation: "cmn", left, right },
+            Comparison::Subtract { left, right } => {
+                Self { operation: TestKind::Compare, left, right }
+            }
+            Comparison::And { left, right } => Self { operation: TestKind::BitTest, left, right },
+            Comparison::Add { left, right } => {
+                Self { operation: TestKind::CompareNegative, left, right }
+            }
         }
     }
 
@@ -604,8 +602,8 @@ impl Test {
     /// condition and swap the code after it.
     fn of_guard(guard: Guard) -> Self {
         let operation = match guard.cond {
-            Cond::BitsClear | Cond::BitsSet => "tst",
-            _ => "cmp",
+            Cond::BitsClear | Cond::BitsSet => TestKind::BitTest,
+            _ => TestKind::Compare,
         };
         Self { operation, left: guard.left, right: guard.right }
     }
@@ -634,7 +632,7 @@ fn normalize_test(test: &Test, address: bool) -> NormInsn {
         })
         .collect();
     NormInsn {
-        operation: test.operation.into(),
+        operation: Operation::Test(test.operation),
         operands: [shape(test.left), shape(test.right)].into_iter().collect(),
         flow: FlowShape::Linear,
         constants,
@@ -647,37 +645,43 @@ mod tests {
     use crate::arch::aarch64::Aarch64;
     use crate::arch::arm32::Arm32;
 
-    fn insn(name: &str, operands: &str, kind: InsnKind) -> Insn {
-        crate::arch::arm32::test_insn(name, operands, kind)
+    /// One A32 word, as the decoder reads it.
+    fn a32(word: u32) -> Insn {
+        Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word must decode")
     }
 
-    /// The A32 `word`, as the decoder reads it.
-    fn decoded(word: u32) -> Insn {
-        Arm32.decode(&word.to_le_bytes(), 0, 0).expect("every word decodes or is unknown")
+    /// One A32 word, normalized.
+    fn word(word: u32) -> NormInsn {
+        normalize(&Arm32, &a32(word), &word.to_le_bytes())
     }
+
+    /// A body of A32 words, normalized.
+    fn body(words: &[u32]) -> Vec<NormInsn> {
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = crate::arch::decode_all(&Arm32, &code, 0);
+        normalize_body(&Arm32, &code, &insns)
+    }
+
+    const ADD: Operation = Operation::Lifted { op: il::Op::Add, width: None };
 
     #[test]
     fn register_choice_does_not_change_the_result() {
-        let first = normalize(&Arm32, &insn("add", "r0, r1, r2", InsnKind::Normal));
-        let second = normalize(&Arm32, &insn("add", "r4, r5, r6", InsnKind::Normal));
-        assert_eq!(first, second, "a compiler picks registers freely");
+        // add r0, r1, r2 and add r4, r5, r6.
+        assert_eq!(word(0xe081_0002), word(0xe085_4006), "a compiler picks registers freely");
     }
 
     #[test]
     fn small_constants_group_together() {
-        let first = normalize(&Arm32, &insn("add", "r0, r0, 0x1", InsnKind::Normal));
-        let second = normalize(&Arm32, &insn("add", "r0, r0, 0x4", InsnKind::Normal));
-        assert_eq!(first, second);
+        // add r0, r0, #1 and add r0, r0, #4.
+        assert_eq!(word(0xe280_0001), word(0xe280_0004));
     }
 
     /// Bucketing must not merge every constant, or a changed mask would hide.
     #[test]
     fn wide_constants_stay_apart_from_small_ones() {
-        let small = normalize(&Arm32, &insn("mov", "r0, 0x4", InsnKind::Normal));
-        let large = normalize(&Arm32, &insn("mov", "r0, 0xdeadbeef", InsnKind::Normal));
+        // mov r0, #4; mov r0, #0x400; mov r0, #0.
+        let (small, large, zero) = (word(0xe3a0_0004), word(0xe3a0_0b01), word(0xe3a0_0000));
         assert_ne!(small, large);
-
-        let zero = normalize(&Arm32, &insn("mov", "r0, 0x0", InsnKind::Normal));
         assert_ne!(zero, small);
     }
 
@@ -685,9 +689,8 @@ mod tests {
     /// and the values must still be there to report the edit.
     #[test]
     fn constants_stay_available_but_out_of_equality() {
-        let original = normalize(&Arm32, &insn("mov", "r1, 0x25", InsnKind::Normal));
-        let edited = normalize(&Arm32, &insn("mov", "r1, 0x29", InsnKind::Normal));
-
+        // mov r1, #0x25 and mov r1, #0x29.
+        let (original, edited) = (word(0xe3a0_1025), word(0xe3a0_1029));
         assert_eq!(original, edited, "the same work with a different constant still matches");
         assert!(original.differs_in_detail(&edited), "the changed value must be visible");
         assert_eq!(original.constants.as_slice(), [0x25]);
@@ -696,9 +699,8 @@ mod tests {
 
     #[test]
     fn identical_instructions_do_not_differ_in_detail() {
-        let first = normalize(&Arm32, &insn("mov", "r1, 0x25", InsnKind::Normal));
-        let second = normalize(&Arm32, &insn("mov", "r2, 0x25", InsnKind::Normal));
-        assert!(!first.differs_in_detail(&second));
+        // mov r1, #0x25 and mov r2, #0x25.
+        assert!(!word(0xe3a0_1025).differs_in_detail(&word(0xe3a0_2025)));
     }
 
     /// `Hash` must agree with `PartialEq`, or lookups break.
@@ -712,72 +714,64 @@ mod tests {
             insn.hash(&mut hasher);
             hasher.finish()
         };
-
-        let original = normalize(&Arm32, &insn("mov", "r1, 0x25", InsnKind::Normal));
-        let edited = normalize(&Arm32, &insn("mov", "r1, 0x29", InsnKind::Normal));
-        assert_eq!(hash_of(&original), hash_of(&edited));
+        assert_eq!(hash_of(&word(0xe3a0_1025)), hash_of(&word(0xe3a0_1029)));
     }
 
     /// An offset into a frame moves with unrelated edits, so it is not a
     /// constant worth reporting.
     #[test]
     fn frame_offsets_are_not_recorded_as_constants() {
-        let load = normalize(&Arm32, &insn("ldr", "r0, [sp, 0x4]", InsnKind::Normal));
-        assert!(load.constants.is_empty());
+        // ldr r0, [sp, #4].
+        assert!(word(0xe59d_0004).constants.is_empty());
     }
 
     #[test]
     fn branch_addresses_do_not_change_the_result() {
-        let near = insn("b", "$+0x8", InsnKind::Jump { target: Some(0x100) });
-        let far = insn("b", "$+0x400", InsnKind::Jump { target: Some(0x9000) });
-        assert_eq!(
-            normalize(&Arm32, &near),
-            normalize(&Arm32, &far),
-            "addresses move with unrelated edits"
-        );
+        // b to the next word but one, and b far ahead.
+        assert_eq!(word(0xea00_0000), word(0xea00_00ff), "addresses move with unrelated edits");
     }
 
     #[test]
     fn separates_stack_references_from_other_memory() {
-        let spill = normalize(&Arm32, &insn("ldr", "r0, [sp, 0x4]", InsnKind::Normal));
-        let load = normalize(&Arm32, &insn("ldr", "r0, [r1]", InsnKind::Normal));
-        assert_ne!(spill, load, "a frame slot is not the same as a data load");
-    }
-
-    /// One A32 word, as the decoder reads it.
-    fn a32(word: u32) -> Insn {
-        Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word must decode")
+        // ldr r0, [sp, #4] and ldr r0, [r1].
+        assert_ne!(word(0xe59d_0004), word(0xe591_0000), "a frame slot is not a data load");
     }
 
     #[test]
     fn drops_frame_management() {
-        let body = [
-            a32(0xe92d_4800), // push {fp, lr}
-            a32(0xe1a0_b00d), // mov fp, sp
-            a32(0xe24d_d00c), // sub sp, sp, 0xc
-            a32(0xe50b_0004), // str r0, [fp, -0x4]
-            a32(0xe080_0001), // add r0, r0, r1
-            a32(0xe12f_ff1e), // bx lr
-        ];
-        let normalized = normalize_body(&Arm32, &body);
-
+        let normalized = body(&[
+            0xe92d_4800, // push {fp, lr}
+            0xe1a0_b00d, // mov fp, sp
+            0xe24d_d00c, // sub sp, sp, 0xc
+            0xe50b_0004, // str r0, [fp, -0x4]
+            0xe080_0001, // add r0, r0, r1
+            0xe12f_ff1e, // bx lr
+        ]);
         assert_eq!(normalized.len(), 2, "only the real work must remain");
-        assert_eq!(normalized[0].operation, "add");
+        assert_eq!(normalized[0].operation, ADD);
         assert_eq!(normalized[1].flow, FlowShape::Return);
     }
 
     /// `pop {fp, pc}` both restores the frame and returns, so it must stay.
     #[test]
     fn keeps_a_pop_that_returns() {
-        let body = [a32(0xe8bd_8800)];
-        assert_eq!(body[0].kind, InsnKind::Return);
-        assert_eq!(normalize_body(&Arm32, &body).len(), 1);
+        assert_eq!(a32(0xe8bd_8800).kind, InsnKind::Return);
+        assert_eq!(body(&[0xe8bd_8800]).len(), 1);
     }
 
     #[test]
     fn keeps_loads_that_are_not_spills() {
-        let body = [a32(0xe591_0008)]; // ldr r0, [r1, 0x8]
-        assert_eq!(normalize_body(&Arm32, &body).len(), 1, "a data load is real work");
+        // ldr r0, [r1, 0x8]
+        assert_eq!(body(&[0xe591_0008]).len(), 1, "a data load is real work");
+    }
+
+    /// The body of MIPS32 little-endian `words`, decoded and normalized.
+    fn mips_body(words: &[u32]) -> (Vec<String>, Vec<NormInsn>) {
+        use crate::arch::mips::Mips32;
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = crate::arch::decode_all(&Mips32::LITTLE, &code, 0);
+        let text = insns.iter().map(ToString::to_string).collect();
+        (text, normalize_body(&Mips32::LITTLE, &code, &insns))
     }
 
     /// An architecture can name a run of instructions as one idiom, and the
@@ -787,21 +781,12 @@ mod tests {
     /// is two words that are scaffolding together and real work apart.
     #[test]
     fn drops_a_whole_idiom_rather_than_one_word_of_it() {
-        use crate::arch::mips::Mips32;
-
-        let mips = |word: u32| {
-            Mips32::LITTLE.decode(&word.to_le_bytes(), 0, 0).expect("the word must decode")
-        };
-
-        let body = [
-            mips(0x3c02_0000), // lui v0, 0x0
-            mips(0x2442_0000), // addiu v0, v0, 0x0
-            mips(0x0059_e021), // addu gp, v0, t9
-            mips(0x0085_1021), // addu v0, a0, a1
-        ];
-        let normalized = normalize_body(&Mips32::LITTLE, &body);
-
-        let text: Vec<String> = body.iter().map(ToString::to_string).collect();
+        let (text, normalized) = mips_body(&[
+            0x3c02_0000, // lui v0, 0x0
+            0x2442_0000, // addiu v0, v0, 0x0
+            0x0059_e021, // addu gp, v0, t9
+            0x0085_1021, // addu v0, a0, a1
+        ]);
         assert_eq!(
             text,
             ["lui v0, 0x0", "addiu v0, v0, 0x0", "addu gp, v0, t9", "addu v0, a0, a1"]
@@ -809,82 +794,58 @@ mod tests {
         // The pair goes as an idiom and the `addu` into `gp` as frame work,
         // leaving only the arithmetic.
         assert_eq!(normalized.len(), 1, "got {normalized:?}");
-        assert_eq!(normalized[0].operation, "addu");
+        assert_eq!(normalized[0].operation, ADD);
     }
 
     /// An idiom the architecture does not confirm stays whole.
     #[test]
     fn keeps_a_sequence_that_is_not_an_idiom() {
-        use crate::arch::mips::Mips32;
-
-        let mips = |word: u32| {
-            Mips32::LITTLE.decode(&word.to_le_bytes(), 0, 0).expect("the word must decode")
-        };
-
         // The same two opening words, but nothing joins the result to `t9`, so
         // this builds the address of a global rather than the global pointer.
-        let body = [
-            mips(0x3c01_0000), // lui at, 0x0
-            mips(0x2421_0000), // addiu at, at, 0x0
-            mips(0x8c22_0000), // lw v0, 0x0(at)
-        ];
-        let text: Vec<String> = body.iter().map(ToString::to_string).collect();
+        let (text, normalized) = mips_body(&[
+            0x3c01_0000, // lui at, 0x0
+            0x2421_0000, // addiu at, at, 0x0
+            0x8c22_0000, // lw v0, 0x0(at)
+        ]);
         assert_eq!(text, ["lui at, 0x0", "addiu at, at, 0x0", "lw v0, 0x0(at)"]);
-
-        assert_eq!(
-            normalize_body(&Mips32::LITTLE, &body).len(),
-            3,
-            "a real address load is work, not scaffolding"
-        );
+        assert_eq!(normalized.len(), 3, "a real address load is work, not scaffolding");
     }
 
     #[test]
     fn a_constant_signature_holds_the_values_a_function_uses() {
-        let body = normalize_body(
-            &Arm32,
-            &[insn("mov", "r1, 0x25", InsnKind::Normal), insn("cmp", "r0, 0x64", InsnKind::Normal)],
-        );
-        assert_eq!(constant_signature(&body), BTreeSet::from([0x25, 0x64]));
+        // mov r1, #0x25; cmp r0, #0x64.
+        let normalized = body(&[0xe3a0_1025, 0xe350_0064]);
+        assert_eq!(constant_signature(&normalized), BTreeSet::from([0x25, 0x64]));
     }
 
     /// Values in almost every function cannot identify one, so they go.
     #[test]
     fn a_constant_signature_drops_the_common_values() {
-        let body = normalize_body(
-            &Arm32,
-            &[
-                insn("mov", "r0, 0x0", InsnKind::Normal),
-                insn("add", "r0, r0, 0x1", InsnKind::Normal),
-                insn("cmp", "r0, 0x25", InsnKind::Normal),
-            ],
-        );
-        assert_eq!(constant_signature(&body), BTreeSet::from([0x25]), "only 37 identifies this");
+        // mov r0, #0; add r0, r0, #1; cmp r0, #0x25.
+        let normalized = body(&[0xe3a0_0000, 0xe280_0001, 0xe350_0025]);
+        assert_eq!(constant_signature(&normalized), BTreeSet::from([0x25]), "only 37 tells");
     }
 
     #[test]
     fn a_constant_signature_is_empty_without_constants() {
-        let body = normalize_body(&Arm32, &[insn("bx", "lr", InsnKind::Return)]);
-        assert!(constant_signature(&body).is_empty());
+        // bx lr.
+        assert!(constant_signature(&body(&[0xe12f_ff1e])).is_empty());
     }
 
     /// The same value used twice is one entry, so the set does not depend on
     /// how many times the compiler happened to materialize it.
     #[test]
     fn a_constant_signature_counts_each_value_once() {
-        let body = normalize_body(
-            &Arm32,
-            &[insn("mov", "r0, 0x25", InsnKind::Normal), insn("mov", "r1, 0x25", InsnKind::Normal)],
-        );
-        assert_eq!(constant_signature(&body), BTreeSet::from([0x25]));
+        // mov r0, #0x25; mov r1, #0x25.
+        let normalized = body(&[0xe3a0_0025, 0xe3a0_1025]);
+        assert_eq!(constant_signature(&normalized), BTreeSet::from([0x25]));
     }
 
-    /// Frame offsets move with unrelated edits, so they are not part of the
-    /// signature. This follows from `constant_value`, and is checked here so
-    /// a change there cannot quietly widen the signature.
+    /// The offset of a memory reference is no constant of the signature.
     #[test]
-    fn a_constant_signature_ignores_frame_offsets() {
-        let body = normalize_body(&Arm32, &[insn("ldr", "r0, [r1, 0x25]", InsnKind::Normal)]);
-        assert!(constant_signature(&body).is_empty());
+    fn a_constant_signature_ignores_memory_offsets() {
+        // ldr r0, [r1, #0x25].
+        assert!(constant_signature(&body(&[0xe591_0025])).is_empty());
     }
 
     /// Two different functions can share a constant set, which is why this
@@ -895,24 +856,9 @@ mod tests {
     /// them apart, so a matching stage built on it would pair the wrong two.
     #[test]
     fn different_functions_can_share_a_constant_signature() {
-        let caller = normalize_body(
-            &Arm32,
-            &[
-                insn("mov", "r1, 0x25", InsnKind::Normal),
-                insn("mul", "r0, r0, r1", InsnKind::Normal),
-                insn("add", "r0, r0, 0x1", InsnKind::Normal),
-                insn("bx", "lr", InsnKind::Return),
-            ],
-        );
-        let callee = normalize_body(
-            &Arm32,
-            &[
-                insn("mov", "r1, 0x25", InsnKind::Normal),
-                insn("mul", "r0, r0, r1", InsnKind::Normal),
-                insn("bx", "lr", InsnKind::Return),
-            ],
-        );
-
+        // mov r1, #0x25; mul r0, r0, r1; add r0, r0, #1; bx lr.
+        let caller = body(&[0xe3a0_1025, 0xe000_0190, 0xe280_0001, 0xe12f_ff1e]);
+        let callee = body(&[0xe3a0_1025, 0xe000_0190, 0xe12f_ff1e]);
         assert_eq!(
             constant_signature(&caller),
             constant_signature(&callee),
@@ -927,21 +873,13 @@ mod tests {
     /// the normal case rather than an unusual one.
     #[test]
     fn a_function_of_common_constants_has_no_signature() {
-        let body = normalize_body(
-            &Arm32,
-            &[
-                insn("cmp", "r0, 0x0", InsnKind::Normal),
-                insn("add", "r0, r0, 0x1", InsnKind::Normal),
-                insn("bx", "lr", InsnKind::Return),
-            ],
-        );
-        assert!(constant_signature(&body).is_empty());
+        // cmp r0, #0; add r0, r0, #1; bx lr.
+        assert!(constant_signature(&body(&[0xe350_0000, 0xe280_0001, 0xe12f_ff1e])).is_empty());
     }
 
     #[test]
     fn opaque_bytes_stay_opaque() {
-        let body = [decoded(0xf260_0680)];
-        assert_eq!(normalize_body(&Arm32, &body)[0].flow, FlowShape::Opaque);
+        assert_eq!(body(&[0xf260_0680])[0].flow, FlowShape::Opaque);
     }
 
     /// Two unreadable instructions must stay apart when their bytes differ.
@@ -951,22 +889,18 @@ mod tests {
     /// the change would be reported as no change at all.
     #[test]
     fn different_opaque_words_do_not_normalize_alike() {
-        let first = normalize(&Arm32, &decoded(0xf260_0680));
-        let second = normalize(&Arm32, &decoded(0xf220_0680));
-        assert_ne!(first, second, "an edit inside unreadable bytes must stay visible");
+        assert_ne!(word(0xf260_0680), word(0xf220_0680), "an edit there must stay visible");
     }
 
     #[test]
     fn matching_opaque_words_normalize_alike() {
-        let first = normalize(&Arm32, &decoded(0xf260_0680));
-        let second = normalize(&Arm32, &decoded(0xf260_0680));
-        assert_eq!(first, second);
+        assert_eq!(word(0xf260_0680), word(0xf260_0680));
     }
 
     #[test]
     fn handles_instructions_without_operands() {
-        let normalized = normalize(&Arm32, &insn("nop", "", InsnKind::Normal));
-        assert!(normalized.operands.is_empty());
+        // nop.
+        assert!(word(0xe320_f000).operands.is_empty());
     }
 
     fn shapes(operand: il::Operand) -> Vec<OperandShape> {
@@ -1051,13 +985,13 @@ mod tests {
         let from_frame = body_of(&Aarch64, &0xd100_13a1_u32.to_le_bytes());
         let from_stack = body_of(&Aarch64, &0x9100_73e1_u32.to_le_bytes());
         assert_eq!(from_frame, from_stack);
-        assert_eq!(from_frame[0].operation, "address");
+        assert_eq!(from_frame[0].operation, Operation::Lifted { op: il::Op::Address, width: None });
         assert_eq!(
             from_frame[0].operands.as_slice(),
             [OperandShape::Register, OperandShape::StackSlot]
         );
         // `add x1, x2, #0x1c` is no frame slot.
-        assert_eq!(body_of(&Aarch64, &0x9100_7041_u32.to_le_bytes())[0].operation, "add");
+        assert_eq!(body_of(&Aarch64, &0x9100_7041_u32.to_le_bytes())[0].operation, ADD);
     }
 
     #[test]

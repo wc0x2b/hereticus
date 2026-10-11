@@ -235,6 +235,8 @@ fn recovers_the_start_of_a_pic_function() {
 /// a memory reference from ordinary code.
 #[test]
 fn a_real_address_load_survives_normalizing() {
+    use hereticus::il::Op;
+    use hereticus::norm::Operation;
     use hereticus::{arch::decode_all, norm::normalize_body};
 
     let Some(binary) = read("mips-nopic-O2", "globals") else { return };
@@ -245,7 +247,7 @@ fn a_real_address_load_survives_normalizing() {
     };
 
     let (insns, _) = decode_all(arch, &reader.code, reader.address);
-    let body = normalize_body(arch, &insns);
+    let body = normalize_body(arch, &reader.code, &insns);
 
     // The function is `lui`, `addiu`, `andi`, `sll`, `addu`, `lw`, `jr`, `nop`.
     // Nothing here is frame work, so normalizing must keep all of it bar the
@@ -258,8 +260,9 @@ fn a_real_address_load_survives_normalizing() {
     );
 
     // Said directly: the two words that build the address must still be there.
-    let operations: Vec<&str> = body.iter().map(|insn| insn.operation.as_str()).collect();
-    assert!(operations.contains(&"lui"), "the address load must survive, got {operations:?}");
+    let operations: Vec<Operation> = body.iter().map(|insn| insn.operation).collect();
+    let lui = Operation::Lifted { op: Op::Address, width: None };
+    assert!(operations.contains(&lui), "the address load must survive, got {operations:?}");
 }
 
 /// The PIC preamble must not be compared, or it measures the ABI.
@@ -295,7 +298,7 @@ fn pic_costs_the_comparison_nothing(pic_build: &str, nopic_build: &str) {
             .iter()
             .map(|function| {
                 let (insns, _) = decode_all(arch, &function.code, function.address);
-                normalize_body(arch, &insns)
+                normalize_body(arch, &function.code, &insns)
             })
             .collect();
 
@@ -352,7 +355,11 @@ fn the_pic_rules_do_not_depend_on_byte_order() {
             .iter()
             .map(|function| {
                 let (insns, _) = decode_all(arch, &function.code, function.address);
-                (function.name.clone(), insns.len(), normalize_body(arch, &insns).len())
+                (
+                    function.name.clone(),
+                    insns.len(),
+                    normalize_body(arch, &function.code, &insns).len(),
+                )
             })
             .collect()
     };

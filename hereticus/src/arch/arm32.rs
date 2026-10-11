@@ -2775,6 +2775,15 @@ fn decode_neon_load_store(word: u32) -> Option<(String, String)> {
 /// gives the A32 form of its word.
 pub(super) fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted> {
     let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
+    // The hints, as `decode_fallback` reads them: they talk to the system
+    // and compute nothing.
+    if word & 0x0fff_ff00 == 0x0320_f000 && word & 0xff < 5 && word >> 28 != 0b1111 {
+        let mut lifted = il::Lifted { op: il::Op::System, ..il::Lifted::default() };
+        if word >> 28 != 0b1110 {
+            lifted.reads.insert(il::Reg::Flags);
+        }
+        return Some(lifted);
+    }
     if encoding == Encoding::A32
         && word >> 28 != 0b1111
         && let Some(integer) = IntegerWord::of(word)
@@ -4579,10 +4588,17 @@ mod tests {
         assert_eq!(load.writes, written.into_iter().collect());
     }
 
-    /// A hint is no access, and lifts to nothing.
+    /// A hint talks to the system: it reads no memory and names nothing.
+    /// On a condition, it reads the flags.
     #[test]
-    fn a_hint_lifts_to_nothing() {
-        assert_eq!(lift_fallback(0xe320_f000, Encoding::A32), None, "nop");
+    fn a_hint_lifts_to_the_system() {
+        for (word, name) in [(0xe320_f000, "nop"), (0xe320_f004, "sev")] {
+            let lifted = lift_fallback(word, Encoding::A32).expect(name);
+            assert_eq!((lifted.op, lifted.memory), (il::Op::System, None), "{name}");
+            assert!(lifted.operands.is_empty() && lifted.reads.is_empty(), "{name}");
+        }
+        let conditional = lift_fallback(0x0320_f004, Encoding::A32).expect("seveq");
+        assert!(conditional.reads.contains(il::Reg::Flags));
     }
 
     #[test]
