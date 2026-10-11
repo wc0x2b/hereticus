@@ -936,6 +936,20 @@ twin, which only names can decide. Of the 6366 pairs wrong by the names,
 2.56%. The pairs by callers, by place and by references keep most of the
 wrong, at 9%, 12% and 10%.
 
+The debug files hold DWARF too, which names the source file of each
+function. A name alone can belong to two static functions of different
+files, and code moves between files across a release: `kernel/futex.c`
+became `kernel/futex/core.c`, and `net/core/ethtool.c` became
+`net/ethtool/ioctl.c`. Two files correspond where two or more names that
+each release holds once move from the one to the other. With that, 62
+pairs that share a name come from files that do not correspond, and a
+rename must stay in its file. Comparing the paths alone had flagged 1137
+such pairs, nearly all moved files. A shared file alone proves too little
+in a large file such as `net/ipv4/tcp.c`: of the renames it alone
+supported, about one in five read as wrong to a person, so those are
+counted apart as unproven. Over the kernels, 1.35% of the pairs are wrong,
+and at most 1.57%.
+
 Two more checks on the weak pairs did not help. Moving a pair by
 similarity, callers or place to a free function that ranks better by
 code, references and constants, once more pairs are known, cut 45 wrong

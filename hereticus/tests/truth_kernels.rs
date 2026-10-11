@@ -2,17 +2,19 @@
 //! symbols of their builds, and lock the counts.
 //!
 //! OpenWrt publishes the `vmlinux` of each kernel it builds, with symbols and
-//! without code. `fixtures/openwrt_debug.py` fetches it and pins it by its
-//! SHA-256, so the counts below tell how often the tool pairs a function of
-//! a shipped, stripped kernel with the right one.
+//! DWARF and without code. `fixtures/openwrt_debug.py` fetches it and pins
+//! it by its SHA-256, so the counts below tell how often the tool pairs a
+//! function of a shipped, stripped kernel with the right one.
 //!
 //! Each pair gets a [`Verdict`]. A pair is right when the two functions
-//! overlap a symbol of the same name. A pair whose names differ is not wrong
-//! by that alone: between kernel releases, functions are renamed
-//! (`generic_make_request` became `submit_bio_noacct`), and code moves into
-//! a new function (`sock_init_data` into `sock_init_data_uid`). So the
-//! names of the callers and the callees, which the tool never reads, and the
-//! function that holds each name on the other side decide the rest.
+//! overlap a symbol of the same name from the same source file, as the
+//! DWARF says: a name alone can belong to two static functions. A pair
+//! whose names differ is not wrong by that alone: between kernel releases,
+//! functions are renamed (`generic_make_request` became
+//! `submit_bio_noacct`), and code moves into a new function
+//! (`sock_init_data` into `sock_init_data_uid`). So the source file, the
+//! names of the callers and the callees, which the tool never reads, and
+//! the function that holds each name on the other side decide the rest.
 //!
 //! The inputs are about 800 MB, so `just quick-test` skips this test.
 
@@ -90,22 +92,32 @@ type Symbol = (u64, u64, String);
 /// What the symbols say of one pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Verdict {
-    /// The two functions share a name.
+    /// The two functions share a name and a source file.
     Right,
-    /// The names differ, but the code went with the new name: the callers
-    /// and callees agree by name, and no function that holds either name is
-    /// closer to the other side than the pair is.
+    /// The names differ, but the code went with the new name. One of the
+    /// names is gone from the other side, no function that holds either
+    /// name is closer to the other side than the pair is, the callers and
+    /// callees agree by name, and the two come from the same source file
+    /// where the debug file says.
     Renamed,
+    /// As [`Self::Renamed`], but with too few callers and callees to agree
+    /// or not: only the source file says the two may be one function. A
+    /// large file holds many unrelated functions, and of these pairs about
+    /// one in five read as wrong to a person.
+    Unproven,
     /// The names differ, and the function that holds a name on the other
     /// side has the same normalized instructions as the one paired. Only the
     /// names tell the two apart, and the tool reads none.
     Twin,
+    /// The two functions share a name but come from different source
+    /// files: two static functions of one name, as two drivers' `probe`.
+    Homonym,
     /// Anything else.
     Wrong,
 }
 
 /// How many verdicts of each kind, indexed by [`Verdict`].
-type Counts = [usize; 4];
+type Counts = [usize; 6];
 
 /// The share of callers and callees, by name, two functions must have in
 /// common to count as renamed.
@@ -171,6 +183,100 @@ fn debug_symbols(path: &Path) -> Vec<Symbol> {
     symbols
 }
 
+/// The source file that declares each function a debug file describes, as
+/// a [`Symbol`] whose name is the file, sorted by its start.
+///
+/// The file is read from `DW_AT_decl_file` of each `DW_TAG_subprogram`
+/// with code, or of the inline function an out-of-line copy comes from,
+/// and the path is cut to what follows the kernel's source directory.
+fn source_files(path: &Path) -> Vec<Symbol> {
+    use gimli::{AttributeValue, EndianSlice, RunTimeEndian};
+    use object::{Object, ObjectSection};
+    let data = std::fs::read(path)
+        .unwrap_or_else(|err| panic!("{}: {err}; run `just test`", path.display()));
+    let file = object::File::parse(&*data).expect("the debug file parses");
+    let endian = if file.is_little_endian() { RunTimeEndian::Little } else { RunTimeEndian::Big };
+    let dwarf = gimli::Dwarf::load(|id| -> Result<_, gimli::Error> {
+        let bytes = file.section_by_name(id.name()).and_then(|section| section.data().ok());
+        Ok(EndianSlice::new(bytes.unwrap_or_default(), endian))
+    })
+    .expect("the DWARF loads");
+
+    let mut files = Vec::new();
+    let mut headers = dwarf.units();
+    while let Some(header) = headers.next().expect("a unit header reads") {
+        let unit = dwarf.unit(header).expect("a unit reads");
+        let Some(program) = &unit.line_program else { continue };
+        let line_header = program.header();
+        let file_name = |index: u64| -> Option<String> {
+            let entry = line_header.file(index)?;
+            let name = dwarf.attr_string(&unit, entry.path_name()).ok()?;
+            let directory = entry
+                .directory(line_header)
+                .and_then(|directory| dwarf.attr_string(&unit, directory).ok());
+            let joined = match directory {
+                Some(directory) => {
+                    format!("{}/{}", directory.to_string_lossy(), name.to_string_lossy())
+                }
+                None => name.to_string_lossy().into_owned(),
+            };
+            Some(source_relative(&joined).to_owned())
+        };
+        let mut entries = unit.entries();
+        while let Some(entry) = entries.next_dfs().expect("an entry reads") {
+            if entry.tag() != gimli::DW_TAG_subprogram {
+                continue;
+            }
+            let Some(low) = entry
+                .attr_value(gimli::DW_AT_low_pc)
+                .and_then(|value| dwarf.attr_address(&unit, value).ok().flatten())
+            else {
+                continue;
+            };
+            let high = match entry.attr_value(gimli::DW_AT_high_pc) {
+                Some(AttributeValue::Udata(size)) => low + size,
+                Some(value) => match dwarf.attr_address(&unit, value).ok().flatten() {
+                    Some(high) => high,
+                    None => continue,
+                },
+                None => continue,
+            };
+            let decl_file = |entry: &gimli::DebuggingInformationEntry<_>| match entry
+                .attr_value(gimli::DW_AT_decl_file)
+            {
+                Some(AttributeValue::FileIndex(index) | AttributeValue::Udata(index)) => {
+                    Some(index)
+                }
+                _ => None,
+            };
+            let index = decl_file(entry).or_else(|| {
+                let Some(AttributeValue::UnitRef(origin)) =
+                    entry.attr_value(gimli::DW_AT_abstract_origin)
+                else {
+                    return None;
+                };
+                decl_file(&unit.entry(origin).ok()?)
+            });
+            if let Some(name) = index.and_then(file_name) {
+                // A Thumb function has its low bit set.
+                let start = low & !1;
+                files.push((start, high & !1, name));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// A path cut to what follows the kernel's source directory, as
+/// `mm/filemap.c` from `.../linux-5.10.146/mm/filemap.c`.
+fn source_relative(path: &str) -> &str {
+    let path = path.strip_prefix("./").unwrap_or(path);
+    let Some(at) = path.rfind("/linux-") else { return path };
+    let rest = &path[at + 1..];
+    rest.find('/').map_or(path, |slash| &rest[slash + 1..])
+}
+
 /// The names of the symbols that overlap `range`.
 fn names_in(symbols: &[Symbol], range: core::ops::Range<u64>) -> BTreeSet<&str> {
     let first = symbols.partition_point(|symbol| symbol.0 <= range.start).saturating_sub(1);
@@ -186,6 +292,8 @@ fn names_in(symbols: &[Symbol], range: core::ops::Range<u64>) -> BTreeSet<&str> 
 struct Side<'a> {
     kernel: &'a Binary,
     symbols: &'a [Symbol],
+    /// The source file of each function the debug file describes.
+    sources: &'a [Symbol],
     /// The index of the function that starts at each address.
     by_start: BTreeMap<u64, usize>,
     /// The names of the callers, as `<name`, and of the callees, as
@@ -194,10 +302,10 @@ struct Side<'a> {
 }
 
 impl<'a> Side<'a> {
-    fn new(kernel: &'a Binary, symbols: &'a [Symbol]) -> Self {
+    fn new(kernel: &'a Binary, symbols: &'a [Symbol], sources: &'a [Symbol]) -> Self {
         let by_start =
             kernel.functions.iter().enumerate().map(|(index, f)| (f.address, index)).collect();
-        let mut side = Self { kernel, symbols, by_start, neighbours: Vec::new() };
+        let mut side = Self { kernel, symbols, sources, by_start, neighbours: Vec::new() };
         let calls: Vec<Vec<usize>> = kernel
             .functions
             .par_iter()
@@ -233,6 +341,13 @@ impl<'a> Side<'a> {
         names_in(self.symbols, function.address..function.address + function.code.len() as u64)
     }
 
+    /// The source files of the functions of the debug file that overlap a
+    /// function.
+    fn files(&self, index: usize) -> BTreeSet<&'a str> {
+        let function = &self.kernel.functions[index];
+        names_in(self.sources, function.address..function.address + function.code.len() as u64)
+    }
+
     fn name_at_start(&self, index: usize) -> Option<&'a str> {
         let start = self.kernel.functions[index].address;
         names_in(self.symbols, start..start + 1).into_iter().next()
@@ -254,29 +369,102 @@ impl<'a> Side<'a> {
     }
 }
 
+/// Which source files of the earlier release went on as which of the later.
+///
+/// Between kernel releases, code moves to other files: `kernel/futex.c`
+/// became `kernel/futex/core.c`, and `net/core/ethtool.c` became
+/// `net/ethtool/ioctl.c`. Two files correspond where they share a path, or
+/// where [`FEWEST_MOVED_NAMES`] or more function names that each release
+/// holds once live in the one file before and in the other after.
+struct FileMoves<'a> {
+    moved: BTreeSet<(&'a str, &'a str)>,
+}
+
+/// See [`FileMoves`]: one name alone can be a homonym.
+const FEWEST_MOVED_NAMES: usize = 2;
+
+impl<'a> FileMoves<'a> {
+    fn new(symbols: &'a [Vec<Symbol>; 2], sources: &'a [Vec<Symbol>; 2]) -> Self {
+        // The file of each name that one function of the release holds.
+        let files_by_name = |side: usize| {
+            let file_at: BTreeMap<u64, &str> =
+                sources[side].iter().map(|source| (source.0, source.2.as_str())).collect();
+            let mut by_name: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+            for symbol in &symbols[side] {
+                let Some(&file) = file_at.get(&symbol.0) else { continue };
+                by_name
+                    .entry(symbol.2.as_str())
+                    .and_modify(|seen| *seen = None)
+                    .or_insert(Some(file));
+            }
+            by_name
+        };
+        let [before, after] = [files_by_name(0), files_by_name(1)];
+        let mut shared: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+        for (name, &file) in &before {
+            if let (Some(file), Some(Some(other))) = (file, after.get(name)) {
+                *shared.entry((file, other)).or_default() += 1;
+            }
+        }
+        let moved = shared
+            .into_iter()
+            .filter(|&(_, count)| count >= FEWEST_MOVED_NAMES)
+            .map(|(files, _)| files)
+            .collect();
+        Self { moved }
+    }
+
+    fn corresponds(&self, before: &str, after: &str) -> bool {
+        before == after || self.moved.contains(&(before, after))
+    }
+}
+
 /// Judge one pair of functions whose names are `names`, both known.
-fn judge(sides: &[Side; 2], pair: &Match, names: &[BTreeSet<&str>; 2]) -> Verdict {
+fn judge(
+    sides: &[Side; 2],
+    moves: &FileMoves,
+    pair: &Match,
+    names: &[BTreeSet<&str>; 2],
+) -> Verdict {
+    let files = [sides[0].files(pair.before), sides[1].files(pair.after)];
+    let files_known = files.iter().all(|files| !files.is_empty());
+    let same_file = files[0]
+        .iter()
+        .any(|&before| files[1].iter().any(|&after| moves.corresponds(before, after)));
     if !names[0].is_disjoint(&names[1]) {
-        return Verdict::Right;
+        return if files_known && !same_file { Verdict::Homonym } else { Verdict::Right };
     }
     let indices = [pair.before, pair.after];
     let bodies = [sides[0].body(pair.before), sides[1].body(pair.after)];
     let paired = similarity(&bodies[0], &bodies[1]);
     let mut followed_the_code = true;
+    let mut names_held = 0;
     for (from, to) in [(0, 1), (1, 0)] {
         // The function on side `to` that holds the name of side `from`.
         let Some(holder) = sides[to].holder(&names[from]) else { continue };
+        names_held += 1;
         let held = sides[to].body(holder);
         if held == bodies[to] {
             return Verdict::Twin;
         }
         followed_the_code &= paired >= similarity(&bodies[from], &held);
     }
+    // Both functions live on under their own names, so the pair crossed
+    // them.
+    if names_held == 2 || !followed_the_code {
+        return Verdict::Wrong;
+    }
+    if files_known && !same_file {
+        return Verdict::Wrong;
+    }
+    // The callers and callees decide where there are enough of them.
     let [before, after] = [0, 1].map(|side| &sides[side].neighbours[indices[side]]);
     let all = before.union(after).count();
     let common = before.intersection(after).count();
-    let same_neighbours = all >= FEWEST_NEIGHBOURS && common as f64 >= SAME_NEIGHBOURS * all as f64;
-    if followed_the_code && same_neighbours { Verdict::Renamed } else { Verdict::Wrong }
+    if all < FEWEST_NEIGHBOURS {
+        return if files_known { Verdict::Unproven } else { Verdict::Wrong };
+    }
+    if common as f64 >= SAME_NEIGHBOURS * all as f64 { Verdict::Renamed } else { Verdict::Wrong }
 }
 
 fn measure(board: &Board, older: &str, newer: &str) -> Tally {
@@ -305,7 +493,14 @@ fn measure(board: &Board, older: &str, newer: &str) -> Tally {
     );
     tally.gone = diff.removed.len();
     tally.new = diff.added.len();
-    let sides = [Side::new(&kernels[0], &symbols[0]), Side::new(&kernels[1], &symbols[1])];
+    let sources = [older, newer].map(|release| {
+        source_files(&debug_cache().join(release).join(board.target).join("vmlinux"))
+    });
+    let moves = FileMoves::new(&symbols, &sources);
+    let sides = [
+        Side::new(&kernels[0], &symbols[0], &sources[0]),
+        Side::new(&kernels[1], &symbols[1], &sources[1]),
+    ];
     let judged: Vec<(String, Verdict)> = diff
         .matched
         .par_iter()
@@ -315,7 +510,7 @@ fn measure(board: &Board, older: &str, newer: &str) -> Tally {
             if names.iter().any(BTreeSet::is_empty) {
                 return None;
             }
-            Some((format!("{:?}", pair.confidence), judge(&sides, pair, &names)))
+            Some((format!("{:?}", pair.confidence), judge(&sides, &moves, pair, &names)))
         })
         .collect();
     for (stage, verdict) in judged {
@@ -331,12 +526,14 @@ fn add(sum: &mut Counts, counts: &Counts) {
 
 /// Write one row of counts: the verdicts, and the share of the wrong.
 fn row(out: &mut String, label: &str, counts: &Counts) {
-    let [right, renamed, twin, wrong] = *counts;
+    let [right, renamed, unproven, twin, homonym, wrong] = *counts;
     let judged: usize = counts.iter().sum();
     writeln!(
         out,
-        "{label:36} {right:>7} {renamed:>7} {twin:>5} {wrong:>6} {:>6.2}%",
-        percent(wrong, judged)
+        "{label:36} {right:>7} {renamed:>7} {unproven:>8} {twin:>5} {homonym:>7} {wrong:>6} \
+         {:>6.2}% {:>6.2}%",
+        percent(homonym + wrong, judged),
+        percent(homonym + wrong + unproven, judged)
     )
     .unwrap();
 }
@@ -345,8 +542,8 @@ fn row(out: &mut String, label: &str, counts: &Counts) {
 fn heading(out: &mut String, label: &str) {
     writeln!(
         out,
-        "\n{label:36} {:>7} {:>7} {:>5} {:>6} {:>7}",
-        "right", "renamed", "twin", "wrong", "wrong%"
+        "\n{label:36} {:>7} {:>7} {:>8} {:>5} {:>7} {:>6} {:>7} {:>7}",
+        "right", "renamed", "unproven", "twin", "homonym", "wrong", "wrong%", "at most"
     )
     .unwrap();
 }
