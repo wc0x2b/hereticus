@@ -959,7 +959,9 @@ impl Cascade<'_> {
     /// does. Out of place, 83% of the pairs by similarity with one paired
     /// neighbour that disagrees were wrong over the kernels; undoing them
     /// undid 57 right pairs and 269 wrong there, and 5 wrong over the
-    /// backports.
+    /// backports. A pair by callers out of place is undone where less than
+    /// [`LEAST_AGREEING_SHARE_OUT_OF_PLACE`] of its paired callers and
+    /// callees agree.
     /// Stronger reasons stand, and a pair by callers or by references has
     /// its context already.
     ///
@@ -1018,25 +1020,19 @@ impl Cascade<'_> {
             .matched
             .iter()
             .map(|pair| {
-                if !matches!(pair.confidence, Confidence::Similar | Confidence::SameLayout) {
-                    return false;
-                }
-                let partners_of_left: BTreeSet<usize> = left[pair.before]
-                    .iter()
-                    .filter_map(|neighbour| partner.get(neighbour).copied())
-                    .collect();
-                let paired_right = right[pair.after]
-                    .iter()
-                    .filter(|&&neighbour| !self.right_free[neighbour])
-                    .count();
-                let fewest = if pair.score < WEAK_PAIR_SIMILARITY || !in_place(pair) {
-                    FEWEST_PAIRED_NEIGHBOURS_OF_A_WEAK_PAIR
-                } else {
-                    FEWEST_PAIRED_NEIGHBOURS
+                let context = Context {
+                    partners_of_left: left[pair.before]
+                        .iter()
+                        .filter_map(|neighbour| partner.get(neighbour).copied())
+                        .collect(),
+                    right: &right[pair.after],
+                    paired_right: right[pair.after]
+                        .iter()
+                        .filter(|&&neighbour| !self.right_free[neighbour])
+                        .count(),
                 };
-                partners_of_left.len() >= fewest
-                    && paired_right >= fewest
-                    && partners_of_left.is_disjoint(&right[pair.after])
+                let place = if in_place(pair) { Place::Kept } else { Place::Moved };
+                lacks_context(pair.confidence, pair.score, place, &context)
             })
             .collect();
         let mut index = 0;
@@ -3370,6 +3366,61 @@ fn constant_agreement(left: &[u64], right: &[u64]) -> f64 {
 /// precision at best, so they are left alone.
 const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
 
+/// Whether a pair sits between the pairs around it on both sides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    /// The second side sits between the partners of the pairs around the
+    /// first, as code that stayed in its source file does.
+    Kept,
+    /// It sits elsewhere.
+    Moved,
+}
+
+/// The callers and callees of the two sides of a pair.
+struct Context<'a> {
+    /// The partners of the paired callers and callees of the first side.
+    partners_of_left: BTreeSet<usize>,
+    /// The callers and callees of the second side.
+    right: &'a BTreeSet<usize>,
+    /// How many of [`Self::right`] paired.
+    paired_right: usize,
+}
+
+/// Whether the callers and callees of a pair say it is wrong: see
+/// [`Cascade::unpair_without_context`].
+fn lacks_context(confidence: Confidence, score: f64, place: Place, context: &Context<'_>) -> bool {
+    let Context { partners_of_left, right, paired_right } = context;
+    let agreeing = partners_of_left.intersection(right).count();
+    match confidence {
+        Confidence::SameCallers => {
+            let most = partners_of_left.len().max(*paired_right);
+            place == Place::Moved
+                && most > 0
+                && (agreeing as f64) < LEAST_AGREEING_SHARE_OUT_OF_PLACE * most as f64
+        }
+        Confidence::Similar | Confidence::SameLayout => {
+            let fewest = if score < WEAK_PAIR_SIMILARITY || place == Place::Moved {
+                FEWEST_PAIRED_NEIGHBOURS_OF_A_WEAK_PAIR
+            } else {
+                FEWEST_PAIRED_NEIGHBOURS
+            };
+            partners_of_left.len() >= fewest && *paired_right >= fewest && agreeing == 0
+        }
+        _ => false,
+    }
+}
+
+/// The least share of the paired callers and callees of a pair by callers
+/// out of place that must agree, where [`Cascade::unpair_without_context`]
+/// is to keep it.
+///
+/// Out of place, the pairs by callers where under 0.3 agree were right 20
+/// times and wrong 156 over the kernels. Undoing them undid 17 right pairs
+/// and 159 wrong there, and 2 right and 11 wrong over the backports, with
+/// the fixes ranked a little higher. At 0.4 it ranked the backport fixes
+/// lower; in place, no share told right from wrong.
+const LEAST_AGREEING_SHARE_OUT_OF_PLACE: f64 = 0.3;
+
 /// How many callers and callees that paired each side of a pair needs for
 /// [`Cascade::unpair_without_context`] to judge it.
 const FEWEST_PAIRED_NEIGHBOURS: usize = 2;
@@ -5693,6 +5744,48 @@ mod tests {
             pair_of_caller(&similar_pair_calling(0x100, &edited, false)),
             Some((3, Confidence::Similar))
         );
+    }
+
+    /// Each rule of `lacks_context`, on both sides of its bound.
+    #[test]
+    fn context_decides_by_stage_place_and_share() {
+        use Confidence::{IdenticalShape, SameCallers, SameLayout, Similar};
+        use Place::{Kept, Moved};
+        // (stage, score, place, partners of the first side's neighbours,
+        // the second side's neighbours, how many of those paired, undone)
+        type Case = (Confidence, f64, Place, &'static [usize], &'static [usize], usize, bool);
+        let cases: &[Case] = &[
+            // Two disagreeing neighbours undo a pair by similarity anywhere.
+            (Similar, 0.9, Kept, &[1, 2], &[3, 4], 2, true),
+            // One is not enough in place, at a firm score.
+            (Similar, 0.9, Kept, &[1], &[3], 1, false),
+            // One is enough out of place, or at a weak score.
+            (Similar, 0.9, Moved, &[1], &[3], 1, true),
+            (SameLayout, 0.2, Kept, &[1], &[3], 1, true),
+            // One that agrees keeps it.
+            (Similar, 0.9, Moved, &[1, 2], &[2, 3], 2, false),
+            // With no paired neighbour, nothing is said.
+            (Similar, 0.2, Moved, &[], &[3], 0, false),
+            // A pair by callers out of place goes under the share.
+            (SameCallers, 0.5, Moved, &[1, 2, 3, 4], &[1, 5, 6, 7], 4, true),
+            (SameCallers, 0.5, Moved, &[1, 2, 3], &[1, 5, 6], 3, false),
+            (SameCallers, 0.5, Kept, &[1, 2, 3, 4], &[1, 5, 6, 7], 4, false),
+            // A stronger stage stands.
+            (IdenticalShape, 1.0, Moved, &[1, 2], &[3, 4], 2, false),
+        ];
+        for &(stage, score, place, left, right, paired_right, undone) in cases {
+            let right: BTreeSet<usize> = right.iter().copied().collect();
+            let context = Context {
+                partners_of_left: left.iter().copied().collect(),
+                right: &right,
+                paired_right,
+            };
+            assert_eq!(
+                lacks_context(stage, score, place, &context),
+                undone,
+                "{stage:?} {score} {place:?} {left:?} {right:?}"
+            );
+        }
     }
 
     /// `b target` from `from`, little endian.
