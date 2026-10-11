@@ -696,8 +696,12 @@ pub enum Opcode {
     Arm(arm32::Decoded),
     /// T32, which names its operations as A32 does.
     Thumb(arm32::Decoded),
-    /// MIPS32 and MIPS16e.
-    Mips(mips::Decoded),
+    /// MIPS32, in the byte order its word was read in.
+    Mips(mips::Decoded, mips::ByteOrder),
+    /// MIPS16e, by the MIPS32 operation it does, or its own where it has
+    /// none, in the byte order its halfwords were read in: see
+    /// [`mips::Decoded`].
+    Mips16(mips::Decoded, mips::ByteOrder),
 }
 
 impl fmt::Display for Insn {

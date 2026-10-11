@@ -479,8 +479,15 @@ fn mips_byte_orders_decode_alike() {
         let address = u64::from(*address);
 
         // The bytes differ by the order; what they mean must not.
+        // The opcode records the order it was read in, which differs too.
         let meaning = |decoded: Result<hereticus::arch::Insn, _>| {
-            decoded.map(|insn| (insn.address, insn.bytes_len, insn.text, insn.kind, insn.opcode))
+            decoded.map(|insn| {
+                let operation = match insn.opcode {
+                    hereticus::arch::Opcode::Mips(operation, _) => Some(operation),
+                    _ => None,
+                };
+                (insn.address, insn.bytes_len, insn.text, insn.kind, operation)
+            })
         };
         assert_eq!(
             meaning(Mips32::LITTLE.decode(word, 0, address)),
