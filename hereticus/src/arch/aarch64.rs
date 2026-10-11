@@ -152,43 +152,8 @@ impl Arch for Aarch64 {
         INSN_WIDTH
     }
 
-    fn is_register(&self, operand: &str) -> bool {
-        let operand = operand.trim();
-        matches!(operand, "sp" | "wsp" | "xzr" | "wzr" | "lr")
-            || ["x", "w", "d", "s", "q", "h", "b", "v"].iter().any(|prefix| {
-                operand.strip_prefix(prefix).is_some_and(|number| {
-                    let number = number.split('.').next().unwrap_or_default();
-                    !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
-                })
-            })
-    }
-
-    fn is_stack_register(&self, operand: &str) -> bool {
-        matches!(operand.trim(), "sp" | "wsp" | "x29")
-    }
-
     fn is_frame_register(&self, reg: Reg) -> bool {
         matches!(reg, Reg::Stack | FRAME)
-    }
-
-    fn mentions_stack_slot(&self, operands: &str) -> bool {
-        operands.contains("[sp") || operands.contains("[x29")
-    }
-
-    fn constant_value(&self, operand: &str) -> Option<u64> {
-        let text = operand.trim().trim_start_matches('#');
-        if text.is_empty() || text.contains(['[', ']']) || text.starts_with('$') {
-            return None;
-        }
-        let (negative, text) = match text.strip_prefix('-') {
-            Some(rest) => (true, rest),
-            None => (false, text),
-        };
-        let value = match text.strip_prefix("0x") {
-            Some(hex) => u64::from_str_radix(hex, 16).ok()?,
-            None => text.parse::<u64>().ok()?,
-        };
-        Some(if negative { value.wrapping_neg() } else { value })
     }
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
@@ -2354,13 +2319,6 @@ mod tests {
         let bytes = code(&[0xd65f_03c0, 0xd503_201f, 0]);
         assert_eq!(Aarch64.trim_padding(&bytes), &bytes[..4]);
         assert!(Aarch64.is_padding(&decode_one(0xd503_201f)));
-    }
-
-    #[test]
-    fn constants_read_with_their_sign() {
-        assert_eq!(Aarch64.constant_value("#0x30"), Some(0x30));
-        assert_eq!(Aarch64.constant_value("#-0x30"), Some(0x30_u64.wrapping_neg()));
-        assert_eq!(Aarch64.constant_value("[sp, #0x10]"), None);
     }
 
     /// An exclusive access is one step of an atomic sequence, never a plain

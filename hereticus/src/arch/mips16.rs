@@ -582,24 +582,8 @@ impl Arch for Mips16 {
         HALFWORD
     }
 
-    fn is_register(&self, operand: &str) -> bool {
-        self.base.is_register(operand)
-    }
-
-    fn is_stack_register(&self, operand: &str) -> bool {
-        self.base.is_stack_register(operand)
-    }
-
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         self.base.is_frame_register(reg)
-    }
-
-    fn mentions_stack_slot(&self, operands: &str) -> bool {
-        self.base.mentions_stack_slot(operands)
-    }
-
-    fn constant_value(&self, operand: &str) -> Option<u64> {
-        self.base.constant_value(operand)
     }
 
     /// `save` and `restore` make and drop the frame whole.

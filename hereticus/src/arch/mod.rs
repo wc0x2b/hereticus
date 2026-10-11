@@ -67,17 +67,7 @@ pub trait Arch {
     /// minimum.
     fn instruction_width(&self) -> usize;
 
-    /// Report whether an operand names a general register.
-    fn is_register(&self, operand: &str) -> bool;
-
-    /// Report whether an operand names the stack or frame pointer.
-    ///
-    /// Separate from [`Arch::is_register`] because frame work is what the
-    /// normalizer drops, so the two must not be confused.
-    fn is_stack_register(&self, operand: &str) -> bool;
-
-    /// Report whether a lifted register is the stack or frame pointer, as
-    /// [`Arch::is_stack_register`] does for one printed.
+    /// Report whether a lifted register is the stack or frame pointer.
     fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
         reg == crate::il::Reg::Stack
     }
@@ -88,25 +78,6 @@ pub trait Arch {
     fn can_open_function(&self, _bytes: &[u8]) -> bool {
         false
     }
-
-    /// Report whether any operand reads or writes a frame slot.
-    ///
-    /// Takes the whole operand list, not one operand, because a frame
-    /// reference is usually one bracketed group inside it.
-    fn mentions_stack_slot(&self, operands: &str) -> bool;
-
-    /// Report whether an operand is a list of registers.
-    ///
-    /// Defaults to `false`, for the architectures that have no such form.
-    fn is_register_list(&self, _operand: &str) -> bool {
-        false
-    }
-
-    /// Read a constant operand, or `None` when it is not one.
-    ///
-    /// Architecture specific because of the immediate sigil, which ARM prints
-    /// as a leading `#`.
-    fn constant_value(&self, operand: &str) -> Option<u64>;
 
     /// The name of the operation `insn` does, from its decoded opcode.
     ///
@@ -326,17 +297,6 @@ pub trait Arch {
     /// every word decodes only those. `false` must mean it is none.
     fn may_be_prologue(&self, _word: &[u8]) -> bool {
         true
-    }
-
-    /// The operands before a reference to memory at a distance from the
-    /// program counter, as a load from a literal pool makes, or `None` for
-    /// operands with no such reference.
-    ///
-    /// The distance says only where the pool sits, which moves whenever code
-    /// before it grows, and the words of the pool are compared on their own.
-    /// Defaults to `None`, for the architectures with no such load.
-    fn before_pc_reference<'a>(&self, _operands: &'a str) -> Option<&'a str> {
-        None
     }
 
     /// Report whether a function can open with the instruction in `word`.

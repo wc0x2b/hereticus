@@ -151,8 +151,8 @@ similarity and confidence; this splits them further, as a reader triages.
 
 ### A13. Instruction diff
 
-Code: `count_edits`, `longest_common_subsequence`, `instruction_diff` and
-`coalesce_changed_constants` in `matching.rs`.
+Code: `count_edits`, `longest_common_subsequence`, `instruction_diff`,
+`lines_from_alignment` and `difference` in `matching.rs`.
 
 The two bodies align as a longest common subsequence, the diff of Hunt
 and McIlroy, and a removal next to an addition of the same shape folds

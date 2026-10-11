@@ -482,18 +482,6 @@ impl Arch for Arm32 {
         INSN_WIDTH
     }
 
-    fn is_register(&self, operand: &str) -> bool {
-        // `ip`, `sl` and `fp` are the AAPCS names for r12, r10 and r11.
-        matches!(operand, "sp" | "lr" | "pc" | "ip" | "sl" | "fp")
-            || operand.strip_prefix('r').is_some_and(|number| {
-                !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
-            })
-    }
-
-    fn is_stack_register(&self, operand: &str) -> bool {
-        matches!(operand.trim(), "sp" | "fp" | "r13" | "r11")
-    }
-
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         matches!(reg, il::Reg::Stack | FRAME)
     }
@@ -502,35 +490,6 @@ impl Arch for Arm32 {
     /// A32 instruction does: its top four bits are `0xE`.
     fn can_open_function(&self, bytes: &[u8]) -> bool {
         bytes.get(..INSN_WIDTH).is_some_and(|word| word[3] >> 4 == 0xe)
-    }
-
-    fn mentions_stack_slot(&self, operands: &str) -> bool {
-        operands.contains("[sp") || operands.contains("[fp") || operands.contains("[r13")
-    }
-
-    /// Register lists print as `{r4, lr}`. Splitting the operand list on
-    /// commas breaks them apart, so a fragment is recognized by its braces
-    /// rather than by holding both.
-    fn is_register_list(&self, operand: &str) -> bool {
-        operand.starts_with('{') || operand.ends_with('}')
-    }
-
-    fn constant_value(&self, operand: &str) -> Option<u64> {
-        let text = operand.trim().trim_start_matches('#');
-        if text.is_empty() {
-            return None;
-        }
-
-        // A memory reference can hold a constant, but that constant is an
-        // offset into a frame or object and moves with unrelated edits.
-        if text.contains('[') || text.contains(']') || text.starts_with('$') {
-            return None;
-        }
-
-        match text.strip_prefix("0x") {
-            Some(hex) => u64::from_str_radix(hex, 16).ok(),
-            None => text.parse::<u64>().ok(),
-        }
     }
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
@@ -714,10 +673,6 @@ impl Arch for Arm32 {
     /// started a function.
     fn may_open_function(&self, word: &[u8]) -> bool {
         word.get(3).is_some_and(|&top| top >= 0xe0)
-    }
-
-    fn before_pc_reference<'a>(&self, operands: &'a str) -> Option<&'a str> {
-        operands.split_once("[pc").map(|(before, _)| before.trim_end_matches([',', ' ']))
     }
 
     fn data_among_code(&self) -> DataAmongCode {
@@ -4649,48 +4604,6 @@ mod tests {
         // ldr r0, [r1]; str r0, [r1]; push {r4, lr}; pop {r4, pc}.
         assert_ne!(operation_of(0xe591_0000), operation_of(0xe581_0000));
         assert_ne!(operation_of(0xe92d_4010), operation_of(0xe8bd_8010));
-    }
-
-    #[test]
-    fn registers_are_recognized_by_name_and_by_number() {
-        for name in ["r0", "r13", "sp", "lr", "pc", "ip", "sl", "fp"] {
-            assert!(Arm32.is_register(name), "{name} names a register");
-        }
-        for other in ["", "0x4", "[sp", "r", "rx", "$+0x8"] {
-            assert!(!Arm32.is_register(other), "{other} does not name a register");
-        }
-    }
-
-    #[test]
-    fn the_stack_and_frame_pointers_are_told_apart_from_other_registers() {
-        for name in ["sp", "fp", "r13", "r11"] {
-            assert!(Arm32.is_stack_register(name));
-        }
-        assert!(!Arm32.is_stack_register("r0"));
-        assert!(!Arm32.is_stack_register("lr"));
-    }
-
-    #[test]
-    fn a_frame_reference_is_told_apart_from_another_memory_reference() {
-        assert!(Arm32.mentions_stack_slot("r0, [sp, 0x4]"));
-        assert!(Arm32.mentions_stack_slot("r0, [fp, -0x4]"));
-        assert!(!Arm32.mentions_stack_slot("r0, [r1, 0x8]"));
-    }
-
-    #[test]
-    fn a_constant_reads_in_hex_and_decimal_and_past_the_immediate_sigil() {
-        assert_eq!(Arm32.constant_value("0x25"), Some(0x25));
-        assert_eq!(Arm32.constant_value("37"), Some(37));
-        assert_eq!(Arm32.constant_value("#4"), Some(4));
-    }
-
-    /// A register, a frame reference and a branch target are not constants,
-    /// even though each holds digits.
-    #[test]
-    fn what_is_not_a_constant_reads_as_none() {
-        for operand in ["r0", "[sp, 0x4]", "$+0x24", "", "lr"] {
-            assert_eq!(Arm32.constant_value(operand), None, "{operand} is not a constant");
-        }
     }
 
     #[test]

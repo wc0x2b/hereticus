@@ -363,52 +363,8 @@ impl Arch for Mips32 {
         INSN_WIDTH
     }
 
-    fn is_register(&self, operand: &str) -> bool {
-        is_register_name(operand)
-    }
-
-    fn is_stack_register(&self, operand: &str) -> bool {
-        // `fp` is the frame pointer, which MIPS also calls `s8`.
-        matches!(operand.trim(), "sp" | "fp" | "s8")
-    }
-
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         matches!(reg, il::Reg::General(SP | FP))
-    }
-
-    fn mentions_stack_slot(&self, operands: &str) -> bool {
-        // A frame reference prints as `0x4(sp)`, so the register sits in
-        // parentheses rather than in brackets as it does on ARM.
-        operands.contains("(sp)") || operands.contains("(fp)") || operands.contains("(s8)")
-    }
-
-    fn constant_value(&self, operand: &str) -> Option<u64> {
-        let text = operand.trim();
-        if text.is_empty() {
-            return None;
-        }
-
-        // A frame or object reference holds a constant, but that constant is
-        // an offset that moves with unrelated edits. A branch target is not a
-        // constant either.
-        if text.contains('(') || text.contains(')') || text.starts_with('$') {
-            return None;
-        }
-
-        // A negative immediate prints as `-0x1`.
-        let (negative, digits) = match text.strip_prefix('-') {
-            Some(rest) => (true, rest),
-            None => (false, text),
-        };
-
-        let value = match digits.strip_prefix("0x") {
-            Some(hex) => u64::from_str_radix(hex, 16).ok()?,
-            None => digits.parse::<u64>().ok()?,
-        };
-
-        // Negative immediates are compared as their two's complement form, so
-        // that a constant keeps one spelling however it is printed.
-        Some(if negative { (value as i64).wrapping_neg() as u64 } else { value })
     }
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
@@ -1900,49 +1856,6 @@ fn is_pic_setup(insn: &Insn) -> bool {
 
         _ => false,
     }
-}
-
-/// Report whether an operand names a general register.
-///
-/// MIPS registers print by their ABI names, which are irregular enough to
-/// list. `$4` style numbers do not appear in this decoder's output.
-fn is_register_name(operand: &str) -> bool {
-    matches!(
-        operand.trim(),
-        "zero"
-            | "at"
-            | "v0"
-            | "v1"
-            | "a0"
-            | "a1"
-            | "a2"
-            | "a3"
-            | "t0"
-            | "t1"
-            | "t2"
-            | "t3"
-            | "t4"
-            | "t5"
-            | "t6"
-            | "t7"
-            | "t8"
-            | "t9"
-            | "s0"
-            | "s1"
-            | "s2"
-            | "s3"
-            | "s4"
-            | "s5"
-            | "s6"
-            | "s7"
-            | "s8"
-            | "k0"
-            | "k1"
-            | "gp"
-            | "sp"
-            | "fp"
-            | "ra"
-    )
 }
 
 /// Work out how an instruction moves control flow.
@@ -3733,52 +3646,6 @@ mod tests {
 
         assert_eq!(normalized(&without).len(), 1);
         assert_eq!(normalized(&with).len(), 2, "the call must remain once its GOT read is dropped");
-    }
-
-    #[test]
-    fn registers_are_recognized_by_their_abi_names() {
-        for name in ["zero", "a0", "v0", "t9", "s8", "sp", "fp", "ra", "gp"] {
-            assert!(Mips32::LITTLE.is_register(name), "{name} names a register");
-        }
-        for other in ["", "0x4", "0x4(sp)", "$+0x8", "r0", "x0"] {
-            assert!(!Mips32::LITTLE.is_register(other), "{other} does not name a register");
-        }
-    }
-
-    #[test]
-    fn the_stack_and_frame_pointers_are_told_apart() {
-        for name in ["sp", "fp", "s8"] {
-            assert!(Mips32::LITTLE.is_stack_register(name));
-        }
-        assert!(!Mips32::LITTLE.is_stack_register("a0"));
-        assert!(!Mips32::LITTLE.is_stack_register("ra"));
-    }
-
-    #[test]
-    fn a_frame_reference_is_told_apart_from_another_memory_reference() {
-        assert!(Mips32::LITTLE.mentions_stack_slot("ra, 0x14(sp)"));
-        assert!(Mips32::LITTLE.mentions_stack_slot("v0, 0x0(fp)"));
-        assert!(!Mips32::LITTLE.mentions_stack_slot("v0, 0x0(a0)"));
-    }
-
-    #[test]
-    fn a_constant_reads_in_hex_and_decimal() {
-        assert_eq!(Mips32::LITTLE.constant_value("0x25"), Some(0x25));
-        assert_eq!(Mips32::LITTLE.constant_value("37"), Some(37));
-    }
-
-    /// A negative immediate must read back as one value, not as its digits.
-    #[test]
-    fn a_negative_constant_keeps_one_spelling() {
-        assert_eq!(Mips32::LITTLE.constant_value("-0x20"), Some((-0x20i64) as u64));
-        assert_ne!(Mips32::LITTLE.constant_value("-0x20"), Mips32::LITTLE.constant_value("0x20"));
-    }
-
-    #[test]
-    fn what_is_not_a_constant_reads_as_none() {
-        for operand in ["a0", "0x4(sp)", "$+0x400", "", "ra"] {
-            assert_eq!(Mips32::LITTLE.constant_value(operand), None, "{operand} is not a constant");
-        }
     }
 
     /// The name of the operation of the MIPS32 `word`.
