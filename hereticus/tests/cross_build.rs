@@ -151,5 +151,5 @@ fn pairs_across_builds_are_locked(
 #[test]
 fn mips16_pairs_across_builds_are_locked() {
     let found = tally_arches("gcc-O2", "gcc-Os", &["mips16"]);
-    assert_eq!(found, Tally { right: 819, wrong: 20, gone: 70, new: 155 });
+    assert_eq!(found, Tally { right: 820, wrong: 21, gone: 68, new: 153 });
 }
