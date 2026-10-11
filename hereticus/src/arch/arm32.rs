@@ -338,8 +338,24 @@ fn printed_opcode(inst: &Instruction) -> Opcode {
 /// What the decoder read for `insn`, where it read A32 or T32.
 pub(crate) fn decoded(insn: &Insn) -> Option<Decoded> {
     match insn.opcode {
-        super::Opcode::Arm(decoded) => Some(decoded),
+        super::Opcode::Arm(decoded) | super::Opcode::Thumb(decoded) => Some(decoded),
         _ => None,
+    }
+}
+
+/// The program counter, as an operand names it.
+const PC_OPERAND: il::Operand = il::Operand::Reg(il::Reg::ProgramCounter);
+
+/// The link register, which a function that calls another saves first.
+const LR: il::Reg = il::Reg::General(14);
+
+/// `insn` lifted in the instruction set that decoded it, A32 or T32. A rule
+/// that both read can take an instruction of either.
+pub(super) fn lifted(insn: &Insn) -> Option<il::Lifted> {
+    match insn.opcode {
+        super::Opcode::Thumb(_) => super::thumb::Thumb2.lift(insn),
+        _ if insn.bytes_len == super::thumb::HALFWORD => super::thumb::Thumb2.lift(insn),
+        _ => Arm32.lift(insn),
     }
 }
 
@@ -519,8 +535,7 @@ impl Arch for Arm32 {
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
         let Some(opcode) = core_opcode(insn) else { return false };
-        let operands = insn.operands();
-        let first = operands.split(',').next().unwrap_or_default();
+        let operands = || lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
 
         match opcode {
             // Saving and restoring registers. A `pop` that loads the program
@@ -529,14 +544,18 @@ impl Arch for Arm32 {
             Opcode::POP => insn.kind != InsnKind::Return,
 
             // Moving the stack pointer, or setting up the frame pointer.
-            Opcode::SUB | Opcode::ADD | Opcode::MOV => self.is_stack_register(first),
+            Opcode::SUB | Opcode::ADD | Opcode::MOV => {
+                matches!(operands().first(), Some(il::Operand::Reg(reg)) if self.is_frame_register(*reg))
+            }
 
             // Spilling to and reloading from the frame, by `ldr`, `str`,
             // `ldm` and `stm`, which go up from the base.
             Opcode::LDR
             | Opcode::STR
             | Opcode::LDM(true, false, ..)
-            | Opcode::STM(true, false, ..) => self.mentions_stack_slot(operands),
+            | Opcode::STM(true, false, ..) => operands().iter().any(|operand| {
+                matches!(operand, il::Operand::Memory { base: Some(base), .. } if self.is_frame_register(*base))
+            }),
 
             _ => false,
         }
@@ -551,23 +570,30 @@ impl Arch for Arm32 {
     /// this as one source among several.
     fn is_prologue(&self, insn: &Insn) -> bool {
         matches!(core_opcode(insn), Some(Opcode::PUSH | Opcode::STM(..)))
-            && insn.operands().contains("lr")
+            && lifted(insn).is_some_and(|lifted| {
+                // `push {lr}` alone is `str lr, [sp, #-4]!`, which names it
+                // as one register.
+                lifted.operands.iter().any(|operand| match operand {
+                    il::Operand::RegisterList(list) => list.contains(LR),
+                    il::Operand::Reg(reg) => *reg == LR,
+                    _ => false,
+                })
+            })
     }
 
-    /// `yaxpeax-arm` 0.4 does not decode the usual ARM `nop` encoding
-    /// `0xe320f000` and reports it as unreadable, so the raw word is checked
-    /// as well as the name. A core before ARMv6K has no such hint, so GCC
-    /// pads with `mov r0, r0` there.
+    /// The `nop` hint, which [`decode_fallback`] reads where `yaxpeax-arm`
+    /// 0.4 does not, or the word of it or of zeros that no decoder reads. A
+    /// core before ARMv6K has no such hint, so GCC pads with `mov r0, r0`
+    /// there. A word of data that holds zero is no padding.
     fn is_padding(&self, insn: &Insn) -> bool {
-        /// The A32 hint encoding that means "no operation", as printed.
-        const NOP: &str = "0xe320f000";
-        /// Zero words, which some linkers use to pad instead.
-        const ZERO: &str = "0x00000000";
-
+        const R0: il::Operand = il::Operand::Reg(il::Reg::General(0));
+        let moves_r0_to_itself =
+            || lifted(insn).is_some_and(|lifted| lifted.operands.as_slice() == [R0, R0]);
         core_opcode(insn) == Some(Opcode::NOP)
-            || (is_plain(insn, Opcode::MOV) && insn.operands() == "r0, r0")
+            || (is_plain(insn, Opcode::MOV) && moves_r0_to_itself())
             || (insn.kind == InsnKind::Unknown
-                && (insn.operands() == NOP || insn.operands() == ZERO))
+                && insn.opcode != super::Opcode::Data
+                && (insn.bytes() == NOP_BYTES || insn.bytes() == ZERO_BYTES))
     }
 
     /// Only whole words at the end are removed, and only the two encodings a
@@ -650,8 +676,9 @@ impl Arch for Arm32 {
     /// one-word fragment that no release could pair.
     fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
         let Some(last) = earlier.last() else { return 0 };
-        let reserves_stack =
-            core_opcode(last) == Some(Opcode::SUB) && last.operands().starts_with("sp, sp, ");
+        const SP: il::Operand = il::Operand::Reg(il::Reg::Stack);
+        let reserves_stack = core_opcode(last) == Some(Opcode::SUB)
+            && lifted(last).is_some_and(|lifted| lifted.operands.starts_with(&[SP, SP]));
         usize::from(reserves_stack)
     }
 
@@ -750,9 +777,30 @@ impl Arch for Arm32 {
         }
         let (insns, _) = super::decode_all(self, code.get(..3 * INSN_WIDTH)?, address);
         let [first, second, third] = insns.as_slice() else { return None };
-        let high = parse_hex(first.operands().strip_prefix("ip, pc, ")?)?;
-        let middle = parse_hex(second.operands().strip_prefix("ip, ip, ")?)?;
-        let low = parse_hex(third.operands().strip_prefix("pc, [ip, ")?.strip_suffix("]!")?)?;
+        const IP: il::Operand = il::Operand::Reg(il::Reg::General(12));
+        const PC: il::Operand = il::Operand::Reg(il::Reg::ProgramCounter);
+        let operands = |insn: &Insn| self.lift(insn).map(|lifted| lifted.operands);
+        // `add ip, pc, #high`; `add ip, ip, #middle`; `ldr pc, [ip, #low]!`.
+        let high = match operands(first)?.as_slice() {
+            [IP, PC, il::Operand::Const(high)] => *high,
+            _ => return None,
+        };
+        let middle = match operands(second)?.as_slice() {
+            [IP, IP, il::Operand::Const(middle)] => *middle,
+            _ => return None,
+        };
+        let low = match operands(third)?.as_slice() {
+            [
+                PC,
+                il::Operand::Memory {
+                    base: Some(il::Reg::General(12)),
+                    offset: Some(low @ 0..),
+                    index: None,
+                    update: il::Update::Before,
+                },
+            ] => *low as u64,
+            _ => return None,
+        };
         let shape = is_plain(first, Opcode::ADR)
             && is_plain(second, Opcode::ADD)
             && is_plain(third, Opcode::LDR);
@@ -1469,39 +1517,47 @@ fn read_jump_table(
     if !is_plain(jump, Opcode::ADD) || jump.kind != (InsnKind::Jump { target: None }) {
         return None;
     }
-    let mut operands = jump.operands().split(',').map(str::trim);
-    let (Some("pc"), Some(table_register), Some(offset_register), None) =
-        (operands.next(), operands.next(), operands.next(), operands.next())
-    else {
-        return None;
+    let operands = |insn: &Insn| lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
+    // `add pc, rB, rX`.
+    let (table_register, offset_register) = match operands(jump).as_slice() {
+        [
+            il::Operand::Reg(il::Reg::ProgramCounter),
+            il::Operand::Reg(table),
+            il::Operand::Reg(offset),
+        ] => (*table, *offset),
+        _ => return None,
     };
 
     // The last instruction to write a register, or `None` past the window.
-    let last_write = |register: &str| {
+    let last_write = |register: il::Reg| {
         earlier
             .iter()
             .rev()
             .take(LOOK_BACK)
-            .find(|insn| insn.operands().split(',').next().map(str::trim) == Some(register))
+            .find(|insn| operands(insn).first() == Some(&il::Operand::Reg(register)))
     };
 
     // `ldr rX, [rB, rI, lsl 2]`: one word of the table.
     let load = last_write(offset_register)?;
-    let expected = format!("{offset_register}, [{table_register}, ");
-    if !is_plain(load, Opcode::LDR)
-        || !load.operands().starts_with(&expected)
-        || !load.operands().ends_with(", lsl 2]")
-    {
+    let reads_the_table = matches!(
+        operands(load).as_slice(),
+        [_, il::Operand::Memory { base: Some(base), offset: None, index: Some((_, 2)), update: il::Update::None }]
+            if *base == table_register
+    );
+    if !is_plain(load, Opcode::LDR) || !reads_the_table {
         return None;
     }
 
     // `adr rB, pc, imm`: the address of the table.
     let address = last_write(table_register)?;
-    let immediate = address.operands().strip_prefix(&format!("{table_register}, pc, "))?;
+    let immediate = match operands(address).as_slice() {
+        [_, il::Operand::Reg(il::Reg::ProgramCounter), il::Operand::Const(immediate)] => *immediate,
+        _ => return None,
+    };
     if !is_plain(address, Opcode::ADR) {
         return None;
     }
-    let table = address.address.checked_add(8)?.checked_add(parse_hex(immediate)?)?;
+    let table = address.address.checked_add(8)?.checked_add(immediate)?;
 
     let (base, end) = (code.start, code.end);
     let mut targets = Vec::new();
@@ -1548,7 +1604,17 @@ fn read_branch_table(memory: &Memory<'_>, code: &Range<u64>, jump: &Insn) -> Opt
 
     let is_jump =
         matches!(jump.kind, InsnKind::Jump { target: None } | InsnKind::Branch { target: None });
-    let shape = jump.operands().starts_with("pc, pc, ") && jump.operands().ends_with(", lsl 2");
+    // `add pc, pc, rX, lsl #2`.
+    let shape = lifted(jump).is_some_and(|lifted| {
+        matches!(
+            lifted.operands.as_slice(),
+            [
+                PC_OPERAND,
+                PC_OPERAND,
+                il::Operand::Shifted { shift: il::Shift::Left, amount: 2, .. }
+            ]
+        )
+    });
     if core_opcode(jump) != Some(Opcode::ADD) || !is_jump || !shape {
         return None;
     }
@@ -1602,15 +1668,23 @@ fn read_offset_table(
     if core_opcode(jump) != Some(Opcode::ADD) || !is_jump {
         return None;
     }
-    let offset_register = jump.operands().strip_prefix("pc, pc, ")?.strip_suffix(", lsl 2")?;
+    let operands = |insn: &Insn| lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
+    // `add pc, pc, rX, lsl #2`.
+    let offset_register = match operands(jump).as_slice() {
+        [
+            PC_OPERAND,
+            PC_OPERAND,
+            il::Operand::Shifted { reg, shift: il::Shift::Left, amount: 2 },
+        ] => *reg,
+        _ => return None,
+    };
 
     let window = || earlier.iter().rev().take(LOOK_BACK);
     // A compare names `r0` first but writes nothing, so it is no write.
-    let writes = |insn: &Insn, register: &str| {
-        writes_first_operand(insn)
-            && insn.operands().split(',').next().map(str::trim) == Some(register)
+    let writes = |insn: &Insn, register: il::Reg| {
+        writes_first_operand(insn) && operands(insn).first() == Some(&il::Operand::Reg(register))
     };
-    let last_write = |register: &str| window().find(|insn| writes(insn, register));
+    let last_write = |register: il::Reg| window().find(|insn| writes(insn, register));
 
     // `ldrb rX, [rB, rI]`: one entry of the table.
     let load = last_write(offset_register)?;
@@ -1619,10 +1693,17 @@ fn read_offset_table(
         Opcode::LDRH => 2,
         _ => return None,
     };
-    let (_, reference) = load.operands().split_once(',')?;
-    let (table_register, Offset::Register(index_register)) = parse_reference(reference.trim())?
-    else {
-        return None;
+    let (table_register, index_register) = match operands(load).as_slice() {
+        [
+            _,
+            il::Operand::Memory {
+                base: Some(base),
+                offset: None,
+                index: Some((index, 0)),
+                update: il::Update::None,
+            },
+        ] => (*base, *index),
+        _ => return None,
     };
 
     // The table's address: `ldr rB, [pc, imm]` then `add rB, pc, rB`.
@@ -1634,8 +1715,10 @@ fn read_offset_table(
         .skip_while(|insn| insn.address >= load.address)
         .take(TABLE_LOOK_BACK)
         .find(|insn| writes(insn, table_register))?;
-    let expected = format!("{table_register}, pc, {table_register}");
-    if core_opcode(add) != Some(Opcode::ADD) || add.operands() != expected {
+    let table_operand = il::Operand::Reg(table_register);
+    if core_opcode(add) != Some(Opcode::ADD)
+        || operands(add).as_slice() != [table_operand, PC_OPERAND, table_operand]
+    {
         return None;
     }
     let pool_load = earlier
@@ -1644,29 +1727,30 @@ fn read_offset_table(
         .skip_while(|insn| insn.address >= add.address)
         .take(LOOK_BACK)
         .find(|insn| writes(insn, table_register))?;
-    let (_, pool_reference) = pool_load.operands().split_once(',')?;
-    let ("pc", Offset::Immediate(pool_offset)) = parse_reference(pool_reference.trim())? else {
-        return None;
+    let pool_offset = match operands(pool_load).as_slice() {
+        [
+            _,
+            il::Operand::Memory {
+                base: Some(il::Reg::ProgramCounter),
+                offset: Some(offset),
+                index: None,
+                update: il::Update::None,
+            },
+        ] => *offset,
+        _ => return None,
     };
     let pool = pool_load.address.checked_add(PC_AHEAD)?.checked_add_signed(pool_offset)?;
     let pool_word = memory.bytes(pool, INSN_WIDTH)?;
     let distance = u32::from_le_bytes([pool_word[0], pool_word[1], pool_word[2], pool_word[3]]);
     let table = (add.address + PC_AHEAD).wrapping_add(u64::from(distance)) & 0xffff_ffff;
 
-    // `cmp rI, n` bounds the case number, so there are n + 1 cases. The
-    // decoder writes it as `cmps r0, rI, n`, so the last two operands count.
-    fn compared(insn: &Insn) -> Option<(&str, &str)> {
-        let operands: Vec<&str> = insn.operands().split(',').map(str::trim).collect();
-        match operands.as_slice() {
-            [.., register, bound] => Some((*register, *bound)),
-            _ => None,
-        }
-    }
-    let (_, bound) = window()
+    // `cmp rI, n` bounds the case number, so there are n + 1 cases.
+    let compare = window()
         .filter(|insn| core_opcode(insn) == Some(Opcode::CMP))
-        .filter_map(compared)
-        .find(|&(register, _)| register == index_register)?;
-    let last_case = parse_hex(bound)?;
+        .map(operands)
+        .find(|compared| compared.first() == Some(&il::Operand::Reg(index_register)))?;
+    let [_, il::Operand::Const(last_case)] = compare.as_slice() else { return None };
+    let last_case = *last_case;
     let cases = usize::try_from(last_case).ok()?.checked_add(1).filter(|&cases| cases <= 1024)?;
 
     let base = jump.address + PC_AHEAD;
@@ -1691,38 +1775,6 @@ fn read_offset_table(
 /// Read a hexadecimal immediate as the decoder prints it, such as `0x4`.
 pub(super) fn parse_hex(text: &str) -> Option<u64> {
     u64::from_str_radix(text.strip_prefix("0x")?, 16).ok()
-}
-
-/// The offset in a memory reference.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Offset<'a> {
-    Immediate(i64),
-    Register(&'a str),
-}
-
-/// Read `[base, offset]` as the base register and the offset.
-pub(super) fn parse_reference(text: &str) -> Option<(&str, Offset<'_>)> {
-    let inner = text.strip_prefix('[')?.strip_suffix(']')?;
-    // `[rX]` is an offset of zero.
-    let Some((base, offset)) = inner.split_once(',') else {
-        return Some((inner.trim(), Offset::Immediate(0)));
-    };
-    let offset = offset.trim();
-    let parsed = match offset.strip_prefix('-') {
-        Some(digits) => Offset::Immediate(-parse_number(digits)?),
-        None if offset.starts_with("0x") || offset.starts_with(|c: char| c.is_ascii_digit()) => {
-            Offset::Immediate(parse_number(offset)?)
-        }
-        None => Offset::Register(offset),
-    };
-    Some((base.trim(), parsed))
-}
-
-fn parse_number(text: &str) -> Option<i64> {
-    match text.strip_prefix("0x") {
-        Some(hex) => i64::from_str_radix(hex, 16).ok(),
-        None => text.parse().ok(),
-    }
 }
 
 /// Read the words `yaxpeax` refuses that this crate knows: the hints, and
@@ -3083,13 +3135,6 @@ enum Lanes {
     One(u32),
 }
 
-/// Read `rA, rB`, the two sources of a three-register operation.
-fn parse_three(text: &str) -> Option<(&str, &str)> {
-    let (left, right) = text.split_once(',')?;
-    let right = right.trim();
-    (!right.contains(',')).then(|| (left.trim(), right))
-}
-
 /// How `pc` reads in one instruction set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PcModel {
@@ -3141,25 +3186,31 @@ impl PcModel {
 /// them otherwise reads as one function. A library that mixes A32 and
 /// Thumb-2 holds both kinds.
 pub(super) fn is_long_thunk(body: &[Insn]) -> bool {
-    let [movw, movt, add, bx, ..] = body else { return false };
-    is_plain(movw, Opcode::MOV)
-        && movw.operands().starts_with("ip, 0x")
-        && is_plain(movt, Opcode::MOVT)
-        && movt.operands().starts_with("ip, ")
-        && is_plain(add, Opcode::ADD)
-        && matches!(add.operands(), "ip, pc" | "ip, ip, pc")
-        && is_plain(bx, Opcode::BX)
-        && bx.operands() == "ip"
+    long_thunk_halves(body).is_some()
 }
 
-/// Where the range extension thunk that `body` opens with jumps: the value
-/// `movw` and `movt` build, plus `pc` at the `add`, without the T32 bit.
-fn long_thunk_target(body: &[Insn], pc: PcModel) -> Option<u64> {
-    if !is_long_thunk(body) {
-        return None;
+/// The two halves a long thunk moves into `ip`: `movw ip, #low`, `movt ip,
+/// #high`, `add ip, pc` or `add ip, ip, pc`, then `bx ip`.
+fn long_thunk_halves(body: &[Insn]) -> Option<(u64, u64)> {
+    const IP: il::Operand = il::Operand::Reg(il::Reg::General(12));
+    let [movw, movt, add, bx, ..] = body else { return None };
+    let operands = |insn: &Insn| lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
+    let shape = is_plain(movw, Opcode::MOV)
+        && is_plain(movt, Opcode::MOVT)
+        && is_plain(add, Opcode::ADD)
+        && matches!(operands(add).as_slice(), [IP, PC_OPERAND] | [IP, IP, PC_OPERAND])
+        && is_plain(bx, Opcode::BX)
+        && operands(bx).as_slice() == [IP];
+    match (shape, operands(movw).as_slice(), operands(movt).as_slice()) {
+        (true, [IP, il::Operand::Const(low)], [IP, il::Operand::Const(high)]) => {
+            Some((*low, *high))
+        }
+        _ => None,
     }
-    let low = parse_hex(body[0].operands().strip_prefix("ip, ")?)?;
-    let high = parse_hex(body[1].operands().strip_prefix("ip, ")?)?;
+}
+
+fn long_thunk_target(body: &[Insn], pc: PcModel) -> Option<u64> {
+    let (low, high) = long_thunk_halves(body)?;
     let distance = (high << 16 | low) as u32;
     let pc = pc.of(body[2].address) as u32;
     Some(u64::from(pc.wrapping_add(distance) & !1))
@@ -3198,17 +3249,33 @@ pub(super) fn pool_words_loaded(insns: &[Insn], pc: PcModel) -> Vec<u64> {
 pub(super) fn pool_loads(insns: &[Insn], pc: PcModel) -> Vec<(u64, u64)> {
     let mut loads = Vec::new();
     for insn in insns {
-        let count = match decoded(insn) {
-            Some(Decoded::Core { opcode: Opcode::LDR, .. }) => 1,
-            Some(Decoded::Vfp { vfp: Vfp::Load, .. }) if insn.operands().starts_with('s') => 1,
+        let is_load = matches!(
+            decoded(insn),
             Some(
-                Decoded::Core { opcode: Opcode::LDRD, .. } | Decoded::Vfp { vfp: Vfp::Load, .. },
-            ) => 2,
-            _ => continue,
+                Decoded::Core { opcode: Opcode::LDR | Opcode::LDRD, .. }
+                    | Decoded::Vfp { vfp: Vfp::Load, .. }
+            )
+        );
+        let Some(lifted) = is_load.then(|| lifted(insn)).flatten() else { continue };
+        // `ldr` and a `vldr` of a single read one word, and `ldrd` and a
+        // `vldr` of a double two.
+        let count = match decoded(insn) {
+            Some(Decoded::Core { opcode: Opcode::LDRD, .. }) => 2,
+            Some(Decoded::Vfp { .. }) => {
+                let width = lifted.memory.and_then(|access| access.width);
+                if width == Some(il::Width::Bits64) { 2 } else { 1 }
+            }
+            _ => 1,
         };
-        let Some((_, reference)) = insn.operands().rsplit_once('[') else { continue };
-        let Some(("pc", Offset::Immediate(offset))) = parse_reference(&format!("[{reference}"))
-        else {
+        let Some(offset) = lifted.operands.iter().rev().find_map(|operand| match operand {
+            il::Operand::Memory {
+                base: Some(il::Reg::ProgramCounter),
+                offset: Some(offset),
+                index: None,
+                ..
+            } => Some(*offset),
+            _ => None,
+        }) else {
             continue;
         };
         let pool = pc.of_literal_load(insn.address).wrapping_add(offset as u64);
@@ -3252,13 +3319,13 @@ pub(super) fn track_pool_words(
     };
 
     // Registers holding a pool word: where the word sits, and its value.
-    let mut literal: Vec<(&str, u64, u32)> = Vec::new();
+    let mut literal: Vec<(il::Reg, u64, u32)> = Vec::new();
     // Registers holding an address built from `pc` and a pool word.
-    let mut relative: Vec<(&str, u64)> = Vec::new();
+    let mut relative: Vec<(il::Reg, u64)> = Vec::new();
     // Registers holding a value built by `movw` and `movt`, with where the
     // two are. LLD's range extension thunks for T32 add such a value to `pc`:
     // `movw ip, lo; movt ip, hi; add ip, pc; bx ip`.
-    let mut halves: Vec<(&str, [usize; 2], u32)> = Vec::new();
+    let mut halves: Vec<(il::Reg, [usize; 2], u32)> = Vec::new();
 
     let word_at = |pool: u64| -> Option<u32> {
         let offset = usize::try_from(pool.checked_sub(start)?).ok()?;
@@ -3268,31 +3335,37 @@ pub(super) fn track_pool_words(
 
     for (index, insn) in body.iter().enumerate() {
         let opcode = core_opcode(insn);
-        let Some((destination, rest)) = insn.operands().split_once(',') else { continue };
-        let (destination, rest) = (destination.trim(), rest.trim());
+        let Some(lifted) = lifted(insn) else { continue };
+        let [il::Operand::Reg(destination), rest @ ..] = lifted.operands.as_slice() else {
+            continue;
+        };
+        let destination = *destination;
+        if rest.is_empty() {
+            continue;
+        }
         let pc = pc_model.of(insn.address);
 
         // `movw rX, lo` then `movt rX, hi`: a 32-bit value in two halves.
         // Any other write ends it, but for the `add rX, pc` that uses it.
         let builds_halves = matches!(opcode, Some(Opcode::MOV | Opcode::MOVT));
-        // A32 writes the `add` with three operands.
+        // T32 writes `add rX, pc`, and A32 `add rX, rX, pc`.
         let adds_pc = opcode == Some(Opcode::ADD)
-            && (rest == "pc"
-                || rest.strip_prefix(destination).and_then(|rest| rest.strip_prefix(", "))
-                    == Some("pc"));
-        let uses_halves = adds_pc;
-        if writes_first_operand(insn) && !builds_halves && !uses_halves {
+            && (rest == [PC_OPERAND] || rest == [il::Operand::Reg(destination), PC_OPERAND]);
+        if writes_first_operand(insn) && !builds_halves && !adds_pc {
             halves.retain(|(held, ..)| *held != destination);
         }
-        match opcode {
-            Some(Opcode::MOV) if !rest.contains(',') => {
+        match (opcode, rest) {
+            (Some(Opcode::MOV), [source]) => {
                 halves.retain(|(held, ..)| *held != destination);
-                if let Some(low) = parse_hex(rest).filter(|&low| low <= 0xffff) {
-                    halves.push((destination, [index, index], low as u32));
+                if let il::Operand::Const(low @ 0..=0xffff) = source {
+                    halves.push((destination, [index, index], *low as u32));
                 }
             }
-            Some(Opcode::MOVT) => {
-                let high = parse_hex(rest).filter(|&high| high <= 0xffff);
+            (Some(Opcode::MOVT), _) => {
+                let high = match rest {
+                    [il::Operand::Const(high @ 0..=0xffff)] => Some(*high),
+                    _ => None,
+                };
                 match (high, halves.iter_mut().find(|(held, ..)| *held == destination)) {
                     (Some(high), Some((_, at, value))) => {
                         at[1] = index;
@@ -3313,7 +3386,7 @@ pub(super) fn track_pool_words(
                 continue;
             }
             // `add rX, pc` of a value in both halves forms an address.
-            Some(Opcode::ADD) if adds_pc => {
+            (Some(Opcode::ADD), _) if adds_pc => {
                 let whole =
                     halves.iter().find(|(held, at, _)| *held == destination && at[0] != at[1]);
                 if let Some(&(_, at, value)) = whole {
@@ -3333,14 +3406,14 @@ pub(super) fn track_pool_words(
             }
             _ => {}
         }
-        let literal_of = |register: &str| {
+        let literal_of = |register: il::Reg| {
             literal
                 .iter()
                 .find(|(held, ..)| *held == register)
                 .map(|&(_, pool, value)| (pool, value))
         };
-        let base_of = |register: &str| match register {
-            "pc" => Some(pc),
+        let base_of = |register: il::Reg| match register {
+            il::Reg::ProgramCounter => Some(pc),
             _ => relative.iter().find(|(held, _)| *held == register).map(|&(_, at)| at),
         };
         // The address a base and a pool word form, when it lies in the
@@ -3358,24 +3431,37 @@ pub(super) fn track_pool_words(
             address
         };
 
-        // T32 writes `add rX, pc` for `add rX, rX, pc`. Only an `add` reads
-        // three operands, so only it parses them.
-        let two_operand_add;
-        let three = match opcode {
-            Some(Opcode::ADD) if !rest.contains(',') => {
-                two_operand_add = format!("{destination}, {rest}");
-                parse_three(&two_operand_add)
+        // The two registers an `add` reads: T32 writes `add rX, rY` for
+        // `add rX, rX, rY`.
+        let sources = match (opcode, rest) {
+            (Some(Opcode::ADD), [il::Operand::Reg(right)]) => Some((destination, *right)),
+            (Some(Opcode::ADD), [il::Operand::Reg(left), il::Operand::Reg(right)]) => {
+                Some((*left, *right))
             }
-            Some(Opcode::ADD) => parse_three(rest),
             _ => None,
         };
-        let reference = match opcode {
-            Some(Opcode::LDR) => parse_reference(rest),
+        // A plain access: through a base, plus a constant or a register.
+        let reference = match (opcode, rest) {
+            (
+                Some(Opcode::LDR),
+                [
+                    il::Operand::Memory {
+                        base: Some(base),
+                        offset,
+                        index,
+                        update: il::Update::None,
+                    },
+                ],
+            ) => match (offset, index) {
+                (Some(offset), None) => Some((*base, Ok(*offset))),
+                (None, Some((index, 0))) => Some((*base, Err(*index))),
+                _ => None,
+            },
             _ => None,
         };
-        match (opcode, reference, three) {
+        match (opcode, rest, reference, sources) {
             // `ldr rX, [pc, imm]`: load a pool word.
-            (Some(Opcode::LDR), Some(("pc", Offset::Immediate(offset))), _) => {
+            (Some(Opcode::LDR), _, Some((il::Reg::ProgramCounter, Ok(offset))), _) => {
                 let pool = pc_model.of_literal_load(insn.address).wrapping_add(offset as u64);
                 forget(&mut literal, &mut relative, destination);
                 if let Some(value) = word_at(pool) {
@@ -3389,9 +3475,10 @@ pub(super) fn track_pool_words(
             // `mov rY, rX`: a copy holds what its source holds. GCC
             // copies the address of the global offset table so before it
             // reads a slot through it.
-            (Some(Opcode::MOV), _, _) if !rest.contains(',') => {
-                let copied_address = base_of(rest).filter(|_| rest != "pc");
-                let copied_word = literal_of(rest);
+            (Some(Opcode::MOV), [il::Operand::Reg(source)], ..) => {
+                let copied_address =
+                    base_of(*source).filter(|_| *source != il::Reg::ProgramCounter);
+                let copied_word = literal_of(*source);
                 forget(&mut literal, &mut relative, destination);
                 if let Some(address) = copied_address {
                     relative.push((destination, address));
@@ -3402,13 +3489,13 @@ pub(super) fn track_pool_words(
                 continue;
             }
             // `ldr rY, [base, rX]`: read at a distance from a base.
-            (Some(Opcode::LDR), Some((base, Offset::Register(index))), _) => {
+            (Some(Opcode::LDR), _, Some((base, Err(index))), _) => {
                 if let (Some(base), Some(word)) = (base_of(base), literal_of(index)) {
                     join(base, word);
                 }
             }
             // `add rY, base, rX`, either order: build an address.
-            (Some(Opcode::ADD), _, Some((left, right))) => {
+            (Some(Opcode::ADD), _, _, Some((left, right))) => {
                 let joined =
                     match (base_of(left), literal_of(right), base_of(right), literal_of(left)) {
                         (Some(base), Some(word), ..) | (.., Some(base), Some(word)) => {
@@ -3448,7 +3535,11 @@ pub(super) fn track_pool_words(
 }
 
 /// Stop following a register the instruction writes.
-fn forget(literal: &mut Vec<(&str, u64, u32)>, relative: &mut Vec<(&str, u64)>, register: &str) {
+fn forget(
+    literal: &mut Vec<(il::Reg, u64, u32)>,
+    relative: &mut Vec<(il::Reg, u64)>,
+    register: il::Reg,
+) {
     literal.retain(|(held, ..)| *held != register);
     relative.retain(|(held, _)| *held != register);
 }
@@ -4297,6 +4388,12 @@ mod tests {
         let mut other = stub.clone();
         other[8..].copy_from_slice(&0xe59c_f000_u32.to_le_bytes()); // ldr pc, [ip]
         assert_eq!(Arm32.stub_slot(&other, 0x1dd60), None);
+
+        // `ldr pc, [ip]!`: a slot at the offset of zero prints no offset,
+        // as Lua's stub of `lua_setupvalue` for ARM does.
+        let mut zero = stub.clone();
+        zero[8..].copy_from_slice(&0xe5bc_f000_u32.to_le_bytes());
+        assert_eq!(Arm32.stub_slot(&zero, 0x1dd60), Some(0x3dd68));
     }
 
     /// `ldm sp!, {r4, pc}` returns, as `pop` does.
