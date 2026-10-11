@@ -196,14 +196,6 @@ impl Arch for Thumb2 {
         HALFWORD
     }
 
-    fn is_register(&self, operand: &str) -> bool {
-        Arm32.is_register(operand)
-    }
-
-    fn is_stack_register(&self, operand: &str) -> bool {
-        Arm32.is_stack_register(operand)
-    }
-
     fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
         Arm32.is_frame_register(reg)
     }
@@ -213,18 +205,6 @@ impl Arch for Thumb2 {
     fn can_open_function(&self, bytes: &[u8]) -> bool {
         self.decode(bytes, 0, 0)
             .is_ok_and(|insn| insn.kind != InsnKind::Unknown && !self.is_padding(&insn))
-    }
-
-    fn mentions_stack_slot(&self, operands: &str) -> bool {
-        Arm32.mentions_stack_slot(operands)
-    }
-
-    fn is_register_list(&self, operand: &str) -> bool {
-        Arm32.is_register_list(operand)
-    }
-
-    fn constant_value(&self, operand: &str) -> Option<u64> {
-        Arm32.constant_value(operand)
     }
 
     fn is_frame_management(&self, insn: &Insn) -> bool {
@@ -364,10 +344,6 @@ impl Arch for Thumb2 {
             let lands = PcModel::T32.of_literal_load(address);
             (&Arm32 as &'static dyn Arch, lands)
         })
-    }
-
-    fn before_pc_reference<'a>(&self, operands: &'a str) -> Option<&'a str> {
-        Arm32.before_pc_reference(operands)
     }
 
     fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {

@@ -1161,7 +1161,16 @@ fn pops_a_frame_it_did_not_make(arch: &dyn Arch, insns: &[Insn], target: u64) ->
             InsnKind::Return => {
                 return crate::arch::arm32::core_opcode(insn)
                     == Some(yaxpeax_arm::armv7::Opcode::POP)
-                    && insn.operands().contains("pc");
+                    && arch.lift(insn).is_some_and(|lifted| {
+                        // `pop {pc}` alone lifts as the register, not a list.
+                        lifted.operands.iter().any(|operand| match operand {
+                            crate::il::Operand::RegisterList(list) => {
+                                list.contains(crate::il::Reg::ProgramCounter)
+                            }
+                            crate::il::Operand::Reg(reg) => *reg == crate::il::Reg::ProgramCounter,
+                            _ => false,
+                        })
+                    });
             }
             InsnKind::Normal | InsnKind::Unknown => {}
             _ => return false,
@@ -1738,6 +1747,20 @@ fn prologue_past_pool(
 mod tests {
     use super::*;
     use crate::arch::arm32::Arm32;
+
+    /// A `pop` that loads `pc` returns from a frame, in its list form and
+    /// alone; a `bx lr` pops no frame.
+    #[test]
+    fn a_pop_of_pc_in_either_form_pops_a_frame() {
+        let pops = |word: u32| {
+            let insns = crate::arch::decode_all(&Arm32, &word.to_le_bytes(), 0).0;
+            pops_a_frame_it_did_not_make(&Arm32, &insns, 0)
+        };
+        assert!(pops(0xe8bd_8010), "pop {{r4, pc}}");
+        assert!(pops(0xe49d_f004), "pop {{pc}}");
+        assert!(!pops(0xe8bd_0010), "pop {{r4}}");
+        assert!(!pops(0xe12f_ff1e), "bx lr");
+    }
 
     /// A PIC call of MIPS32 through the slot at 0x10010, after the
     /// `_gp_disp` preamble.

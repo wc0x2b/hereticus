@@ -20,7 +20,6 @@ pub use crate::view::PairedLabels;
 use rayon::prelude::*;
 
 use crate::address::{AddressSpace, ConstantKind, Contents};
-use compact_str::CompactString;
 
 use crate::arch::{
     Arch, DataAmongCode, Insn, InsnKind, Memory, decode_all, is_branch_target, split_printed,
@@ -2345,6 +2344,88 @@ fn operands_are_interchangeable(
         })
 }
 
+/// How two instructions differ, for a diff to show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Difference {
+    /// Only in what the compiler or the linker chose freely: a register, a
+    /// branch target, or where a literal pool sits.
+    FreeChoices,
+    /// In a constant or the offset of an access too, but not in shape: the
+    /// same instruction with another value.
+    Values,
+    /// In the operation or the shape of its operands: other work.
+    Shape,
+}
+
+/// Whether the offset of a slot of the frame is a free choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameSlots {
+    /// A slot moves when the frame grows, which the compiler decides, as
+    /// the IL view reads it.
+    Move,
+    /// A slot is where the instruction prints it, as the assembly view
+    /// reads it.
+    Stay,
+}
+
+/// How `before` differs from `after`, read from their lifts.
+///
+/// What no lift reads differs in shape unless its bytes agree.
+fn difference(
+    before_arch: &dyn Arch,
+    before: &Insn,
+    after_arch: &dyn Arch,
+    after: &Insn,
+    frame_slots: FrameSlots,
+) -> Difference {
+    if before_arch.operation_name(before) != after_arch.operation_name(after) {
+        return Difference::Shape;
+    }
+    let (Some(before_lift), Some(after_lift)) = (before_arch.lift(before), after_arch.lift(after))
+    else {
+        return if before.bytes() == after.bytes() {
+            Difference::FreeChoices
+        } else {
+            Difference::Shape
+        };
+    };
+    let without_frame_offsets = |arch: &dyn Arch, operands: &[il::Operand]| -> Vec<il::Operand> {
+        operands
+            .iter()
+            .map(|operand| match *operand {
+                il::Operand::Memory { base: Some(base), index, update, .. }
+                    if frame_slots == FrameSlots::Move && arch.is_frame_register(base) =>
+                {
+                    il::Operand::Memory { base: Some(base), offset: None, index, update }
+                }
+                other => other,
+            })
+            .collect()
+    };
+    let before_operands = without_frame_offsets(before_arch, &before_lift.operands);
+    let after_operands = without_frame_offsets(after_arch, &after_lift.operands);
+    let (before_operands, after_operands) = (&before_operands[..], &after_operands[..]);
+    // The distance to a literal pool says only where the pool sits.
+    let free = match (pool_reference(before_operands), pool_reference(after_operands)) {
+        (Some(before_at), Some(after_at)) => {
+            (&before_operands[..before_at], &after_operands[..after_at])
+        }
+        _ => (before_operands, after_operands),
+    };
+    if operands_are_interchangeable(free.0, free.1, TargetMoves::Freely, AddressMoves::Never) {
+        Difference::FreeChoices
+    } else if operands_are_interchangeable(
+        before_operands,
+        after_operands,
+        TargetMoves::Freely,
+        AddressMoves::Freely,
+    ) {
+        Difference::Values
+    } else {
+        Difference::Shape
+    }
+}
+
 /// The registers in `list` that are no general register.
 fn special_registers(list: il::RegSet) -> il::RegSet {
     list.iter().filter(|reg| !matches!(reg, il::Reg::General(_))).collect()
@@ -2452,7 +2533,7 @@ fn differs_only_where_unreadable(before: &[NormInsn], after: &[NormInsn]) -> boo
 /// An instruction counts as rewritten when the alignment dropped it from both
 /// sides, such as an `add` that became a `sub`. Those arrive as a removal next
 /// to an addition and are folded back into one rewrite, the same way
-/// [`coalesce_changed_constants`] folds them for display. What is left on one
+/// [`lines_from_alignment`] folds them for display. What is left on one
 /// side alone is a true addition or removal.
 ///
 /// A pair the alignment kept is not a rewrite even when its constants differ.
@@ -3849,7 +3930,7 @@ pub fn instruction_diff_in(
     if view == View::Assembly {
         return instruction_diff(left, before_isa, right, after_isa);
     }
-    let lines = |binary: &Binary, function: &Function, isa: Isa, paired| {
+    let side = |binary: &Binary, function: &Function, isa: Isa, paired| {
         let arch = isa.arch();
         let insns = decode_all(arch, &function.code, function.address).0;
         let context = crate::view::Context {
@@ -3858,34 +3939,44 @@ pub fn instruction_diff_in(
             functions: &binary.functions,
             paired,
         };
-        crate::view::il_lines_in(arch, &function.code, &insns, Some(context))
+        IlSide::new(arch, &function.code, insns, Some(context))
     };
-    let (before_lines, after_lines) =
-        (lines(before, left, before_isa, None), lines(after, right, after_isa, paired));
-    let before_keys: Vec<String> = before_lines.iter().map(|line| il_key(line)).collect();
-    let after_keys: Vec<String> = after_lines.iter().map(|line| il_key(line)).collect();
-    let steps = align(&before_keys, &after_keys);
+    let before_side = side(before, left, before_isa, None);
+    let after_side = side(after, right, after_isa, paired);
+    let keys = |side: &IlSide| -> Vec<String> {
+        side.statements.iter().map(|statement| il_key(&statement.text)).collect()
+    };
+    let steps = align(&keys(&before_side), &keys(&after_side));
+    fold_il_runs(&steps, &before_side, &after_side)
+}
 
-    let mut aligned = Vec::with_capacity(steps.len());
-    let (mut i, mut j) = (0, 0);
-    for step in steps {
-        match step {
-            Step::Both => {
-                aligned.push(DiffLine::Same(after_lines[j].clone()));
-                i += 1;
-                j += 1;
-            }
-            Step::Left => {
-                aligned.push(DiffLine::Removed(before_lines[i].clone()));
-                i += 1;
-            }
-            Step::Right => {
-                aligned.push(DiffLine::Added(after_lines[j].clone()));
-                j += 1;
-            }
-        }
+/// The IL statements of one side of a diff, with the instructions they show.
+struct IlSide<'a> {
+    arch: &'a dyn Arch,
+    insns: Vec<Insn>,
+    statements: Vec<crate::view::Statement>,
+    /// The words the instructions print, as their registers.
+    printed: HashSet<String>,
+}
+
+impl<'a> IlSide<'a> {
+    fn new(
+        arch: &'a dyn Arch,
+        code: &[u8],
+        insns: Vec<Insn>,
+        context: Option<crate::view::Context<'_>>,
+    ) -> Self {
+        let statements = crate::view::il_statements_in(arch, code, &insns, context);
+        let printed = insns.iter().flat_map(|insn| words_of(&insn.to_string())).collect();
+        Self { arch, insns, statements, printed }
     }
-    fold_il_runs(after_isa.arch(), aligned)
+
+    /// The instruction that `statement` shows.
+    fn insn_of(&self, statement: &crate::view::Statement) -> Option<&Insn> {
+        let index =
+            self.insns.binary_search_by_key(&statement.address, |insn| insn.address).ok()?;
+        Some(&self.insns[index])
+    }
 }
 
 /// Pair a run of removed statements with the run of added ones right after
@@ -3895,71 +3986,117 @@ pub fn instruction_diff_in(
 /// register differs, as a register is the compiler's free choice, and else
 /// with another constant. A compare and its branch move together, so their
 /// two statements come as a run of two.
-fn fold_il_runs(arch: &dyn Arch, aligned: Vec<DiffLine>) -> Vec<DiffLine> {
-    let fold = |before: &str, after: &str| {
-        if only_registers_differ(arch, before, after) {
-            Some(DiffLine::Same(after.to_string()))
-        } else if il_shape(before) == il_shape(after) {
-            Some(DiffLine::Changed { before: before.to_string(), after: after.to_string() })
-        } else {
-            None
-        }
-    };
-    let mut folded: Vec<DiffLine> = Vec::with_capacity(aligned.len());
+fn fold_il_runs(steps: &[Step], before: &IlSide<'_>, after: &IlSide<'_>) -> Vec<DiffLine> {
+    let mut folded: Vec<DiffLine> = Vec::with_capacity(steps.len());
+    let (mut i, mut j) = (0, 0);
     let mut index = 0;
-    while index < aligned.len() {
-        let removed =
-            aligned[index..].iter().take_while(|line| matches!(line, DiffLine::Removed(_))).count();
-        let added = aligned[index + removed..]
-            .iter()
-            .take_while(|line| matches!(line, DiffLine::Added(_)))
-            .count();
+    while index < steps.len() {
+        let removed = steps[index..].iter().take_while(|step| **step == Step::Left).count();
+        let added =
+            steps[index + removed..].iter().take_while(|step| **step == Step::Right).count();
         if removed == 0 || added == 0 {
-            folded.push(aligned[index].clone());
+            folded.push(match steps[index] {
+                Step::Both => DiffLine::Same(after.statements[j].text.clone()),
+                Step::Left => DiffLine::Removed(before.statements[i].text.clone()),
+                Step::Right => DiffLine::Added(after.statements[j].text.clone()),
+            });
+            (i, j) = match steps[index] {
+                Step::Both => (i + 1, j + 1),
+                Step::Left => (i + 1, j),
+                Step::Right => (i, j + 1),
+            };
             index += 1;
             continue;
         }
-        let text = |line: &DiffLine| match line {
-            DiffLine::Removed(text) | DiffLine::Added(text) => text.clone(),
-            _ => String::new(),
-        };
-        let (befores, afters) =
-            (&aligned[index..index + removed], &aligned[index + removed..index + removed + added]);
-        let pairs: Option<Vec<DiffLine>> = (removed == added)
-            .then(|| befores.iter().zip(afters).map(|(b, a)| fold(&text(b), &text(a))).collect())
-            .flatten();
+        let run = IlRun { before, before_at: i..i + removed, after, after_at: j..j + added };
+        let pairs: Option<Vec<DiffLine>> =
+            (removed == added).then(|| (0..removed).map(|at| run.fold(at, at)).collect()).flatten();
         match pairs {
             Some(pairs) => folded.extend(pairs),
             // Runs of other lengths fold only where they meet.
             None => {
-                folded.extend(befores[..removed - 1].iter().cloned());
-                match fold(&text(&befores[removed - 1]), &text(&afters[0])) {
+                folded.extend(
+                    (0..removed - 1).map(|at| DiffLine::Removed(run.before_text(at).to_string())),
+                );
+                match run.fold(removed - 1, 0) {
                     Some(line) => folded.push(line),
-                    None => folded.extend([befores[removed - 1].clone(), afters[0].clone()]),
+                    None => folded.extend([
+                        DiffLine::Removed(run.before_text(removed - 1).to_string()),
+                        DiffLine::Added(run.after_text(0).to_string()),
+                    ]),
                 }
-                folded.extend(afters[1..].iter().cloned());
+                folded.extend((1..added).map(|at| DiffLine::Added(run.after_text(at).to_string())));
             }
         }
+        (i, j) = (i + removed, j + added);
         index += removed + added;
     }
     folded
 }
 
-/// Report whether two statements differ in nothing but register names.
-fn only_registers_differ(arch: &dyn Arch, before: &str, after: &str) -> bool {
-    let words = |line: &str| -> Vec<String> {
-        il_key(line)
-            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-            .filter(|word| !word.is_empty())
-            .map(str::to_string)
-            .collect()
-    };
-    let (before, after) = (words(before), words(after));
-    before.len() == after.len()
-        && before
-            .iter()
-            .zip(&after)
-            .all(|(a, b)| a == b || (arch.is_register(a) && arch.is_register(b)))
+/// A run of removed IL statements and the run of added ones after it.
+struct IlRun<'a> {
+    before: &'a IlSide<'a>,
+    before_at: core::ops::Range<usize>,
+    after: &'a IlSide<'a>,
+    after_at: core::ops::Range<usize>,
+}
+
+impl IlRun<'_> {
+    fn before_text(&self, at: usize) -> &str {
+        &self.before.statements[self.before_at.start + at].text
+    }
+
+    fn after_text(&self, at: usize) -> &str {
+        &self.after.statements[self.after_at.start + at].text
+    }
+
+    /// The statement `before_at` of the run against `after_at`, as one line
+    /// where the two are of one shape.
+    fn fold(&self, before_at: usize, after_at: usize) -> Option<DiffLine> {
+        let before_statement = &self.before.statements[self.before_at.start + before_at];
+        let after_statement = &self.after.statements[self.after_at.start + after_at];
+        let (before_text, after_text) = (&before_statement.text, &after_statement.text);
+        let difference =
+            match (self.before.insn_of(before_statement), self.after.insn_of(after_statement)) {
+                (Some(left), Some(right)) => {
+                    difference(self.before.arch, left, self.after.arch, right, FrameSlots::Move)
+                }
+                _ => Difference::Shape,
+            };
+        if difference == Difference::FreeChoices
+            && self.only_printed_words_differ(before_at, after_at)
+        {
+            Some(DiffLine::Same(after_text.clone()))
+        } else if il_shape(before_text) == il_shape(after_text) {
+            Some(DiffLine::Changed { before: before_text.clone(), after: after_text.clone() })
+        } else {
+            None
+        }
+    }
+
+    /// Whether each word in which the two statements differ is one that the
+    /// instructions of its side print, as a register is.
+    ///
+    /// A name the IL view gives, as of a callee or a string, is no word of
+    /// an instruction. It changes where the target or the pool the
+    /// instruction reads changed, which [`difference`] lets move.
+    fn only_printed_words_differ(&self, before_at: usize, after_at: usize) -> bool {
+        let before = words_of(&il_key(self.before_text(before_at)));
+        let after = words_of(&il_key(self.after_text(after_at)));
+        before.len() == after.len()
+            && before.iter().zip(&after).all(|(a, b)| {
+                a == b || (self.before.printed.contains(a) && self.after.printed.contains(b))
+            })
+    }
+}
+
+/// The words of `line`: its runs of letters, digits and `_`.
+fn words_of(line: &str) -> Vec<String> {
+    line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The text two IL statements must share to align: the statement with
@@ -4059,21 +4196,7 @@ pub fn instruction_diff(
     let after_keys: Vec<String> = after_insns.iter().map(diff_key).collect();
 
     let steps = align(&before_keys, &after_keys);
-    let lines = lines_from_alignment(&steps, &before_insns, &after_insns);
-    let operations =
-        operations_by_text(&[(before_arch, &before_insns), (after_arch, &after_insns)]);
-    coalesce_changed_constants(before_arch, lines, &operations)
-}
-
-/// The operation each printed instruction does, by its text, for
-/// [`coalesce_changed_constants`], which sees only the text.
-fn operations_by_text(sides: &[(&dyn Arch, &Vec<Insn>)]) -> HashMap<String, CompactString> {
-    sides
-        .iter()
-        .flat_map(|(arch, insns)| {
-            insns.iter().map(|insn| (insn.to_string(), arch.operation_name(insn)))
-        })
-        .collect()
+    lines_from_alignment(&steps, (before_arch, &before_insns), (after_arch, &after_insns))
 }
 
 /// The text two instructions must share to align, with targets removed.
@@ -4091,105 +4214,6 @@ fn diff_key(insn: &Insn) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("{name} {operands}")
-}
-
-/// Fold an adjacent remove-then-add of the same instruction into one line.
-///
-/// Aligning on the printed text splits a changed constant into a removal and an
-/// addition, because the two print differently. They are the same instruction
-/// with another value, so they belong on one [`DiffLine::Changed`]. When the
-/// two are identical bar their targets they are no change at all. The pair is
-/// always adjacent, because the alignment keeps the order.
-///
-/// See RESEARCH.md, A13.
-fn coalesce_changed_constants(
-    arch: &dyn Arch,
-    lines: Vec<DiffLine>,
-    operations: &HashMap<String, CompactString>,
-) -> Vec<DiffLine> {
-    let mut folded: Vec<DiffLine> = Vec::with_capacity(lines.len());
-    for line in lines {
-        let pair = match (folded.last(), &line) {
-            (Some(DiffLine::Removed(before)), DiffLine::Added(after)) => {
-                Some((before.clone(), after.clone()))
-            }
-            _ => None,
-        };
-
-        match pair {
-            // The two share the operation and operand shapes, so they are the
-            // same instruction. A moved register or branch target is a free
-            // choice, so that is no change; a changed constant is a real one.
-            Some((before, after)) if same_operation(arch, operations, &before, &after) => {
-                folded.pop();
-                folded.push(if only_free_choices_differ(arch, &before, &after) {
-                    DiffLine::Same(after)
-                } else {
-                    DiffLine::Changed { before, after }
-                });
-            }
-            _ => folded.push(line),
-        }
-    }
-    folded
-}
-
-/// Report whether two same-shape instructions differ in nothing but a register
-/// or a branch target.
-///
-/// Both are free choices the compiler makes, so an instruction that differs
-/// only in them did not really change. A differing literal, by contrast, is a
-/// changed value the reader must see. Call this only on a pair that already
-/// shares its operation.
-fn only_free_choices_differ(arch: &dyn Arch, before: &str, after: &str) -> bool {
-    let (_, before_args) = before.split_once(' ').unwrap_or((before, ""));
-    let (_, after_args) = after.split_once(' ').unwrap_or((after, ""));
-
-    before_args.split(',').map(str::trim).zip(after_args.split(',').map(str::trim)).all(|(a, b)| {
-        a == b
-            || (arch.is_register(a) && arch.is_register(b))
-            || (is_branch_target(a) && is_branch_target(b))
-    })
-}
-
-/// Report whether two printed instructions share operation and operand shapes,
-/// where `operations` names the operation of each.
-///
-/// This is the printed-text mirror of what the matcher normalizes to: the two
-/// agree once a register name or a branch target is allowed to differ. It tells
-/// a changed constant, which keeps the same shape, from an unrelated pairing.
-fn same_operation(
-    arch: &dyn Arch,
-    operations: &HashMap<String, CompactString>,
-    before: &str,
-    after: &str,
-) -> bool {
-    match (operations.get(before), operations.get(after)) {
-        (Some(before), Some(after)) if before == after => {}
-        _ => return false,
-    }
-    let (_, before_args) = split_printed(before);
-    let (_, after_args) = split_printed(after);
-
-    let mut before = before_args.split(',').map(str::trim);
-    let mut after = after_args.split(',').map(str::trim);
-    loop {
-        match (before.next(), after.next()) {
-            (None, None) => return true,
-            (Some(a), Some(b)) => {
-                // A changed constant keeps the same shape, so two literals are
-                // interchangeable here: it is the case this fold exists for.
-                let interchangeable = a == b
-                    || (arch.is_register(a) && arch.is_register(b))
-                    || (is_branch_target(a) && is_branch_target(b))
-                    || (arch.constant_value(a).is_some() && arch.constant_value(b).is_some());
-                if !interchangeable {
-                    return false;
-                }
-            }
-            _ => return false,
-        }
-    }
 }
 
 /// A move through the alignment grid: keep both sides, or drop one.
@@ -4584,31 +4608,55 @@ fn longest_common_subsequence_of_numbers(left: &[u32], right: &[u32], count: usi
     steps
 }
 
-/// Turn an alignment into diff lines, reading the printed text for each side.
+/// Turn an alignment of `before` against `after` into diff lines.
 ///
-/// A line the alignment kept on both sides is unchanged, targets aside.
-/// A changed constant reaches here as a removal next to an addition;
-/// [`coalesce_changed_constants`] folds that pair back into one line.
+/// Aligning on the printed text splits a changed constant into a removal
+/// and an addition, as the two print differently, and can so split a line
+/// whose target only moved. A removal right before an addition of the same
+/// operation and shape is one line: [`DiffLine::Same`] where only a free
+/// choice differs, and [`DiffLine::Changed`] where a value does.
+///
+/// See RESEARCH.md, A13.
 fn lines_from_alignment(
     steps: &[Step],
-    before_insns: &[Insn],
-    after_insns: &[Insn],
+    (before_arch, before_insns): (&dyn Arch, &[Insn]),
+    (after_arch, after_insns): (&dyn Arch, &[Insn]),
 ) -> Vec<DiffLine> {
     let mut lines = Vec::with_capacity(steps.len());
     let (mut i, mut j) = (0, 0);
+    // The instruction of the last line, where that line is a removal.
+    let mut removed: Option<&Insn> = None;
     for step in steps {
         match step {
             Step::Both => {
                 lines.push(DiffLine::Same(after_insns[j].to_string()));
+                removed = None;
                 i += 1;
                 j += 1;
             }
             Step::Left => {
                 lines.push(DiffLine::Removed(before_insns[i].to_string()));
+                removed = Some(&before_insns[i]);
                 i += 1;
             }
             Step::Right => {
-                lines.push(DiffLine::Added(after_insns[j].to_string()));
+                let added = &after_insns[j];
+                let difference = removed
+                    .take()
+                    .map(|left| difference(before_arch, left, after_arch, added, FrameSlots::Stay));
+                let line = match (difference, lines.pop()) {
+                    (Some(Difference::FreeChoices), Some(DiffLine::Removed(_))) => {
+                        DiffLine::Same(added.to_string())
+                    }
+                    (Some(Difference::Values), Some(DiffLine::Removed(before))) => {
+                        DiffLine::Changed { before, after: added.to_string() }
+                    }
+                    (_, last) => {
+                        lines.extend(last);
+                        DiffLine::Added(added.to_string())
+                    }
+                };
+                lines.push(line);
                 j += 1;
             }
         }
@@ -4906,16 +4954,6 @@ mod tests {
         let (signed, unsigned) = (decode(0xb300_0001), decode(0x3300_0001));
         assert_ne!(signed.text, unsigned.text);
         assert_eq!(Arm32.operation_name(&signed), Arm32.operation_name(&unsigned));
-    }
-
-    #[test]
-    fn a_register_name_is_recognized() {
-        for name in ["r0", "r12", "sp", "lr", "pc", "fp"] {
-            assert!(Arm32.is_register(name), "{name} is a register");
-        }
-        for other in ["0x1c", "[sp, 0x4]", "{r4, lr}", "lsr 17", ""] {
-            assert!(!Arm32.is_register(other), "{other} is not a register");
-        }
     }
 
     #[test]
@@ -5484,23 +5522,72 @@ mod tests {
         assert_eq!(il_key("sp = sp - 0x40"), "sp = sp - 0x40", "the frame size stays");
         assert_eq!(il_key("x1 = &\"usage\""), "x1 = &\"usage\"");
         assert_ne!(il_shape("w0 = w1 + 1"), il_shape("w0 = w1 - 1"));
-        let arch = &crate::arch::aarch64::Aarch64;
-        assert!(only_registers_differ(arch, "x3 = x20 + 4", "x3 = x19 + 4"));
-        assert!(!only_registers_differ(arch, "x3 = x20 + 4", "x3 = x20 + 8"));
-        let run = vec![
-            DiffLine::Removed("flags = compare(x23, x0)".into()),
-            DiffLine::Removed("if (x23 != x0) goto $-0x1c".into()),
-            DiffLine::Added("flags = compare(x20, x0)".into()),
-            DiffLine::Added("if (x20 != x0) goto $-0x1c".into()),
-        ];
-        let folded = fold_il_runs(arch, run);
+    }
+
+    /// The IL statements of the AArch64 `words`, with their instructions.
+    fn il_side(words: &[u32]) -> IlSide<'static> {
+        let arch: &dyn Arch = &crate::arch::aarch64::Aarch64;
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let insns = decode_all(arch, &code, 0x1000).0;
+        IlSide::new(arch, &code, insns, None)
+    }
+
+    /// Fold the IL statements of `before` against those of `after`.
+    fn fold_il(before: &[u32], after: &[u32], steps: &[Step]) -> Vec<DiffLine> {
+        fold_il_runs(steps, &il_side(before), &il_side(after))
+    }
+
+    /// A statement where only a register changed is the same, and one where
+    /// a constant changed is changed. A compare and its branch fold as a run.
+    #[test]
+    fn an_il_statement_folds_on_its_instruction() {
+        const ADD_X3_X20_4: u32 = 0x9100_1283;
+        const ADD_X3_X19_4: u32 = 0x9100_1263;
+        const ADD_X3_X20_8: u32 = 0x9100_2283;
+        let one_pair = [Step::Left, Step::Right];
+        assert!(matches!(
+            fold_il(&[ADD_X3_X20_4], &[ADD_X3_X19_4], &one_pair)[..],
+            [DiffLine::Same(_)]
+        ));
+        assert!(matches!(
+            fold_il(&[ADD_X3_X20_4], &[ADD_X3_X20_8], &one_pair)[..],
+            [DiffLine::Changed { .. }]
+        ));
+
+        // `cmp x23, x0; b.ne` against `cmp x20, x0; b.ne`.
+        const B_NE: u32 = 0x54ff_ff21;
+        let folded = fold_il(
+            &[0xeb00_02ff, B_NE],
+            &[0xeb00_029f, B_NE],
+            &[Step::Left, Step::Left, Step::Right, Step::Right],
+        );
         assert!(folded.iter().all(|line| matches!(line, DiffLine::Same(_))), "{folded:?}");
-        let grew = vec![
-            DiffLine::Removed("w0 = w1 + 1".into()),
-            DiffLine::Added("w0 = w1 + 2".into()),
-            DiffLine::Added("call x1".into()),
-        ];
-        assert!(matches!(fold_il_runs(arch, grew)[0], DiffLine::Changed { .. }));
+
+        // `add w0, w1, 1` against `add w0, w1, 2; blr x1`.
+        let grew = fold_il(
+            &[0x1100_0420],
+            &[0x1100_0820, 0xd63f_0020],
+            &[Step::Left, Step::Right, Step::Right],
+        );
+        assert!(matches!(grew[..], [DiffLine::Changed { .. }, DiffLine::Added(_)]), "{grew:?}");
+    }
+
+    /// A call whose target moved is a free choice, but not where the IL
+    /// view names another callee: the name is no word of the instruction.
+    #[test]
+    fn an_il_statement_with_another_callee_is_no_same_line() {
+        let side = |word: u32, text: &str| {
+            let mut side = il_side(&[word]);
+            side.statements[0].text = text.to_string();
+            side
+        };
+        // `bl` to two places.
+        let (before, after) = (side(0x9400_0010, "call foo"), side(0x9400_0020, "call bar"));
+        let folded = fold_il_runs(&[Step::Left, Step::Right], &before, &after);
+        assert!(matches!(folded[..], [DiffLine::Removed(_), DiffLine::Added(_)]), "{folded:?}");
+        let renamed = side(0x9400_0020, "call foo");
+        let folded = fold_il_runs(&[Step::Left, Step::Right], &before, &renamed);
+        assert!(matches!(folded[..], [DiffLine::Same(_)]), "{folded:?}");
     }
 
     #[test]
@@ -6707,45 +6794,58 @@ mod tests {
     ///
     /// Aligning on the printed text splits a changed constant, and can split a
     /// line whose target only moved, into a removal beside an addition. The fold
-    /// puts them back: same text is no change, a changed value is one
+    /// puts them back: a moved target is no change, a changed value is one
     /// [`DiffLine::Changed`], and an unrelated pair is left apart.
     #[test]
     fn an_adjacent_remove_and_add_fold_by_shape() {
-        let lines = vec![
-            // Identical bar the target: no change.
-            DiffLine::Removed("bl $+0x40".to_string()),
-            DiffLine::Added("bl $+0x80".to_string()),
-            // Same operation, changed value: one changed line.
-            DiffLine::Removed("mov r1, 0x25".to_string()),
-            DiffLine::Added("mov r1, 0x29".to_string()),
-            // Unrelated: stays two lines.
-            DiffLine::Removed("push {lr}".to_string()),
-            DiffLine::Added("mul r0, r0, r1".to_string()),
-        ];
-        let operations: HashMap<String, CompactString> = [
-            ("bl $+0x40", "b"),
-            ("bl $+0x80", "b"),
-            ("mov r1, 0x25", "mov"),
-            ("mov r1, 0x29", "mov"),
-            ("push {lr}", "push"),
-            ("mul r0, r0, r1", "mul"),
-        ]
-        .into_iter()
-        .map(|(text, operation)| (text.to_string(), operation.into()))
-        .collect();
-        let folded = coalesce_changed_constants(&Arm32, lines, &operations);
+        let insns = |words: &[u32]| {
+            let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+            decode_all(&Arm32, &code, 0).0
+        };
+        // `bl`, `mov r1, 0x25`, `push {lr}`, against `bl` farther, `mov r1,
+        // 0x29`, `mul r0, r0, r1`.
+        let before = insns(&[0xeb00_0006, 0xe3a0_1025, 0xe52d_e004]);
+        let after = insns(&[0xeb00_000e, 0xe3a0_1029, 0xe000_0190]);
+        let steps = [Step::Left, Step::Right, Step::Left, Step::Right, Step::Left, Step::Right];
+        let folded = lines_from_alignment(&steps, (&Arm32, &before), (&Arm32, &after));
         assert_eq!(
             folded,
             vec![
-                DiffLine::Same("bl $+0x80".to_string()),
-                DiffLine::Changed {
-                    before: "mov r1, 0x25".to_string(),
-                    after: "mov r1, 0x29".to_string(),
-                },
-                DiffLine::Removed("push {lr}".to_string()),
-                DiffLine::Added("mul r0, r0, r1".to_string()),
+                DiffLine::Same(after[0].to_string()),
+                DiffLine::Changed { before: before[1].to_string(), after: after[1].to_string() },
+                DiffLine::Removed(before[2].to_string()),
+                DiffLine::Added(after[2].to_string()),
             ]
         );
+    }
+
+    /// A register or a slot of the frame is a free choice, a constant or the
+    /// offset of another access is a value, and the base of an access or the
+    /// operation is the shape.
+    #[test]
+    fn two_instructions_differ_in_choices_values_or_shape() {
+        let insn = |word: u32| decode_all(&Arm32, &word.to_le_bytes(), 0).0.remove(0);
+        let difference = |left: u32, right: u32| {
+            difference(&Arm32, &insn(left), &Arm32, &insn(right), FrameSlots::Move)
+        };
+        const MOV_R1_0X25: u32 = 0xe3a0_1025;
+        const LDR_R0_R1_8: u32 = 0xe591_0008;
+        assert_eq!(difference(MOV_R1_0X25, MOV_R1_0X25), Difference::FreeChoices);
+        assert_eq!(difference(MOV_R1_0X25, 0xe3a0_2025), Difference::FreeChoices, "mov r2");
+        assert_eq!(difference(MOV_R1_0X25, 0xe3a0_1029), Difference::Values, "mov r1, 0x29");
+        assert_eq!(difference(LDR_R0_R1_8, 0xe591_000c), Difference::Values, "[r1, 0xc]");
+        assert_eq!(difference(LDR_R0_R1_8, 0xe592_0008), Difference::Shape, "[r2, 8]");
+        assert_eq!(difference(MOV_R1_0X25, 0xe000_0190), Difference::Shape, "mul");
+        // `str r4, [sp]` against `str r4, [sp, 4]`: the frame grew, which
+        // the assembly view shows.
+        assert_eq!(difference(0xe58d_4000, 0xe58d_4004), Difference::FreeChoices);
+        let (store, store_farther) = (insn(0xe58d_4000), insn(0xe58d_4004));
+        assert_eq!(
+            super::difference(&Arm32, &store, &Arm32, &store_farther, FrameSlots::Stay),
+            Difference::Values
+        );
+        // `ldr r0, [pc, 8]` against `ldr r0, [pc, 0x10]`: the pool moved.
+        assert_eq!(difference(0xe59f_0008, 0xe59f_0010), Difference::FreeChoices);
     }
 
     /// A matched function is not a near miss, so the report stays short.
