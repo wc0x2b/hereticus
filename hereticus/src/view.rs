@@ -1496,10 +1496,10 @@ mod tests {
         let a32 = |word: u32| Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word decodes");
         // push.w {r4, lr}
         let push = Thumb2.decode(&[0x2d, 0xe9, 0x10, 0x40], 0, 0).expect("the word decodes");
-        assert_eq!(crate::arch::split_printed(&push.text).0, "push");
+        assert_eq!(crate::arch::printed_name(&push), "push");
         assert_eq!(ListOrder::of(&push), Some((ListOrder::DecrementBefore, WriteBack::Yes)));
         let vpop = a32(0xecbd_8b02); // vpop {d8}
-        assert_eq!(crate::arch::split_printed(&vpop.text).0, "vpop");
+        assert_eq!(crate::arch::printed_name(&vpop), "vpop");
         assert_eq!(ListOrder::of(&vpop), Some((ListOrder::IncrementAfter, WriteBack::Yes)));
         let stmdb = a32(0xe900_0002); // stmdb r0, {r1}
         assert_eq!(ListOrder::of(&stmdb), Some((ListOrder::DecrementBefore, WriteBack::No)));
@@ -1683,11 +1683,11 @@ mod tests {
         assert_eq!(a32_condition(&insns[1], Some(Op::Add)), Some("ne"));
         // mls r0, r1, r2, r3 ends in the letters of a condition.
         let mls = Arm32.decode(&0xe060_3291_u32.to_le_bytes(), 0, 0).expect("the word decodes");
-        assert_eq!(crate::arch::split_printed(&mls.text).0, "mls");
+        assert_eq!(crate::arch::printed_name(&mls), "mls");
         assert_eq!(a32_condition(&mls, Some(Op::MultiplyAdd)), None, "a multiply-subtract");
         // adcs r0, r0, r1 ends in `cs` too, and runs always.
         let adcs = Arm32.decode(&0xe0b0_0001_u32.to_le_bytes(), 0, 0).expect("the word decodes");
-        assert_eq!(crate::arch::split_printed(&adcs.text).0, "adcs");
+        assert_eq!(crate::arch::printed_name(&adcs), "adcs");
         assert_eq!(a32_condition(&adcs, Some(Op::Add)), None, "an add with carry");
     }
 

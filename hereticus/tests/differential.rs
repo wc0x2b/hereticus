@@ -41,9 +41,14 @@ struct ObjdumpInsn {
 ///
 /// Keep this list short and justified. Each entry hides a real difference, so
 /// a wrong entry hides a real bug.
-/// The name `insn` prints with, which this test checks against objdump's.
-fn printed_name(insn: &hereticus::arch::Insn) -> &str {
-    insn.text.split_once(' ').map_or(insn.text.as_str(), |(name, _)| name)
+/// The name and the operands `insn` prints with, which this test checks
+/// against objdump's.
+fn printed(insn: &hereticus::arch::Insn) -> (String, String) {
+    let text = insn.to_string();
+    match text.split_once(' ') {
+        Some((name, operands)) => (name.to_string(), operands.to_string()),
+        None => (text, String::new()),
+    }
 }
 
 fn canonical_mnemonic(mnemonic: &str) -> String {
@@ -289,7 +294,7 @@ fn decoder_agrees_with_objdump() {
                 }
 
                 assert_eq!(
-                    canonical(printed_name(ours)),
+                    canonical(&printed(ours).0),
                     canonical(&theirs.mnemonic),
                     "{where_}: mnemonic differs at {:#x}",
                     theirs.address
@@ -714,11 +719,12 @@ fn operands_agree_with_objdump() {
             for insn in decoded.iter().filter(|insn| insn.kind != InsnKind::Unknown) {
                 let Some((mnemonic, operands)) = theirs.get(&insn.address) else { continue };
                 checked += 1;
-                let ours = folded(isa, insn.address, printed_name(insn), insn.operands());
+                let (name, printed_operands) = printed(insn);
+                let ours = folded(isa, insn.address, &name, &printed_operands);
                 let them = folded(isa, insn.address, mnemonic, operands);
                 if ours != them {
                     *disagree.entry(format!("{isa:?}")).or_default() += 1;
-                    let kind = format!("{isa:?} {}", printed_name(insn));
+                    let kind = format!("{isa:?} {name}");
                     if !examples.iter().any(|example| example.starts_with(&format!("{kind} "))) {
                         examples.push(format!("{kind} {ours}  |  {them}"));
                     }

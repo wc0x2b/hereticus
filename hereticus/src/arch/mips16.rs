@@ -1199,9 +1199,7 @@ mod tests {
     fn text(values: &[u16], address: u64) -> String {
         let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
         let insn = Mips16::BIG.decode(&code, 0, address).expect("decodes");
-        format!("{} {}", crate::arch::split_printed(&insn.text).0, insn.operands())
-            .trim_end()
-            .to_string()
+        insn.to_string().trim_end().to_string()
     }
 
     /// The opening of `adler32_combine_` in zlib, by GCC 14 at `-Os`.
@@ -1372,8 +1370,8 @@ mod tests {
             [0xf0c0_u16, 0x6003].iter().flat_map(|value| value.to_be_bytes()).collect();
         let insn = Mips16::BIG.decode(&code, 0, 0xe).expect("decodes");
         assert_eq!(insn.kind, InsnKind::Branch { target: Some(0x198) });
-        assert_eq!(crate::arch::split_printed(&insn.text).0, "beqz");
-        assert!(insn.operands().starts_with("t8, "));
+        assert_eq!(crate::arch::printed_name(&insn), "beqz");
+        assert!(crate::arch::printed_operands(&insn).starts_with("t8, "));
     }
 
     #[test]

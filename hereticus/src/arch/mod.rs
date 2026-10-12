@@ -861,6 +861,19 @@ pub(crate) fn split_printed(text: &str) -> (&str, &str) {
     }
 }
 
+/// The name of `insn` as [`Insn`]'s `Display` prints it, as `ldr`.
+#[cfg(test)]
+pub(crate) fn printed_name(insn: &Insn) -> String {
+    split_printed(&insn.to_string()).0.to_string()
+}
+
+/// The operands of `insn` as [`Insn`]'s `Display` prints them, as
+/// `r0, [sp, 0x4]`. May be empty.
+#[cfg(test)]
+pub(crate) fn printed_operands(insn: &Insn) -> String {
+    split_printed(&insn.to_string()).1.to_string()
+}
+
 /// A word of data among code, as one instruction no decoder reads.
 fn data_word(at: u64, bytes: &[u8]) -> Insn {
     let word: String = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();

@@ -1959,7 +1959,7 @@ mod extend_tests {
         let shown = |words: u32| {
             let code = words.to_le_bytes();
             let insn = Aarch64.decode(&code, 0, 0).expect("decodes");
-            format!("{} {}", crate::arch::split_printed(&insn.text).0, insn.operands())
+            insn.to_string()
         };
         // From `llvm-mc --triple=aarch64`.
         assert_eq!(shown(0x8b21_5061), "add x1, x3, w1, uxtw #4");
