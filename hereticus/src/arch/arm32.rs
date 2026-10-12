@@ -2809,7 +2809,10 @@ pub(super) fn unread_text(word: u32) -> &'static str {
 
 /// What [`Insn::opcode`] holds for an A32 `word` the decoder cannot read.
 fn unread_opcode(word: u32) -> super::Opcode {
-    if is_neon_data(word) { super::Opcode::Arm(Decoded::NeonData) } else { super::Opcode::None }
+    match is_neon_data(word) {
+        true => super::Opcode::Arm(Decoded::NeonData),
+        false => super::Opcode::Unread(super::InstructionSet::Arm),
+    }
 }
 
 /// NEON data processing, `1111 001U`.

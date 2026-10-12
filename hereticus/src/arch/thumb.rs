@@ -115,7 +115,7 @@ impl Arch for Thumb2 {
             let (name, opcode) = if is_neon {
                 (NEON_TEXT, super::Opcode::Thumb(Decoded::NeonData))
             } else {
-                (UNKNOWN_TEXT, super::Opcode::None)
+                (UNKNOWN_TEXT, super::Opcode::Unread(super::InstructionSet::Thumb))
             };
             return Ok(Insn::new(
                 insn_address,

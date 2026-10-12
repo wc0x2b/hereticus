@@ -508,7 +508,7 @@ impl Arch for Mips16 {
                 &code[offset..offset + width],
                 &format!("(unknown) {raw}"),
                 InsnKind::Unknown,
-                super::Opcode::None,
+                super::Opcode::Unread(super::InstructionSet::Mips16(self.base.order())),
             )
         };
         let Some(decoded) = self.decoded(code, offset, insn_address) else {

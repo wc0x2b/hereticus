@@ -131,7 +131,7 @@ impl Arch for Aarch64 {
                 bytes,
                 &format!("{UNKNOWN_TEXT} {word:#010x}"),
                 InsnKind::Unknown,
-                super::Opcode::None,
+                super::Opcode::Unread(super::InstructionSet::Aarch64),
             ));
         }
 
