@@ -21,8 +21,7 @@ use yaxpeax_arm::armv8::a64::{
     InstDecoder, Instruction, Opcode, Operand, SIMDSizeCode, ShiftStyle, SizeCode,
 };
 
-use super::split_printed;
-use super::{Arch, DecodeError, Insn, InsnKind, JumpTable, Memory};
+use super::{Arch, DecodeError, Insn, InsnKind, JumpTable, Memory, Printing, split_printed};
 use crate::address::{AddressSpace, ConstantKind};
 use crate::il::{
     self, AccessKind, Comparison, Cond, Guard, Lifted, MemoryAccess, Op, Reg, RegSet, Test, Value,
@@ -61,6 +60,48 @@ const MOST_CASES: usize = 4096;
 /// ARMv8-A in A64 (AArch64) mode.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Aarch64;
+
+impl Aarch64 {
+    /// The instruction at `offset` of `code`, which starts at `address`,
+    /// and its text where `printing` asks for it.
+    pub(super) fn read(
+        self,
+        code: &[u8],
+        offset: usize,
+        address: u64,
+        printing: Printing,
+    ) -> Result<(Insn, String), DecodeError> {
+        let bytes = code.get(offset..offset + INSN_WIDTH).ok_or(DecodeError::Truncated)?;
+        let insn_address = address + offset as u64;
+
+        let mut reader = U8Reader::new(bytes);
+        let mut inst = Instruction::default();
+        if InstDecoder::default().decode_into(&mut inst, &mut reader).is_err() {
+            // Every instruction is 4 bytes, so stepping over an unreadable
+            // one keeps the rest aligned. Its word goes in the operands, so
+            // that an edit to it still shows.
+            let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let insn = Insn::new(
+                insn_address,
+                bytes,
+                InsnKind::Unknown,
+                super::Opcode::Unread(super::InstructionSet::Aarch64),
+            );
+            return Ok((insn, printing.text(|| format!("{UNKNOWN_TEXT} {word:#010x}"))));
+        }
+
+        let kind = classify(&inst, insn_address);
+        let opcode =
+            super::Opcode::Aarch64(Decoded { opcode: inst.opcode, alias: alias_of(&inst) });
+        let text = printing.text(|| {
+            let printed = inst.to_string();
+            let (name, operands) = split_printed(&printed);
+            let operands = extended_register(inst.opcode, operands.to_string());
+            format!("{name} {operands}")
+        });
+        Ok((Insn::new(insn_address, bytes, kind, opcode), text))
+    }
+}
 
 impl Arch for Aarch64 {
     /// The condition of `b.ne` is dropped, so a branch on any condition is
@@ -116,32 +157,7 @@ impl Arch for Aarch64 {
     }
 
     fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
-        let bytes = code.get(offset..offset + INSN_WIDTH).ok_or(DecodeError::Truncated)?;
-        let insn_address = address + offset as u64;
-
-        let mut reader = U8Reader::new(bytes);
-        let mut inst = Instruction::default();
-        if InstDecoder::default().decode_into(&mut inst, &mut reader).is_err() {
-            // Every instruction is 4 bytes, so stepping over an unreadable
-            // one keeps the rest aligned. Its word goes in the operands, so
-            // that an edit to it still shows.
-            let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            return Ok(Insn::new(
-                insn_address,
-                bytes,
-                &format!("{UNKNOWN_TEXT} {word:#010x}"),
-                InsnKind::Unknown,
-                super::Opcode::Unread(super::InstructionSet::Aarch64),
-            ));
-        }
-
-        let printed = inst.to_string();
-        let (name, operands) = split_printed(&printed);
-        let operands = extended_register(inst.opcode, operands.to_string());
-        let kind = classify(&inst, insn_address);
-        let opcode =
-            super::Opcode::Aarch64(Decoded { opcode: inst.opcode, alias: alias_of(&inst) });
-        Ok(Insn::new(insn_address, bytes, &format!("{name} {operands}"), kind, opcode))
+        self.read(code, offset, address, Printing::Skip).map(|(insn, _)| insn)
     }
 
     fn triple(&self) -> &'static str {

@@ -567,12 +567,10 @@ pub fn is_branch_target(operand: &str) -> bool {
 /// One decoded instruction, in the only detail the rest of `hereticus` needs.
 ///
 /// [`Insn::opcode`] says what the instruction does, and everything that
-/// decides by the operation reads it. [`Insn::text`] is the instruction as
-/// the decoder prints it, for a reader: a decoder can print one operation
-/// several ways, as `cset` for a `csinc`, and a test of text is slow. The
-/// operands are still read from the text where no lift names them.
-/// [`Insn::bytes_len`] must be right: a wrong length desynchronizes every
-/// instruction that follows.
+/// decides by the operation reads it. `Display` prints the instruction as
+/// its decoder does, for a reader: it reads the bytes again, so only the
+/// diff and the IL view pay for the text. [`Insn::bytes_len`] must be
+/// right: a wrong length desynchronizes every instruction that follows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Insn {
     /// Virtual address of this instruction.
@@ -584,11 +582,6 @@ pub struct Insn {
     /// instruction is four bytes at most, and a word of data among code
     /// eight.
     bytes: [u8; 8],
-    /// The instruction as printed, with one space before the operands, as
-    /// `ldr r0, [sp, 0x4]`.
-    pub text: String,
-    /// Where the operands start in [`Insn::text`].
-    operands_at: usize,
     /// How this instruction moves control, which the CFG builder needs.
     pub kind: InsnKind,
     /// The operation the decoder read.
@@ -596,47 +589,19 @@ pub struct Insn {
 }
 
 impl Insn {
-    /// An instruction of `bytes`, printed as `text`. Space around the
-    /// operands is trimmed to one before them. Past eight bytes, only the
-    /// first eight are kept.
-    pub fn new(address: u64, bytes: &[u8], text: &str, kind: InsnKind, opcode: Opcode) -> Self {
+    /// An instruction of `bytes`. Past eight bytes, only the first eight
+    /// are kept.
+    pub fn new(address: u64, bytes: &[u8], kind: InsnKind, opcode: Opcode) -> Self {
         let bytes_len = bytes.len();
         let mut kept = [0; 8];
         let held = bytes_len.min(kept.len());
         kept[..held].copy_from_slice(&bytes[..held]);
-        let text = text.trim();
-        let (text, operands_at) = match text.split_once(char::is_whitespace) {
-            Some((head, tail)) => {
-                let tail = tail.trim();
-                if tail.is_empty() {
-                    (head.to_string(), head.len())
-                } else {
-                    (format!("{head} {tail}"), head.len() + 1)
-                }
-            }
-            None => (text.to_string(), text.len()),
-        };
-        Self { address, bytes_len, bytes: kept, text, operands_at, kind, opcode }
+        Self { address, bytes_len, bytes: kept, kind, opcode }
     }
 
     /// The bytes of the instruction, in the order memory holds them.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes[..self.bytes_len.min(self.bytes.len())]
-    }
-
-    /// The operands as printed, as `r0, [sp, 0x4]`. May be empty.
-    pub fn operands(&self) -> &str {
-        &self.text[self.operands_at..]
-    }
-
-    /// The same instruction printed as `text`.
-    pub fn with_text(self, text: &str) -> Self {
-        Self::new(self.address, self.bytes(), text, self.kind, self.opcode)
-    }
-
-    /// The same instruction, read from `bytes`.
-    pub fn with_bytes(self, bytes: &[u8]) -> Self {
-        Self::new(self.address, bytes, &self.text, self.kind, self.opcode)
     }
 }
 
@@ -665,6 +630,27 @@ pub enum Opcode {
     Mips16(mips::Decoded, mips::ByteOrder),
 }
 
+/// Whether a decoder prints what it reads. Printing costs more than
+/// reading, and only a reader needs the text, so a decoder prints only on
+/// demand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Printing {
+    /// Read the instruction, and print nothing.
+    Skip,
+    /// Read the instruction, and print it too.
+    Text,
+}
+
+impl Printing {
+    /// The text that `print` makes, where this prints; else an empty text.
+    pub(crate) fn text(self, print: impl FnOnce() -> String) -> String {
+        match self {
+            Self::Skip => String::new(),
+            Self::Text => print(),
+        }
+    }
+}
+
 /// The instruction set a decoder reads, which prints what it read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstructionSet {
@@ -677,9 +663,57 @@ pub enum InstructionSet {
     Mips16(mips::ByteOrder),
 }
 
+impl Insn {
+    /// The text of this instruction, read again from its bytes by the
+    /// decoder that read it.
+    fn printed(&self) -> String {
+        use InstructionSet as Set;
+        let printed = match self.opcode {
+            Opcode::Data => Some(data_text(self.bytes())),
+            Opcode::None => None,
+            Opcode::Aarch64(_) | Opcode::Unread(Set::Aarch64) => aarch64::Aarch64
+                .read(self.bytes(), 0, self.address, Printing::Text)
+                .ok()
+                .map(|read| read.1),
+            Opcode::Arm(_) | Opcode::Unread(Set::Arm) => arm32::Arm32
+                .read(self.bytes(), 0, self.address, Printing::Text)
+                .ok()
+                .map(|read| read.1),
+            Opcode::Thumb(_) | Opcode::Unread(Set::Thumb) => thumb::print(self),
+            Opcode::Mips(_, order) | Opcode::Unread(Set::Mips(order)) => mips::Mips32::of(order)
+                .read(self.bytes(), 0, self.address, Printing::Text)
+                .ok()
+                .map(|read| read.1),
+            Opcode::Mips16(_, order) | Opcode::Unread(Set::Mips16(order)) => {
+                mips16::Mips16::of(mips::Mips32::of(order))
+                    .read(self.bytes(), 0, self.address, Printing::Text)
+                    .ok()
+                    .map(|read| read.1)
+            }
+        };
+        // An instruction made by hand has no decoder to print it.
+        let printed =
+            printed.unwrap_or_else(|| format!("{UNKNOWN_TEXT} {}", hex_word(self.bytes())));
+        one_space(&printed)
+    }
+}
+
+/// The text of bytes that no decoder reads.
+const UNKNOWN_TEXT: &str = "(unknown)";
+
+/// `text` with no space around it, and one space before the operands.
+fn one_space(text: &str) -> String {
+    let text = text.trim();
+    match text.split_once(char::is_whitespace) {
+        Some((head, tail)) if !tail.trim().is_empty() => format!("{head} {}", tail.trim()),
+        Some((head, _)) => head.to_string(),
+        None => text.to_string(),
+    }
+}
+
 impl fmt::Display for Insn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.text)
+        f.write_str(&self.printed())
     }
 }
 
@@ -889,8 +923,17 @@ pub(crate) fn printed_operands(insn: &Insn) -> String {
 
 /// A word of data among code, as one instruction no decoder reads.
 fn data_word(at: u64, bytes: &[u8]) -> Insn {
-    let word: String = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
-    Insn::new(at, bytes, &format!(".word {word}"), InsnKind::Unknown, Opcode::Data)
+    Insn::new(at, bytes, InsnKind::Unknown, Opcode::Data)
+}
+
+/// The text of a word of data among code, as `.word 00002000`.
+fn data_text(bytes: &[u8]) -> String {
+    format!(".word {}", hex_word(bytes))
+}
+
+/// `bytes`, which memory holds lowest first, as one hexadecimal number.
+fn hex_word(bytes: &[u8]) -> String {
+    bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Decode `code` one instruction after the next.
@@ -950,13 +993,7 @@ mod tests {
     fn nops(start: u64, count: u64) -> Vec<Insn> {
         (0..count)
             .map(|index| {
-                Insn::new(
-                    start + 4 * index,
-                    &[0; 4],
-                    "nop",
-                    InsnKind::Normal,
-                    crate::arch::Opcode::None,
-                )
+                Insn::new(start + 4 * index, &[0; 4], InsnKind::Normal, crate::arch::Opcode::None)
             })
             .collect()
     }
@@ -985,6 +1022,65 @@ mod tests {
             let end = u64::from(start) + 4 * (u64::from(count) + 1);
             let outside = target < u64::from(start) || target >= end;
             assert_eq!(leaves(&insns, target), outside);
+        });
+    }
+
+    #[rstest]
+    #[case::name_alone("nop", "nop")]
+    #[case::trailing_space("ret ", "ret")]
+    #[case::space_around(" add r0, r1 ", "add r0, r1")]
+    #[case::many_spaces("ldr   r0, [sp]", "ldr r0, [sp]")]
+    #[case::tab("mov\tr0, r1", "mov r0, r1")]
+    #[case::empty("", "")]
+    fn a_text_keeps_one_space_before_its_operands(#[case] text: &str, #[case] expected: &str) {
+        assert_eq!(one_space(text), expected);
+    }
+
+    #[test]
+    fn printing_runs_only_where_asked() {
+        assert_eq!(Printing::Text.text(|| "add".to_string()), "add");
+        let skipped = Printing::Skip.text(|| unreachable!("a skipped text is never made"));
+        assert_eq!(skipped, "");
+    }
+
+    #[test]
+    fn data_and_a_hand_made_instruction_print_their_bytes() {
+        let data = data_word(0x100, &[0x00, 0x20, 0x00, 0x00]);
+        assert_eq!(data.to_string(), ".word 00002000");
+        let made = Insn::new(0, &[0x1f, 0x20, 0x03, 0xd5], InsnKind::Normal, Opcode::None);
+        assert_eq!(made.to_string(), "(unknown) d503201f");
+    }
+
+    /// A decoder that reads at the start of its code, at a fixed address.
+    type Read = fn(&[u8], Printing) -> Option<(Insn, String)>;
+
+    /// Every decoder, by the instruction set it reads.
+    const DECODERS: [(&str, Read); 7] = [
+        ("A64", |code, printing| aarch64::Aarch64.read(code, 0, 0x1000, printing).ok()),
+        ("A32", |code, printing| arm32::Arm32.read(code, 0, 0x1000, printing).ok()),
+        ("T32", |code, printing| thumb::Thumb2.read(code, 0, 0x1000, printing).ok()),
+        ("MIPS", |code, printing| mips::Mips32::BIG.read(code, 0, 0x1000, printing).ok()),
+        ("MIPSel", |code, printing| mips::Mips32::LITTLE.read(code, 0, 0x1000, printing).ok()),
+        ("MIPS16e", |code, printing| mips16::Mips16::BIG.read(code, 0, 0x1000, printing).ok()),
+        ("MIPS16el", |code, printing| mips16::Mips16::LITTLE.read(code, 0, 0x1000, printing).ok()),
+    ];
+
+    /// Printing changes nothing a decoder reads, and `Display` prints from
+    /// the bytes what the decoder printed as it read them.
+    #[test]
+    fn printing_changes_nothing_but_the_text() {
+        bolero::check!().with_type::<[u8; 4]>().for_each(|code| {
+            for (name, read) in DECODERS {
+                let (Some((skipped, none)), Some((printed, text))) =
+                    (read(code, Printing::Skip), read(code, Printing::Text))
+                else {
+                    continue;
+                };
+                assert_eq!(skipped, printed, "{name}: printing changed what was read");
+                assert_eq!(none, "", "{name}: a skipped text was made");
+                assert!(!text.trim().is_empty(), "{name}: no text for {code:02x?}");
+                assert_eq!(printed.to_string(), one_space(&text), "{name}: Display differs");
+            }
         });
     }
 }

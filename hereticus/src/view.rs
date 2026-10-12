@@ -1521,61 +1521,50 @@ mod tests {
         assert_eq!(ListOrder::DecrementBefore.offsets(8, 4), (-8, -8));
     }
 
-    /// A MIPS instruction as the decoder would give it. MIPS16e prints an
-    /// `addiu` with two operands, which no MIPS32 word decodes to.
-    fn mips(name: &str, operands: &str, kind: crate::arch::InsnKind) -> Insn {
-        let opcode = match name {
-            "lw" => MipsOpcode::core_lw,
-            "addiu" => MipsOpcode::core_addiu,
-            "jalr" => MipsOpcode::core_jalr,
-            _ => MipsOpcode::core_or,
-        };
-        Insn::new(
-            0,
-            &[0; 4],
-            &format!("{name} {operands}"),
-            kind,
-            crate::arch::Opcode::Mips(
-                MipsDecoded::Rabbitizer(opcode),
-                crate::arch::mips::ByteOrder::Little,
-            ),
-        )
+    /// The little-endian MIPS32 `word`, decoded.
+    fn mips(word: u32) -> Insn {
+        use crate::arch::mips::Mips32;
+        Mips32::LITTLE.decode(&word.to_le_bytes(), 0, 0).expect("the word decodes")
     }
 
     #[test]
     fn a_load_of_a_page_is_found_by_the_addiu_after_it() {
-        use crate::arch::InsnKind::{Call, Normal};
         let insns = [
-            mips("lw", "v0, -0x7fe0(gp)", Normal),
-            mips("lw", "a2, -0x7fe0(gp)", Normal),
-            mips("lw", "t9, -0x7f00(gp)", Normal),
-            mips("addiu", "v0, v0, 0x10", Normal),
-            mips("addiu", "a2, a2, 0x20", Normal),
+            mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
+            mips(0x8f86_8020), // lw a2, -0x7fe0(gp)
+            mips(0x8f99_8100), // lw t9, -0x7f00(gp)
+            mips(0x2442_0010), // addiu v0, v0, 0x10
+            mips(0x24c6_0020), // addiu a2, a2, 0x20
         ];
         let formed = [Some(0x1000), Some(0x1000), Some(0x1004), Some(0x2010), Some(0x2020)];
         assert_eq!(page_loads(&insns, &formed), HashSet::from([0, 1]));
 
         // MIPS16e adds to the register it writes.
-        let insns = [mips("lw", "v0, 0x10(s0)", Normal), mips("addiu", "v0, 0x10", Normal)];
+        let mips16 = |halfword: u16| {
+            use crate::arch::mips16::Mips16;
+            Mips16::LITTLE.decode(&halfword.to_le_bytes(), 0, 0).expect("the halfword decodes")
+        };
+        let insns = [mips16(0x9844), mips16(0x4a10)]; // lw v0, 0x10(s0); addiu v0, 0x10
+        assert_eq!(insns[1].to_string(), "addiu v0, v0, 0x10", "as the MIPS32 twin");
         assert_eq!(page_loads(&insns, &[Some(0x1000), Some(0x2010)]), HashSet::from([0]));
 
         // A write or a call between them leaves the register holding
         // something else.
         let insns = [
-            mips("lw", "v0, -0x7fe0(gp)", Normal),
-            mips("or", "v0, a0, zero", Normal),
-            mips("addiu", "v0, v0, 0x10", Normal),
+            mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
+            mips(0x0080_1025), // or v0, a0, zero
+            mips(0x2442_0010), // addiu v0, v0, 0x10
         ];
         assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
         let insns = [
-            mips("lw", "v0, -0x7fe0(gp)", Normal),
-            mips("jalr", "t9", Call { target: None }),
-            mips("addiu", "v0, v0, 0x10", Normal),
+            mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
+            mips(0x0320_f809), // jalr t9
+            mips(0x2442_0010), // addiu v0, v0, 0x10
         ];
         assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
 
         // An `addiu` that forms no address joins no page.
-        let insns = [mips("lw", "v0, -0x7fe0(gp)", Normal), mips("addiu", "v0, v0, 1", Normal)];
+        let insns = [mips(0x8f82_8020), mips(0x2442_0001)]; // lw v0, ...; addiu v0, v0, 1
         assert!(page_loads(&insns, &[Some(0x1000), None]).is_empty());
     }
 

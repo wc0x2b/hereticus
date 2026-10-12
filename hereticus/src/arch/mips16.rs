@@ -21,7 +21,9 @@ use super::mips::{
     Decoded as MipsDecoded, GP, Mips32, SP_REG, T9, access, constant, decoded, first_register, is,
     operands_of, register_name,
 };
-use super::{Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory};
+use super::{
+    Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory, Printing,
+};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
 use compact_str::CompactString;
@@ -488,7 +490,87 @@ impl Mips16 {
 
     /// The MIPS32 instruction a word translates to, at `address`.
     fn as_mips32(&self, word: u32, address: u64) -> Option<Insn> {
-        self.base.decode(&self.base.word_bytes(word), 0, address).ok()
+        self.base
+            .read(&self.base.word_bytes(word), 0, address, Printing::Skip)
+            .ok()
+            .map(|(insn, _)| insn)
+    }
+
+    /// The instruction at `offset` of `code`, which starts at `address`,
+    /// and its text where `printing` asks for it.
+    pub(super) fn read(
+        &self,
+        code: &[u8],
+        offset: usize,
+        address: u64,
+        printing: Printing,
+    ) -> Result<(Insn, String), DecodeError> {
+        let first = self.halfword(code, offset).ok_or(DecodeError::Truncated)?;
+        let insn_address = address + offset as u64;
+        let unknown = |width: usize| {
+            let bytes = &code[offset..offset + width];
+            let insn = Insn::new(
+                insn_address,
+                bytes,
+                InsnKind::Unknown,
+                super::Opcode::Unread(super::InstructionSet::Mips16(self.base.order())),
+            );
+            let text = printing.text(|| {
+                let raw: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+                format!("(unknown) {raw}")
+            });
+            (insn, text)
+        };
+        let Some(decoded) = self.decoded(code, offset, insn_address) else {
+            // A prefix or a `jal` whose second halfword is cut off, or an
+            // encoding MIPS16e leaves reserved, is stepped over whole.
+            let wide =
+                matches!(first >> 11, 0b00011 | 0b11110) && code.len() >= offset + 2 * HALFWORD;
+            return Ok(unknown(if wide { 2 * HALFWORD } else { HALFWORD }));
+        };
+        let bytes = &code[offset..offset + decoded.width];
+        let order = self.base.order();
+        // Every instruction says MIPS16e decoded it, so a rule that MIPS32
+        // shares lifts it as MIPS16e.
+        let (kind, decoded, text) = match decoded.reading {
+            Reading::Word(word) => {
+                // The text and the opcode are those of the MIPS32 twin, and
+                // the bytes are the MIPS16e ones, which the lift reads.
+                let word = self.base.word_bytes(word);
+                let (twin, text) = self.base.read(&word, 0, insn_address, printing)?;
+                let super::Opcode::Mips(decoded, _) = twin.opcode else {
+                    let opcode = super::Opcode::Unread(super::InstructionSet::Mips16(order));
+                    return Ok((Insn::new(insn_address, bytes, twin.kind, opcode), text));
+                };
+                (twin.kind, decoded, text)
+            }
+            Reading::Control { name, decoded, operands, kind, .. } => {
+                (kind, decoded, printing.text(|| format!("{name} {operands}")))
+            }
+            Reading::PcRelative { load, dest, address: at } => {
+                let text = printing.text(|| {
+                    let register = REGISTER_NAMES[dest as usize];
+                    match load {
+                        true => format!("lw {register}, {at:#x}(pc)"),
+                        false => format!("addiu {register}, pc, {at:#x}"),
+                    }
+                });
+                // A load or an add from `pc` does what the MIPS32 one does
+                // from another register.
+                let opcode = if load { Opcode::core_lw } else { Opcode::core_addiu };
+                (InsnKind::Normal, MipsDecoded::Rabbitizer(opcode), text)
+            }
+            Reading::Frame { step, size, registers } => {
+                let op = match step {
+                    FrameStep::Save => Op::Save,
+                    FrameStep::Restore => Op::Restore,
+                };
+                let text = printing.text(|| format!("{} {}", op.name(), registers.operands(size)));
+                (InsnKind::Normal, MipsDecoded::Mips16(op), text)
+            }
+        };
+        let opcode = super::Opcode::Mips16(decoded, order);
+        Ok((Insn::new(insn_address, bytes, kind, opcode), text))
     }
 }
 
@@ -498,80 +580,7 @@ impl Arch for Mips16 {
     }
 
     fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
-        let first = self.halfword(code, offset).ok_or(DecodeError::Truncated)?;
-        let insn_address = address + offset as u64;
-        let unknown = |width: usize| {
-            let raw: String =
-                code[offset..offset + width].iter().map(|byte| format!("{byte:02x}")).collect();
-            Insn::new(
-                insn_address,
-                &code[offset..offset + width],
-                &format!("(unknown) {raw}"),
-                InsnKind::Unknown,
-                super::Opcode::Unread(super::InstructionSet::Mips16(self.base.order())),
-            )
-        };
-        let Some(decoded) = self.decoded(code, offset, insn_address) else {
-            // A prefix or a `jal` whose second halfword is cut off, or an
-            // encoding MIPS16e leaves reserved, is stepped over whole.
-            let wide =
-                matches!(first >> 11, 0b00011 | 0b11110) && code.len() >= offset + 2 * HALFWORD;
-            return Ok(unknown(if wide { 2 * HALFWORD } else { HALFWORD }));
-        };
-        let width = decoded.width;
-        let insn = match decoded.reading {
-            Reading::Word(word) => {
-                // The text and the opcode are those of the MIPS32 twin, and
-                // the bytes are the MIPS16e ones, which the lift reads.
-                let insn = self.as_mips32(word, insn_address).ok_or(DecodeError::Truncated)?;
-                insn.with_bytes(&code[offset..offset + width])
-            }
-            Reading::Control { name, decoded, operands, kind, .. } => Insn::new(
-                insn_address,
-                &code[offset..offset + width],
-                &format!("{name} {operands}"),
-                kind,
-                super::Opcode::Mips(decoded, self.base.order()),
-            ),
-            Reading::PcRelative { load, dest, address: at } => {
-                let register = REGISTER_NAMES[dest as usize];
-                let text = if load {
-                    format!("lw {register}, {at:#x}(pc)")
-                } else {
-                    format!("addiu {register}, pc, {at:#x}")
-                };
-                // A load or an add from `pc` does what the MIPS32 one does
-                // from another register.
-                let opcode = if load { Opcode::core_lw } else { Opcode::core_addiu };
-                Insn::new(
-                    insn_address,
-                    &code[offset..offset + width],
-                    &text,
-                    InsnKind::Normal,
-                    super::Opcode::Mips(MipsDecoded::Rabbitizer(opcode), self.base.order()),
-                )
-            }
-            Reading::Frame { step, size, registers } => {
-                let op = match step {
-                    FrameStep::Save => Op::Save,
-                    FrameStep::Restore => Op::Restore,
-                };
-                Insn::new(
-                    insn_address,
-                    &code[offset..offset + width],
-                    &format!("{} {}", op.name(), registers.operands(size)),
-                    InsnKind::Normal,
-                    super::Opcode::Mips(MipsDecoded::Mips16(op), self.base.order()),
-                )
-            }
-        };
-        // Every instruction says MIPS16e decoded it, so a rule that MIPS32
-        // shares lifts it as MIPS16e.
-        let opcode = match insn.opcode {
-            super::Opcode::Mips(decoded, order) => super::Opcode::Mips16(decoded, order),
-            other => other,
-        };
-        Ok(Insn { opcode, ..insn })
+        self.read(code, offset, address, Printing::Skip).map(|(insn, _)| insn)
     }
 
     fn triple(&self) -> &'static str {

@@ -4711,21 +4711,18 @@ mod tests {
     use crate::arch::arm32::Arm32;
     use crate::norm::normalize;
 
-    /// Instructions written by hand, with no bytes: each normalizes by its
-    /// opcode alone, which is all these tests compare.
-    fn body(operations: &[(&str, &str)]) -> Vec<NormInsn> {
-        operations
+    /// Instructions written by hand, by name, with no bytes: each
+    /// normalizes by its opcode alone, which is all these tests compare.
+    fn body(names: &[&str]) -> Vec<NormInsn> {
+        names
             .iter()
-            .map(|(name, operands)| {
-                let insn = crate::arch::arm32::test_insn(name, operands, InsnKind::Normal);
-                normalize(&Arm32, &insn)
-            })
+            .map(|name| normalize(&Arm32, &crate::arch::arm32::test_insn(name, InsnKind::Normal)))
             .collect()
     }
 
     #[test]
     fn a_body_is_identical_to_itself() {
-        let only = body(&[("add", "r0, r1, r2"), ("mul", "r0, r0, r1")]);
+        let only = body(&["add", "mul"]);
         assert_eq!(similarity(&only, &only), 1.0);
     }
 
@@ -4736,22 +4733,22 @@ mod tests {
 
     #[test]
     fn an_empty_body_shares_nothing_with_a_full_one() {
-        assert_eq!(similarity(&[], &body(&[("add", "r0, r1, r2")])), 0.0);
+        assert_eq!(similarity(&[], &body(&["add"])), 0.0);
     }
 
     #[test]
     fn similarity_does_not_depend_on_the_order_of_its_arguments() {
-        let left = body(&[("add", "r0, r1, r2"), ("mul", "r0, r0, r1")]);
-        let right = body(&[("add", "r0, r1, r2"), ("sub", "r0, r0, r1")]);
+        let left = body(&["add", "mul"]);
+        let right = body(&["add", "sub"]);
         assert_eq!(similarity(&left, &right), similarity(&right, &left));
     }
 
     /// Reordering the same instructions is not the same as editing them.
     #[test]
     fn reordering_is_told_apart_from_editing() {
-        let original = body(&[("mov", "r0, 0x1"), ("mvn", "r1, 0x2"), ("cmp", "r0, r1")]);
-        let moved = body(&[("mvn", "r1, 0x2"), ("cmp", "r0, r1"), ("mov", "r0, 0x1")]);
-        let edited = body(&[("mov", "r0, 0x1"), ("ldr", "r1, [r2]"), ("cmp", "r0, r1")]);
+        let original = body(&["mov", "mvn", "cmp"]);
+        let moved = body(&["mvn", "cmp", "mov"]);
+        let edited = body(&["mov", "ldr", "cmp"]);
 
         let mut original_sorted = original.clone();
         let mut moved_sorted = moved.clone();
@@ -4953,7 +4950,7 @@ mod tests {
         let decode = |word: u32| Arm32.decode(&word.to_le_bytes(), 0, 0).expect("decodes");
         // movwlt r0, #1 and movwlo r0, #1.
         let (signed, unsigned) = (decode(0xb300_0001), decode(0x3300_0001));
-        assert_ne!(signed.text, unsigned.text);
+        assert_ne!(signed.to_string(), unsigned.to_string());
         assert_eq!(Arm32.operation_name(&signed), Arm32.operation_name(&unsigned));
     }
 
@@ -5220,9 +5217,9 @@ mod tests {
         assert!(cells(500, 500) <= LARGEST_ALIGNMENT, "an ordinary function is well under it");
 
         // One instruction rewritten, in bodies past the alignment limit.
-        let left = vec![body(&[("add", "r0, r1, r2")])[0].clone(); 5000];
+        let left = vec![body(&["add"])[0].clone(); 5000];
         let mut right = left.clone();
-        right[0] = body(&[("sub", "r0, r1, r2")])[0].clone();
+        right[0] = body(&["sub"])[0].clone();
         assert!(
             cells(left.len(), right.len()) > LARGEST_ALIGNMENT,
             "the test bodies are over the limit"
@@ -6906,28 +6903,19 @@ mod tests {
     fn scoring_by_symbol_agrees_with_scoring_by_body() {
         let cases: Vec<(Vec<NormInsn>, Vec<NormInsn>)> = vec![
             // Identical.
-            (body(&[("add", "r0, r1, r2")]), body(&[("add", "r0, r1, r2")])),
+            (body(&["add"]), body(&["add"])),
             // Nothing shared.
-            (body(&[("ldr", "r0, [r1]")]), body(&[("mul", "r0, r0, r1")])),
+            (body(&["ldr"]), body(&["mul"])),
             // Partly shared.
-            (
-                body(&[("add", "r0, r1, r2"), ("mul", "r0, r0, r1")]),
-                body(&[("add", "r0, r1, r2"), ("sub", "r0, r0, r1")]),
-            ),
+            (body(&["add", "mul"]), body(&["add", "sub"])),
             // One side empty.
-            (Vec::new(), body(&[("add", "r0, r1, r2")])),
+            (Vec::new(), body(&["add"])),
             // Both empty.
             (Vec::new(), Vec::new()),
             // Repeats, where the multiset matters rather than the set.
-            (
-                body(&[("add", "r0, r1, r2"), ("add", "r0, r1, r2"), ("add", "r0, r1, r2")]),
-                body(&[("add", "r0, r1, r2")]),
-            ),
+            (body(&["add", "add", "add"]), body(&["add"])),
             // The same instructions in a different order.
-            (
-                body(&[("add", "r0, r1, r2"), ("mul", "r0, r0, r1")]),
-                body(&[("mul", "r0, r0, r1"), ("add", "r0, r1, r2")]),
-            ),
+            (body(&["add", "mul"]), body(&["mul", "add"])),
         ];
 
         for (left, right) in &cases {
@@ -6948,13 +6936,15 @@ mod tests {
     fn equal_instructions_share_a_symbol() {
         let mut interner = Interner::default();
 
-        let same_shape_other_constant = body(&[("mov", "r0, 0x1"), ("mov", "r0, 0x2")]);
-        let first = interner.intern(&same_shape_other_constant[0]);
-        let second = interner.intern(&same_shape_other_constant[1]);
+        let decoded = |word: u32| {
+            let insn = Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word decodes");
+            normalize(&Arm32, &insn)
+        };
+        let first = interner.intern(&decoded(0xe3a0_0001)); // mov r0, #1
+        let second = interner.intern(&decoded(0xe3a0_0002)); // mov r0, #2
         assert_eq!(first, second, "constants stay out of equality, so out of the symbol");
 
-        let different = body(&[("ldr", "r0, [r1]")]);
-        let third = interner.intern(&different[0]);
+        let third = interner.intern(&decoded(0xe591_0000)); // ldr r0, [r1]
         assert_ne!(first, third, "a different operation needs a different symbol");
         assert_eq!(interner.len(), 2, "two distinct instructions were seen");
     }
@@ -7103,9 +7093,9 @@ mod tests {
 
     #[test]
     fn similarity_falls_as_bodies_diverge() {
-        let base = body(&[("add", "r0, r1, r2"), ("mul", "r0, r0, r1")]);
-        let half = body(&[("add", "r0, r1, r2"), ("sub", "r0, r0, r1")]);
-        let none = body(&[("ldr", "r0, [r1]"), ("str", "r0, [r2]")]);
+        let base = body(&["add", "mul"]);
+        let half = body(&["add", "sub"]);
+        let none = body(&["ldr", "str"]);
 
         assert!(similarity(&base, &half) > similarity(&base, &none));
         assert_eq!(similarity(&base, &none), 0.0);

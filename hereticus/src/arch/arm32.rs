@@ -17,7 +17,9 @@ use yaxpeax_arm::armv7::{
 use core::ops::Range;
 use std::collections::BTreeSet;
 
-use super::{Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, split_printed};
+use super::{
+    Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, Printing, split_printed,
+};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
 
@@ -134,11 +136,10 @@ pub(super) fn operation_name(decoded: Decoded) -> CompactString {
     }
 }
 
-/// An A32 instruction printed as `name` and `operands`, with the opcode
-/// `name` has, for a test that writes instructions by hand. It holds no
-/// bytes, so it lifts to nothing.
+/// An A32 instruction with the opcode `name` has, for a test that writes
+/// instructions by hand. It holds no bytes, so it lifts to nothing.
 #[cfg(test)]
-pub(crate) fn test_insn(name: &str, operands: &str, kind: InsnKind) -> Insn {
+pub(crate) fn test_insn(name: &str, kind: InsnKind) -> Insn {
     let opcode = match name {
         "add" => Opcode::ADD,
         "sub" => Opcode::SUB,
@@ -154,7 +155,7 @@ pub(crate) fn test_insn(name: &str, operands: &str, kind: InsnKind) -> Insn {
         other => panic!("no opcode for {other}"),
     };
     let decoded = Decoded::Core { opcode, condition: ConditionCode::AL, flags: Flags::Kept };
-    Insn::new(0, &[], &format!("{name} {operands}"), kind, super::Opcode::Arm(decoded))
+    Insn::new(0, &[], kind, super::Opcode::Arm(decoded))
 }
 
 /// How a load or store of a list steps, as the suffix of `ldmia` says.
@@ -407,21 +408,21 @@ pub(super) fn is_plain(insn: &Insn, opcode: Opcode) -> bool {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Arm32;
 
-impl Arch for Arm32 {
-    /// The condition of `addeq` and the `s` of `adds` are dropped: they say
-    /// when the work runs and what it leaves in the flags, not what it
-    /// computes. The condition of a branch is kept: it is the test.
-    fn operation_name(&self, insn: &Insn) -> CompactString {
-        let Some(decoded) = decoded(insn) else { return UNKNOWN_TEXT.into() };
-        operation_name(decoded)
-    }
-
-    fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
+impl Arm32 {
+    /// The instruction at `offset` of `code`, which starts at `address`,
+    /// and its text where `printing` asks for it.
+    pub(super) fn read(
+        self,
+        code: &[u8],
+        offset: usize,
+        address: u64,
+        printing: Printing,
+    ) -> Result<(Insn, String), DecodeError> {
         let bytes = code.get(offset..).ok_or(DecodeError::Truncated)?;
         if bytes.len() < INSN_WIDTH {
             return Err(DecodeError::Truncated);
         }
-
+        let bytes = &bytes[..INSN_WIDTH];
         let insn_address = address + offset as u64;
 
         let mut reader = U8Reader::new(bytes);
@@ -442,21 +443,12 @@ impl Arch for Arm32 {
             // unreadable instruction would look like every other one, and an
             // edit inside a NEON loop would be reported as no change at all.
             if let Some((name, operands, decoded)) = decode_fallback(word, Encoding::A32) {
-                return Ok(Insn::new(
-                    insn_address,
-                    &bytes[..INSN_WIDTH],
-                    &format!("{name} {operands}"),
-                    InsnKind::Normal,
-                    super::Opcode::Arm(decoded),
-                ));
+                let opcode = super::Opcode::Arm(decoded);
+                let insn = Insn::new(insn_address, bytes, InsnKind::Normal, opcode);
+                return Ok((insn, printing.text(|| format!("{name} {operands}"))));
             }
-            return Ok(Insn::new(
-                insn_address,
-                &bytes[..INSN_WIDTH],
-                &format!("{} {word:#010x}", unread_text(word)),
-                InsnKind::Unknown,
-                unread_opcode(word),
-            ));
+            let insn = Insn::new(insn_address, bytes, InsnKind::Unknown, unread_opcode(word));
+            return Ok((insn, printing.text(|| format!("{} {word:#010x}", unread_text(word)))));
         }
 
         // `total_offset` is in words; convert so the assertion below compares
@@ -465,13 +457,27 @@ impl Arch for Arm32 {
         let consumed = words as usize * INSN_WIDTH;
         debug_assert_eq!(consumed, INSN_WIDTH, "A32 instructions are always 4 bytes");
 
-        Ok(Insn::new(
+        let insn = Insn::new(
             insn_address,
-            &bytes[..INSN_WIDTH],
-            &printed(&inst),
+            bytes,
             classify(&inst, branch_target(&inst, insn_address)),
             super::Opcode::Arm(decoded_of(&inst)),
-        ))
+        );
+        Ok((insn, printing.text(|| printed(&inst))))
+    }
+}
+
+impl Arch for Arm32 {
+    /// The condition of `addeq` and the `s` of `adds` are dropped: they say
+    /// when the work runs and what it leaves in the flags, not what it
+    /// computes. The condition of a branch is kept: it is the test.
+    fn operation_name(&self, insn: &Insn) -> CompactString {
+        let Some(decoded) = decoded(insn) else { return UNKNOWN_TEXT.into() };
+        operation_name(decoded)
+    }
+
+    fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
+        self.read(code, offset, address, Printing::Skip).map(|(insn, _)| insn)
     }
 
     fn triple(&self) -> &'static str {
