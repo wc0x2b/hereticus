@@ -44,47 +44,17 @@ pub struct GlobalPointerSetup {
     pub register: String,
 }
 
-/// An architecture that `hereticus` can decode, with the rules that read
-/// its code: padding, prologues, tail calls, literal pools and jump tables.
-/// An implementation answers for its own instructions and never has to
-/// agree with another architecture's.
-pub trait Arch: Decoder {
-    /// Report whether a lifted register is the stack or frame pointer.
-    fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
-        reg == crate::il::Reg::Stack
-    }
-
+/// The rules that find functions in the code of one instruction set:
+/// padding, prologues, tail calls, literal pools, jump tables and the
+/// unwind index. [`crate::scan`] reads code through these alone. An
+/// implementation answers for its own instructions and never has to agree
+/// with another architecture's.
+pub trait Recovery: Decoder {
     /// Report whether `bytes` can open a function, where an unwind index
     /// says one begins. A table of small numbers otherwise reads as an
     /// index. Defaults to `false`, for the architectures with no such index.
     fn can_open_function(&self, _bytes: &[u8]) -> bool {
         false
-    }
-
-    /// Report whether an instruction only maintains the stack frame.
-    ///
-    /// Saving registers, moving the stack pointer and spilling to a frame slot
-    /// are all bookkeeping a compiler adds or removes freely.
-    fn is_frame_management(&self, insn: &Insn) -> bool;
-
-    /// Say, for each instruction of `body`, whether its constants are an
-    /// address inside `space` or a value.
-    ///
-    /// An address moves whenever the linker moves what it points at, so
-    /// comparing it reports a change on every release. Where an architecture
-    /// builds an address from several instructions, only the sequence shows
-    /// which constants are parts of one, so the whole body is judged at once.
-    ///
-    /// `code` is the bytes `body` was decoded from, for a word whose value
-    /// the decoded text does not show. The result holds one entry per
-    /// instruction of `body`. Defaults to [`ConstantKind::Value`] for all.
-    fn constant_kinds(
-        &self,
-        _code: &[u8],
-        body: &[Insn],
-        _space: &AddressSpace,
-    ) -> Vec<ConstantKind> {
-        vec![ConstantKind::Value; body.len()]
     }
 
     /// The addresses inside `space` that `body` forms, in order, to read the
@@ -220,45 +190,6 @@ pub trait Arch: Decoder {
         None
     }
 
-    /// Say whether a recovered function holds code or data.
-    ///
-    /// A scan cannot see where code ends and data begins, so it reads a
-    /// table after the last function as more of that function. Its words
-    /// decode as nonsense instructions, and every release changes thousands
-    /// of them, which puts the table at the top of any report.
-    ///
-    /// `code` is the bytes of the function, `insns` the same decoded.
-    /// Defaults to [`Contents::Code`], for an architecture with no test that
-    /// tells the two apart.
-    fn contents(&self, _code: &[u8], _insns: &[Insn], _space: &AddressSpace) -> Contents {
-        Contents::Code
-    }
-
-    /// The length of an ABI idiom starting at `body[0]`, or 0 for none.
-    ///
-    /// [`Arch::is_frame_management`] judges one instruction at a time, which
-    /// cannot recognize bookkeeping whose shape lives in a *sequence*. The MIPS
-    /// PIC preamble is the case: `lui rX, 0x0` followed by `addiu rX, rX, 0x0`
-    /// loads one link-time constant, but either word alone is an ordinary
-    /// operation that real code uses, so only the pair can be dropped safely.
-    ///
-    /// `body` begins at the instruction being judged and runs to the end of the
-    /// function, so the return value can never exceed `body.len()`.
-    ///
-    /// Defaults to 0, for the architectures whose bookkeeping is all
-    /// recognizable one instruction at a time.
-    fn idiom_length(&self, _body: &[Insn]) -> usize {
-        0
-    }
-
-    /// The instructions that make the global pointer from `body[0]` on, as
-    /// the PIC preamble of MIPS does, which the IL view shows as one line.
-    ///
-    /// Defaults to `None`, for the architectures with no global pointer.
-    fn global_pointer_setup(&self, _body: &[Insn]) -> Option<GlobalPointerSetup> {
-        None
-    }
-
     /// Report whether an instruction opens a function.
     ///
     /// Used to recover function starts from stripped code, so a false positive
@@ -266,7 +197,7 @@ pub trait Arch: Decoder {
     fn is_prologue(&self, insn: &Insn) -> bool;
 
     /// Report whether the instruction `word` starts with could be one
-    /// [`Arch::is_prologue`] accepts, from its bits alone, so that a scan of
+    /// [`Recovery::is_prologue`] accepts, from its bits alone, so that a scan of
     /// every word decodes only those. `false` must mean it is none.
     fn may_be_prologue(&self, _word: &[u8]) -> bool {
         true
@@ -293,7 +224,7 @@ pub trait Arch: Decoder {
 
     /// How far back a function really starts, given its prologue.
     ///
-    /// [`Arch::is_prologue`] names the instruction that opens a frame, but an
+    /// [`Recovery::is_prologue`] names the instruction that opens a frame, but an
     /// ABI can oblige a few words before it. MIPS PIC computes the global
     /// pointer first, so the frame allocation is the second or third
     /// instruction of the function rather than the first.
@@ -354,20 +285,6 @@ pub trait Arch: Decoder {
         BTreeSet::new()
     }
 
-    /// The address each instruction of `body` forms or reads, where the
-    /// code shows it: a page and the offset joined to it, as `adrp` and
-    /// `add` do. A page counts as the address of its instruction. An
-    /// instruction that forms none is `None`. Defaults to none for each.
-    fn formed_addresses(
-        &self,
-        _code: &[u8],
-        body: &[Insn],
-        _space: &AddressSpace,
-        _memory: &Memory<'_>,
-    ) -> Vec<Option<u64>> {
-        vec![None; body.len()]
-    }
-
     /// Report whether an instruction is alignment padding rather than work.
     fn is_padding(&self, insn: &Insn) -> bool;
 
@@ -395,6 +312,95 @@ pub trait Arch: Decoder {
     /// relative.
     fn absolute_call(&self, _word: &[u8]) -> Option<AbsoluteCall> {
         None
+    }
+}
+
+/// An architecture that `hereticus` can compare code in: the rules of
+/// [`Recovery`], and the rules the matching reads, as which registers hold
+/// the frame and which constants are addresses.
+pub trait Arch: Recovery {
+    /// Report whether a lifted register is the stack or frame pointer.
+    fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
+        reg == crate::il::Reg::Stack
+    }
+
+    /// Report whether an instruction only maintains the stack frame.
+    ///
+    /// Saving registers, moving the stack pointer and spilling to a frame slot
+    /// are all bookkeeping a compiler adds or removes freely.
+    fn is_frame_management(&self, insn: &Insn) -> bool;
+
+    /// Say, for each instruction of `body`, whether its constants are an
+    /// address inside `space` or a value.
+    ///
+    /// An address moves whenever the linker moves what it points at, so
+    /// comparing it reports a change on every release. Where an architecture
+    /// builds an address from several instructions, only the sequence shows
+    /// which constants are parts of one, so the whole body is judged at once.
+    ///
+    /// `code` is the bytes `body` was decoded from, for a word whose value
+    /// the decoded text does not show. The result holds one entry per
+    /// instruction of `body`. Defaults to [`ConstantKind::Value`] for all.
+    fn constant_kinds(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        _space: &AddressSpace,
+    ) -> Vec<ConstantKind> {
+        vec![ConstantKind::Value; body.len()]
+    }
+
+    /// Say whether a recovered function holds code or data.
+    ///
+    /// A scan cannot see where code ends and data begins, so it reads a
+    /// table after the last function as more of that function. Its words
+    /// decode as nonsense instructions, and every release changes thousands
+    /// of them, which puts the table at the top of any report.
+    ///
+    /// `code` is the bytes of the function, `insns` the same decoded.
+    /// Defaults to [`Contents::Code`], for an architecture with no test that
+    /// tells the two apart.
+    fn contents(&self, _code: &[u8], _insns: &[Insn], _space: &AddressSpace) -> Contents {
+        Contents::Code
+    }
+
+    /// The length of an ABI idiom starting at `body[0]`, or 0 for none.
+    ///
+    /// [`Arch::is_frame_management`] judges one instruction at a time, which
+    /// cannot recognize bookkeeping whose shape lives in a *sequence*. The MIPS
+    /// PIC preamble is the case: `lui rX, 0x0` followed by `addiu rX, rX, 0x0`
+    /// loads one link-time constant, but either word alone is an ordinary
+    /// operation that real code uses, so only the pair can be dropped safely.
+    ///
+    /// `body` begins at the instruction being judged and runs to the end of the
+    /// function, so the return value can never exceed `body.len()`.
+    ///
+    /// Defaults to 0, for the architectures whose bookkeeping is all
+    /// recognizable one instruction at a time.
+    fn idiom_length(&self, _body: &[Insn]) -> usize {
+        0
+    }
+
+    /// The instructions that make the global pointer from `body[0]` on, as
+    /// the PIC preamble of MIPS does, which the IL view shows as one line.
+    ///
+    /// Defaults to `None`, for the architectures with no global pointer.
+    fn global_pointer_setup(&self, _body: &[Insn]) -> Option<GlobalPointerSetup> {
+        None
+    }
+
+    /// The address each instruction of `body` forms or reads, where the
+    /// code shows it: a page and the offset joined to it, as `adrp` and
+    /// `add` do. A page counts as the address of its instruction. An
+    /// instruction that forms none is `None`. Defaults to none for each.
+    fn formed_addresses(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        _space: &AddressSpace,
+        _memory: &Memory<'_>,
+    ) -> Vec<Option<u64>> {
+        vec![None; body.len()]
     }
 }
 
@@ -513,9 +519,13 @@ pub fn leaves(insns: &[Insn], target: u64) -> bool {
 /// T32, the code is read twice: once to find the pool words, and again with
 /// each kept whole. See [`decode_all_but`].
 ///
-/// A body that [`Arch::switch_at_start`] says opens with a switch to another
+/// A body that [`Recovery::switch_at_start`] says opens with a switch to another
 /// instruction set is read in that set from where the switch lands.
-pub fn decode_all(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Option<DecodeError>) {
+pub fn decode_all(
+    arch: &dyn Recovery,
+    code: &[u8],
+    address: u64,
+) -> (Vec<Insn>, Option<DecodeError>) {
     let switch = arch.switch_at_start(code, address).and_then(|(other, lands)| {
         let offset = usize::try_from(lands.checked_sub(address)?).ok()?;
         (offset > 0 && offset < code.len()).then_some((other, lands, offset))
@@ -534,7 +544,7 @@ pub fn decode_all(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Opt
 
 /// [`decode_all`], in one instruction set throughout.
 fn decode_in_one_set(
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
     code: &[u8],
     address: u64,
 ) -> (Vec<Insn>, Option<DecodeError>) {

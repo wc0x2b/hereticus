@@ -9,7 +9,7 @@
 
 pub use hereticus_il::arch::arm32::*;
 
-use super::{Arch, DataAmongCode, Decoder, Insn, InsnKind, JumpTable, Memory};
+use super::{Arch, DataAmongCode, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
 use core::ops::Range;
@@ -69,43 +69,11 @@ pub(super) fn is_plain(insn: &Insn, opcode: Opcode) -> bool {
         == Some(Decoded::Core { opcode, condition: ConditionCode::AL, flags: Flags::Kept })
 }
 
-impl Arch for Arm32 {
-    fn is_frame_register(&self, reg: il::Reg) -> bool {
-        matches!(reg, il::Reg::Stack | FRAME)
-    }
-
+impl Recovery for Arm32 {
     /// The first instruction of a function runs always, as almost every
     /// A32 instruction does: its top four bits are `0xE`.
     fn can_open_function(&self, bytes: &[u8]) -> bool {
         bytes.get(..INSN_WIDTH).is_some_and(|word| word[3] >> 4 == 0xe)
-    }
-
-    fn is_frame_management(&self, insn: &Insn) -> bool {
-        let Some(opcode) = core_opcode(insn) else { return false };
-        let operands = || lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
-
-        match opcode {
-            // Saving and restoring registers. A `pop` that loads the program
-            // counter also returns, so it must stay.
-            Opcode::PUSH => true,
-            Opcode::POP => insn.kind != InsnKind::Return,
-
-            // Moving the stack pointer, or setting up the frame pointer.
-            Opcode::SUB | Opcode::ADD | Opcode::MOV => {
-                matches!(operands().first(), Some(il::Operand::Reg(reg)) if self.is_frame_register(*reg))
-            }
-
-            // Spilling to and reloading from the frame, by `ldr`, `str`,
-            // `ldm` and `stm`, which go up from the base.
-            Opcode::LDR
-            | Opcode::STR
-            | Opcode::LDM(true, false, ..)
-            | Opcode::STM(true, false, ..) => operands().iter().any(|operand| {
-                matches!(operand, il::Operand::Memory { base: Some(base), .. } if self.is_frame_register(*base))
-            }),
-
-            _ => false,
-        }
     }
 
     /// A function that calls anything must save the link register first, so
@@ -159,35 +127,6 @@ impl Arch for Arm32 {
         &bytes[..end]
     }
 
-    /// ARM code reaches its data through literal pool words, and PIC code
-    /// stores a *distance* there rather than an address: the word is added to
-    /// `pc`, or used as an offset from a base built that way.
-    ///
-    /// ```text
-    /// ldr r0, [pc, 0x4]     ; load the pool word
-    /// add r0, pc, r0        ; add it to pc: the word is a distance
-    /// ...
-    /// ldr r3, [pc, 0xa0]
-    /// ldr r3, [pc, r3]      ; read a GOT entry at that distance
-    /// ```
-    ///
-    /// Such a word changes whenever the linker moves the data it reaches,
-    /// which is every release, so it is marked as a stored address, but only
-    /// when the address it forms lies inside `space`. A distance to something
-    /// outside the image, such as the kernel a decompressor stub unpacks,
-    /// stays a value: it changes because the thing it measures changed. A
-    /// pool word used any other way, such as a size or a mask, stays a value.
-    /// Measured on zlib built as an ARM shared library, these words alone made
-    /// 18 unedited functions read as changed.
-    fn constant_kinds(
-        &self,
-        code: &[u8],
-        body: &[Insn],
-        space: &AddressSpace,
-    ) -> Vec<ConstantKind> {
-        track_pool_words(code, body, space, PcModel::A32).kinds
-    }
-
     /// The addresses [`Arch::constant_kinds`] finds formed, and the pool
     /// words that hold an address whole, as non-PIC code keeps them.
     fn data_addresses(
@@ -198,16 +137,6 @@ impl Arch for Arm32 {
         _memory: &Memory<'_>,
     ) -> Vec<u64> {
         track_pool_words(code, body, space, PcModel::A32).addresses
-    }
-
-    fn formed_addresses(
-        &self,
-        code: &[u8],
-        body: &[Insn],
-        space: &AddressSpace,
-        _memory: &Memory<'_>,
-    ) -> Vec<Option<u64>> {
-        track_pool_words(code, body, space, PcModel::A32).formed
     }
 
     /// `bx` through a register other than `lr`. A `switch` jumps with `add pc`
@@ -227,31 +156,6 @@ impl Arch for Arm32 {
         let reserves_stack = core_opcode(last) == Some(Opcode::SUB)
             && lifted(last).is_some_and(|lifted| lifted.operands.starts_with(&[SP, SP]));
         usize::from(reserves_stack)
-    }
-
-    /// Almost every ARM instruction runs always: its top four bits are
-    /// `0xE`, or `0xF` for the few with no condition. Data has no such
-    /// bias. Measured on zlib, Lua and tinyxml2 for ARM, at least 40% of the
-    /// words of every function of 16 words or more are such, and 65% for all
-    /// but one in twenty. Their symbol tables, strings, `.rodata`, relocations
-    /// and unwind tables reach at most 6%. So a quarter is the line.
-    ///
-    /// Below 16 words a function is not judged: a stub can look like
-    /// anything.
-    fn contents(&self, code: &[u8], _insns: &[Insn], _space: &AddressSpace) -> Contents {
-        const FEWEST_WORDS: usize = 16;
-
-        let words: Vec<u32> = code
-            .as_chunks::<INSN_WIDTH>()
-            .0
-            .iter()
-            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
-            .collect();
-        if words.len() < FEWEST_WORDS {
-            return Contents::Code;
-        }
-        let always = words.iter().filter(|&&word| word >> 28 >= 0xe).count();
-        if always * 4 < words.len() { Contents::Data } else { Contents::Code }
     }
 
     /// A function opens unconditionally: nothing has set the flags a
@@ -284,6 +188,7 @@ impl Arch for Arm32 {
     fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<super::CallTarget>)> {
         call_targets_through_thunks(insns, PcModel::A32)
     }
+
     /// The table GCC emits for a `switch` in PIC code:
     ///
     /// ```text
@@ -352,6 +257,104 @@ impl Arch for Arm32 {
 
     fn unwind_section(&self) -> Option<&'static str> {
         Some(UNWIND_SECTION)
+    }
+}
+
+impl Arch for Arm32 {
+    fn is_frame_register(&self, reg: il::Reg) -> bool {
+        matches!(reg, il::Reg::Stack | FRAME)
+    }
+
+    fn is_frame_management(&self, insn: &Insn) -> bool {
+        let Some(opcode) = core_opcode(insn) else { return false };
+        let operands = || lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
+
+        match opcode {
+            // Saving and restoring registers. A `pop` that loads the program
+            // counter also returns, so it must stay.
+            Opcode::PUSH => true,
+            Opcode::POP => insn.kind != InsnKind::Return,
+
+            // Moving the stack pointer, or setting up the frame pointer.
+            Opcode::SUB | Opcode::ADD | Opcode::MOV => {
+                matches!(operands().first(), Some(il::Operand::Reg(reg)) if self.is_frame_register(*reg))
+            }
+
+            // Spilling to and reloading from the frame, by `ldr`, `str`,
+            // `ldm` and `stm`, which go up from the base.
+            Opcode::LDR
+            | Opcode::STR
+            | Opcode::LDM(true, false, ..)
+            | Opcode::STM(true, false, ..) => operands().iter().any(|operand| {
+                matches!(operand, il::Operand::Memory { base: Some(base), .. } if self.is_frame_register(*base))
+            }),
+
+            _ => false,
+        }
+    }
+
+    /// ARM code reaches its data through literal pool words, and PIC code
+    /// stores a *distance* there rather than an address: the word is added to
+    /// `pc`, or used as an offset from a base built that way.
+    ///
+    /// ```text
+    /// ldr r0, [pc, 0x4]     ; load the pool word
+    /// add r0, pc, r0        ; add it to pc: the word is a distance
+    /// ...
+    /// ldr r3, [pc, 0xa0]
+    /// ldr r3, [pc, r3]      ; read a GOT entry at that distance
+    /// ```
+    ///
+    /// Such a word changes whenever the linker moves the data it reaches,
+    /// which is every release, so it is marked as a stored address, but only
+    /// when the address it forms lies inside `space`. A distance to something
+    /// outside the image, such as the kernel a decompressor stub unpacks,
+    /// stays a value: it changes because the thing it measures changed. A
+    /// pool word used any other way, such as a size or a mask, stays a value.
+    /// Measured on zlib built as an ARM shared library, these words alone made
+    /// 18 unedited functions read as changed.
+    fn constant_kinds(
+        &self,
+        code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+    ) -> Vec<ConstantKind> {
+        track_pool_words(code, body, space, PcModel::A32).kinds
+    }
+
+    fn formed_addresses(
+        &self,
+        code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        _memory: &Memory<'_>,
+    ) -> Vec<Option<u64>> {
+        track_pool_words(code, body, space, PcModel::A32).formed
+    }
+
+    /// Almost every ARM instruction runs always: its top four bits are
+    /// `0xE`, or `0xF` for the few with no condition. Data has no such
+    /// bias. Measured on zlib, Lua and tinyxml2 for ARM, at least 40% of the
+    /// words of every function of 16 words or more are such, and 65% for all
+    /// but one in twenty. Their symbol tables, strings, `.rodata`, relocations
+    /// and unwind tables reach at most 6%. So a quarter is the line.
+    ///
+    /// Below 16 words a function is not judged: a stub can look like
+    /// anything.
+    fn contents(&self, code: &[u8], _insns: &[Insn], _space: &AddressSpace) -> Contents {
+        const FEWEST_WORDS: usize = 16;
+
+        let words: Vec<u32> = code
+            .as_chunks::<INSN_WIDTH>()
+            .0
+            .iter()
+            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect();
+        if words.len() < FEWEST_WORDS {
+            return Contents::Code;
+        }
+        let always = words.iter().filter(|&&word| word >> 28 >= 0xe).count();
+        if always * 4 < words.len() { Contents::Data } else { Contents::Code }
     }
 }
 
@@ -715,7 +718,7 @@ fn long_thunk_target(body: &[Insn], pc: PcModel) -> Option<u64> {
 }
 
 /// The calls of `insns`, the tail calls, and the jump of a range extension
-/// thunk to where it formed. See [`super::Arch::call_targets`].
+/// thunk to where it formed. See [`super::Recovery::call_targets`].
 pub(super) fn call_targets_through_thunks(
     insns: &[Insn],
     pc: PcModel,
@@ -1636,7 +1639,7 @@ mod tests {
     }
 
     /// A zero word decodes as `andeq r0, r0, r0`, a real instruction, so the
-    /// instruction-level test does not claim it. Only [`Arch::trim_padding`],
+    /// instruction-level test does not claim it. Only [`Recovery::trim_padding`],
     /// which reads the bytes, removes a run of zeros from the end of a
     /// function. The two tests differ on purpose: mistaking a zero word inside
     /// a function for padding would drop real code.

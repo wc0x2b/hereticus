@@ -51,10 +51,14 @@ twins in different orders, and their callers are twins too.
 
 `scan.rs` and `arch/` find 45795 of 46006 functions exactly in stripped
 libraries, over ARM, Thumb-2, AArch64 and MIPS, and few Rust crates do
-that. They depend only on `address.rs` and `obj::Function`, and the
-decoders are already a crate, `crates/hereticus-il`. But the `Arch` trait
-holds about 30 methods of rules, which `scan.rs` and the matching both
-read. Split a stable API for recovery out of it first.
+that. The decoders are a crate, `crates/hereticus-il`, and `scan.rs` and
+`raw.rs` read code only through the `Recovery` trait, apart from the
+rules of the matching in `Arch`. What is left is the move: put
+`Recovery`, the implementation of it for each architecture, `scan.rs`,
+`raw.rs` and `address.rs` into a crate of their own. Each file of rules
+in `arch/` holds both traits, so split it first, as the decoders were
+split, and give `scan.rs` its own type of a recovered function in place
+of `obj::Function`.
 
 ## Unpack more firmware containers
 

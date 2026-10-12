@@ -23,7 +23,9 @@ use super::mips::{
     Decoded as MipsDecoded, GP, Mips32, SP_REG, T9, access, constant, decoded, first_register, is,
     operands_of, register_name,
 };
-use super::{Arch, CallTarget, Decoder, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory};
+use super::{
+    Arch, CallTarget, Decoder, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory, Recovery,
+};
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
 use rabbitizer::opcodes::Opcode;
@@ -35,6 +37,150 @@ fn mips16_op(insn: &Insn) -> Option<Op> {
     match decoded(insn)? {
         MipsDecoded::Mips16(op) => Some(op),
         _ => None,
+    }
+}
+
+impl Recovery for Mips16 {
+    fn jump_tables(
+        &self,
+        memory: &Memory<'_>,
+        code: core::ops::Range<u64>,
+        insns: &[Insn],
+    ) -> Vec<JumpTable> {
+        let entry = |address: u64| {
+            let bytes = memory.bytes(address, HALFWORD)?;
+            Some(self.base.read_halfword([bytes[0], bytes[1]]) as i16)
+        };
+        (0..insns.len())
+            .filter_map(|index| read_jump_table(self, insns, index, &code, &entry))
+            .collect()
+    }
+
+    /// An address taken from the program counter, or a lower half added to
+    /// a page that PIC code read from the global offset table, through a
+    /// copy of the global pointer:
+    ///
+    /// ```text
+    /// la    a1, text               lw    a1, %got(text)(s0)
+    ///                              addiu a1, %lo(text)
+    /// ```
+    fn data_addresses(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        memory: &Memory<'_>,
+    ) -> Vec<u64> {
+        self.addresses_by_index(body, space, memory)
+            .into_iter()
+            .map(|(_, address)| address)
+            .collect()
+    }
+
+    /// PIC code calls a function it does not reach with `jal` through a
+    /// slot of the global offset table, as MIPS32 does. It reaches the table
+    /// through a copy of the global pointer, as `s0`:
+    ///
+    /// ```text
+    /// lw   v0, %call16(callee)(s0)       lw    v0, %got(local)(s0)
+    /// jalr v0                            addiu v0, %lo(local)
+    /// move t9, v0                        jalr  v0
+    /// ```
+    ///
+    /// A local function is reached as on the right: through a page that a
+    /// slot holds, and its offset in that page.
+    fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
+        let slot_of = |load_at: usize, load: &Insn| {
+            let (offset, base) = load_reference(load)?;
+            if !is(load, Opcode::core_lw) || !holds_global_pointer(insns, load_at, base) {
+                return None;
+            }
+            let global_pointer = global_pointer_before(self, insns, load_at)?;
+            Some(u64::from((global_pointer as u32).wrapping_add(offset as u32)))
+        };
+        let through_slot = |index: usize| {
+            let register = operands_of(&insns[index]).last().and_then(super::mips::register)?;
+            let (written_at, written) = last_write(insns, index, register)?;
+            let operands = operands_of(written);
+            match operands.as_slice() {
+                [_, il::Operand::Reg(source), low] if is(written, Opcode::core_addiu) => {
+                    let (load_at, load) = last_write(insns, written_at, *source)?;
+                    let slot = slot_of(load_at, load)?;
+                    Some(CallTarget::PageOffset { slot, offset: constant(low)? })
+                }
+                _ => slot_of(written_at, written).map(CallTarget::Slot),
+            }
+        };
+        insns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, insn)| match insn.kind {
+                InsnKind::Call { target: Some(target) } => {
+                    Some((index, Some(CallTarget::Address(target))))
+                }
+                InsnKind::Call { target: None } => Some((index, through_slot(index))),
+                InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
+                    Some((index, Some(CallTarget::Address(target))))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn is_function_entry(&self, body: &[Insn]) -> bool {
+        body.get(..GP_PREAMBLE_LENGTH).is_some_and(is_gp_preamble)
+    }
+
+    /// PIC computes the global pointer before `save`.
+    fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
+        let start = earlier.len().saturating_sub(GP_PREAMBLE_LENGTH);
+        if is_gp_preamble(&earlier[start..]) { GP_PREAMBLE_LENGTH } else { 0 }
+    }
+
+    /// A pointer to a MIPS16e function has bit 0 set, as on Thumb-2.
+    fn tagged_function(&self, word: u64) -> Option<u64> {
+        (word & 1 == 1).then_some(word & !1)
+    }
+
+    /// `save` makes the frame of almost every function that calls, and a
+    /// leaf drops the stack pointer as MIPS32 does.
+    fn is_prologue(&self, insn: &Insn) -> bool {
+        mips16_op(insn) == Some(Op::Save) || self.base.is_prologue(insn)
+    }
+
+    fn is_tail_call(&self, insn: &Insn) -> bool {
+        matches!(insn.kind, InsnKind::Jump { target: None })
+    }
+
+    /// A zero halfword pads as `nop` does, and reads as this `addiu`. In
+    /// the GCC builds of the tests, no instruction is a zero halfword: each
+    /// is fill or a word of a literal pool.
+    fn is_padding(&self, insn: &Insn) -> bool {
+        is(insn, Opcode::core_nop)
+            || (is(insn, Opcode::core_addiu)
+                && operands_of(insn).as_slice()
+                    == [
+                        il::Operand::Reg(il::Reg::General(16)),
+                        il::Operand::Reg(SP_REG),
+                        il::Operand::Const(0),
+                    ])
+    }
+
+    /// Only whole halfwords at the end are removed: the `nop` and zero fill.
+    fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
+        let mut end = bytes.len() - bytes.len() % HALFWORD;
+        while end >= HALFWORD && matches!(self.halfword(bytes, end - HALFWORD), Some(0x6500 | 0)) {
+            end -= HALFWORD;
+        }
+        &bytes[..end]
+    }
+
+    fn stub_arch(&self) -> Option<&'static dyn Arch> {
+        Some(if self.base.is_big() { &Mips32::BIG } else { &Mips32::LITTLE })
+    }
+
+    fn function_address(&self, pointer: u64) -> u64 {
+        pointer & !1
     }
 }
 
@@ -103,43 +249,7 @@ impl Arch for Mips16 {
         Contents::Code
     }
 
-    fn jump_tables(
-        &self,
-        memory: &Memory<'_>,
-        code: core::ops::Range<u64>,
-        insns: &[Insn],
-    ) -> Vec<JumpTable> {
-        let entry = |address: u64| {
-            let bytes = memory.bytes(address, HALFWORD)?;
-            Some(self.base.read_halfword([bytes[0], bytes[1]]) as i16)
-        };
-        (0..insns.len())
-            .filter_map(|index| read_jump_table(self, insns, index, &code, &entry))
-            .collect()
-    }
-
-    /// An address taken from the program counter, or a lower half added to
-    /// a page that PIC code read from the global offset table, through a
-    /// copy of the global pointer:
-    ///
-    /// ```text
-    /// la    a1, text               lw    a1, %got(text)(s0)
-    ///                              addiu a1, %lo(text)
-    /// ```
-    fn data_addresses(
-        &self,
-        _code: &[u8],
-        body: &[Insn],
-        space: &AddressSpace,
-        memory: &Memory<'_>,
-    ) -> Vec<u64> {
-        self.addresses_by_index(body, space, memory)
-            .into_iter()
-            .map(|(_, address)| address)
-            .collect()
-    }
-
-    /// What [`Arch::data_addresses`] finds, and also the slot of the
+    /// What [`Recovery::data_addresses`] finds, and also the slot of the
     /// global offset table each load through the global pointer reads.
     fn formed_addresses(
         &self,
@@ -162,116 +272,10 @@ impl Arch for Mips16 {
         formed
     }
 
-    /// PIC code calls a function it does not reach with `jal` through a
-    /// slot of the global offset table, as MIPS32 does. It reaches the table
-    /// through a copy of the global pointer, as `s0`:
-    ///
-    /// ```text
-    /// lw   v0, %call16(callee)(s0)       lw    v0, %got(local)(s0)
-    /// jalr v0                            addiu v0, %lo(local)
-    /// move t9, v0                        jalr  v0
-    /// ```
-    ///
-    /// A local function is reached as on the right: through a page that a
-    /// slot holds, and its offset in that page.
-    fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
-        let slot_of = |load_at: usize, load: &Insn| {
-            let (offset, base) = load_reference(load)?;
-            if !is(load, Opcode::core_lw) || !holds_global_pointer(insns, load_at, base) {
-                return None;
-            }
-            let global_pointer = global_pointer_before(self, insns, load_at)?;
-            Some(u64::from((global_pointer as u32).wrapping_add(offset as u32)))
-        };
-        let through_slot = |index: usize| {
-            let register = operands_of(&insns[index]).last().and_then(super::mips::register)?;
-            let (written_at, written) = last_write(insns, index, register)?;
-            let operands = operands_of(written);
-            match operands.as_slice() {
-                [_, il::Operand::Reg(source), low] if is(written, Opcode::core_addiu) => {
-                    let (load_at, load) = last_write(insns, written_at, *source)?;
-                    let slot = slot_of(load_at, load)?;
-                    Some(CallTarget::PageOffset { slot, offset: constant(low)? })
-                }
-                _ => slot_of(written_at, written).map(CallTarget::Slot),
-            }
-        };
-        insns
-            .iter()
-            .enumerate()
-            .filter_map(|(index, insn)| match insn.kind {
-                InsnKind::Call { target: Some(target) } => {
-                    Some((index, Some(CallTarget::Address(target))))
-                }
-                InsnKind::Call { target: None } => Some((index, through_slot(index))),
-                InsnKind::Jump { target: Some(target) } if super::leaves(insns, target) => {
-                    Some((index, Some(CallTarget::Address(target))))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn is_function_entry(&self, body: &[Insn]) -> bool {
-        body.get(..GP_PREAMBLE_LENGTH).is_some_and(is_gp_preamble)
-    }
-
     fn global_pointer_setup(&self, body: &[Insn]) -> Option<GlobalPointerSetup> {
         let preamble = body.get(..GP_PREAMBLE_LENGTH).filter(|run| is_gp_preamble(run))?;
         let register = register_name(first_register(preamble.last()?)?)?.to_string();
         Some(GlobalPointerSetup { parts: (0..GP_PREAMBLE_LENGTH).collect(), register })
-    }
-
-    /// PIC computes the global pointer before `save`.
-    fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
-        let start = earlier.len().saturating_sub(GP_PREAMBLE_LENGTH);
-        if is_gp_preamble(&earlier[start..]) { GP_PREAMBLE_LENGTH } else { 0 }
-    }
-
-    /// A pointer to a MIPS16e function has bit 0 set, as on Thumb-2.
-    fn tagged_function(&self, word: u64) -> Option<u64> {
-        (word & 1 == 1).then_some(word & !1)
-    }
-
-    /// `save` makes the frame of almost every function that calls, and a
-    /// leaf drops the stack pointer as MIPS32 does.
-    fn is_prologue(&self, insn: &Insn) -> bool {
-        mips16_op(insn) == Some(Op::Save) || self.base.is_prologue(insn)
-    }
-
-    fn is_tail_call(&self, insn: &Insn) -> bool {
-        matches!(insn.kind, InsnKind::Jump { target: None })
-    }
-
-    /// A zero halfword pads as `nop` does, and reads as this `addiu`. In
-    /// the GCC builds of the tests, no instruction is a zero halfword: each
-    /// is fill or a word of a literal pool.
-    fn is_padding(&self, insn: &Insn) -> bool {
-        is(insn, Opcode::core_nop)
-            || (is(insn, Opcode::core_addiu)
-                && operands_of(insn).as_slice()
-                    == [
-                        il::Operand::Reg(il::Reg::General(16)),
-                        il::Operand::Reg(SP_REG),
-                        il::Operand::Const(0),
-                    ])
-    }
-
-    /// Only whole halfwords at the end are removed: the `nop` and zero fill.
-    fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
-        let mut end = bytes.len() - bytes.len() % HALFWORD;
-        while end >= HALFWORD && matches!(self.halfword(bytes, end - HALFWORD), Some(0x6500 | 0)) {
-            end -= HALFWORD;
-        }
-        &bytes[..end]
-    }
-
-    fn stub_arch(&self) -> Option<&'static dyn Arch> {
-        Some(if self.base.is_big() { &Mips32::BIG } else { &Mips32::LITTLE })
-    }
-
-    fn function_address(&self, pointer: u64) -> u64 {
-        pointer & !1
     }
 }
 
@@ -501,7 +505,7 @@ impl AddressRules for Mips16 {
     }
 
     /// Each address `body` forms, with the index of the instruction that
-    /// forms it: see [`Arch::data_addresses`].
+    /// forms it: see [`Recovery::data_addresses`].
     fn addresses_by_index(
         &self,
         body: &[Insn],
