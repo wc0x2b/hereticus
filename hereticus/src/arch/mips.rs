@@ -315,7 +315,7 @@ impl Arch for Mips32 {
                 word,
                 &format!("{UNKNOWN_TEXT} {raw:#010x}"),
                 InsnKind::Unknown,
-                super::Opcode::None,
+                super::Opcode::Unread(super::InstructionSet::Mips(self.order)),
             ));
         };
 

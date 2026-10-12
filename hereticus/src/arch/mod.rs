@@ -643,10 +643,11 @@ impl Insn {
 /// The operation one instruction does, as its architecture names it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Opcode {
-    /// No decoder named an operation: bytes it cannot read, or an
-    /// instruction made by hand.
+    /// No decoder named an operation: an instruction made by hand.
     #[default]
     None,
+    /// Bytes the decoder of this instruction set cannot read.
+    Unread(InstructionSet),
     /// A64.
     Aarch64(aarch64::Decoded),
     /// A word of data among code, as a literal pool holds, which no decoder
@@ -662,6 +663,18 @@ pub enum Opcode {
     /// none, in the byte order its halfwords were read in: see
     /// [`mips::Decoded`].
     Mips16(mips::Decoded, mips::ByteOrder),
+}
+
+/// The instruction set a decoder reads, which prints what it read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstructionSet {
+    Aarch64,
+    Arm,
+    Thumb,
+    /// MIPS32, in the byte order its words are read in.
+    Mips(mips::ByteOrder),
+    /// MIPS16e, in the byte order its halfwords are read in.
+    Mips16(mips::ByteOrder),
 }
 
 impl fmt::Display for Insn {
