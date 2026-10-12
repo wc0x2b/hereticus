@@ -229,6 +229,10 @@ fn instruction_lines(
             let printed = insn.to_string();
             let operands = operand_tokens(&printed, named.as_ref());
             let tokens: Vec<&str> = operands.iter().map(|token| token.as_str()).collect();
+            // The operands the instruction shows, with no name for one it
+            // leaves out.
+            let shown: Vec<&str> =
+                tokens.iter().copied().filter(|token| !token.is_empty()).collect();
             // A call can run on a condition, as `blne` does.
             let conditional = |text: String, op| match a32_condition(insn, op) {
                 Some(cond) => format!("if ({cond}) {text}"),
@@ -241,17 +245,17 @@ fn instruction_lines(
             }
             let address =
                 formed.zip(context).map(|(address, context)| Pointed::of(address, context));
-            let text = named_line(arch, insn, &tokens, &address, context, &mut callees);
+            let text = named_line(arch, insn, &shown, &address, context, &mut callees);
             if let Some(text) = text {
                 return conditional(text, None);
             }
             if pages.contains(&index)
                 && matches!(address, Some(Pointed::Address(_)))
-                && let Some(dest) = tokens.first()
+                && let Some(dest) = shown.first()
             {
                 return format!("{dest} = &page");
             }
-            if is_mips && let Some(text) = mips_statement(insn, &tokens, &mut float_condition) {
+            if is_mips && let Some(text) = mips_statement(insn, &shown, &mut float_condition) {
                 return text;
             }
             let source = if named.is_some() { Source::Lift } else { Source::Printed };
@@ -312,9 +316,11 @@ fn operand_tokens(printed: &str, named: Option<&crate::il::Named>) -> Vec<String
     }
 }
 
-/// The operand names of `insn`: see [`operand_tokens`].
+/// The operand names `insn` shows: see [`operand_tokens`].
 fn operand_tokens_of(arch: &dyn Arch, insn: &Insn) -> Vec<String> {
-    operand_tokens(&insn.to_string(), arch.lift_named(insn).as_ref())
+    let mut tokens = operand_tokens(&insn.to_string(), arch.lift_named(insn).as_ref());
+    tokens.retain(|token| !token.is_empty());
+    tokens
 }
 
 /// The MIPS loads of a page from the global offset table: each `lw` whose

@@ -480,70 +480,118 @@ fn cop0(fields: &Fields) -> Option<(Op, String)> {
 /// one names it as another operand, and a multiply into one lifts to
 /// nothing.
 pub(super) fn lift(word: u32) -> Option<il::Lifted> {
+    lift_named(word).map(|named| named.lifted)
+}
+
+/// [`lift`], with the name of each operand as [`decode`] writes it. An
+/// operand it does not write, as the `hi` that `mthi` writes, has an empty
+/// name.
+pub(super) fn lift_named(word: u32) -> Option<il::Named> {
+    use compact_str::{CompactString, format_compact};
     use il::Op;
     let fields = Fields::of(word);
     let decoded = decode(word)?.op;
-    let general = |number: u32| match number {
-        0 => il::Operand::Zero,
-        number => il::Operand::Reg(il::Reg::General(number as u8)),
+    type Named = (il::Operand, CompactString);
+    let general = |number: u32| -> Named {
+        let operand = match number {
+            0 => il::Operand::Zero,
+            number => il::Operand::Reg(il::Reg::General(number as u8)),
+        };
+        (operand, REGISTERS[number as usize].into())
     };
-    let constant = |value: u32| il::Operand::Const(value.into());
+    let constant =
+        |value: u32, name: CompactString| -> Named { (il::Operand::Const(value.into()), name) };
+    let decimal = |value: u32| constant(value, format_compact!("{value}"));
+    let hidden = |reg: il::Reg| -> Named { (il::Operand::Reg(reg), CompactString::default()) };
+    let other = |name: CompactString| -> Named { (il::Operand::Other, name) };
     let (rs, rt, rd) = (general(fields.rs), general(fields.rt), general(fields.rd));
-    let list = |operands: &[il::Operand]| -> il::Operands { operands.iter().copied().collect() };
-    let select = constant(fields.function & 0x7);
+    let select = decimal(fields.function & 0x7);
     let base = match fields.rs {
         0 => None,
         number => Some(il::Reg::General(number as u8)),
     };
-    let memory = il::Operand::memory(base, Some(i64::from(fields.immediate as u16 as i16)));
-    let (op, operands, written) = match decoded {
-        self::Op::Movz | self::Op::Movn => (Op::Select, list(&[rd, rs, rt]), Some(rd)),
-        self::Op::Rotr => (Op::Rotate, list(&[rd, rt, constant(fields.sa)]), Some(rd)),
-        self::Op::Rotrv => (Op::Rotate, list(&[rd, rt, rs]), Some(rd)),
-        self::Op::Mul => (Op::Multiply, list(&[rd, rs, rt]), Some(rd)),
-        self::Op::Clz | self::Op::Clo => (Op::Bits, list(&[rd, rs]), Some(rd)),
-        self::Op::Wsbh => (Op::Bits, list(&[rd, rt]), Some(rd)),
-        self::Op::Seb | self::Op::Seh => (Op::Extend, list(&[rd, rt]), Some(rd)),
+    let offset = fields.offset();
+    let place = match offset.as_str() {
+        "0x0" => format_compact!("[{}]", fields.rs_name()),
+        _ => format_compact!("[{} + {offset}]", fields.rs_name()),
+    };
+    let memory: Named =
+        (il::Operand::memory(base, Some(i64::from(fields.immediate as u16 as i16))), place);
+    let accumulator = |number: u32| other(format_compact!("{}", Accumulator(number)));
+    let (op, named, written): (Op, Vec<Named>, Option<il::Operand>) = match decoded {
+        self::Op::Movz | self::Op::Movn => (Op::Select, vec![rd.clone(), rs, rt], Some(rd.0)),
+        self::Op::Rotr => (Op::Rotate, vec![rd.clone(), rt, decimal(fields.sa)], Some(rd.0)),
+        self::Op::Rotrv => (Op::Rotate, vec![rd.clone(), rt, rs], Some(rd.0)),
+        self::Op::Mul => (Op::Multiply, vec![rd.clone(), rs, rt], Some(rd.0)),
+        self::Op::Clz | self::Op::Clo => (Op::Bits, vec![rd.clone(), rs], Some(rd.0)),
+        self::Op::Wsbh => (Op::Bits, vec![rd.clone(), rt], Some(rd.0)),
+        self::Op::Seb | self::Op::Seh => (Op::Extend, vec![rd.clone(), rt], Some(rd.0)),
         self::Op::Ext => {
-            let size = constant(fields.rd + 1);
-            (Op::BitField, list(&[rt, rs, constant(fields.sa), size]), Some(rt))
+            let size = decimal(fields.rd + 1);
+            (Op::BitField, vec![rt.clone(), rs, decimal(fields.sa), size], Some(rt.0))
         }
         self::Op::Ins => {
-            let size = constant(fields.rd - fields.sa + 1);
-            (Op::BitField, list(&[rt, rs, constant(fields.sa), size]), Some(rt))
+            let size = decimal(fields.rd - fields.sa + 1);
+            (Op::BitField, vec![rt.clone(), rs, decimal(fields.sa), size], Some(rt.0))
         }
         // Only `ac0`, which is `hi` and `lo`, is a register the IL names.
         self::Op::Madd | self::Op::Maddu | self::Op::Msub | self::Op::Msubu if fields.rd == 0 => {
-            (Op::MultiplyAdd, list(&[rs, rt]), None)
+            (Op::MultiplyAdd, vec![rs, rt], None)
         }
-        self::Op::Mult | self::Op::Multu if fields.rd == 0 => (Op::Multiply, list(&[rs, rt]), None),
-        self::Op::Mfhi if fields.rs == 0 => (Op::Move, list(&[rd, il::Operand::Reg(HI)]), Some(rd)),
-        self::Op::Mflo if fields.rs == 0 => (Op::Move, list(&[rd, il::Operand::Reg(LO)]), Some(rd)),
+        self::Op::Mult | self::Op::Multu if fields.rd == 0 => (Op::Multiply, vec![rs, rt], None),
+        self::Op::Mfhi if fields.rs == 0 => {
+            (Op::Move, vec![rd.clone(), (il::Operand::Reg(HI), "ac0".into())], Some(rd.0))
+        }
+        self::Op::Mflo if fields.rs == 0 => {
+            (Op::Move, vec![rd.clone(), (il::Operand::Reg(LO), "ac0".into())], Some(rd.0))
+        }
         self::Op::Mthi if fields.rd == 0 => {
-            (Op::Move, list(&[il::Operand::Reg(HI), rs]), Some(il::Operand::Reg(HI)))
+            (Op::Move, vec![hidden(HI), rs], Some(il::Operand::Reg(HI)))
         }
         self::Op::Mtlo if fields.rd == 0 => {
-            (Op::Move, list(&[il::Operand::Reg(LO), rs]), Some(il::Operand::Reg(LO)))
+            (Op::Move, vec![hidden(LO), rs], Some(il::Operand::Reg(LO)))
         }
         // An accumulator past `ac0` is no register the IL names.
-        self::Op::Mfhi | self::Op::Mflo => (Op::Move, list(&[rd, il::Operand::Other]), Some(rd)),
-        self::Op::Mthi | self::Op::Mtlo => (Op::Move, list(&[il::Operand::Other, rs]), None),
+        self::Op::Mfhi | self::Op::Mflo => {
+            (Op::Move, vec![rd.clone(), accumulator(fields.rs)], Some(rd.0))
+        }
+        self::Op::Mthi | self::Op::Mtlo => (Op::Move, vec![accumulator(fields.rd), rs], None),
         // A move to or from coprocessor 0 names its register and select,
         // which the IL does not track.
-        self::Op::Mfc0 => (Op::System, list(&[rt, il::Operand::Other, select]), Some(rt)),
-        self::Op::Mtc0 => (Op::System, list(&[rt, il::Operand::Other, select]), None),
+        self::Op::Mfc0 | self::Op::Mtc0 => {
+            let register = other(format_compact!("c0r{}", fields.rd));
+            let written = (decoded == self::Op::Mfc0).then_some(rt.0);
+            (Op::System, vec![rt, register, select], written)
+        }
         // `di` and `ei` write the old status to `rt`, where it names one.
-        self::Op::Di | self::Op::Ei if fields.rt == 0 => (Op::System, list(&[]), None),
-        self::Op::Di | self::Op::Ei => (Op::System, list(&[rt]), Some(rt)),
-        self::Op::Wait | self::Op::Eret | self::Op::Deret => (Op::System, list(&[]), None),
-        self::Op::Sigrie => (Op::System, list(&[constant(fields.immediate)]), None),
-        self::Op::Pref => (Op::System, list(&[constant(fields.rt), memory]), None),
-        self::Op::Synci => (Op::System, list(&[memory]), None),
-        self::Op::Rdhwr => (Op::Move, list(&[rt, il::Operand::Other]), Some(rt)),
-        self::Op::JrHb => (Op::Jump, list(&[rs]), None),
-        self::Op::JalrHb => (Op::Call, list(&[rd, rs]), Some(rd)),
+        self::Op::Di | self::Op::Ei if fields.rt == 0 => (Op::System, vec![], None),
+        self::Op::Di | self::Op::Ei => (Op::System, vec![rt.clone()], Some(rt.0)),
+        self::Op::Wait | self::Op::Eret | self::Op::Deret => (Op::System, vec![], None),
+        self::Op::Sigrie => {
+            let code = constant(fields.immediate, format_compact!("{:#x}", fields.immediate));
+            (Op::System, vec![code], None)
+        }
+        self::Op::Pref => {
+            let hint = constant(fields.rt, format_compact!("{:#x}", fields.rt));
+            (Op::System, vec![hint, memory], None)
+        }
+        self::Op::Synci => (Op::System, vec![memory], None),
+        self::Op::Rdhwr => {
+            let register = other(format_compact!("hwr{}", fields.rd));
+            (Op::Move, vec![rt.clone(), register], Some(rt.0))
+        }
+        self::Op::JrHb => (Op::Jump, vec![rs], None),
+        self::Op::JalrHb => {
+            // `jalr` names its link register only when it is not `ra`.
+            let link = match fields.rd {
+                31 => (rd.0, CompactString::default()),
+                _ => rd.clone(),
+            };
+            (Op::Call, vec![link, rs], Some(rd.0))
+        }
         _ => return None,
     };
+    let (operands, names): (il::Operands, il::Names) = named.into_iter().unzip();
 
     let register = |operand: &il::Operand| match operand {
         il::Operand::Reg(reg) => Some(*reg),
@@ -571,7 +619,8 @@ pub(super) fn lift(word: u32) -> Option<il::Lifted> {
 
         _ => {}
     }
-    Some(il::Lifted { op, reads, writes, memory: None, test: None, operands })
+    let lifted = il::Lifted { op, reads, writes, memory: None, test: None, operands };
+    Some(il::Named { lifted, names, write_back: None })
 }
 
 /// Where the IL keeps `hi` and `lo`, as [`super::mips`] does.

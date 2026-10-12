@@ -295,12 +295,8 @@ impl Mips32 {
             //
             // A branch is written from its offset rather than its target,
             // which cannot be resolved when it would lie below address zero.
-            if let Some(offset) = inst.get_branch_offset() {
-                operands = with_target(&operands, i64::from(offset.inner()));
-            } else if let InsnKind::Call { target: Some(target) }
-            | InsnKind::Jump { target: Some(target) } = kind
-            {
-                operands = with_target(&operands, target.wrapping_sub(insn_address) as i64);
+            if let Some(distance) = target_distance(&inst, kind, insn_address) {
+                operands = with_target(&operands, distance);
             }
             format!("{name} {operands}")
         });
@@ -723,6 +719,22 @@ impl Arch for Mips32 {
         match Instruction::new_checked(raw, Vram::new(insn.address as u32), flags) {
             Some(inst) => Some(lift(&inst)),
             None => super::mips32::lift(raw),
+        }
+    }
+
+    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
+        let word = insn.bytes();
+        if insn.kind == InsnKind::Unknown {
+            return None;
+        }
+        let raw = self.order.read_word(word.try_into().ok()?);
+        let flags = InstructionFlags::new(ISA);
+        match Instruction::new_checked(raw, Vram::new(insn.address as u32), flags) {
+            Some(inst) => {
+                let names = names(&inst, insn.kind, insn.address);
+                Some(il::Named { lifted: lift(&inst), names, write_back: None })
+            }
+            None => super::mips32::lift_named(raw),
         }
     }
 
@@ -1996,6 +2008,60 @@ fn lift(inst: &Instruction) -> il::Lifted {
     let op = op_of(inst, kind);
     let operands = inst.valued_operands_iter().map(il_operand).collect();
     il::Lifted { op, reads, writes, memory, test: test_of(inst), operands }
+}
+
+/// How far the target of `inst`, which moves control as `kind` from
+/// `address`, lies from it.
+///
+/// A branch is read from its offset rather than its target, which cannot
+/// be resolved when it would lie below address zero.
+fn target_distance(inst: &Instruction, kind: InsnKind, address: u64) -> Option<i64> {
+    if let Some(offset) = inst.get_branch_offset() {
+        return Some(i64::from(offset.inner()));
+    }
+    match kind {
+        InsnKind::Call { target: Some(target) } | InsnKind::Jump { target: Some(target) } => {
+            Some(target.wrapping_sub(address) as i64)
+        }
+        _ => None,
+    }
+}
+
+/// The name of each operand that [`lift`] gives `inst`, in its order, as
+/// `rabbitizer` writes it with no `$`. `inst` moves control as `kind`, from
+/// `address`.
+fn names(inst: &Instruction, kind: InsnKind, address: u64) -> il::Names {
+    use compact_str::{CompactString, format_compact};
+    let flags = InstructionDisplayFlags::new_gnu_as();
+    let shown = |operand: ValuedOperand| -> CompactString {
+        format_compact!("{}", operand.display::<&str>(inst, &flags, None)).replace('$', "").into()
+    };
+    inst.valued_operands_iter()
+        .map(|operand| match operand {
+            ValuedOperand::core_label(_) | ValuedOperand::core_branch_target_label(_) => {
+                match target_distance(inst, kind, address) {
+                    Some(distance) => il::target_name(distance),
+                    None => shown(operand),
+                }
+            }
+            // `offset(base)`, as `[base + offset]`.
+            ValuedOperand::core_imm_rs(offset, base) => {
+                let base = shown(ValuedOperand::core_rs(base));
+                match offset {
+                    0 => format_compact!("[{base}]"),
+                    offset if offset < 0 => {
+                        format_compact!("[{base} + -0x{:X}]", i32::from(offset).unsigned_abs())
+                    }
+                    offset => format_compact!("[{base} + 0x{offset:X}]"),
+                }
+            }
+            // `jalr` and the GNU `div` print another register before the
+            // one they read.
+            ValuedOperand::core_maybe_rd_rs(_, reg)
+            | ValuedOperand::core_maybe_zero_rs((), reg) => shown(ValuedOperand::core_rs(reg)),
+            operand => shown(operand),
+        })
+        .collect()
 }
 
 /// An operand as the IL names it.
