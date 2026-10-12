@@ -27,7 +27,7 @@ use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operan
 use super::arm32::{
     Arm32, Decoded, Encoding, Extend, Flags, IntegerWord, NEON_LOAD_STORE, NEON_TEXT, PcModel,
     UNKNOWN_TEXT, UNWIND_SECTION, call_targets_through_thunks, classify, condition_name,
-    core_opcode, decode_fallback, decoded_of, decoder_misreads, is_long_thunk, lift_with,
+    core_opcode, decode_fallback, decoded_of, decoder_misreads, is_long_thunk, lift_named_with,
     pool_loads, track_pool_words,
 };
 use super::{
@@ -103,6 +103,106 @@ const PADDING: [[u8; 2]; 3] = [[0x00, 0xbf], [0xc0, 0x46], [0xd4, 0xd4]];
 pub struct Thumb2;
 
 impl Thumb2 {
+    /// Lift `insn`, with the name of each operand where `printing` asks for
+    /// them, as [`Thumb2::read`] prints them.
+    fn lift_as(self, insn: &Insn, printing: Printing) -> Option<crate::il::Named> {
+        use crate::il::{Named, Names, Operand};
+        use compact_str::format_compact;
+        let word = insn.bytes();
+        let halves = match *word {
+            [low, high, second_low, second_high] => Some((
+                u16::from_le_bytes([low, high]),
+                u16::from_le_bytes([second_low, second_high]),
+            )),
+            _ => None,
+        };
+        let named = |names: &dyn Fn() -> Names| match printing {
+            Printing::Skip => Names::new(),
+            Printing::Text => names(),
+        };
+        if let Some(store) = halves.and_then(|(first, second)| wide_store(first, second)) {
+            let names = named(&|| store.names());
+            return Some(Named { lifted: store.lifted(), names, write_back: None });
+        }
+        if let Some(wide) = halves.and_then(|(first, second)| WideWord::of(first, second)) {
+            let names = named(&|| wide.names());
+            return Some(Named { lifted: wide.lifted(), names, write_back: None });
+        }
+        let a32 = match *word {
+            [low, high, second_low, second_high] => {
+                Some(as_a32(u32::from_le_bytes([second_low, second_high, low, high])))
+            }
+            _ => None,
+        };
+        let fallback = a32.map(|a32| (a32, Encoding::T32));
+        let mut named =
+            lift_named_with(InstDecoder::default_thumb(), insn, word, fallback, printing)?;
+        // `yaxpeax-arm` misplaces `imm4` of `movw` and `movt`, so the
+        // constant is read again from the encoding, as the text is.
+        if let Some((first, second)) = halves
+            && let Some(value) = wide_move_value(first, second)
+            && let Some(at) = named
+                .lifted
+                .operands
+                .iter()
+                .rposition(|operand| matches!(operand, Operand::Const(_)))
+        {
+            named.lifted.operands[at] = Operand::Const(u64::from(value));
+            if let Some(name) = named.names.get_mut(at) {
+                *name = format_compact!("{value:#x}");
+            }
+            if let Some(name) = named.names.first_mut() {
+                *name = REGISTER_NAMES[usize::from(second >> 8 & 0xf)].into();
+            }
+        }
+        if printing == Printing::Skip {
+            return Some(named);
+        }
+        // A target counts from this instruction, as [`with_target_text`]
+        // prints it.
+        let target = match insn.kind {
+            InsnKind::Branch { target } | InsnKind::Jump { target } | InsnKind::Call { target } => {
+                target
+            }
+            _ => None,
+        };
+        // A shift right by 32 encodes as one by 0: see [`shift_of_32`].
+        let shifts_by_32 = halves.is_some_and(|(first, second)| {
+            let amount = (second >> 12 & 0b111) << 2 | (second >> 6 & 0b11);
+            first & 0xfe00 == 0xea00 && amount == 0 && matches!(second >> 4 & 0b11, 0b01 | 0b10)
+        });
+        // `tbb` and `tbh` index a table at `pc`; `yaxpeax-arm` 0.4 reads the
+        // shift of `tbh` as one by a register: see [`table_branch`].
+        let table = halves.and_then(|(first, second)| {
+            let (_, _, opcode) = table_branch(first, second)?;
+            let base = REGISTER_NAMES[usize::from(first & 0xf)];
+            let index = REGISTER_NAMES[usize::from(second & 0xf)];
+            Some(match opcode {
+                Opcode::TBH => format_compact!("[{base} + ({index} lsl 1)]"),
+                _ => format_compact!("[{base} + {index}]"),
+            })
+        });
+        for (operand, name) in named.lifted.operands.iter().zip(named.names.iter_mut()) {
+            match operand {
+                Operand::Memory { .. } if table.is_some() => {
+                    *name = table.clone().unwrap_or_default();
+                }
+                Operand::Target(_) => {
+                    if let Some(target) = target {
+                        *name = crate::il::target_name(target.wrapping_sub(insn.address) as i64);
+                    }
+                }
+                Operand::Shifted { .. } if shifts_by_32 => {
+                    if let Some(shifted) = name.strip_suffix(" 0)") {
+                        *name = format_compact!("{shifted} 0x20)");
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(named)
+    }
+
     /// The instruction at `offset` of `code`, which starts at `address`,
     /// and its text where `printing` asks for it. An instruction that an
     /// `it` covers reads as if it ran always: see [`Arch::after_decoding`].
@@ -478,51 +578,11 @@ impl Arch for Thumb2 {
     }
 
     fn lift(&self, insn: &Insn) -> Option<crate::il::Lifted> {
-        let word = insn.bytes();
-        if let [low, high, second_low, second_high] = *word
-            && let Some(store) = wide_store(
-                u16::from_le_bytes([low, high]),
-                u16::from_le_bytes([second_low, second_high]),
-            )
-        {
-            return Some(store.lifted());
-        }
-        if let [low, high, second_low, second_high] = *word
-            && let Some(wide) = WideWord::of(
-                u16::from_le_bytes([low, high]),
-                u16::from_le_bytes([second_low, second_high]),
-            )
-        {
-            return Some(wide.lifted());
-        }
-        let a32 = match *word {
-            [low, high, second_low, second_high] => {
-                Some(as_a32(u32::from_le_bytes([second_low, second_high, low, high])))
-            }
-            _ => None,
-        };
-        let mut lifted = lift_with(
-            InstDecoder::default_thumb(),
-            insn,
-            word,
-            a32.map(|a32| (a32, Encoding::T32)),
-        )?;
-        // `yaxpeax-arm` misplaces `imm4` of `movw` and `movt`, so the
-        // constant is read again from the encoding, as the text is.
-        if let [low, high, second_low, second_high] = *word
-            && let Some(value) = wide_move_value(
-                u16::from_le_bytes([low, high]),
-                u16::from_le_bytes([second_low, second_high]),
-            )
-            && let Some(constant) = lifted
-                .operands
-                .iter_mut()
-                .rev()
-                .find(|operand| matches!(operand, crate::il::Operand::Const(_)))
-        {
-            *constant = crate::il::Operand::Const(u64::from(value));
-        }
-        Some(lifted)
+        self.lift_as(insn, Printing::Skip).map(|named| named.lifted)
+    }
+
+    fn lift_named(&self, insn: &Insn) -> Option<crate::il::Named> {
+        self.lift_as(insn, Printing::Text)
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
@@ -620,6 +680,19 @@ impl WideStore {
             0 => format!("{value}, [{base}]"),
             offset => format!("{value}, [{base}, {offset:#x}]"),
         }
+    }
+
+    /// The name of each operand of [`WideStore::lifted`], as
+    /// [`WideStore::operands`] prints it.
+    fn names(self) -> crate::il::Names {
+        use compact_str::format_compact;
+        let (value, base) =
+            (REGISTER_NAMES[usize::from(self.value)], REGISTER_NAMES[usize::from(self.base)]);
+        let place = match self.offset {
+            0 => format_compact!("[{base}]"),
+            offset => format_compact!("[{base} + {offset:#x}]"),
+        };
+        [value.into(), place].into_iter().collect()
     }
 
     /// The store as the IL reads it.
@@ -770,6 +843,20 @@ impl WideWord {
                 )
             }
             Self::Integer(word) => (word.printed_name(), word.operands()),
+        }
+    }
+
+    /// The name of each operand of [`WideWord::lifted`], as
+    /// [`WideWord::text`] prints it.
+    fn names(self) -> crate::il::Names {
+        use compact_str::{CompactString, format_compact};
+        let name = |number: u32| CompactString::from(REGISTER_NAMES[number as usize]);
+        match self {
+            Self::NotConstant { rd, value, .. } => {
+                [name(rd), format_compact!("{value:#x}")].into_iter().collect()
+            }
+            Self::Shift { rd, rn, rm, .. } => [name(rd), name(rn), name(rm)].into_iter().collect(),
+            Self::Integer(word) => word.names(),
         }
     }
 

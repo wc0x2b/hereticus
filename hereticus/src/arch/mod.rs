@@ -638,6 +638,40 @@ pub enum Opcode {
     Mips16(mips::Decoded, mips::ByteOrder),
 }
 
+/// The decoder that read `insn`, by its opcode, where one did.
+///
+/// A body can mix instruction sets, as a Thumb-2 function that goes on in
+/// A32 after `bx pc`, so the decoder of the function may not be the one of
+/// each instruction.
+pub(crate) fn reader_of(insn: &Insn) -> Option<&'static dyn Arch> {
+    use InstructionSet as Set;
+    use mips::ByteOrder;
+    Some(match insn.opcode {
+        Opcode::None | Opcode::Data => return None,
+        Opcode::Aarch64(_) | Opcode::Unread(Set::Aarch64) => &aarch64::Aarch64,
+        Opcode::Arm(_) | Opcode::Unread(Set::Arm) => &arm32::Arm32,
+        Opcode::Thumb(_) | Opcode::Unread(Set::Thumb) => &thumb::Thumb2,
+        Opcode::Mips(_, ByteOrder::Big) | Opcode::Unread(Set::Mips(ByteOrder::Big)) => {
+            &mips::Mips32::BIG
+        }
+        Opcode::Mips(_, ByteOrder::Little) | Opcode::Unread(Set::Mips(ByteOrder::Little)) => {
+            &mips::Mips32::LITTLE
+        }
+        Opcode::Mips16(_, ByteOrder::Big) | Opcode::Unread(Set::Mips16(ByteOrder::Big)) => {
+            &mips16::Mips16::BIG
+        }
+        Opcode::Mips16(_, ByteOrder::Little) | Opcode::Unread(Set::Mips16(ByteOrder::Little)) => {
+            &mips16::Mips16::LITTLE
+        }
+    })
+}
+
+/// [`Arch::lift_named`] of `insn`, by the decoder that read it: see
+/// [`reader_of`].
+pub fn lift_named(insn: &Insn) -> Option<crate::il::Named> {
+    reader_of(insn)?.lift_named(insn)
+}
+
 /// Whether a decoder prints what it reads. Printing costs more than
 /// reading, and only a reader needs the text, so a decoder prints only on
 /// demand.

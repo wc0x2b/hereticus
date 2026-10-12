@@ -785,6 +785,13 @@ impl Arch for Arm32 {
         let a32 = word.try_into().ok().map(u32::from_le_bytes);
         lift_with(InstDecoder::default(), insn, word, a32.map(|a32| (a32, Encoding::A32)))
     }
+
+    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
+        let word = insn.bytes();
+        let a32 = word.try_into().ok().map(u32::from_le_bytes);
+        let fallback = a32.map(|a32| (a32, Encoding::A32));
+        lift_named_with(InstDecoder::default(), insn, word, fallback, Printing::Text)
+    }
 }
 
 /// Decode `word` again with `decoder` and lift it. A word the decoder
@@ -798,6 +805,18 @@ pub(super) fn lift_with(
     word: &[u8],
     fallback: Option<(u32, Encoding)>,
 ) -> Option<il::Lifted> {
+    lift_named_with(decoder, insn, word, fallback, Printing::Skip).map(|named| named.lifted)
+}
+
+/// [`lift_with`], with the name of each operand where `printing` asks for
+/// them: see [`il::Named`].
+pub(super) fn lift_named_with(
+    decoder: InstDecoder,
+    insn: &Insn,
+    word: &[u8],
+    fallback: Option<(u32, Encoding)>,
+    printing: Printing,
+) -> Option<il::Named> {
     if insn.kind == InsnKind::Unknown {
         return None;
     }
@@ -805,10 +824,19 @@ pub(super) fn lift_with(
     let decoded = decoder.decode_into(&mut inst, &mut U8Reader::new(word)).is_ok();
     let misread = fallback.is_some_and(|(a32, encoding)| decoder_misreads(a32, encoding));
     if decoded && inst.opcode != Opcode::Invalid && !misread {
-        Some(lift(&inst))
+        Some(lift_named(&inst, printing))
     } else {
         let (a32, encoding) = fallback?;
-        lift_fallback(a32, encoding)
+        let lifted = lift_fallback(a32, encoding)?;
+        let names = match printing {
+            Printing::Skip => il::Names::new(),
+            Printing::Text => fallback_names(a32, encoding)?,
+        };
+        let write_back = match printing {
+            Printing::Skip => None,
+            Printing::Text => fallback_write_back(a32, encoding),
+        };
+        Some(il::Named { lifted, names, write_back })
     }
 }
 
@@ -826,8 +854,9 @@ enum Role {
     StoreExclusive,
 }
 
-/// Lift one decoded A32 or T32 instruction.
-fn lift(inst: &Instruction) -> il::Lifted {
+/// Lift one decoded A32 or T32 instruction, with the name of each operand
+/// where `printing` asks for them.
+fn lift_named(inst: &Instruction, printing: Printing) -> il::Named {
     let mut operands: Vec<Operand> =
         inst.operands.iter().copied().take_while(|operand| *operand != Operand::Nothing).collect();
     // `yaxpeax` gives an A32 compare the unused destination field first, as
@@ -839,6 +868,31 @@ fn lift(inst: &Instruction) -> il::Lifted {
     // as in `mvn r0, r0, 0x1`.
     if matches!(inst.opcode, Opcode::MVN | Opcode::MOV) && operands.len() == 3 {
         operands.remove(1);
+    }
+    // The names follow each change to the operands below.
+    let mut names: il::Names = match printing {
+        Printing::Skip => il::Names::new(),
+        Printing::Text => operands.iter().map(|operand| operand_name(*operand)).collect(),
+    };
+    let mut write_back = match printing {
+        Printing::Skip => None,
+        Printing::Text => operands.iter().find_map(|operand| write_back_name(*operand)),
+    };
+    // `yaxpeax-arm` prints a load or store of one register that steps `sp`
+    // as `pop` or `push` of a list of one.
+    let sp = Reg::from_u8(REG_SP as u8);
+    if let (Opcode::LDR | Opcode::STR, [Operand::Reg(value), access], [_, _]) =
+        (inst.opcode, operands.as_slice(), names.as_slice())
+        && matches!(
+            (inst.opcode, *access),
+            (Opcode::LDR, Operand::RegDerefPostindexOffset(base, 4, true, false))
+                | (Opcode::STR, Operand::RegDerefPreindexOffset(base, 4, false, true))
+                if base == sp
+        )
+    {
+        let list = compact_str::format_compact!("{{{}}}", register_name(*value));
+        names = [list, CompactString::default()].into_iter().collect();
+        write_back = None;
     }
     let mut reads = il::RegSet::EMPTY;
     let mut writes = il::RegSet::EMPTY;
@@ -894,11 +948,17 @@ fn lift(inst: &Instruction) -> il::Lifted {
     if is_binary(lifted.op) && lifted.operands.len() == 2 {
         let destination = lifted.operands[0];
         lifted.operands.insert(1, destination);
+        if !names.is_empty() {
+            names.insert(1, CompactString::default());
+        }
     }
     // `rsb` subtracts the other way round, so its values swap to read as
     // `sub` does: `rsb r0, r1, #0` is `0 - r1`.
     if matches!(inst.opcode, Opcode::RSB | Opcode::RSC) && lifted.operands.len() == 3 {
         lifted.operands.swap(1, 2);
+        if names.len() == 3 {
+            names.swap(1, 2);
+        }
     }
     // `mov r4, r1, lsl #4` is the shift `lsl r4, r1, #4`.
     if let (Opcode::MOV, [_, Operand::RegShift(shift)]) = (inst.opcode, operands.as_slice()) {
@@ -921,12 +981,20 @@ fn lift(inst: &Instruction) -> il::Lifted {
             RegShiftStyle::RegReg(shift) => il_reg(shift.shifter())
                 .map(|by| (op_of_style(shift.stype()), shift.shiftee(), il::Operand::Reg(by))),
         };
-        if let Some((op, source, amount)) = shifted
-            && let Some(source) = il_reg(source)
+        if let Some((op, source_reg, amount)) = shifted
+            && let Some(source) = il_reg(source_reg)
         {
             lifted.op = op;
             lifted.operands =
                 [lifted.operands[0], il::Operand::Reg(source), amount].into_iter().collect();
+            if let [dest, _] = names.as_slice() {
+                let amount_name = match shift.into_shift() {
+                    RegShiftStyle::RegImm(shift) => compact_str::format_compact!("{}", shift.imm()),
+                    RegShiftStyle::RegReg(shift) => register_name(shift.shifter()),
+                };
+                names =
+                    [dest.clone(), register_name(source_reg), amount_name].into_iter().collect();
+            }
         }
     }
     // `mvn r0, #1` puts the constant `~1` in `r0`, as `mov` would.
@@ -937,7 +1005,154 @@ fn lift(inst: &Instruction) -> il::Lifted {
         lifted.operands = [*dest, inverted].into_iter().collect();
         lifted.op = il::Op::Move;
     }
-    lifted
+    il::Named { lifted, names, write_back }
+}
+
+/// The names `yaxpeax-arm` 0.4 prints for the general registers. Unlike
+/// [`ARM_REGISTERS`], it calls `r10` by its number.
+const PRINTED_REGISTERS: [&str; 16] = [
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "r10", "fp", "ip", "sp", "lr", "pc",
+];
+
+/// The name of `reg`, as `yaxpeax-arm` prints it.
+fn register_name(reg: Reg) -> CompactString {
+    PRINTED_REGISTERS[usize::from(reg.number() & 15)].into()
+}
+
+/// `operand`, where it is no access and no shift, as `yaxpeax-arm` prints
+/// it.
+fn printed_operand(operand: Operand) -> CompactString {
+    use compact_str::format_compact;
+    let lower = |text: String| CompactString::from(text.to_ascii_lowercase());
+    match operand {
+        Operand::Reg(reg) | Operand::RegWBack(reg, false) => register_name(reg),
+        Operand::RegWBack(reg, true) => format_compact!("{}!", register_name(reg)),
+        Operand::RegList(list) => {
+            let names: Vec<&str> = (0..16)
+                .filter(|bit| list & (1 << bit) != 0)
+                .map(|bit| PRINTED_REGISTERS[bit])
+                .collect();
+            format_compact!("{{{}}}", names.join(", "))
+        }
+        Operand::Imm12(value) => format_compact!("{value:#x}"),
+        Operand::Imm32(value) => format_compact!("{value:#x}"),
+        Operand::CoprocOption(number) => format_compact!("{{{number:#x}}}"),
+        Operand::CReg(creg) => format_compact!("c{}", creg.number()),
+        Operand::StatusRegMask(mask) => lower(format!("{mask:?}")),
+        Operand::BankedReg(bank, reg) => {
+            format_compact!(
+                "{}_{}",
+                PRINTED_REGISTERS[usize::from(reg.number() & 15)],
+                lower(format!("{bank:?}"))
+            )
+        }
+        Operand::BankedSPSR(bank) => format_compact!("spsr_{}", lower(format!("{bank:?}"))),
+        Operand::APSR => "apsr".into(),
+        Operand::SPSR => "spsr".into(),
+        Operand::CPSR => "cpsr".into(),
+        _ => CompactString::default(),
+    }
+}
+
+/// The register `shift` shifts, and the shift as `yaxpeax-arm` prints
+/// it, as `lsl 4` or `asr r2`. A left shift by zero is none.
+fn shift_parts(shift: RegShift) -> (CompactString, Option<CompactString>) {
+    use compact_str::format_compact;
+    let style = |style: ShiftStyle| match style {
+        ShiftStyle::LSL => "lsl",
+        ShiftStyle::LSR => "lsr",
+        ShiftStyle::ASR => "asr",
+        ShiftStyle::ROR => "ror",
+    };
+    match shift.into_shift() {
+        RegShiftStyle::RegImm(shift) if shift.imm() == 0 && shift.stype() == ShiftStyle::LSL => {
+            (register_name(shift.shiftee()), None)
+        }
+        RegShiftStyle::RegImm(shift) => (
+            register_name(shift.shiftee()),
+            Some(format_compact!("{} {}", style(shift.stype()), shift.imm())),
+        ),
+        RegShiftStyle::RegReg(shift) => (
+            register_name(shift.shiftee()),
+            Some(format_compact!("{} {}", style(shift.stype()), register_name(shift.shifter()))),
+        ),
+    }
+}
+
+/// A register shifted by `shift`, as `(r1 lsl 4)`, or the register alone
+/// where the shift is a left shift by zero. `minus` marks an index that the
+/// access subtracts.
+fn shift_name(shift: RegShift, minus: &str) -> CompactString {
+    use compact_str::format_compact;
+    match shift_parts(shift) {
+        (reg, None) => format_compact!("{minus}{reg}"),
+        (reg, Some(shift)) => format_compact!("({minus}{reg} {shift})"),
+    }
+}
+
+/// The name of `operand`, as the IL view shows it: a register as
+/// `yaxpeax-arm` prints it, an access as `[r0 + 0x4]`, and a target as
+/// `$+0x24`.
+fn operand_name(operand: Operand) -> CompactString {
+    use compact_str::format_compact;
+    let sign = |add: bool| if add { "+" } else { "-" };
+    match operand {
+        Operand::RegShift(shift) => shift_name(shift, ""),
+        Operand::RegDeref(base)
+        | Operand::RegDerefPostindexOffset(base, ..)
+        | Operand::RegDerefPostindexReg(base, ..)
+        | Operand::RegDerefPostindexRegShift(base, ..) => {
+            format_compact!("[{}]", register_name(base))
+        }
+        Operand::RegDerefPreindexOffset(base, 0, ..) => {
+            format_compact!("[{}]", register_name(base))
+        }
+        Operand::RegDerefPreindexOffset(base, offset, add, _) => {
+            format_compact!("[{} {} {offset:#x}]", register_name(base), sign(add))
+        }
+        Operand::RegDerefPreindexReg(base, index, add, _) => {
+            format_compact!("[{} {} {}]", register_name(base), sign(add), register_name(index))
+        }
+        Operand::RegDerefPreindexRegShift(base, shift, add, _) => match shift_parts(shift) {
+            (index, None) => format_compact!("[{} {} {index}]", register_name(base), sign(add)),
+            (_, Some(_)) => format_compact!(
+                "[{} + {}]",
+                register_name(base),
+                shift_name(shift, if add { "" } else { "-" })
+            ),
+        },
+        Operand::BranchOffset(words) => il::target_name(i64::from(words) << 2),
+        Operand::BranchThumbOffset(halfwords) => il::target_name(i64::from(halfwords) << 1),
+        Operand::Nothing => CompactString::default(),
+        _ => printed_operand(operand),
+    }
+}
+
+/// What a post-index access through `operand` adds to its base after it,
+/// as `yaxpeax-arm` prints it.
+fn write_back_name(operand: Operand) -> Option<CompactString> {
+    use compact_str::format_compact;
+    let minus = |add: bool| if add { "" } else { "-" };
+    match operand {
+        Operand::RegDerefPostindexOffset(_, 0, ..) => None,
+        Operand::RegDerefPostindexOffset(_, offset, add, _) => {
+            Some(format_compact!("{}{offset:#x}", minus(add)))
+        }
+        Operand::RegDerefPostindexReg(_, index, add, _) => {
+            Some(format_compact!("{}{}", minus(add), register_name(index)))
+        }
+        Operand::RegDerefPostindexRegShift(_, shift, add, _) => {
+            let shifted = match shift_parts(shift) {
+                (reg, None) => reg,
+                (reg, Some(shift)) => format_compact!("{reg}, {shift}"),
+            };
+            Some(match add {
+                true => shifted,
+                false => format_compact!("- {shifted}"),
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Report whether `op` computes its result from two values.
@@ -2154,6 +2369,71 @@ impl IntegerWord {
         }
     }
 
+    /// The name of each operand that [`IntegerWord::lift`] gives, as
+    /// [`IntegerWord::operands`] prints it.
+    pub(super) fn names(self) -> il::Names {
+        use compact_str::format_compact;
+        let name = |number: u32| CompactString::from(ARM_REGISTERS[number as usize]);
+        let hex = |value: u32| format_compact!("{value:#x}");
+        match self {
+            Self::Extend { rd, rn, rm, rotation, .. } => {
+                let rotated = match rotation {
+                    0 => name(rm),
+                    _ => format_compact!("({} ror {rotation:#x})", name(rm)),
+                };
+                [Some(name(rd)), rn.map(name), Some(rotated)].into_iter().flatten().collect()
+            }
+            Self::Insert { rd, rn, lsb, width } => {
+                [Some(name(rd)), rn.map(name), Some(hex(lsb)), Some(hex(width))]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+            }
+            Self::Extract { rd, rn, lsb, width, .. } => {
+                [name(rd), name(rn), hex(lsb), hex(width)].into_iter().collect()
+            }
+            Self::ShiftByRegister { rd, rm, rs, .. } => {
+                [name(rd), name(rm), name(rs)].into_iter().collect()
+            }
+            Self::HalfwordMultiply { kind, rd, ra, rn, rm, .. } => {
+                let listed: &[u32] = match kind {
+                    HalfwordMultiply::Multiply | HalfwordMultiply::WordMultiply => &[rd, rn, rm],
+                    HalfwordMultiply::MultiplyAdd | HalfwordMultiply::WordMultiplyAdd => {
+                        &[rd, rn, rm, ra]
+                    }
+                    HalfwordMultiply::LongMultiplyAdd => &[ra, rd, rn, rm],
+                };
+                listed.iter().map(|&number| name(number)).collect()
+            }
+            Self::Halfword { access, rt, rn, offset, index } => {
+                let pair = access.is_pair().then(|| name((rt + 1) & 15));
+                let base = name(rn);
+                let address = match (index, offset) {
+                    (Indexing::PostIndex, _) | (_, 0) => format_compact!("[{base}]"),
+                    (_, offset) if offset < 0 => {
+                        format_compact!("[{base} - {:#x}]", offset.unsigned_abs())
+                    }
+                    (_, offset) => format_compact!("[{base} + {offset:#x}]"),
+                };
+                [Some(name(rt)), pair, Some(address)].into_iter().flatten().collect()
+            }
+        }
+    }
+
+    /// What a post-index access of this word adds to its base after it.
+    fn write_back(self) -> Option<CompactString> {
+        use compact_str::format_compact;
+        match self {
+            Self::Halfword { index: Indexing::PostIndex, offset, .. } if offset < 0 => {
+                Some(format_compact!("-{:#x}", offset.unsigned_abs()))
+            }
+            Self::Halfword { index: Indexing::PostIndex, offset, .. } => {
+                Some(format_compact!("{offset:#x}"))
+            }
+            _ => None,
+        }
+    }
+
     /// The IL form of this word, as [`lift`] gives for the words `yaxpeax`
     /// reads.
     pub(super) fn lift(self) -> il::Lifted {
@@ -2242,7 +2522,16 @@ impl IntegerWord {
                     Indexing::PostIndex => 0,
                     Indexing::Offset | Indexing::PreIndex => offset,
                 };
-                let memory = il::Operand::memory(Some(operand_general(rn)), Some(at));
+                let update = match index {
+                    Indexing::PostIndex => il::Update::After,
+                    Indexing::Offset | Indexing::PreIndex => il::Update::None,
+                };
+                let memory = il::Operand::Memory {
+                    base: Some(operand_general(rn)),
+                    offset: Some(at),
+                    index: None,
+                    update,
+                };
                 lifted.op = if load { Op::Load } else { Op::Store };
                 lifted.operands =
                     values.iter().map(|&number| value(number)).chain([memory]).collect();
@@ -2671,6 +2960,63 @@ impl VfpWord {
         }
     }
 
+    /// The name of each operand that [`VfpWord::lift`] gives, as
+    /// [`VfpWord::text`] prints it.
+    fn names(self) -> il::Names {
+        use compact_str::format_compact;
+        let core = |number: u32| CompactString::from(ARM_REGISTERS[number as usize]);
+        let vector = |double: bool, number: u32| {
+            format_compact!("{}{number}", if double { 'd' } else { 's' })
+        };
+        match self {
+            Self::MoveSingle { to_core: true, core: rt, single } => {
+                [core(rt), vector(false, single)].into_iter().collect()
+            }
+            Self::MoveSingle { to_core: false, core: rt, single } => {
+                [vector(false, single), core(rt)].into_iter().collect()
+            }
+            Self::MoveDouble { to_core: true, low, high, double } => {
+                [core(low), core(high), vector(true, double)].into_iter().collect()
+            }
+            Self::MoveDouble { to_core: false, low, high, double } => {
+                [vector(true, double), core(low), core(high)].into_iter().collect()
+            }
+            Self::StatusToCore { core: 15 } => ["APSR_nzcv".into()].into_iter().collect(),
+            Self::StatusToCore { core: rt } => [core(rt)].into_iter().collect(),
+            Self::Multiple { load, base, write_back, before, first, count, double } => {
+                let list: Vec<CompactString> =
+                    (first..first + count).map(|number| vector(double, number)).collect();
+                let list = format_compact!("{{{}}}", list.join(", "));
+                // `vpush` and `vpop` name no base.
+                let base = match (load, base, write_back, before) {
+                    (false, 13, true, true) | (true, 13, true, false) => CompactString::default(),
+                    _ => format_compact!("{}{}", core(base), if write_back { "!" } else { "" }),
+                };
+                [list, base].into_iter().collect()
+            }
+            Self::MoveConstant { dest, bits } => {
+                let value = if dest.double {
+                    f64::from_bits(bits)
+                } else {
+                    f64::from(f32::from_bits(bits as u32))
+                };
+                [CompactString::from(dest.text()), format_compact!("#{value:?}")]
+                    .into_iter()
+                    .collect()
+            }
+            Self::Compute { operation, dest, sources, .. } => {
+                let mut names: il::Names = [CompactString::from(dest.text())]
+                    .into_iter()
+                    .chain(sources.iter().flatten().map(|source| source.text().into()))
+                    .collect();
+                if operation.is_compare() && sources == [None, None] {
+                    names.push("0x0".into());
+                }
+                names
+            }
+        }
+    }
+
     /// The IL form of this word. The VFP registers are [`il::Reg::Vector`]
     /// by number, `s` and `d` alike.
     fn lift(self) -> il::Lifted {
@@ -2969,6 +3315,73 @@ pub(super) fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted>
         test: None,
         operands: [values, memory].into_iter().collect(),
     })
+}
+
+/// The name of each operand that [`lift_fallback`] gives `word`, as
+/// [`decode_fallback`] prints it.
+fn fallback_names(word: u32, encoding: Encoding) -> Option<il::Names> {
+    use compact_str::format_compact;
+    let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
+    if word & 0x0fff_ff00 == 0x0320_f000 && word & 0xff < 5 && word >> 28 != 0b1111 {
+        return Some(il::Names::new());
+    }
+    if encoding == Encoding::A32
+        && word >> 28 != 0b1111
+        && let Some(integer) = IntegerWord::of(word)
+    {
+        return Some(integer.names());
+    }
+    if word >> 28 != 0b1111
+        && let Some(vfp) = VfpWord::of(word)
+    {
+        return Some(vfp.names());
+    }
+    if word >> 24 == NEON_LOAD_STORE {
+        let access = NeonAccess::of(word)?;
+        let lane = match access.lanes {
+            Lanes::Whole => CompactString::default(),
+            Lanes::All => "[]".into(),
+            Lanes::One(lane) => format_compact!("[{lane}]"),
+        };
+        let list: Vec<CompactString> =
+            access.registers().map(|register| format_compact!("d{register}{lane}")).collect();
+        let alignment = access.alignment.map(|bits| format_compact!(":{bits}")).unwrap_or_default();
+        let base = format_compact!("[{}{alignment}]", ARM_REGISTERS[access.base as usize]);
+        return Some([format_compact!("{{{}}}", list.join(", ")), base].into_iter().collect());
+    }
+    // `vldr` and `vstr`: 1101 U D 0 L Rn Vd 101 sz imm8.
+    let (d, vd) = (field(22, 1), field(12, 4));
+    let register = match field(8, 1) {
+        1 => format_compact!("d{}", d << 4 | vd),
+        _ => format_compact!("s{}", vd << 1 | d),
+    };
+    let base = ARM_REGISTERS[field(16, 4) as usize];
+    let offset = field(0, 8) * 4;
+    let reference = match (offset, field(23, 1) == 1) {
+        (0, _) => format_compact!("[{base}]"),
+        (_, true) => format_compact!("[{base} + {offset:#x}]"),
+        (_, false) => format_compact!("[{base} - {offset:#x}]"),
+    };
+    Some([register, reference].into_iter().collect())
+}
+
+/// What a post-index access of `word` adds to its base after it, as
+/// [`decode_fallback`] prints it.
+fn fallback_write_back(word: u32, encoding: Encoding) -> Option<CompactString> {
+    if encoding == Encoding::A32
+        && word >> 28 != 0b1111
+        && let Some(integer) = IntegerWord::of(word)
+    {
+        return integer.write_back();
+    }
+    if word >> 24 != NEON_LOAD_STORE {
+        return None;
+    }
+    let access = NeonAccess::of(word)?;
+    match access.index {
+        0b1111 | 0b1101 => None,
+        index => Some(ARM_REGISTERS[index as usize].into()),
+    }
 }
 
 /// The fields of an A32 NEON element or structure load or store.
