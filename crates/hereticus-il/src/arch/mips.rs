@@ -81,14 +81,14 @@ pub fn is(insn: &Insn, opcode: Opcode) -> bool {
 }
 
 /// The text of bytes the decoder cannot read.
-pub const UNKNOWN_TEXT: &str = "(unknown)";
+pub(crate) const UNKNOWN_TEXT: &str = "(unknown)";
 
 /// The instruction set this decoder reads.
 ///
 /// MIPS II covers most of what a compiler emits for a 32-bit target. The
 /// MIPS32 and Release 2 words it refuses are read by [`crate::arch::mips32`]
 /// instead, which leaves every word MIPS II reads as it was.
-pub const ISA: IsaVersion = IsaVersion::MIPS_II;
+pub(crate) const ISA: IsaVersion = IsaVersion::MIPS_II;
 
 /// The byte order a word is stored in.
 ///
@@ -335,7 +335,7 @@ impl Decoder for Mips32 {
 ///
 /// `distance` runs from the instruction to its target, which is how the ARM
 /// decoder writes a target too.
-pub fn with_target(operands: &str, distance: i64) -> String {
+pub(crate) fn with_target(operands: &str, distance: i64) -> String {
     let written = if distance < 0 {
         format!("$-{:#x}", distance.unsigned_abs())
     } else {
@@ -359,7 +359,7 @@ pub fn with_target(operands: &str, distance: i64) -> String {
 /// region rather than a distance from here. A conditional branch holds a
 /// signed offset counted from the delay slot, one instruction past itself.
 /// `rabbitizer` resolves both forms, so neither correction is repeated here.
-pub fn classify(inst: &Instruction) -> InsnKind {
+pub(crate) fn classify(inst: &Instruction) -> InsnKind {
     // A `jr` through the return-address register ends the function; through
     // any other register it is a tail call or a jump table.
     if inst.is_return() {
@@ -398,12 +398,12 @@ pub fn classify(inst: &Instruction) -> InsnKind {
 }
 
 /// Resolve the absolute target of a `j` or `jal`.
-pub fn jump_target(inst: &Instruction) -> Option<u64> {
+pub(crate) fn jump_target(inst: &Instruction) -> Option<u64> {
     inst.get_instr_index_as_vram().map(|vram| u64::from(vram.inner()))
 }
 
 /// Resolve the target of a branch, which is relative to the delay slot.
-pub fn branch_target(inst: &Instruction) -> Option<u64> {
+pub(crate) fn branch_target(inst: &Instruction) -> Option<u64> {
     let offset = inst.get_branch_offset()?;
     let address = i64::from(inst.vram().inner());
     u64::try_from(address + i64::from(offset.inner())).ok()
@@ -412,13 +412,14 @@ pub fn branch_target(inst: &Instruction) -> Option<u64> {
 /// Where the IL keeps `hi` and `lo`, after the 32 general registers.
 pub const HI: il::Reg = il::Reg::General(32);
 
+/// Where the IL keeps `lo`: see [`HI`].
 pub const LO: il::Reg = il::Reg::General(33);
 
 /// The return address register, which a call writes.
-pub const RA: u8 = 31;
+pub(crate) const RA: u8 = 31;
 
 /// Every MIPS32 general register is 32 bits wide.
-pub const WIDTH: il::Width = il::Width::Bits32;
+pub(crate) const WIDTH: il::Width = il::Width::Bits32;
 
 /// Lift one instruction `rabbitizer` decoded, from what its opcode says it
 /// reads, writes and accesses.
@@ -478,7 +479,7 @@ pub fn lift(inst: &Instruction) -> il::Lifted {
 ///
 /// A branch is read from its offset rather than its target, which cannot
 /// be resolved when it would lie below address zero.
-pub fn target_distance(inst: &Instruction, kind: InsnKind, address: u64) -> Option<i64> {
+pub(crate) fn target_distance(inst: &Instruction, kind: InsnKind, address: u64) -> Option<i64> {
     if let Some(offset) = inst.get_branch_offset() {
         return Some(i64::from(offset.inner()));
     }
@@ -528,7 +529,7 @@ pub fn names(inst: &Instruction, kind: InsnKind, address: u64) -> il::Names {
 }
 
 /// An operand as the IL names it.
-pub fn il_operand(operand: ValuedOperand) -> il::Operand {
+pub(crate) fn il_operand(operand: ValuedOperand) -> il::Operand {
     let general = |reg: rabbitizer::registers::Gpr| match reg.as_index() {
         0 => il::Operand::Zero,
         index => il::Operand::Reg(il::Reg::General(index as u8)),
@@ -564,7 +565,7 @@ pub fn il_operand(operand: ValuedOperand) -> il::Operand {
 
 /// What a MIPS instruction computes. A pseudo-instruction, such as `not`
 /// or `beqz`, has an opcode of its own.
-pub fn op_of(inst: &Instruction, access: Option<il::AccessKind>) -> il::Op {
+pub(crate) fn op_of(inst: &Instruction, access: Option<il::AccessKind>) -> il::Op {
     use il::Op;
     match access {
         Some(il::AccessKind::Load) => return Op::Load,
@@ -683,7 +684,9 @@ pub fn float_op(opcode: Opcode) -> Option<il::Op> {
     })
 }
 
-pub fn access_width(access: Option<rabbitizer::access_type::AccessType>) -> Option<il::Width> {
+pub(crate) fn access_width(
+    access: Option<rabbitizer::access_type::AccessType>,
+) -> Option<il::Width> {
     use rabbitizer::access_type::AccessType;
     match access? {
         AccessType::BYTE => Some(il::Width::Bits8),
@@ -700,7 +703,7 @@ pub fn access_width(access: Option<rabbitizer::access_type::AccessType>) -> Opti
 
 /// What a general register operand gives as a value: the zero register
 /// gives 0.
-pub fn register_value(reg: Option<rabbitizer::registers::Gpr>) -> il::Value {
+pub(crate) fn register_value(reg: Option<rabbitizer::registers::Gpr>) -> il::Value {
     match reg.map(|reg| reg.as_index()) {
         Some(0) => il::Value::Const(0),
         Some(index) => il::Value::Reg(il::Reg::General(index as u8)),
@@ -708,7 +711,7 @@ pub fn register_value(reg: Option<rabbitizer::registers::Gpr>) -> il::Value {
     }
 }
 
-pub fn test_of(inst: &Instruction) -> Option<il::Test> {
+pub(crate) fn test_of(inst: &Instruction) -> Option<il::Test> {
     let field = inst.field();
     let (rs, rt) = (register_value(field.rs()), register_value(field.rt()));
     let zero = il::Value::Const(0);

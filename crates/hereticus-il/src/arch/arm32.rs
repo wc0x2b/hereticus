@@ -28,13 +28,13 @@ pub const UNKNOWN_TEXT: &str = "(unknown)";
 pub const NEON_TEXT: &str = "(neon)";
 
 /// Register number of the program counter.
-pub const REG_PC: u16 = 15;
+pub(crate) const REG_PC: u16 = 15;
 
 /// Register number of the link register.
-pub const REG_LR: u16 = 14;
+pub(crate) const REG_LR: u16 = 14;
 
 /// Register number of the stack pointer.
-pub const REG_SP: u16 = 13;
+pub(crate) const REG_SP: u16 = 13;
 
 /// What [`Insn::opcode`] holds for A32 and T32.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,12 +42,29 @@ pub enum Decoded {
     /// An integer instruction, by the opcode `yaxpeax-arm` names, whether it
     /// or this module reads the word. A store or a load of the stack that
     /// it prints as `push` or `pop` has that opcode.
-    Core { opcode: Opcode, condition: ConditionCode, flags: Flags },
+    Core {
+        /// The operation.
+        opcode: Opcode,
+        /// When it runs.
+        condition: ConditionCode,
+        /// Whether it sets the flags.
+        flags: Flags,
+    },
     /// `it`, which makes up to four instructions after it conditional: the
     /// condition of the first, and the mask that says the rest.
-    It { condition: u8, mask: u8 },
+    It {
+        /// The condition of the first instruction it covers.
+        condition: u8,
+        /// The mask that says the rest.
+        mask: u8,
+    },
     /// A VFP instruction this module reads, and its condition.
-    Vfp { vfp: Vfp, condition: ConditionCode },
+    Vfp {
+        /// Which VFP instruction it is.
+        vfp: Vfp,
+        /// When it runs.
+        condition: ConditionCode,
+    },
     /// A NEON load or store this module reads.
     NeonAccess(NeonShape),
     /// NEON data processing, which nothing here reads.
@@ -109,7 +126,7 @@ pub fn operation_name(decoded: Decoded) -> CompactString {
 }
 
 /// How a load or store of a list steps, as the suffix of `ldmia` says.
-pub fn list_step(add: bool, pre: bool) -> &'static str {
+pub(crate) fn list_step(add: bool, pre: bool) -> &'static str {
     match (add, pre) {
         (true, false) => "ia",
         (true, true) => "ib",
@@ -121,7 +138,7 @@ pub fn list_step(add: bool, pre: bool) -> &'static str {
 /// The `t` and `e` of the instructions an `it` makes conditional after the
 /// first, as `ite` says: each bit of `mask` above its lowest set bit is
 /// then where it equals the low bit of `condition`, and else where not.
-pub fn it_pattern(condition: u8, mask: u8) -> String {
+pub(crate) fn it_pattern(condition: u8, mask: u8) -> String {
     let lowest = mask.trailing_zeros();
     (lowest + 1..4)
         .rev()
@@ -132,7 +149,9 @@ pub fn it_pattern(condition: u8, mask: u8) -> String {
 /// Whether an access reads memory or writes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transfer {
+    /// Reads memory.
     Load,
+    /// Writes memory.
     Store,
 }
 
@@ -147,19 +166,25 @@ impl Transfer {
 /// element, as a power of two of bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NeonShape {
+    /// Whether the access loads or stores.
     pub transfer: Transfer,
+    /// How many elements make one structure, as the 3 of `vld3`.
     pub structures: u8,
+    /// The size of an element, as a power of two of bytes.
     pub size: u8,
 }
 
 /// Whether an instruction sets the flags, as the `s` of `adds` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flags {
+    /// The instruction keeps the flags.
     Kept,
+    /// The instruction sets the flags.
     Set,
 }
 
 impl Flags {
+    /// `Set` where `sets_flags`, else `Kept`.
     pub fn of(sets_flags: bool) -> Self {
         if sets_flags { Self::Set } else { Self::Kept }
     }
@@ -185,11 +210,21 @@ pub enum Vfp {
     /// `vldm` and `vstm`, which step through memory as `step` says.
     Multiple(Step, Transfer),
     /// `vcmp` and `vcmpe`, on singles or doubles as `size` says.
-    Compare { operation: VfpOperation, size: &'static str },
+    Compare {
+        /// Which compare it is.
+        operation: VfpOperation,
+        /// `f32` or `f64`.
+        size: &'static str,
+    },
     /// The arithmetic, the conversions and `vmov` of a constant, on singles
     /// or doubles as `size` says. A conversion names its sizes in
     /// `operation`, and its `size` is empty.
-    Compute { operation: VfpOperation, size: &'static str },
+    Compute {
+        /// What it computes.
+        operation: VfpOperation,
+        /// `f32` or `f64`, or empty for a conversion.
+        size: &'static str,
+    },
 }
 
 /// Which way a load or store of a list steps through memory.
@@ -202,7 +237,7 @@ pub enum Step {
 }
 
 /// The conditions of A32, by the top four bits of a word.
-pub const CONDITION_CODES: [ConditionCode; 15] = [
+pub(crate) const CONDITION_CODES: [ConditionCode; 15] = [
     ConditionCode::EQ,
     ConditionCode::NE,
     ConditionCode::HS,
@@ -222,12 +257,12 @@ pub const CONDITION_CODES: [ConditionCode; 15] = [
 
 /// The condition the top four bits of an A32 `word` name, or `None` for the
 /// words that have none.
-pub fn condition_of(word: u32) -> Option<ConditionCode> {
+pub(crate) fn condition_of(word: u32) -> Option<ConditionCode> {
     CONDITION_CODES.get((word >> 28) as usize).copied()
 }
 
 /// What `inst` holds, as [`Insn::opcode`] keeps it.
-pub fn decoded_of(inst: &Instruction) -> Decoded {
+pub(crate) fn decoded_of(inst: &Instruction) -> Decoded {
     if inst.opcode == Opcode::IT
         && let [Operand::Imm32(condition), Operand::Imm32(mask), ..] = inst.operands
     {
@@ -243,7 +278,7 @@ pub fn decoded_of(inst: &Instruction) -> Decoded {
 /// The opcode of `inst`, or `push` or `pop` where `yaxpeax-arm` 0.4 prints
 /// it so: a store of one register before `sp` that moves `sp`, a load of
 /// one after it, and a store or a load of a list on `sp` that moves it.
-pub fn printed_opcode(inst: &Instruction) -> Opcode {
+pub(crate) fn printed_opcode(inst: &Instruction) -> Opcode {
     let is_sp = |reg: Reg| u16::from(reg.number()) == REG_SP;
     match (inst.opcode, inst.operands) {
         (
@@ -454,7 +489,7 @@ impl Decoder for Arm32 {
 ///
 /// A word the decoder refuses lifts from `fallback`, its A32 form and the
 /// encoding it came in, where [`lift_fallback`] reads it.
-pub fn lift_with(
+pub(crate) fn lift_with(
     decoder: InstDecoder,
     insn: &Insn,
     word: &[u8],
@@ -465,7 +500,7 @@ pub fn lift_with(
 
 /// [`lift_with`], with the name of each operand where `printing` asks for
 /// them: see [`il::Named`].
-pub fn lift_named_with(
+pub(crate) fn lift_named_with(
     decoder: InstDecoder,
     insn: &Insn,
     word: &[u8],
@@ -497,7 +532,7 @@ pub fn lift_named_with(
 
 /// What an ARM instruction does with its first operands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
+pub(crate) enum Role {
     /// Writes its first `count` operands from the others, as `add` writes
     /// one and `umull` two.
     Compute { count: usize },
@@ -511,7 +546,7 @@ pub enum Role {
 
 /// Lift one decoded A32 or T32 instruction, with the name of each operand
 /// where `printing` asks for them.
-pub fn lift_named(inst: &Instruction, printing: Printing) -> il::Named {
+pub(crate) fn lift_named(inst: &Instruction, printing: Printing) -> il::Named {
     let mut operands: Vec<Operand> =
         inst.operands.iter().copied().take_while(|operand| *operand != Operand::Nothing).collect();
     // `yaxpeax` gives an A32 compare the unused destination field first, as
@@ -665,18 +700,18 @@ pub fn lift_named(inst: &Instruction, printing: Printing) -> il::Named {
 
 /// The names `yaxpeax-arm` 0.4 prints for the general registers. Unlike
 /// [`ARM_REGISTERS`], it calls `r10` by its number.
-pub const PRINTED_REGISTERS: [&str; 16] = [
+pub(crate) const PRINTED_REGISTERS: [&str; 16] = [
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "r10", "fp", "ip", "sp", "lr", "pc",
 ];
 
 /// The name of `reg`, as `yaxpeax-arm` prints it.
-pub fn register_name(reg: Reg) -> CompactString {
+pub(crate) fn register_name(reg: Reg) -> CompactString {
     PRINTED_REGISTERS[usize::from(reg.number() & 15)].into()
 }
 
 /// `operand`, where it is no access and no shift, as `yaxpeax-arm` prints
 /// it.
-pub fn printed_operand(operand: Operand) -> CompactString {
+pub(crate) fn printed_operand(operand: Operand) -> CompactString {
     use compact_str::format_compact;
     let lower = |text: String| CompactString::from(text.to_ascii_lowercase());
     match operand {
@@ -711,7 +746,7 @@ pub fn printed_operand(operand: Operand) -> CompactString {
 
 /// The register `shift` shifts, and the shift as `yaxpeax-arm` prints
 /// it, as `lsl 4` or `asr r2`. A left shift by zero is none.
-pub fn shift_parts(shift: RegShift) -> (CompactString, Option<CompactString>) {
+pub(crate) fn shift_parts(shift: RegShift) -> (CompactString, Option<CompactString>) {
     use compact_str::format_compact;
     let style = |style: ShiftStyle| match style {
         ShiftStyle::LSL => "lsl",
@@ -737,7 +772,7 @@ pub fn shift_parts(shift: RegShift) -> (CompactString, Option<CompactString>) {
 /// A register shifted by `shift`, as `(r1 lsl 4)`, or the register alone
 /// where the shift is a left shift by zero. `minus` marks an index that the
 /// access subtracts.
-pub fn shift_name(shift: RegShift, minus: &str) -> CompactString {
+pub(crate) fn shift_name(shift: RegShift, minus: &str) -> CompactString {
     use compact_str::format_compact;
     match shift_parts(shift) {
         (reg, None) => format_compact!("{minus}{reg}"),
@@ -748,7 +783,7 @@ pub fn shift_name(shift: RegShift, minus: &str) -> CompactString {
 /// The name of `operand`, as the IL view shows it: a register as
 /// `yaxpeax-arm` prints it, an access as `[r0 + 0x4]`, and a target as
 /// `$+0x24`.
-pub fn operand_name(operand: Operand) -> CompactString {
+pub(crate) fn operand_name(operand: Operand) -> CompactString {
     use compact_str::format_compact;
     let sign = |add: bool| if add { "+" } else { "-" };
     match operand {
@@ -785,7 +820,7 @@ pub fn operand_name(operand: Operand) -> CompactString {
 
 /// What a post-index access through `operand` adds to its base after it,
 /// as `yaxpeax-arm` prints it.
-pub fn write_back_name(operand: Operand) -> Option<CompactString> {
+pub(crate) fn write_back_name(operand: Operand) -> Option<CompactString> {
     use compact_str::format_compact;
     let minus = |add: bool| if add { "" } else { "-" };
     match operand {
@@ -811,7 +846,7 @@ pub fn write_back_name(operand: Operand) -> Option<CompactString> {
 }
 
 /// Report whether `op` computes its result from two values.
-pub fn is_binary(op: il::Op) -> bool {
+pub(crate) fn is_binary(op: il::Op) -> bool {
     use il::Op;
     matches!(
         op,
@@ -831,7 +866,7 @@ pub fn is_binary(op: il::Op) -> bool {
 }
 
 /// An operand as the IL names it.
-pub fn il_operand(operand: Operand) -> il::Operand {
+pub(crate) fn il_operand(operand: Operand) -> il::Operand {
     let register = |reg: Reg| il::Operand::Reg(operand_reg(reg));
     let memory = |base: Reg, offset, index, update| il::Operand::Memory {
         base: Some(operand_reg(base)),
@@ -882,17 +917,17 @@ pub fn il_operand(operand: Operand) -> il::Operand {
 
 /// The register an operand names, where the program counter has a name of
 /// its own.
-pub fn operand_reg(reg: Reg) -> il::Reg {
+pub(crate) fn operand_reg(reg: Reg) -> il::Reg {
     il_reg(reg).unwrap_or(il::Reg::ProgramCounter)
 }
 
 /// The general register `number`, as an operand names it.
-pub fn operand_general(number: u32) -> il::Reg {
+pub(crate) fn operand_general(number: u32) -> il::Reg {
     operand_reg(Reg::from_u8(number as u8))
 }
 
 /// The registers of a list, as the bits of `push` and `ldm` name them.
-pub fn register_list(list: u16) -> il::RegSet {
+pub(crate) fn register_list(list: u16) -> il::RegSet {
     (0..16)
         .filter(|bit| list & (1 << bit) != 0)
         .map(|bit| operand_reg(Reg::from_u8(bit as u8)))
@@ -919,7 +954,7 @@ pub fn shifted(reg: Reg, style: ShiftStyle, amount: u8) -> il::Operand {
 /// No access shifts its index by a register. `yaxpeax-arm` 0.4 builds the
 /// index of `tbh [pc, rI, lsl #1]` with the bit that, read back, says it
 /// does, so that form is `tbh`'s shift by one.
-pub fn shifted_index(shift: RegShift) -> Option<(il::Reg, u8)> {
+pub(crate) fn shifted_index(shift: RegShift) -> Option<(il::Reg, u8)> {
     match shift.into_shift() {
         RegShiftStyle::RegImm(shift) if shift.stype() == ShiftStyle::LSL => {
             Some((operand_reg(shift.shiftee()), shift.imm()))
@@ -930,7 +965,7 @@ pub fn shifted_index(shift: RegShift) -> Option<(il::Reg, u8)> {
 }
 
 /// What an A32 or T32 instruction computes.
-pub fn op_of(inst: &Instruction, operands: &[Operand]) -> il::Op {
+pub(crate) fn op_of(inst: &Instruction, operands: &[Operand]) -> il::Op {
     use il::Op;
     let unconditional = inst.condition == ConditionCode::AL;
     let loads_pc = operands.iter().any(|operand| {
@@ -1056,19 +1091,19 @@ pub fn op_of(inst: &Instruction, operands: &[Operand]) -> il::Op {
     }
 }
 
-pub fn is_compare(opcode: Opcode) -> bool {
+pub(crate) fn is_compare(opcode: Opcode) -> bool {
     matches!(opcode, Opcode::CMP | Opcode::CMN | Opcode::TST | Opcode::TEQ)
 }
 
 /// Instructions that keep part of their destination, so read it too.
-pub fn reads_destination(opcode: Opcode) -> bool {
+pub(crate) fn reads_destination(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::MOVT | Opcode::BFI | Opcode::BFC | Opcode::UMLAL | Opcode::SMLAL | Opcode::UMAAL
     )
 }
 
-pub fn role_of(opcode: Opcode) -> Role {
+pub(crate) fn role_of(opcode: Opcode) -> Role {
     match opcode {
         Opcode::LDR
         | Opcode::LDRB
@@ -1165,7 +1200,7 @@ pub fn printed(inst: &Instruction) -> String {
 
 /// The register `reg` names, where it is one the IL tracks: the program
 /// counter is not.
-pub fn il_reg(reg: Reg) -> Option<il::Reg> {
+pub(crate) fn il_reg(reg: Reg) -> Option<il::Reg> {
     match u16::from(reg.number()) {
         REG_PC => None,
         REG_SP => Some(il::Reg::Stack),
@@ -1174,7 +1209,7 @@ pub fn il_reg(reg: Reg) -> Option<il::Reg> {
 }
 
 /// The registers an operand that is a value names.
-pub fn value_registers(operand: Operand) -> il::RegSet {
+pub(crate) fn value_registers(operand: Operand) -> il::RegSet {
     match operand {
         Operand::Reg(reg) | Operand::RegWBack(reg, _) => il_reg(reg).into_iter().collect(),
         Operand::RegShift(shift) => match shift.into_shift() {
@@ -1194,7 +1229,7 @@ pub fn value_registers(operand: Operand) -> il::RegSet {
 /// The registers a memory operand reads to form its address, and the base
 /// it writes back. A base in the list of `ldm` or `stm` is a value, and its
 /// write back is read from the operand.
-pub fn address_registers(operand: Operand, reads: &mut il::RegSet, writes: &mut il::RegSet) {
+pub(crate) fn address_registers(operand: Operand, reads: &mut il::RegSet, writes: &mut il::RegSet) {
     let mut base = |reg: Reg, write_back: bool| {
         if let Some(reg) = il_reg(reg) {
             reads.insert(reg);
@@ -1228,7 +1263,7 @@ pub fn address_registers(operand: Operand, reads: &mut il::RegSet, writes: &mut 
     }
 }
 
-pub fn memory_access(opcode: Opcode, operands: &[Operand]) -> Option<il::MemoryAccess> {
+pub(crate) fn memory_access(opcode: Opcode, operands: &[Operand]) -> Option<il::MemoryAccess> {
     let kind = match role_of(opcode) {
         Role::Load { .. } if matches!(opcode, Opcode::SWP | Opcode::SWPB) => {
             il::AccessKind::LoadStore
@@ -1280,7 +1315,7 @@ pub fn memory_access(opcode: Opcode, operands: &[Operand]) -> Option<il::MemoryA
 
 /// What an operand gives as a value. The program counter, and a register
 /// shifted by something, are no one value.
-pub fn value_of(operand: Operand) -> il::Value {
+pub(crate) fn value_of(operand: Operand) -> il::Value {
     match operand {
         Operand::Reg(reg) => il_reg(reg).map_or(il::Value::Other, il::Value::Reg),
         Operand::Imm32(value) => il::Value::Const(u64::from(value)),
@@ -1297,7 +1332,7 @@ pub fn value_of(operand: Operand) -> il::Value {
     }
 }
 
-pub fn test_of(inst: &Instruction, operands: &[Operand]) -> Option<il::Test> {
+pub(crate) fn test_of(inst: &Instruction, operands: &[Operand]) -> Option<il::Test> {
     /// Every ARM general register is 32 bits wide.
     const WIDTH: il::Width = il::Width::Bits32;
     let value = |index: usize| operands.get(index).map_or(il::Value::Other, |op| value_of(*op));
@@ -1415,7 +1450,7 @@ pub fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, String,
 /// halfword extends, the bit field operations, `mov` and `mvn` of a register
 /// shifted by a register, and a halfword or signed byte load with no offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IntegerWord {
+pub(crate) enum IntegerWord {
     /// `uxtb rd, rm` and kin, which may add `rn` and rotate `rm` first.
     Extend { kind: Extend, rd: u32, rn: Option<u32>, rm: u32, rotation: u32 },
     /// `bfi rd, rn, lsb, width`, or `bfc` with no `rn`.
@@ -1442,12 +1477,18 @@ pub enum IntegerWord {
 
 /// Which extend an [`IntegerWord::Extend`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Extend {
+pub(crate) enum Extend {
+    /// Sign-extends two bytes, each to a halfword.
     Sxtb16,
+    /// Sign-extends a byte.
     Sxtb,
+    /// Sign-extends a halfword.
     Sxth,
+    /// Zero-extends two bytes, each to a halfword.
     Uxtb16,
+    /// Zero-extends a byte.
     Uxtb,
+    /// Zero-extends a halfword.
     Uxth,
 }
 
@@ -1484,7 +1525,7 @@ impl Extend {
 
 /// Which load or store an [`IntegerWord::Halfword`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HalfwordAccess {
+pub(crate) enum HalfwordAccess {
     Ldrh,
     Ldrsb,
     Ldrsh,
@@ -1536,7 +1577,7 @@ impl HalfwordAccess {
 
 /// How a load or store forms its address and moves its base.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Indexing {
+pub(crate) enum Indexing {
     /// `[rn, imm]`: the base stays.
     Offset,
     /// `[rn, imm]!`: the base moves first.
@@ -1942,7 +1983,7 @@ impl IntegerWord {
 ///
 /// In A32 it swaps `bb` and `tt` of the multiplies of halfwords, so that
 /// `smulbb` reads as `smultt`, and reads `smulwb` as `smlawb`.
-pub fn decoder_misreads(word: u32, encoding: Encoding) -> bool {
+pub(crate) fn decoder_misreads(word: u32, encoding: Encoding) -> bool {
     let vfp =
         matches!(VfpWord::of(word), Some(VfpWord::Compute { .. } | VfpWord::MoveConstant { .. }));
     let multiply = encoding == Encoding::A32
@@ -1952,7 +1993,7 @@ pub fn decoder_misreads(word: u32, encoding: Encoding) -> bool {
 
 /// Which multiply of halfwords an A32 word is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HalfwordMultiply {
+pub(crate) enum HalfwordMultiply {
     /// `smulbb rd, rn, rm`: a halfword of each.
     Multiply,
     /// `smlabb rd, rn, rm, ra`: the product, plus `ra`.
@@ -1974,7 +2015,7 @@ pub enum HalfwordMultiply {
 /// `-mfloat-abi=softfp` build moves every double argument and result
 /// through core registers, so `vmov d16, r0, r1` is common.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VfpWord {
+pub(crate) enum VfpWord {
     /// `vmov s0, r1` or `vmov r0, s0`.
     MoveSingle { to_core: bool, core: u32, single: u32 },
     /// `vmov d16, r0, r1` or `vmov r0, r1, d16`.
@@ -2007,24 +2048,41 @@ pub enum VfpWord {
 /// What a VFP data processing word computes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VfpOperation {
+    /// `vmla`: adds the product to the destination.
     Vmla,
+    /// `vmls`: subtracts the product from the destination.
     Vmls,
+    /// `vnmls`: subtracts the destination from the product.
     Vnmls,
+    /// `vnmla`: adds the destination to the product, and negates the sum.
     Vnmla,
+    /// `vmul`: multiplies.
     Vmul,
+    /// `vnmul`: multiplies, and negates the product.
     Vnmul,
+    /// `vadd`: adds.
     Vadd,
+    /// `vsub`: subtracts.
     Vsub,
+    /// `vdiv`: divides.
     Vdiv,
+    /// `vmov`: copies a register.
     Vmov,
+    /// `vabs`: takes the magnitude.
     Vabs,
+    /// `vneg`: negates.
     Vneg,
+    /// `vsqrt`: takes the square root.
     Vsqrt,
+    /// `vcmp`: compares.
     Vcmp,
+    /// `vcmpe`: compares, and raises an exception on a NaN.
     Vcmpe,
     /// `vcvt` and `vcvtr`. The name holds the sizes, as `vcvt.s32.f64`.
     Convert {
+        /// The name, as `vcvt.s32.f64`.
         name: &'static str,
+        /// How the conversion rounds.
         rounding: Rounding,
     },
 }
@@ -2522,27 +2580,28 @@ pub fn expand_float_constant(constant: u32, double: bool) -> u64 {
 /// word reads as its A32 twin, but no other T32 word does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
+    /// An A32 word, as it is.
     A32,
     /// A wide T32 word, its halfwords swapped and its NEON prefix made A32.
     T32,
 }
 
 /// The names of the general registers, as the decoder prints them.
-pub const ARM_REGISTERS: [&str; 16] = [
+pub(crate) const ARM_REGISTERS: [&str; 16] = [
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "sl", "fp", "ip", "sp", "lr", "pc",
 ];
 
 /// The top byte of an A32 NEON element or structure load or store.
-pub const NEON_LOAD_STORE: u32 = 0xf4;
+pub(crate) const NEON_LOAD_STORE: u32 = 0xf4;
 
 /// The name for an A32 `word` the decoder cannot read: [`NEON_TEXT`]
 /// for NEON data processing, `1111 001U`, else [`UNKNOWN_TEXT`].
-pub fn unread_text(word: u32) -> &'static str {
+pub(crate) fn unread_text(word: u32) -> &'static str {
     if is_neon_data(word) { NEON_TEXT } else { UNKNOWN_TEXT }
 }
 
 /// What [`Insn::opcode`] holds for an A32 `word` the decoder cannot read.
-pub fn unread_opcode(word: u32) -> crate::arch::Opcode {
+pub(crate) fn unread_opcode(word: u32) -> crate::arch::Opcode {
     match is_neon_data(word) {
         true => crate::arch::Opcode::Arm(Decoded::NeonData),
         false => crate::arch::Opcode::Unread(crate::arch::InstructionSet::Arm),
@@ -2550,7 +2609,7 @@ pub fn unread_opcode(word: u32) -> crate::arch::Opcode {
 }
 
 /// NEON data processing, `1111 001U`.
-pub fn is_neon_data(word: u32) -> bool {
+pub(crate) fn is_neon_data(word: u32) -> bool {
     word >> 25 == 0b111_1001
 }
 
@@ -2563,7 +2622,7 @@ pub fn is_neon_data(word: u32) -> bool {
 /// `A` clear moves whole structures, set moves one lane or all lanes. `Rm`
 /// says how the base moves after: 15 not at all, 13 by the size moved, any
 /// other by that register.
-pub fn decode_neon_load_store(word: u32) -> Option<(String, String)> {
+pub(crate) fn decode_neon_load_store(word: u32) -> Option<(String, String)> {
     let access = NeonAccess::of(word)?;
     let lane = match access.lanes {
         Lanes::Whole => String::new(),
@@ -2701,7 +2760,7 @@ pub fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted> {
 
 /// The name of each operand that [`lift_fallback`] gives `word`, as
 /// [`decode_fallback`] prints it.
-pub fn fallback_names(word: u32, encoding: Encoding) -> Option<il::Names> {
+pub(crate) fn fallback_names(word: u32, encoding: Encoding) -> Option<il::Names> {
     use compact_str::format_compact;
     let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
     if word & 0x0fff_ff00 == 0x0320_f000 && word & 0xff < 5 && word >> 28 != 0b1111 {
@@ -2749,7 +2808,7 @@ pub fn fallback_names(word: u32, encoding: Encoding) -> Option<il::Names> {
 
 /// What a post-index access of `word` adds to its base after it, as
 /// [`decode_fallback`] prints it.
-pub fn fallback_write_back(word: u32, encoding: Encoding) -> Option<CompactString> {
+pub(crate) fn fallback_write_back(word: u32, encoding: Encoding) -> Option<CompactString> {
     if encoding == Encoding::A32
         && word >> 28 != 0b1111
         && let Some(integer) = IntegerWord::of(word)
@@ -2767,7 +2826,7 @@ pub fn fallback_write_back(word: u32, encoding: Encoding) -> Option<CompactStrin
 }
 
 /// The fields of an A32 NEON element or structure load or store.
-pub struct NeonAccess {
+pub(crate) struct NeonAccess {
     load: bool,
     structures: u32,
     /// The first `d` register, and how many follow it, how far apart.
@@ -2888,7 +2947,7 @@ impl NeonAccess {
 
 /// Which lanes of its registers a NEON load or store moves.
 #[derive(Clone, Copy)]
-pub enum Lanes {
+pub(crate) enum Lanes {
     /// Whole registers.
     Whole,
     /// One element, copied to every lane.
@@ -2903,7 +2962,7 @@ pub enum Lanes {
 /// counter, so `pop {pc}` decodes as `LDR` and `mov pc, lr` as `MOV`. Reading
 /// the opcode alone would miss both, so check the destination register too.
 /// How `inst` moves control, where `target` is where a branch in it goes.
-pub fn classify(inst: &Instruction, target: Option<u64>) -> InsnKind {
+pub(crate) fn classify(inst: &Instruction, target: Option<u64>) -> InsnKind {
     let unconditional = inst.condition == ConditionCode::AL;
 
     match inst.opcode {
@@ -2943,7 +3002,7 @@ pub fn classify(inst: &Instruction, target: Option<u64>) -> InsnKind {
 /// itself, and has already removed the 8-byte pipeline bias that the ARM
 /// encoding carries. A branch to itself therefore reports offset 0. Adding the
 /// bias again here would put every target 8 bytes too far.
-pub fn branch_target(inst: &Instruction, address: u64) -> Option<u64> {
+pub(crate) fn branch_target(inst: &Instruction, address: u64) -> Option<u64> {
     match inst.operands[0] {
         Operand::BranchOffset(words) => {
             let byte_offset = (words as i64) * INSN_WIDTH as i64;
@@ -2985,7 +3044,7 @@ pub fn returns(inst: &Instruction) -> bool {
 /// Only a destination counts. `add r1, pc, r1` reads the PC to form an
 /// address, which PIC code does in every function that reaches a global, and
 /// reading it as a write ended the function there.
-pub fn writes_pc(inst: &Instruction) -> bool {
+pub(crate) fn writes_pc(inst: &Instruction) -> bool {
     let is_pc = |operand: &Operand| match operand {
         Operand::Reg(reg) | Operand::RegWBack(reg, _) => reg.number() as u16 == REG_PC,
         _ => false,

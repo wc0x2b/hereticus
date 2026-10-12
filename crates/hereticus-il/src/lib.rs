@@ -42,6 +42,8 @@
 //! largest gains came from reading what each instruction does one way on
 //! every architecture: the operation, its operands, a guard, an idiom.
 
+#![warn(missing_docs)]
+
 pub mod arch;
 
 use compact_str::CompactString;
@@ -100,18 +102,22 @@ impl RegSet {
     /// The empty set.
     pub const EMPTY: Self = Self(0);
 
+    /// Put `reg` in the set.
     pub fn insert(&mut self, reg: Reg) {
         self.0 |= 1 << reg.bit();
     }
 
+    /// Whether `reg` is in the set.
     pub fn contains(self, reg: Reg) -> bool {
         self.0 & (1 << reg.bit()) != 0
     }
 
+    /// Whether the set holds no register.
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
 
+    /// How many registers the set holds.
     pub fn len(self) -> usize {
         self.0.count_ones() as usize
     }
@@ -143,10 +149,15 @@ impl FromIterator<Reg> for RegSet {
 /// How many bits an operation works on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Width {
+    /// 8 bits, a byte.
     Bits8,
+    /// 16 bits, a halfword.
     Bits16,
+    /// 32 bits, a word.
     Bits32,
+    /// 64 bits, a doubleword.
     Bits64,
+    /// 128 bits, a vector register.
     Bits128,
 }
 
@@ -176,6 +187,7 @@ impl Width {
 /// An operand that an instruction reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Value {
+    /// A register.
     Reg(Reg),
     /// A constant, in the width of the operation.
     Const(u64),
@@ -187,7 +199,9 @@ pub enum Value {
 /// How an instruction touches memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AccessKind {
+    /// Reads memory.
     Load,
+    /// Writes memory.
     Store,
     /// Both at once, as an atomic swap or add does.
     LoadStore,
@@ -196,6 +210,7 @@ pub enum AccessKind {
 /// A memory access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MemoryAccess {
+    /// Whether the access reads, writes, or both.
     pub kind: AccessKind,
     /// The width of each value moved, where the instruction says it.
     pub width: Option<Width>,
@@ -207,22 +222,35 @@ pub struct MemoryAccess {
 /// `cmp a, b`, [`Cond::UnsignedLess`] holds where `a < b` as unsigned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Cond {
+    /// `left == right`.
     Equal,
+    /// `left != right`.
     NotEqual,
+    /// `left >= right`, unsigned.
     UnsignedGreaterOrEqual,
+    /// `left < right`, unsigned.
     UnsignedLess,
     /// The result is negative.
     Negative,
     /// The result is zero or positive.
     NotNegative,
+    /// The signed result overflowed.
     Overflow,
+    /// The signed result did not overflow.
     NoOverflow,
+    /// `left > right`, unsigned.
     UnsignedGreater,
+    /// `left <= right`, unsigned.
     UnsignedLessOrEqual,
+    /// `left >= right`, signed.
     SignedGreaterOrEqual,
+    /// `left < right`, signed.
     SignedLess,
+    /// `left > right`, signed.
     SignedGreater,
+    /// `left <= right`, signed.
     SignedLessOrEqual,
+    /// Holds whatever the values.
     Always,
     /// `left & right` is zero.
     BitsClear,
@@ -236,12 +264,19 @@ pub enum Cond {
 /// after it, so a guard is compared by family, not by condition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CondFamily {
+    /// Equal or not equal.
     Equality,
+    /// An order of unsigned values.
     Unsigned,
+    /// An order of signed values.
     Signed,
+    /// The sign of the result.
     Sign,
+    /// Whether the result overflowed.
     Overflow,
+    /// Whether bits are clear or set.
     Bits,
+    /// No test.
     Always,
 }
 
@@ -309,6 +344,7 @@ impl Cond {
         }
     }
 
+    /// The family of this condition: see [`CondFamily`].
     pub fn family(self) -> CondFamily {
         match self {
             Self::Equal | Self::NotEqual => CondFamily::Equality,
@@ -332,19 +368,38 @@ impl Cond {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Comparison {
     /// `left - right`, as `cmp` computes.
-    Subtract { left: Value, right: Value },
+    Subtract {
+        /// The value subtracted from.
+        left: Value,
+        /// The value subtracted.
+        right: Value,
+    },
     /// `left + right`, as `cmn` computes with a register.
-    Add { left: Value, right: Value },
+    Add {
+        /// The first value added.
+        left: Value,
+        /// The second value added.
+        right: Value,
+    },
     /// `left & right`, as `tst` computes.
-    And { left: Value, right: Value },
+    And {
+        /// The first value.
+        left: Value,
+        /// The mask.
+        right: Value,
+    },
 }
 
 /// A branch on a test of values: the shape a check takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Guard {
+    /// The condition the branch tests.
     pub cond: Cond,
+    /// The value tested.
     pub left: Value,
+    /// What `left` is tested against.
     pub right: Value,
+    /// The width the test works on.
     pub width: Width,
 }
 
@@ -379,7 +434,12 @@ impl Guard {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Test {
     /// Sets the flags from a comparison and writes nothing else, as `cmp`.
-    Compare { comparison: Comparison, width: Width },
+    Compare {
+        /// What the compare computes.
+        comparison: Comparison,
+        /// The width it computes in.
+        width: Width,
+    },
     /// Branches where the flags meet a condition, as `b.ne`.
     OnFlags(Cond),
     /// Compares and branches in one, as `cbz` and `tbnz`.
@@ -387,7 +447,18 @@ pub enum Test {
     /// Writes 1 to `dest` where `left` meets `cond` against `right`, and 0
     /// where not, as the MIPS `slt` does. A branch on `dest` then makes a
     /// guard of it.
-    SetOnCompare { dest: Reg, cond: Cond, left: Value, right: Value, width: Width },
+    SetOnCompare {
+        /// The register written.
+        dest: Reg,
+        /// The condition tested.
+        cond: Cond,
+        /// The value tested.
+        left: Value,
+        /// What `left` is tested against.
+        right: Value,
+        /// The width the test works on.
+        width: Width,
+    },
 }
 
 /// What an instruction computes, named the same way on every architecture.
@@ -403,24 +474,37 @@ pub enum Op {
     Move,
     /// Forms an address from the program counter, as `adrp` and `lui` do.
     Address,
+    /// `left + right`.
     Add,
+    /// `left - right`.
     Subtract,
+    /// `left * right`.
     Multiply,
     /// A multiply with an add or subtract, as `madd` and `mla` do.
     MultiplyAdd,
+    /// `left / right`.
     Divide,
+    /// `left & right`.
     And,
+    /// `left | right`.
     Or,
+    /// `left ^ right`.
     Xor,
     /// `left & !right`, as `bic` does.
     AndNot,
     /// `left | !right`, as `orn` does.
     OrNot,
+    /// Every bit inverted, as `mvn` does.
     Not,
+    /// `0 - value`, as `neg` does.
     Negate,
+    /// `left << right`.
     ShiftLeft,
+    /// `left >> right`, with zeros in.
     ShiftRight,
+    /// `left >> right`, with copies of the sign in.
     ShiftRightArithmetic,
+    /// Rotates right.
     Rotate,
     /// Widens a value with its sign or with zeros, as `sxtb` and `seb` do.
     Extend,
@@ -430,7 +514,9 @@ pub enum Op {
     Bits,
     /// Picks one of two values on a condition, as `csel` and `movn` do.
     Select,
+    /// Reads memory into registers.
     Load,
+    /// Writes registers to memory.
     Store,
     /// One step of an atomic sequence: an access that loads and stores in
     /// one, as a swap or add does, or an exclusive load or store, as
@@ -438,18 +524,27 @@ pub enum Op {
     Atomic,
     /// Sets the flags from a comparison, or sets a register as `slt` does.
     Compare,
+    /// Goes to a target on a condition, else falls through.
     Branch,
+    /// Goes to a target always.
     Jump,
+    /// Calls a subroutine and expects control back.
     Call,
+    /// Leaves the function.
     Return,
+    /// `left + right`, in floating point.
     FloatAdd,
+    /// `left - right`, in floating point.
     FloatSubtract,
+    /// `left * right`, in floating point.
     FloatMultiply,
     /// A multiply with an add or subtract, as `fmadd` and `vmla` do.
     FloatMultiplyAdd,
+    /// `left / right`, in floating point.
     FloatDivide,
     /// Negates or takes the magnitude, as `fneg` and `fabs` do.
     FloatSign,
+    /// The square root, in floating point.
     FloatSquareRoot,
     /// Converts between sizes, or to or from an integer, with the rounding
     /// the conversion implies.
@@ -538,6 +633,7 @@ impl Op {
 /// from the decoded fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Operand {
+    /// A register.
     Reg(Reg),
     /// A register that always reads as zero, as `xzr` and the MIPS `zero`.
     Zero,
@@ -546,8 +642,11 @@ pub enum Operand {
     /// A register shifted left, right or round by a constant, as the second
     /// source of `add r0, r1, r2, lsl #2`. It reads the register.
     Shifted {
+        /// The register shifted.
         reg: Reg,
+        /// How it is shifted.
         shift: Shift,
+        /// By how many bits.
         amount: u8,
     },
     /// A memory reference, through `base` plus `offset`, or plus `index`
@@ -555,9 +654,13 @@ pub enum Operand {
     /// and so is an offset in a register. `update` says whether the access
     /// writes the address it formed back to `base`.
     Memory {
+        /// The register the address starts from.
         base: Option<Reg>,
+        /// The constant added to the base.
         offset: Option<i64>,
+        /// The register added to the base, and how far left it is shifted.
         index: Option<(Reg, u8)>,
+        /// Whether the access writes its address back to `base`.
         update: Update,
     },
     /// A branch or address target, by the distance its encoding holds,
@@ -581,9 +684,13 @@ impl Operand {
 /// How a register is shifted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Shift {
+    /// Left, with zeros in.
     Left,
+    /// Right, with zeros in.
     Right,
+    /// Right, with copies of the sign in.
     RightArithmetic,
+    /// Right, with the bits that leave coming back in at the top.
     Rotate,
     /// A rotate right by one, through the carry, as A32 `rrx` does.
     RotateExtended,
@@ -610,10 +717,15 @@ pub type Operands = SmallVec<[Operand; 4]>;
 /// See RESEARCH.md, A15.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Lifted {
+    /// What the instruction computes.
     pub op: Op,
+    /// The registers it reads.
     pub reads: RegSet,
+    /// The registers it writes.
     pub writes: RegSet,
+    /// How it touches memory, where it does.
     pub memory: Option<MemoryAccess>,
+    /// What it tests, where it tests anything.
     pub test: Option<Test>,
     /// The operands, in the order the decoder prints them.
     pub operands: Operands,
@@ -666,6 +778,7 @@ pub type Names = SmallVec<[CompactString; 4]>;
 /// target as `$+0x24`, and a condition as `eq`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Named {
+    /// The instruction, lifted.
     pub lifted: Lifted,
     /// One name for each operand of [`Named::lifted`].
     pub names: Names,
@@ -857,6 +970,7 @@ pub struct FoundGuard {
     pub compare: Option<usize>,
     /// The index of the branch.
     pub branch: usize,
+    /// The test the guard makes.
     pub guard: Guard,
 }
 
