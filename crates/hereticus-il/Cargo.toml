@@ -15,7 +15,10 @@ bench = false
 
 [dependencies]
 compact_str = "0.9"
+rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = ["std", "MIPS_II"] }
 smallvec = "1"
+yaxpeax-arch = "0.3"
+yaxpeax-arm = "0.4"
 
 [dev-dependencies]
 # One test body runs as a plain property test on stable, and under a

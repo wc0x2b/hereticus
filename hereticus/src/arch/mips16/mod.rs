@@ -17,8 +17,7 @@
 //! `rabbitizer` reads no MIPS16e, so this module decodes it from the
 //! encodings of the MIPS16e ASE manual.
 
-mod decode;
-pub use decode::*;
+pub use hereticus_il::arch::mips16::*;
 
 use super::mips::{
     Decoded as MipsDecoded, GP, Mips32, SP_REG, T9, access, constant, decoded, first_register, is,
@@ -468,7 +467,20 @@ fn order_of(insn: &Insn) -> super::mips::ByteOrder {
     }
 }
 
-impl Mips16 {
+/// The rules that read the addresses MIPS16e forms from `pc` and through
+/// the global offset table.
+trait AddressRules {
+    fn address_from_pc(&self, insn: &Insn) -> Option<u64>;
+    fn slot_of(&self, body: &[Insn], load_index: usize, load: &Insn) -> Option<u64>;
+    fn addresses_by_index(
+        &self,
+        body: &[Insn],
+        space: &AddressSpace,
+        memory: &Memory<'_>,
+    ) -> Vec<(usize, u64)>;
+}
+
+impl AddressRules for Mips16 {
     /// The address an `addiu rX, pc, imm` forms, from where `insn` is.
     fn address_from_pc(&self, insn: &Insn) -> Option<u64> {
         match self.decoded(insn.bytes(), 0, insn.address)?.reading {

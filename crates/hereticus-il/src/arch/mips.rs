@@ -1,10 +1,10 @@
 //! The decoder and the lifter of MIPS32, which read one word at a time
 //! and know nothing of the binary around it. The rules that read MIPS
 //! code, as the addresses it forms through `gp` and the tables a `switch`
-//! jumps through, are in the module above.
+//! jumps through, are in `hereticus`.
 
+use crate as il;
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};
-use crate::il;
 use compact_str::CompactString;
 use rabbitizer::registers_meta::Register as _;
 use rabbitizer::{
@@ -13,7 +13,7 @@ use rabbitizer::{
 };
 
 /// Every MIPS32 instruction is 4 bytes wide.
-pub(crate) const INSN_WIDTH: usize = 4;
+pub const INSN_WIDTH: usize = 4;
 
 /// What [`Insn::opcode`] holds for MIPS32 and MIPS16e.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,7 +29,7 @@ pub enum Decoded {
 }
 
 /// What the decoder read for `insn`, where it read MIPS.
-pub(crate) fn decoded(insn: &Insn) -> Option<Decoded> {
+pub fn decoded(insn: &Insn) -> Option<Decoded> {
     match insn.opcode {
         crate::arch::Opcode::Mips(decoded, _) | crate::arch::Opcode::Mips16(decoded, _) => {
             Some(decoded)
@@ -40,7 +40,7 @@ pub(crate) fn decoded(insn: &Insn) -> Option<Decoded> {
 
 /// `insn` lifted in the instruction set and the byte order that decoded
 /// it, MIPS32 or MIPS16e. A rule both read can take either.
-pub(crate) fn lifted(insn: &Insn) -> Option<il::Lifted> {
+pub fn lifted(insn: &Insn) -> Option<il::Lifted> {
     match insn.opcode {
         crate::arch::Opcode::Mips(_, order) => Mips32::of(order).lift(insn),
         crate::arch::Opcode::Mips16(_, order) => {
@@ -51,7 +51,7 @@ pub(crate) fn lifted(insn: &Insn) -> Option<il::Lifted> {
 }
 
 /// The register `operand` names. The `zero` register names none.
-pub(crate) fn register(operand: &il::Operand) -> Option<il::Reg> {
+pub fn register(operand: &il::Operand) -> Option<il::Reg> {
     match operand {
         il::Operand::Reg(reg) => Some(*reg),
         _ => None,
@@ -59,7 +59,7 @@ pub(crate) fn register(operand: &il::Operand) -> Option<il::Reg> {
 }
 
 /// The value of a constant operand. A negative one is in two's complement.
-pub(crate) fn constant(operand: &il::Operand) -> Option<u64> {
+pub fn constant(operand: &il::Operand) -> Option<u64> {
     match operand {
         il::Operand::Const(value) => Some(*value),
         _ => None,
@@ -68,7 +68,7 @@ pub(crate) fn constant(operand: &il::Operand) -> Option<u64> {
 
 /// The base and offset of an access `offset(base)`. A base of `zero` is
 /// none.
-pub(crate) fn access(operand: &il::Operand) -> Option<(Option<il::Reg>, u64)> {
+pub fn access(operand: &il::Operand) -> Option<(Option<il::Reg>, u64)> {
     match operand {
         il::Operand::Memory { base, offset: Some(offset), .. } => Some((*base, *offset as u64)),
         _ => None,
@@ -76,19 +76,19 @@ pub(crate) fn access(operand: &il::Operand) -> Option<(Option<il::Reg>, u64)> {
 }
 
 /// Whether `rabbitizer` read `insn` as `opcode`.
-pub(crate) fn is(insn: &Insn, opcode: Opcode) -> bool {
+pub fn is(insn: &Insn, opcode: Opcode) -> bool {
     decoded(insn) == Some(Decoded::Rabbitizer(opcode))
 }
 
 /// The text of bytes the decoder cannot read.
-pub(crate) const UNKNOWN_TEXT: &str = "(unknown)";
+pub const UNKNOWN_TEXT: &str = "(unknown)";
 
 /// The instruction set this decoder reads.
 ///
 /// MIPS II covers most of what a compiler emits for a 32-bit target. The
 /// MIPS32 and Release 2 words it refuses are read by [`crate::arch::mips32`]
 /// instead, which leaves every word MIPS II reads as it was.
-pub(crate) const ISA: IsaVersion = IsaVersion::MIPS_II;
+pub const ISA: IsaVersion = IsaVersion::MIPS_II;
 
 /// The byte order a word is stored in.
 ///
@@ -105,7 +105,7 @@ pub enum ByteOrder {
 
 impl ByteOrder {
     /// Assemble one stored word.
-    pub(crate) fn read_word(self, bytes: [u8; INSN_WIDTH]) -> u32 {
+    pub fn read_word(self, bytes: [u8; INSN_WIDTH]) -> u32 {
         match self {
             Self::Little => u32::from_le_bytes(bytes),
             Self::Big => u32::from_be_bytes(bytes),
@@ -137,7 +137,7 @@ impl Mips32 {
 
     /// The instruction at `offset` of `code`, which starts at `address`,
     /// and its text where `printing` asks for it.
-    pub(crate) fn read(
+    pub fn read(
         self,
         code: &[u8],
         offset: usize,
@@ -216,7 +216,7 @@ impl Mips32 {
     }
 
     /// The bytes of `word`, stored in this byte order.
-    pub(crate) fn word_bytes(self, word: u32) -> [u8; INSN_WIDTH] {
+    pub fn word_bytes(self, word: u32) -> [u8; INSN_WIDTH] {
         match self.order {
             ByteOrder::Little => word.to_le_bytes(),
             ByteOrder::Big => word.to_be_bytes(),
@@ -224,7 +224,7 @@ impl Mips32 {
     }
 
     /// Assemble one stored halfword, as MIPS16e code is made of.
-    pub(crate) fn read_halfword(self, bytes: [u8; 2]) -> u16 {
+    pub fn read_halfword(self, bytes: [u8; 2]) -> u16 {
         match self.order {
             ByteOrder::Little => u16::from_le_bytes(bytes),
             ByteOrder::Big => u16::from_be_bytes(bytes),
@@ -232,7 +232,7 @@ impl Mips32 {
     }
 
     /// Report whether this is the big-endian decoder.
-    pub(crate) fn is_big(self) -> bool {
+    pub fn is_big(self) -> bool {
         self.order == ByteOrder::Big
     }
 }
@@ -335,7 +335,7 @@ impl Decoder for Mips32 {
 ///
 /// `distance` runs from the instruction to its target, which is how the ARM
 /// decoder writes a target too.
-pub(crate) fn with_target(operands: &str, distance: i64) -> String {
+pub fn with_target(operands: &str, distance: i64) -> String {
     let written = if distance < 0 {
         format!("$-{:#x}", distance.unsigned_abs())
     } else {
@@ -359,7 +359,7 @@ pub(crate) fn with_target(operands: &str, distance: i64) -> String {
 /// region rather than a distance from here. A conditional branch holds a
 /// signed offset counted from the delay slot, one instruction past itself.
 /// `rabbitizer` resolves both forms, so neither correction is repeated here.
-pub(crate) fn classify(inst: &Instruction) -> InsnKind {
+pub fn classify(inst: &Instruction) -> InsnKind {
     // A `jr` through the return-address register ends the function; through
     // any other register it is a tail call or a jump table.
     if inst.is_return() {
@@ -398,31 +398,31 @@ pub(crate) fn classify(inst: &Instruction) -> InsnKind {
 }
 
 /// Resolve the absolute target of a `j` or `jal`.
-pub(crate) fn jump_target(inst: &Instruction) -> Option<u64> {
+pub fn jump_target(inst: &Instruction) -> Option<u64> {
     inst.get_instr_index_as_vram().map(|vram| u64::from(vram.inner()))
 }
 
 /// Resolve the target of a branch, which is relative to the delay slot.
-pub(crate) fn branch_target(inst: &Instruction) -> Option<u64> {
+pub fn branch_target(inst: &Instruction) -> Option<u64> {
     let offset = inst.get_branch_offset()?;
     let address = i64::from(inst.vram().inner());
     u64::try_from(address + i64::from(offset.inner())).ok()
 }
 
 /// Where the IL keeps `hi` and `lo`, after the 32 general registers.
-pub(crate) const HI: il::Reg = il::Reg::General(32);
+pub const HI: il::Reg = il::Reg::General(32);
 
-pub(crate) const LO: il::Reg = il::Reg::General(33);
+pub const LO: il::Reg = il::Reg::General(33);
 
 /// The return address register, which a call writes.
-pub(crate) const RA: u8 = 31;
+pub const RA: u8 = 31;
 
 /// Every MIPS32 general register is 32 bits wide.
-pub(crate) const WIDTH: il::Width = il::Width::Bits32;
+pub const WIDTH: il::Width = il::Width::Bits32;
 
 /// Lift one instruction `rabbitizer` decoded, from what its opcode says it
 /// reads, writes and accesses.
-pub(crate) fn lift(inst: &Instruction) -> il::Lifted {
+pub fn lift(inst: &Instruction) -> il::Lifted {
     let opcode = inst.opcode();
     let field = inst.field();
     let general = |reg: Option<rabbitizer::registers::Gpr>| {
@@ -478,7 +478,7 @@ pub(crate) fn lift(inst: &Instruction) -> il::Lifted {
 ///
 /// A branch is read from its offset rather than its target, which cannot
 /// be resolved when it would lie below address zero.
-pub(crate) fn target_distance(inst: &Instruction, kind: InsnKind, address: u64) -> Option<i64> {
+pub fn target_distance(inst: &Instruction, kind: InsnKind, address: u64) -> Option<i64> {
     if let Some(offset) = inst.get_branch_offset() {
         return Some(i64::from(offset.inner()));
     }
@@ -493,7 +493,7 @@ pub(crate) fn target_distance(inst: &Instruction, kind: InsnKind, address: u64) 
 /// The name of each operand that [`lift`] gives `inst`, in its order, as
 /// `rabbitizer` writes it with no `$`. `inst` moves control as `kind`, from
 /// `address`.
-pub(crate) fn names(inst: &Instruction, kind: InsnKind, address: u64) -> il::Names {
+pub fn names(inst: &Instruction, kind: InsnKind, address: u64) -> il::Names {
     use compact_str::{CompactString, format_compact};
     let flags = InstructionDisplayFlags::new_gnu_as();
     let shown = |operand: ValuedOperand| -> CompactString {
@@ -528,7 +528,7 @@ pub(crate) fn names(inst: &Instruction, kind: InsnKind, address: u64) -> il::Nam
 }
 
 /// An operand as the IL names it.
-pub(crate) fn il_operand(operand: ValuedOperand) -> il::Operand {
+pub fn il_operand(operand: ValuedOperand) -> il::Operand {
     let general = |reg: rabbitizer::registers::Gpr| match reg.as_index() {
         0 => il::Operand::Zero,
         index => il::Operand::Reg(il::Reg::General(index as u8)),
@@ -564,7 +564,7 @@ pub(crate) fn il_operand(operand: ValuedOperand) -> il::Operand {
 
 /// What a MIPS instruction computes. A pseudo-instruction, such as `not`
 /// or `beqz`, has an opcode of its own.
-pub(crate) fn op_of(inst: &Instruction, access: Option<il::AccessKind>) -> il::Op {
+pub fn op_of(inst: &Instruction, access: Option<il::AccessKind>) -> il::Op {
     use il::Op;
     match access {
         Some(il::AccessKind::Load) => return Op::Load,
@@ -625,7 +625,7 @@ pub(crate) fn op_of(inst: &Instruction, access: Option<il::AccessKind>) -> il::O
 /// What a MIPS floating point instruction computes, or `None` for one that
 /// is not floating point. A conversion to an integer names its rounding:
 /// `floor.w.d` rounds down.
-pub(crate) fn float_op(opcode: Opcode) -> Option<il::Op> {
+pub fn float_op(opcode: Opcode) -> Option<il::Op> {
     use il::Op;
     Some(match opcode {
         Opcode::core_add_s | Opcode::core_add_d => Op::FloatAdd,
@@ -683,9 +683,7 @@ pub(crate) fn float_op(opcode: Opcode) -> Option<il::Op> {
     })
 }
 
-pub(crate) fn access_width(
-    access: Option<rabbitizer::access_type::AccessType>,
-) -> Option<il::Width> {
+pub fn access_width(access: Option<rabbitizer::access_type::AccessType>) -> Option<il::Width> {
     use rabbitizer::access_type::AccessType;
     match access? {
         AccessType::BYTE => Some(il::Width::Bits8),
@@ -702,7 +700,7 @@ pub(crate) fn access_width(
 
 /// What a general register operand gives as a value: the zero register
 /// gives 0.
-pub(crate) fn register_value(reg: Option<rabbitizer::registers::Gpr>) -> il::Value {
+pub fn register_value(reg: Option<rabbitizer::registers::Gpr>) -> il::Value {
     match reg.map(|reg| reg.as_index()) {
         Some(0) => il::Value::Const(0),
         Some(index) => il::Value::Reg(il::Reg::General(index as u8)),
@@ -710,7 +708,7 @@ pub(crate) fn register_value(reg: Option<rabbitizer::registers::Gpr>) -> il::Val
     }
 }
 
-pub(crate) fn test_of(inst: &Instruction) -> Option<il::Test> {
+pub fn test_of(inst: &Instruction) -> Option<il::Test> {
     let field = inst.field();
     let (rs, rt) = (register_value(field.rs()), register_value(field.rt()));
     let zero = il::Value::Const(0);

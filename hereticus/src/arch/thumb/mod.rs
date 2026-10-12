@@ -17,8 +17,7 @@
 //!
 //! A binary that mixes A32 and T32 functions is read as one or the other.
 
-mod decode;
-pub use decode::*;
+pub use hereticus_il::arch::thumb::*;
 
 use super::arm32::{
     Arm32, Decoded, Flags, PcModel, UNWIND_SECTION, call_targets_through_thunks, core_opcode,

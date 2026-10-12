@@ -21,14 +21,14 @@
 //! the extension, and `extr`, did not occur.
 
 /// ABI names of the general registers, as `rabbitizer` prints them.
-pub(super) const REGISTERS: [&str; 32] = [
+pub const REGISTERS: [&str; 32] = [
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
     "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "s8",
     "ra",
 ];
 
 use super::InsnKind;
-use crate::il;
+use crate as il;
 
 /// The major opcodes this module reads under.
 const SPECIAL: u32 = 0x00;
@@ -84,7 +84,7 @@ pub enum Op {
 }
 
 impl Op {
-    pub(super) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Synci => "synci",
             Self::Sigrie => "sigrie",
@@ -129,10 +129,10 @@ impl Op {
 
 /// One word this module reads.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct Word {
-    pub(super) op: Op,
-    pub(super) operands: String,
-    pub(super) kind: InsnKind,
+pub struct Word {
+    pub op: Op,
+    pub operands: String,
+    pub kind: InsnKind,
 }
 
 /// `eret` and `deret`, which return from an exception and from a debug
@@ -143,7 +143,7 @@ const DERET: u32 = 0x4200_001f;
 /// Report whether `op` returns from an exception.
 ///
 /// Unlike every other MIPS jump, such a return has no delay slot.
-pub(super) fn is_exception_return(op: Op) -> bool {
+pub fn is_exception_return(op: Op) -> bool {
     matches!(op, Op::Eret | Op::Deret)
 }
 
@@ -151,7 +151,7 @@ pub(super) fn is_exception_return(op: Op) -> bool {
 ///
 /// Returns `None` for a word this module does not know, which leaves it
 /// unreadable.
-pub(super) fn decode(word: u32) -> Option<Word> {
+pub fn decode(word: u32) -> Option<Word> {
     let fields = Fields::of(word);
     if let Some(found) = control(word, &fields) {
         return Some(found);
@@ -479,14 +479,14 @@ fn cop0(fields: &Fields) -> Option<(Op, String)> {
 /// is `hi` and `lo`, is a register the IL does not name: a move to or from
 /// one names it as another operand, and a multiply into one lifts to
 /// nothing.
-pub(super) fn lift(word: u32) -> Option<il::Lifted> {
+pub fn lift(word: u32) -> Option<il::Lifted> {
     lift_named(word).map(|named| named.lifted)
 }
 
 /// [`lift`], with the name of each operand as [`decode`] writes it. An
 /// operand it does not write, as the `hi` that `mthi` writes, has an empty
 /// name.
-pub(super) fn lift_named(word: u32) -> Option<il::Named> {
+pub fn lift_named(word: u32) -> Option<il::Named> {
     use compact_str::{CompactString, format_compact};
     use il::Op;
     let fields = Fields::of(word);

@@ -42,6 +42,8 @@
 //! largest gains came from reading what each instruction does one way on
 //! every architecture: the operation, its operands, a guard, an idiom.
 
+pub mod arch;
+
 use compact_str::CompactString;
 use smallvec::SmallVec;
 

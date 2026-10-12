@@ -1,47 +1,47 @@
 //! The decoder and the lifter of MIPS16e, which read one instruction at a
 //! time, by the MIPS32 instruction it does where it has one. The rules that
 //! read MIPS16e code, as its preamble of the global pointer and its jump
-//! tables, are in the module above.
+//! tables, are in `hereticus`.
 
+use crate as il;
 use crate::arch::mips::{Decoded as MipsDecoded, Mips32, decoded};
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing};
-use crate::il;
 use compact_str::CompactString;
 use rabbitizer::opcodes::Opcode;
 
 /// The width of one halfword, the unit of MIPS16e code.
-pub(crate) const HALFWORD: usize = 2;
+pub const HALFWORD: usize = 2;
 
 /// The general register of each 3-bit register field.
-pub(crate) const REGISTERS: [u32; 8] = [16, 17, 2, 3, 4, 5, 6, 7];
+pub const REGISTERS: [u32; 8] = [16, 17, 2, 3, 4, 5, 6, 7];
 
 /// The T register, which compares write, as MIPS32 numbers it.
-pub(crate) const T: u32 = 24;
+pub const T: u32 = 24;
 
 /// The stack pointer and the return address register.
-pub(crate) const SP: u32 = 29;
+pub const SP: u32 = 29;
 
-pub(crate) const RA: u32 = 31;
-pub(crate) const S0: u32 = 16;
+pub const RA: u32 = 31;
+pub const S0: u32 = 16;
 
-pub(crate) const S2: u32 = 18;
+pub const S2: u32 = 18;
 
-pub(crate) const S8: u32 = 30;
+pub const S8: u32 = 30;
 
 /// The registers that `save` and `restore` name.
-pub(crate) const A0: u32 = 4;
+pub const A0: u32 = 4;
 
 /// MIPS16e, in either byte order.
 #[derive(Clone, Copy, Debug)]
 pub struct Mips16 {
     /// The MIPS32 decoder of the same byte order, which reads what each
     /// instruction translates to.
-    pub(crate) base: Mips32,
+    pub base: Mips32,
 }
 
 impl Mips16 {
     /// MIPS16e in the byte order of `base`.
-    pub(crate) fn of(base: Mips32) -> Self {
+    pub fn of(base: Mips32) -> Self {
         Self { base }
     }
 }
@@ -70,7 +70,7 @@ pub enum Op {
 
 impl Op {
     /// The name the instruction prints with.
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Jalx => "jalx",
             Self::Jrc => "jrc",
@@ -85,15 +85,15 @@ impl Op {
 /// The frame that a `save` or `restore` makes or drops: whether it saves,
 /// the arguments it stores into the frame of the caller, the size of the
 /// frame, and the registers kept in it, lowest address first.
-pub(crate) struct Frame {
-    pub(crate) saves: bool,
-    pub(crate) arguments: Vec<&'static str>,
-    pub(crate) size: u32,
-    pub(crate) kept: Vec<&'static str>,
+pub struct Frame {
+    pub saves: bool,
+    pub arguments: Vec<&'static str>,
+    pub size: u32,
+    pub kept: Vec<&'static str>,
 }
 
 /// The frame of `insn`, where it is a `save` or `restore`.
-pub(crate) fn frame(insn: &Insn) -> Option<Frame> {
+pub fn frame(insn: &Insn) -> Option<Frame> {
     let order = match insn.opcode {
         crate::arch::Opcode::Mips16(_, order) => order,
         _ => return None,
@@ -111,7 +111,7 @@ pub(crate) fn frame(insn: &Insn) -> Option<Frame> {
 
 /// What one MIPS16e instruction reads as.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Reading {
+pub enum Reading {
     /// The MIPS32 instruction that does the same work.
     Word(u32),
     /// A transfer of control: its text, its kind, the register it goes
@@ -134,14 +134,14 @@ pub(crate) enum Reading {
 
 /// Whether a frame instruction makes the frame or drops it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FrameStep {
+pub enum FrameStep {
     Save,
     Restore,
 }
 
 /// The registers a `save` stores and a `restore` loads.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FrameRegisters {
+pub struct FrameRegisters {
     /// How many arguments, from `a0`, a `save` stores into the frame of the
     /// caller. A `restore` loads none of them back.
     arguments: u32,
@@ -193,30 +193,30 @@ impl FrameRegisters {
 }
 
 /// The decoded fields of one instruction, and its width.
-pub(crate) struct Read {
-    pub(crate) reading: Reading,
+pub struct Read {
+    pub reading: Reading,
     width: usize,
 }
 
 /// One MIPS32 word of the I format.
-pub(crate) fn immediate(op: u32, rs: u32, rt: u32, value: i64) -> u32 {
+pub fn immediate(op: u32, rs: u32, rt: u32, value: i64) -> u32 {
     op << 26 | rs << 21 | rt << 16 | (value as u32 & 0xffff)
 }
 
 /// One MIPS32 word of the R format.
-pub(crate) fn register(rs: u32, rt: u32, rd: u32, sa: u32, funct: u32) -> u32 {
+pub fn register(rs: u32, rt: u32, rd: u32, sa: u32, funct: u32) -> u32 {
     rs << 21 | rt << 16 | rd << 11 | sa << 6 | funct
 }
 
 /// Sign-extend the low `bits` of `value`.
-pub(crate) fn signed(value: u32, bits: u32) -> i64 {
+pub fn signed(value: u32, bits: u32) -> i64 {
     let shift = 64 - bits;
     (i64::from(value) << shift) >> shift
 }
 
 /// Decode the instruction `first`, with the halfword after it, `next`, at
 /// `address`.
-pub(crate) fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Read> {
+pub fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Read> {
     let op = u32::from(first >> 11);
     // `jal` and `jalx` take two halfwords: a 26-bit target, in words.
     if op == 0b00011 {
@@ -251,7 +251,7 @@ pub(crate) fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> O
 /// prefix came first: the prefix itself, and the 16-bit constant the two
 /// make.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Reading> {
+pub fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Reading> {
     let h = u32::from(insn);
     let op = h >> 11;
     let rx = REGISTERS[(h >> 8 & 7) as usize];
@@ -405,7 +405,7 @@ pub(crate) fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Optio
 }
 
 /// Read an instruction of the RR group, which names two registers.
-pub(crate) fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
+pub fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
     let word = |value: u32| Some(Reading::Word(value));
     match h & 0x1f {
         0b00000 => {
@@ -471,7 +471,7 @@ pub(crate) fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
 }
 
 /// The ABI names of the general registers, as `rabbitizer` prints them.
-pub(crate) const REGISTER_NAMES: [&str; 32] = [
+pub const REGISTER_NAMES: [&str; 32] = [
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
     "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "s8",
     "ra",
@@ -479,13 +479,13 @@ pub(crate) const REGISTER_NAMES: [&str; 32] = [
 
 impl Mips16 {
     /// The halfword at `offset` of `code`, in this byte order.
-    pub(crate) fn halfword(self, code: &[u8], offset: usize) -> Option<u16> {
+    pub fn halfword(self, code: &[u8], offset: usize) -> Option<u16> {
         let bytes: [u8; 2] = code.get(offset..offset + HALFWORD)?.try_into().ok()?;
         Some(self.base.read_halfword(bytes))
     }
 
     /// Decode at `offset`, with what it reads as.
-    pub(crate) fn decoded(&self, code: &[u8], offset: usize, address: u64) -> Option<Read> {
+    pub fn decoded(&self, code: &[u8], offset: usize, address: u64) -> Option<Read> {
         let first = self.halfword(code, offset)?;
         decode_halfwords(first, self.halfword(code, offset + HALFWORD), address)
     }
@@ -500,7 +500,7 @@ impl Mips16 {
 
     /// The instruction at `offset` of `code`, which starts at `address`,
     /// and its text where `printing` asks for it.
-    pub(crate) fn read(
+    pub fn read(
         &self,
         code: &[u8],
         offset: usize,

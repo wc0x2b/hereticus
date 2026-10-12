@@ -7,8 +7,7 @@
 //! 2. `total_offset()` counts **words**, not bytes. Multiplying by the
 //!    instruction width is what makes reported addresses right.
 
-mod decode;
-pub use decode::*;
+pub use hereticus_il::arch::arm32::*;
 
 use super::{Arch, DataAmongCode, Decoder, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind, Contents};

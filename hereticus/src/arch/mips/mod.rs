@@ -14,8 +14,7 @@
 //!    `jal` hold an address rather than a distance. `rabbitizer` resolves
 //!    both, so neither correction is made here.
 
-mod decode;
-pub use decode::*;
+pub use hereticus_il::arch::mips::*;
 
 use super::{
     AbsoluteCall, Arch, CallTarget, Decoder, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory,
@@ -53,7 +52,17 @@ pub(super) fn first_register(insn: &Insn) -> Option<il::Reg> {
 }
 
 /// The rules that read data through the global offset table.
-impl Mips32 {
+trait TableRules {
+    fn slot_of(&self, body: &[Insn], load_index: usize, load: &Insn) -> Option<u64>;
+    fn addresses_by_index(
+        &self,
+        body: &[Insn],
+        space: &AddressSpace,
+        memory: &Memory<'_>,
+    ) -> Vec<(usize, u64)>;
+}
+
+impl TableRules for Mips32 {
     /// The slot of the global offset table that `load`, at `load_index` of
     /// `body`, reads through the global pointer.
     fn slot_of(&self, body: &[Insn], load_index: usize, load: &Insn) -> Option<u64> {
