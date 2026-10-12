@@ -1368,4 +1368,41 @@ mod tests {
         assert!(flow_features(&[None, None], 2).is_empty());
         assert!(flow_features(&[], 2).is_empty());
     }
+
+    #[rstest::rstest]
+    #[case::zero(0, "0")]
+    #[case::small(9, "9")]
+    #[case::ten(10, "0xa")]
+    #[case::large(0x1234, "0x1234")]
+    #[case::negative(-8_i64 as u64, "-0x8")]
+    #[case::negative_in_32_bits(0xffff_fffe, "-0x2")]
+    #[case::most_negative(-0x1_0000_i64 as u64, "-0x10000")]
+    #[case::far_negative(-0x1_0001_i64 as u64, "0xfffffffffffeffff")]
+    fn a_constant_reads_as_code_writes_it(#[case] value: u64, #[case] expected: &str) {
+        assert_eq!(constant_name(value), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::ahead(0x24, "$+0x24")]
+    #[case::here(0, "$+0x0")]
+    #[case::behind(-0x10, "$-0x10")]
+    #[case::far_behind(i64::MIN, "$-0x8000000000000000")]
+    fn a_target_names_its_distance(#[case] distance: i64, #[case] expected: &str) {
+        assert_eq!(target_name(distance), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::base(None, None, "[sp]")]
+    #[case::no_offset(None, Some(0), "[sp]")]
+    #[case::offset(None, Some(0x10), "[sp + 0x10]")]
+    #[case::negative(None, Some(-8), "[sp - 0x8]")]
+    #[case::index(Some("(r1 lsl 2)"), None, "[sp + (r1 lsl 2)]")]
+    #[case::index_wins(Some("r1"), Some(4), "[sp + r1]")]
+    fn a_memory_operand_names_base_and_offset(
+        #[case] index: Option<&str>,
+        #[case] offset: Option<i64>,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(memory_name("sp", index, offset), expected);
+    }
 }

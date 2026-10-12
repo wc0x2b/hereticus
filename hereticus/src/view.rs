@@ -7,8 +7,9 @@
 //! names the compare before it, as `if (w0 <= 0x3f) goto $+0x40`.
 //!
 //! The IL keeps no register names and no targets, so each statement takes
-//! them from the operands the decoder printed. An instruction the IL does
-//! not name shows as the decoder printed it.
+//! them from the names the lift gives each operand, as [`Named`] holds
+//! them. An instruction the IL does not name shows as the decoder prints
+//! it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,9 +18,10 @@ use crate::arch::arm32::{self, Step, Vfp};
 use crate::arch::mips::{self, Decoded as MipsDecoded};
 use crate::arch::mips16::Op as Mips16Op;
 use crate::arch::mips32::Op as Mips32Op;
-use crate::arch::{Arch, Insn, aarch64, is_branch_target, split_printed};
+use crate::arch::{Arch, Insn, aarch64, is_branch_target};
 use crate::callee::Links;
-use crate::il::{AccessKind, Comparison, Cond, Lifted, Op, Operand, Reg, Test};
+use crate::il::{AccessKind, Comparison, Cond, Lifted, Named, Op, Operand, Reg, Test};
+use compact_str::CompactString;
 use rabbitizer::opcodes::Opcode as MipsOpcode;
 use yaxpeax_arm::armv7::{ConditionCode, Opcode as ArmOpcode};
 use yaxpeax_arm::armv8::a64::Opcode as A64Opcode;
@@ -226,9 +228,8 @@ fn instruction_lines(
         .enumerate()
         .map(|(index, (insn, formed))| {
             let named = crate::arch::lift_named(insn);
-            let printed = insn.to_string();
-            let operands = operand_tokens(&printed, named.as_ref());
-            let tokens: Vec<&str> = operands.iter().map(|token| token.as_str()).collect();
+            let names: &[CompactString] = named.as_ref().map_or(&[], |named| &named.names);
+            let tokens: Vec<&str> = names.iter().map(CompactString::as_str).collect();
             // The operands the instruction shows, with no name for one it
             // leaves out.
             let shown: Vec<&str> =
@@ -258,69 +259,25 @@ fn instruction_lines(
             if is_mips && let Some(text) = mips_statement(insn, &shown, &mut float_condition) {
                 return text;
             }
-            let source = if named.is_some() { Source::Lift } else { Source::Printed };
-            let write_back = named.as_ref().and_then(|named| named.write_back.clone());
-            let lifted = named.map(|named| named.lifted).or_else(|| arch.lift(insn));
             let moves = moving.get(index).copied().unwrap_or(false);
-            let printed_name = split_printed(&printed).0;
-            let shown = lifted.and_then(|lifted| {
-                let text = statement(
-                    insn,
-                    Operands {
-                        printed_name,
-                        tokens: &tokens,
-                        source,
-                        write_back: write_back.as_deref(),
-                    },
-                    &lifted,
-                    address,
-                    moves,
-                    &mut last_compare,
-                )?;
-                Some((lifted.op, text))
+            let shown = named.as_ref().and_then(|named| {
+                let text = statement(insn, named, address, moves, &mut last_compare)?;
+                Some((named.lifted.op, text))
             });
             match shown {
                 Some((op, text)) => conditional(text, Some(op)),
-                None => printed,
+                // An instruction the IL does not name shows as the decoder
+                // prints it.
+                None => insn.to_string(),
             }
         })
         .collect()
 }
 
-/// Where the IL view reads the names of the operands of an instruction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Source {
-    /// From the text the decoder printed, split at its commas.
-    Printed,
-    /// From the names the lift gives, one for each lifted operand.
-    Lift,
-}
-
-/// The operands of one instruction, as the IL view names them.
-#[derive(Clone, Copy)]
-struct Operands<'a> {
-    /// The name the instruction prints with, as `vsqrt.f64`.
-    printed_name: &'a str,
-    tokens: &'a [&'a str],
-    source: Source,
-    /// What a post-index access adds to its base, where the lift names it.
-    write_back: Option<&'a str>,
-}
-
-/// The names of the operands of the instruction printed as `printed`: those
-/// of `named`, where the lift names them.
-fn operand_tokens(printed: &str, named: Option<&crate::il::Named>) -> Vec<String> {
-    match named {
-        Some(named) => named.names.iter().map(|name| name.to_string()).collect(),
-        None => split_operands(split_printed(printed).1).into_iter().map(str::to_string).collect(),
-    }
-}
-
-/// The operand names `insn` shows: see [`operand_tokens`].
-fn operand_tokens_of(insn: &Insn) -> Vec<String> {
-    let mut tokens = operand_tokens(&insn.to_string(), crate::arch::lift_named(insn).as_ref());
-    tokens.retain(|token| !token.is_empty());
-    tokens
+/// The names of the operands `insn` shows, from its lift.
+fn shown_names(insn: &Insn) -> Vec<CompactString> {
+    let names = crate::arch::lift_named(insn).map(|named| named.names).unwrap_or_default();
+    names.into_iter().filter(|name| !name.is_empty()).collect()
 }
 
 /// The MIPS loads of a page from the global offset table: each `lw` whose
@@ -347,7 +304,7 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
         })
         .filter_map(|(index, insn)| {
             // The MIPS16e `addiu v0, 0x10` adds to the register it writes.
-            let source = match operand_tokens_of(insn).as_slice() {
+            let source = match shown_names(insn).as_slice() {
                 [_, source, _] => source.clone(),
                 [dest, _] => dest.clone(),
                 _ => return None,
@@ -355,7 +312,7 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
             let at = (index.saturating_sub(LOOK_BACK)..index).rev().find(|&at| {
                 let earlier = &insns[at];
                 matches!(earlier.kind, crate::arch::InsnKind::Call { .. })
-                    || operand_tokens_of(earlier).first() == Some(&source)
+                    || shown_names(earlier).first() == Some(&source)
             })?;
             let loads = mips::rabbitizer_opcode(&insns[at]) == Some(MipsOpcode::core_lw);
             (loads && formed[at].is_some()).then_some(at)
@@ -639,56 +596,6 @@ enum CompareKind {
     And,
 }
 
-/// The operands as the decoder printed them, split at the commas that are
-/// not inside brackets, braces or parentheses.
-fn split_operands(text: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let (mut depth, mut start) = (0i32, 0);
-    for (index, character) in text.char_indices() {
-        match character {
-            '[' | '{' | '(' => depth += 1,
-            ']' | '}' | ')' => depth -= 1,
-            ',' if depth == 0 => {
-                parts.push(text[start..index].trim());
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    let last = text[start..].trim();
-    if !last.is_empty() {
-        parts.push(last);
-    }
-    parts
-}
-
-/// A memory operand as `[base + offset]`, from `[x1, #0x10]` or
-/// `0x10(sp)`.
-fn memory_text(token: &str) -> String {
-    let inner = if let Some(inner) = token.strip_prefix('[') {
-        inner.trim_end_matches('!').trim_end_matches(']')
-    } else if let Some((offset, base)) = token.split_once('(') {
-        let base = base.trim_end_matches(')');
-        return match offset.trim() {
-            "" | "0" | "0x0" => format!("[{base}]"),
-            offset => format!("[{base} + {offset}]"),
-        };
-    } else {
-        return token.to_string();
-    };
-    // A shift applies to the index before it, as `[r3, r1, lsl 2]` does.
-    let mut parts: Vec<String> = Vec::new();
-    for part in inner.split(',').map(|part| part.trim().trim_start_matches('#')) {
-        let is_shift =
-            ["lsl", "lsr", "asr", "ror", "uxt", "sxt"].iter().any(|word| part.starts_with(word));
-        match parts.last_mut() {
-            Some(index) if is_shift => *index = format!("({index} {})", part.replace('#', "")),
-            _ => parts.push(part.to_string()),
-        }
-    }
-    format!("[{}]", parts.join(" + ").replace("+ -", "- "))
-}
-
 /// The statement of a MIPS16e `save` or `restore`: the arguments `save`
 /// stores into the frame of the caller, the size of the frame, then the
 /// registers kept in the frame, lowest address first:
@@ -762,20 +669,6 @@ fn aarch64_statement(
         // A shifted value is named as one, as `3 msl 16`.
         (A64Opcode::MVNI, [dest, value]) if value.contains(' ') => format!("{dest} = ~({value})"),
         (A64Opcode::MVNI, [dest, value]) => format!("{dest} = ~{}", immediate(value)),
-        (A64Opcode::MOVI | A64Opcode::MVNI, [dest, value, shift]) => {
-            let (kind, amount) = shift.split_once(' ')?;
-            let operator = match kind {
-                "lsl" => "<<",
-                // `msl` shifts ones in.
-                "msl" => "msl",
-                _ => return None,
-            };
-            let shifted = format!("{} {operator} {}", immediate(value), immediate(amount));
-            match opcode {
-                A64Opcode::MVNI => format!("{dest} = ~({shifted})"),
-                _ => format!("{dest} = {shifted}"),
-            }
-        }
         // `ins`, `umov` and `dup` of a lane print as `mov`.
         (A64Opcode::INS | A64Opcode::UMOV | A64Opcode::DUP, [dest, source])
             if is_lane(dest) || is_lane(source) =>
@@ -807,7 +700,7 @@ fn vfp_statement(
             let right = if *right == "0x0" { "0" } else { right };
             format!("fpscr = compare({left}, {right})")
         }
-        (Vfp::Status, ["APSR_nzcv", "fpscr"] | ["APSR_nzcv"]) => {
+        (Vfp::Status, ["APSR_nzcv"]) => {
             *last_compare = None;
             "flags = fpscr".to_string()
         }
@@ -885,95 +778,18 @@ fn width_text(lifted: &Lifted) -> String {
         .unwrap_or_default()
 }
 
-/// What a lifted operand was paired with among the printed ones.
-enum Pairing {
-    /// A printed operand.
-    Printed(String),
-    /// Nothing printed, as the zero register of `cmp`: what it reads as.
-    Implied(String),
-    /// The printed operands left over after the last lifted one, as the
-    /// `#0x20` of a post-index access.
-    Extra(String),
-}
-
-impl Pairing {
-    fn into_text(self) -> String {
-        match self {
-            Self::Printed(text) | Self::Implied(text) | Self::Extra(text) => text,
-        }
-    }
-}
-
-/// Pair each lifted operand with the printed operand it stands for.
-///
-/// An alias prints fewer operands than the IL holds: `cmp` leaves out the
-/// zero register it writes, `mov x0, x1` is `orr x0, xzr, x1`, `mov x29,
-/// sp` adds 0, and the Thumb-2 `adds r0, 0x18` names `r0` once for two
-/// operands. A shifted register prints as two, as `r1, lsl 4`, which pair
-/// with one lifted operand as `(r1 lsl 4)`. `None` where the two do not
-/// pair.
-fn pair_operands(lifted: &[Operand], tokens: &[&str]) -> Option<Vec<Pairing>> {
-    let mut missing = lifted.len().saturating_sub(tokens.len());
-    let mut printed = tokens.iter();
-    let mut paired: Vec<Pairing> = Vec::with_capacity(lifted.len());
-    for (index, operand) in lifted.iter().enumerate() {
-        let repeats = index > 0
-            && matches!(operand, Operand::Reg(_))
-            && lifted.get(index - 1) == Some(operand);
-        if missing > 0 && matches!(operand, Operand::Zero | Operand::Const(0)) {
-            missing -= 1;
-            paired.push(Pairing::Implied("0".to_string()));
-            continue;
-        }
-        if missing > 0 && repeats {
-            missing -= 1;
-            let text = paired.last().map(|last| match last {
-                Pairing::Printed(text) | Pairing::Implied(text) | Pairing::Extra(text) => {
-                    text.clone()
-                }
-            })?;
-            paired.push(Pairing::Implied(text));
-            continue;
-        }
-        paired.push(Pairing::Printed((*printed.next()?).to_string()));
-    }
-    if missing > 0 {
-        return None;
-    }
-    let rest: Vec<&str> = printed.copied().collect();
-    if !rest.is_empty() {
-        // A post-index offset follows the memory operand; a shift follows
-        // the register it shifts.
-        let after_memory = matches!(lifted.last(), Some(Operand::Memory { .. }));
-        let is_shift = |token: &str| {
-            ["lsl", "lsr", "asr", "ror", "rrx", "uxt", "sxt"]
-                .iter()
-                .any(|word| token.starts_with(word))
-        };
-        if after_memory {
-            paired.push(Pairing::Extra(rest.join(", ")));
-        } else if rest.iter().all(|token| is_shift(token)) {
-            let Some(Pairing::Printed(last)) = paired.pop() else { return None };
-            let shift = rest.join(" ").replace('#', "");
-            paired.push(Pairing::Printed(format!("({last} {shift})")));
-        } else {
-            return None;
-        }
-    }
-    Some(paired)
-}
-
-/// Pair each lifted operand with its name from the lift. An operand that
+/// The text of each lifted operand: its name from the lift. An operand that
 /// the instruction leaves out has an empty name, and reads as what it
 /// holds: zero, or the register it repeats, as the `x1` that `cinc x0, x1,
-/// ne` names once for two operands.
-fn named_pairs(lifted: &[Operand], names: &[&str]) -> Option<Vec<Pairing>> {
+/// ne` names once for two operands. `None` where the names do not match
+/// the operands.
+fn operand_texts(lifted: &[Operand], names: &[&str]) -> Option<Vec<String>> {
     if lifted.len() != names.len() {
         return None;
     }
-    let pairs = lifted.iter().zip(names).map(|(operand, name)| {
+    let texts = lifted.iter().zip(names).map(|(operand, name)| {
         if !name.is_empty() {
-            return Pairing::Printed(name.to_string());
+            return name.to_string();
         }
         let repeated = lifted
             .iter()
@@ -981,12 +797,11 @@ fn named_pairs(lifted: &[Operand], names: &[&str]) -> Option<Vec<Pairing>> {
             .find(|(other, other_name)| *other == operand && !other_name.is_empty())
             .map(|(_, other_name)| other_name.to_string());
         match (operand, repeated) {
-            (Operand::Zero | Operand::Const(0), _) => Pairing::Implied("0".to_string()),
-            (_, Some(name)) => Pairing::Implied(name),
-            (_, None) => Pairing::Implied(String::new()),
+            (Operand::Zero | Operand::Const(0), _) => "0".to_string(),
+            (_, name) => name.unwrap_or_default(),
         }
     });
-    Some(pairs.collect())
+    Some(texts.collect())
 }
 
 /// Where an ARM access to a list of registers starts, relative to its base,
@@ -1107,8 +922,7 @@ fn list_statement(insn: &Insn, tokens: &[&str], lifted: &Lifted) -> Option<Strin
 /// it well enough to show.
 fn statement(
     insn: &Insn,
-    Operands { printed_name, tokens, source, write_back }: Operands<'_>,
-    lifted: &Lifted,
+    named: &Named,
     address: Option<Pointed>,
     moves: bool,
     last_compare: &mut Option<Compared>,
@@ -1117,27 +931,15 @@ fn statement(
     let constant = |value: u64| {
         if moves { format!("@{value:#x}") } else { constant_text(value) }
     };
-    // The names of the lift, one for each lifted operand, where it gives
-    // them; an operand the instruction shows no name for has an empty one.
-    let lift_names: Vec<&str> = match source {
-        Source::Lift => tokens.to_vec(),
-        Source::Printed => Vec::new(),
-    };
+    let lifted = &named.lifted;
+    // One name for each lifted operand; an operand the instruction shows no
+    // name for has an empty one.
+    let lift_names: Vec<&str> = named.names.iter().map(CompactString::as_str).collect();
     // The operands as the instruction shows them.
-    let mut tokens: Vec<&str> = tokens.iter().copied().filter(|token| !token.is_empty()).collect();
-    // The A32 decoder prints a register before the two a compare compares,
-    // as `cmps r0, r3, 0x0`, which is no operand of it.
-    if lifted.op == Op::Compare && tokens.len() == lifted.operands.len() + 1 {
-        tokens.remove(0);
-    }
-    // The MIPS16e `la` prints the `pc` it reads, as `addiu v1, pc, 0x7340`,
-    // and already adds it into the address it prints.
-    if lifted.op == Op::Address
-        && tokens.len() == lifted.operands.len() + 1
-        && tokens.get(1) == Some(&"pc")
-    {
-        tokens.remove(1);
-    }
+    let tokens: Vec<&str> = lift_names.iter().copied().filter(|name| !name.is_empty()).collect();
+    // The name the instruction prints with, as `vsqrt.f64`.
+    let printed_name = crate::arch::printed_name(insn);
+    let operation = printed_name.as_str();
     let target = tokens.iter().rev().find(|token| is_branch_target(token)).copied();
     // A call or jump through a register names it last, as `blr x1` and the
     // MIPS16e `jalr ra, v0` do.
@@ -1152,7 +954,7 @@ fn statement(
         Op::Jump => return Some(format!("goto {}", target.or(tokens.last().copied())?)),
         _ => {}
     }
-    if let Some(line) = aarch64_statement(insn, printed_name, &tokens, last_compare) {
+    if let Some(line) = aarch64_statement(insn, operation, &tokens, last_compare) {
         return Some(line);
     }
     if let Some(line) = vfp_statement(insn, &tokens, last_compare) {
@@ -1194,45 +996,23 @@ fn statement(
         && let Some((dest, sources)) = tokens.split_first()
         && !sources.is_empty()
     {
-        // As printed, for the reader, without the size: `vsqrt` of
-        // `vsqrt.f64`.
-        let name = printed_name.split('.').next().unwrap_or(printed_name);
+        // Without the size: `vsqrt` of `vsqrt.f64`.
+        let name = operation.split('.').next().unwrap_or(operation);
         let sources: Vec<String> =
             sources.iter().map(|source| source.trim_start_matches('#').to_string()).collect();
         return Some(format!("{dest} = {name}({})", sources.join(", ")));
     }
-    let mut paired = match source {
-        Source::Lift => named_pairs(&lifted.operands, &lift_names)?,
-        Source::Printed => pair_operands(&lifted.operands, &tokens)?,
-    };
+    let paired = operand_texts(&lifted.operands, &lift_names)?;
     // A post-index access writes its base after it, as `ldp x29, x30, [sp],
     // #0x20` does.
     let mut after = String::new();
     let post_index = lifted.operands.iter().zip(&lift_names).find_map(|(operand, name)| {
         matches!(operand, Operand::Memory { update: crate::il::Update::After, .. }).then_some(*name)
     });
-    match (source, post_index.zip(write_back)) {
-        (Source::Lift, Some((name, amount))) => {
-            let base = name.trim_start_matches('[').trim_end_matches(']');
-            after = format!("; {base} = {base} + {amount}");
-        }
-        (Source::Lift, None) => {}
-        (Source::Printed, _) => {
-            if let Some(Pairing::Extra(rest)) = paired.last()
-                && let Some(base) = tokens.iter().find(|token| token.starts_with('['))
-            {
-                let base = base.trim_start_matches('[').trim_end_matches(']');
-                after = format!("; {base} = {base} + {}", rest.trim_start_matches('#'));
-                paired.pop();
-            }
-        }
+    if let Some((name, amount)) = post_index.zip(named.write_back.as_deref()) {
+        let base = name.trim_start_matches('[').trim_end_matches(']');
+        after = format!("; {base} = {base} + {amount}");
     }
-    // A memory operand as the IL reads it: a name of the lift is one.
-    let place_text = |token: &str| match source {
-        Source::Lift => token.to_string(),
-        Source::Printed => memory_text(token),
-    };
-    let paired: Vec<String> = paired.into_iter().map(Pairing::into_text).collect();
 
     // The idioms `canonical` reads plainly rewrite the operands, so their
     // registers are named by what each was paired with.
@@ -1253,7 +1033,6 @@ fn statement(
             .iter()
             .zip(paired)
             .map(|(operand, text)| match operand {
-                Operand::Memory { .. } => place_text(&text),
                 Operand::Const(value) => constant(*value),
                 _ => text,
             })
@@ -1265,7 +1044,7 @@ fn statement(
                 Operand::Reg(reg) | Operand::Shifted { reg, .. } => (*names.get(reg)?).to_string(),
                 Operand::Zero => "0".to_string(),
                 Operand::Const(value) => constant(*value),
-                Operand::Memory { .. } => place_text(memory?),
+                Operand::Memory { .. } => memory?.to_string(),
                 Operand::Target(_) => target?.to_string(),
                 Operand::RegisterList(_) | Operand::Other => return None,
             })
@@ -1379,7 +1158,7 @@ fn statement(
             let access = canonical.memory?;
             let place = match &address {
                 Some(pointed) => pointed.as_place(),
-                None => place_text(memory?),
+                None => memory?.to_string(),
             };
             let values: Vec<&String> =
                 operands.iter().filter(|operand| !operand.starts_with('[')).collect();
@@ -1485,24 +1264,6 @@ mod tests {
         assert_eq!(constant_text(u64::MAX), "-0x1");
         assert_eq!(constant_text(0xffff_fffc), "-0x4", "in a 32-bit register");
         assert_eq!(constant_text(0x8000_0000), "0x80000000");
-    }
-
-    #[test]
-    fn operands_split_outside_brackets() {
-        assert_eq!(split_operands("x0, [x1, #0x10]"), ["x0", "[x1, #0x10]"]);
-        assert_eq!(split_operands("a0, 0x10(sp)"), ["a0", "0x10(sp)"]);
-        assert_eq!(split_operands(""), Vec::<&str>::new());
-    }
-
-    #[test]
-    fn a_memory_operand_reads_as_base_plus_offset() {
-        assert_eq!(memory_text("[x1, #0x10]"), "[x1 + 0x10]");
-        assert_eq!(memory_text("[sp, #-0x10]!"), "[sp - 0x10]");
-        assert_eq!(memory_text("[x0]"), "[x0]");
-        assert_eq!(memory_text("0x10(sp)"), "[sp + 0x10]");
-        assert_eq!(memory_text("0x0(v0)"), "[v0]");
-        assert_eq!(memory_text("[r3, r1, lsl 2]"), "[r3 + (r1 lsl 2)]");
-        assert_eq!(memory_text("[x1, x2, lsl #3]"), "[x1 + (x2 lsl 3)]");
     }
 
     #[test]
@@ -2010,5 +1771,75 @@ mod tests {
     fn what_the_il_does_not_name_reads_as_the_decoder_printed_it() {
         let shown = lines(&[0xd503_201f]); // nop
         assert_eq!(shown, ["nop"]);
+    }
+
+    /// Each operand reads by its name from the lift, so an operand that
+    /// prints as two words, as a shifted register, still pairs with the
+    /// operand it is, and an `rsb` reads its values the way it subtracts.
+    #[test]
+    fn each_operand_reads_by_its_name_from_the_lift() {
+        use crate::arch::arm32::Arm32;
+        use crate::arch::mips::Mips32;
+        let words = |words: &[u32], order: fn(u32) -> [u8; 4]| -> Vec<u8> {
+            words.iter().flat_map(|&word| order(word)).collect()
+        };
+        let shown = |arch: &dyn Arch, code: Vec<u8>| {
+            let (insns, _) = decode_all(arch, &code, 0x1000);
+            il_lines(arch, &code, &insns)
+        };
+        assert_eq!(
+            lines(&[
+                0x1b00_7c21, // mul w1, w1, w0
+                0xeb23_c05f, // cmp x2, w3, sxtw
+                0x4cc8_7000, // ld1 {v0.16b}, [x0], x8
+            ]),
+            [
+                "w1 = w1 * w0",
+                "flags = compare(x2, (w3 sxtw))",
+                "{v0.16b} = load [x0]; x0 = x0 + x8",
+            ]
+        );
+        let a32 = [
+            0xe265_5001, // rsb r5, r5, #1
+            0xe1a0_0110, // lsl r0, r0, r1
+            0xe151_0203, // cmp r1, r3, lsl #4
+            0xe52d_e004, // push {lr}, as str lr, [sp, #-4]!
+            0xe262_2000, // neg r2, r2
+            0xe49d_f004, // pop {pc}, as ldr pc, [sp], #4
+        ];
+        assert_eq!(
+            shown(&Arm32, words(&a32, u32::to_le_bytes)),
+            [
+                "r5 = 1 - r5",
+                "r0 = r0 << r1",
+                "flags = compare(r1, (r3 lsl 4))",
+                "store.32 [sp - 4] = lr; sp = sp - 4",
+                "r2 = -r2",
+                "pc = load.32 [sp]; sp = sp + 4",
+            ]
+        );
+        // mthi v0, ac1; mthi writes ac1, and ac0 is hi and lo.
+        let mips = [0x0040_0811, 0x0040_0013];
+        assert_eq!(shown(&Mips32::BIG, words(&mips, u32::to_be_bytes)), ["ac1 = v0", "lo = v0"]);
+    }
+
+    #[test]
+    fn an_operand_left_out_reads_as_what_it_holds() {
+        let x = |number| Operand::Reg(Reg::General(number));
+        // cset w0, ne: a csinc of the zero register twice.
+        assert_eq!(
+            operand_texts(
+                &[x(0), Operand::Zero, Operand::Zero, Operand::Other],
+                &["w0", "", "", "ne"]
+            ),
+            Some(vec!["w0".into(), "0".into(), "0".into(), "ne".into()])
+        );
+        // cneg x0, x1, ne names x1 once for two operands.
+        assert_eq!(
+            operand_texts(&[x(0), x(1), x(1), Operand::Other], &["x0", "", "x1", "eq"]),
+            Some(vec!["x0".into(), "x1".into(), "x1".into(), "eq".into()])
+        );
+        assert_eq!(operand_texts(&[x(0)], &[""]), Some(vec![String::new()]), "nothing to read");
+        assert_eq!(operand_texts(&[x(0)], &[]), None, "the names do not match the operands");
     }
 }

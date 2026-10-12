@@ -21,9 +21,7 @@ use rayon::prelude::*;
 
 use crate::address::{AddressSpace, ConstantKind, Contents};
 
-use crate::arch::{
-    Arch, DataAmongCode, Insn, InsnKind, Memory, decode_all, is_branch_target, split_printed,
-};
+use crate::arch::{Arch, DataAmongCode, Insn, InsnKind, Memory, decode_all, is_branch_target};
 use crate::callee::{Callee, callees_in};
 use crate::il;
 use crate::norm::{
@@ -3955,7 +3953,7 @@ struct IlSide<'a> {
     arch: &'a dyn Arch,
     insns: Vec<Insn>,
     statements: Vec<crate::view::Statement>,
-    /// The words the instructions print, as their registers.
+    /// The words the operands of the instructions name, as their registers.
     printed: HashSet<String>,
 }
 
@@ -3967,7 +3965,12 @@ impl<'a> IlSide<'a> {
         context: Option<crate::view::Context<'_>>,
     ) -> Self {
         let statements = crate::view::il_statements_in(arch, code, &insns, context);
-        let printed = insns.iter().flat_map(|insn| words_of(&insn.to_string())).collect();
+        let printed = insns
+            .iter()
+            .filter_map(crate::arch::lift_named)
+            .flat_map(|named| named.names)
+            .flat_map(|name| words_of(&name))
+            .collect();
         Self { arch, insns, statements, printed }
     }
 
@@ -4199,22 +4202,27 @@ pub fn instruction_diff(
     lines_from_alignment(&steps, (before_arch, &before_insns), (after_arch, &after_insns))
 }
 
-/// The text two instructions must share to align, with targets removed.
+/// What two instructions must share to align: the operation, and the name
+/// of each operand from the lift, with targets removed. What no lift reads
+/// aligns by its bytes.
 ///
-/// A branch or a `[pc, #imm]` load prints its target as `$+0x24`; the target
-/// moves whenever anything before it changes size, so it must not decide the
-/// alignment. Everything else, the constant included, stays: a changed value is
-/// a real difference the reader came to see.
+/// A branch or a load from a literal pool names its target as `$+0x24`; the
+/// target moves whenever anything before it changes size, so it must not
+/// decide the alignment. Everything else, the constant included, stays: a
+/// changed value is a real difference the reader came to see.
 fn diff_key(insn: &Insn) -> String {
-    let printed = insn.to_string();
-    let (name, operands) = split_printed(&printed);
-    let operands = operands
-        .split(',')
-        .map(str::trim)
-        .map(|operand| if is_branch_target(operand) { "$" } else { operand })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{name} {operands}")
+    match crate::arch::lift_named(insn) {
+        Some(named) => {
+            let names = named.names.iter().map(|name| match is_branch_target(name) {
+                true => "$",
+                false => name.as_str(),
+            });
+            // What a post-index access adds to its base is no operand name.
+            let write_back = named.write_back.as_deref().unwrap_or_default();
+            format!("{:?} {} {write_back}", insn.opcode, names.collect::<Vec<_>>().join(", "))
+        }
+        None => format!("{:?} {:02x?}", insn.opcode, insn.bytes()),
+    }
 }
 
 /// A move through the alignment grid: keep both sides, or drop one.
@@ -4707,6 +4715,30 @@ mod tests {
             longest_common_subsequence(&long, &other)
         );
     }
+    /// Two instructions align on the operation and the names of the lift,
+    /// with targets left out, and what no lift reads aligns by its bytes.
+    #[test]
+    fn a_diff_aligns_on_the_names_of_the_lift() {
+        use crate::arch::aarch64::Aarch64;
+        let a32 = |word: u32, at: u64| Arm32.decode(&word.to_le_bytes(), 0, at).expect("decodes");
+        let a64 = |word: u32, at: u64| Aarch64.decode(&word.to_le_bytes(), 0, at).expect("decodes");
+        // bl $+0x100 and bl $+0x200, at two places: the target moves.
+        assert_eq!(diff_key(&a64(0x9400_0040, 0x1000)), diff_key(&a64(0x9400_0080, 0x2000)));
+        // The post-index register.
+        let (by_r2, by_r3) = (a32(0xe691_0002, 0), a32(0xe691_0003, 0));
+        assert_eq!(by_r2.to_string(), "ldr r0, [r1],  r2", "as yaxpeax-arm prints it");
+        assert_eq!(by_r3.to_string(), "ldr r0, [r1],  r3");
+        assert_ne!(diff_key(&by_r2), diff_key(&by_r3));
+        // cmp r0, #1 against cmp r0, #2: the constant.
+        assert_ne!(diff_key(&a32(0xe350_0001, 0)), diff_key(&a32(0xe350_0002, 0)));
+        // add w0, w1, w2 against add x0, x1, x2: the width.
+        assert_ne!(diff_key(&a64(0x0b02_0020, 0)), diff_key(&a64(0x8b02_0020, 0)));
+        // Two words no decoder reads, by their bytes.
+        let unread = |word: u32| a64(word, 0);
+        assert_eq!(diff_key(&unread(0)), diff_key(&unread(0)));
+        assert_ne!(diff_key(&unread(0)), diff_key(&unread(1)));
+    }
+
     use crate::arch::InsnKind;
     use crate::arch::arm32::Arm32;
     use crate::norm::normalize;
