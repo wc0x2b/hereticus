@@ -342,13 +342,12 @@ impl Arch for Aarch64 {
     }
 
     fn lift(&self, insn: &Insn) -> Option<Lifted> {
-        let word = insn.bytes();
-        if insn.kind == InsnKind::Unknown {
-            return None;
-        }
-        let mut inst = Instruction::default();
-        InstDecoder::default().decode_into(&mut inst, &mut U8Reader::new(word)).ok()?;
-        Some(lift(&inst))
+        Some(lift(&instruction(insn)?))
+    }
+
+    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
+        let inst = instruction(insn)?;
+        Some(il::Named { lifted: lift(&inst), names: names(&inst), write_back: write_back(&inst) })
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
@@ -484,6 +483,255 @@ enum Role {
 }
 
 /// Lift one decoded A64 instruction.
+/// `insn` decoded again, where it is an instruction.
+fn instruction(insn: &Insn) -> Option<Instruction> {
+    if insn.kind == InsnKind::Unknown {
+        return None;
+    }
+    let mut inst = Instruction::default();
+    InstDecoder::default().decode_into(&mut inst, &mut U8Reader::new(insn.bytes())).ok()?;
+    Some(inst)
+}
+
+/// The name of each operand that [`lift`] gives `inst`, in its order.
+fn names(inst: &Instruction) -> il::Names {
+    let operands = || inst.operands.iter().take_while(|operand| **operand != Operand::Nothing);
+    // `add x0, x1, w2, lsl #3` reads `w2` zero extended: see
+    // [`extended_register`].
+    let wide_first = matches!(
+        inst.operands[0],
+        Operand::Register(SizeCode::X, _) | Operand::RegisterOrSP(SizeCode::X, _)
+    );
+    let extends = wide_first
+        && matches!(inst.opcode, Opcode::ADD | Opcode::ADDS | Opcode::SUB | Opcode::SUBS);
+    let mut names: il::Names = operands().map(|operand| operand_name(*operand, extends)).collect();
+    alias_names(inst, &mut names);
+    names
+}
+
+/// What a post-index access of `inst` adds to its base after it.
+fn write_back(inst: &Instruction) -> Option<CompactString> {
+    use compact_str::format_compact;
+    inst.operands.iter().find_map(|operand| match *operand {
+        Operand::RegPostIndex(_, offset) if offset < 0 => {
+            Some(format_compact!("-{:#x}", offset.unsigned_abs()))
+        }
+        Operand::RegPostIndex(_, offset) => Some(format_compact!("{offset:#x}")),
+        Operand::RegPostIndexReg(_, number) => Some(format_compact!("x{number}")),
+        _ => None,
+    })
+}
+
+/// Rename the operands of `inst` as the alias it prints as names them, by
+/// the rules of `yaxpeax-arm` 0.4: an operand the alias leaves out has an
+/// empty name, and a field it reads another way, as the `lsb` and `width`
+/// of `ubfx`, names the value the alias shows.
+fn alias_names(inst: &Instruction, names: &mut il::Names) {
+    use compact_str::{ToCompactString, format_compact};
+    let operands = &inst.operands;
+    let immediate = |index: usize| match operands[index] {
+        Operand::Immediate(value) => Some(value),
+        _ => None,
+    };
+    let register = |index: usize| match operands[index] {
+        Operand::Register(size, number) => Some((size, number)),
+        _ => None,
+    };
+    let width = match register(0) {
+        Some((SizeCode::X, _)) => 64,
+        _ => 32,
+    };
+    let hex = |value: u32| format_compact!("#{value:#x}");
+    let mut set = |index: usize, name: CompactString| {
+        if let Some(slot) = names.get_mut(index) {
+            *slot = name;
+        }
+    };
+    let condition = |index: usize| match operands[index] {
+        Operand::ConditionCode(code) if code < 0b1110 => Some(code),
+        _ => None,
+    };
+    let inverted = |code: u8| Operand::ConditionCode(code ^ 1).to_compact_string();
+    let is_zero = |index: usize| matches!(operands[index], Operand::Register(_, 31));
+    match inst.opcode {
+        Opcode::UBFM => {
+            let (Some(immr), Some(imms)) = (immediate(2), immediate(3)) else { return };
+            let narrow = matches!(
+                (register(0), register(1)),
+                (Some((SizeCode::W, _)), Some((SizeCode::W, _)))
+            );
+            if narrow && immr == 0 && matches!(imms, 7 | 15) {
+                set(2, CompactString::default());
+                set(3, CompactString::default());
+            } else if imms == width - 1 {
+                set(3, CompactString::default());
+            } else if imms + 1 == immr {
+                set(2, hex(width - imms - 1));
+                set(3, CompactString::default());
+            } else if imms < immr {
+                set(2, hex(width - immr));
+                set(3, hex(imms + 1));
+            } else {
+                set(3, hex(imms.wrapping_sub(immr).wrapping_add(1)));
+            }
+        }
+        Opcode::BFM => {
+            let (Some(immr), Some(imms)) = (immediate(2), immediate(3)) else { return };
+            if imms < immr {
+                let lsb = (immr as u8).wrapping_neg() & if width == 32 { 0x1f } else { 0x3f };
+                if is_zero(1) {
+                    set(1, CompactString::default());
+                }
+                set(2, hex(lsb.into()));
+                set(3, hex(imms + 1));
+            } else {
+                set(3, hex(imms + 1 - immr));
+            }
+        }
+        Opcode::SBFM => {
+            let (Some(first), Some(second)) = (immediate(2), immediate(3)) else { return };
+            if second == width - 1 {
+                set(3, CompactString::default());
+            } else if first == 0 && matches!(second, 7 | 15 | 31) {
+                if let Some((_, number)) = register(1) {
+                    set(1, Operand::Register(SizeCode::W, number).to_compact_string());
+                }
+                set(2, CompactString::default());
+                set(3, CompactString::default());
+            } else if second < first {
+                set(2, hex(width - first));
+                set(3, hex(second + 1));
+            } else {
+                set(3, hex(second.wrapping_sub(first).wrapping_add(1)));
+            }
+        }
+        Opcode::EXTR => {
+            if let (Some((_, left)), Some((_, right))) = (register(1), register(2))
+                && left == right
+            {
+                set(1, CompactString::default());
+            }
+        }
+        Opcode::CSNEG => {
+            if let (Some((_, left)), Some((_, right)), Some(code)) =
+                (register(1), register(2), condition(3))
+                && left == right
+            {
+                set(1, CompactString::default());
+                set(3, inverted(code));
+            }
+        }
+        Opcode::CSINC | Opcode::CSINV => {
+            if let (Some((_, left)), Some((_, right)), Some(code)) =
+                (register(1), register(2), condition(3))
+                && left == right
+            {
+                if left == 31 {
+                    set(1, CompactString::default());
+                }
+                set(2, CompactString::default());
+                set(3, inverted(code));
+            }
+        }
+        Opcode::MADD
+        | Opcode::MSUB
+        | Opcode::SMADDL
+        | Opcode::SMSUBL
+        | Opcode::UMADDL
+        | Opcode::UMSUBL
+            if is_zero(3) =>
+        {
+            set(3, CompactString::default());
+        }
+        Opcode::ORR if is_zero(1) => match operands[2] {
+            Operand::Immediate(0) => set(2, CompactString::default()),
+            _ => set(1, CompactString::default()),
+        },
+        Opcode::ORR if operands[1] == operands[2] => set(2, CompactString::default()),
+        Opcode::ORN if is_zero(1) => set(1, CompactString::default()),
+        Opcode::ANDS | Opcode::ADDS | Opcode::SUBS if is_zero(0) => {
+            set(0, CompactString::default());
+        }
+        Opcode::SUBS | Opcode::SUB | Opcode::SBC | Opcode::SBCS if is_zero(1) => {
+            set(1, CompactString::default());
+        }
+        Opcode::ADD if is_add_move(operands) => set(2, CompactString::default()),
+        Opcode::MOVN | Opcode::MOVZ => {
+            let (Operand::ImmShift(value, shift), Some((size, _))) = (operands[1], register(0))
+            else {
+                return;
+            };
+            let value = u64::from(value) << shift;
+            let value = if inst.opcode == Opcode::MOVN { !value } else { value };
+            let value = if size == SizeCode::W { u64::from(value as u32) } else { value };
+            set(1, format_compact!("#{value:#x}"));
+        }
+        Opcode::RET if operands[0] == Operand::Register(SizeCode::X, 30) => {
+            set(0, CompactString::default());
+        }
+        Opcode::HINT => names.iter_mut().for_each(|name| *name = CompactString::default()),
+        Opcode::ISB if operands[0] == Operand::Imm16(15) => set(0, CompactString::default()),
+        _ => {}
+    }
+}
+
+/// The name of `operand`. Where `extends`, a 32-bit register reads zero
+/// extended to 64 bits.
+fn operand_name(operand: Operand, extends: bool) -> CompactString {
+    use compact_str::{ToCompactString, format_compact};
+    let base = |number: u16| Operand::RegisterOrSP(SizeCode::X, number).to_compact_string();
+    // A register with how it is shifted or extended, as `(w1 uxtw 2)`.
+    let shifted = |name: CompactString, style: ShiftStyle, amount: u8| match amount {
+        0 => format_compact!("({name} {style})"),
+        _ => format_compact!("({name} {style} {amount})"),
+    };
+    match operand {
+        Operand::RegShift(style, amount, size, number) => {
+            let name = Operand::Register(size, number).to_compact_string();
+            let style = match (extends, size, style) {
+                (true, SizeCode::W, ShiftStyle::LSL) => ShiftStyle::UXTW,
+                _ => style,
+            };
+            let plain = matches!(style, ShiftStyle::LSL)
+                || (size == SizeCode::X && style == ShiftStyle::UXTX);
+            match (plain && amount == 0, extends && size == SizeCode::W) {
+                (true, true) => shifted(name, ShiftStyle::UXTW, 0),
+                (true, false) => name,
+                (false, _) => shifted(name, style, amount),
+            }
+        }
+        Operand::Register(SizeCode::W, number) if extends && number != 31 => {
+            shifted(operand.to_compact_string(), ShiftStyle::UXTW, 0)
+        }
+        Operand::RegRegOffset(number, index, size, extend, amount) => {
+            let name = Operand::Register(size, index).to_compact_string();
+            let index = match (extend, size, amount) {
+                (ShiftStyle::LSL, _, 0) => name,
+                (ShiftStyle::UXTW, SizeCode::W, 0) | (ShiftStyle::UXTX, SizeCode::X, 0) => {
+                    shifted(name, extend, 0)
+                }
+                _ => format_compact!("({name} {extend} {amount})"),
+            };
+            il::memory_name(&base(number), Some(&index), None)
+        }
+        Operand::RegPreIndex(number, offset, _) => {
+            il::memory_name(&base(number), None, Some(offset.into()))
+        }
+        Operand::RegPostIndex(number, _) | Operand::RegPostIndexReg(number, _) => {
+            il::memory_name(&base(number), None, None)
+        }
+        Operand::PCOffset(distance) => il::target_name(distance),
+        Operand::ImmShift(value, shift) if shift != 0 => {
+            format_compact!("{} << {shift}", il::constant_name(value.into()))
+        }
+        // `msl` shifts ones in.
+        Operand::ImmShiftMSL(value, shift) if shift != 0 => {
+            format_compact!("{} msl {shift}", il::constant_name(value.into()))
+        }
+        _ => operand.to_compact_string(),
+    }
+}
+
 fn lift(inst: &Instruction) -> Lifted {
     let operands: Vec<Operand> =
         inst.operands.iter().copied().take_while(|operand| *operand != Operand::Nothing).collect();
@@ -543,12 +791,13 @@ fn lift(inst: &Instruction) -> Lifted {
 /// value and the stack pointer as a base.
 fn il_operand(operand: Operand) -> il::Operand {
     let general = |number: u16| il::Operand::Reg(Reg::General(number as u8));
-    let base = |number: u16, offset: Option<i64>| {
-        il::Operand::memory(
-            Some(if number == 31 { Reg::Stack } else { Reg::General(number as u8) }),
-            offset,
-        )
+    let written = |number: u16, offset: Option<i64>, update: il::Update| il::Operand::Memory {
+        base: Some(if number == 31 { Reg::Stack } else { Reg::General(number as u8) }),
+        offset,
+        index: None,
+        update,
     };
+    let base = |number: u16, offset: Option<i64>| written(number, offset, il::Update::None);
     match operand {
         Operand::Register(_, 31) | Operand::RegShift(_, _, _, 31) => il::Operand::Zero,
         Operand::Register(_, number)
@@ -571,12 +820,20 @@ fn il_operand(operand: Operand) -> il::Operand {
         Operand::ImmShift(value, shift) | Operand::ImmShiftMSL(value, shift) => {
             il::Operand::Const(u64::from(value) << shift)
         }
-        Operand::RegPreIndex(number, offset, _) | Operand::RegPostIndex(number, offset) => {
-            base(number, Some(offset.into()))
+        Operand::RegPreIndex(number, offset, write_back) => {
+            let update = if write_back { il::Update::Before } else { il::Update::None };
+            written(number, Some(offset.into()), update)
         }
-        Operand::RegPostIndexReg(number, _) | Operand::RegRegOffset(number, ..) => {
-            base(number, None)
+        Operand::RegPostIndex(number, offset) => {
+            written(number, Some(offset.into()), il::Update::After)
         }
+        Operand::RegPostIndexReg(number, index) => il::Operand::Memory {
+            base: Some(if number == 31 { Reg::Stack } else { Reg::General(number as u8) }),
+            offset: None,
+            index: Some((Reg::General(index as u8), 0)),
+            update: il::Update::After,
+        },
+        Operand::RegRegOffset(number, ..) => base(number, None),
         _ => il::Operand::Other,
     }
 }
@@ -2210,10 +2467,15 @@ mod tests {
         let memory = |word| *lift_one(word).operands.last().expect("a memory operand");
         assert_eq!(memory(words::LDR_X1_X2_8), il::Operand::memory(Some(x(2)), Some(8)));
         assert_eq!(memory(words::STR_W3_X4_X5), il::Operand::memory(Some(x(4)), None));
-        assert_eq!(
-            memory(words::LDP_X29_X30_SP_POST),
-            il::Operand::memory(Some(Reg::Stack), Some(16))
-        );
+        let written = |offset, update| il::Operand::Memory {
+            base: Some(Reg::Stack),
+            offset: Some(offset),
+            index: None,
+            update,
+        };
+        assert_eq!(memory(words::LDP_X29_X30_SP_POST), written(16, il::Update::After));
+        // stp x29, x30, [sp, #-0x10]!
+        assert_eq!(memory(0xa9bf_7bfd), written(-16, il::Update::Before));
     }
 
     #[test]

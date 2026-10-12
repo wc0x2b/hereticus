@@ -204,7 +204,7 @@ fn instruction_lines(
         }
         None => vec![None; insns.len()],
     };
-    let pages = page_loads(insns, &formed);
+    let pages = page_loads(arch, insns, &formed);
     let mut last_compare: Option<Compared> = None;
     let is_mips = arch.triple().starts_with("mips");
     let mut float_condition: Option<String> = None;
@@ -225,8 +225,10 @@ fn instruction_lines(
         .zip(formed)
         .enumerate()
         .map(|(index, (insn, formed))| {
+            let named = arch.lift_named(insn);
             let printed = insn.to_string();
-            let operands = split_printed(&printed).1;
+            let operands = operand_tokens(&printed, named.as_ref());
+            let tokens: Vec<&str> = operands.iter().map(|token| token.as_str()).collect();
             // A call can run on a condition, as `blne` does.
             let conditional = |text: String, op| match a32_condition(insn, op) {
                 Some(cond) => format!("if ({cond}) {text}"),
@@ -239,23 +241,38 @@ fn instruction_lines(
             }
             let address =
                 formed.zip(context).map(|(address, context)| Pointed::of(address, context));
-            let text = named_line(arch, insn, operands, &address, context, &mut callees);
+            let text = named_line(arch, insn, &tokens, &address, context, &mut callees);
             if let Some(text) = text {
                 return conditional(text, None);
             }
             if pages.contains(&index)
                 && matches!(address, Some(Pointed::Address(_)))
-                && let Some(dest) = split_operands(operands).first()
+                && let Some(dest) = tokens.first()
             {
                 return format!("{dest} = &page");
             }
-            if is_mips && let Some(text) = mips_statement(insn, operands, &mut float_condition) {
+            if is_mips && let Some(text) = mips_statement(insn, &tokens, &mut float_condition) {
                 return text;
             }
-            let lifted = arch.lift(insn);
+            let source = if named.is_some() { Source::Lift } else { Source::Printed };
+            let write_back = named.as_ref().and_then(|named| named.write_back.clone());
+            let lifted = named.map(|named| named.lifted).or_else(|| arch.lift(insn));
             let moves = moving.get(index).copied().unwrap_or(false);
+            let printed_name = split_printed(&printed).0;
             let shown = lifted.and_then(|lifted| {
-                let text = statement(insn, &printed, &lifted, address, moves, &mut last_compare)?;
+                let text = statement(
+                    insn,
+                    Operands {
+                        printed_name,
+                        tokens: &tokens,
+                        source,
+                        write_back: write_back.as_deref(),
+                    },
+                    &lifted,
+                    address,
+                    moves,
+                    &mut last_compare,
+                )?;
                 Some((lifted.op, text))
             });
             match shown {
@@ -264,6 +281,40 @@ fn instruction_lines(
             }
         })
         .collect()
+}
+
+/// Where the IL view reads the names of the operands of an instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    /// From the text the decoder printed, split at its commas.
+    Printed,
+    /// From the names the lift gives, one for each lifted operand.
+    Lift,
+}
+
+/// The operands of one instruction, as the IL view names them.
+#[derive(Clone, Copy)]
+struct Operands<'a> {
+    /// The name the instruction prints with, as `vsqrt.f64`.
+    printed_name: &'a str,
+    tokens: &'a [&'a str],
+    source: Source,
+    /// What a post-index access adds to its base, where the lift names it.
+    write_back: Option<&'a str>,
+}
+
+/// The names of the operands of the instruction printed as `printed`: those
+/// of `named`, where the lift names them.
+fn operand_tokens(printed: &str, named: Option<&crate::il::Named>) -> Vec<String> {
+    match named {
+        Some(named) => named.names.iter().map(|name| name.to_string()).collect(),
+        None => split_operands(split_printed(printed).1).into_iter().map(str::to_string).collect(),
+    }
+}
+
+/// The operand names of `insn`: see [`operand_tokens`].
+fn operand_tokens_of(arch: &dyn Arch, insn: &Insn) -> Vec<String> {
+    operand_tokens(&insn.to_string(), arch.lift_named(insn).as_ref())
 }
 
 /// The MIPS loads of a page from the global offset table: each `lw` whose
@@ -277,7 +328,7 @@ fn instruction_lines(
 ///
 /// The slot the `lw` reads moves with the table, but the `addiu` names what
 /// the two point at, as the `add` after `adrp` does.
-fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
+fn page_loads(arch: &dyn Arch, insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
     /// How far back the `lw` can be, as a compiler schedules others between.
     const LOOK_BACK: usize = 16;
     insns
@@ -290,17 +341,15 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
         })
         .filter_map(|(index, insn)| {
             // The MIPS16e `addiu v0, 0x10` adds to the register it writes.
-            let printed = insn.to_string();
-            let source = match split_operands(split_printed(&printed).1).as_slice() {
-                [_, source, _] => *source,
-                [dest, _] => *dest,
+            let source = match operand_tokens_of(arch, insn).as_slice() {
+                [_, source, _] => source.clone(),
+                [dest, _] => dest.clone(),
                 _ => return None,
             };
             let at = (index.saturating_sub(LOOK_BACK)..index).rev().find(|&at| {
                 let earlier = &insns[at];
                 matches!(earlier.kind, crate::arch::InsnKind::Call { .. })
-                    || split_operands(split_printed(&earlier.to_string()).1).first()
-                        == Some(&source)
+                    || operand_tokens_of(arch, earlier).first() == Some(&source)
             })?;
             let loads = mips::rabbitizer_opcode(&insns[at]) == Some(MipsOpcode::core_lw);
             (loads && formed[at].is_some()).then_some(at)
@@ -317,11 +366,10 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
 /// on it reads as `if (fv0 < fv1) goto $+0xc`.
 fn mips_statement(
     insn: &Insn,
-    operands: &str,
+    operands: &[&str],
     float_condition: &mut Option<String>,
 ) -> Option<String> {
     use MipsDecoded::{Mips16, Mips32, Rabbitizer};
-    let operands = split_operands(operands);
     let decoded = mips::decoded(insn)?;
     // `multu` and `divu` read their operands unsigned, as `u>>` does.
     let unsigned = matches!(
@@ -330,7 +378,7 @@ fn mips_statement(
             | Mips32(Mips32Op::Multu | Mips32Op::Maddu | Mips32Op::Msubu)
     );
     let sign = if unsigned { "u" } else { "" };
-    let line = match (decoded, operands.as_slice()) {
+    let line = match (decoded, operands) {
         (
             Rabbitizer(MipsOpcode::core_mult | MipsOpcode::core_multu)
             | Mips32(Mips32Op::Mult | Mips32Op::Multu),
@@ -348,7 +396,7 @@ fn mips_statement(
             [left, right] | ["zero", left, right],
         ) => format!("lo = {left} {sign}/ {right}; hi = {left} {sign}% {right}"),
         (Mips16(step @ (Mips16Op::Save | Mips16Op::Restore)), _) => {
-            return frame_statement(step, &operands);
+            return frame_statement(step, operands);
         }
         (Rabbitizer(MipsOpcode::core_mfhi) | Mips32(Mips32Op::Mfhi), [dest]) => {
             format!("{dest} = hi")
@@ -432,12 +480,12 @@ fn float_test(opcode: MipsOpcode, left: &str, right: &str) -> Option<String> {
 fn named_line(
     arch: &dyn Arch,
     insn: &Insn,
-    operands: &str,
+    operands: &[&str],
     address: &Option<Pointed>,
     context: Option<Context<'_>>,
     callees: &mut HashMap<String, String>,
 ) -> Option<String> {
-    let written = split_operands(operands).first().map(|first| first.to_string());
+    let written = operands.first().map(|first| first.to_string());
     match insn.kind {
         crate::arch::InsnKind::Call { target: Some(target) } => {
             Some(format!("call {}", context?.callee_at(arch, target)?))
@@ -447,7 +495,7 @@ fn named_line(
             Some(format!("goto {}", context?.callee_at(arch, target)?))
         }
         crate::arch::InsnKind::Call { target: None } => {
-            let register = split_operands(operands).last()?.to_string();
+            let register = operands.last()?.to_string();
             Some(format!("call {}", callees.get(&register)?))
         }
         _ => {
@@ -706,6 +754,8 @@ fn aarch64_statement(
             format!("flags = {cond} ? compare({left}, {right}) : nzcv({})", immediate(flags))
         }
         (A64Opcode::MOVI, [dest, value]) => format!("{dest} = {}", immediate(value)),
+        // A shifted value is named as one, as `3 msl 16`.
+        (A64Opcode::MVNI, [dest, value]) if value.contains(' ') => format!("{dest} = ~({value})"),
         (A64Opcode::MVNI, [dest, value]) => format!("{dest} = ~{}", immediate(value)),
         (A64Opcode::MOVI | A64Opcode::MVNI, [dest, value, shift]) => {
             let (kind, amount) = shift.split_once(' ')?;
@@ -775,15 +825,7 @@ fn aarch64_opcode(insn: &Insn) -> Option<A64Opcode> {
 /// A constant as code reads it: small ones in decimal, a negative one with
 /// its sign.
 fn constant_text(value: u64) -> String {
-    let signed = value as i64;
-    if (-0x1_0000..0).contains(&signed) {
-        return format!("-{:#x}", signed.unsigned_abs());
-    }
-    // A small negative number in a 32-bit register, as `mvn r0, #0` makes.
-    if (0xffff_0000..=0xffff_ffff).contains(&value) {
-        return format!("-{:#x}", 0x1_0000_0000 - value);
-    }
-    if value < 10 { value.to_string() } else { format!("{value:#x}") }
+    crate::il::constant_name(value).to_string()
 }
 
 /// The relation a condition tests, as an operator.
@@ -916,6 +958,32 @@ fn pair_operands(lifted: &[Operand], tokens: &[&str]) -> Option<Vec<Pairing>> {
     Some(paired)
 }
 
+/// Pair each lifted operand with its name from the lift. An operand that
+/// the instruction leaves out has an empty name, and reads as what it
+/// holds: zero, or the register it repeats, as the `x1` that `cinc x0, x1,
+/// ne` names once for two operands.
+fn named_pairs(lifted: &[Operand], names: &[&str]) -> Option<Vec<Pairing>> {
+    if lifted.len() != names.len() {
+        return None;
+    }
+    let pairs = lifted.iter().zip(names).map(|(operand, name)| {
+        if !name.is_empty() {
+            return Pairing::Printed(name.to_string());
+        }
+        let repeated = lifted
+            .iter()
+            .zip(names)
+            .find(|(other, other_name)| *other == operand && !other_name.is_empty())
+            .map(|(_, other_name)| other_name.to_string());
+        match (operand, repeated) {
+            (Operand::Zero | Operand::Const(0), _) => Pairing::Implied("0".to_string()),
+            (_, Some(name)) => Pairing::Implied(name),
+            (_, None) => Pairing::Implied(String::new()),
+        }
+    });
+    Some(pairs.collect())
+}
+
 /// Where an ARM access to a list of registers starts, relative to its base,
 /// and in which direction it moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -985,8 +1053,9 @@ impl ListOrder {
 /// `store.32 [sp - 0x8] = r4, lr; sp = sp - 0x8` for `push {r4, lr}`.
 ///
 /// It is read from the printed text, as the IL holds no list.
-fn list_statement(insn: &Insn, operands: &str, lifted: &Lifted) -> Option<String> {
+fn list_statement(insn: &Insn, tokens: &[&str], lifted: &Lifted) -> Option<String> {
     let (order, mut write_back) = ListOrder::of(insn)?;
+    let operands = tokens.join(", ");
     let (before, list) = operands.split_once('{')?;
     let registers: Vec<&str> =
         list.trim_end().strip_suffix('}')?.split(',').map(str::trim).collect();
@@ -1031,7 +1100,7 @@ fn list_statement(insn: &Insn, operands: &str, lifted: &Lifted) -> Option<String
 /// it well enough to show.
 fn statement(
     insn: &Insn,
-    printed: &str,
+    Operands { printed_name, tokens, source, write_back }: Operands<'_>,
     lifted: &Lifted,
     address: Option<Pointed>,
     moves: bool,
@@ -1041,8 +1110,14 @@ fn statement(
     let constant = |value: u64| {
         if moves { format!("@{value:#x}") } else { constant_text(value) }
     };
-    let (printed_name, operands) = split_printed(printed);
-    let mut tokens = split_operands(operands);
+    // The names of the lift, one for each lifted operand, where it gives
+    // them; an operand the instruction shows no name for has an empty one.
+    let lift_names: Vec<&str> = match source {
+        Source::Lift => tokens.to_vec(),
+        Source::Printed => Vec::new(),
+    };
+    // The operands as the instruction shows them.
+    let mut tokens: Vec<&str> = tokens.iter().copied().filter(|token| !token.is_empty()).collect();
     // The A32 decoder prints a register before the two a compare compares,
     // as `cmps r0, r3, 0x0`, which is no operand of it.
     if lifted.op == Op::Compare && tokens.len() == lifted.operands.len() + 1 {
@@ -1062,7 +1137,7 @@ fn statement(
     match lifted.op {
         Op::Return => return Some("return".to_string()),
         Op::Load | Op::Store => {
-            if let Some(line) = list_statement(insn, operands, lifted) {
+            if let Some(line) = list_statement(insn, &tokens, lifted) {
                 return Some(line);
             }
         }
@@ -1119,17 +1194,37 @@ fn statement(
             sources.iter().map(|source| source.trim_start_matches('#').to_string()).collect();
         return Some(format!("{dest} = {name}({})", sources.join(", ")));
     }
-    let mut paired = pair_operands(&lifted.operands, &tokens)?;
+    let mut paired = match source {
+        Source::Lift => named_pairs(&lifted.operands, &lift_names)?,
+        Source::Printed => pair_operands(&lifted.operands, &tokens)?,
+    };
     // A post-index access writes its base after it, as `ldp x29, x30, [sp],
     // #0x20` does.
     let mut after = String::new();
-    if let Some(Pairing::Extra(rest)) = paired.last()
-        && let Some(base) = tokens.iter().find(|token| token.starts_with('['))
-    {
-        let base = base.trim_start_matches('[').trim_end_matches(']');
-        after = format!("; {base} = {base} + {}", rest.trim_start_matches('#'));
-        paired.pop();
+    let post_index = lifted.operands.iter().zip(&lift_names).find_map(|(operand, name)| {
+        matches!(operand, Operand::Memory { update: crate::il::Update::After, .. }).then_some(*name)
+    });
+    match (source, post_index.zip(write_back)) {
+        (Source::Lift, Some((name, amount))) => {
+            let base = name.trim_start_matches('[').trim_end_matches(']');
+            after = format!("; {base} = {base} + {amount}");
+        }
+        (Source::Lift, None) => {}
+        (Source::Printed, _) => {
+            if let Some(Pairing::Extra(rest)) = paired.last()
+                && let Some(base) = tokens.iter().find(|token| token.starts_with('['))
+            {
+                let base = base.trim_start_matches('[').trim_end_matches(']');
+                after = format!("; {base} = {base} + {}", rest.trim_start_matches('#'));
+                paired.pop();
+            }
+        }
     }
+    // A memory operand as the IL reads it: a name of the lift is one.
+    let place_text = |token: &str| match source {
+        Source::Lift => token.to_string(),
+        Source::Printed => memory_text(token),
+    };
     let paired: Vec<String> = paired.into_iter().map(Pairing::into_text).collect();
 
     // The idioms `canonical` reads plainly rewrite the operands, so their
@@ -1151,7 +1246,7 @@ fn statement(
             .iter()
             .zip(paired)
             .map(|(operand, text)| match operand {
-                Operand::Memory { .. } => memory_text(&text),
+                Operand::Memory { .. } => place_text(&text),
                 Operand::Const(value) => constant(*value),
                 _ => text,
             })
@@ -1163,7 +1258,7 @@ fn statement(
                 Operand::Reg(reg) | Operand::Shifted { reg, .. } => (*names.get(reg)?).to_string(),
                 Operand::Zero => "0".to_string(),
                 Operand::Const(value) => constant(*value),
-                Operand::Memory { .. } => memory_text(memory?),
+                Operand::Memory { .. } => place_text(memory?),
                 Operand::Target(_) => target?.to_string(),
                 Operand::RegisterList(_) | Operand::Other => return None,
             })
@@ -1277,7 +1372,7 @@ fn statement(
             let access = canonical.memory?;
             let place = match &address {
                 Some(pointed) => pointed.as_place(),
-                None => memory_text(memory?),
+                None => place_text(memory?),
             };
             let values: Vec<&String> =
                 operands.iter().filter(|operand| !operand.starts_with('[')).collect();
@@ -1529,6 +1624,8 @@ mod tests {
 
     #[test]
     fn a_load_of_a_page_is_found_by_the_addiu_after_it() {
+        use crate::arch::mips::Mips32;
+        use crate::arch::mips16::Mips16;
         let insns = [
             mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
             mips(0x8f86_8020), // lw a2, -0x7fe0(gp)
@@ -1537,16 +1634,18 @@ mod tests {
             mips(0x24c6_0020), // addiu a2, a2, 0x20
         ];
         let formed = [Some(0x1000), Some(0x1000), Some(0x1004), Some(0x2010), Some(0x2020)];
-        assert_eq!(page_loads(&insns, &formed), HashSet::from([0, 1]));
+        assert_eq!(page_loads(&Mips32::LITTLE, &insns, &formed), HashSet::from([0, 1]));
 
         // MIPS16e adds to the register it writes.
         let mips16 = |halfword: u16| {
-            use crate::arch::mips16::Mips16;
             Mips16::LITTLE.decode(&halfword.to_le_bytes(), 0, 0).expect("the halfword decodes")
         };
         let insns = [mips16(0x9844), mips16(0x4a10)]; // lw v0, 0x10(s0); addiu v0, 0x10
         assert_eq!(insns[1].to_string(), "addiu v0, v0, 0x10", "as the MIPS32 twin");
-        assert_eq!(page_loads(&insns, &[Some(0x1000), Some(0x2010)]), HashSet::from([0]));
+        assert_eq!(
+            page_loads(&Mips16::LITTLE, &insns, &[Some(0x1000), Some(0x2010)]),
+            HashSet::from([0])
+        );
 
         // A write or a call between them leaves the register holding
         // something else.
@@ -1555,17 +1654,21 @@ mod tests {
             mips(0x0080_1025), // or v0, a0, zero
             mips(0x2442_0010), // addiu v0, v0, 0x10
         ];
-        assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
+        assert!(
+            page_loads(&Mips32::LITTLE, &insns, &[Some(0x1000), None, Some(0x2010)]).is_empty()
+        );
         let insns = [
             mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
             mips(0x0320_f809), // jalr t9
             mips(0x2442_0010), // addiu v0, v0, 0x10
         ];
-        assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
+        assert!(
+            page_loads(&Mips32::LITTLE, &insns, &[Some(0x1000), None, Some(0x2010)]).is_empty()
+        );
 
         // An `addiu` that forms no address joins no page.
         let insns = [mips(0x8f82_8020), mips(0x2442_0001)]; // lw v0, ...; addiu v0, v0, 1
-        assert!(page_loads(&insns, &[Some(0x1000), None]).is_empty());
+        assert!(page_loads(&Mips32::LITTLE, &insns, &[Some(0x1000), None]).is_empty());
     }
 
     #[test]
