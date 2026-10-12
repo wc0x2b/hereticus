@@ -225,6 +225,8 @@ fn instruction_lines(
         .zip(formed)
         .enumerate()
         .map(|(index, (insn, formed))| {
+            let printed = insn.to_string();
+            let operands = split_printed(&printed).1;
             // A call can run on a condition, as `blne` does.
             let conditional = |text: String, op| match a32_condition(insn, op) {
                 Some(cond) => format!("if ({cond}) {text}"),
@@ -237,28 +239,28 @@ fn instruction_lines(
             }
             let address =
                 formed.zip(context).map(|(address, context)| Pointed::of(address, context));
-            let text = named_line(arch, insn, &address, context, &mut callees);
+            let text = named_line(arch, insn, operands, &address, context, &mut callees);
             if let Some(text) = text {
                 return conditional(text, None);
             }
             if pages.contains(&index)
                 && matches!(address, Some(Pointed::Address(_)))
-                && let Some(dest) = split_operands(insn.operands()).first()
+                && let Some(dest) = split_operands(operands).first()
             {
                 return format!("{dest} = &page");
             }
-            if is_mips && let Some(text) = mips_statement(insn, &mut float_condition) {
+            if is_mips && let Some(text) = mips_statement(insn, operands, &mut float_condition) {
                 return text;
             }
             let lifted = arch.lift(insn);
             let moves = moving.get(index).copied().unwrap_or(false);
             let shown = lifted.and_then(|lifted| {
-                let text = statement(insn, &lifted, address, moves, &mut last_compare)?;
+                let text = statement(insn, &printed, &lifted, address, moves, &mut last_compare)?;
                 Some((lifted.op, text))
             });
             match shown {
                 Some((op, text)) => conditional(text, Some(op)),
-                None => insn.to_string(),
+                None => printed,
             }
         })
         .collect()
@@ -288,7 +290,8 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
         })
         .filter_map(|(index, insn)| {
             // The MIPS16e `addiu v0, 0x10` adds to the register it writes.
-            let source = match split_operands(insn.operands()).as_slice() {
+            let printed = insn.to_string();
+            let source = match split_operands(split_printed(&printed).1).as_slice() {
                 [_, source, _] => *source,
                 [dest, _] => *dest,
                 _ => return None,
@@ -296,7 +299,8 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
             let at = (index.saturating_sub(LOOK_BACK)..index).rev().find(|&at| {
                 let earlier = &insns[at];
                 matches!(earlier.kind, crate::arch::InsnKind::Call { .. })
-                    || split_operands(earlier.operands()).first() == Some(&source)
+                    || split_operands(split_printed(&earlier.to_string()).1).first()
+                        == Some(&source)
             })?;
             let loads = mips::rabbitizer_opcode(&insns[at]) == Some(MipsOpcode::core_lw);
             (loads && formed[at].is_some()).then_some(at)
@@ -311,9 +315,13 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
 ///
 /// `float_condition` keeps the test of the last float compare, so a branch
 /// on it reads as `if (fv0 < fv1) goto $+0xc`.
-fn mips_statement(insn: &Insn, float_condition: &mut Option<String>) -> Option<String> {
+fn mips_statement(
+    insn: &Insn,
+    operands: &str,
+    float_condition: &mut Option<String>,
+) -> Option<String> {
     use MipsDecoded::{Mips16, Mips32, Rabbitizer};
-    let operands = split_operands(insn.operands());
+    let operands = split_operands(operands);
     let decoded = mips::decoded(insn)?;
     // `multu` and `divu` read their operands unsigned, as `u>>` does.
     let unsigned = matches!(
@@ -424,11 +432,12 @@ fn float_test(opcode: MipsOpcode, left: &str, right: &str) -> Option<String> {
 fn named_line(
     arch: &dyn Arch,
     insn: &Insn,
+    operands: &str,
     address: &Option<Pointed>,
     context: Option<Context<'_>>,
     callees: &mut HashMap<String, String>,
 ) -> Option<String> {
-    let written = split_operands(insn.operands()).first().map(|first| first.to_string());
+    let written = split_operands(operands).first().map(|first| first.to_string());
     match insn.kind {
         crate::arch::InsnKind::Call { target: Some(target) } => {
             Some(format!("call {}", context?.callee_at(arch, target)?))
@@ -438,7 +447,7 @@ fn named_line(
             Some(format!("goto {}", context?.callee_at(arch, target)?))
         }
         crate::arch::InsnKind::Call { target: None } => {
-            let register = split_operands(insn.operands()).last()?.to_string();
+            let register = split_operands(operands).last()?.to_string();
             Some(format!("call {}", callees.get(&register)?))
         }
         _ => {
@@ -670,12 +679,11 @@ fn frame_statement(step: Mips16Op, operands: &[&str]) -> Option<String> {
 /// and a move between a general register and a lane of a vector.
 fn aarch64_statement(
     insn: &Insn,
+    printed_name: &str,
     tokens: &[&str],
     last_compare: &mut Option<Compared>,
 ) -> Option<String> {
     let opcode = aarch64::decoded(insn)?.opcode;
-    // As printed, for the reader.
-    let (printed_name, _) = split_printed(&insn.text);
     let immediate = |token: &str| {
         let token = token.trim_start_matches('#');
         token
@@ -977,9 +985,9 @@ impl ListOrder {
 /// `store.32 [sp - 0x8] = r4, lr; sp = sp - 0x8` for `push {r4, lr}`.
 ///
 /// It is read from the printed text, as the IL holds no list.
-fn list_statement(insn: &Insn, lifted: &Lifted) -> Option<String> {
+fn list_statement(insn: &Insn, operands: &str, lifted: &Lifted) -> Option<String> {
     let (order, mut write_back) = ListOrder::of(insn)?;
-    let (before, list) = insn.operands().split_once('{')?;
+    let (before, list) = operands.split_once('{')?;
     let registers: Vec<&str> =
         list.trim_end().strip_suffix('}')?.split(',').map(str::trim).collect();
     if registers.iter().any(|register| register.is_empty() || register.contains('-')) {
@@ -1023,6 +1031,7 @@ fn list_statement(insn: &Insn, lifted: &Lifted) -> Option<String> {
 /// it well enough to show.
 fn statement(
     insn: &Insn,
+    printed: &str,
     lifted: &Lifted,
     address: Option<Pointed>,
     moves: bool,
@@ -1032,7 +1041,8 @@ fn statement(
     let constant = |value: u64| {
         if moves { format!("@{value:#x}") } else { constant_text(value) }
     };
-    let mut tokens = split_operands(insn.operands());
+    let (printed_name, operands) = split_printed(printed);
+    let mut tokens = split_operands(operands);
     // The A32 decoder prints a register before the two a compare compares,
     // as `cmps r0, r3, 0x0`, which is no operand of it.
     if lifted.op == Op::Compare && tokens.len() == lifted.operands.len() + 1 {
@@ -1052,7 +1062,7 @@ fn statement(
     match lifted.op {
         Op::Return => return Some("return".to_string()),
         Op::Load | Op::Store => {
-            if let Some(line) = list_statement(insn, lifted) {
+            if let Some(line) = list_statement(insn, operands, lifted) {
                 return Some(line);
             }
         }
@@ -1060,7 +1070,7 @@ fn statement(
         Op::Jump => return Some(format!("goto {}", target.or(tokens.last().copied())?)),
         _ => {}
     }
-    if let Some(line) = aarch64_statement(insn, &tokens, last_compare) {
+    if let Some(line) = aarch64_statement(insn, printed_name, &tokens, last_compare) {
         return Some(line);
     }
     if let Some(line) = vfp_statement(insn, &tokens, last_compare) {
@@ -1104,7 +1114,6 @@ fn statement(
     {
         // As printed, for the reader, without the size: `vsqrt` of
         // `vsqrt.f64`.
-        let (printed_name, _) = split_printed(&insn.text);
         let name = printed_name.split('.').next().unwrap_or(printed_name);
         let sources: Vec<String> =
             sources.iter().map(|source| source.trim_start_matches('#').to_string()).collect();
