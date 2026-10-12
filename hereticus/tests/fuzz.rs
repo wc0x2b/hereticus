@@ -257,10 +257,12 @@ fn unreadable_bytes_are_marked_opaque() {
         // that one unreadable instruction can be told from another.
         if insn.kind == InsnKind::Unknown {
             assert_eq!(insn.bytes_len, 4);
-            assert!(!insn.operands().is_empty(), "opaque bytes must carry their raw word");
+            let printed = insn.to_string();
+            let operands = printed.split_once(' ').map_or("", |(_, operands)| operands);
+            assert!(!operands.is_empty(), "opaque bytes must carry their raw word");
 
             let word = u32::from_le_bytes(*bytes);
-            assert_eq!(insn.operands(), format!("{word:#010x}"), "the raw word must be reported");
+            assert_eq!(operands, format!("{word:#010x}"), "the raw word must be reported");
         }
     });
 }
@@ -486,7 +488,7 @@ fn mips_byte_orders_decode_alike() {
                     hereticus::arch::Opcode::Mips(operation, _) => Some(operation),
                     _ => None,
                 };
-                (insn.address, insn.bytes_len, insn.text, insn.kind, operation)
+                (insn.address, insn.bytes_len, insn.to_string(), insn.kind, operation)
             })
         };
         assert_eq!(

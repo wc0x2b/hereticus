@@ -1109,10 +1109,7 @@ mod tests {
         for (first, second, name, operands) in cases {
             let bytes = halfwords(&[first, second]);
             let insn = Thumb2.decode(&bytes, 0, 0).expect("the word reads");
-            assert_eq!(
-                (crate::arch::split_printed(&insn.text).0, insn.operands()),
-                (name, operands)
-            );
+            assert_eq!(insn.to_string(), format!("{name} {operands}"));
         }
         let lift = |first, second| {
             let bytes = halfwords(&[first, second]);
@@ -1126,9 +1123,9 @@ mod tests {
         assert_eq!(lift(0xfa6c, 0xfc00).op, crate::il::Op::Rotate);
         // `asr #32` is encoded as a shift of 0.
         let shifted = Thumb2.decode(&halfwords(&[0xea13, 0x0321]), 0, 0).unwrap();
-        assert_eq!(shifted.operands(), "r3, r3, r1, asr 0x20");
+        assert_eq!(crate::arch::printed_operands(&shifted), "r3, r3, r1, asr 0x20");
         let plain = Thumb2.decode(&halfwords(&[0xea13, 0x0301]), 0, 0).unwrap();
-        assert_eq!(plain.operands(), "r3, r3, r1");
+        assert_eq!(crate::arch::printed_operands(&plain), "r3, r3, r1");
     }
 
     /// Each pattern of `ThumbExpandImm`, and a rotated byte.
@@ -1159,10 +1156,7 @@ mod tests {
         ];
         for (bytes, name, operands) in cases {
             let insn = Thumb2.decode(bytes, 0, 0x1000).expect("the branch reads");
-            assert_eq!(
-                (crate::arch::split_printed(&insn.text).0, insn.operands()),
-                (name, operands)
-            );
+            assert_eq!(insn.to_string(), format!("{name} {operands}"));
             let (InsnKind::Branch { target: Some(target) }
             | InsnKind::Jump { target: Some(target) }) = insn.kind
             else {
@@ -1293,12 +1287,9 @@ mod tests {
     #[test]
     fn tbb_and_tbh_read_as_themselves() {
         let tbb = decode_one(&[0xe8df, 0xf002]);
-        assert_eq!((crate::arch::split_printed(&tbb.text).0, tbb.operands()), ("tbb", "[pc, r2]"));
+        assert_eq!(tbb.to_string(), "tbb [pc, r2]");
         let tbh = decode_one(&[0xe8df, 0xf012]);
-        assert_eq!(
-            (crate::arch::split_printed(&tbh.text).0, tbh.operands()),
-            ("tbh", "[pc, r2, lsl 0x1]")
-        );
+        assert_eq!(tbh.to_string(), "tbh [pc, r2, lsl 0x1]");
         assert_eq!(tbh.kind, InsnKind::Jump { target: None });
     }
 
@@ -1318,8 +1309,7 @@ mod tests {
         // ite gt; movgt r0, #0; movle r0, #1; adds r0, #1
         let code = halfwords(&[0xbfcc, 0x2000, 0x2001, 0x3001]);
         let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
-        let names: Vec<&str> =
-            insns.iter().map(|insn| crate::arch::split_printed(&insn.text).0).collect();
+        let names: Vec<String> = insns.iter().map(crate::arch::printed_name).collect();
         assert_eq!(names, ["ite", "movgt", "movle", "adds"]);
         let condition = |insn: &Insn| match insn.opcode {
             super::super::Opcode::Thumb(Decoded::Core { condition, flags, .. }) => {
@@ -1341,7 +1331,7 @@ mod tests {
         // From `llvm-mc --triple=thumbv7`.
         let shown = |values: &[u16]| {
             let insn = decode_one(values);
-            format!("{} {}", crate::arch::split_printed(&insn.text).0, insn.operands())
+            insn.to_string()
         };
         assert_eq!(shown(&[0xf8cd, 0x801c]), "str r8, [sp, 0x1c]");
         assert_eq!(shown(&[0xf8ad, 0x801c]), "strh r8, [sp, 0x1c]");
@@ -1360,15 +1350,9 @@ mod tests {
     fn a_wide_move_keeps_every_bit_of_its_value() {
         // movw ip, 0xfaac; movt ip, 0xfffe: imm4 is set in both.
         let low = decode_one(&[0xf64f, 0x2cac]);
-        assert_eq!(
-            (crate::arch::split_printed(&low.text).0, low.operands()),
-            ("mov", "ip, 0xfaac")
-        );
+        assert_eq!(low.to_string(), "mov ip, 0xfaac");
         let high = decode_one(&[0xf6cf, 0x7cfe]);
-        assert_eq!(
-            (crate::arch::split_printed(&high.text).0, high.operands()),
-            ("movt", "ip, 0xfffe")
-        );
+        assert_eq!(high.to_string(), "movt ip, 0xfffe");
         // The lift holds the same values the text shows.
         let constant = |values: &[u16]| lift_one(values).operands.last().copied();
         assert_eq!(constant(&[0xf64f, 0x2cac]), Some(crate::il::Operand::Const(0xfaac)));
@@ -1422,8 +1406,8 @@ mod tests {
     #[test]
     fn a_t32_neon_store_reads_as_its_a32_twin() {
         let insn = decode_one(&[0xf941, 0x0a8d]);
-        assert_eq!(crate::arch::split_printed(&insn.text).0, "vst1.32");
-        assert_eq!(insn.operands(), "{d16, d17}, [r1]!");
+        assert_eq!(crate::arch::printed_name(&insn), "vst1.32");
+        assert_eq!(crate::arch::printed_operands(&insn), "{d16, d17}, [r1]!");
         assert_eq!((insn.bytes_len, insn.kind), (4, InsnKind::Normal));
     }
 
@@ -1431,7 +1415,7 @@ mod tests {
     fn t32_neon_data_processing_is_unread_code() {
         let insn = decode_one(&[0xefc0, 0x0050]);
         assert_eq!(
-            (crate::arch::split_printed(&insn.text).0, insn.kind),
+            (crate::arch::printed_name(&insn).as_str(), insn.kind),
             (NEON_TEXT, InsnKind::Unknown)
         );
         assert!(Thumb2.is_unread_extension(&insn));
@@ -1442,17 +1426,21 @@ mod tests {
         // `f3f0 8000` is no instruction, though `0xf3f08000` would be A32
         // NEON data processing.
         let insn = decode_one(&[0xf3f0, 0x8000]);
-        assert_eq!(crate::arch::split_printed(&insn.text).0, UNKNOWN_TEXT);
+        assert_eq!(crate::arch::printed_name(&insn), UNKNOWN_TEXT);
         assert!(!Thumb2.is_unread_extension(&insn));
     }
 
     #[test]
     fn narrow_and_wide_instructions_have_their_width() {
         let narrow = decode_one(&[0x4770]); // bx lr
-        assert_eq!((crate::arch::split_printed(&narrow.text).0, narrow.bytes_len), ("bx", 2));
+        assert_eq!((crate::arch::printed_name(&narrow).as_str(), narrow.bytes_len), ("bx", 2));
         assert_eq!(narrow.kind, InsnKind::Return);
         let wide = decode_one(&[0xf04f, 0x0001]); // mov.w r0, 1
-        assert_eq!((crate::arch::split_printed(&wide.text).0, wide.bytes_len), ("mov", 4), "no .w");
+        assert_eq!(
+            (crate::arch::printed_name(&wide).as_str(), wide.bytes_len),
+            ("mov", 4),
+            "no .w"
+        );
     }
 
     #[test]
@@ -1501,13 +1489,13 @@ mod tests {
             for mask in 1..16_u16 {
                 let insn = decode_one(&[0xbf00 | condition << 4 | mask]);
                 assert!(is_it(&insn), "{insn}");
-                let then = insn.operands().trim();
+                let then = crate::arch::printed_operands(&insn);
                 let names: Vec<&str> = it_conditions(condition as u8, mask as u8)
                     .expect("a condition with an opposite")
                     .into_iter()
                     .map(condition_name)
                     .collect();
-                let pattern = &crate::arch::split_printed(&insn.text).0[2..];
+                let pattern = &crate::arch::printed_name(&insn)[2..];
                 assert_eq!(names.len(), pattern.len() + 1, "{insn}");
                 assert_eq!(names[0], then, "{insn}");
                 for (name, letter) in names[1..].iter().zip(pattern.chars()) {

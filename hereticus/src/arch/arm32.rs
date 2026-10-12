@@ -3658,7 +3658,7 @@ mod unused_operand_tests {
         let shown = |word: u32| {
             let code = word.to_le_bytes();
             let insn = Arm32.decode(&code, 0, 0).expect("decodes");
-            format!("{} {}", crate::arch::split_printed(&insn.text).0, insn.operands())
+            insn.to_string()
         };
         // From `llvm-mc --triple=armv7`.
         assert_eq!(shown(0xe153_0002), "cmp r3, r2");
@@ -3712,7 +3712,7 @@ mod tests {
     fn a_list_access_names_its_order() {
         let name = |word: u32| {
             let insn = decode_one(word.to_le_bytes());
-            crate::arch::split_printed(&insn.text).0.to_string()
+            crate::arch::printed_name(&insn).to_string()
         };
         assert_eq!(name(0xe890_0006), "ldm", "increment after");
         assert_eq!(name(0xe990_0006), "ldmib");
@@ -3861,16 +3861,13 @@ mod tests {
     /// The text of the A32 instruction `word`.
     fn text_of(word: u32) -> (String, String) {
         let insn = decode_one(word.to_le_bytes());
-        (crate::arch::split_printed(&insn.text).0.to_string(), insn.operands().to_string())
+        (crate::arch::printed_name(&insn), crate::arch::printed_operands(&insn))
     }
 
     #[test]
     fn mov_r0_r0_is_padding_as_a_core_before_armv6k_pads() {
         let filler = decode_one(0xe1a0_0000u32.to_le_bytes());
-        assert_eq!(
-            (crate::arch::split_printed(&filler.text).0, filler.operands()),
-            ("mov", "r0, r0")
-        );
+        assert_eq!(filler.to_string(), "mov r0, r0");
         assert!(Arm32.is_padding(&filler));
         let copy = decode_one(0xe1a0_0001u32.to_le_bytes());
         assert!(!Arm32.is_padding(&copy), "mov r0, r1 does work");
@@ -3919,7 +3916,7 @@ mod tests {
     fn an_undefined_neon_load_stays_unknown() {
         let insn = decode_one(0xf420_0b0fu32.to_le_bytes());
         assert_eq!(
-            (crate::arch::split_printed(&insn.text).0, insn.kind),
+            (crate::arch::printed_name(&insn).as_str(), insn.kind),
             (UNKNOWN_TEXT, InsnKind::Unknown)
         );
         assert!(!Arm32.is_unread_extension(&insn));
@@ -3929,18 +3926,22 @@ mod tests {
     fn neon_data_processing_stays_opaque_but_is_code() {
         let insn = decode_one(0xf260_0680u32.to_le_bytes());
         assert_eq!(
-            (crate::arch::split_printed(&insn.text).0, insn.kind),
+            (crate::arch::printed_name(&insn).as_str(), insn.kind),
             (NEON_TEXT, InsnKind::Unknown)
         );
-        assert_eq!(insn.operands(), "0xf2600680", "the word keeps an edit visible");
+        assert_eq!(
+            crate::arch::printed_operands(&insn),
+            "0xf2600680",
+            "the word keeps an edit visible"
+        );
         assert!(Arm32.is_unread_extension(&insn));
     }
 
     #[test]
     fn decodes_simple_arithmetic() {
         let insn = decode_one([0x00, 0x00, 0x81, 0xe0]);
-        assert_eq!(crate::arch::split_printed(&insn.text).0, "add");
-        assert_eq!(insn.operands(), "r0, r1, r0");
+        assert_eq!(crate::arch::printed_name(&insn), "add");
+        assert_eq!(crate::arch::printed_operands(&insn), "r0, r1, r0");
         assert_eq!(insn.bytes_len, 4);
         assert_eq!(insn.kind, InsnKind::Normal);
     }
@@ -4460,7 +4461,7 @@ mod tests {
     #[test]
     fn nop_encoding_decodes_as_nop() {
         let insn = decode_one([0x00, 0xf0, 0x20, 0xe3]);
-        assert_eq!(crate::arch::split_printed(&insn.text).0, "nop");
+        assert_eq!(crate::arch::printed_name(&insn), "nop");
         assert_eq!(insn.kind, InsnKind::Normal);
     }
 
@@ -4813,11 +4814,7 @@ mod tests {
         ];
         for (word, text) in cases {
             let insn = Arm32.decode(&u32::to_le_bytes(word), 0, 0).expect("the word reads");
-            assert_eq!(
-                format!("{} {}", crate::arch::split_printed(&insn.text).0, insn.operands()),
-                text,
-                "{word:#010x}"
-            );
+            assert_eq!(insn.to_string(), text, "{word:#010x}");
         }
         let lift = |word: u32| {
             let bytes = word.to_le_bytes();
@@ -4895,18 +4892,12 @@ mod tests {
         ];
         for (word, name, operands) in cases {
             let insn = Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word reads");
-            assert_eq!(
-                (crate::arch::split_printed(&insn.text).0, insn.operands()),
-                (name, operands)
-            );
+            assert_eq!(insn.to_string(), format!("{name} {operands}"));
             if word >> 28 == 0b1110 {
                 let halves = [(word >> 16) as u16, word as u16];
                 let bytes: Vec<u8> = halves.iter().flat_map(|half| half.to_le_bytes()).collect();
                 let insn = super::super::thumb::Thumb2.decode(&bytes, 0, 0).expect("reads");
-                assert_eq!(
-                    (crate::arch::split_printed(&insn.text).0, insn.operands()),
-                    (name, operands)
-                );
+                assert_eq!(insn.to_string(), format!("{name} {operands}"));
             }
         }
         let constant = Arm32

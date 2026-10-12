@@ -2372,8 +2372,8 @@ mod tests {
     #[test]
     fn decodes_simple_arithmetic() {
         let insn = decode_one(0x0085_1021);
-        assert_eq!(crate::arch::split_printed(&insn.text).0, "addu");
-        assert_eq!(insn.operands(), "v0, a0, a1");
+        assert_eq!(crate::arch::printed_name(&insn), "addu");
+        assert_eq!(crate::arch::printed_operands(&insn), "v0, a0, a1");
         assert_eq!(insn.bytes_len, 4);
         assert_eq!(insn.kind, InsnKind::Normal);
     }
@@ -2783,7 +2783,7 @@ mod tests {
     #[test]
     fn a_zero_word_is_padding() {
         let nop = decode_one(0x0000_0000);
-        assert_eq!(crate::arch::split_printed(&nop.text).0, "nop");
+        assert_eq!(crate::arch::printed_name(&nop), "nop");
         assert!(Mips32::LITTLE.is_padding(&nop));
         assert!(Mips32::LITTLE.trim_padding(&[0; 4]).is_empty());
     }
@@ -3111,8 +3111,8 @@ mod tests {
         fn a_jump_target_prints_as_a_resolved_target() {
             let code = jal(0x8000_4000).to_be_bytes();
             let insn = Mips32::BIG.decode(&code, 0, BASE).unwrap();
-            assert_eq!(insn.operands(), "$+0x4000");
-            assert!(crate::arch::is_branch_target(insn.operands()));
+            assert_eq!(crate::arch::printed_operands(&insn), "$+0x4000");
+            assert!(crate::arch::is_branch_target(&crate::arch::printed_operands(&insn)));
         }
 
         fn contents_of(words: &[u32], space: &AddressSpace) -> crate::address::Contents {
@@ -3694,8 +3694,8 @@ mod tests {
         // b, which is `beq zero, zero, offset`, and j to an absolute address.
         let relative = decode_one(0x1000_0002);
         let absolute = decode_one(0x0800_0010);
-        assert_eq!(crate::arch::split_printed(&relative.text).0, "b");
-        assert_eq!(crate::arch::split_printed(&absolute.text).0, "j");
+        assert_eq!(crate::arch::printed_name(&relative), "b");
+        assert_eq!(crate::arch::printed_name(&absolute), "j");
 
         let arch = &Mips32::LITTLE;
         assert_eq!(normalize(arch, &relative), normalize(arch, &absolute));
@@ -3711,7 +3711,7 @@ mod tests {
         // beq a0, v0, offset: a real test, not `b`.
         let conditional = decode_one(0x1082_0005);
         let unconditional = decode_one(0x1000_0002);
-        assert_eq!(crate::arch::split_printed(&conditional.text).0, "beq");
+        assert_eq!(crate::arch::printed_name(&conditional), "beq");
         assert_ne!(
             normalize(arch, &conditional),
             normalize(arch, &unconditional),
@@ -3771,11 +3771,11 @@ mod tests {
         let stored = 0x0085_1021u32.to_be_bytes();
 
         let big = Mips32::BIG.decode(&stored, 0, 0).unwrap();
-        assert_eq!(crate::arch::split_printed(&big.text).0, "addu");
+        assert_eq!(crate::arch::printed_name(&big), "addu");
 
         let little = Mips32::LITTLE.decode(&stored, 0, 0).unwrap();
         assert_ne!(
-            crate::arch::split_printed(&little.text).0,
+            crate::arch::printed_name(&little),
             "addu",
             "the wrong order reads another instruction"
         );
