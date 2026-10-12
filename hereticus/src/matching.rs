@@ -4676,6 +4676,7 @@ fn lines_from_alignment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::Decoder as _;
 
     /// The bit-parallel table walks as the table of cells does, ties and
     /// all, on runs of every length across the edges of a word.

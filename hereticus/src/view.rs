@@ -1248,6 +1248,7 @@ fn statement(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::Decoder as _;
     use crate::arch::aarch64::Aarch64;
     use crate::arch::decode_all;
 

@@ -23,8 +23,8 @@ use rabbitizer::{
 };
 
 use super::{
-    AbsoluteCall, Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable,
-    Memory, Printing, split_printed,
+    AbsoluteCall, Arch, CallTarget, DecodeError, Decoder, GlobalPointerSetup, Insn, InsnKind,
+    JumpTable, Memory, Printing, split_printed,
 };
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
@@ -327,7 +327,7 @@ impl Mips32 {
     }
 }
 
-impl Arch for Mips32 {
+impl Decoder for Mips32 {
     /// MIPS puts no condition or flag-setting suffix on an operation: the
     /// compare is part of it, as in `beq` against `bne`, which differ in
     /// the test they apply and so stay apart.
@@ -370,6 +370,58 @@ impl Arch for Mips32 {
         INSN_WIDTH
     }
 
+    /// MIPS runs the instruction after a branch whether or not the branch is
+    /// taken, so that instruction belongs to the branch. An exception return
+    /// is the exception: it leaves at once.
+    fn delay_slots(&self, insn: &Insn) -> usize {
+        match decoded(insn) {
+            Some(Decoded::Mips32(op)) if super::mips32::is_exception_return(op) => 0,
+            _ => 1,
+        }
+    }
+
+    fn pointer_width(&self) -> usize {
+        INSN_WIDTH
+    }
+
+    fn read_pointer(&self, bytes: &[u8]) -> u64 {
+        u64::from(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    /// What `rabbitizer` reads is lifted from its decoded fields, and the
+    /// MIPS32 words that [`super::mips32`] reads in its place by that
+    /// module, where they compute a value.
+    fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
+        let word = insn.bytes();
+        if insn.kind == InsnKind::Unknown {
+            return None;
+        }
+        let raw = self.order.read_word(word.try_into().ok()?);
+        let flags = InstructionFlags::new(ISA);
+        match Instruction::new_checked(raw, Vram::new(insn.address as u32), flags) {
+            Some(inst) => Some(lift(&inst)),
+            None => super::mips32::lift(raw),
+        }
+    }
+
+    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
+        let word = insn.bytes();
+        if insn.kind == InsnKind::Unknown {
+            return None;
+        }
+        let raw = self.order.read_word(word.try_into().ok()?);
+        let flags = InstructionFlags::new(ISA);
+        match Instruction::new_checked(raw, Vram::new(insn.address as u32), flags) {
+            Some(inst) => {
+                let names = names(&inst, insn.kind, insn.address);
+                Some(il::Named { lifted: lift(&inst), names, write_back: None })
+            }
+            None => super::mips32::lift_named(raw),
+        }
+    }
+}
+
+impl Arch for Mips32 {
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         matches!(reg, il::Reg::General(SP | FP))
     }
@@ -686,56 +738,6 @@ impl Arch for Mips32 {
                 _ => None,
             })
             .collect()
-    }
-
-    /// MIPS runs the instruction after a branch whether or not the branch is
-    /// taken, so that instruction belongs to the branch. An exception return
-    /// is the exception: it leaves at once.
-    fn delay_slots(&self, insn: &Insn) -> usize {
-        match decoded(insn) {
-            Some(Decoded::Mips32(op)) if super::mips32::is_exception_return(op) => 0,
-            _ => 1,
-        }
-    }
-
-    fn pointer_width(&self) -> usize {
-        INSN_WIDTH
-    }
-
-    fn read_pointer(&self, bytes: &[u8]) -> u64 {
-        u64::from(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    /// What `rabbitizer` reads is lifted from its decoded fields, and the
-    /// MIPS32 words that [`super::mips32`] reads in its place by that
-    /// module, where they compute a value.
-    fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
-        let word = insn.bytes();
-        if insn.kind == InsnKind::Unknown {
-            return None;
-        }
-        let raw = self.order.read_word(word.try_into().ok()?);
-        let flags = InstructionFlags::new(ISA);
-        match Instruction::new_checked(raw, Vram::new(insn.address as u32), flags) {
-            Some(inst) => Some(lift(&inst)),
-            None => super::mips32::lift(raw),
-        }
-    }
-
-    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
-        let word = insn.bytes();
-        if insn.kind == InsnKind::Unknown {
-            return None;
-        }
-        let raw = self.order.read_word(word.try_into().ok()?);
-        let flags = InstructionFlags::new(ISA);
-        match Instruction::new_checked(raw, Vram::new(insn.address as u32), flags) {
-            Some(inst) => {
-                let names = names(&inst, insn.kind, insn.address);
-                Some(il::Named { lifted: lift(&inst), names, write_back: None })
-            }
-            None => super::mips32::lift_named(raw),
-        }
     }
 
     /// A lower half joined to what its source register holds, where that

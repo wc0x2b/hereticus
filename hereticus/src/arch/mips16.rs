@@ -22,7 +22,8 @@ use super::mips::{
     operands_of, register_name,
 };
 use super::{
-    Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory, Printing,
+    Arch, CallTarget, DecodeError, Decoder, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory,
+    Printing,
 };
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
@@ -601,7 +602,7 @@ impl Mips16 {
     }
 }
 
-impl Arch for Mips16 {
+impl Decoder for Mips16 {
     fn operation_name(&self, insn: &Insn) -> CompactString {
         self.base.operation_name(insn)
     }
@@ -618,6 +619,138 @@ impl Arch for Mips16 {
         HALFWORD
     }
 
+    /// `jal`, `jalx`, `jr` and `jalr` run the instruction after them first;
+    /// a branch and the compact jumps do not.
+    fn delay_slots(&self, insn: &Insn) -> usize {
+        let has_slot = matches!(
+            decoded(insn),
+            Some(
+                MipsDecoded::Rabbitizer(Opcode::core_jal | Opcode::core_jr | Opcode::core_jalr)
+                    | MipsDecoded::Mips16(Op::Jalx)
+            )
+        );
+        usize::from(has_slot)
+    }
+
+    fn pointer_width(&self) -> usize {
+        self.base.pointer_width()
+    }
+
+    fn read_pointer(&self, bytes: &[u8]) -> u64 {
+        self.base.read_pointer(bytes)
+    }
+
+    fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
+        let word = insn.bytes();
+        if insn.kind == InsnKind::Unknown {
+            return None;
+        }
+        let decoded = self.decoded(word, 0, insn.address)?;
+        match decoded.reading {
+            Reading::Word(word) => {
+                let translated = self.as_mips32(word, insn.address)?;
+                self.base.lift(&translated)
+            }
+            Reading::Control { test: Some(word), .. } => {
+                let translated = self.as_mips32(word, insn.address)?;
+                self.base.lift(&translated)
+            }
+            Reading::Control { kind, through, .. } => {
+                let op = match kind {
+                    InsnKind::Call { .. } => il::Op::Call,
+                    InsnKind::Return => il::Op::Return,
+                    _ => il::Op::Jump,
+                };
+                let mut lifted = il::Lifted { op, ..Default::default() };
+                if matches!(kind, InsnKind::Call { .. }) {
+                    lifted.writes.insert(il::Reg::General(RA as u8));
+                }
+                // `jr`, `jalr` and their compact forms go through a register.
+                let target = match through {
+                    Some(number) => {
+                        let reg = il::Reg::General(number as u8);
+                        lifted.reads.insert(reg);
+                        il::Operand::Reg(reg)
+                    }
+                    None => il::Operand::Target(None),
+                };
+                lifted.operands = [target].into_iter().collect();
+                Some(lifted)
+            }
+            Reading::PcRelative { load, dest, address } => {
+                let mut lifted = il::Lifted::default();
+                let dest = il::Reg::General(dest as u8);
+                lifted.writes.insert(dest);
+                lifted.op = if load { il::Op::Load } else { il::Op::Address };
+                let source = if load {
+                    lifted.memory = Some(il::MemoryAccess {
+                        kind: il::AccessKind::Load,
+                        width: Some(il::Width::Bits32),
+                    });
+                    il::Operand::memory(Some(il::Reg::ProgramCounter), None)
+                } else {
+                    il::Operand::Target(Some(address.wrapping_sub(insn.address) as i64))
+                };
+                lifted.operands = [il::Operand::Reg(dest), source].into_iter().collect();
+                Some(lifted)
+            }
+            Reading::Frame { .. } => None,
+        }
+    }
+
+    /// The names are those of the MIPS32 twin, but for a target, which
+    /// counts from the MIPS16e instruction, and the forms MIPS16e alone
+    /// has.
+    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
+        use compact_str::{CompactString, format_compact};
+        if insn.kind == InsnKind::Unknown {
+            return None;
+        }
+        let lifted = self.lift(insn)?;
+        let decoded = self.decoded(insn.bytes(), 0, insn.address)?;
+        let target = match insn.kind {
+            InsnKind::Call { target } | InsnKind::Jump { target } | InsnKind::Branch { target } => {
+                target
+            }
+            _ => None,
+        };
+        let place = target.map(|target| il::target_name(target.wrapping_sub(insn.address) as i64));
+        let names: il::Names = match decoded.reading {
+            Reading::Word(word) | Reading::Control { test: Some(word), .. } => {
+                let translated = self.as_mips32(word, insn.address)?;
+                let twin = self.base.lift_named(&translated)?;
+                twin.lifted
+                    .operands
+                    .iter()
+                    .zip(twin.names)
+                    .map(|(operand, name)| match (operand, &place) {
+                        (il::Operand::Target(_), Some(place)) => place.clone(),
+                        _ => name,
+                    })
+                    .collect()
+            }
+            Reading::Control { through: Some(number), .. } => {
+                [CompactString::from(REGISTER_NAMES[number as usize])].into_iter().collect()
+            }
+            // `jal` and `jalx` print where they go; a branch prints how far.
+            Reading::Control { kind: InsnKind::Call { target: Some(target) }, .. } => {
+                [format_compact!("{target:#x}")].into_iter().collect()
+            }
+            Reading::Control { .. } => place.into_iter().collect(),
+            Reading::PcRelative { load, dest, address } => {
+                let source = match load {
+                    true => format_compact!("[pc + {address:#x}]"),
+                    false => format_compact!("{address:#x}"),
+                };
+                [CompactString::from(REGISTER_NAMES[dest as usize]), source].into_iter().collect()
+            }
+            Reading::Frame { .. } => return None,
+        };
+        Some(il::Named { lifted, names, write_back: None })
+    }
+}
+
+impl Arch for Mips16 {
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         self.base.is_frame_register(reg)
     }
@@ -843,136 +976,6 @@ impl Arch for Mips16 {
             end -= HALFWORD;
         }
         &bytes[..end]
-    }
-
-    /// `jal`, `jalx`, `jr` and `jalr` run the instruction after them first;
-    /// a branch and the compact jumps do not.
-    fn delay_slots(&self, insn: &Insn) -> usize {
-        let has_slot = matches!(
-            decoded(insn),
-            Some(
-                MipsDecoded::Rabbitizer(Opcode::core_jal | Opcode::core_jr | Opcode::core_jalr)
-                    | MipsDecoded::Mips16(Op::Jalx)
-            )
-        );
-        usize::from(has_slot)
-    }
-
-    fn pointer_width(&self) -> usize {
-        self.base.pointer_width()
-    }
-
-    fn read_pointer(&self, bytes: &[u8]) -> u64 {
-        self.base.read_pointer(bytes)
-    }
-
-    fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
-        let word = insn.bytes();
-        if insn.kind == InsnKind::Unknown {
-            return None;
-        }
-        let decoded = self.decoded(word, 0, insn.address)?;
-        match decoded.reading {
-            Reading::Word(word) => {
-                let translated = self.as_mips32(word, insn.address)?;
-                self.base.lift(&translated)
-            }
-            Reading::Control { test: Some(word), .. } => {
-                let translated = self.as_mips32(word, insn.address)?;
-                self.base.lift(&translated)
-            }
-            Reading::Control { kind, through, .. } => {
-                let op = match kind {
-                    InsnKind::Call { .. } => il::Op::Call,
-                    InsnKind::Return => il::Op::Return,
-                    _ => il::Op::Jump,
-                };
-                let mut lifted = il::Lifted { op, ..Default::default() };
-                if matches!(kind, InsnKind::Call { .. }) {
-                    lifted.writes.insert(il::Reg::General(RA as u8));
-                }
-                // `jr`, `jalr` and their compact forms go through a register.
-                let target = match through {
-                    Some(number) => {
-                        let reg = il::Reg::General(number as u8);
-                        lifted.reads.insert(reg);
-                        il::Operand::Reg(reg)
-                    }
-                    None => il::Operand::Target(None),
-                };
-                lifted.operands = [target].into_iter().collect();
-                Some(lifted)
-            }
-            Reading::PcRelative { load, dest, address } => {
-                let mut lifted = il::Lifted::default();
-                let dest = il::Reg::General(dest as u8);
-                lifted.writes.insert(dest);
-                lifted.op = if load { il::Op::Load } else { il::Op::Address };
-                let source = if load {
-                    lifted.memory = Some(il::MemoryAccess {
-                        kind: il::AccessKind::Load,
-                        width: Some(il::Width::Bits32),
-                    });
-                    il::Operand::memory(Some(il::Reg::ProgramCounter), None)
-                } else {
-                    il::Operand::Target(Some(address.wrapping_sub(insn.address) as i64))
-                };
-                lifted.operands = [il::Operand::Reg(dest), source].into_iter().collect();
-                Some(lifted)
-            }
-            Reading::Frame { .. } => None,
-        }
-    }
-
-    /// The names are those of the MIPS32 twin, but for a target, which
-    /// counts from the MIPS16e instruction, and the forms MIPS16e alone
-    /// has.
-    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
-        use compact_str::{CompactString, format_compact};
-        if insn.kind == InsnKind::Unknown {
-            return None;
-        }
-        let lifted = self.lift(insn)?;
-        let decoded = self.decoded(insn.bytes(), 0, insn.address)?;
-        let target = match insn.kind {
-            InsnKind::Call { target } | InsnKind::Jump { target } | InsnKind::Branch { target } => {
-                target
-            }
-            _ => None,
-        };
-        let place = target.map(|target| il::target_name(target.wrapping_sub(insn.address) as i64));
-        let names: il::Names = match decoded.reading {
-            Reading::Word(word) | Reading::Control { test: Some(word), .. } => {
-                let translated = self.as_mips32(word, insn.address)?;
-                let twin = self.base.lift_named(&translated)?;
-                twin.lifted
-                    .operands
-                    .iter()
-                    .zip(twin.names)
-                    .map(|(operand, name)| match (operand, &place) {
-                        (il::Operand::Target(_), Some(place)) => place.clone(),
-                        _ => name,
-                    })
-                    .collect()
-            }
-            Reading::Control { through: Some(number), .. } => {
-                [CompactString::from(REGISTER_NAMES[number as usize])].into_iter().collect()
-            }
-            // `jal` and `jalx` print where they go; a branch prints how far.
-            Reading::Control { kind: InsnKind::Call { target: Some(target) }, .. } => {
-                [format_compact!("{target:#x}")].into_iter().collect()
-            }
-            Reading::Control { .. } => place.into_iter().collect(),
-            Reading::PcRelative { load, dest, address } => {
-                let source = match load {
-                    true => format_compact!("[pc + {address:#x}]"),
-                    false => format_compact!("{address:#x}"),
-                };
-                [CompactString::from(REGISTER_NAMES[dest as usize]), source].into_iter().collect()
-            }
-            Reading::Frame { .. } => return None,
-        };
-        Some(il::Named { lifted, names, write_back: None })
     }
 
     fn stub_arch(&self) -> Option<&'static dyn Arch> {

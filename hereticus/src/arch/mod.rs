@@ -45,12 +45,9 @@ pub struct GlobalPointerSetup {
     pub register: String,
 }
 
-/// An architecture that `hereticus` can decode.
-///
-/// The classifying methods take operands as printed, in the spelling this
-/// architecture's own [`Arch::decode`] produces. An implementation answers for
-/// its own output and never has to agree with another architecture's.
-pub trait Arch {
+/// What decodes and lifts the instructions of one instruction set, with
+/// the facts of the set a decoder knows, as its pointer width.
+pub trait Decoder {
     /// Decode one instruction at `offset` bytes into `code`.
     ///
     /// `address` is the virtual address of `code[0]`, so branch targets come
@@ -67,6 +64,70 @@ pub trait Arch {
     /// minimum.
     fn instruction_width(&self) -> usize;
 
+    /// The name of the operation `insn` does, from its decoded opcode.
+    ///
+    /// What only decorates the work is left out: a compiler picks between a
+    /// flag-setting form and a plain one, or puts a condition on an
+    /// instruction, for reasons that do not change what it computes. One
+    /// name for both is what lets them compare equal. Two names never
+    /// meet across architectures, so each picks its own.
+    fn operation_name(&self, insn: &Insn) -> CompactString;
+
+    /// Lift `insn` to the intermediate language of [`crate::il`]. `word`
+    /// holds its bytes.
+    ///
+    /// Defaults to `None`, for the architectures with no lifter yet. A
+    /// caller treats `None` as "nothing known", never as "does nothing".
+    fn lift(&self, _insn: &Insn) -> Option<crate::il::Lifted> {
+        None
+    }
+
+    /// [`Decoder::lift`], with the name of each operand, for a reader: see
+    /// [`crate::il::Named`].
+    ///
+    /// Defaults to `None`, as [`Decoder::lift`] does.
+    fn lift_named(&self, _insn: &Insn) -> Option<crate::il::Named> {
+        None
+    }
+
+    /// Adjust instructions that only their neighbours explain, once a run of
+    /// them is decoded.
+    ///
+    /// T32 `it` makes up to four instructions after it conditional, and
+    /// each of them, decoded alone, reads as if it ran always. Defaults to
+    /// changing nothing.
+    fn after_decoding(&self, _insns: &mut [Insn]) {}
+
+    /// Instructions after a branch that still belong to it.
+    ///
+    /// A delay slot runs whether or not the branch is taken, so it is part of
+    /// the instruction before it rather than the start of whatever follows.
+    /// Function recovery must step over it: MIPS ends a function with
+    /// `jr ra` and then unwinds the frame in the slot, and treating that
+    /// unwind as a new function invents one at the end of every function.
+    ///
+    /// `insn` is the branch or return, because an architecture can have both
+    /// kinds: MIPS `eret` leaves at once, with no slot.
+    ///
+    /// Defaults to 0, for the architectures that have no such slot.
+    fn delay_slots(&self, _insn: &Insn) -> usize {
+        0
+    }
+
+    /// Bytes in one stored pointer.
+    fn pointer_width(&self) -> usize;
+
+    /// Read one stored pointer, in this architecture's byte order.
+    ///
+    /// `bytes` is at least [`Decoder::pointer_width`] long.
+    fn read_pointer(&self, bytes: &[u8]) -> u64;
+}
+
+/// An architecture that `hereticus` can decode, with the rules that read
+/// its code: padding, prologues, tail calls, literal pools and jump tables.
+/// An implementation answers for its own instructions and never has to
+/// agree with another architecture's.
+pub trait Arch: Decoder {
     /// Report whether a lifted register is the stack or frame pointer.
     fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
         reg == crate::il::Reg::Stack
@@ -78,15 +139,6 @@ pub trait Arch {
     fn can_open_function(&self, _bytes: &[u8]) -> bool {
         false
     }
-
-    /// The name of the operation `insn` does, from its decoded opcode.
-    ///
-    /// What only decorates the work is left out: a compiler picks between a
-    /// flag-setting form and a plain one, or puts a condition on an
-    /// instruction, for reasons that do not change what it computes. One
-    /// name for both is what lets them compare equal. Two names never
-    /// meet across architectures, so each picks its own.
-    fn operation_name(&self, insn: &Insn) -> CompactString;
 
     /// Report whether an instruction only maintains the stack frame.
     ///
@@ -345,23 +397,6 @@ pub trait Arch {
         false
     }
 
-    /// Lift `insn` to the intermediate language of [`crate::il`]. `word`
-    /// holds its bytes.
-    ///
-    /// Defaults to `None`, for the architectures with no lifter yet. A
-    /// caller treats `None` as "nothing known", never as "does nothing".
-    fn lift(&self, _insn: &Insn) -> Option<crate::il::Lifted> {
-        None
-    }
-
-    /// [`Arch::lift`], with the name of each operand, for a reader: see
-    /// [`crate::il::Named`].
-    ///
-    /// Defaults to `None`, as [`Arch::lift`] does.
-    fn lift_named(&self, _insn: &Insn) -> Option<crate::il::Named> {
-        None
-    }
-
     /// The architecture the PLT stubs of a binary are in, where it is not
     /// this one.
     ///
@@ -412,14 +447,6 @@ pub trait Arch {
         vec![None; body.len()]
     }
 
-    /// Adjust instructions that only their neighbours explain, once a run of
-    /// them is decoded.
-    ///
-    /// T32 `it` makes up to four instructions after it conditional, and
-    /// each of them, decoded alone, reads as if it ran always. Defaults to
-    /// changing nothing.
-    fn after_decoding(&self, _insns: &mut [Insn]) {}
-
     /// Report whether an instruction is alignment padding rather than work.
     fn is_padding(&self, insn: &Insn) -> bool;
 
@@ -436,30 +463,6 @@ pub trait Arch {
     fn unwind_section(&self) -> Option<&'static str> {
         None
     }
-
-    /// Instructions after a branch that still belong to it.
-    ///
-    /// A delay slot runs whether or not the branch is taken, so it is part of
-    /// the instruction before it rather than the start of whatever follows.
-    /// Function recovery must step over it: MIPS ends a function with
-    /// `jr ra` and then unwinds the frame in the slot, and treating that
-    /// unwind as a new function invents one at the end of every function.
-    ///
-    /// `insn` is the branch or return, because an architecture can have both
-    /// kinds: MIPS `eret` leaves at once, with no slot.
-    ///
-    /// Defaults to 0, for the architectures that have no such slot.
-    fn delay_slots(&self, _insn: &Insn) -> usize {
-        0
-    }
-
-    /// Bytes in one stored pointer.
-    fn pointer_width(&self) -> usize;
-
-    /// Read one stored pointer, in this architecture's byte order.
-    ///
-    /// `bytes` is at least [`Arch::pointer_width`] long.
-    fn read_pointer(&self, bytes: &[u8]) -> u64;
 
     /// Read a call that names its target by an absolute address.
     ///
@@ -643,7 +646,7 @@ pub enum Opcode {
 /// A body can mix instruction sets, as a Thumb-2 function that goes on in
 /// A32 after `bx pc`, so the decoder of the function may not be the one of
 /// each instruction.
-pub(crate) fn reader_of(insn: &Insn) -> Option<&'static dyn Arch> {
+pub(crate) fn reader_of(insn: &Insn) -> Option<&'static dyn Decoder> {
     use InstructionSet as Set;
     use mips::ByteOrder;
     Some(match insn.opcode {
@@ -897,7 +900,7 @@ fn decode_in_one_set(
 /// address in place of decoding it again. `earlier` holds that pass, sorted
 /// by address, and the words it read as data, which decode nothing.
 fn decode_raw(
-    arch: &dyn Arch,
+    arch: &dyn Decoder,
     code: &[u8],
     address: u64,
     data: &std::collections::BTreeSet<u64>,
@@ -980,7 +983,11 @@ fn hex_word(bytes: &[u8]) -> String {
 }
 
 /// Decode `code` one instruction after the next.
-fn decode_linear(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Option<DecodeError>) {
+fn decode_linear(
+    arch: &dyn Decoder,
+    code: &[u8],
+    address: u64,
+) -> (Vec<Insn>, Option<DecodeError>) {
     let mut out = Vec::new();
     let mut offset = 0;
 
@@ -1017,7 +1024,7 @@ fn decode_linear(arch: &dyn Arch, code: &[u8], address: u64) -> (Vec<Insn>, Opti
 /// function. Such a word here is one [`InsnKind::Unknown`] as wide as a
 /// pointer.
 pub fn decode_all_but(
-    arch: &dyn Arch,
+    arch: &dyn Decoder,
     code: &[u8],
     address: u64,
     data: &std::collections::BTreeSet<u64>,

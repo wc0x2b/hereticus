@@ -16,12 +16,14 @@
 use core::ops::Range;
 
 use compact_str::CompactString;
-use yaxpeax_arch::{Decoder, U8Reader};
+use yaxpeax_arch::{Decoder as _, U8Reader};
 use yaxpeax_arm::armv8::a64::{
     InstDecoder, Instruction, Opcode, Operand, SIMDSizeCode, ShiftStyle, SizeCode,
 };
 
-use super::{Arch, DecodeError, Insn, InsnKind, JumpTable, Memory, Printing, split_printed};
+use super::{
+    Arch, DecodeError, Decoder, Insn, InsnKind, JumpTable, Memory, Printing, split_printed,
+};
 use crate::address::{AddressSpace, ConstantKind};
 use crate::il::{
     self, AccessKind, Comparison, Cond, Guard, Lifted, MemoryAccess, Op, Reg, RegSet, Test, Value,
@@ -103,7 +105,7 @@ impl Aarch64 {
     }
 }
 
-impl Arch for Aarch64 {
+impl Decoder for Aarch64 {
     /// The condition of `b.ne` is dropped, so a branch on any condition is
     /// one operation. A32 keeps it: see `TODO.md`. An alias the decoder
     /// prints names the operation it stands for: a `madd` into the zero
@@ -168,6 +170,27 @@ impl Arch for Aarch64 {
         INSN_WIDTH
     }
 
+    fn pointer_width(&self) -> usize {
+        POINTER_WIDTH
+    }
+
+    fn lift(&self, insn: &Insn) -> Option<Lifted> {
+        Some(lift(&instruction(insn)?))
+    }
+
+    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
+        let inst = instruction(insn)?;
+        Some(il::Named { lifted: lift(&inst), names: names(&inst), write_back: write_back(&inst) })
+    }
+
+    fn read_pointer(&self, bytes: &[u8]) -> u64 {
+        u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ])
+    }
+}
+
+impl Arch for Aarch64 {
     fn is_frame_register(&self, reg: Reg) -> bool {
         matches!(reg, Reg::Stack | FRAME)
     }
@@ -335,25 +358,6 @@ impl Arch for Aarch64 {
     fn is_tail_call(&self, insn: &Insn) -> bool {
         opcode_of(insn) == Some(Opcode::BR)
             && matches!(operands_of(insn).as_slice(), [target] if is_x(*target, 16) || is_x(*target, 17))
-    }
-
-    fn pointer_width(&self) -> usize {
-        POINTER_WIDTH
-    }
-
-    fn lift(&self, insn: &Insn) -> Option<Lifted> {
-        Some(lift(&instruction(insn)?))
-    }
-
-    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
-        let inst = instruction(insn)?;
-        Some(il::Named { lifted: lift(&inst), names: names(&inst), write_back: write_back(&inst) })
-    }
-
-    fn read_pointer(&self, bytes: &[u8]) -> u64 {
-        u64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
     }
 }
 
