@@ -3077,3 +3077,689 @@ pub(crate) fn writes_pc(inst: &Instruction) -> bool {
         _ => is_pc(&inst.operands[0]),
     }
 }
+
+#[cfg(test)]
+mod unused_operand_tests {
+    use super::*;
+
+    #[test]
+    fn a_compare_and_a_move_print_only_what_they_use() {
+        let shown = |word: u32| {
+            let code = word.to_le_bytes();
+            let insn = Arm32.decode(&code, 0, 0).expect("decodes");
+            insn.to_string()
+        };
+        // From `llvm-mc --triple=armv7`.
+        assert_eq!(shown(0xe153_0002), "cmp r3, r2");
+        assert_eq!(shown(0x1350_0007), "cmpne r0, 0x7");
+        assert_eq!(shown(0xe311_0003), "tst r1, 0x3");
+        assert_eq!(shown(0xe3e0_0000), "mvn r0, 0x0");
+        assert_eq!(shown(0xe1a0_4201), "mov r4, r1, lsl 4");
+        assert_eq!(shown(0xe1a0_7000), "mov r7, r0");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arch::DecodeError;
+    use compact_str::CompactString;
+
+    /// Decode one instruction from raw bytes at address 0.
+    fn decode_one(bytes: [u8; 4]) -> Insn {
+        Arm32.decode(&bytes, 0, 0).expect("bytes must decode")
+    }
+
+    /// Encodings from `llvm-mc --triple=armv7a --show-encoding`.
+    mod words {
+        pub const CMP_R0_1: [u8; 4] = [0x01, 0x00, 0x50, 0xe3];
+        pub const BLT: [u8; 4] = [0x02, 0x00, 0x00, 0xba];
+        pub const CMP_R0_0: [u8; 4] = [0x00, 0x00, 0x50, 0xe3];
+        pub const BLE: [u8; 4] = [0x02, 0x00, 0x00, 0xda];
+        pub const CMN_R1_1: [u8; 4] = [0x01, 0x00, 0x71, 0xe3];
+        pub const BNE: [u8; 4] = [0x02, 0x00, 0x00, 0x1a];
+        pub const TST_R2_4: [u8; 4] = [0x04, 0x00, 0x12, 0xe3];
+        pub const BEQ: [u8; 4] = [0x02, 0x00, 0x00, 0x0a];
+        pub const ADD_R0_R1_R2: [u8; 4] = [0x02, 0x00, 0x81, 0xe0];
+        pub const LDR_R1_R2_8: [u8; 4] = [0x08, 0x10, 0x92, 0xe5];
+        pub const LDR_R1_R2_POST: [u8; 4] = [0x04, 0x10, 0x92, 0xe4];
+        pub const STR_R3_R4_R5: [u8; 4] = [0x05, 0x30, 0x84, 0xe7];
+        pub const PUSH_R4_LR: [u8; 4] = [0x10, 0x40, 0x2d, 0xe9];
+        pub const POP_R4_PC: [u8; 4] = [0x10, 0x80, 0xbd, 0xe8];
+        pub const BL: [u8; 4] = [0x40, 0x00, 0x00, 0xeb];
+        pub const STREX_R1_R2_R3: [u8; 4] = [0x92, 0x1f, 0x83, 0xe1];
+        pub const UMULL: [u8; 4] = [0x92, 0x03, 0x81, 0xe0];
+        pub const MOVT_R4: [u8; 4] = [0x34, 0x42, 0x41, 0xe3];
+        pub const ADDEQ_R0: [u8; 4] = [0x01, 0x00, 0x80, 0x02];
+        pub const LDRD_R2_R3_SP: [u8; 4] = [0xd8, 0x20, 0xcd, 0xe1];
+    }
+
+    fn lift_one(bytes: [u8; 4]) -> il::Lifted {
+        Arm32.lift(&decode_one(bytes)).expect("the word must lift")
+    }
+
+    #[test]
+    fn a_list_access_names_its_order() {
+        let name = |word: u32| {
+            let insn = decode_one(word.to_le_bytes());
+            crate::arch::printed_name(&insn).to_string()
+        };
+        assert_eq!(name(0xe890_0006), "ldm", "increment after");
+        assert_eq!(name(0xe990_0006), "ldmib");
+        assert_eq!(name(0x1990_0006), "ldmibne");
+        assert_eq!(name(0xe980_0006), "stmib");
+        assert_eq!(name(0xe910_0006), "ldmdb");
+        assert_eq!(name(0xe810_0006), "ldmda");
+    }
+
+    #[test]
+    fn operands_come_in_printed_order() {
+        use il::Operand::{Const, RegisterList, Target};
+        let reg = |number| il::Operand::Reg(il::Reg::General(number));
+        let operands = |bytes| lift_one(bytes).operands.into_vec();
+        assert_eq!(operands(words::ADD_R0_R1_R2), [reg(0), reg(1), reg(2)]);
+        assert_eq!(operands(words::CMP_R0_1), [reg(0), Const(1)], "no unused destination");
+        let saved = [il::Reg::General(4), il::Reg::General(14)].into_iter().collect();
+        let push = [il::Operand::Reg(il::Reg::Stack), RegisterList(saved)];
+        assert_eq!(operands(words::PUSH_R4_LR), push, "the list names what it saves");
+        assert!(
+            matches!(operands(words::BL).as_slice(), [Target(Some(_))]),
+            "a call names its distance"
+        );
+    }
+
+    fn regs(numbers: &[u8]) -> il::RegSet {
+        numbers
+            .iter()
+            .map(|&number| match number {
+                13 => il::Reg::Stack,
+                number => il::Reg::General(number),
+            })
+            .collect()
+    }
+
+    fn guard_of(words: &[[u8; 4]]) -> Option<il::Guard> {
+        let lifted: Vec<Option<il::Lifted>> =
+            words.iter().map(|&word| Some(lift_one(word))).collect();
+        il::find_guards(&lifted).first().map(|found| found.guard)
+    }
+
+    /// Clang tests `x < 1` where GCC tests `x <= 0`, and both are one test.
+    #[test]
+    fn a_compare_and_its_branch_are_one_guard() {
+        let clang = guard_of(&[words::CMP_R0_1, words::BLT]).unwrap();
+        let gcc = guard_of(&[words::CMP_R0_0, words::BLE]).unwrap();
+        assert_eq!(clang.cond, il::Cond::SignedLess);
+        assert_eq!(clang.width, il::Width::Bits32);
+        assert_eq!(clang.canonical(), gcc.canonical());
+    }
+
+    #[test]
+    fn cmn_with_one_compares_with_minus_one() {
+        let guard = guard_of(&[words::CMN_R1_1, words::BNE]).unwrap();
+        assert_eq!(guard.right, il::Value::Const(0xffff_ffff));
+    }
+
+    #[test]
+    fn tst_with_beq_tests_bits() {
+        let guard = guard_of(&[words::TST_R2_4, words::BEQ]).unwrap();
+        assert_eq!((guard.cond, guard.right), (il::Cond::BitsClear, il::Value::Const(4)));
+    }
+
+    #[test]
+    fn a_conditional_instruction_reads_the_flags() {
+        let lifted = lift_one(words::ADDEQ_R0);
+        assert!(lifted.reads.contains(il::Reg::Flags));
+        assert_eq!(lifted.test, None);
+        assert_eq!(guard_of(&[words::CMP_R0_0, words::ADDEQ_R0, words::BEQ]), None);
+    }
+
+    #[test]
+    fn registers_and_memory_are_named() {
+        let add = lift_one(words::ADD_R0_R1_R2);
+        assert_eq!((add.reads, add.writes), (regs(&[1, 2]), regs(&[0])));
+
+        let load = lift_one(words::LDR_R1_R2_8);
+        assert_eq!((load.reads, load.writes), (regs(&[2]), regs(&[1])));
+        assert_eq!(load.memory.map(|access| access.kind), Some(il::AccessKind::Load));
+        assert_eq!(lift_one(words::LDR_R1_R2_POST).writes, regs(&[1, 2]), "written back");
+
+        let store = lift_one(words::STR_R3_R4_R5);
+        assert_eq!((store.reads, store.writes), (regs(&[3, 4, 5]), il::RegSet::EMPTY));
+        assert_eq!(store.memory.map(|access| access.kind), Some(il::AccessKind::Store));
+
+        let push = lift_one(words::PUSH_R4_LR);
+        assert_eq!((push.reads, push.writes), (regs(&[4, 13, 14]), regs(&[13])));
+        let pop = lift_one(words::POP_R4_PC);
+        assert_eq!((pop.reads, pop.writes), (regs(&[13]), regs(&[4, 13])), "the pc is no register");
+
+        assert_eq!(lift_one(words::BL).writes, regs(&[14]));
+        let exclusive = lift_one(words::STREX_R1_R2_R3);
+        assert_eq!((exclusive.reads, exclusive.writes), (regs(&[2, 3]), regs(&[1])));
+        let long = lift_one(words::UMULL);
+        assert_eq!((long.reads, long.writes), (regs(&[2, 3]), regs(&[0, 1])));
+        let movt = lift_one(words::MOVT_R4);
+        assert_eq!((movt.reads, movt.writes), (regs(&[4]), regs(&[4])));
+        let pair = lift_one(words::LDRD_R2_R3_SP);
+        assert_eq!((pair.reads, pair.writes), (regs(&[13]), regs(&[2, 3])));
+    }
+
+    #[test]
+    fn lifting_any_word_never_panics() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            let bytes = word.to_le_bytes();
+            let insn = Arm32.decode(&bytes, 0, 0).expect("every word decodes or is unknown");
+            if let Some(lifted) = Arm32.lift(&insn)
+                && let Some(il::Test::Guard(_) | il::Test::OnFlags(_)) = lifted.test
+            {
+                assert!(
+                    matches!(insn.kind, InsnKind::Branch { .. }),
+                    "{insn}: a test that branches"
+                );
+            }
+        });
+    }
+
+    /// The text of the A32 instruction `word`.
+    fn text_of(word: u32) -> (String, String) {
+        let insn = decode_one(word.to_le_bytes());
+        (crate::arch::printed_name(&insn), crate::arch::printed_operands(&insn))
+    }
+
+    #[test]
+    fn neon_loads_and_stores_of_whole_registers_read() {
+        let cases = [
+            (0xf420_070f, "vld1.8", "{d0}, [r0]"),
+            (0xf441_0a8d, "vst1.32", "{d16, d17}, [r1]!"),
+            (0xf422_0142, "vld4.16", "{d0, d2, d4, d6}, [r2], r2"),
+        ];
+        for (word, name, operands) in cases {
+            assert_eq!(text_of(word), (name.into(), operands.into()), "{word:#010x}");
+            assert_eq!(decode_one(word.to_le_bytes()).kind, InsnKind::Normal);
+        }
+    }
+
+    #[test]
+    fn neon_loads_of_lanes_read() {
+        assert_eq!(text_of(0xf4a1_0c8f), ("vld1.32".into(), "{d0[]}, [r1]".into()), "all lanes");
+        assert_eq!(
+            text_of(0xf4a0_0762),
+            ("vld4.16".into(), "{d0[1], d2[1], d4[1], d6[1]}, [r0], r2".into()),
+            "one lane, every second register"
+        );
+    }
+
+    #[test]
+    fn decodes_simple_arithmetic() {
+        let insn = decode_one([0x00, 0x00, 0x81, 0xe0]);
+        assert_eq!(crate::arch::printed_name(&insn), "add");
+        assert_eq!(crate::arch::printed_operands(&insn), "r0, r1, r0");
+        assert_eq!(insn.bytes_len, 4);
+        assert_eq!(insn.kind, InsnKind::Normal);
+    }
+
+    #[test]
+    fn bx_lr_is_a_return() {
+        assert_eq!(decode_one([0x1e, 0xff, 0x2f, 0xe1]).kind, InsnKind::Return);
+    }
+
+    /// `pop {pc}` decodes with opcode `LDR`, so only the PC check finds it.
+    #[test]
+    fn pop_pc_is_a_return() {
+        assert_eq!(decode_one([0x04, 0xf0, 0x9d, 0xe4]).kind, InsnKind::Return);
+    }
+
+    /// `pop {fp, pc}` carries the PC in a register-list bitmask.
+    #[test]
+    fn pop_reglist_with_pc_is_a_return() {
+        assert_eq!(decode_one([0x00, 0x88, 0xbd, 0xe8]).kind, InsnKind::Return);
+    }
+
+    /// `mov pc, lr` decodes with opcode `MOV`.
+    #[test]
+    fn mov_pc_lr_is_a_return() {
+        assert_eq!(decode_one([0x0e, 0xf0, 0xa0, 0xe1]).kind, InsnKind::Return);
+    }
+
+    /// `add r1, pc, r1` reads the PC to form an address. It does not leave.
+    #[test]
+    fn reading_the_pc_is_not_a_return() {
+        let add = decode_one(0xe08f_1001_u32.to_le_bytes());
+        assert_eq!(add.to_string(), "add r1, pc, r1");
+        assert_eq!(add.kind, InsnKind::Normal);
+    }
+
+    /// `str pc, [sp]` and `cmp pc, r0` name the PC, but do not write it.
+    #[test]
+    fn a_store_or_compare_of_the_pc_is_not_a_return() {
+        assert_eq!(decode_one(0xe58d_f000_u32.to_le_bytes()).kind, InsnKind::Normal);
+        assert_eq!(decode_one(0xe15f_0000_u32.to_le_bytes()).kind, InsnKind::Normal);
+        assert_eq!(
+            decode_one(0xe92d_c000_u32.to_le_bytes()).kind,
+            InsnKind::Normal,
+            "push lr and pc"
+        );
+    }
+
+    /// `add pc, pc, r0, lsl 2` and `ldr pc, [r1, r0, lsl 2]` jump through a
+    /// table. They leave the block, but not the function.
+    #[test]
+    fn a_computed_write_of_the_pc_is_a_jump() {
+        assert_eq!(decode_one(0xe08f_f100_u32.to_le_bytes()).kind, InsnKind::Jump { target: None });
+        assert_eq!(decode_one(0xe791_f100_u32.to_le_bytes()).kind, InsnKind::Jump { target: None });
+        assert_eq!(
+            decode_one(0xe1a0_f003_u32.to_le_bytes()).kind,
+            InsnKind::Jump { target: None },
+            "mov pc, r3"
+        );
+    }
+
+    /// `ldm sp!, {r4, pc}` returns, as `pop` does.
+    #[test]
+    fn a_load_multiple_from_the_stack_is_a_return() {
+        assert_eq!(decode_one(0xe8bd_8010_u32.to_le_bytes()).kind, InsnKind::Return);
+    }
+
+    /// A conditional return falls through when the condition fails.
+    #[test]
+    fn a_conditional_bx_lr_is_a_branch() {
+        assert_eq!(
+            decode_one(0x012f_ff1e_u32.to_le_bytes()).kind,
+            InsnKind::Branch { target: None }
+        );
+        assert_eq!(
+            decode_one(0x012f_ff13_u32.to_le_bytes()).kind,
+            InsnKind::Branch { target: None }
+        ); // bxeq r3
+    }
+
+    #[test]
+    fn push_is_not_a_return() {
+        assert_eq!(decode_one([0x00, 0x48, 0x2d, 0xe9]).kind, InsnKind::Normal);
+    }
+
+    #[test]
+    fn bl_is_a_call() {
+        let insn = decode_one([0xfe, 0xff, 0xff, 0xeb]);
+        assert!(matches!(insn.kind, InsnKind::Call { .. }));
+    }
+
+    /// `b` and `beq` share opcode `B`; only the condition separates them.
+    #[test]
+    fn unconditional_branch_is_a_jump() {
+        assert!(matches!(decode_one([0xfe, 0xff, 0xff, 0xea]).kind, InsnKind::Jump { .. }));
+    }
+
+    #[test]
+    fn conditional_branch_can_fall_through() {
+        assert!(matches!(decode_one([0xfe, 0xff, 0xff, 0x0a]).kind, InsnKind::Branch { .. }));
+    }
+
+    /// `yaxpeax` removes the pipeline bias, so a branch to self is offset 0.
+    #[test]
+    fn branch_to_self_resolves_to_its_own_address() {
+        let insn = Arm32.decode(&[0xfe, 0xff, 0xff, 0xea], 0, 0x1000).unwrap();
+        assert_eq!(insn.kind, InsnKind::Jump { target: Some(0x1000) });
+    }
+
+    /// Branching to itself cannot catch a wrong scale or sign, so check a
+    /// forward and a backward branch too.
+    #[test]
+    fn branch_targets_scale_by_instruction_width() {
+        let forward = Arm32.decode(&[0xff, 0xff, 0xff, 0xea], 0, 0x1000).unwrap();
+        assert_eq!(forward.kind, InsnKind::Jump { target: Some(0x1004) });
+
+        let backward = Arm32.decode(&[0xfd, 0xff, 0xff, 0xea], 0, 0x1000).unwrap();
+        assert_eq!(backward.kind, InsnKind::Jump { target: Some(0x0ffc) });
+    }
+
+    #[test]
+    fn address_tracks_the_offset() {
+        let code = [0x00, 0x00, 0x81, 0xe0, 0x1e, 0xff, 0x2f, 0xe1];
+        assert_eq!(Arm32.decode(&code, 4, 0x8000).unwrap().address, 0x8004);
+    }
+
+    #[test]
+    fn rejects_truncated_input() {
+        assert_eq!(Arm32.decode(&[0x00, 0x00], 0, 0), Err(DecodeError::Truncated));
+        assert_eq!(Arm32.decode(&[], 0, 0), Err(DecodeError::Truncated));
+    }
+
+    #[test]
+    fn rejects_offset_past_the_end() {
+        assert_eq!(Arm32.decode(&[0x00; 4], 8, 0), Err(DecodeError::Truncated));
+    }
+
+    /// The usual ARM `nop` is one `yaxpeax` decodes "successfully" as
+    /// `Opcode::Invalid`. The fallback reads it as `nop`, which moves nothing.
+    #[test]
+    fn nop_encoding_decodes_as_nop() {
+        let insn = decode_one([0x00, 0xf0, 0x20, 0xe3]);
+        assert_eq!(crate::arch::printed_name(&insn), "nop");
+        assert_eq!(insn.kind, InsnKind::Normal);
+    }
+
+    /// NEON is outside what `yaxpeax-arm` 0.4 decodes. `vdup.32 q8, r2` must
+    /// come back as opaque bytes, not as an error.
+    #[test]
+    fn neon_decodes_as_unknown() {
+        let insn = decode_one([0x90, 0x2b, 0xa0, 0xee]);
+        assert_eq!(insn.kind, InsnKind::Unknown);
+        assert_eq!(insn.bytes_len, INSN_WIDTH);
+    }
+
+    /// The name of the operation of the A32 `word`.
+    fn operation_of(word: u32) -> CompactString {
+        Arm32.operation_name(&decode_one(word.to_le_bytes()))
+    }
+
+    #[test]
+    fn distinct_operations_stay_distinct() {
+        // ldr r0, [r1]; str r0, [r1]; push {r4, lr}; pop {r4, pc}.
+        assert_ne!(operation_of(0xe591_0000), operation_of(0xe581_0000));
+        assert_ne!(operation_of(0xe92d_4010), operation_of(0xe8bd_8010));
+    }
+
+    /// `yaxpeax` reads `mvn r0, #1` with an unused field, as
+    /// `mvn r0, r0, 0x1`.
+    #[test]
+    fn a_not_of_a_constant_is_a_move_of_the_inverse() {
+        let lifted = lift_one([0x01, 0x00, 0xe0, 0xe3]);
+        assert_eq!(lifted.op, il::Op::Move);
+        let inverse = il::Operand::Const(0xffff_fffe);
+        assert_eq!(lifted.operands.as_slice(), [il::Operand::Reg(il::Reg::General(0)), inverse]);
+        assert!(lifted.reads.is_empty(), "no register is read");
+        // `mvn r1, r2` stays a not.
+        assert_eq!(lift_one([0x02, 0x10, 0xe0, 0xe1]).op, il::Op::Not);
+    }
+
+    #[test]
+    fn an_exclusive_access_is_atomic() {
+        assert_eq!(lift_one(words::STREX_R1_R2_R3).op, il::Op::Atomic);
+        // `ldrex r1, [r2]`
+        assert_eq!(lift_one([0x9f, 0x1f, 0x92, 0xe1]).op, il::Op::Atomic);
+        assert_eq!(lift_one(words::LDR_R1_R2_8).op, il::Op::Load);
+    }
+
+    /// `rsb` subtracts the other way round: `rsb r0, r1, #1` is `1 - r1`.
+    #[test]
+    fn a_reverse_subtract_names_its_values_in_order() {
+        let general = |number| il::Operand::Reg(il::Reg::General(number));
+        let lifted = lift_one([0x01, 0x00, 0x61, 0xe2]);
+        assert_eq!(lifted.op, il::Op::Subtract);
+        assert_eq!(lifted.operands.as_slice(), [general(0), il::Operand::Const(1), general(1)]);
+    }
+
+    /// `yaxpeax` reads no VFP or NEON load or store, so they lift from the
+    /// fields [`decode_fallback`] reads.
+    /// A register less or exclusive-or itself is zero, but not shifted:
+    /// `eor r0, r1, r1, lsl #2` is `r1 ^ (r1 << 2)`. The lift once dropped
+    /// the shift and read it as a move of zero.
+    #[test]
+    fn a_shifted_register_is_not_itself() {
+        // eor r0, r1, r1, lsl #2 and eor r0, r1, r1.
+        let shifted = lift_one(0xe021_0101_u32.to_le_bytes());
+        let shift =
+            il::Operand::Shifted { reg: il::Reg::General(1), shift: il::Shift::Left, amount: 2 };
+        assert_eq!(shifted.operands[2], shift);
+        assert_eq!(shifted.canonical().op, il::Op::Xor);
+        assert_eq!(lift_one(0xe021_0001_u32.to_le_bytes()).canonical().op, il::Op::Move);
+    }
+
+    #[test]
+    fn a_vfp_load_and_store_lift() {
+        // `vldr d16, [pc, 0x90]`, as GCC loads a double from its pool.
+        let load = lift_fallback(0xeddf_0b24, Encoding::A32).expect("vldr lifts");
+        assert_eq!(load.op, il::Op::Load);
+        assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits64));
+        let pool = il::Operand::memory(Some(il::Reg::ProgramCounter), Some(0x90));
+        assert_eq!(load.operands.as_slice(), [il::Operand::Reg(il::Reg::Vector(16)), pool]);
+        assert_eq!(load.writes, [il::Reg::Vector(16)].into_iter().collect());
+        // `vstr s0, [sp, -0x4]`
+        let store = lift_fallback(0xed0d_0a01, Encoding::A32).expect("vstr lifts");
+        assert_eq!(store.op, il::Op::Store);
+        let slot = il::Operand::memory(Some(il::Reg::Stack), Some(-4));
+        assert_eq!(store.operands[1], slot);
+        assert_eq!(store.reads, [il::Reg::Stack, il::Reg::Vector(0)].into_iter().collect());
+        assert!(store.writes.is_empty());
+    }
+
+    /// A hint talks to the system: it reads no memory and names nothing.
+    /// On a condition, it reads the flags.
+    #[test]
+    fn a_hint_lifts_to_the_system() {
+        for (word, name) in [(0xe320_f000, "nop"), (0xe320_f004, "sev")] {
+            let lifted = lift_fallback(word, Encoding::A32).expect(name);
+            assert_eq!((lifted.op, lifted.memory), (il::Op::System, None), "{name}");
+            assert!(lifted.operands.is_empty() && lifted.reads.is_empty(), "{name}");
+        }
+        let conditional = lift_fallback(0x0320_f004, Encoding::A32).expect("seveq");
+        assert!(conditional.reads.contains(il::Reg::Flags));
+    }
+
+    #[test]
+    fn what_the_fallback_lifts_it_decodes() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            if lift_fallback(word, Encoding::A32).is_some() {
+                assert!(decode_fallback(word, Encoding::A32).is_some(), "{word:#010x}");
+            }
+        });
+    }
+
+    fn fallback_text(word: u32) -> Option<String> {
+        decode_fallback(word, Encoding::A32).map(|(name, operands, _)| format!("{name} {operands}"))
+    }
+
+    /// Words `yaxpeax` 0.4 refuses, as `llvm-mc` reads them.
+    #[test]
+    fn reads_the_integer_words_the_decoder_refuses() {
+        assert_eq!(fallback_text(0xe6ef_3073).as_deref(), Some("uxtb r3, r3"));
+        assert_eq!(fallback_text(0xe6af_307e).as_deref(), Some("sxtb r3, lr"));
+        assert_eq!(fallback_text(0xe6ff_0070).as_deref(), Some("uxth r0, r0"));
+        assert_eq!(fallback_text(0xe7df_171f).as_deref(), Some("bfc r1, 0xe, 0x12"));
+        assert_eq!(fallback_text(0xe7d6_3712).as_deref(), Some("bfi r3, r2, 0xe, 0x9"));
+        assert_eq!(fallback_text(0xe7e8_0757).as_deref(), Some("ubfx r0, r7, 0xe, 0x9"));
+        assert_eq!(fallback_text(0xe1a0_0011).as_deref(), Some("mov r0, r1, lsl r0"));
+        assert_eq!(fallback_text(0xe1e0_a31c).as_deref(), Some("mvn sl, ip, lsl r3"));
+        assert_eq!(fallback_text(0xe1d2_20d0).as_deref(), Some("ldrsb r2, [r2]"));
+    }
+
+    /// A wide T32 word is no A32 integer word, whatever its bits.
+    #[test]
+    fn a_t32_word_is_not_read_as_an_a32_integer_word() {
+        assert!(decode_fallback(0xe6ef_3073, Encoding::T32).is_none());
+        assert!(lift_fallback(0xe6ef_3073, Encoding::T32).is_none());
+    }
+
+    #[test]
+    fn the_integer_words_lift() {
+        let general = |number| il::Operand::Reg(il::Reg::General(number));
+        let lift = |word| lift_fallback(word, Encoding::A32).expect("the word lifts");
+        let extend = lift(0xe6ef_3073);
+        assert_eq!(
+            (extend.op, extend.operands.as_slice()),
+            (il::Op::Extend, &[general(3), general(3)][..])
+        );
+        let insert = lift(0xe7d6_3712);
+        assert_eq!(insert.op, il::Op::BitField);
+        assert_eq!(insert.reads, [2, 3].map(il::Reg::General).into_iter().collect(), "keeps rd");
+        let extract = lift(0xe7e8_0757);
+        let field = [general(0), general(7), il::Operand::Const(14), il::Operand::Const(9)];
+        assert_eq!(extract.operands.as_slice(), field);
+        let shift = lift(0xe1a0_0011);
+        assert_eq!(
+            (shift.op, shift.operands.as_slice()),
+            (il::Op::ShiftLeft, &[general(0), general(1), general(0)][..])
+        );
+        let load = lift(0xe1d2_20d0);
+        assert_eq!(load.memory.and_then(|access| access.width), Some(il::Width::Bits8));
+        let at = il::Operand::memory(Some(il::Reg::General(2)), Some(0));
+        assert_eq!(load.operands.as_slice(), [general(2), at]);
+    }
+
+    /// A conditional word reads the flags.
+    #[test]
+    fn a_conditional_integer_word_reads_the_flags() {
+        // `uxtbne r3, r3`
+        let lifted = lift_fallback(0x16ef_3073, Encoding::A32).expect("the word lifts");
+        assert!(lifted.reads.contains(il::Reg::Flags));
+        assert_eq!(fallback_text(0x16ef_3073).as_deref(), Some("uxtbne r3, r3"));
+    }
+
+    /// `yaxpeax` swaps `bb` and `tt` of the multiplies of halfwords, and
+    /// reads `smulwb` as `smlawb`; all 16 forms read as `llvm-mc` reads
+    /// them.
+    #[test]
+    fn the_multiplies_of_halfwords_read_as_encoded() {
+        let cases = [
+            (0xe107_3182, "smlabb r7, r2, r1, r3"),
+            (0xe107_31a2, "smlatb r7, r2, r1, r3"),
+            (0xe107_31c2, "smlabt r7, r2, r1, r3"),
+            (0xe107_31e2, "smlatt r7, r2, r1, r3"),
+            (0xe127_3182, "smlawb r7, r2, r1, r3"),
+            (0xe127_31a2, "smulwb r7, r2, r1"),
+            (0xe127_31c2, "smlawt r7, r2, r1, r3"),
+            (0xe127_31e2, "smulwt r7, r2, r1"),
+            (0xe147_3182, "smlalbb r3, r7, r2, r1"),
+            (0xe147_31a2, "smlaltb r3, r7, r2, r1"),
+            (0xe147_31c2, "smlalbt r3, r7, r2, r1"),
+            (0xe147_31e2, "smlaltt r3, r7, r2, r1"),
+            (0xe167_3182, "smulbb r7, r2, r1"),
+            (0xe167_31a2, "smultb r7, r2, r1"),
+            (0xe167_31c2, "smulbt r7, r2, r1"),
+            (0xe167_31e2, "smultt r7, r2, r1"),
+        ];
+        for (word, text) in cases {
+            let insn = Arm32.decode(&u32::to_le_bytes(word), 0, 0).expect("the word reads");
+            assert_eq!(insn.to_string(), text, "{word:#010x}");
+        }
+        let lift = |word: u32| {
+            let bytes = word.to_le_bytes();
+            Arm32.lift(&Arm32.decode(&bytes, 0, 0).unwrap()).expect("the word lifts")
+        };
+        let general = il::Reg::General;
+        // `smulwb r7, r2, r1` multiplies and adds nothing.
+        let word = lift(0xe127_31a2);
+        assert_eq!(word.op, il::Op::Multiply);
+        assert_eq!(word.reads, [general(2), general(1)].into_iter().collect());
+        // `smlalbb r3, r7, r2, r1` adds to the pair, and writes both.
+        let long = lift(0xe147_3182);
+        assert_eq!(long.op, il::Op::MultiplyAdd);
+        assert_eq!(long.writes, [general(3), general(7)].into_iter().collect());
+        assert_eq!(
+            long.reads,
+            [general(1), general(2), general(3), general(7)].into_iter().collect()
+        );
+    }
+
+    /// A NEON load names the alignment it asserts, as `llvm-mc` reads it:
+    /// whole structures, all lanes and one lane. A sweep of 510 encodings
+    /// agreed with `llvm-mc` when this was written.
+    #[test]
+    fn a_neon_load_names_its_alignment() {
+        let cases = [
+            (0xf423_0a0f, "vld1.8 {d0, d1}, [r3]"),
+            (0xf423_0a1f, "vld1.8 {d0, d1}, [r3:64]"),
+            (0xf423_0a2f, "vld1.8 {d0, d1}, [r3:128]"),
+            (0xf423_023f, "vld1.8 {d0, d1, d2, d3}, [r3:256]"),
+            (0xf4a3_0f9f, "vld4.32 {d0[], d1[], d2[], d3[]}, [r3:64]"),
+            (0xf4a3_0c5f, "vld1.16 {d0[]}, [r3:16]"),
+            (0xf4a3_041f, "vld1.16 {d0[0]}, [r3:16]"),
+            (0xf4a3_0baf, "vld4.32 {d0[1], d1[1], d2[1], d3[1]}, [r3:128]"),
+        ];
+        for (word, text) in cases {
+            assert_eq!(fallback_text(word).as_deref(), Some(text), "{word:#010x}");
+        }
+    }
+
+    /// VFP words `yaxpeax` 0.4 refuses, as `llvm-mc` reads them.
+    #[test]
+    fn reads_the_vfp_words_the_decoder_refuses() {
+        let cases = [
+            (0xeebd_0be0, "vcvt.s32.f64 s0, d16"),
+            (0xeef8_0bc0, "vcvt.f64.s32 d16, s0"),
+            (0xeef8_0b40, "vcvt.f64.u32 d16, s0"),
+            (0xeef5_0b40, "vcmp.f64 d16, 0x0"),
+            (0xee40_1ba2, "vmla.f64 d17, d16, d18"),
+            (0xec51_0b30, "vmov r0, r1, d16"),
+            (0xec41_0b30, "vmov d16, r0, r1"),
+            (0xee10_0a10, "vmov r0, s0"),
+            (0xee00_1a10, "vmov s0, r1"),
+            (0xeef1_fa10, "vmrs APSR_nzcv, fpscr"),
+            (0xed2d_8b04, "vpush {d8, d9}"),
+            (0xecbd_8b04, "vpop {d8, d9}"),
+            (0xeef7_0a00, "vmov.f32 s1, #1.0"),
+            (0xeeb8_0b00, "vmov.f64 d0, #-2.0"),
+            (0xeef0_0b48, "vmov.f64 d16, d8"),
+        ];
+        for (word, text) in cases {
+            assert_eq!(fallback_text(word).as_deref(), Some(text), "{word:#010x}");
+        }
+    }
+
+    /// `yaxpeax` reads these words but drops an operand, so the decoder
+    /// reads them itself, in A32 and in T32.
+    #[test]
+    fn the_vfp_words_the_decoder_misreads_keep_their_operands() {
+        let cases = [
+            (0xeef7_0a00_u32, "vmov.f32", "s1, #1.0"),
+            (0xeef0_0b48, "vmov.f64", "d16, d8"),
+            (0xeeb8_0b40, "vcvt.f64.u32", "d0, s0"),
+            (0x1eb7_0b00, "vmov.f64ne", "d0, #1.0"),
+        ];
+        for (word, name, operands) in cases {
+            let insn = Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word reads");
+            assert_eq!(insn.to_string(), format!("{name} {operands}"));
+            if word >> 28 == 0b1110 {
+                let halves = [(word >> 16) as u16, word as u16];
+                let bytes: Vec<u8> = halves.iter().flat_map(|half| half.to_le_bytes()).collect();
+                let insn = super::super::thumb::Thumb2.decode(&bytes, 0, 0).expect("reads");
+                assert_eq!(insn.to_string(), format!("{name} {operands}"));
+            }
+        }
+        let constant = Arm32
+            .lift(&Arm32.decode(&0xeef7_0a00_u32.to_le_bytes(), 0, 0).unwrap())
+            .expect("the word lifts");
+        assert_eq!(constant.op, il::Op::Move);
+        assert_eq!(
+            constant.operands.as_slice(),
+            [il::Operand::Reg(il::Reg::Vector(1)), il::Operand::Const(0x3f80_0000)]
+        );
+        assert_eq!(constant.writes, [il::Reg::Vector(1)].into_iter().collect());
+    }
+
+    /// Each of the 256 constants of a VFP `vmov` stands for the same value
+    /// as a single and as a double: a sign, then 16 to 31 sixteenths times
+    /// a power of two from 2^-3 to 2^4.
+    #[test]
+    fn a_vfp_constant_is_the_same_value_at_both_sizes() {
+        for constant in 0..=255 {
+            let single = f64::from(f32::from_bits(expand_float_constant(constant, false) as u32));
+            let double = f64::from_bits(expand_float_constant(constant, true));
+            assert_eq!(single, double, "{constant:#x}");
+            let exponent = (i32::from((constant >> 4 & 0b111) as u8) ^ 0b100) - 3;
+            let sixteenths = f64::from(16 + (constant & 0b1111));
+            let sign = if constant >> 7 == 1 { -1.0 } else { 1.0 };
+            assert_eq!(double, sign * sixteenths / 16.0 * 2f64.powi(exponent), "{constant:#x}");
+        }
+    }
+
+    /// T32 encodes the VFP as A32 does, so a T32 caller reads them too.
+    #[test]
+    fn a_t32_vfp_word_reads_as_its_a32_twin() {
+        assert_eq!(
+            decode_fallback(0xec51_0b30, Encoding::T32),
+            decode_fallback(0xec51_0b30, Encoding::A32)
+        );
+        assert!(lift_fallback(0xec51_0b30, Encoding::T32).is_some());
+    }
+
+    #[test]
+    fn a_vfp_operation_names_what_it_computes() {
+        let op = |word| lift_fallback(word, Encoding::A32).expect("the word lifts").op;
+        assert_eq!(op(0xee40_1ba2), il::Op::FloatMultiplyAdd, "vmla.f64");
+        assert_eq!(op(0xeebd_0be0), il::Op::FloatRoundTowardZero, "vcvt.s32.f64");
+        assert_eq!(op(0xeef8_0bc0), il::Op::FloatConvert, "vcvt.f64.s32");
+        assert_eq!(op(0xeef5_0b40), il::Op::Float, "vcmp.f64");
+    }
+}

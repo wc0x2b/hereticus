@@ -751,3 +751,145 @@ impl Decoder for Mips16 {
         Some(il::Named { lifted, names, write_back: None })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The text of the halfwords `values`, big endian, at `address`.
+    fn text(values: &[u16], address: u64) -> String {
+        let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
+        let insn = Mips16::BIG.decode(&code, 0, address).expect("decodes");
+        insn.to_string().trim_end().to_string()
+    }
+
+    /// Words from GCC 14 at `-mips16`, as `objdump` reads them.
+    #[test]
+    fn reads_as_the_mips32_instruction_of_the_same_work() {
+        assert_eq!(text(&[0x3382], 0), "srl v1, a0, 8"); // srl v1,a0,8
+        assert_eq!(text(&[0x3362], 0), "srl v1, v1, 8"); // srl v1,8
+        assert_eq!(text(&[0x6744], 0), "or v0, a0, zero"); // move v0,a0
+        assert_eq!(text(&[0x653b], 0), "or t9, v1, zero"); // move t9,v1
+        assert_eq!(text(&[0xd303], 0), "sw v1, 0xC(sp)"); // sw v1,12(sp)
+        assert_eq!(text(&[0xa460], 0), "lbu v1, 0x0(a0)"); // lbu v1,0(a0)
+        assert_eq!(text(&[0x4c10], 0), "addiu a0, a0, 0x10"); // addiu a0,16
+        assert_eq!(text(&[0xe34d], 0), "addu v1, v1, v0"); // addu v1,v0
+        assert_eq!(text(&[0x6500], 0), "nop");
+    }
+
+    #[test]
+    fn an_extend_widens_the_constant() {
+        // addiu v1,a1,5552
+        assert_eq!(text(&[0xf5b2, 0x4560], 0), "addiu v1, a1, 0x15B0");
+        // lbu s1,-6(a0)
+        assert_eq!(text(&[0xf7ff, 0xa43a], 0), "lbu s1, -0x6(a0)");
+        // addiu a1,-5552
+        assert_eq!(text(&[0xf25d, 0x4d10], 0), "addiu a1, a1, -0x15B0");
+    }
+
+    #[test]
+    fn a_compare_writes_t8_and_a_branch_on_t_reads_it() {
+        assert_eq!(text(&[0x7601], 0), "xori t8, a2, 0x1"); // cmpi a2,1
+        assert_eq!(text(&[0x5e10], 0), "sltiu t8, a2, 0x10"); // sltiu a2,16
+        // bteqz 198 at 0xe
+        let code: Vec<u8> =
+            [0xf0c0_u16, 0x6003].iter().flat_map(|value| value.to_be_bytes()).collect();
+        let insn = Mips16::BIG.decode(&code, 0, 0xe).expect("decodes");
+        assert_eq!(insn.kind, InsnKind::Branch { target: Some(0x198) });
+        assert_eq!(crate::arch::printed_name(&insn), "beqz");
+        assert!(crate::arch::printed_operands(&insn).starts_with("t8, "));
+    }
+
+    #[test]
+    fn a_branch_counts_from_the_instruction_after_it() {
+        // beqz a1,2fa at 0x12, extended
+        let code: Vec<u8> =
+            [0xf160_u16, 0x2512].iter().flat_map(|value| value.to_be_bytes()).collect();
+        let insn = Mips16::BIG.decode(&code, 0, 0x12).expect("decodes");
+        assert_eq!(insn.kind, InsnKind::Branch { target: Some(0x2fa) });
+        assert_eq!(insn.bytes_len, 4);
+    }
+
+    /// Each encoding as GNU `as` 2.44 assembles the `binutils` text.
+    #[test]
+    fn save_and_restore_name_the_registers_they_move() {
+        let cases: [(&[u16], &str, &str); 15] = [
+            (&[0x64f4], "save 32,ra,s0-s1", "save 0x20, s0, s1, ra"),
+            (&[0xf004, 0x64c4], "save a0,32,ra", "save a0, 0x20, ra"),
+            (&[0xf001, 0x64c4], "save 32,ra,a3", "save 0x20, a3, ra"),
+            (&[0xf005, 0x64c4], "save a0,32,ra,a3", "save a0, 0x20, a3, ra"),
+            (&[0xf008, 0x64c4], "save a0-a1,32,ra", "save a0, a1, 0x20, ra"),
+            (&[0xf009, 0x64c4], "save a0-a1,32,ra,a3", "save a0, a1, 0x20, a3, ra"),
+            (&[0xf00c, 0x64c4], "save a0-a2,32,ra", "save a0, a1, a2, 0x20, ra"),
+            (&[0xf00e, 0x64c4], "save a0-a3,32,ra", "save a0, a1, a2, a3, 0x20, ra"),
+            (&[0xf00b, 0x64c4], "save 32,ra,a0-a3", "save 0x20, a0, a1, a2, a3, ra"),
+            (&[0xf002, 0x64c4], "save 32,ra,a2-a3", "save 0x20, a2, a3, ra"),
+            (&[0xf003, 0x64c4], "save 32,ra,a1-a3", "save 0x20, a1, a2, a3, ra"),
+            (&[0xf006, 0x64c4], "save a0,32,ra,a2-a3", "save a0, 0x20, a2, a3, ra"),
+            (
+                &[0xf700, 0x64f4],
+                "save 32,ra,s0-s8",
+                "save 0x20, s0, s1, s2, s3, s4, s5, s6, s7, s8, ra",
+            ),
+            (&[0xf100, 0x64f4], "save 32,ra,s0-s2", "save 0x20, s0, s1, s2, ra"),
+            (&[0xf002, 0x6474], "restore 32,ra,s0-s1,a2-a3", "restore 0x20, a2, a3, s0, s1, ra"),
+        ];
+        for (halfwords, binutils, shown) in cases {
+            assert_eq!(text(halfwords, 0), shown, "{binutils}");
+        }
+    }
+
+    #[test]
+    fn a_reserved_mix_of_arguments_and_statics_is_no_save() {
+        // `aregs` 0b1111 names three arguments and three statics of four.
+        let code: Vec<u8> = [0xf00f_u16, 0x64c4].iter().flat_map(|h| h.to_be_bytes()).collect();
+        assert_eq!(
+            Mips16::BIG.decode(&code, 0, 0).map(|insn| insn.kind).ok(),
+            Some(InsnKind::Unknown)
+        );
+    }
+
+    #[test]
+    fn a_return_and_a_call_move_control() {
+        let decode = |values: &[u16]| {
+            let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
+            Mips16::BIG.decode(&code, 0, 0x400).expect("decodes")
+        };
+        let jr_ra = decode(&[0xe820]);
+        assert_eq!(jr_ra.kind, InsnKind::Return);
+        assert_eq!(Mips16::BIG.delay_slots(&jr_ra), 1);
+        let jrc_ra = decode(&[0xe8a0]);
+        assert_eq!(jrc_ra.kind, InsnKind::Return);
+        assert_eq!(Mips16::BIG.delay_slots(&jrc_ra), 0);
+        // jal to 0x1000, which stays MIPS16e
+        let jal = decode(&[0x1800, 0x0400]);
+        assert_eq!(jal.kind, InsnKind::Call { target: Some(0x1000) });
+        assert_eq!(jal.bytes_len, 4);
+    }
+
+    #[test]
+    fn a_compare_and_its_branch_lift_as_a_guard() {
+        let lift = |values: &[u16], address: u64| {
+            let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
+            let insn = Mips16::BIG.decode(&code, 0, address).expect("decodes");
+            Some(Mips16::BIG.lift(&insn).expect("lifts"))
+        };
+        // sltiu a2,16 then btnez
+        let body = [lift(&[0x5e10], 0), lift(&[0x6105], 2)];
+        let guards = il::find_guards(&body);
+        assert_eq!(guards.len(), 1);
+    }
+
+    #[test]
+    fn decoding_any_halfwords_never_panics() {
+        bolero::check!().with_type::<(u16, u16)>().for_each(|&(first, second)| {
+            let code: Vec<u8> =
+                [first, second].iter().flat_map(|value| value.to_be_bytes()).collect();
+            for arch in [Mips16::BIG, Mips16::LITTLE] {
+                let insn = arch.decode(&code, 0, 0x1000).expect("two halfwords decode");
+                assert!(insn.bytes_len == 2 || insn.bytes_len == 4);
+                let _ = arch.lift(&insn);
+            }
+        });
+    }
+}

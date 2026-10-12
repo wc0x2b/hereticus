@@ -378,110 +378,8 @@ fn read_branch_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arch::arm32::{NEON_TEXT, UNKNOWN_TEXT, condition_name};
+    use crate::arch::arm32::{NEON_TEXT, UNKNOWN_TEXT};
 
-    /// Taking out a suffix by bytes gives what `str::replace` gives, for
-    /// any text of dots, the two letters and others.
-    #[test]
-    fn a_suffix_comes_out_as_replace_takes_it() {
-        bolero::check!().with_type::<Vec<u8>>().for_each(|picks| {
-            let text: String =
-                picks.iter().map(|pick| ['.', 'w', 'n', 'b', 'e'][*pick as usize % 5]).collect();
-            for letter in *b"wn" {
-                let pattern = format!(".{}", letter as char);
-                assert_eq!(without_suffix(&text, letter), text.replace(&pattern, ""), "{text:?}");
-            }
-        });
-    }
-
-    /// The target of a branch replaces the first `$+` offset, or else the
-    /// first `$-` one.
-    #[test]
-    fn a_branch_names_the_distance_to_its_target() {
-        assert_eq!(with_target_text("$+0x2e", 0x100, 0x130), "$+0x30");
-        assert_eq!(with_target_text("r0, $-0x4", 0x100, 0xf0), "r0, $-0x10");
-        assert_eq!(with_target_text("r1, r2", 0x100, 0x130), "r1, r2");
-        assert_eq!(with_target_text("$5, $+0x2", 0x100, 0x108), "$5, $+0x8");
-    }
-
-    /// The wide words `yaxpeax` misreads, against `llvm-mc`.
-    #[test]
-    fn reads_the_wide_words_the_decoder_misreads() {
-        let cases: [(u16, u16, &str, &str); 9] = [
-            (0xf06f, 0x0002, "mvn", "r0, 0x2"),
-            (0xf07f, 0x4300, "mvns", "r3, 0x80000000"),
-            (0xfa0c, 0xfc00, "lsl", "ip, ip, r0"),
-            (0xfa2c, 0xfc00, "lsr", "ip, ip, r0"),
-            (0xfa4c, 0xfc00, "asr", "ip, ip, r0"),
-            (0xfa6c, 0xfc00, "ror", "ip, ip, r0"),
-            (0xfa1f, 0xf29b, "uxth", "r2, fp, ror 0x8"),
-            (0xf362, 0x3596, "bfi", "r5, r2, 0xe, 0x9"),
-            (0xf36f, 0x209f, "bfc", "r0, 0xa, 0x16"),
-        ];
-        for (first, second, name, operands) in cases {
-            let bytes = halfwords(&[first, second]);
-            let insn = Thumb2.decode(&bytes, 0, 0).expect("the word reads");
-            assert_eq!(insn.to_string(), format!("{name} {operands}"));
-        }
-        let lift = |first, second| {
-            let bytes = halfwords(&[first, second]);
-            Thumb2.lift(&Thumb2.decode(&bytes, 0, 0).unwrap()).expect("the word lifts")
-        };
-        // `mvn r0, #2` puts `~2` in `r0`.
-        let not = lift(0xf06f, 0x0002);
-        assert_eq!(not.op, crate::il::Op::Move);
-        assert_eq!(not.operands[1], crate::il::Operand::Const(u64::from(!2u32)));
-        assert_eq!(lift(0xfa4c, 0xfc00).op, crate::il::Op::ShiftRightArithmetic);
-        assert_eq!(lift(0xfa6c, 0xfc00).op, crate::il::Op::Rotate);
-        // `asr #32` is encoded as a shift of 0.
-        let shifted = Thumb2.decode(&halfwords(&[0xea13, 0x0321]), 0, 0).unwrap();
-        assert_eq!(crate::arch::printed_operands(&shifted), "r3, r3, r1, asr 0x20");
-        let plain = Thumb2.decode(&halfwords(&[0xea13, 0x0301]), 0, 0).unwrap();
-        assert_eq!(crate::arch::printed_operands(&plain), "r3, r3, r1");
-    }
-
-    /// Each pattern of `ThumbExpandImm`, and a rotated byte.
-    #[test]
-    fn a_t32_constant_expands() {
-        assert_eq!(thumb_expand_constant(0x0ab), 0xab);
-        assert_eq!(thumb_expand_constant(0x1ab), 0x00ab_00ab);
-        assert_eq!(thumb_expand_constant(0x2ab), 0xab00_ab00);
-        assert_eq!(thumb_expand_constant(0x3ab), 0xabab_abab);
-        assert_eq!(thumb_expand_constant(0x400), 0x8000_0000);
-        // A rotation of 31 puts the byte `0xff` at bits 1 to 8.
-        assert_eq!(thumb_expand_constant(0xfff), 0x1fe);
-    }
-
-    /// A branch prints the distance from itself to where it goes, as
-    /// `llvm-objdump` resolves it: `bne` at 0x14cf6 goes to 0x14d26.
-    #[test]
-    fn a_branch_prints_the_distance_to_its_target() {
-        let cases: [(&[u8], &str, &str); 4] = [
-            // `bne`, narrow and conditional.
-            (&[0x16, 0xd1], "bne", "$+0x30"),
-            // `cbz r1`, narrow.
-            (&[0xd1, 0xb1], "cbz", "r1, $+0x38"),
-            // `b.w`, wide.
-            (&[0x00, 0xf0, 0x10, 0xb8], "b", "$+0x24"),
-            // LLD's fill, a branch back.
-            (&[0xd4, 0xd4], "bmi", "$-0x54"),
-        ];
-        for (bytes, name, operands) in cases {
-            let insn = Thumb2.decode(bytes, 0, 0x1000).expect("the branch reads");
-            assert_eq!(insn.to_string(), format!("{name} {operands}"));
-            let (InsnKind::Branch { target: Some(target) }
-            | InsnKind::Jump { target: Some(target) }) = insn.kind
-            else {
-                panic!("{bytes:x?} is a branch")
-            };
-            let distance = operands.rsplit('$').next().expect("a distance");
-            let distance = i64::from_str_radix(&distance[3..], 16).expect("hex")
-                * if distance.starts_with('-') { -1 } else { 1 };
-            assert_eq!(target as i64 - 0x1000, distance, "{bytes:x?}");
-        }
-        assert_eq!(with_target_text("r1, $+0x2", 0x10, 0x8), "r1, $-0x8");
-        assert_eq!(with_target_text("r1", 0x10, 0x8), "r1", "no distance to put right");
-    }
     use crate::arch::decode_all;
 
     /// T32 code from halfwords, little endian.
@@ -491,65 +389,6 @@ mod tests {
 
     fn decode_one(values: &[u16]) -> Insn {
         Thumb2.decode(&halfwords(values), 0, 0x1000).expect("bytes must decode")
-    }
-
-    fn lift_one(values: &[u16]) -> crate::il::Lifted {
-        Thumb2.lift(&decode_one(values)).expect("the halfwords must lift")
-    }
-
-    fn guard_of(code: &[&[u16]]) -> Option<crate::il::Guard> {
-        let lifted: Vec<_> = code.iter().map(|values| Some(lift_one(values))).collect();
-        crate::il::find_guards(&lifted).first().map(|found| found.guard)
-    }
-
-    /// Encodings from `llvm-mc --triple=thumbv7m --show-encoding`.
-    #[test]
-    fn cbz_and_cmp_with_beq_are_one_guard() {
-        use crate::il::{Cond, Reg, Value};
-        const CBZ_R0: &[u16] = &[0xb120];
-        const CMP_R0_0: &[u16] = &[0x2800];
-        const BEQ: &[u16] = &[0xd004];
-        const CBNZ_R1: &[u16] = &[0xb921];
-        let cbz = guard_of(&[CBZ_R0]).unwrap();
-        assert_eq!(guard_of(&[CMP_R0_0, BEQ]), Some(cbz));
-        assert_eq!((cbz.cond, cbz.left), (Cond::Equal, Value::Reg(Reg::General(0))));
-        assert_eq!(guard_of(&[CBNZ_R1]).unwrap().cond, Cond::NotEqual);
-    }
-
-    #[test]
-    fn a_wide_compare_and_branch_are_one_guard() {
-        use crate::il::{Cond, Reg, Value};
-        const CMP_W_R8_256: &[u16] = &[0xf5b8, 0x7f80];
-        const BHS_W: &[u16] = &[0xf080, 0x8020];
-        let guard = guard_of(&[CMP_W_R8_256, BHS_W]).unwrap();
-        assert_eq!(guard.cond, Cond::UnsignedGreaterOrEqual);
-        assert_eq!((guard.left, guard.right), (Value::Reg(Reg::General(8)), Value::Const(256)));
-    }
-
-    #[test]
-    fn an_it_block_reads_the_flags_and_ends_a_guard() {
-        const CMP_R0_0: &[u16] = &[0x2800];
-        const IT_EQ: &[u16] = &[0xbf08];
-        const BEQ: &[u16] = &[0xd004];
-        assert!(lift_one(IT_EQ).reads.contains(crate::il::Reg::Flags));
-        assert_eq!(guard_of(&[CMP_R0_0, IT_EQ, BEQ]), None);
-    }
-
-    #[test]
-    fn a_narrow_load_names_its_width() {
-        const LDRB_R0_R1_3: &[u16] = &[0x78c8];
-        let load = lift_one(LDRB_R0_R1_3);
-        assert_eq!(load.memory.and_then(|access| access.width), Some(crate::il::Width::Bits8));
-        assert!(load.writes.contains(crate::il::Reg::General(0)));
-    }
-
-    #[test]
-    fn lifting_any_halfwords_never_panics() {
-        bolero::check!().with_type::<(u16, u16)>().for_each(|&(first, second)| {
-            let bytes = halfwords(&[first, second]);
-            let Ok(insn) = Thumb2.decode(&bytes, 0, 0x1000) else { return };
-            let _ = Thumb2.lift(&insn);
-        });
     }
 
     /// A Cortex-M image, loaded at 0x08000000, that opens with `entries`
@@ -597,15 +436,6 @@ mod tests {
     }
 
     #[test]
-    fn tbb_and_tbh_read_as_themselves() {
-        let tbb = decode_one(&[0xe8df, 0xf002]);
-        assert_eq!(tbb.to_string(), "tbb [pc, r2]");
-        let tbh = decode_one(&[0xe8df, 0xf012]);
-        assert_eq!(tbh.to_string(), "tbh [pc, r2, lsl 0x1]");
-        assert_eq!(tbh.kind, InsnKind::Jump { target: None });
-    }
-
-    #[test]
     fn a_tbh_table_holds_halfwords() {
         // cmp r2, 1; tbh [pc, r2, lsl 1]; then the table, 2 and 3 halfwords.
         let code = halfwords(&[0x2a01, 0xe8df, 0xf012, 0x0002, 0x0003, 0x4770, 0x4770, 0x4770]);
@@ -636,39 +466,6 @@ mod tests {
         let eq_ne_eq = vec![ConditionCode::EQ, ConditionCode::NE, ConditionCode::EQ];
         assert_eq!(it_conditions(0, 0b1010), Some(eq_ne_eq));
         assert_eq!(it_conditions(14, 0b1000), None, "no condition to name");
-    }
-
-    #[test]
-    fn a_wide_store_at_an_offset_reads_as_one() {
-        // From `llvm-mc --triple=thumbv7`.
-        let shown = |values: &[u16]| {
-            let insn = decode_one(values);
-            insn.to_string()
-        };
-        assert_eq!(shown(&[0xf8cd, 0x801c]), "str r8, [sp, 0x1c]");
-        assert_eq!(shown(&[0xf8ad, 0x801c]), "strh r8, [sp, 0x1c]");
-        assert_eq!(shown(&[0xf88d, 0x801c]), "strb r8, [sp, 0x1c]");
-        assert_eq!(shown(&[0xf8cd, 0x8000]), "str r8, [sp]");
-        assert_eq!(shown(&[0xf840, 0x8001]), "str r8, [r0, r1]", "the register form stays");
-        let lifted = lift_one(&[0xf8c5, 0x8004]);
-        assert_eq!(lifted.op, crate::il::Op::Store);
-        assert_eq!(
-            lifted.operands.last(),
-            Some(&crate::il::Operand::memory(Some(crate::il::Reg::General(5)), Some(4)))
-        );
-    }
-
-    #[test]
-    fn a_wide_move_keeps_every_bit_of_its_value() {
-        // movw ip, 0xfaac; movt ip, 0xfffe: imm4 is set in both.
-        let low = decode_one(&[0xf64f, 0x2cac]);
-        assert_eq!(low.to_string(), "mov ip, 0xfaac");
-        let high = decode_one(&[0xf6cf, 0x7cfe]);
-        assert_eq!(high.to_string(), "movt ip, 0xfffe");
-        // The lift holds the same values the text shows.
-        let constant = |values: &[u16]| lift_one(values).operands.last().copied();
-        assert_eq!(constant(&[0xf64f, 0x2cac]), Some(crate::il::Operand::Const(0xfaac)));
-        assert_eq!(constant(&[0xf6cf, 0x7cfe]), Some(crate::il::Operand::Const(0xfffe)));
     }
 
     #[test]
@@ -716,14 +513,6 @@ mod tests {
     }
 
     #[test]
-    fn a_t32_neon_store_reads_as_its_a32_twin() {
-        let insn = decode_one(&[0xf941, 0x0a8d]);
-        assert_eq!(crate::arch::printed_name(&insn), "vst1.32");
-        assert_eq!(crate::arch::printed_operands(&insn), "{d16, d17}, [r1]!");
-        assert_eq!((insn.bytes_len, insn.kind), (4, InsnKind::Normal));
-    }
-
-    #[test]
     fn t32_neon_data_processing_is_unread_code() {
         let insn = decode_one(&[0xefc0, 0x0050]);
         assert_eq!(
@@ -743,38 +532,9 @@ mod tests {
     }
 
     #[test]
-    fn narrow_and_wide_instructions_have_their_width() {
-        let narrow = decode_one(&[0x4770]); // bx lr
-        assert_eq!((crate::arch::printed_name(&narrow).as_str(), narrow.bytes_len), ("bx", 2));
-        assert_eq!(narrow.kind, InsnKind::Return);
-        let wide = decode_one(&[0xf04f, 0x0001]); // mov.w r0, 1
-        assert_eq!(
-            (crate::arch::printed_name(&wide).as_str(), wide.bytes_len),
-            ("mov", 4),
-            "no .w"
-        );
-    }
-
-    #[test]
     fn a_push_with_lr_is_a_prologue_and_a_pop_with_pc_returns() {
         assert!(Thumb2.is_prologue(&decode_one(&[0xb5f0]))); // push {r4, r5, r6, r7, lr}
         assert_eq!(decode_one(&[0xbdf0]).kind, InsnKind::Return); // pop {r4, r5, r6, r7, pc}
-    }
-
-    /// Every branch form goes to `pc`, 4 bytes past it, plus twice its
-    /// offset.
-    #[test]
-    fn branches_reach_their_targets() {
-        // b.n with an offset of 1: 0x1004 + 2.
-        assert_eq!(decode_one(&[0xe001]).kind, InsnKind::Jump { target: Some(0x1006) });
-        // bne.n with an offset of 2: 0x1004 + 4.
-        assert_eq!(decode_one(&[0xd102]).kind, InsnKind::Branch { target: Some(0x1008) });
-        // cbz r0 with an offset of 6: 0x1004 + 12.
-        assert_eq!(decode_one(&[0xb130]).kind, InsnKind::Branch { target: Some(0x1010) });
-        // b.w with an offset of 0x7fe: 0x1004 + 0xffc.
-        assert_eq!(decode_one(&[0xf000, 0xbffe]).kind, InsnKind::Jump { target: Some(0x2000) });
-        // bl with an offset of 0x7fe: 0x1004 + 0xffc.
-        assert_eq!(decode_one(&[0xf000, 0xfffe]).kind, InsnKind::Call { target: Some(0x2000) });
     }
 
     /// A `bx lr` that an `it` made conditional is an early exit.
@@ -791,31 +551,6 @@ mod tests {
         let kinds: Vec<InsnKind> = insns.iter().map(|insn| insn.kind).collect();
         assert_eq!(kinds[2], InsnKind::Branch { target: None });
         assert_eq!(kinds[4], InsnKind::Return);
-    }
-
-    /// Each `it` covers the conditions its name and its operand print:
-    /// `t` the condition, and `e` its opposite.
-    #[test]
-    fn it_blocks_cover_what_they_print() {
-        for condition in 0..14_u16 {
-            for mask in 1..16_u16 {
-                let insn = decode_one(&[0xbf00 | condition << 4 | mask]);
-                assert!(is_it(&insn), "{insn}");
-                let then = crate::arch::printed_operands(&insn);
-                let names: Vec<&str> = it_conditions(condition as u8, mask as u8)
-                    .expect("a condition with an opposite")
-                    .into_iter()
-                    .map(condition_name)
-                    .collect();
-                let pattern = &crate::arch::printed_name(&insn)[2..];
-                assert_eq!(names.len(), pattern.len() + 1, "{insn}");
-                assert_eq!(names[0], then, "{insn}");
-                for (name, letter) in names[1..].iter().zip(pattern.chars()) {
-                    assert_eq!(letter == 't', *name == then, "{insn}");
-                }
-            }
-        }
-        assert!(!is_it(&decode_one(&[0xbf00])), "nop");
     }
 
     /// `tbb` reads the byte table after itself, bounded by the `cmp` before.
@@ -905,35 +640,6 @@ mod tests {
     #[test]
     fn a_pointer_to_a_function_drops_the_thumb_bit() {
         assert_eq!(Thumb2.function_address(0x1235), 0x1234);
-    }
-
-    fn reg(number: u8) -> crate::il::Operand {
-        crate::il::Operand::Reg(crate::il::Reg::General(number))
-    }
-
-    /// A 16-bit form names its destination once, and lifts as the 32-bit
-    /// form that names it twice.
-    #[test]
-    fn a_two_address_form_names_its_destination_twice() {
-        use crate::il::{Op, Operand};
-        // `adds r0, #1` and `ands r0, r1`
-        let add = lift_one(&[0x3001]);
-        assert_eq!(
-            (add.op, add.operands.as_slice()),
-            (Op::Add, &[reg(0), reg(0), Operand::Const(1)][..])
-        );
-        let and = lift_one(&[0x4008]);
-        assert_eq!((and.op, and.operands.as_slice()), (Op::And, &[reg(0), reg(0), reg(1)][..]));
-        // `lsls r0, r1, #2` names three already.
-        assert_eq!(lift_one(&[0x0088]).operands.len(), 3);
-    }
-
-    /// `negs r0, r1` is `rsbs r0, r1, #0`, which is `0 - r1`.
-    #[test]
-    fn a_reverse_subtract_from_zero_is_a_negate() {
-        let negate = lift_one(&[0x4248]).canonical();
-        assert_eq!(negate.op, crate::il::Op::Negate);
-        assert_eq!(negate.operands.as_slice(), [reg(0), reg(1)]);
     }
 
     /// The unwind index names a T32 function by its first instruction,

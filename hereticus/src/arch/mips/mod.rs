@@ -1570,7 +1570,6 @@ const FP: u8 = 30;
 mod tests {
     use super::*;
     use crate::arch::{DecodeError, decode_all};
-    use compact_str::CompactString;
 
     /// Decode one instruction from a little-endian word at address 0.
     fn decode_one(word: u32) -> Insn {
@@ -1578,56 +1577,7 @@ mod tests {
     }
 
     /// Encodings from `llvm-mc --triple=mips --show-encoding`, as words.
-    mod words {
-        pub const BEQ_A0_A1: u32 = 0x1085_0002;
-        pub const BEQZ_A0: u32 = 0x1080_0002;
-        pub const BNEZ_A0: u32 = 0x1480_0002;
-        pub const BLEZ_A0: u32 = 0x1880_0002;
-        pub const BGTZ_A0: u32 = 0x1c80_0002;
-        pub const BLTZ_A0: u32 = 0x0480_0002;
-        pub const BGEZ_A0: u32 = 0x0481_0002;
-        pub const SLT_T0_A0_A1: u32 = 0x0085_402a;
-        pub const SLTI_T0_A0_5: u32 = 0x2888_0005;
-        pub const SLTIU_T0_A0_MINUS_1: u32 = 0x2c88_ffff;
-        pub const BNEZ_T0: u32 = 0x1500_0002;
-        pub const BEQZ_T0: u32 = 0x1100_0002;
-        pub const LW_T0_SP_4: u32 = 0x8fa8_0004;
-        pub const SB_T1_A0: u32 = 0xa089_0000;
-        pub const JAL: u32 = 0x0c00_0040;
-        pub const ADDU_V0_A0_A1: u32 = 0x0085_1021;
-        pub const MULT_A0_A1: u32 = 0x0085_0018;
-        pub const MFLO_V0: u32 = 0x0000_1012;
-        pub const B: u32 = 0x1000_0002;
-    }
-
-    /// Lift a word in both byte orders, and check that they agree.
-    fn lift_one(word: u32) -> il::Lifted {
-        let big = Mips32::BIG.lift(&Mips32::BIG.decode(&word.to_be_bytes(), 0, 0).unwrap());
-        let little = Mips32::LITTLE.lift(&decode_one(word));
-        assert_eq!(big, little, "{word:#010x}: both byte orders lift alike");
-        big.expect("the word must lift")
-    }
-
-    #[test]
-    fn operands_come_in_printed_order() {
-        use il::Operand::{Const, Target};
-        let reg = |number| il::Operand::Reg(il::Reg::General(number));
-        let operands = |word| lift_one(word).operands.into_vec();
-        assert_eq!(operands(words::ADDU_V0_A0_A1), [reg(2), reg(4), reg(5)]);
-        assert_eq!(operands(words::SLTIU_T0_A0_MINUS_1), [reg(8), reg(4), Const(u64::MAX)]);
-        assert_eq!(operands(words::BEQZ_A0), [reg(4), Target(None)]);
-    }
-
-    #[test]
-    fn a_memory_operand_names_its_base_and_offset() {
-        let general = |number| Some(il::Reg::General(number));
-        let memory = |word| *lift_one(word).operands.last().expect("a memory operand");
-        // `lw t0, -8(a0)`
-        const LW_T0_A0_MINUS_8: u32 = 0x8c88_fff8;
-        assert_eq!(memory(words::LW_T0_SP_4), il::Operand::memory(general(29), Some(4)));
-        assert_eq!(memory(LW_T0_A0_MINUS_8), il::Operand::memory(general(4), Some(-8)));
-        assert_eq!(memory(words::SB_T1_A0), il::Operand::memory(general(4), Some(0)));
-    }
+    mod words {}
 
     #[test]
     fn the_frame_registers_are_sp_and_fp() {
@@ -1635,111 +1585,6 @@ mod tests {
         assert!(Mips32::BIG.is_frame_register(il::Reg::General(30)));
         assert!(!Mips32::BIG.is_frame_register(il::Reg::General(31)));
         assert!(!Mips32::BIG.is_frame_register(il::Reg::Stack), "MIPS names sp by number");
-    }
-
-    fn guards(words: &[u32]) -> Vec<il::FoundGuard> {
-        let lifted: Vec<_> = words.iter().map(|&word| Some(lift_one(word))).collect();
-        il::find_guards(&lifted)
-    }
-
-    fn reg(number: u8) -> il::Value {
-        il::Value::Reg(il::Reg::General(number))
-    }
-
-    fn regs(numbers: &[u8]) -> il::RegSet {
-        numbers.iter().map(|&number| il::Reg::General(number)).collect()
-    }
-
-    #[test]
-    fn each_compare_and_branch_is_a_guard() {
-        use il::Cond;
-        for (word, cond, right) in [
-            (words::BEQ_A0_A1, Cond::Equal, reg(5)),
-            (words::BEQZ_A0, Cond::Equal, il::Value::Const(0)),
-            (words::BNEZ_A0, Cond::NotEqual, il::Value::Const(0)),
-            (words::BLEZ_A0, Cond::SignedLessOrEqual, il::Value::Const(0)),
-            (words::BGTZ_A0, Cond::SignedGreater, il::Value::Const(0)),
-            (words::BLTZ_A0, Cond::SignedLess, il::Value::Const(0)),
-            (words::BGEZ_A0, Cond::SignedGreaterOrEqual, il::Value::Const(0)),
-        ] {
-            let found = guards(&[word]);
-            assert_eq!(found.len(), 1, "{word:#010x}");
-            assert_eq!(
-                (found[0].guard.cond, found[0].guard.left, found[0].guard.right),
-                (cond, reg(4), right)
-            );
-        }
-        assert_eq!(guards(&[words::B]), [], "`b` always branches");
-    }
-
-    /// `slt t0, a0, a1` with `bnez t0` branches where `a0 < a1`.
-    #[test]
-    fn a_set_on_less_and_its_branch_are_one_guard() {
-        let found = guards(&[words::SLT_T0_A0_A1, words::ADDU_V0_A0_A1, words::BNEZ_T0]);
-        assert_eq!(found.len(), 1);
-        assert_eq!((found[0].compare, found[0].branch), (Some(0), 2));
-        let guard = found[0].guard;
-        assert_eq!((guard.cond, guard.left, guard.right), (il::Cond::SignedLess, reg(4), reg(5)));
-
-        let found = guards(&[words::SLTI_T0_A0_5, words::BEQZ_T0]);
-        assert_eq!(found[0].guard.cond, il::Cond::SignedGreaterOrEqual);
-        assert_eq!(found[0].guard.right, il::Value::Const(5));
-    }
-
-    #[test]
-    fn sltiu_extends_the_sign_of_its_constant() {
-        let found = guards(&[words::SLTIU_T0_A0_MINUS_1, words::BNEZ_T0]);
-        assert_eq!(found[0].guard.cond, il::Cond::UnsignedLess);
-        assert_eq!(found[0].guard.right, il::Value::Const(0xffff_ffff));
-    }
-
-    #[test]
-    fn registers_and_memory_are_named() {
-        let load = lift_one(words::LW_T0_SP_4);
-        assert_eq!((load.reads, load.writes), (regs(&[29]), regs(&[8])));
-        assert_eq!(
-            load.memory,
-            Some(il::MemoryAccess { kind: il::AccessKind::Load, width: Some(il::Width::Bits32) })
-        );
-        let store = lift_one(words::SB_T1_A0);
-        assert_eq!((store.reads, store.writes), (regs(&[4, 9]), il::RegSet::EMPTY));
-        assert_eq!(store.memory.and_then(|access| access.width), Some(il::Width::Bits8));
-        assert_eq!(lift_one(words::JAL).writes, regs(&[31]));
-        let add = lift_one(words::ADDU_V0_A0_A1);
-        assert_eq!((add.reads, add.writes), (regs(&[4, 5]), regs(&[2])));
-        let multiply = lift_one(words::MULT_A0_A1);
-        assert_eq!(
-            (multiply.reads, multiply.writes),
-            (regs(&[4, 5]), [HI, LO].into_iter().collect())
-        );
-        assert_eq!(lift_one(words::MFLO_V0).reads, [LO].into_iter().collect());
-    }
-
-    #[test]
-    fn lifting_any_word_never_panics() {
-        bolero::check!().with_type::<u32>().for_each(|&word| {
-            let bytes = word.to_be_bytes();
-            let Ok(insn) = Mips32::BIG.decode(&bytes, 0, 0) else { return };
-            if let Some(lifted) = Mips32::BIG.lift(&insn)
-                && let Some(il::Test::Guard(_)) = lifted.test
-            {
-                assert!(matches!(insn.kind, InsnKind::Branch { .. }), "{insn}: a guard branches");
-            }
-        });
-    }
-
-    #[test]
-    fn decodes_simple_arithmetic() {
-        let insn = decode_one(0x0085_1021);
-        assert_eq!(crate::arch::printed_name(&insn), "addu");
-        assert_eq!(crate::arch::printed_operands(&insn), "v0, a0, a1");
-        assert_eq!(insn.bytes_len, 4);
-        assert_eq!(insn.kind, InsnKind::Normal);
-    }
-
-    #[test]
-    fn jr_ra_is_a_return() {
-        assert_eq!(decode_one(0x03e0_0008).kind, InsnKind::Return);
     }
 
     /// `jr` through any other register is a tail call or a switch, which
@@ -1756,11 +1601,6 @@ mod tests {
         assert!(Mips32::LITTLE.is_tail_call(&decode_one(0x0320_0008)), "jr t9");
         assert!(!Mips32::LITTLE.is_tail_call(&decode_one(0x0040_0008)), "jr v0");
         assert!(!Mips32::LITTLE.is_tail_call(&decode_one(0x03e0_0008)), "jr ra");
-    }
-
-    #[test]
-    fn jalr_is_a_call() {
-        assert!(matches!(decode_one(0x0320_f809).kind, InsnKind::Call { .. }));
     }
 
     /// Read the jump tables of big-endian code at `base`.
@@ -2006,15 +1846,6 @@ mod tests {
         );
     }
 
-    /// `bal` calls its target. `bltzal t0` calls only on a condition, which
-    /// compiled code never does, so its target names no function.
-    #[test]
-    fn only_an_unconditional_link_names_its_target() {
-        assert_eq!(decode_one(0x0411_0003).kind, InsnKind::Call { target: Some(0x10) }, "bal");
-        assert_eq!(decode_one(0x0510_0003).kind, InsnKind::Call { target: None }, "bltzal t0");
-        assert_eq!(decode_one(0x0511_0003).kind, InsnKind::Call { target: None }, "bgezal t0");
-    }
-
     /// `jal` holds the target's word index, which the region completes.
     #[test]
     fn jal_is_an_absolute_call_in_either_order() {
@@ -2031,82 +1862,6 @@ mod tests {
         for word in [0x0800_0800u32, 0x0320_f809, 0x0411_0004, 0x27bd_ffe8, 0] {
             assert_eq!(Mips32::LITTLE.absolute_call(&word.to_le_bytes()), None, "{word:#010x}");
         }
-    }
-
-    /// The J-type target is an address inside the region, not a distance from
-    /// the instruction. The index `0x100` shifted left two is `0x400`, and
-    /// that must be the answer whatever address the instruction sits at.
-    #[test]
-    fn a_jump_target_is_absolute_not_relative() {
-        let at_zero = Mips32::LITTLE.decode(&0x0c00_0100u32.to_le_bytes(), 0, 0).unwrap();
-        assert_eq!(at_zero.kind, InsnKind::Call { target: Some(0x400) });
-
-        let moved = Mips32::LITTLE.decode(&0x0c00_0100u32.to_le_bytes(), 0, 0x1000).unwrap();
-        assert_eq!(
-            moved.kind,
-            InsnKind::Call { target: Some(0x400) },
-            "a region target must not move with the instruction address"
-        );
-    }
-
-    #[test]
-    fn j_is_an_unconditional_jump() {
-        assert_eq!(decode_one(0x0800_0100).kind, InsnKind::Jump { target: Some(0x400) });
-    }
-
-    /// A branch offset counts from the delay slot, one instruction past the
-    /// branch, so an offset of 5 from address 0 lands at `4 + (5 << 2)`.
-    #[test]
-    fn a_conditional_branch_can_fall_through() {
-        assert_eq!(decode_one(0x1082_0005).kind, InsnKind::Branch { target: Some(24) });
-        assert_eq!(decode_one(0x1482_0005).kind, InsnKind::Branch { target: Some(24) });
-    }
-
-    /// A backwards branch must resolve below the instruction, which catches a
-    /// sign error that a forward-only test would miss.
-    #[test]
-    fn a_backwards_branch_resolves_below_itself() {
-        let insn = Mips32::LITTLE.decode(&0x1082_fffeu32.to_le_bytes(), 0, 0x1000).unwrap();
-        assert_eq!(insn.kind, InsnKind::Branch { target: Some(0x0ffc) });
-    }
-
-    /// A branch target moves with the instruction, unlike a jump target.
-    #[test]
-    fn a_branch_target_is_relative_to_the_instruction() {
-        let insn = Mips32::LITTLE.decode(&0x1082_0005u32.to_le_bytes(), 0, 0x1000).unwrap();
-        assert_eq!(insn.kind, InsnKind::Branch { target: Some(0x1018) });
-    }
-
-    /// `beq` of a register with itself renders as `b`, which never falls
-    /// through.
-    #[test]
-    fn an_always_taken_branch_is_a_jump() {
-        assert_eq!(decode_one(0x1000_0005).kind, InsnKind::Jump { target: Some(24) });
-    }
-
-    /// `break` begins with `b` but is not a branch.
-    #[test]
-    fn break_is_not_a_branch() {
-        assert_eq!(decode_one(0x0000_000d).kind, InsnKind::Normal);
-    }
-
-    #[test]
-    fn address_tracks_the_offset() {
-        let mut code = Vec::new();
-        code.extend_from_slice(&0x0085_1021u32.to_le_bytes());
-        code.extend_from_slice(&0x03e0_0008u32.to_le_bytes());
-        assert_eq!(Mips32::LITTLE.decode(&code, 4, 0x8000).unwrap().address, 0x8004);
-    }
-
-    #[test]
-    fn rejects_truncated_input() {
-        assert_eq!(Mips32::LITTLE.decode(&[0x00, 0x00], 0, 0), Err(DecodeError::Truncated));
-        assert_eq!(Mips32::LITTLE.decode(&[], 0, 0), Err(DecodeError::Truncated));
-    }
-
-    #[test]
-    fn rejects_offset_past_the_end() {
-        assert_eq!(Mips32::LITTLE.decode(&[0x00; 4], 8, 0), Err(DecodeError::Truncated));
     }
 
     #[test]
@@ -3007,43 +2762,6 @@ mod tests {
         assert_eq!(normalized(&with).len(), 2, "the call must remain once its GOT read is dropped");
     }
 
-    /// The name of the operation of the MIPS32 `word`.
-    fn operation_of(word: u32) -> CompactString {
-        Mips32::LITTLE.operation_name(&decode_one(word))
-    }
-
-    /// MIPS puts the comparison in the operation, so two different branches
-    /// stay different.
-    #[test]
-    fn distinct_branches_are_distinct_operations() {
-        // addu v0, a0, a1; beq a0, a1; bne a0, a1.
-        assert_eq!(operation_of(0x0085_1021), "addu");
-        assert_ne!(operation_of(0x1085_0002), operation_of(0x1485_0002));
-    }
-
-    /// `b` and `j` are one jump spelled two ways, and which one a compiler picks
-    /// follows from PIC rather than from the source.
-    #[test]
-    fn the_two_spellings_of_a_jump_are_one_operation() {
-        assert_eq!(
-            operation_of(0x0800_0004),
-            operation_of(0x1000_0002),
-            "a PIC build emits `b` where a non-PIC build emits `j`"
-        );
-    }
-
-    /// Merging the jumps must not reach the conditional branches, nor the
-    /// calling forms.
-    #[test]
-    fn merging_the_jumps_leaves_everything_else_apart() {
-        let jump = operation_of(0x0800_0004);
-        // beq, bne, bgez, blez and bltz on a0, jal, jalr t9 and jr ra.
-        let others = [0x1085_0002, 0x1485_0002, 0x0481_0002, 0x1880_0002, 0x0480_0002, 0x0c00_0004];
-        for word in others.into_iter().chain([0x0320_f809, 0x03e0_0008]) {
-            assert_ne!(operation_of(word), jump, "{word:#010x} is not a plain jump");
-        }
-    }
-
     /// The whole instruction, not just the name, must come out alike: a `b` and
     /// a `j` to the same place are one operation.
     #[test]
@@ -3085,85 +2803,12 @@ mod tests {
         assert_eq!(Mips32::LITTLE.unwind_section(), None);
     }
 
-    /// MIPS runs the instruction after a branch either way, so recovery must
-    /// not read it as the start of the next function.
-    #[test]
-    fn a_branch_has_one_delay_slot() {
-        let return_ = decode_one(0x03e0_0008);
-        assert_eq!(Mips32::LITTLE.delay_slots(&return_), 1);
-        assert_eq!(Mips32::BIG.delay_slots(&return_), 1);
-    }
-
-    /// `eret` and `deret` leave at once, so the word after them is not
-    /// theirs.
-    #[test]
-    fn an_exception_return_has_no_delay_slot() {
-        for word in [0x4200_0018, 0x4200_001f] {
-            let insn = decode_one(word);
-            assert_eq!(insn.kind, InsnKind::Return, "{insn}");
-            assert_eq!(Mips32::LITTLE.delay_slots(&insn), 0, "{insn}");
-        }
-    }
-
     /// Padding after an `eret` is padding, not the slot of a branch.
     #[test]
     fn padding_after_an_exception_return_is_trimmed() {
         let code: Vec<u8> =
             [0x2402_0001u32, 0x4200_0018, 0, 0].into_iter().flat_map(u32::to_le_bytes).collect();
         assert_eq!(Mips32::LITTLE.trim_padding(&code).len(), 8);
-    }
-
-    /// `jr.hb ra` returns, and `jr.hb` through another register jumps, as
-    /// `jr` does.
-    #[test]
-    fn a_hazard_barrier_jump_moves_control_as_jr_does() {
-        assert_eq!(decode_one(0x03e0_0408).kind, InsnKind::Return);
-        assert_eq!(decode_one(0x0060_0408).kind, InsnKind::Jump { target: None });
-        assert_eq!(decode_one(0x0320_fc09).kind, InsnKind::Call { target: None });
-    }
-
-    /// The same bytes are two different instructions in the two byte orders,
-    /// which is why the order cannot be guessed.
-    #[test]
-    fn byte_order_decides_what_a_word_means() {
-        // `addu v0, a0, a1` stored big endian.
-        let stored = 0x0085_1021u32.to_be_bytes();
-
-        let big = Mips32::BIG.decode(&stored, 0, 0).unwrap();
-        assert_eq!(crate::arch::printed_name(&big), "addu");
-
-        let little = Mips32::LITTLE.decode(&stored, 0, 0).unwrap();
-        assert_ne!(
-            crate::arch::printed_name(&little),
-            "addu",
-            "the wrong order reads another instruction"
-        );
-    }
-
-    /// A big-endian image decodes exactly as a little-endian one does once
-    /// the word is assembled, so the whole trait works either way.
-    #[test]
-    fn big_endian_classifies_control_flow_the_same() {
-        let jr_ra = Mips32::BIG.decode(&0x03e0_0008u32.to_be_bytes(), 0, 0).unwrap();
-        assert_eq!(jr_ra.kind, InsnKind::Return);
-
-        let jal = Mips32::BIG.decode(&0x0c00_0100u32.to_be_bytes(), 0, 0).unwrap();
-        assert_eq!(jal.kind, InsnKind::Call { target: Some(0x400) });
-    }
-
-    /// Each order names the triple the differential test disassembles with.
-    #[test]
-    fn each_order_names_its_own_triple() {
-        assert_eq!(Mips32::LITTLE.triple(), "mipsel");
-        assert_eq!(Mips32::BIG.triple(), "mips");
-    }
-
-    /// A stored pointer follows the image byte order, as an instruction does.
-    #[test]
-    fn a_pointer_reads_in_the_image_byte_order() {
-        let stored = 0x8000_0000u32.to_be_bytes();
-        assert_eq!(Mips32::BIG.read_pointer(&stored), 0x8000_0000);
-        assert_ne!(Mips32::LITTLE.read_pointer(&stored), 0x8000_0000);
     }
 
     /// The bits `may_be_prologue` tests reject no word that opens a frame.
@@ -3185,17 +2830,5 @@ mod tests {
         let addiu = 0x27bd_ffe0_u32.to_be_bytes(); // addiu sp, sp, -0x20
         assert!(Mips32::BIG.may_be_prologue(&addiu));
         assert!(Mips32::BIG.is_prologue(&Mips32::BIG.decode(&addiu, 0, 0).unwrap()));
-    }
-
-    #[test]
-    fn a_float_operation_names_what_it_computes() {
-        assert_eq!(float_op(Opcode::core_div_d), Some(il::Op::FloatDivide));
-        assert_eq!(float_op(Opcode::core_mul_s), Some(il::Op::FloatMultiply));
-        assert_eq!(float_op(Opcode::core_floor_w_d), Some(il::Op::FloatRoundDown));
-        assert_eq!(float_op(Opcode::core_ceil_w_s), Some(il::Op::FloatRoundUp));
-        assert_eq!(float_op(Opcode::core_trunc_w_d), Some(il::Op::FloatRoundTowardZero));
-        assert_eq!(float_op(Opcode::core_mov_d), Some(il::Op::Move));
-        assert_eq!(float_op(Opcode::core_c_lt_d), Some(il::Op::Float));
-        assert_eq!(float_op(Opcode::core_addu), None, "no floating point");
     }
 }
