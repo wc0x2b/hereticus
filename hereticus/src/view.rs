@@ -204,7 +204,7 @@ fn instruction_lines(
         }
         None => vec![None; insns.len()],
     };
-    let pages = page_loads(arch, insns, &formed);
+    let pages = page_loads(insns, &formed);
     let mut last_compare: Option<Compared> = None;
     let is_mips = arch.triple().starts_with("mips");
     let mut float_condition: Option<String> = None;
@@ -225,7 +225,7 @@ fn instruction_lines(
         .zip(formed)
         .enumerate()
         .map(|(index, (insn, formed))| {
-            let named = arch.lift_named(insn);
+            let named = crate::arch::lift_named(insn);
             let printed = insn.to_string();
             let operands = operand_tokens(&printed, named.as_ref());
             let tokens: Vec<&str> = operands.iter().map(|token| token.as_str()).collect();
@@ -317,8 +317,8 @@ fn operand_tokens(printed: &str, named: Option<&crate::il::Named>) -> Vec<String
 }
 
 /// The operand names `insn` shows: see [`operand_tokens`].
-fn operand_tokens_of(arch: &dyn Arch, insn: &Insn) -> Vec<String> {
-    let mut tokens = operand_tokens(&insn.to_string(), arch.lift_named(insn).as_ref());
+fn operand_tokens_of(insn: &Insn) -> Vec<String> {
+    let mut tokens = operand_tokens(&insn.to_string(), crate::arch::lift_named(insn).as_ref());
     tokens.retain(|token| !token.is_empty());
     tokens
 }
@@ -334,7 +334,7 @@ fn operand_tokens_of(arch: &dyn Arch, insn: &Insn) -> Vec<String> {
 ///
 /// The slot the `lw` reads moves with the table, but the `addiu` names what
 /// the two point at, as the `add` after `adrp` does.
-fn page_loads(arch: &dyn Arch, insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
+fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
     /// How far back the `lw` can be, as a compiler schedules others between.
     const LOOK_BACK: usize = 16;
     insns
@@ -347,7 +347,7 @@ fn page_loads(arch: &dyn Arch, insns: &[Insn], formed: &[Option<u64>]) -> HashSe
         })
         .filter_map(|(index, insn)| {
             // The MIPS16e `addiu v0, 0x10` adds to the register it writes.
-            let source = match operand_tokens_of(arch, insn).as_slice() {
+            let source = match operand_tokens_of(insn).as_slice() {
                 [_, source, _] => source.clone(),
                 [dest, _] => dest.clone(),
                 _ => return None,
@@ -355,7 +355,7 @@ fn page_loads(arch: &dyn Arch, insns: &[Insn], formed: &[Option<u64>]) -> HashSe
             let at = (index.saturating_sub(LOOK_BACK)..index).rev().find(|&at| {
                 let earlier = &insns[at];
                 matches!(earlier.kind, crate::arch::InsnKind::Call { .. })
-                    || operand_tokens_of(arch, earlier).first() == Some(&source)
+                    || operand_tokens_of(earlier).first() == Some(&source)
             })?;
             let loads = mips::rabbitizer_opcode(&insns[at]) == Some(MipsOpcode::core_lw);
             (loads && formed[at].is_some()).then_some(at)
@@ -807,7 +807,7 @@ fn vfp_statement(
             let right = if *right == "0x0" { "0" } else { right };
             format!("fpscr = compare({left}, {right})")
         }
-        (Vfp::Status, ["APSR_nzcv", "fpscr"]) => {
+        (Vfp::Status, ["APSR_nzcv", "fpscr"] | ["APSR_nzcv"]) => {
             *last_compare = None;
             "flags = fpscr".to_string()
         }
@@ -1060,14 +1060,16 @@ impl ListOrder {
 /// It is read from the printed text, as the IL holds no list.
 fn list_statement(insn: &Insn, tokens: &[&str], lifted: &Lifted) -> Option<String> {
     let (order, mut write_back) = ListOrder::of(insn)?;
-    let operands = tokens.join(", ");
-    let (before, list) = operands.split_once('{')?;
+    let list = tokens.iter().find(|token| token.starts_with('{'))?;
     let registers: Vec<&str> =
-        list.trim_end().strip_suffix('}')?.split(',').map(str::trim).collect();
+        list.trim_end().strip_suffix('}')?[1..].split(',').map(str::trim).collect();
     if registers.iter().any(|register| register.is_empty() || register.contains('-')) {
         return None;
     }
-    let base = match before.trim().trim_end_matches(',').trim() {
+    // The base, where the access names one: `push` and `pop` go through
+    // `sp`.
+    let base = tokens.iter().find(|token| !token.starts_with('{')).copied().unwrap_or("");
+    let base = match base {
         "" => "sp",
         base => match base.strip_suffix('!') {
             Some(base) => {
@@ -1629,7 +1631,6 @@ mod tests {
 
     #[test]
     fn a_load_of_a_page_is_found_by_the_addiu_after_it() {
-        use crate::arch::mips::Mips32;
         use crate::arch::mips16::Mips16;
         let insns = [
             mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
@@ -1639,7 +1640,7 @@ mod tests {
             mips(0x24c6_0020), // addiu a2, a2, 0x20
         ];
         let formed = [Some(0x1000), Some(0x1000), Some(0x1004), Some(0x2010), Some(0x2020)];
-        assert_eq!(page_loads(&Mips32::LITTLE, &insns, &formed), HashSet::from([0, 1]));
+        assert_eq!(page_loads(&insns, &formed), HashSet::from([0, 1]));
 
         // MIPS16e adds to the register it writes.
         let mips16 = |halfword: u16| {
@@ -1647,10 +1648,7 @@ mod tests {
         };
         let insns = [mips16(0x9844), mips16(0x4a10)]; // lw v0, 0x10(s0); addiu v0, 0x10
         assert_eq!(insns[1].to_string(), "addiu v0, v0, 0x10", "as the MIPS32 twin");
-        assert_eq!(
-            page_loads(&Mips16::LITTLE, &insns, &[Some(0x1000), Some(0x2010)]),
-            HashSet::from([0])
-        );
+        assert_eq!(page_loads(&insns, &[Some(0x1000), Some(0x2010)]), HashSet::from([0]));
 
         // A write or a call between them leaves the register holding
         // something else.
@@ -1659,21 +1657,17 @@ mod tests {
             mips(0x0080_1025), // or v0, a0, zero
             mips(0x2442_0010), // addiu v0, v0, 0x10
         ];
-        assert!(
-            page_loads(&Mips32::LITTLE, &insns, &[Some(0x1000), None, Some(0x2010)]).is_empty()
-        );
+        assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
         let insns = [
             mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
             mips(0x0320_f809), // jalr t9
             mips(0x2442_0010), // addiu v0, v0, 0x10
         ];
-        assert!(
-            page_loads(&Mips32::LITTLE, &insns, &[Some(0x1000), None, Some(0x2010)]).is_empty()
-        );
+        assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
 
         // An `addiu` that forms no address joins no page.
         let insns = [mips(0x8f82_8020), mips(0x2442_0001)]; // lw v0, ...; addiu v0, v0, 1
-        assert!(page_loads(&Mips32::LITTLE, &insns, &[Some(0x1000), None]).is_empty());
+        assert!(page_loads(&insns, &[Some(0x1000), None]).is_empty());
     }
 
     #[test]
