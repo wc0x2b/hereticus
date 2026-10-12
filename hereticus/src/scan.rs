@@ -28,7 +28,7 @@
 //!
 //! Which section holds the unwind index, which instruction is a prologue and
 //! which word is padding are all architecture specific, so this module asks
-//! [`Arch`] rather than deciding for itself.
+//! [`Recovery`] rather than deciding for itself.
 //!
 //! Recovery is a guess wherever the first two sources are missing. [`Recovered`]
 //! records which source found each function so a caller can tell an exact
@@ -53,7 +53,7 @@ use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind,
 
 use crate::address::AddressSpace;
 use crate::arch::{
-    Arch, CallTarget, DataAmongCode, Insn, InsnKind, Memory, TableJumps, decode_all,
+    CallTarget, DataAmongCode, Insn, InsnKind, Memory, Recovery, TableJumps, decode_all,
 };
 use crate::obj::Function;
 
@@ -100,7 +100,7 @@ pub enum Source {
     /// Something calls it, so it must be a function. Exact for what it finds.
     CallTarget,
     /// It opens with a sequence only a function entry runs. See
-    /// [`Arch::is_function_entry`].
+    /// [`Recovery::is_function_entry`].
     Entry,
     /// It follows the end of another function. A guess.
     AfterReturn,
@@ -128,7 +128,7 @@ pub struct Recovered {
 /// nothing to read a name from.
 ///
 /// See RESEARCH.md, A16.
-pub fn recover_functions(data: &[u8], arch: &dyn Arch) -> Vec<Recovered> {
+pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
     let Ok(file) = object::File::parse(data) else { return Vec::new() };
 
     // Only executable sections hold functions. A binary can hold several, as
@@ -206,7 +206,11 @@ pub struct Linked {
 /// to each word of data that holds an address: a relocation with no symbol.
 /// Where such a word holds an address in the code, it points at a function,
 /// as a table of callbacks does: Lua keeps `str_find` in one.
-fn relocated_pointers(file: &object::File<'_>, arch: &dyn Arch, memory: &Memory<'_>) -> Vec<u64> {
+fn relocated_pointers(
+    file: &object::File<'_>,
+    arch: &dyn Recovery,
+    memory: &Memory<'_>,
+) -> Vec<u64> {
     let Some(relocations) = file.dynamic_relocations() else { return Vec::new() };
     // A REL relocation keeps the address in the word, as ARM and MIPS do,
     // and a RELA one in the relocation, as AArch64 does.
@@ -251,7 +255,7 @@ fn exported_functions(file: &object::File<'_>) -> Vec<core::ops::Range<u64>> {
 ///
 /// A range of MIPS16e code starts at an address with bit 0 set, as a
 /// pointer to such a function has it, so `arch` reads each end as one.
-pub fn index_from_ranges(ranges: &[core::ops::Range<u64>], arch: &dyn Arch) -> Vec<IndexEntry> {
+pub fn index_from_ranges(ranges: &[core::ops::Range<u64>], arch: &dyn Recovery) -> Vec<IndexEntry> {
     let ranges: Vec<core::ops::Range<u64>> = ranges
         .iter()
         .map(|range| arch.function_address(range.start)..arch.function_address(range.end))
@@ -278,7 +282,7 @@ pub fn index_from_ranges(ranges: &[core::ops::Range<u64>], arch: &dyn Arch) -> V
 pub fn recover_from_regions(
     regions: &[(u64, &[u8])],
     exception_index: &[IndexEntry],
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
 ) -> Vec<Recovered> {
     let linked = Linked::default();
     recover_in_memory(
@@ -310,7 +314,7 @@ struct Region<'a> {
 }
 
 impl<'a> Region<'a> {
-    fn decode(arch: &dyn Arch, base: u64, code: &'a [u8]) -> Self {
+    fn decode(arch: &dyn Recovery, base: u64, code: &'a [u8]) -> Self {
         Self { base, code, insns: decode_all(arch, code, base).0 }
     }
 }
@@ -325,7 +329,7 @@ pub fn recover_in_memory(
     exception_index: &[IndexEntry],
     linked: &Linked,
     contents: Regions,
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
     memory: &Memory<'_>,
 ) -> Vec<Recovered> {
     if regions.is_empty() {
@@ -450,7 +454,7 @@ const WORD_WIDTH: u64 = 4;
 /// as a raw Thumb-2 image, `XMLElement::~XMLElement` split so at each level.
 fn outside_pool_spans(
     starts: BTreeSet<(u64, Source)>,
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
     regions: &[Region<'_>],
     memory: &Memory<'_>,
 ) -> BTreeSet<(u64, Source)> {
@@ -549,7 +553,7 @@ const NEVER_RETURN: [&str; 16] = [
 /// the slot it goes through, or the slot of the PLT stub it reaches, names
 /// it.
 fn calls_that_never_return(
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
     insns: &[Insn],
     memory: &Memory<'_>,
     slot_names: &BTreeMap<u64, String>,
@@ -585,7 +589,7 @@ fn calls_that_never_return(
 /// the releases built for the tests, Lua's `luaZ_init` is called only so,
 /// after a function that ends with a jump back, and this found 12 more
 /// function starts and invented none.
-fn slot_call_targets(arch: &dyn Arch, region: &Region<'_>, memory: &Memory<'_>) -> Vec<u64> {
+fn slot_call_targets(arch: &dyn Recovery, region: &Region<'_>, memory: &Memory<'_>) -> Vec<u64> {
     let (base, code, insns) = (region.base, region.code, region.insns.as_slice());
     let end = base + code.len() as u64;
     arch.call_targets(insns)
@@ -618,7 +622,7 @@ fn slot_call_targets(arch: &dyn Arch, region: &Region<'_>, memory: &Memory<'_>) 
 /// of a variable lands in the regions too. Measured on the OpenWrt MIPS
 /// kernels, it cut hundreds of pieces out of their data.
 fn taken_addresses(
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
     regions: &[(u64, &[u8])],
     contents: Regions,
     pointers: &[u64],
@@ -698,7 +702,7 @@ fn taken_addresses(
 /// nothing. So are the words that go on with a text: in an image loaded near
 /// address 0, the tail `"ue"` of `"true"` reads as the address 0x6575.
 fn tagged_functions(
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
     regions: &[(u64, &[u8])],
     distances: &BTreeSet<u64>,
 ) -> Vec<u64> {
@@ -774,7 +778,7 @@ fn is_printable(byte: u8) -> bool {
 fn build_functions(
     starts: &BTreeSet<(u64, Source)>,
     code_sections: &[(u64, &[u8])],
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
 ) -> Vec<Recovered> {
     // One address can come from several sources. Keep the strongest, which is
     // the first for a given address because `Source` sorts that way.
@@ -836,7 +840,7 @@ fn build_functions(
 ///
 /// Measured on tinyxml2 for ARM as a raw image, the scan without it joined
 /// destructors and short functions that follow a call that does not return.
-pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Arch) -> Vec<IndexEntry> {
+pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Recovery) -> Vec<IndexEntry> {
     /// The fewest entries a run needs to be taken for an index.
     const FEWEST_INDEX_ENTRIES: usize = 16;
     /// The personalities an inline description can name: 0, 1 and 2.
@@ -1004,7 +1008,7 @@ fn cannot_unwind_ranges(index: &[IndexEntry]) -> Vec<core::ops::Range<u64>> {
         .collect()
 }
 
-fn exception_index(file: &object::File<'_>, arch: &dyn Arch) -> Vec<IndexEntry> {
+fn exception_index(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<IndexEntry> {
     let Some(name) = arch.unwind_section() else { return Vec::new() };
     let Some(section) = file.section_by_name(name) else { return Vec::new() };
     let Ok(data) = section.data() else { return Vec::new() };
@@ -1076,7 +1080,7 @@ fn sign_extend_31(value: u32) -> i64 {
 /// no call to name it, and one after a call that does not return, such as
 /// `_Unwind_Resume`, follows no return. Measured on tinyxml2 for MIPS, both
 /// joined two functions into one.
-fn function_entries(arch: &dyn Arch, insns: &[Insn]) -> Vec<u64> {
+fn function_entries(arch: &dyn Recovery, insns: &[Insn]) -> Vec<u64> {
     (0..insns.len())
         .filter(|&index| arch.is_function_entry(&insns[index..]))
         .map(|index| insns[index].address)
@@ -1092,7 +1096,7 @@ fn function_entries(arch: &dyn Arch, insns: &[Insn]) -> Vec<u64> {
 /// linker has not filled in the target yet, so every such call encodes the
 /// placeholder `bl .-8`, which reads back as the call site. Believing those
 /// would make a function start at every call.
-fn call_targets(arch: &dyn Arch, region: &Region<'_>) -> Vec<u64> {
+fn call_targets(arch: &dyn Recovery, region: &Region<'_>) -> Vec<u64> {
     let (base, code, insns) = (region.base, region.code, region.insns.as_slice());
     let end = base + code.len() as u64;
 
@@ -1147,7 +1151,7 @@ fn call_targets(arch: &dyn Arch, region: &Region<'_>) -> Vec<u64> {
 /// of the function around it. A `b` of ARMv6-M reaches only 2 KiB, so clang
 /// jumps farther inside a function with `bl`, as to the shared epilogue of
 /// `deflate` in zlib for Cortex-M0.
-fn pops_a_frame_it_did_not_make(arch: &dyn Arch, insns: &[Insn], target: u64) -> bool {
+fn pops_a_frame_it_did_not_make(arch: &dyn Recovery, insns: &[Insn], target: u64) -> bool {
     /// Longer than any epilogue.
     const MOST_INSTRUCTIONS: usize = 16;
     let Ok(start) = insns.binary_search_by_key(&target, |insn| insn.address) else {
@@ -1196,7 +1200,7 @@ fn pops_a_frame_it_did_not_make(arch: &dyn Arch, insns: &[Insn], target: u64) ->
 /// none. On a vendor firmware image it removes 104 of 144 candidate
 /// boundaries.
 #[cfg(test)]
-fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
+fn starts_after_returns(arch: &dyn Recovery, code: &[u8], base: u64) -> Vec<u64> {
     let regions = [(base, code)];
     let region = Region::decode(arch, base, code);
     starts_after_returns_in(arch, &region, &Memory::new(&regions), &Linked::default())
@@ -1204,7 +1208,7 @@ fn starts_after_returns(arch: &dyn Arch, code: &[u8], base: u64) -> Vec<u64> {
 
 /// [`starts_after_returns`], where `memory` holds what else the binary loads.
 fn starts_after_returns_in(
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
     region: &Region<'_>,
     memory: &Memory<'_>,
     linked: &Linked,
@@ -1611,7 +1615,7 @@ fn is_zero_fill(code: &[u8], base: u64, insn: &Insn) -> bool {
 /// The words of a region that are data among the code: literal pools, and
 /// the tables that jumps go through.
 fn data_words(
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
     memory: &Memory<'_>,
     code: core::ops::Range<u64>,
     insns: &[Insn],
@@ -1636,7 +1640,7 @@ enum Transfer {
 /// frame allocation. The architecture decides how far back to look, and the
 /// instructions before `prologue` bound it, so a preamble can never reach past
 /// the start of the slice.
-fn start_of(insns: &[Insn], prologue: usize, arch: &dyn Arch) -> u64 {
+fn start_of(insns: &[Insn], prologue: usize, arch: &dyn Recovery) -> u64 {
     // An architecture answers for its own ABI, and a wrong answer here would
     // move a boundary rather than fail. Clamping keeps a decoder bug from
     // reaching past the words this scan was given.
@@ -1673,7 +1677,7 @@ fn prologue_past_pool(
     is_pool: &dyn Fn(u64) -> bool,
     is_sure_start: &dyn Fn(u64) -> bool,
     may_open: &dyn Fn(u64) -> bool,
-    arch: &dyn Arch,
+    arch: &dyn Recovery,
 ) -> Option<u64> {
     /// The most words not known to be pool data to step over before a
     /// prologue. A literal pool between two functions holds a few constants;

@@ -64,7 +64,7 @@
 
 use std::collections::HashMap;
 
-use crate::arch::{AbsoluteCall, Arch};
+use crate::arch::{AbsoluteCall, Recovery};
 
 /// How far outside the image still counts as "nearly pointing at it", as a
 /// multiple of the image length.
@@ -192,7 +192,7 @@ impl core::fmt::Display for BaseFit {
 /// halves.
 ///
 /// See RESEARCH.md, A17.
-pub fn check_base(data: &[u8], base: u64, arch: &dyn Arch) -> BaseFit {
+pub fn check_base(data: &[u8], base: u64, arch: &dyn Recovery) -> BaseFit {
     let by_pointers = check_pointers(data, base, arch);
     if by_pointers.is_suspect() {
         return by_pointers;
@@ -220,7 +220,7 @@ pub fn check_base(data: &[u8], base: u64, arch: &dyn Arch) -> BaseFit {
 /// pointers to a function start choose the region. It is `None` when the
 /// architecture has no calls that name an absolute target, or when either
 /// choice is not clear.
-pub fn suggest_base(data: &[u8], arch: &dyn Arch) -> Option<u64> {
+pub fn suggest_base(data: &[u8], arch: &dyn Recovery) -> Option<u64> {
     let calls = Calls::read(data, arch)?;
 
     let ranked = calls.ranked();
@@ -281,7 +281,7 @@ struct Calls {
 
 impl Calls {
     /// Read the calls of a blob, or `None` when it has too few to judge by.
-    fn read(data: &[u8], arch: &dyn Arch) -> Option<Self> {
+    fn read(data: &[u8], arch: &dyn Recovery) -> Option<Self> {
         let width = arch.instruction_width();
         let mut calls = data.chunks_exact(width).filter_map(|word| arch.absolute_call(word));
         let AbsoluteCall { region, .. } = calls.clone().next()?;
@@ -329,7 +329,7 @@ impl Calls {
 
     /// Count the stored words that point at a function start when the blob
     /// loads at `base`.
-    fn pointers_to_starts(&self, data: &[u8], base: u64, arch: &dyn Arch) -> usize {
+    fn pointers_to_starts(&self, data: &[u8], base: u64, arch: &dyn Recovery) -> usize {
         data.chunks_exact(arch.pointer_width())
             .map(|word| arch.read_pointer(word))
             .filter(|&value| value.checked_sub(base).is_some_and(|offset| self.is_start(offset)))
@@ -395,7 +395,7 @@ impl Calls {
 }
 
 /// Judge a load address against the words stored in a blob.
-fn check_pointers(data: &[u8], base: u64, arch: &dyn Arch) -> BaseFit {
+fn check_pointers(data: &[u8], base: u64, arch: &dyn Recovery) -> BaseFit {
     let end = base.saturating_add(data.len() as u64);
 
     let mut inside = 0;

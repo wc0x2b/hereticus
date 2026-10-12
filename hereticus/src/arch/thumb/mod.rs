@@ -24,7 +24,8 @@ use super::arm32::{
     is_long_thunk, pool_loads, track_pool_words,
 };
 use super::{
-    Arch, DataAmongCode, Decoder, Insn, InsnKind, JumpTable, Memory, TableJumps, VectorTable,
+    Arch, DataAmongCode, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery, TableJumps,
+    VectorTable,
 };
 use crate::address::{AddressSpace, ConstantKind};
 use core::ops::Range;
@@ -49,36 +50,12 @@ const TABLE_LOOK_BACK: usize = 16;
 /// cut 170 functions two bytes short.
 const PADDING: [[u8; 2]; 3] = [[0x00, 0xbf], [0xc0, 0x46], [0xd4, 0xd4]];
 
-impl Arch for Thumb2 {
-    fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
-        Arm32.is_frame_register(reg)
-    }
-
+impl Recovery for Thumb2 {
     /// T32 has no condition field to test, so the first instruction must
     /// read as one and not as padding.
     fn can_open_function(&self, bytes: &[u8]) -> bool {
         self.decode(bytes, 0, 0)
             .is_ok_and(|insn| insn.kind != InsnKind::Unknown && !self.is_padding(&insn))
-    }
-
-    fn is_frame_management(&self, insn: &Insn) -> bool {
-        Arm32.is_frame_management(insn)
-    }
-
-    fn constant_kinds(
-        &self,
-        code: &[u8],
-        body: &[Insn],
-        space: &AddressSpace,
-    ) -> Vec<ConstantKind> {
-        match split_at_switch(code, body) {
-            Some((offset, index)) => {
-                let mut kinds = track_pool_words(code, &body[..index], space, PcModel::T32).kinds;
-                kinds.extend(Arm32.constant_kinds(&code[offset..], &body[index..], space));
-                kinds
-            }
-            None => track_pool_words(code, body, space, PcModel::T32).kinds,
-        }
     }
 
     fn data_addresses(
@@ -258,6 +235,36 @@ impl Arch for Thumb2 {
         (word & 1 == 1).then_some(word & !1)
     }
 
+    fn distance_words(&self, code: &[u8], insns: &[Insn]) -> BTreeSet<u64> {
+        track_pool_words(code, insns, &AddressSpace::default(), PcModel::T32).distances
+    }
+}
+
+impl Arch for Thumb2 {
+    fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
+        Arm32.is_frame_register(reg)
+    }
+
+    fn is_frame_management(&self, insn: &Insn) -> bool {
+        Arm32.is_frame_management(insn)
+    }
+
+    fn constant_kinds(
+        &self,
+        code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+    ) -> Vec<ConstantKind> {
+        match split_at_switch(code, body) {
+            Some((offset, index)) => {
+                let mut kinds = track_pool_words(code, &body[..index], space, PcModel::T32).kinds;
+                kinds.extend(Arm32.constant_kinds(&code[offset..], &body[index..], space));
+                kinds
+            }
+            None => track_pool_words(code, body, space, PcModel::T32).kinds,
+        }
+    }
+
     fn formed_addresses(
         &self,
         code: &[u8],
@@ -267,14 +274,10 @@ impl Arch for Thumb2 {
     ) -> Vec<Option<u64>> {
         track_pool_words(code, body, space, PcModel::T32).formed
     }
-
-    fn distance_words(&self, code: &[u8], insns: &[Insn]) -> BTreeSet<u64> {
-        track_pool_words(code, insns, &AddressSpace::default(), PcModel::T32).distances
-    }
 }
 
 /// Where a body that opens with a switch to A32 goes on in A32: the offset
-/// into `code`, and the index into `body`. See [`Arch::switch_at_start`].
+/// into `code`, and the index into `body`. See [`Recovery::switch_at_start`].
 fn split_at_switch(code: &[u8], body: &[Insn]) -> Option<(usize, usize)> {
     let start = body.first()?.address;
     let (_, lands) = Thumb2.switch_at_start(code, start)?;

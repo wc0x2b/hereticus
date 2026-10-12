@@ -15,7 +15,7 @@
 
 pub use hereticus_il::arch::aarch64::*;
 
-use super::{Arch, Insn, InsnKind, JumpTable, Memory};
+use super::{Arch, Insn, InsnKind, JumpTable, Memory, Recovery};
 use crate::address::{AddressSpace, ConstantKind};
 use crate::il::Reg;
 use core::ops::Range;
@@ -43,31 +43,7 @@ const TABLE_LOOK_BACK: usize = 32;
 /// More cases than any `switch` a compiler turns into one table.
 const MOST_CASES: usize = 4096;
 
-impl Arch for Aarch64 {
-    fn is_frame_register(&self, reg: Reg) -> bool {
-        matches!(reg, Reg::Stack | FRAME)
-    }
-
-    fn is_frame_management(&self, insn: &Insn) -> bool {
-        let Some(Decoded { opcode, alias }) = decoded(insn) else { return false };
-        match (opcode, alias) {
-            // Saving and restoring the frame and the registers it keeps.
-            (Opcode::STP | Opcode::LDP | Opcode::STR | Opcode::LDR, _) => {
-                operands_of(insn).iter().any(|&operand| reaches_frame(operand))
-            }
-            // Moving the stack pointer, or setting up the frame pointer.
-            (_, Alias::Move)
-            | (Opcode::SUB | Opcode::ADD | Opcode::MOVZ | Opcode::MOVN, Alias::None) => {
-                operands_of(insn).first().is_some_and(|&operand| is_stack_or_frame(operand))
-            }
-            // Signing and checking the return address, and marking a branch
-            // target, change nothing a function computes.
-            (Opcode::PACIASP | Opcode::PACIBSP | Opcode::AUTIASP | Opcode::AUTIBSP, _)
-            | (_, Alias::BranchTarget) => true,
-            _ => false,
-        }
-    }
-
+impl Recovery for Aarch64 {
     /// Almost every function that calls another saves the frame pointer and
     /// the link register first, as `stp x29, x30, [sp, #-N]!`. A leaf that
     /// needs no frame has no prologue, which is why the scan treats this as
@@ -110,27 +86,6 @@ impl Arch for Aarch64 {
             end -= INSN_WIDTH;
         }
         &bytes[..end]
-    }
-
-    /// The offset in a page that `add` or a load joins to an `adrp` is part
-    /// of an address, and moves with the data it names.
-    fn constant_kinds(
-        &self,
-        code: &[u8],
-        body: &[Insn],
-        space: &AddressSpace,
-    ) -> Vec<ConstantKind> {
-        track_pages(code, body, space).kinds
-    }
-
-    fn formed_addresses(
-        &self,
-        code: &[u8],
-        body: &[Insn],
-        space: &AddressSpace,
-        _memory: &Memory<'_>,
-    ) -> Vec<Option<u64>> {
-        track_pages(code, body, space).formed
     }
 
     /// The addresses a function forms from a page, and the pointers it
@@ -211,6 +166,53 @@ impl Arch for Aarch64 {
     fn is_tail_call(&self, insn: &Insn) -> bool {
         opcode_of(insn) == Some(Opcode::BR)
             && matches!(operands_of(insn).as_slice(), [target] if is_x(*target, 16) || is_x(*target, 17))
+    }
+}
+
+impl Arch for Aarch64 {
+    fn is_frame_register(&self, reg: Reg) -> bool {
+        matches!(reg, Reg::Stack | FRAME)
+    }
+
+    fn is_frame_management(&self, insn: &Insn) -> bool {
+        let Some(Decoded { opcode, alias }) = decoded(insn) else { return false };
+        match (opcode, alias) {
+            // Saving and restoring the frame and the registers it keeps.
+            (Opcode::STP | Opcode::LDP | Opcode::STR | Opcode::LDR, _) => {
+                operands_of(insn).iter().any(|&operand| reaches_frame(operand))
+            }
+            // Moving the stack pointer, or setting up the frame pointer.
+            (_, Alias::Move)
+            | (Opcode::SUB | Opcode::ADD | Opcode::MOVZ | Opcode::MOVN, Alias::None) => {
+                operands_of(insn).first().is_some_and(|&operand| is_stack_or_frame(operand))
+            }
+            // Signing and checking the return address, and marking a branch
+            // target, change nothing a function computes.
+            (Opcode::PACIASP | Opcode::PACIBSP | Opcode::AUTIASP | Opcode::AUTIBSP, _)
+            | (_, Alias::BranchTarget) => true,
+            _ => false,
+        }
+    }
+
+    /// The offset in a page that `add` or a load joins to an `adrp` is part
+    /// of an address, and moves with the data it names.
+    fn constant_kinds(
+        &self,
+        code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+    ) -> Vec<ConstantKind> {
+        track_pages(code, body, space).kinds
+    }
+
+    fn formed_addresses(
+        &self,
+        code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+        _memory: &Memory<'_>,
+    ) -> Vec<Option<u64>> {
+        track_pages(code, body, space).formed
     }
 }
 

@@ -24,7 +24,7 @@ pub const UNKNOWN_TEXT: &str = "(unknown)";
 
 /// The text of a NEON data-processing instruction, which the decoder
 /// cannot read either. It stays opaque, as an unreadable word does, but the
-/// name says that it is code. See `Arch::is_unread_extension` of `hereticus`.
+/// name says that it is code. See `Recovery::is_unread_extension` of `hereticus`.
 pub const NEON_TEXT: &str = "(neon)";
 
 /// Register number of the program counter.

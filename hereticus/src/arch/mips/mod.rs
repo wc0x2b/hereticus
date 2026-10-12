@@ -18,6 +18,7 @@ pub use hereticus_il::arch::mips::*;
 
 use super::{
     AbsoluteCall, Arch, CallTarget, Decoder, GlobalPointerSetup, Insn, InsnKind, JumpTable, Memory,
+    Recovery,
 };
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
@@ -75,7 +76,7 @@ impl TableRules for Mips32 {
     }
 
     /// Each address `body` forms, with the index of the instruction that
-    /// joins its lower half: see [`Arch::data_addresses`].
+    /// joins its lower half: see [`Recovery::data_addresses`].
     fn addresses_by_index(
         &self,
         body: &[Insn],
@@ -115,122 +116,7 @@ impl TableRules for Mips32 {
     }
 }
 
-impl Arch for Mips32 {
-    fn is_frame_register(&self, reg: il::Reg) -> bool {
-        matches!(reg, il::Reg::General(SP | FP))
-    }
-
-    fn is_frame_management(&self, insn: &Insn) -> bool {
-        // The PIC preamble is bookkeeping in the same sense frame work is: the
-        // ABI obliges it, the source never asked for it, and it appears in
-        // every function a PIC build compiles.
-        if is_pic_setup(insn) {
-            return true;
-        }
-
-        let operands = operands_of(insn);
-        match rabbitizer_opcode(insn) {
-            // Moving the stack pointer, or setting up the frame pointer.
-            // `or fp, sp, zero` is how a frame is established: this decoder
-            // renders every register move as `or`, never as `move`.
-            Some(Opcode::core_addiu | Opcode::core_addu | Opcode::core_subu | Opcode::core_or) => {
-                operands.first().and_then(register).is_some_and(|reg| self.is_frame_register(reg))
-            }
-
-            // Spilling to and reloading from the frame.
-            Some(Opcode::core_sw | Opcode::core_lw | Opcode::core_swc1 | Opcode::core_lwc1) => {
-                operands
-                    .iter()
-                    .filter_map(access)
-                    .any(|(base, _)| base.is_some_and(|base| self.is_frame_register(base)))
-            }
-
-            _ => false,
-        }
-    }
-
-    /// The `_gp_disp` pair is the one piece of PIC scaffolding that needs two
-    /// instructions to recognize.
-    ///
-    /// `lui rX, 0x0` on its own is how any relocated address load begins, and
-    /// `addiu rX, rX, 0x0` on its own adds zero to a register. Dropping either
-    /// alone would take real code with it, so only the pair comes out — and
-    /// only where an `addu` against `t9` proves it is the PIC preamble rather
-    /// than the address of a global.
-    fn idiom_length(&self, body: &[Insn]) -> usize {
-        if is_gp_disp_preamble(body) { 2 } else { 0 }
-    }
-
-    fn global_pointer_setup(&self, body: &[Insn]) -> Option<GlobalPointerSetup> {
-        let consumer = gp_disp_consumer(body)?;
-        let register = register_name(first_register(&body[consumer])?)?.to_string();
-        Some(GlobalPointerSetup { parts: vec![0, 1, consumer], register })
-    }
-
-    /// MIPS builds a 32-bit address in two halves: `lui rX, hi` loads the
-    /// upper sixteen bits, and a later `addiu rY, rX, lo` or `ori` adds the
-    /// lower sixteen. The two are often far apart, with other work between,
-    /// so each register is followed from its `lui` to its uses.
-    ///
-    /// A `lui` whose upper half reaches into `space` is an address. So is a
-    /// lower half that, joined to the address in its source register, lands in
-    /// `space`, and so is a load or store whose offset is that lower half.
-    ///
-    /// Forward branches are followed, so code after a return that a branch
-    /// reaches still knows what its registers hold. A loop is followed only on
-    /// its way in.
-    fn constant_kinds(
-        &self,
-        _code: &[u8],
-        body: &[Insn],
-        space: &AddressSpace,
-    ) -> Vec<ConstantKind> {
-        // Code that no known branch reaches, as a loop body entered from
-        // below or a landing pad the unwinder enters, still holds what the
-        // function keeps in a saved register throughout. Which registers
-        // those are is known only once the whole function has been read.
-        constant_kinds_in(self, body, space)
-    }
-
-    /// A compiler keeps no data among MIPS instructions: constants are built
-    /// with `lui` and literal pools do not exist. So a long function where
-    /// many words are data is mostly not a function. Two shapes give it away:
-    ///
-    /// * Words that do not decode, or that hold an address inside the image.
-    ///   A pointer inside a KSEG0 image reads as `lb rX, off(zero)`, which no
-    ///   compiler emits. At least two words in five mark data.
-    /// * Zero fill, which reads as `nop`. At least half the words mark data.
-    ///
-    /// Below 64 words a function is not judged: short code can look like
-    /// anything, and every region of data measured was far longer. On two
-    /// OpenWrt MIPS kernels, code of 64 words or more reaches at most 19% of
-    /// the first and 25% of the second, and the regions of tables and zero
-    /// fill after the code start at 44% and 67%. None of the compiled fixture
-    /// functions is marked.
-    fn contents(&self, code: &[u8], insns: &[Insn], space: &AddressSpace) -> Contents {
-        const FEWEST_WORDS: usize = 64;
-
-        let words = insns.len();
-        if words < FEWEST_WORDS {
-            return Contents::Code;
-        }
-
-        let unreadable = insns.iter().filter(|insn| insn.kind == InsnKind::Unknown).count();
-        let pointers = code
-            .as_chunks::<INSN_WIDTH>()
-            .0
-            .iter()
-            .filter(|word| space.contains(self.read_pointer(*word)))
-            .count();
-        let zeros = insns.iter().filter(|insn| self.is_padding(insn)).count();
-
-        if (unreadable + pointers) * 5 >= words * 2 || zeros * 2 >= words {
-            Contents::Data
-        } else {
-            Contents::Code
-        }
-    }
-
+impl Recovery for Mips32 {
     /// `jr t9`: the ABI calls through `t9`, and a `switch` jumps through
     /// another register.
     fn is_tail_call(&self, insn: &Insn) -> bool {
@@ -459,7 +345,135 @@ impl Arch for Mips32 {
             .collect()
     }
 
-    /// What [`Arch::data_addresses`] finds, and also the slot of the
+    fn absolute_call(&self, word: &[u8]) -> Option<AbsoluteCall> {
+        /// The primary opcode of `jal`, in the top 6 bits.
+        const JAL: u32 = 0b00_0011;
+        /// `jal` holds a word index, so the region is 2^26 words.
+        const JAL_REGION: u64 = 1 << 28;
+
+        let raw = self.order().read_word([word[0], word[1], word[2], word[3]]);
+        (raw >> 26 == JAL)
+            .then(|| AbsoluteCall { offset: u64::from(raw & 0x03ff_ffff) << 2, region: JAL_REGION })
+    }
+}
+
+impl Arch for Mips32 {
+    fn is_frame_register(&self, reg: il::Reg) -> bool {
+        matches!(reg, il::Reg::General(SP | FP))
+    }
+
+    fn is_frame_management(&self, insn: &Insn) -> bool {
+        // The PIC preamble is bookkeeping in the same sense frame work is: the
+        // ABI obliges it, the source never asked for it, and it appears in
+        // every function a PIC build compiles.
+        if is_pic_setup(insn) {
+            return true;
+        }
+
+        let operands = operands_of(insn);
+        match rabbitizer_opcode(insn) {
+            // Moving the stack pointer, or setting up the frame pointer.
+            // `or fp, sp, zero` is how a frame is established: this decoder
+            // renders every register move as `or`, never as `move`.
+            Some(Opcode::core_addiu | Opcode::core_addu | Opcode::core_subu | Opcode::core_or) => {
+                operands.first().and_then(register).is_some_and(|reg| self.is_frame_register(reg))
+            }
+
+            // Spilling to and reloading from the frame.
+            Some(Opcode::core_sw | Opcode::core_lw | Opcode::core_swc1 | Opcode::core_lwc1) => {
+                operands
+                    .iter()
+                    .filter_map(access)
+                    .any(|(base, _)| base.is_some_and(|base| self.is_frame_register(base)))
+            }
+
+            _ => false,
+        }
+    }
+
+    /// The `_gp_disp` pair is the one piece of PIC scaffolding that needs two
+    /// instructions to recognize.
+    ///
+    /// `lui rX, 0x0` on its own is how any relocated address load begins, and
+    /// `addiu rX, rX, 0x0` on its own adds zero to a register. Dropping either
+    /// alone would take real code with it, so only the pair comes out — and
+    /// only where an `addu` against `t9` proves it is the PIC preamble rather
+    /// than the address of a global.
+    fn idiom_length(&self, body: &[Insn]) -> usize {
+        if is_gp_disp_preamble(body) { 2 } else { 0 }
+    }
+
+    fn global_pointer_setup(&self, body: &[Insn]) -> Option<GlobalPointerSetup> {
+        let consumer = gp_disp_consumer(body)?;
+        let register = register_name(first_register(&body[consumer])?)?.to_string();
+        Some(GlobalPointerSetup { parts: vec![0, 1, consumer], register })
+    }
+
+    /// MIPS builds a 32-bit address in two halves: `lui rX, hi` loads the
+    /// upper sixteen bits, and a later `addiu rY, rX, lo` or `ori` adds the
+    /// lower sixteen. The two are often far apart, with other work between,
+    /// so each register is followed from its `lui` to its uses.
+    ///
+    /// A `lui` whose upper half reaches into `space` is an address. So is a
+    /// lower half that, joined to the address in its source register, lands in
+    /// `space`, and so is a load or store whose offset is that lower half.
+    ///
+    /// Forward branches are followed, so code after a return that a branch
+    /// reaches still knows what its registers hold. A loop is followed only on
+    /// its way in.
+    fn constant_kinds(
+        &self,
+        _code: &[u8],
+        body: &[Insn],
+        space: &AddressSpace,
+    ) -> Vec<ConstantKind> {
+        // Code that no known branch reaches, as a loop body entered from
+        // below or a landing pad the unwinder enters, still holds what the
+        // function keeps in a saved register throughout. Which registers
+        // those are is known only once the whole function has been read.
+        constant_kinds_in(self, body, space)
+    }
+
+    /// A compiler keeps no data among MIPS instructions: constants are built
+    /// with `lui` and literal pools do not exist. So a long function where
+    /// many words are data is mostly not a function. Two shapes give it away:
+    ///
+    /// * Words that do not decode, or that hold an address inside the image.
+    ///   A pointer inside a KSEG0 image reads as `lb rX, off(zero)`, which no
+    ///   compiler emits. At least two words in five mark data.
+    /// * Zero fill, which reads as `nop`. At least half the words mark data.
+    ///
+    /// Below 64 words a function is not judged: short code can look like
+    /// anything, and every region of data measured was far longer. On two
+    /// OpenWrt MIPS kernels, code of 64 words or more reaches at most 19% of
+    /// the first and 25% of the second, and the regions of tables and zero
+    /// fill after the code start at 44% and 67%. None of the compiled fixture
+    /// functions is marked.
+    fn contents(&self, code: &[u8], insns: &[Insn], space: &AddressSpace) -> Contents {
+        const FEWEST_WORDS: usize = 64;
+
+        let words = insns.len();
+        if words < FEWEST_WORDS {
+            return Contents::Code;
+        }
+
+        let unreadable = insns.iter().filter(|insn| insn.kind == InsnKind::Unknown).count();
+        let pointers = code
+            .as_chunks::<INSN_WIDTH>()
+            .0
+            .iter()
+            .filter(|word| space.contains(self.read_pointer(*word)))
+            .count();
+        let zeros = insns.iter().filter(|insn| self.is_padding(insn)).count();
+
+        if (unreadable + pointers) * 5 >= words * 2 || zeros * 2 >= words {
+            Contents::Data
+        } else {
+            Contents::Code
+        }
+    }
+
+    /// What [`Recovery::data_addresses`] finds, and also the slot of the
     /// global offset table each load through the global pointer reads.
     fn formed_addresses(
         &self,
@@ -481,17 +495,6 @@ impl Arch for Mips32 {
             }
         }
         formed
-    }
-
-    fn absolute_call(&self, word: &[u8]) -> Option<AbsoluteCall> {
-        /// The primary opcode of `jal`, in the top 6 bits.
-        const JAL: u32 = 0b00_0011;
-        /// `jal` holds a word index, so the region is 2^26 words.
-        const JAL_REGION: u64 = 1 << 28;
-
-        let raw = self.order().read_word([word[0], word[1], word[2], word[3]]);
-        (raw >> 26 == JAL)
-            .then(|| AbsoluteCall { offset: u64::from(raw & 0x03ff_ffff) << 2, region: JAL_REGION })
     }
 }
 
