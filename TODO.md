@@ -202,13 +202,20 @@ that became a `beq` reads as a change, but drops it from `b.ne` of A64.
 Both kept what the names did before. A flipped condition is a real edit;
 decide one rule for both and measure it.
 
-## Print instruction text only on demand
+## Read the IL view and the diff from the lift
 
-`Insn` still holds its printed `text` and where its operands start. The
-arch modules, `view.rs`, `diff_key` in `matching.rs` and some tests read
-them. Move each of these uses to the lift or the opcode. Then remove
-`text`, `operands()`, `with_text` and `split_printed` from `Insn`, and
-print it from its bytes in `Display`, for the diff and the IL view only.
+`Insn` holds no text, but the diff and the IL view still read what
+`Display` prints. `diff_key` in `matching.rs` aligns on that text. The
+IL view reads registers, targets, register lists and memory operands
+from it (`split_operands`, `memory_text`, `list_statement`,
+`frame_statement` and `aarch64_statement` in `view.rs`), because the IL
+holds no names. Thus each line decodes its instruction a second time.
+
+To read them from the lift, give `il::Reg` a name on each architecture,
+and key the diff on a lift that tells apart all that the text does: a
+system register now lifts to `Operand::Other`, so two `mrs` that read
+different registers would align as the same. Then `split_printed` is
+only for the decoders.
 
 ## Make the matching faster
 
@@ -225,8 +232,13 @@ Against `7bbfb6a`, with each report the same byte for byte:
 | ARM kernel of the EX6100v2 | 27.8 s, 1097 MB | 10.0 s, 741 MB |
 | MIPS kernel of the VR200 | 36.0 s, 977 MB | 12.0 s, 706 MB |
 
-The text each decoder prints is now less than a tenth of the run on the
-ARM kernel. An alignment numbers its items and holds its table as bits,
+A decoder now prints an instruction only where `Display` asks, for the
+diff and the IL view. On the raw kernels of 22.03.2 and 22.03.5, with
+each report and each IL diff the same byte for byte, that took the ARM
+kernel of the EX6100v2 from 17.0 s to 12.0 s, and the MIPS kernel of
+the EAP245v3 from 11.7 s to 7.3 s.
+
+An alignment numbers its items and holds its table as bits,
 the lifted form of an instruction parses no operand text, and `prepare`
 keeps each normalized body for the pairs that read it. What is left is
 the matching stages themselves; measure them before anything else.
