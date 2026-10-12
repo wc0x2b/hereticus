@@ -42,6 +42,7 @@
 //! largest gains came from reading what each instruction does one way on
 //! every architecture: the operation, its operands, a guard, an idiom.
 
+use compact_str::CompactString;
 use smallvec::SmallVec;
 
 /// A register, named the same way on every architecture.
@@ -647,6 +648,63 @@ impl Lifted {
             self.operands = operands;
         }
         self
+    }
+}
+
+/// The name of each operand of a [`Lifted`], in its order, as its
+/// architecture spells it for a reader.
+pub type Names = SmallVec<[CompactString; 4]>;
+
+/// One instruction, lifted, with the name of each operand.
+///
+/// The IL holds no names: `w0` and `x0` are one [`Reg`], and a matcher must
+/// not tell them apart. A reader needs them, so the IL view and the diff
+/// read them here, never from printed text. A register shows as `w0`, a
+/// memory operand as `[x1 + 0x10]`, a shifted register as `(r1 lsl 4)`, a
+/// target as `$+0x24`, and a condition as `eq`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Named {
+    pub lifted: Lifted,
+    /// One name for each operand of [`Named::lifted`].
+    pub names: Names,
+    /// What a post-index access adds to its base after it, as `0x20`,
+    /// `-0x10` or `x8`.
+    pub write_back: Option<CompactString>,
+}
+
+/// A constant as code reads it: small ones in decimal, a negative one with
+/// its sign, as `3`, `0x10` and `-0x8`.
+pub fn constant_name(value: u64) -> CompactString {
+    use compact_str::format_compact;
+    let signed = value as i64;
+    if (-0x1_0000..0).contains(&signed) {
+        return format_compact!("-{:#x}", signed.unsigned_abs());
+    }
+    // A small negative number in a 32-bit register, as `mvn r0, #0` makes.
+    if (0xffff_0000..=0xffff_ffff).contains(&value) {
+        return format_compact!("-{:#x}", 0x1_0000_0000 - value);
+    }
+    if value < 10 { format_compact!("{value}") } else { format_compact!("{value:#x}") }
+}
+
+/// The name of a target `distance` bytes from its instruction, as `$+0x24`.
+pub fn target_name(distance: i64) -> CompactString {
+    match distance < 0 {
+        true => compact_str::format_compact!("$-{:#x}", distance.unsigned_abs()),
+        false => compact_str::format_compact!("$+{distance:#x}"),
+    }
+}
+
+/// The name of a memory operand through `base`, plus `index` or `offset`,
+/// as `[x1 + 0x10]`, `[r3 + (r1 lsl 2)]` or `[sp - 0x8]`.
+pub fn memory_name(base: &str, index: Option<&str>, offset: Option<i64>) -> CompactString {
+    match (index, offset) {
+        (Some(index), _) => compact_str::format_compact!("[{base} + {index}]"),
+        (None, None | Some(0)) => compact_str::format_compact!("[{base}]"),
+        (None, Some(offset)) if offset < 0 => {
+            compact_str::format_compact!("[{base} - {:#x}]", offset.unsigned_abs())
+        }
+        (None, Some(offset)) => compact_str::format_compact!("[{base} + {offset:#x}]"),
     }
 }
 

@@ -354,6 +354,14 @@ pub trait Arch {
         None
     }
 
+    /// [`Arch::lift`], with the name of each operand, for a reader: see
+    /// [`crate::il::Named`].
+    ///
+    /// Defaults to `None`, as [`Arch::lift`] does.
+    fn lift_named(&self, _insn: &Insn) -> Option<crate::il::Named> {
+        None
+    }
+
     /// The architecture the PLT stubs of a binary are in, where it is not
     /// this one.
     ///

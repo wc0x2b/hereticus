@@ -261,3 +261,10 @@ register names packed into words. `track_pages` still reads `w24` and
 `x24` too. Ending the page of `x24` there changed the texts of two
 functions of the libgnutls update and moved no truth test; find out
 whether those two show a real change before it ends them.
+
+## Rust has the idea of MIR, an in-between IL. Would that help this project?
+
+## Our IL is cool, but maybe it could be even better!
+1. Tui could show branches graphically, like other tools
+2. IL could be an emulator?
+3. IL could be an input/output simulator, might be nice for function diffing...
