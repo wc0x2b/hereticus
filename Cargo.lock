@@ -852,6 +852,7 @@ dependencies = [
  "bolero",
  "compact_str",
  "gimli",
+ "hereticus-il",
  "insta",
  "lzma-rs",
  "mimalloc",
@@ -880,6 +881,16 @@ dependencies = [
  "ratatui",
  "serde_json",
  "tabled",
+]
+
+[[package]]
+name = "hereticus-il"
+version = "0.1.0"
+dependencies = [
+ "bolero",
+ "compact_str",
+ "rstest",
+ "smallvec",
 ]
 
 [[package]]
