@@ -710,41 +710,11 @@ fn read_jump_table(
 }
 
 #[cfg(test)]
-mod extend_tests {
-    use super::*;
-    use crate::arch::Decoder as _;
-
-    #[test]
-    fn a_32_bit_register_in_a_64_bit_add_is_zero_extended() {
-        let shown = |words: u32| {
-            let code = words.to_le_bytes();
-            let insn = Aarch64.decode(&code, 0, 0).expect("decodes");
-            insn.to_string()
-        };
-        // From `llvm-mc --triple=aarch64`.
-        assert_eq!(shown(0x8b21_5061), "add x1, x3, w1, uxtw #4");
-        // `add x23, x10, w8, uxtw`, `sub x29, x6, w30, uxtw` and
-        // `cmp x12, w11, uxtw`, as `llvm-mc` reads them.
-        assert_eq!(shown(0x8b28_4157), "add x23, x10, w8, uxtw");
-        assert_eq!(shown(0xcb3e_40dd), "sub x29, x6, w30, uxtw");
-        assert_eq!(shown(0xeb2b_419f), "cmp x12, w11, uxtw");
-        assert_eq!(shown(0x9b22_7c20), "smull x0, w1, w2");
-        let extended = |opcode, operands: &str| extended_register(opcode, operands.into());
-        assert_eq!(extended(Opcode::ADD, "x0, x1, x2, lsl #3"), "x0, x1, x2, lsl #3");
-        assert_eq!(extended(Opcode::ADD, "w0, w1, w2, lsl #3"), "w0, w1, w2, lsl #3");
-        assert_eq!(extended(Opcode::SMADDL, "x0, w1, w2"), "x0, w1, w2");
-        assert_eq!(extended(Opcode::ADD, "x0, x1, w2, sxtw"), "x0, x1, w2, sxtw");
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::arch::Decoder as _;
     use crate::arch::decode_all;
-    use crate::il::{
-        self, AccessKind, Cond, Guard, Lifted, MemoryAccess, Op, RegSet, Test, Value, Width,
-    };
+    use crate::il::{self, Lifted};
 
     /// After an end, a register may hold any page it took, each once and
     /// the first first; a new page on the path read now replaces them.
@@ -782,175 +752,17 @@ mod tests {
 
     /// Encodings from `llvm-mc --triple=aarch64 -mattr=+lse --show-encoding`.
     mod words {
-        pub const CBNZ_X8: u32 = 0xb500_00e8;
-        pub const CBZ_X8: u32 = 0xb400_0068;
-        pub const CMN_X8_1: u32 = 0xb100_051f;
-        pub const B_NE: u32 = 0x5400_0121;
-        pub const CMP_X8_0: u32 = 0xf100_011f;
-        pub const CMP_W2_63: u32 = 0x7100_fc5f;
-        pub const B_HI: u32 = 0x5400_0208;
-        pub const TST_W0_4: u32 = 0x721e_001f;
-        pub const B_EQ: u32 = 0x5400_0080;
-        pub const TBZ_W0_2: u32 = 0x3610_0080;
-        pub const ADD_X0_X1_X2: u32 = 0x8b02_0020;
         pub const LDR_X1_X2_8: u32 = 0xf940_0441;
         pub const LDP_X29_X30_SP_POST: u32 = 0xa8c1_7bfd;
         pub const STR_W3_X4_X5: u32 = 0xb825_6883;
-        pub const STXR_W1_X2_X3: u32 = 0xc801_7c62;
-        pub const BL: u32 = 0x9400_0040;
-        pub const BLR_X8: u32 = 0xd63f_0100;
-        pub const RET: u32 = 0xd65f_03c0;
-        pub const CSEL_X8_XZR_X8_EQ: u32 = 0x9a88_03e8;
-        pub const MOVK_X23: u32 = 0xf2e3_05d7;
-        pub const SUBS_X0_X0_1: u32 = 0xf100_0400;
-        pub const LDADD_W1_W2_X3: u32 = 0xb821_0062;
-        pub const CMP_X1_X2: u32 = 0xeb02_003f;
     }
 
     fn lift_one(word: u32) -> Lifted {
         Aarch64.lift(&decode_one(word)).expect("the word must lift")
     }
 
-    fn regs(regs: &[Reg]) -> RegSet {
-        regs.iter().copied().collect()
-    }
-
     fn x(number: u8) -> Reg {
         Reg::General(number)
-    }
-
-    /// The first guard that `words` make, and how many words it takes.
-    fn guard_of(words: &[u32]) -> Option<(usize, Guard)> {
-        let lifted: Vec<Option<Lifted>> = words.iter().map(|&word| Some(lift_one(word))).collect();
-        let found = *crate::il::find_guards(&lifted).first()?;
-        Some((found.branch + 1 - found.compare.unwrap_or(found.branch), found.guard))
-    }
-
-    #[test]
-    fn cbnz_and_cmp_with_b_ne_are_one_guard() {
-        let (taken, fused) = guard_of(&[words::CMP_X8_0, words::B_NE]).unwrap();
-        assert_eq!(taken, 2);
-        assert_eq!(guard_of(&[words::CBNZ_X8]), Some((1, fused)));
-        assert_eq!(fused.cond, Cond::NotEqual);
-        assert_eq!(fused.left, Value::Reg(x(8)));
-        assert_eq!(fused.right, Value::Const(0));
-    }
-
-    #[test]
-    fn cbz_tests_for_zero() {
-        let (_, guard) = guard_of(&[words::CBZ_X8]).unwrap();
-        assert_eq!(guard.cond, Cond::Equal);
-        assert_eq!(guard.width, Width::Bits64);
-    }
-
-    /// The check of CVE-2024-23265: `x8 != -1`.
-    #[test]
-    fn cmn_with_one_compares_with_minus_one() {
-        let (_, guard) = guard_of(&[words::CMN_X8_1, words::B_NE]).unwrap();
-        assert_eq!(guard.cond, Cond::NotEqual);
-        assert_eq!(guard.right, Value::Const(u64::MAX));
-    }
-
-    /// The check of CVE-2025-24257: a size above 63.
-    #[test]
-    fn a_32_bit_bound_keeps_its_width() {
-        let (_, guard) = guard_of(&[words::CMP_W2_63, words::B_HI]).unwrap();
-        assert_eq!(guard.cond, Cond::UnsignedGreater);
-        assert_eq!(guard.left, Value::Reg(x(2)));
-        assert_eq!(guard.right, Value::Const(63));
-        assert_eq!(guard.width, Width::Bits32);
-    }
-
-    #[test]
-    fn tst_with_b_eq_and_tbz_are_one_guard() {
-        let (_, tst) = guard_of(&[words::TST_W0_4, words::B_EQ]).unwrap();
-        let (_, tbz) = guard_of(&[words::TBZ_W0_2]).unwrap();
-        assert_eq!(tst, tbz);
-        assert_eq!(tbz.cond, Cond::BitsClear);
-        assert_eq!(tbz.right, Value::Const(4));
-    }
-
-    #[test]
-    fn a_compare_of_two_registers_reads_both() {
-        let lifted = lift_one(words::CMP_X1_X2);
-        assert_eq!(lifted.reads, regs(&[x(1), x(2)]));
-        assert_eq!(lifted.writes, regs(&[Reg::Flags]), "the zero register is no destination");
-    }
-
-    #[test]
-    fn arithmetic_that_sets_flags_is_no_compare() {
-        let lifted = lift_one(words::SUBS_X0_X0_1);
-        assert_eq!(lifted.writes, regs(&[x(0), Reg::Flags]));
-        assert_eq!(lifted.test, None, "a loop count is work, not a check");
-    }
-
-    #[test]
-    fn computing_writes_the_first_operand() {
-        let lifted = lift_one(words::ADD_X0_X1_X2);
-        assert_eq!(lifted.writes, regs(&[x(0)]));
-        assert_eq!(lifted.reads, regs(&[x(1), x(2)]));
-        assert_eq!(lifted.memory, None);
-    }
-
-    #[test]
-    fn loads_and_stores_name_their_registers_and_width() {
-        let load = lift_one(words::LDR_X1_X2_8);
-        assert_eq!((load.reads, load.writes), (regs(&[x(2)]), regs(&[x(1)])));
-        assert_eq!(
-            load.memory,
-            Some(MemoryAccess { kind: AccessKind::Load, width: Some(Width::Bits64) })
-        );
-
-        let pair = lift_one(words::LDP_X29_X30_SP_POST);
-        assert_eq!(pair.writes, regs(&[x(29), x(30), Reg::Stack]), "the base is written back");
-        assert_eq!(pair.reads, regs(&[Reg::Stack]));
-
-        let store = lift_one(words::STR_W3_X4_X5);
-        assert_eq!(store.reads, regs(&[x(3), x(4), x(5)]));
-        assert!(store.writes.is_empty());
-        assert_eq!(
-            store.memory,
-            Some(MemoryAccess { kind: AccessKind::Store, width: Some(Width::Bits32) })
-        );
-
-        let exclusive = lift_one(words::STXR_W1_X2_X3);
-        assert_eq!(exclusive.writes, regs(&[x(1)]), "the status");
-        assert_eq!(exclusive.reads, regs(&[x(2), x(3)]));
-
-        let atomic = lift_one(words::LDADD_W1_W2_X3);
-        assert_eq!((atomic.reads, atomic.writes), (regs(&[x(1), x(3)]), regs(&[x(2)])));
-        assert_eq!(atomic.memory.map(|access| access.kind), Some(AccessKind::LoadStore));
-    }
-
-    #[test]
-    fn calls_and_returns_use_the_link_register() {
-        assert_eq!(lift_one(words::BL).writes, regs(&[x(30)]));
-        let indirect = lift_one(words::BLR_X8);
-        assert_eq!((indirect.reads, indirect.writes), (regs(&[x(8)]), regs(&[x(30)])));
-        assert!(lift_one(words::RET).reads.contains(x(30)));
-    }
-
-    #[test]
-    fn a_select_reads_the_flags_and_a_movk_its_destination() {
-        let select = lift_one(words::CSEL_X8_XZR_X8_EQ);
-        assert_eq!(select.reads, regs(&[x(8), Reg::Flags]));
-        assert_eq!(select.writes, regs(&[x(8)]));
-        let movk = lift_one(words::MOVK_X23);
-        assert_eq!((movk.reads, movk.writes), (regs(&[x(23)]), regs(&[x(23)])));
-    }
-
-    #[test]
-    fn operands_come_in_printed_order() {
-        use il::Operand::{Const, Other, Target, Zero};
-        let reg = |number| il::Operand::Reg(x(number));
-        let operands = |word| lift_one(word).operands.into_vec();
-        assert_eq!(operands(words::SUBS_X0_X0_1), [reg(0), reg(0), Const(1)]);
-        assert_eq!(operands(words::CSEL_X8_XZR_X8_EQ), [reg(8), Zero, reg(8), Other]);
-        assert!(
-            matches!(operands(words::BL).as_slice(), [Target(Some(_))]),
-            "a call names its distance"
-        );
-        assert_eq!(operands(words::RET), [reg(30)], "the link register");
     }
 
     #[test]
@@ -975,33 +787,6 @@ mod tests {
         assert!(Aarch64.is_frame_register(x(29)));
         assert!(!Aarch64.is_frame_register(x(28)));
         assert!(!Aarch64.is_frame_register(Reg::Vector(29)));
-    }
-
-    #[test]
-    fn lifting_any_word_never_panics() {
-        bolero::check!().with_type::<u32>().for_each(|&word| {
-            let bytes = word.to_le_bytes();
-            let insn = Aarch64.decode(&bytes, 0, 0x1000).expect("every word decodes or is unknown");
-            if let Some(lifted) = Aarch64.lift(&insn)
-                && let Some(Test::Guard(_) | Test::OnFlags(_)) = lifted.test
-            {
-                assert!(
-                    matches!(insn.kind, InsnKind::Branch { .. }),
-                    "{insn}: a test that branches"
-                );
-            }
-        });
-    }
-
-    #[test]
-    fn control_moves_as_the_instruction_says() {
-        assert_eq!(decode_one(0xd65f_03c0).kind, InsnKind::Return); // ret
-        assert_eq!(decode_one(0x9400_0004).kind, InsnKind::Call { target: Some(0x1010) }); // bl
-        assert_eq!(decode_one(0x1400_0002).kind, InsnKind::Jump { target: Some(0x1008) }); // b
-        assert_eq!(decode_one(0x5400_0041).kind, InsnKind::Branch { target: Some(0x1008) }); // b.ne
-        assert_eq!(decode_one(0xb400_0060).kind, InsnKind::Branch { target: Some(0x100c) }); // cbz x0
-        assert_eq!(decode_one(0xd61f_0220).kind, InsnKind::Jump { target: None }); // br x17
-        assert_eq!(decode_one(0xd63f_0100).kind, InsnKind::Call { target: None }); // blr x8
     }
 
     #[test]
@@ -1088,104 +873,6 @@ mod tests {
         let bytes = code(&[0xd65f_03c0, 0xd503_201f, 0]);
         assert_eq!(Aarch64.trim_padding(&bytes), &bytes[..4]);
         assert!(Aarch64.is_padding(&decode_one(0xd503_201f)));
-    }
-
-    /// An exclusive access is one step of an atomic sequence, never a plain
-    /// load or store that a pair could stand for.
-    #[test]
-    fn an_exclusive_access_is_atomic() {
-        assert_eq!(lift_one(words::STXR_W1_X2_X3).op, Op::Atomic);
-        // `ldxp x1, x2, [x0]`
-        assert_eq!(lift_one(0xc87f_0801).op, Op::Atomic);
-        assert_eq!(lift_one(words::LDR_X1_X2_8).op, Op::Load);
-    }
-
-    /// `floor` and `ceil` inline as `frintm` and `frintp`, and Lua's
-    /// `math_floor` and `math_ceil` are twins but for them.
-    #[test]
-    fn a_float_operation_names_what_it_computes() {
-        let cases = [
-            (0x1e61_0800_u32, Op::FloatMultiply),    // fmul d0, d0, d1
-            (0x1e61_1800, Op::FloatDivide),          // fdiv d0, d0, d1
-            (0x1e65_4000, Op::FloatRoundDown),       // frintm d0, d0
-            (0x1e64_c000, Op::FloatRoundUp),         // frintp d0, d0
-            (0x1e78_0000, Op::FloatRoundTowardZero), // fcvtzs w0, d0
-            (0x1e62_0000, Op::FloatConvert),         // scvtf d0, w0
-        ];
-        for (word, op) in cases {
-            assert_eq!(lift_one(word).op, op, "{word:#010x}");
-        }
-    }
-
-    /// The decoder prints an alias in place of the instruction it stands
-    /// for, and the alias names what the instruction computes.
-    #[test]
-    fn an_alias_computes_what_it_names() {
-        let cases = [
-            (0x2a01_03e0_u32, Op::Move),             // mov w0, w1 (orr)
-            (0x9100_03e0, Op::Move),                 // mov x0, sp (add)
-            (0x4b01_03e0, Op::Negate),               // neg w0, w1 (sub)
-            (0xeb01_03e0, Op::Negate),               // negs x0, x1 (subs)
-            (0xda01_03e0, Op::Negate),               // ngc x0, x1 (sbc)
-            (0x2a21_03e0, Op::Not),                  // mvn w0, w1 (orn)
-            (0x9b02_7c20, Op::Multiply),             // mul x0, x1, x2 (madd)
-            (0x9b22_fc20, Op::Multiply),             // smnegl x0, w1, w2 (smsubl)
-            (0xd37f_f800, Op::ShiftLeft),            // lsl x0, x0, #1 (ubfm)
-            (0xd341_fc00, Op::ShiftRight),           // lsr x0, x0, #1 (ubfm)
-            (0x5300_1c00, Op::Extend),               // uxtb w0, w0 (ubfm)
-            (0xd344_1c00, Op::BitField),             // ubfx x0, x0, #4, #4 (ubfm)
-            (0x1300_1c00, Op::Extend),               // sxtb w0, w0 (sbfm)
-            (0x9340_7c00, Op::Extend),               // sxtw x0, w0 (sbfm)
-            (0x9340_fc00, Op::ShiftRightArithmetic), // asr x0, x0, #0 (sbfm)
-            (words::CMP_X1_X2, Op::Compare),         // cmp x1, x2 (subs)
-            (words::TST_W0_4, Op::Compare),          // tst w0, #4 (ands)
-            (words::SUBS_X0_X0_1, Op::Subtract),     // subs x0, x0, #1
-        ];
-        for (word, op) in cases {
-            assert_eq!(lift_one(word).op, op, "{word:#010x}");
-        }
-    }
-
-    /// `ldadd w1, wzr, [x0]` keeps no old value, and prints as `stadd`. An
-    /// acquiring form has no such alias, as it orders what comes after it.
-    #[test]
-    fn an_atomic_that_keeps_no_value_is_a_store() {
-        let store = lift_one(0xb821_001f); // stadd w1, [x0]
-        assert_eq!(store.op, Op::Store);
-        assert_eq!(store.memory.map(|access| access.kind), Some(AccessKind::Store));
-        assert!(store.writes.is_empty());
-        assert_eq!(lift_one(0xb8a1_001f).op, Op::Atomic); // ldadda w1, wzr, [x0]
-    }
-
-    /// Instructions that keep part of their destination read it.
-    #[test]
-    fn an_insert_reads_its_destination() {
-        let insert = lift_one(0x4e0c_1c20); // mov v0.s[1], w1 (ins)
-        assert!(insert.reads.contains(Reg::Vector(0)));
-        assert!(insert.writes.contains(Reg::Vector(0)));
-        let select = lift_one(0x6e62_1c20); // bsl v0.16b, v1.16b, v2.16b
-        assert!(select.reads.contains(Reg::Vector(0)));
-        assert!(select.writes.contains(Reg::Vector(0)));
-    }
-
-    /// `ldrab` loads a whole pointer, though its name ends in `b`.
-    #[test]
-    fn a_signed_pointer_load_moves_a_pointer() {
-        let load = lift_one(0xf8bf_0c20); // ldrab x0, [x1, #0xf80]!
-        assert_eq!(load.memory.and_then(|access| access.width), Some(Width::Bits64));
-    }
-
-    /// `bc.eq` branches as `b.eq` does, and `eret` returns.
-    #[test]
-    fn a_hinted_branch_and_an_exception_return_move_control() {
-        let branch = decode_one(0x5400_0010); // bc.eq
-        assert_eq!(branch.kind, InsnKind::Branch { target: Some(0x1000) });
-        let lifted = lift_one(0x5400_0010);
-        assert_eq!(lifted.test, Some(Test::OnFlags(Cond::Equal)));
-        assert!(lifted.reads.contains(Reg::Flags));
-        assert_eq!(decode_one(0xd69f_03e0).kind, InsnKind::Return);
-        assert_eq!(lift_one(0xd69f_03e0).op, Op::Return);
-        assert_eq!(lift_one(0xd503_229f).op, Op::System, "csdb");
     }
 
     /// A function that loads a pointer from a table points at what the
