@@ -4206,7 +4206,8 @@ pub fn instruction_diff(
 /// alignment. Everything else, the constant included, stays: a changed value is
 /// a real difference the reader came to see.
 fn diff_key(insn: &Insn) -> String {
-    let (name, operands) = split_printed(&insn.text);
+    let printed = insn.to_string();
+    let (name, operands) = split_printed(&printed);
     let operands = operands
         .split(',')
         .map(str::trim)
