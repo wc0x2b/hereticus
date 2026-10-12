@@ -8,7 +8,7 @@
 //!    instruction width is what makes reported addresses right.
 
 use compact_str::CompactString;
-use yaxpeax_arch::{Decoder, Reader, U8Reader, U32le};
+use yaxpeax_arch::{Decoder as _, Reader, U8Reader, U32le};
 use yaxpeax_arm::armv7::{
     ConditionCode, InstDecoder, Instruction, Opcode, Operand, Reg, RegShift, RegShiftStyle,
     ShiftStyle,
@@ -18,7 +18,8 @@ use core::ops::Range;
 use std::collections::BTreeSet;
 
 use super::{
-    Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, Printing, split_printed,
+    Arch, DataAmongCode, DecodeError, Decoder, Insn, InsnKind, JumpTable, Memory, Printing,
+    split_printed,
 };
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
@@ -467,7 +468,7 @@ impl Arm32 {
     }
 }
 
-impl Arch for Arm32 {
+impl Decoder for Arm32 {
     /// The condition of `addeq` and the `s` of `adds` are dropped: they say
     /// when the work runs and what it leaves in the flags, not what it
     /// computes. The condition of a branch is kept: it is the test.
@@ -488,6 +489,29 @@ impl Arch for Arm32 {
         INSN_WIDTH
     }
 
+    fn pointer_width(&self) -> usize {
+        INSN_WIDTH
+    }
+
+    fn read_pointer(&self, bytes: &[u8]) -> u64 {
+        u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
+        let word = insn.bytes();
+        let a32 = word.try_into().ok().map(u32::from_le_bytes);
+        lift_with(InstDecoder::default(), insn, word, a32.map(|a32| (a32, Encoding::A32)))
+    }
+
+    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
+        let word = insn.bytes();
+        let a32 = word.try_into().ok().map(u32::from_le_bytes);
+        let fallback = a32.map(|a32| (a32, Encoding::A32));
+        lift_named_with(InstDecoder::default(), insn, word, fallback, Printing::Text)
+    }
+}
+
+impl Arch for Arm32 {
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         matches!(reg, il::Reg::Stack | FRAME)
     }
@@ -770,27 +794,6 @@ impl Arch for Arm32 {
 
     fn unwind_section(&self) -> Option<&'static str> {
         Some(UNWIND_SECTION)
-    }
-
-    fn pointer_width(&self) -> usize {
-        INSN_WIDTH
-    }
-
-    fn read_pointer(&self, bytes: &[u8]) -> u64 {
-        u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
-        let word = insn.bytes();
-        let a32 = word.try_into().ok().map(u32::from_le_bytes);
-        lift_with(InstDecoder::default(), insn, word, a32.map(|a32| (a32, Encoding::A32)))
-    }
-
-    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
-        let word = insn.bytes();
-        let a32 = word.try_into().ok().map(u32::from_le_bytes);
-        let fallback = a32.map(|a32| (a32, Encoding::A32));
-        lift_named_with(InstDecoder::default(), insn, word, fallback, Printing::Text)
     }
 }
 

@@ -1746,6 +1746,7 @@ fn prologue_past_pool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::Decoder as _;
     use crate::arch::arm32::Arm32;
 
     /// A `pop` that loads `pc` returns from a frame, in its list form and

@@ -12,7 +12,9 @@
 use bolero::check;
 
 use hereticus::address::AddressSpace;
-use hereticus::arch::{Arch, DecodeError, InsnKind, arm32::Arm32, decode_all, mips::Mips32};
+use hereticus::arch::{
+    Arch, DecodeError, Decoder, InsnKind, arm32::Arm32, decode_all, mips::Mips32,
+};
 use hereticus::norm::{OperandShape, normalize, normalize_body, normalize_body_in};
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};

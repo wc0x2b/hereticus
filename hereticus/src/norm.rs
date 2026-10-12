@@ -624,6 +624,7 @@ fn normalize_test(test: &Test, address: bool) -> NormInsn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::Decoder as _;
     use crate::arch::aarch64::Aarch64;
     use crate::arch::arm32::Arm32;
 

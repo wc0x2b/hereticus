@@ -21,7 +21,7 @@ use core::ops::Range;
 use std::collections::BTreeSet;
 
 use compact_str::CompactString;
-use yaxpeax_arch::{Decoder, U8Reader};
+use yaxpeax_arch::{Decoder as _, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
 
 use super::arm32::{
@@ -31,8 +31,8 @@ use super::arm32::{
     pool_loads, track_pool_words,
 };
 use super::{
-    Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, Printing, TableJumps,
-    VectorTable, split_printed,
+    Arch, DataAmongCode, DecodeError, Decoder, Insn, InsnKind, JumpTable, Memory, Printing,
+    TableJumps, VectorTable, split_printed,
 };
 use crate::address::{AddressSpace, ConstantKind};
 
@@ -325,7 +325,7 @@ impl Thumb2 {
     }
 }
 
-impl Arch for Thumb2 {
+impl Decoder for Thumb2 {
     fn operation_name(&self, insn: &Insn) -> CompactString {
         Arm32.operation_name(insn)
     }
@@ -344,6 +344,57 @@ impl Arch for Thumb2 {
         HALFWORD
     }
 
+    /// An `it` makes the next one to four instructions conditional: `itt`
+    /// two, `itete` four. A return or a jump among them falls through when
+    /// its condition fails, so it is a branch.
+    fn after_decoding(&self, insns: &mut [Insn]) {
+        // The conditions of the instructions an `it` covers, next first.
+        let mut conditions: Vec<ConditionCode> = Vec::new();
+        for insn in insns {
+            if !conditions.is_empty() {
+                let code = conditions.remove(0);
+                insn.kind = match insn.kind {
+                    InsnKind::Return => InsnKind::Branch { target: None },
+                    InsnKind::Jump { target } => InsnKind::Branch { target },
+                    kind => kind,
+                };
+                // A 16-bit form that sets the flags outside a block does
+                // not inside one. [`print`] reads both from the opcode.
+                let narrow = insn.bytes_len == HALFWORD;
+                match &mut insn.opcode {
+                    super::Opcode::Thumb(Decoded::Core { condition, flags, .. }) => {
+                        *condition = code;
+                        if narrow {
+                            *flags = Flags::Kept;
+                        }
+                    }
+                    super::Opcode::Thumb(Decoded::Vfp { condition, .. }) => *condition = code,
+                    _ => {}
+                }
+            } else if let super::Opcode::Thumb(Decoded::It { condition, mask }) = insn.opcode {
+                conditions = it_conditions(condition, mask).unwrap_or_default();
+            }
+        }
+    }
+
+    fn pointer_width(&self) -> usize {
+        WORD
+    }
+
+    fn lift(&self, insn: &Insn) -> Option<crate::il::Lifted> {
+        self.lift_as(insn, Printing::Skip).map(|named| named.lifted)
+    }
+
+    fn lift_named(&self, insn: &Insn) -> Option<crate::il::Named> {
+        self.lift_as(insn, Printing::Text)
+    }
+
+    fn read_pointer(&self, bytes: &[u8]) -> u64 {
+        u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+}
+
+impl Arch for Thumb2 {
     fn is_frame_register(&self, reg: crate::il::Reg) -> bool {
         Arm32.is_frame_register(reg)
     }
@@ -502,39 +553,6 @@ impl Arch for Thumb2 {
         Arm32.is_tail_call(insn)
     }
 
-    /// An `it` makes the next one to four instructions conditional: `itt`
-    /// two, `itete` four. A return or a jump among them falls through when
-    /// its condition fails, so it is a branch.
-    fn after_decoding(&self, insns: &mut [Insn]) {
-        // The conditions of the instructions an `it` covers, next first.
-        let mut conditions: Vec<ConditionCode> = Vec::new();
-        for insn in insns {
-            if !conditions.is_empty() {
-                let code = conditions.remove(0);
-                insn.kind = match insn.kind {
-                    InsnKind::Return => InsnKind::Branch { target: None },
-                    InsnKind::Jump { target } => InsnKind::Branch { target },
-                    kind => kind,
-                };
-                // A 16-bit form that sets the flags outside a block does
-                // not inside one. [`print`] reads both from the opcode.
-                let narrow = insn.bytes_len == HALFWORD;
-                match &mut insn.opcode {
-                    super::Opcode::Thumb(Decoded::Core { condition, flags, .. }) => {
-                        *condition = code;
-                        if narrow {
-                            *flags = Flags::Kept;
-                        }
-                    }
-                    super::Opcode::Thumb(Decoded::Vfp { condition, .. }) => *condition = code,
-                    _ => {}
-                }
-            } else if let super::Opcode::Thumb(Decoded::It { condition, mask }) = insn.opcode {
-                conditions = it_conditions(condition, mask).unwrap_or_default();
-            }
-        }
-    }
-
     /// A zero halfword reads as `lsls r0, r0, 0`, which changes nothing but
     /// the flags, and fills the gap before a word-aligned pool.
     fn is_padding(&self, insn: &Insn) -> bool {
@@ -571,22 +589,6 @@ impl Arch for Thumb2 {
 
     fn unwind_section(&self) -> Option<&'static str> {
         Some(UNWIND_SECTION)
-    }
-
-    fn pointer_width(&self) -> usize {
-        WORD
-    }
-
-    fn lift(&self, insn: &Insn) -> Option<crate::il::Lifted> {
-        self.lift_as(insn, Printing::Skip).map(|named| named.lifted)
-    }
-
-    fn lift_named(&self, insn: &Insn) -> Option<crate::il::Named> {
-        self.lift_as(insn, Printing::Text)
-    }
-
-    fn read_pointer(&self, bytes: &[u8]) -> u64 {
-        u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     fn stub_arch(&self) -> Option<&'static dyn Arch> {
