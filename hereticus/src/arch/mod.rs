@@ -950,8 +950,9 @@ pub(crate) fn split_printed(text: &str) -> (&str, &str) {
     }
 }
 
-/// The name of `insn` as [`Insn`]'s `Display` prints it, as `ldr`.
-#[cfg(test)]
+/// The name of `insn` as [`Insn`]'s `Display` prints it, as `ldr` or
+/// `vsqrt.f64`: for a reader, as the IL view names an operation it has no
+/// operator for.
 pub(crate) fn printed_name(insn: &Insn) -> String {
     split_printed(&insn.to_string()).0.to_string()
 }
@@ -1122,6 +1123,50 @@ mod tests {
                 assert_eq!(none, "", "{name}: a skipped text was made");
                 assert!(!text.trim().is_empty(), "{name}: no text for {code:02x?}");
                 assert_eq!(printed.to_string(), one_space(&text), "{name}: Display differs");
+            }
+        });
+    }
+
+    /// Every architecture, by name.
+    const ARCHES: [(&str, &dyn Arch); 7] = [
+        ("A64", &aarch64::Aarch64),
+        ("A32", &arm32::Arm32),
+        ("T32", &thumb::Thumb2),
+        ("MIPS", &mips::Mips32::BIG),
+        ("MIPSel", &mips::Mips32::LITTLE),
+        ("MIPS16e", &mips16::Mips16::BIG),
+        ("MIPS16el", &mips16::Mips16::LITTLE),
+    ];
+
+    /// The names stay in step with the operands: a lift with names lifts
+    /// what the lift alone does, with one name for each operand, and the
+    /// decoder of each instruction is the one that read it.
+    #[test]
+    fn a_lift_names_each_operand_it_lifts() {
+        bolero::check!().with_type::<[u8; 4]>().for_each(|code| {
+            for (name, arch) in ARCHES {
+                let (insns, _) = decode_all(arch, code, 0x1000);
+                for insn in &insns {
+                    let named = lift_named(insn);
+                    assert_eq!(
+                        named.as_ref().map(|named| &named.lifted),
+                        arch.lift(insn).as_ref(),
+                        "{name}: {insn}: a name changed the lift"
+                    );
+                    if let Some(named) = named {
+                        assert_eq!(
+                            named.names.len(),
+                            named.lifted.operands.len(),
+                            "{name}: {insn}: {:?} for {:?}",
+                            named.names,
+                            named.lifted.operands
+                        );
+                    }
+                    assert!(
+                        reader_of(insn).is_some() || insn.kind == InsnKind::Unknown,
+                        "{name}: {insn}: no decoder"
+                    );
+                }
             }
         });
     }

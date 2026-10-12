@@ -52,8 +52,8 @@ twins in different orders, and their callers are twins too.
 `scan.rs` and `arch/` find 45795 of 46006 functions exactly in stripped
 libraries, over ARM, Thumb-2, AArch64 and MIPS, and few Rust crates do
 that. They depend only on `address.rs` and `obj::Function`. But the `Arch`
-trait mixes decoding with the rules of `hereticus`, about 30 methods, and
-reads operands back from text. Split a stable API out of it first.
+trait mixes decoding with the rules of `hereticus`, about 30 methods.
+Split a stable API out of it first.
 
 ## Move the lift and the decoders into `crates/hereticus-il`
 
@@ -61,9 +61,9 @@ Put `il.rs` and the decoder and lift of each architecture in `arch/` into
 a crate of their own, `crates/hereticus-il`. Keep the rules of
 `hereticus`, such as padding, tail calls and jump tables, out of it.
 Thus another tool can decode and lift ARM, Thumb-2, AArch64 and MIPS
-without the matching. Do this after the IL view and the diff read the
-lift, so that the crate needs no printed text but its `Display`. It is
-also the first step of the library above.
+without the matching. The IL view and the diff read the names that
+`Arch::lift_named` gives, so the crate needs no printed text but its
+`Display`. It is also the first step of the library above.
 
 ## Unpack more firmware containers
 
@@ -211,21 +211,6 @@ says where the time goes.
 that became a `beq` reads as a change, but drops it from `b.ne` of A64.
 Both kept what the names did before. A flipped condition is a real edit;
 decide one rule for both and measure it.
-
-## Read the IL view and the diff from the lift
-
-`Insn` holds no text, but the diff and the IL view still read what
-`Display` prints. `diff_key` in `matching.rs` aligns on that text. The
-IL view reads registers, targets, register lists and memory operands
-from it (`split_operands`, `memory_text`, `list_statement`,
-`frame_statement` and `aarch64_statement` in `view.rs`), because the IL
-holds no names. Thus each line decodes its instruction a second time.
-
-To read them from the lift, give `il::Reg` a name on each architecture,
-and key the diff on a lift that tells apart all that the text does: a
-system register now lifts to `Operand::Other`, so two `mrs` that read
-different registers would align as the same. Then `split_printed` is
-only for the decoders.
 
 ## Make the matching faster
 

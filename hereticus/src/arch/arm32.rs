@@ -2395,15 +2395,20 @@ impl IntegerWord {
             Self::ShiftByRegister { rd, rm, rs, .. } => {
                 [name(rd), name(rm), name(rs)].into_iter().collect()
             }
+            // As the lift lists them: written first, then each read that is
+            // not written.
             Self::HalfwordMultiply { kind, rd, ra, rn, rm, .. } => {
-                let listed: &[u32] = match kind {
-                    HalfwordMultiply::Multiply | HalfwordMultiply::WordMultiply => &[rd, rn, rm],
-                    HalfwordMultiply::MultiplyAdd | HalfwordMultiply::WordMultiplyAdd => {
-                        &[rd, rn, rm, ra]
+                let (written, read_too): (&[u32], &[u32]) = match kind {
+                    HalfwordMultiply::Multiply | HalfwordMultiply::WordMultiply => {
+                        (&[rd], &[rn, rm])
                     }
-                    HalfwordMultiply::LongMultiplyAdd => &[ra, rd, rn, rm],
+                    HalfwordMultiply::MultiplyAdd | HalfwordMultiply::WordMultiplyAdd => {
+                        (&[rd], &[rn, rm, ra])
+                    }
+                    HalfwordMultiply::LongMultiplyAdd => (&[ra, rd], &[ra, rd, rn, rm]),
                 };
-                listed.iter().map(|&number| name(number)).collect()
+                let listed = written.iter().chain(read_too.iter().filter(|r| !written.contains(r)));
+                listed.map(|&number| name(number)).collect()
             }
             Self::Halfword { access, rt, rn, offset, index } => {
                 let pair = access.is_pair().then(|| name((rt + 1) & 15));
