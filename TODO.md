@@ -205,11 +205,10 @@ decide one rule for both and measure it.
 ## Print instruction text only on demand
 
 `Insn` still holds its printed `text` and where its operands start. The
-matcher no longer reads them, but the arch modules, `scan.rs`,
-`callee.rs`, `view.rs` and some tests do. Move each of these uses to
-the lift or the opcode. Then remove `text`, `operands()`, `with_text`
-and `split_printed` from `Insn`, and print it from its bytes in
-`Display`, for the diff and the IL view only.
+arch modules, `view.rs`, `diff_key` in `matching.rs` and some tests read
+them. Move each of these uses to the lift or the opcode. Then remove
+`text`, `operands()`, `with_text` and `split_printed` from `Insn`, and
+print it from its bytes in `Display`, for the diff and the IL view only.
 
 ## Make the matching faster
 
