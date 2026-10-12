@@ -1,7 +1,7 @@
 //! The decoder and the lifter of T32, which read one instruction at a
 //! time, with the condition of the `it` that covers it, and know nothing
 //! of the binary around it. The rules that read Thumb-2 code, as table
-//! branches and the switch to A32 after `bx pc`, are in the module above.
+//! branches and the switch to A32 after `bx pc`, are in `hereticus`.
 
 use crate::arch::arm32::{
     Arm32, Decoded, Encoding, Extend, Flags, IntegerWord, NEON_LOAD_STORE, NEON_TEXT, UNKNOWN_TEXT,
@@ -14,9 +14,9 @@ use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operan
 
 /// The text of `insn`, read again from its bytes, with the condition of
 /// the `it` that covers it.
-pub(crate) fn print(insn: &Insn) -> Option<String> {
+pub fn print(insn: &Insn) -> Option<String> {
     let (alone, text) = Thumb2.read(insn.bytes(), 0, insn.address, Printing::Text).ok()?;
-    // [`Arch::after_decoding`] writes the condition of an `it` into the
+    // [`Decoder::after_decoding`] writes the condition of an `it` into the
     // opcode, so an opcode that differs from the one read alone holds it.
     let covered = match insn.opcode {
         crate::arch::Opcode::Thumb(
@@ -36,7 +36,7 @@ pub(crate) fn print(insn: &Insn) -> Option<String> {
 /// `yaxpeax-arm` prints no condition inside the block, so `movgt r0, #0`
 /// reads as `movs r0, 0x0`. A 16-bit form that sets the flags outside a
 /// block does not inside one.
-pub(crate) fn conditional_text(text: &str, width: usize, code: ConditionCode) -> String {
+pub fn conditional_text(text: &str, width: usize, code: ConditionCode) -> String {
     let condition = condition_name(code);
     let (name, operands) = split_printed(text);
     let base = match width == HALFWORD && name.len() > 2 {
@@ -50,10 +50,10 @@ pub(crate) fn conditional_text(text: &str, width: usize, code: ConditionCode) ->
 }
 
 /// The narrow T32 instruction, and the alignment of every one.
-pub(crate) const HALFWORD: usize = 2;
+pub const HALFWORD: usize = 2;
 
 /// The wide T32 instruction.
-pub(crate) const WORD: usize = 4;
+pub const WORD: usize = 4;
 
 /// ARM32 in T32 (Thumb-2) mode.
 #[derive(Clone, Copy, Debug, Default)]
@@ -62,8 +62,8 @@ pub struct Thumb2;
 impl Thumb2 {
     /// Lift `insn`, with the name of each operand where `printing` asks for
     /// them, as [`Thumb2::read`] prints them.
-    fn lift_as(self, insn: &Insn, printing: Printing) -> Option<crate::il::Named> {
-        use crate::il::{Named, Names, Operand};
+    fn lift_as(self, insn: &Insn, printing: Printing) -> Option<crate::Named> {
+        use crate::{Named, Names, Operand};
         use compact_str::format_compact;
         let word = insn.bytes();
         let halves = match *word {
@@ -146,7 +146,7 @@ impl Thumb2 {
                 }
                 Operand::Target(_) => {
                     if let Some(target) = target {
-                        *name = crate::il::target_name(target.wrapping_sub(insn.address) as i64);
+                        *name = crate::target_name(target.wrapping_sub(insn.address) as i64);
                     }
                 }
                 Operand::Shifted { .. } if shifts_by_32 => {
@@ -162,8 +162,8 @@ impl Thumb2 {
 
     /// The instruction at `offset` of `code`, which starts at `address`,
     /// and its text where `printing` asks for it. An instruction that an
-    /// `it` covers reads as if it ran always: see [`Arch::after_decoding`].
-    pub(crate) fn read(
+    /// `it` covers reads as if it ran always: see [`Decoder::after_decoding`].
+    pub fn read(
         self,
         code: &[u8],
         offset: usize,
@@ -339,11 +339,11 @@ impl Decoder for Thumb2 {
         WORD
     }
 
-    fn lift(&self, insn: &Insn) -> Option<crate::il::Lifted> {
+    fn lift(&self, insn: &Insn) -> Option<crate::Lifted> {
         self.lift_as(insn, Printing::Skip).map(|named| named.lifted)
     }
 
-    fn lift_named(&self, insn: &Insn) -> Option<crate::il::Named> {
+    fn lift_named(&self, insn: &Insn) -> Option<crate::Named> {
         self.lift_as(insn, Printing::Text)
     }
 
@@ -363,7 +363,7 @@ impl Decoder for Thumb2 {
 /// too high, so `movw ip, 0xfaac` reads as `0xf0aac`. Most values a thunk
 /// builds have `imm4` clear, so only a far jump, as from T32 to an A32
 /// function, showed it.
-pub(crate) fn wide_move_operands(first: u16, second: u16) -> Option<String> {
+pub fn wide_move_operands(first: u16, second: u16) -> Option<String> {
     let value = wide_move_value(first, second)?;
     let register = REGISTER_NAMES[usize::from(second >> 8 & 0xf)];
     Some(format!("{register}, {value:#x}"))
@@ -380,11 +380,11 @@ pub(crate) fn wide_move_operands(first: u16, second: u16) -> Option<String> {
 /// so `str.w r8, [sp, #0x1c]` read as `str r8, [sp, ip, lsl 1]`. The loads
 /// of the same form read right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct WideStore {
+pub struct WideStore {
     value: u16,
     base: u16,
     offset: u16,
-    width: crate::il::Width,
+    width: crate::Width,
 }
 
 impl WideStore {
@@ -393,16 +393,16 @@ impl WideStore {
     /// #0xec4]` read as `strt`.
     fn printed_name(self) -> &'static str {
         match self.width {
-            crate::il::Width::Bits8 => "strb",
-            crate::il::Width::Bits16 => "strh",
+            crate::Width::Bits8 => "strb",
+            crate::Width::Bits16 => "strh",
             _ => "str",
         }
     }
 
     fn decoded(self) -> Decoded {
         let opcode = match self.width {
-            crate::il::Width::Bits8 => Opcode::STRB,
-            crate::il::Width::Bits16 => Opcode::STRH,
+            crate::Width::Bits8 => Opcode::STRB,
+            crate::Width::Bits16 => Opcode::STRH,
             _ => Opcode::STR,
         };
         always(opcode, Flags::Kept)
@@ -420,7 +420,7 @@ impl WideStore {
 
     /// The name of each operand of [`WideStore::lifted`], as
     /// [`WideStore::operands`] prints it.
-    fn names(self) -> crate::il::Names {
+    fn names(self) -> crate::Names {
         use compact_str::format_compact;
         let (value, base) =
             (REGISTER_NAMES[usize::from(self.value)], REGISTER_NAMES[usize::from(self.base)]);
@@ -432,8 +432,8 @@ impl WideStore {
     }
 
     /// The store as the IL reads it.
-    fn lifted(self) -> crate::il::Lifted {
-        use crate::il::{AccessKind, Lifted, MemoryAccess, Op, Operand, Reg};
+    fn lifted(self) -> crate::Lifted {
+        use crate::{AccessKind, Lifted, MemoryAccess, Op, Operand, Reg};
         let reg = |number: u16| match number {
             13 => Reg::Stack,
             number => Reg::General(number as u8),
@@ -457,8 +457,8 @@ impl WideStore {
 
 /// The wide store at an offset that `first` and `second` encode, if they
 /// encode one: see [`WideStore`].
-pub(crate) fn wide_store(first: u16, second: u16) -> Option<WideStore> {
-    use crate::il::Width;
+pub fn wide_store(first: u16, second: u16) -> Option<WideStore> {
+    use crate::Width;
     let width = match first & 0xfff0 {
         0xf8c0 => Width::Bits32,
         0xf8a0 => Width::Bits16,
@@ -471,7 +471,7 @@ pub(crate) fn wide_store(first: u16, second: u16) -> Option<WideStore> {
 }
 
 /// The 16-bit value of a T32 `movw` or `movt`: see [`wide_move_operands`].
-pub(crate) fn wide_move_value(first: u16, second: u16) -> Option<u32> {
+pub fn wide_move_value(first: u16, second: u16) -> Option<u32> {
     const MOVW: u16 = 0xf240;
     const MOVT: u16 = 0xf2c0;
     const OPCODE_MASK: u16 = 0xfbf0;
@@ -500,7 +500,7 @@ pub(crate) fn wide_move_value(first: u16, second: u16) -> Option<u32> {
 /// for its width. The shift, the extend and the insert are the operations
 /// A32 encodes too, so they read and lift as [`IntegerWord`] does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WideWord {
+pub enum WideWord {
     /// `mvn rd, #value`, or `mvns`.
     NotConstant { rd: u32, value: u32, sets_flags: bool },
     /// `lsl rd, rn, rm` and kin, or `lsls`.
@@ -584,7 +584,7 @@ impl WideWord {
 
     /// The name of each operand of [`WideWord::lifted`], as
     /// [`WideWord::text`] prints it.
-    fn names(self) -> crate::il::Names {
+    fn names(self) -> crate::Names {
         use compact_str::{CompactString, format_compact};
         let name = |number: u32| CompactString::from(REGISTER_NAMES[number as usize]);
         match self {
@@ -597,8 +597,8 @@ impl WideWord {
     }
 
     /// The IL form, as A32 lifts the same operation.
-    fn lifted(self) -> crate::il::Lifted {
-        use crate::il::{Lifted, Op, Operand, Reg};
+    fn lifted(self) -> crate::Lifted {
+        use crate::{Lifted, Op, Operand, Reg};
         match self {
             // `mvn r0, #1` puts the constant `~1` in `r0`.
             Self::NotConstant { rd, value, sets_flags } => {
@@ -627,7 +627,7 @@ impl WideWord {
 /// The 32-bit constant that the 12 bits of a T32 data processing word
 /// stand for: `ThumbExpandImm` of the Arm architecture manual. A byte
 /// repeated in a pattern, or a byte with its top bit set, rotated.
-pub(crate) fn thumb_expand_constant(constant: u32) -> u32 {
+pub fn thumb_expand_constant(constant: u32) -> u32 {
     let byte = constant & 0xff;
     if constant >> 10 == 0 {
         return match constant >> 8 & 0b11 {
@@ -649,7 +649,7 @@ pub(crate) fn thumb_expand_constant(constant: u32) -> u32 {
 ///
 /// `yaxpeax-arm` 0.4 prints the field, so `ands.w r3, r3, r1, asr #32`
 /// read as `asr 0`.
-pub(crate) fn shift_of_32(first: u16, second: u16, operands: String) -> String {
+pub fn shift_of_32(first: u16, second: u16, operands: String) -> String {
     let amount = (second >> 12 & 0b111) << 2 | (second >> 6 & 0b11);
     let kind = second >> 4 & 0b11;
     if first & 0xfe00 != 0xea00 || amount != 0 || !matches!(kind, 0b01 | 0b10) {
@@ -670,7 +670,7 @@ pub(crate) fn shift_of_32(first: u16, second: u16, operands: String) -> String {
 /// `yaxpeax-arm` 0.4 reads `tbh [pc, r2, lsl 1]` as `tbb [pc, r2, lsl r0]`,
 /// so a table of halfwords read as one of bytes. Measured on Lua built by GCC
 /// at `-Os` for Thumb-2, the `tbh` of `luaV_execute` cut it in 19 pieces.
-pub(crate) fn table_branch(first: u16, second: u16) -> Option<(&'static str, String, Opcode)> {
+pub fn table_branch(first: u16, second: u16) -> Option<(&'static str, String, Opcode)> {
     const TABLE_BRANCH: u16 = 0xe8d0;
     if first & 0xfff0 != TABLE_BRANCH || second & 0xffe0 != 0xf000 {
         return None;
@@ -684,12 +684,12 @@ pub(crate) fn table_branch(first: u16, second: u16) -> Option<(&'static str, Str
 }
 
 /// `opcode`, with no condition: an `it` before it gives one later.
-pub(crate) fn always(opcode: Opcode, flags: Flags) -> Decoded {
+pub fn always(opcode: Opcode, flags: Flags) -> Decoded {
     Decoded::Core { opcode, condition: ConditionCode::AL, flags }
 }
 
 /// The names of the general registers, as `yaxpeax-arm` prints them.
-pub(crate) const REGISTER_NAMES: [&str; 16] = [
+pub const REGISTER_NAMES: [&str; 16] = [
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "sl", "fp", "ip", "sp", "lr", "pc",
 ];
 
@@ -700,7 +700,7 @@ pub(crate) const REGISTER_NAMES: [&str; 16] = [
 /// NEON element or structure load or store is `1111 1001` in T32 and
 /// `1111 0100` in A32. VFP is the same word in both, with the A32 condition
 /// that means always.
-pub(crate) fn as_a32(word: u32) -> u32 {
+pub fn as_a32(word: u32) -> u32 {
     const LOW: u32 = 0x00ff_ffff;
     match word >> 24 {
         0xef => 0xf200_0000 | word & LOW,
@@ -711,7 +711,7 @@ pub(crate) fn as_a32(word: u32) -> u32 {
 }
 
 /// Report whether the halfword `first` opens a 32-bit instruction.
-pub(crate) fn is_wide(first: u16) -> bool {
+pub fn is_wide(first: u16) -> bool {
     matches!(first >> 11, 0b11101..=0b11111)
 }
 
@@ -721,7 +721,7 @@ pub(crate) fn is_wide(first: u16) -> bool {
 /// `yaxpeax` reports one more than the encoding holds for a narrow `cbz`,
 /// `cbnz` and conditional `b`, and the encoding itself for the rest. A call
 /// that switches to A32 goes to a word, so its target rounds down.
-pub(crate) fn branch_target(inst: &Instruction, address: u64, width: usize) -> Option<u64> {
+pub fn branch_target(inst: &Instruction, address: u64, width: usize) -> Option<u64> {
     let reported = inst.operands.iter().find_map(|operand| match operand {
         Operand::BranchThumbOffset(halfwords) => Some(i64::from(*halfwords)),
         _ => None,
@@ -746,7 +746,7 @@ pub(crate) fn branch_target(inst: &Instruction, address: u64, width: usize) -> O
 /// `name` with every `.` followed by `letter` taken out, as
 /// `str::replace` would, but by a scan of bytes: a search for a string on
 /// every instruction cost a sixth of a whole comparison.
-pub(crate) fn without_suffix(name: &str, letter: u8) -> String {
+pub fn without_suffix(name: &str, letter: u8) -> String {
     let bytes = name.as_bytes();
     let mut kept = String::with_capacity(name.len());
     let mut at = 0;
@@ -762,7 +762,7 @@ pub(crate) fn without_suffix(name: &str, letter: u8) -> String {
     kept
 }
 
-pub(crate) fn with_target_text(operands: &str, address: u64, target: u64) -> String {
+pub fn with_target_text(operands: &str, address: u64, target: u64) -> String {
     // A search for a byte, not for `"$+"`: this runs on every branch.
     let after_dollar = |sign: u8| {
         operands
@@ -784,7 +784,7 @@ pub(crate) fn with_target_text(operands: &str, address: u64, target: u64) -> Str
 /// above its lowest set bit covers one more: as bit 0 of the condition,
 /// `t`, it takes the condition, and else its opposite, `e`. `None` where
 /// the condition has no opposite.
-pub(crate) fn it_conditions(condition: u8, mask: u8) -> Option<Vec<ConditionCode>> {
+pub fn it_conditions(condition: u8, mask: u8) -> Option<Vec<ConditionCode>> {
     /// The conditions by number. 14 is always, and has no opposite.
     const CODES: [ConditionCode; 14] = [
         ConditionCode::EQ,
@@ -817,6 +817,6 @@ pub(crate) fn it_conditions(condition: u8, mask: u8) -> Option<Vec<ConditionCode
 }
 
 /// Whether `insn` is an `it`.
-pub(crate) fn is_it(insn: &Insn) -> bool {
+pub fn is_it(insn: &Insn) -> bool {
     matches!(insn.opcode, crate::arch::Opcode::Thumb(Decoded::It { .. }))
 }

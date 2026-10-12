@@ -51,19 +51,10 @@ twins in different orders, and their callers are twins too.
 
 `scan.rs` and `arch/` find 45795 of 46006 functions exactly in stripped
 libraries, over ARM, Thumb-2, AArch64 and MIPS, and few Rust crates do
-that. They depend only on `address.rs` and `obj::Function`. But the `Arch`
-trait mixes decoding with the rules of `hereticus`, about 30 methods.
-Split a stable API out of it first.
-
-## Move the lift and the decoders into `crates/hereticus-il`
-
-Put `il.rs` and the decoder and lift of each architecture in `arch/` into
-a crate of their own, `crates/hereticus-il`. Keep the rules of
-`hereticus`, such as padding, tail calls and jump tables, out of it.
-Thus another tool can decode and lift ARM, Thumb-2, AArch64 and MIPS
-without the matching. The IL view and the diff read the names that
-`Arch::lift_named` gives, so the crate needs no printed text but its
-`Display`. It is also the first step of the library above.
+that. They depend only on `address.rs` and `obj::Function`, and the
+decoders are already a crate, `crates/hereticus-il`. But the `Arch` trait
+holds about 30 methods of rules, which `scan.rs` and the matching both
+read. Split a stable API for recovery out of it first.
 
 ## Unpack more firmware containers
 

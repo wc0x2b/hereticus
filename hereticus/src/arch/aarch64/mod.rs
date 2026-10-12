@@ -13,8 +13,7 @@
 //! unwind tables are `.eh_frame`, which the scan reads for any architecture,
 //! and a `switch` jumps through a table of distances in `.rodata`.
 
-mod decode;
-pub use decode::*;
+pub use hereticus_il::arch::aarch64::*;
 
 use super::{Arch, Insn, InsnKind, JumpTable, Memory};
 use crate::address::{AddressSpace, ConstantKind};

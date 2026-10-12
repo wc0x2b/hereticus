@@ -1,12 +1,12 @@
 //! The decoder and the lifter of A64, which read one instruction at a
 //! time and know nothing of the binary around it. The rules that read A64
 //! code, as the pages that `adrp` forms and the tables a `switch` jumps
-//! through, are in the module above.
+//! through, are in `hereticus`.
 
+use crate as il;
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};
-use crate::il::{
-    self, AccessKind, Comparison, Cond, Guard, Lifted, MemoryAccess, Op, Reg, RegSet, Test, Value,
-    Width,
+use crate::{
+    AccessKind, Comparison, Cond, Guard, Lifted, MemoryAccess, Op, Reg, RegSet, Test, Value, Width,
 };
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder as _, U8Reader};
@@ -15,13 +15,13 @@ use yaxpeax_arm::armv8::a64::{
 };
 
 /// Every A64 instruction is 4 bytes wide.
-pub(crate) const INSN_WIDTH: usize = 4;
+pub const INSN_WIDTH: usize = 4;
 
 /// A pointer is 8 bytes wide.
-pub(crate) const POINTER_WIDTH: usize = 8;
+pub const POINTER_WIDTH: usize = 8;
 
 /// The text of bytes the decoder cannot read.
-pub(crate) const UNKNOWN_TEXT: &str = "(unknown)";
+pub const UNKNOWN_TEXT: &str = "(unknown)";
 
 /// ARMv8-A in A64 (AArch64) mode.
 #[derive(Clone, Copy, Debug, Default)]
@@ -30,7 +30,7 @@ pub struct Aarch64;
 impl Aarch64 {
     /// The instruction at `offset` of `code`, which starts at `address`,
     /// and its text where `printing` asks for it.
-    pub(crate) fn read(
+    pub fn read(
         self,
         code: &[u8],
         offset: usize,
@@ -166,7 +166,7 @@ impl Decoder for Aarch64 {
 /// This runs on every instruction, so it searches for the comma, a single
 /// byte, and not for `", "`: a search for a string builds a searcher each
 /// time, which cost 8% of a whole comparison.
-pub(crate) fn extended_register(opcode: Opcode, operands: String) -> String {
+pub fn extended_register(opcode: Opcode, operands: String) -> String {
     let is_w = |name: &str| {
         name == "wzr" || (name.starts_with('w') && name[1..].bytes().all(|b| b.is_ascii_digit()))
     };
@@ -201,7 +201,7 @@ pub(crate) fn extended_register(opcode: Opcode, operands: String) -> String {
 /// How an instruction moves control. The pointer authentication forms of a
 /// return, a jump and a call, as `retaa`, `braa` and `blraa`, move it as the
 /// plain ones do.
-pub(crate) fn classify(inst: &Instruction, address: u64) -> InsnKind {
+pub fn classify(inst: &Instruction, address: u64) -> InsnKind {
     let target = inst.operands.iter().find_map(|operand| match operand {
         Operand::PCOffset(offset) => address.checked_add_signed(*offset),
         _ => None,
@@ -223,7 +223,7 @@ pub(crate) fn classify(inst: &Instruction, address: u64) -> InsnKind {
 }
 
 /// `ret`, and the forms that check a signed return address.
-pub(crate) fn is_return(opcode: Opcode) -> bool {
+pub fn is_return(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::RET
@@ -238,17 +238,17 @@ pub(crate) fn is_return(opcode: Opcode) -> bool {
 
 /// `eret`, which returns from an exception through `elr`, not the link
 /// register.
-pub(crate) fn is_exception_return(opcode: Opcode) -> bool {
+pub fn is_exception_return(opcode: Opcode) -> bool {
     matches!(opcode, Opcode::ERET | Opcode::ERETAA | Opcode::ERETAB)
 }
 
-pub(crate) fn is_indirect_call(opcode: Opcode) -> bool {
+pub fn is_indirect_call(opcode: Opcode) -> bool {
     matches!(opcode, Opcode::BLR | Opcode::BLRAA | Opcode::BLRAAZ | Opcode::BLRAB | Opcode::BLRABZ)
 }
 
 /// `br` and its signed forms. `brk` traps, and control does not come back
 /// to the next instruction, so it ends the code as a jump does.
-pub(crate) fn is_indirect_jump(opcode: Opcode) -> bool {
+pub fn is_indirect_jump(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::BR | Opcode::BRAA | Opcode::BRAAZ | Opcode::BRAB | Opcode::BRABZ | Opcode::BRK
@@ -256,11 +256,11 @@ pub(crate) fn is_indirect_jump(opcode: Opcode) -> bool {
 }
 
 /// The link register, which a call writes and a return reads.
-pub(crate) const LINK: Reg = Reg::General(30);
+pub const LINK: Reg = Reg::General(30);
 
 /// What an instruction does with its first operand, and with the flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Role {
+pub enum Role {
     /// Writes its first operand from the others, as `add` does.
     Compute,
     /// Reads every operand and writes none, as `br` and `ccmp` do.
@@ -278,7 +278,7 @@ pub(crate) enum Role {
 
 /// Lift one decoded A64 instruction.
 /// `insn` decoded again, where it is an instruction.
-pub(crate) fn instruction(insn: &Insn) -> Option<Instruction> {
+pub fn instruction(insn: &Insn) -> Option<Instruction> {
     if insn.kind == InsnKind::Unknown {
         return None;
     }
@@ -288,7 +288,7 @@ pub(crate) fn instruction(insn: &Insn) -> Option<Instruction> {
 }
 
 /// The name of each operand that [`lift`] gives `inst`, in its order.
-pub(crate) fn names(inst: &Instruction) -> il::Names {
+pub fn names(inst: &Instruction) -> il::Names {
     let operands = || inst.operands.iter().take_while(|operand| **operand != Operand::Nothing);
     // `add x0, x1, w2, lsl #3` reads `w2` zero extended: see
     // [`extended_register`].
@@ -304,7 +304,7 @@ pub(crate) fn names(inst: &Instruction) -> il::Names {
 }
 
 /// What a post-index access of `inst` adds to its base after it.
-pub(crate) fn write_back(inst: &Instruction) -> Option<CompactString> {
+pub fn write_back(inst: &Instruction) -> Option<CompactString> {
     use compact_str::format_compact;
     inst.operands.iter().find_map(|operand| match *operand {
         Operand::RegPostIndex(_, offset) if offset < 0 => {
@@ -320,7 +320,7 @@ pub(crate) fn write_back(inst: &Instruction) -> Option<CompactString> {
 /// the rules of `yaxpeax-arm` 0.4: an operand the alias leaves out has an
 /// empty name, and a field it reads another way, as the `lsb` and `width`
 /// of `ubfx`, names the value the alias shows.
-pub(crate) fn alias_names(inst: &Instruction, names: &mut il::Names) {
+pub fn alias_names(inst: &Instruction, names: &mut il::Names) {
     use compact_str::{ToCompactString, format_compact};
     let operands = &inst.operands;
     let immediate = |index: usize| match operands[index] {
@@ -471,7 +471,7 @@ pub(crate) fn alias_names(inst: &Instruction, names: &mut il::Names) {
 
 /// The name of `operand`. Where `extends`, a 32-bit register reads zero
 /// extended to 64 bits.
-pub(crate) fn operand_name(operand: Operand, extends: bool) -> CompactString {
+pub fn operand_name(operand: Operand, extends: bool) -> CompactString {
     use compact_str::{ToCompactString, format_compact};
     let base = |number: u16| Operand::RegisterOrSP(SizeCode::X, number).to_compact_string();
     // A register with how it is shifted or extended, as `(w1 uxtw 2)`.
@@ -526,7 +526,7 @@ pub(crate) fn operand_name(operand: Operand, extends: bool) -> CompactString {
     }
 }
 
-pub(crate) fn lift(inst: &Instruction) -> Lifted {
+pub fn lift(inst: &Instruction) -> Lifted {
     let operands: Vec<Operand> =
         inst.operands.iter().copied().take_while(|operand| *operand != Operand::Nothing).collect();
     let mut lifted = Lifted::default();
@@ -583,7 +583,7 @@ pub(crate) fn lift(inst: &Instruction) -> Lifted {
 
 /// An operand as the IL names it. Register 31 is the zero register as a
 /// value and the stack pointer as a base.
-pub(crate) fn il_operand(operand: Operand) -> il::Operand {
+pub fn il_operand(operand: Operand) -> il::Operand {
     let general = |number: u16| il::Operand::Reg(Reg::General(number as u8));
     let written = |number: u16, offset: Option<i64>, update: il::Update| il::Operand::Memory {
         base: Some(if number == 31 { Reg::Stack } else { Reg::General(number as u8) }),
@@ -635,7 +635,7 @@ pub(crate) fn il_operand(operand: Operand) -> il::Operand {
 /// What an A64 instruction computes. An alias the decoder prints in place
 /// of its instruction, as `cmp` for a `subs` into the zero register, or
 /// `lsl` for a `ubfm`, computes what the alias names.
-pub(crate) fn op_of(inst: &Instruction, alias: Alias, role: Role, operands: &[Operand]) -> Op {
+pub fn op_of(inst: &Instruction, alias: Alias, role: Role, operands: &[Operand]) -> Op {
     match role {
         Role::Load { .. } if is_exclusive_load(inst.opcode) => return Op::Atomic,
         Role::Load { .. } => return Op::Load,
@@ -687,7 +687,7 @@ pub(crate) fn op_of(inst: &Instruction, alias: Alias, role: Role, operands: &[Op
 
 /// What an A64 instruction computes, where it prints as no alias of other
 /// work.
-pub(crate) fn plain_op(opcode: Opcode) -> Op {
+pub fn plain_op(opcode: Opcode) -> Op {
     match opcode {
         Opcode::MOVZ | Opcode::MOVN | Opcode::MOVK | Opcode::FMOV => Op::Move,
         Opcode::ADR | Opcode::ADRP => Op::Address,
@@ -822,12 +822,12 @@ pub enum BitFieldForm {
 }
 
 /// The form of a bit field instruction from its `immr` and `imms`.
-pub(crate) fn bit_field_form(immr: u32, imms: u32) -> BitFieldForm {
+pub fn bit_field_form(immr: u32, imms: u32) -> BitFieldForm {
     if imms < immr { BitFieldForm::Insert } else { BitFieldForm::Extract }
 }
 
 /// The alias `inst` prints as, by the rules of `yaxpeax-arm` 0.4.
-pub(crate) fn alias_of(inst: &Instruction) -> Alias {
+pub fn alias_of(inst: &Instruction) -> Alias {
     let operands = &inst.operands;
     let zero = |index: usize| is_zero_register(operands[index]);
     match inst.opcode {
@@ -863,12 +863,12 @@ pub(crate) fn alias_of(inst: &Instruction) -> Alias {
 }
 
 /// Register 31 where it names the zero register, not the stack pointer.
-pub(crate) fn is_zero_register(operand: Operand) -> bool {
+pub fn is_zero_register(operand: Operand) -> bool {
     matches!(operand, Operand::Register(_, 31))
 }
 
 /// The number of a `hint`, from its two fields.
-pub(crate) fn hint_number(operands: &[Operand]) -> Option<u16> {
+pub fn hint_number(operands: &[Operand]) -> Option<u16> {
     match (operands[0], operands[1]) {
         (Operand::ControlReg(crm), Operand::Immediate(op2)) => Some(crm << 3 | op2 as u16),
         _ => None,
@@ -876,7 +876,7 @@ pub(crate) fn hint_number(operands: &[Operand]) -> Option<u16> {
 }
 
 /// An `orr` that prints as `mov`.
-pub(crate) fn is_orr_move(operands: &[Operand]) -> bool {
+pub fn is_orr_move(operands: &[Operand]) -> bool {
     match (operands[1], operands[2]) {
         (Operand::Register(_, 31), Operand::RegShift(style, amount, ..)) => {
             style == ShiftStyle::LSL && amount == 0
@@ -887,14 +887,14 @@ pub(crate) fn is_orr_move(operands: &[Operand]) -> bool {
 }
 
 /// An `add` that prints as `mov`.
-pub(crate) fn is_add_move(operands: &[Operand]) -> bool {
+pub fn is_add_move(operands: &[Operand]) -> bool {
     let stack = |operand| matches!(operand, Operand::RegisterOrSP(_, 31));
     operands[2] == Operand::Immediate(0) && (stack(operands[0]) || stack(operands[1]))
 }
 
 /// The width of the register a bit field instruction writes, and its
 /// `immr` and `imms` fields.
-pub(crate) fn bit_field(operands: &[Operand]) -> Option<(u32, u32, u32)> {
+pub fn bit_field(operands: &[Operand]) -> Option<(u32, u32, u32)> {
     let size = match operands[0] {
         Operand::Register(SizeCode::W, _) => 32,
         Operand::Register(SizeCode::X, _) => 64,
@@ -908,7 +908,7 @@ pub(crate) fn bit_field(operands: &[Operand]) -> Option<(u32, u32, u32)> {
 
 /// `lsr`, `lsl`, `uxtb` and `uxth` are aliases of `ubfm`. `ubfx` and
 /// `ubfiz` are too, but for the same work.
-pub(crate) fn unsigned_bit_field_alias(operands: &[Operand]) -> Alias {
+pub fn unsigned_bit_field_alias(operands: &[Operand]) -> Alias {
     let is_w = matches!(operands[1], Operand::Register(SizeCode::W, _));
     match bit_field(operands) {
         Some((32, 0, imms @ (7 | 15))) if is_w => Alias::Extend(imms as u8 + 1),
@@ -921,7 +921,7 @@ pub(crate) fn unsigned_bit_field_alias(operands: &[Operand]) -> Alias {
 
 /// `asr`, `sxtb`, `sxth` and `sxtw` are aliases of `sbfm`. `sbfx` and
 /// `sbfiz` are too, but for the same work.
-pub(crate) fn signed_bit_field_alias(operands: &[Operand]) -> Alias {
+pub fn signed_bit_field_alias(operands: &[Operand]) -> Alias {
     match bit_field(operands) {
         Some((size, _, imms)) if imms == size - 1 => Alias::ShiftRightArithmetic,
         Some((_, 0, imms @ (7 | 15 | 31))) => Alias::Extend(imms as u8 + 1),
@@ -933,7 +933,7 @@ pub(crate) fn signed_bit_field_alias(operands: &[Operand]) -> Alias {
 /// What an A64 floating point instruction computes, or `None` for one that
 /// is not floating point. A conversion to an integer names its rounding:
 /// `fcvtms` rounds down, as `floor` does.
-pub(crate) fn float_op(opcode: Opcode) -> Option<Op> {
+pub fn float_op(opcode: Opcode) -> Option<Op> {
     Some(match opcode {
         Opcode::FADD => Op::FloatAdd,
         Opcode::FSUB => Op::FloatSubtract,
@@ -1005,7 +1005,7 @@ pub(crate) fn float_op(opcode: Opcode) -> Option<Op> {
 }
 
 /// `ldxr`, `ldaxr`, `ldxp` and `ldaxp`, which open an exclusive access.
-pub(crate) fn is_exclusive_load(opcode: Opcode) -> bool {
+pub fn is_exclusive_load(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::LDXR
@@ -1020,7 +1020,7 @@ pub(crate) fn is_exclusive_load(opcode: Opcode) -> bool {
 }
 
 /// See [`Alias::AtomicStore`].
-pub(crate) fn is_atomic_store(inst: &Instruction) -> bool {
+pub fn is_atomic_store(inst: &Instruction) -> bool {
     let order = match inst.opcode {
         Opcode::LDADD(order)
         | Opcode::LDADDB(order)
@@ -1052,7 +1052,7 @@ pub(crate) fn is_atomic_store(inst: &Instruction) -> bool {
     order & ACQUIRE == 0 && is_zero_register(inst.operands[1])
 }
 
-pub(crate) fn role_of(opcode: Opcode, alias: Alias) -> Role {
+pub fn role_of(opcode: Opcode, alias: Alias) -> Role {
     if alias == Alias::AtomicStore {
         return Role::Store;
     }
@@ -1211,7 +1211,7 @@ pub(crate) fn role_of(opcode: Opcode, alias: Alias) -> Role {
 }
 
 /// Instructions that keep part of their destination, so read it too.
-pub(crate) fn reads_destination(opcode: Opcode) -> bool {
+pub fn reads_destination(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::MOVK
@@ -1224,7 +1224,7 @@ pub(crate) fn reads_destination(opcode: Opcode) -> bool {
     )
 }
 
-pub(crate) fn reads_flags(opcode: Opcode) -> bool {
+pub fn reads_flags(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::Bcc(_)
@@ -1245,7 +1245,7 @@ pub(crate) fn reads_flags(opcode: Opcode) -> bool {
     )
 }
 
-pub(crate) fn writes_flags(opcode: Opcode) -> bool {
+pub fn writes_flags(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::ADDS
@@ -1265,7 +1265,7 @@ pub(crate) fn writes_flags(opcode: Opcode) -> bool {
 
 /// The registers an operand that is a value names. A memory operand names
 /// none here: see [`address_registers`].
-pub(crate) fn value_registers(operand: Operand) -> RegSet {
+pub fn value_registers(operand: Operand) -> RegSet {
     let general = |number: u16| Reg::General(number as u8);
     let vectors = |first: u16, count: u8| {
         (0..u16::from(count)).map(move |n| Reg::Vector(((first + n) % 32) as u8))
@@ -1294,7 +1294,7 @@ pub(crate) fn value_registers(operand: Operand) -> RegSet {
 
 /// The registers a memory operand reads to form its address, and the base
 /// it writes back.
-pub(crate) fn address_registers(operand: Operand, reads: &mut RegSet, writes: &mut RegSet) {
+pub fn address_registers(operand: Operand, reads: &mut RegSet, writes: &mut RegSet) {
     let base = |number: u16| if number == 31 { Reg::Stack } else { Reg::General(number as u8) };
     let index = |number: u16| (number != 31).then_some(Reg::General(number as u8));
     match operand {
@@ -1321,7 +1321,7 @@ pub(crate) fn address_registers(operand: Operand, reads: &mut RegSet, writes: &m
     }
 }
 
-pub(crate) fn is_memory(operand: &Operand) -> bool {
+pub fn is_memory(operand: &Operand) -> bool {
     matches!(
         operand,
         Operand::RegPreIndex(..)
@@ -1331,11 +1331,7 @@ pub(crate) fn is_memory(operand: &Operand) -> bool {
     )
 }
 
-pub(crate) fn memory_access(
-    opcode: Opcode,
-    role: Role,
-    operands: &[Operand],
-) -> Option<MemoryAccess> {
+pub fn memory_access(opcode: Opcode, role: Role, operands: &[Operand]) -> Option<MemoryAccess> {
     if !operands.iter().any(is_memory) {
         return None;
     }
@@ -1351,7 +1347,7 @@ pub(crate) fn memory_access(
 
 /// The width of each value an access moves: the one the instruction names,
 /// as `ldrb` and `ldrsw` do, else the width of the register moved.
-pub(crate) fn access_width(opcode: Opcode, role: Role, operands: &[Operand]) -> Option<Width> {
+pub fn access_width(opcode: Opcode, role: Role, operands: &[Operand]) -> Option<Width> {
     match opcode {
         Opcode::LDRSW | Opcode::LDURSW | Opcode::LDTRSW | Opcode::LDAPURSW | Opcode::LDPSW => {
             return Some(Width::Bits32);
@@ -1437,7 +1433,7 @@ pub(crate) fn access_width(opcode: Opcode, role: Role, operands: &[Operand]) -> 
     }
 }
 
-pub(crate) fn width_of(size: SizeCode) -> Width {
+pub fn width_of(size: SizeCode) -> Width {
     match size {
         SizeCode::W => Width::Bits32,
         SizeCode::X => Width::Bits64,
@@ -1445,7 +1441,7 @@ pub(crate) fn width_of(size: SizeCode) -> Width {
 }
 
 /// What an operand gives as a value, at `width`.
-pub(crate) fn value_of(operand: Operand, width: Width) -> Value {
+pub fn value_of(operand: Operand, width: Width) -> Value {
     let value = match operand {
         Operand::Register(_, 31) | Operand::RegShift(ShiftStyle::LSL, 0, _, 31) => Value::Const(0),
         Operand::Register(_, number) | Operand::RegShift(ShiftStyle::LSL, 0, _, number) => {
@@ -1466,7 +1462,7 @@ pub(crate) fn value_of(operand: Operand, width: Width) -> Value {
 }
 
 /// The width of the general registers an instruction works on.
-pub(crate) fn operation_width(operands: &[Operand]) -> Width {
+pub fn operation_width(operands: &[Operand]) -> Width {
     operands
         .iter()
         .find_map(|operand| match operand {
@@ -1476,7 +1472,7 @@ pub(crate) fn operation_width(operands: &[Operand]) -> Width {
         .unwrap_or(Width::Bits64)
 }
 
-pub(crate) fn test_of(inst: &Instruction, alias: Alias, operands: &[Operand]) -> Option<Test> {
+pub fn test_of(inst: &Instruction, alias: Alias, operands: &[Operand]) -> Option<Test> {
     let width = operation_width(operands);
     let value = |index: usize| operands.get(index).map_or(Value::Other, |op| value_of(*op, width));
     let guard = |cond, right| Some(Test::Guard(Guard { cond, left: value(0), right, width }));
@@ -1522,7 +1518,7 @@ pub(crate) fn test_of(inst: &Instruction, alias: Alias, operands: &[Operand]) ->
 }
 
 /// What the decoder read for `insn`, where it read A64.
-pub(crate) fn decoded(insn: &Insn) -> Option<Decoded> {
+pub fn decoded(insn: &Insn) -> Option<Decoded> {
     match insn.opcode {
         crate::arch::Opcode::Aarch64(decoded) => Some(decoded),
         _ => None,

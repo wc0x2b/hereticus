@@ -54,7 +54,7 @@ pub enum Operation {
     /// branch on the opposite condition and swap the code after it.
     GuardBranch(Cond),
     /// An instruction the lifter names no operation for, by a key of the
-    /// operation its opcode does: see [`Arch::operation_name`].
+    /// operation its opcode does: see [`crate::arch::Decoder::operation_name`].
     Decoded(u64),
     /// Bytes no decoder reads, by the bytes. Without them, a NEON `vmax`
     /// and a NEON `vmin` would normalize alike, and an edit between them

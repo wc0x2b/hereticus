@@ -889,8 +889,11 @@ version = "0.1.0"
 dependencies = [
  "bolero",
  "compact_str",
+ "rabbitizer",
  "rstest",
  "smallvec",
+ "yaxpeax-arch",
+ "yaxpeax-arm",
 ]
 
 [[package]]
