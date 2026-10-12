@@ -1819,7 +1819,7 @@ mod tests {
 
     /// A two-byte Thumb instruction at `address` that moves control as `kind`.
     fn thumb_insn(address: u64, kind: InsnKind) -> Insn {
-        Insn::new(address, &[0; 2], "", kind, crate::arch::Opcode::None)
+        Insn::new(address, &[0; 2], kind, crate::arch::Opcode::None)
     }
 
     /// Instructions from 0x1000 up to 0x1100, all but `branches` plain.

@@ -24,7 +24,7 @@ use rabbitizer::{
 
 use super::{
     AbsoluteCall, Arch, CallTarget, DecodeError, GlobalPointerSetup, Insn, InsnKind, JumpTable,
-    Memory, split_printed,
+    Memory, Printing, split_printed,
 };
 use crate::address::{AddressSpace, ConstantKind, Contents};
 use crate::il;
@@ -225,6 +225,90 @@ impl Mips32 {
         self.order
     }
 
+    /// The instruction at `offset` of `code`, which starts at `address`,
+    /// and its text where `printing` asks for it.
+    pub(super) fn read(
+        self,
+        code: &[u8],
+        offset: usize,
+        address: u64,
+        printing: Printing,
+    ) -> Result<(Insn, String), DecodeError> {
+        let bytes = code.get(offset..).ok_or(DecodeError::Truncated)?;
+        if bytes.len() < INSN_WIDTH {
+            return Err(DecodeError::Truncated);
+        }
+
+        let insn_address = address + offset as u64;
+        let word = &bytes[..INSN_WIDTH];
+        let raw = self.order.read_word([word[0], word[1], word[2], word[3]]);
+
+        // `new_checked` rejects a word it cannot read rather than reading it
+        // as something else, which is what makes stepping over the word safe.
+        let decoded = Instruction::new_checked(
+            raw,
+            Vram::new(insn_address as u32),
+            InstructionFlags::new(ISA),
+        );
+
+        let Some(inst) = decoded else {
+            // `rabbitizer` stops at MIPS IV, so a MIPS32 word it refuses may
+            // still be one this crate reads.
+            if let Some(word32) = super::mips32::decode(raw) {
+                let insn = Insn::new(
+                    insn_address,
+                    word,
+                    word32.kind,
+                    super::Opcode::Mips(Decoded::Mips32(word32.op), self.order),
+                );
+                let text = printing.text(|| format!("{} {}", word32.op.name(), word32.operands));
+                return Ok((insn, text));
+            }
+
+            // Stepping over an unreadable word keeps everything after it
+            // aligned, because every instruction is the same width. The raw
+            // word goes in the operand field so that two unreadable words
+            // still compare as different.
+            let insn = Insn::new(
+                insn_address,
+                word,
+                InsnKind::Unknown,
+                super::Opcode::Unread(super::InstructionSet::Mips(self.order)),
+            );
+            return Ok((insn, printing.text(|| format!("{UNKNOWN_TEXT} {raw:#010x}"))));
+        };
+
+        let kind = classify(&inst);
+        let text = printing.text(|| {
+            let printed =
+                inst.display::<&str>(&InstructionDisplayFlags::new_gnu_as(), None, 0).to_string();
+            let (name, operands) = split_printed(&printed);
+            // `rabbitizer` writes registers as `$a0`; the rest of `hereticus`
+            // reads them as `a0`.
+            let mut operands = operands.replace('$', "");
+
+            // `rabbitizer` names a jump target as a label, such as
+            // `func_80001000`, and a branch target as an expression, such as
+            // `. + 4 + (0x7 << 2)`. Every decoder prints a resolved target in
+            // the `$` form instead, which is how the rest of `hereticus` knows
+            // it moves with the code rather than coming from the source.
+            //
+            // A branch is written from its offset rather than its target,
+            // which cannot be resolved when it would lie below address zero.
+            if let Some(offset) = inst.get_branch_offset() {
+                operands = with_target(&operands, i64::from(offset.inner()));
+            } else if let InsnKind::Call { target: Some(target) }
+            | InsnKind::Jump { target: Some(target) } = kind
+            {
+                operands = with_target(&operands, target.wrapping_sub(insn_address) as i64);
+            }
+            format!("{name} {operands}")
+        });
+
+        let opcode = super::Opcode::Mips(Decoded::Rabbitizer(inst.opcode()), self.order);
+        Ok((Insn::new(insn_address, word, kind, opcode), text))
+    }
+
     /// The bytes of `word`, stored in this byte order.
     pub(super) fn word_bytes(self, word: u32) -> [u8; INSN_WIDTH] {
         match self.order {
@@ -276,80 +360,7 @@ impl Arch for Mips32 {
     }
 
     fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
-        let bytes = code.get(offset..).ok_or(DecodeError::Truncated)?;
-        if bytes.len() < INSN_WIDTH {
-            return Err(DecodeError::Truncated);
-        }
-
-        let insn_address = address + offset as u64;
-        let word = &bytes[..INSN_WIDTH];
-        let raw = self.order.read_word([word[0], word[1], word[2], word[3]]);
-
-        // `new_checked` rejects a word it cannot read rather than reading it
-        // as something else, which is what makes stepping over the word safe.
-        let decoded = Instruction::new_checked(
-            raw,
-            Vram::new(insn_address as u32),
-            InstructionFlags::new(ISA),
-        );
-
-        let Some(inst) = decoded else {
-            // `rabbitizer` stops at MIPS IV, so a MIPS32 word it refuses may
-            // still be one this crate reads.
-            if let Some(word) = super::mips32::decode(raw) {
-                return Ok(Insn::new(
-                    insn_address,
-                    &bytes[..INSN_WIDTH],
-                    &format!("{} {}", word.op.name(), word.operands),
-                    word.kind,
-                    super::Opcode::Mips(Decoded::Mips32(word.op), self.order),
-                ));
-            }
-
-            // Stepping over an unreadable word keeps everything after it
-            // aligned, because every instruction is the same width. The raw
-            // word goes in the operand field so that two unreadable words
-            // still compare as different.
-            return Ok(Insn::new(
-                insn_address,
-                word,
-                &format!("{UNKNOWN_TEXT} {raw:#010x}"),
-                InsnKind::Unknown,
-                super::Opcode::Unread(super::InstructionSet::Mips(self.order)),
-            ));
-        };
-
-        let printed =
-            inst.display::<&str>(&InstructionDisplayFlags::new_gnu_as(), None, 0).to_string();
-        let (name, operands) = split_printed(&printed);
-        // `rabbitizer` writes registers as `$a0`; the rest of `hereticus`
-        // reads them as `a0`.
-        let mut operands = operands.replace('$', "");
-        let kind = classify(&inst);
-
-        // `rabbitizer` names a jump target as a label, such as
-        // `func_80001000`, and a branch target as an expression, such as
-        // `. + 4 + (0x7 << 2)`. Every decoder prints a resolved target in the
-        // `$` form instead, which is how the rest of `hereticus` knows it
-        // moves with the code rather than coming from the source.
-        //
-        // A branch is written from its offset rather than its target, which
-        // cannot be resolved when it would lie below address zero.
-        if let Some(offset) = inst.get_branch_offset() {
-            operands = with_target(&operands, i64::from(offset.inner()));
-        } else if let InsnKind::Call { target: Some(target) }
-        | InsnKind::Jump { target: Some(target) } = kind
-        {
-            operands = with_target(&operands, target.wrapping_sub(insn_address) as i64);
-        }
-
-        Ok(Insn::new(
-            insn_address,
-            word,
-            &format!("{name} {operands}"),
-            kind,
-            super::Opcode::Mips(Decoded::Rabbitizer(inst.opcode()), self.order),
-        ))
+        self.read(code, offset, address, Printing::Skip).map(|(insn, _)| insn)
     }
 
     fn triple(&self) -> &'static str {

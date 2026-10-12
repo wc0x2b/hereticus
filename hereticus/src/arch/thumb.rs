@@ -31,10 +31,48 @@ use super::arm32::{
     pool_loads, track_pool_words,
 };
 use super::{
-    Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, TableJumps, VectorTable,
-    split_printed,
+    Arch, DataAmongCode, DecodeError, Insn, InsnKind, JumpTable, Memory, Printing, TableJumps,
+    VectorTable, split_printed,
 };
 use crate::address::{AddressSpace, ConstantKind};
+
+/// The text of `insn`, read again from its bytes, with the condition of
+/// the `it` that covers it.
+pub(super) fn print(insn: &Insn) -> Option<String> {
+    let (alone, text) = Thumb2.read(insn.bytes(), 0, insn.address, Printing::Text).ok()?;
+    // [`Arch::after_decoding`] writes the condition of an `it` into the
+    // opcode, so an opcode that differs from the one read alone holds it.
+    let covered =
+        match insn.opcode {
+            super::Opcode::Thumb(
+                Decoded::Core { condition, .. } | Decoded::Vfp { condition, .. },
+            ) if alone.opcode != insn.opcode => Some(condition),
+            _ => None,
+        };
+    Some(match covered {
+        Some(condition) => conditional_text(&text, insn.bytes_len, condition),
+        None => text,
+    })
+}
+
+/// `text`, of an instruction `width` bytes wide, as it prints where an
+/// `it` makes it run on `code`.
+///
+/// `yaxpeax-arm` prints no condition inside the block, so `movgt r0, #0`
+/// reads as `movs r0, 0x0`. A 16-bit form that sets the flags outside a
+/// block does not inside one.
+fn conditional_text(text: &str, width: usize, code: ConditionCode) -> String {
+    let condition = condition_name(code);
+    let (name, operands) = split_printed(text);
+    let base = match width == HALFWORD && name.len() > 2 {
+        true => name.strip_suffix('s').unwrap_or(name),
+        false => name,
+    };
+    match base.ends_with(condition) {
+        true => text.to_string(),
+        false => format!("{base}{condition} {operands}"),
+    }
+}
 
 /// The narrow T32 instruction, and the alignment of every one.
 pub(super) const HALFWORD: usize = 2;
@@ -64,12 +102,17 @@ const PADDING: [[u8; 2]; 3] = [[0x00, 0xbf], [0xc0, 0x46], [0xd4, 0xd4]];
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Thumb2;
 
-impl Arch for Thumb2 {
-    fn operation_name(&self, insn: &Insn) -> CompactString {
-        Arm32.operation_name(insn)
-    }
-
-    fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
+impl Thumb2 {
+    /// The instruction at `offset` of `code`, which starts at `address`,
+    /// and its text where `printing` asks for it. An instruction that an
+    /// `it` covers reads as if it ran always: see [`Arch::after_decoding`].
+    pub(super) fn read(
+        self,
+        code: &[u8],
+        offset: usize,
+        address: u64,
+        printing: Printing,
+    ) -> Result<(Insn, String), DecodeError> {
         let bytes = code.get(offset..).ok_or(DecodeError::Truncated)?;
         let first = bytes.get(..HALFWORD).ok_or(DecodeError::Truncated)?;
         let width = if is_wide(u16::from_le_bytes([first[0], first[1]])) { WORD } else { HALFWORD };
@@ -99,91 +142,96 @@ impl Arch for Thumb2 {
             };
             let fallback = word.and_then(|word| decode_fallback(as_a32(word), Encoding::T32));
             if let Some((name, operands, decoded)) = fallback {
-                return Ok(Insn::new(
-                    insn_address,
-                    bytes,
-                    &format!("{name} {operands}"),
-                    InsnKind::Normal,
-                    super::Opcode::Thumb(decoded),
-                ));
+                let opcode = super::Opcode::Thumb(decoded);
+                let insn = Insn::new(insn_address, bytes, InsnKind::Normal, opcode);
+                return Ok((insn, printing.text(|| format!("{name} {operands}"))));
             }
             // The width comes from the first halfword, so stepping over an
             // unreadable instruction keeps the rest aligned. Its bytes go in
             // the operands, so that an edit to it still shows.
-            let operands: String = bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
             let is_neon = word.is_some_and(|word| matches!(word >> 24, 0xef | 0xff));
             let (name, opcode) = if is_neon {
                 (NEON_TEXT, super::Opcode::Thumb(Decoded::NeonData))
             } else {
                 (UNKNOWN_TEXT, super::Opcode::Unread(super::InstructionSet::Thumb))
             };
-            return Ok(Insn::new(
-                insn_address,
-                bytes,
-                &format!("{name} {operands}"),
-                InsnKind::Unknown,
-                opcode,
-            ));
+            let insn = Insn::new(insn_address, bytes, InsnKind::Unknown, opcode);
+            let text = printing.text(|| {
+                let operands: String =
+                    bytes.iter().rev().map(|byte| format!("{byte:02x}")).collect();
+                format!("{name} {operands}")
+            });
+            return Ok((insn, text));
         }
 
-        let printed = inst.to_string();
-        let (name, operands) = split_printed(&printed);
-        let operands = operands.to_string();
-        // `.w` only says the encoding is wide, which the length already
-        // does, so the text leaves it out, as A32 does. A condition can
-        // follow it, as in `b.wne`.
-        let name = if name.contains('.') {
-            without_suffix(&without_suffix(name, b'w'), b'n')
-        } else {
-            name.to_string()
+        // A wide instruction that this module reads in place of
+        // `yaxpeax-arm`, as its halfwords.
+        let halves = match *bytes {
+            [low, high, second_low, second_high] => Some((
+                u16::from_le_bytes([low, high]),
+                u16::from_le_bytes([second_low, second_high]),
+            )),
+            _ => None,
         };
-        let decoded = decoded_of(&inst);
-        let (name, operands, decoded) = match *bytes {
-            [low, high, second_low, second_high] => {
-                let (first, second) = (
-                    u16::from_le_bytes([low, high]),
-                    u16::from_le_bytes([second_low, second_high]),
-                );
-                let fixed = wide_move_operands(first, second)
-                    .map(|operands| (name.clone(), operands, decoded))
-                    .or_else(|| {
-                        wide_store(first, second).map(|store| {
-                            (store.printed_name().to_string(), store.operands(), store.decoded())
-                        })
-                    });
-                match (table_branch(first, second), WideWord::of(first, second), fixed) {
-                    (Some((table, operands, opcode)), ..) => {
-                        (table.to_string(), operands, always(opcode, Flags::Kept))
-                    }
-                    (None, Some(word), _) => {
-                        let (name, operands) = word.text();
-                        (name, operands, word.decoded())
-                    }
-                    (None, None, Some(fixed)) => fixed,
-                    (None, None, None) => (name, shift_of_32(first, second, operands), decoded),
-                }
-            }
-            _ => (name, operands, decoded),
+        let table = halves.and_then(|(first, second)| table_branch(first, second));
+        let word = halves.and_then(|(first, second)| WideWord::of(first, second));
+        let moves = halves.is_some_and(|(first, second)| wide_move_value(first, second).is_some());
+        let store = halves.and_then(|(first, second)| wide_store(first, second));
+        let decoded = match (&table, &word, moves, &store) {
+            (Some((_, _, opcode)), ..) => always(*opcode, Flags::Kept),
+            (None, Some(word), ..) => word.decoded(),
+            (None, None, false, Some(store)) => store.decoded(),
+            _ => decoded_of(&inst),
         };
         let target = branch_target(&inst, insn_address, width);
-        let operands = match target {
-            Some(target) => with_target_text(&operands, insn_address, target),
-            None => operands,
-        };
         let kind = match inst.opcode {
             Opcode::CBZ | Opcode::CBNZ => InsnKind::Branch { target },
             Opcode::TBB | Opcode::TBH => InsnKind::Jump { target: None },
             Opcode::IT => InsnKind::Normal,
             _ => classify(&inst, target),
         };
+        let text = printing.text(|| {
+            let printed = inst.to_string();
+            let (name, operands) = split_printed(&printed);
+            // `.w` only says the encoding is wide, which the length already
+            // does, so the text leaves it out, as A32 does. A condition can
+            // follow it, as in `b.wne`.
+            let name = if name.contains('.') {
+                without_suffix(&without_suffix(name, b'w'), b'n')
+            } else {
+                name.to_string()
+            };
+            let (name, operands) = match (table, word, halves) {
+                (Some((table, operands, _)), ..) => (table.to_string(), operands),
+                (None, Some(word), _) => word.text(),
+                (None, None, Some((first, second))) => {
+                    match (wide_move_operands(first, second), store) {
+                        (Some(moved), _) => (name, moved),
+                        (None, Some(store)) => (store.printed_name().to_string(), store.operands()),
+                        (None, None) => (name, shift_of_32(first, second, operands.to_string())),
+                    }
+                }
+                (None, None, None) => (name, operands.to_string()),
+            };
+            let operands = match target {
+                Some(target) => with_target_text(&operands, insn_address, target),
+                None => operands,
+            };
+            format!("{name} {operands}")
+        });
 
-        Ok(Insn::new(
-            insn_address,
-            bytes,
-            &format!("{name} {operands}"),
-            kind,
-            super::Opcode::Thumb(decoded),
-        ))
+        let insn = Insn::new(insn_address, bytes, kind, super::Opcode::Thumb(decoded));
+        Ok((insn, text))
+    }
+}
+
+impl Arch for Thumb2 {
+    fn operation_name(&self, insn: &Insn) -> CompactString {
+        Arm32.operation_name(insn)
+    }
+
+    fn decode(&self, code: &[u8], offset: usize, address: u64) -> Result<Insn, DecodeError> {
+        self.read(code, offset, address, Printing::Skip).map(|(insn, _)| insn)
     }
 
     fn triple(&self) -> &'static str {
@@ -363,26 +411,14 @@ impl Arch for Thumb2 {
         for insn in insns {
             if !conditions.is_empty() {
                 let code = conditions.remove(0);
-                let condition = condition_name(code);
                 insn.kind = match insn.kind {
                     InsnKind::Return => InsnKind::Branch { target: None },
                     InsnKind::Jump { target } => InsnKind::Branch { target },
                     kind => kind,
                 };
-                // `yaxpeax-arm` prints no condition inside the block, so
-                // `movgt r0, #0` read as `movs r0, 0x0`. A 16-bit form that
-                // sets the flags outside a block does not inside one. The
-                // opcode below says both; the text says them for a reader.
+                // A 16-bit form that sets the flags outside a block does
+                // not inside one. [`print`] reads both from the opcode.
                 let narrow = insn.bytes_len == HALFWORD;
-                let (name, operands) = split_printed(&insn.text);
-                let base = match narrow && name.len() > 2 {
-                    true => name.strip_suffix('s').unwrap_or(name),
-                    false => name,
-                };
-                if !base.ends_with(condition) {
-                    let text = format!("{base}{condition} {operands}");
-                    *insn = insn.clone().with_text(&text);
-                }
                 match &mut insn.opcode {
                     super::Opcode::Thumb(Decoded::Core { condition, flags, .. }) => {
                         *condition = code;
@@ -1632,5 +1668,15 @@ mod tests {
         assert!(!Thumb2.can_open_function(&halfwords(&[0x0000])), "zero fill");
         assert!(!Thumb2.can_open_function(&halfwords(&[0xbf00])), "nop");
         assert!(!Thumb2.can_open_function(&[]), "no bytes");
+    }
+
+    #[test]
+    fn an_it_prints_its_condition_on_what_it_covers() {
+        // itt mi; movmi r0, #0; then a word no decoder reads
+        let code = halfwords(&[0xbf44, 0x2000, 0xeaa8, 0xe67d]);
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        let printed: Vec<String> = insns.iter().map(Insn::to_string).collect();
+        // The unread word holds no condition to print.
+        assert_eq!(printed, ["itt mi", "movmi r0, 0x0", "(unknown) e67deaa8"]);
     }
 }
