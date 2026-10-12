@@ -206,7 +206,9 @@ fn instruction_lines(
         }
         None => vec![None; insns.len()],
     };
-    let pages = page_loads(insns, &formed);
+    // Each instruction lifted once, with its names, for every reader below.
+    let lifts: Vec<Option<Named>> = insns.iter().map(crate::arch::lift_named).collect();
+    let pages = page_loads(insns, &lifts, &formed);
     let mut last_compare: Option<Compared> = None;
     let is_mips = arch.triple().starts_with("mips");
     let mut float_condition: Option<String> = None;
@@ -227,8 +229,8 @@ fn instruction_lines(
         .zip(formed)
         .enumerate()
         .map(|(index, (insn, formed))| {
-            let named = crate::arch::lift_named(insn);
-            let names: &[CompactString] = named.as_ref().map_or(&[], |named| &named.names);
+            let named = lifts[index].as_ref();
+            let names: &[CompactString] = named.map_or(&[], |named| &named.names);
             let tokens: Vec<&str> = names.iter().map(CompactString::as_str).collect();
             // The operands the instruction shows, with no name for one it
             // leaves out.
@@ -260,7 +262,7 @@ fn instruction_lines(
                 return text;
             }
             let moves = moving.get(index).copied().unwrap_or(false);
-            let shown = named.as_ref().and_then(|named| {
+            let shown = named.and_then(|named| {
                 let text = statement(insn, named, address, moves, &mut last_compare)?;
                 Some((named.lifted.op, text))
             });
@@ -274,10 +276,10 @@ fn instruction_lines(
         .collect()
 }
 
-/// The names of the operands `insn` shows, from its lift.
-fn shown_names(insn: &Insn) -> Vec<CompactString> {
-    let names = crate::arch::lift_named(insn).map(|named| named.names).unwrap_or_default();
-    names.into_iter().filter(|name| !name.is_empty()).collect()
+/// The names of the operands that the instruction lifted as `named` shows.
+fn shown_names(named: Option<&Named>) -> Vec<&str> {
+    let names = named.map_or(&[][..], |named| &named.names);
+    names.iter().map(CompactString::as_str).filter(|name| !name.is_empty()).collect()
 }
 
 /// The MIPS loads of a page from the global offset table: each `lw` whose
@@ -291,7 +293,8 @@ fn shown_names(insn: &Insn) -> Vec<CompactString> {
 ///
 /// The slot the `lw` reads moves with the table, but the `addiu` names what
 /// the two point at, as the `add` after `adrp` does.
-fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
+/// `lifts` holds the lift of each instruction, with its names.
+fn page_loads(insns: &[Insn], lifts: &[Option<Named>], formed: &[Option<u64>]) -> HashSet<usize> {
     /// How far back the `lw` can be, as a compiler schedules others between.
     const LOOK_BACK: usize = 16;
     insns
@@ -302,17 +305,17 @@ fn page_loads(insns: &[Insn], formed: &[Option<u64>]) -> HashSet<usize> {
             matches!(opcode, Some(MipsOpcode::core_addiu | MipsOpcode::core_ori))
                 && formed[index].is_some()
         })
-        .filter_map(|(index, insn)| {
+        .filter_map(|(index, _)| {
             // The MIPS16e `addiu v0, 0x10` adds to the register it writes.
-            let source = match shown_names(insn).as_slice() {
-                [_, source, _] => source.clone(),
-                [dest, _] => dest.clone(),
+            let source = match shown_names(lifts[index].as_ref()).as_slice() {
+                [_, source, _] => *source,
+                [dest, _] => *dest,
                 _ => return None,
             };
             let at = (index.saturating_sub(LOOK_BACK)..index).rev().find(|&at| {
                 let earlier = &insns[at];
                 matches!(earlier.kind, crate::arch::InsnKind::Call { .. })
-                    || shown_names(earlier).first() == Some(&source)
+                    || shown_names(lifts[at].as_ref()).first() == Some(&source)
             })?;
             let loads = mips::rabbitizer_opcode(&insns[at]) == Some(MipsOpcode::core_lw);
             (loads && formed[at].is_some()).then_some(at)
@@ -635,11 +638,10 @@ fn frame_statement(frame: &crate::arch::mips16::Frame) -> Option<String> {
 }
 
 /// The statement of an AArch64 instruction whose operands the IL does not
-/// pair with the printed ones: a conditional compare, a vector constant,
-/// and a move between a general register and a lane of a vector.
+/// read as an operator does: a conditional compare, a vector constant, and
+/// a move between a general register and a lane of a vector.
 fn aarch64_statement(
     insn: &Insn,
-    printed_name: &str,
     tokens: &[&str],
     last_compare: &mut Option<Compared>,
 ) -> Option<String> {
@@ -676,7 +678,7 @@ fn aarch64_statement(
             format!("{dest} = {source}")
         }
         (A64Opcode::SMOV | A64Opcode::DUP, [dest, source]) => {
-            format!("{dest} = {printed_name}({source})")
+            format!("{dest} = {}({source})", crate::arch::printed_name(insn))
         }
         _ => return None,
     };
@@ -937,9 +939,6 @@ fn statement(
     let lift_names: Vec<&str> = named.names.iter().map(CompactString::as_str).collect();
     // The operands as the instruction shows them.
     let tokens: Vec<&str> = lift_names.iter().copied().filter(|name| !name.is_empty()).collect();
-    // The name the instruction prints with, as `vsqrt.f64`.
-    let printed_name = crate::arch::printed_name(insn);
-    let operation = printed_name.as_str();
     let target = tokens.iter().rev().find(|token| is_branch_target(token)).copied();
     // A call or jump through a register names it last, as `blr x1` and the
     // MIPS16e `jalr ra, v0` do.
@@ -954,7 +953,7 @@ fn statement(
         Op::Jump => return Some(format!("goto {}", target.or(tokens.last().copied())?)),
         _ => {}
     }
-    if let Some(line) = aarch64_statement(insn, operation, &tokens, last_compare) {
+    if let Some(line) = aarch64_statement(insn, &tokens, last_compare) {
         return Some(line);
     }
     if let Some(line) = vfp_statement(insn, &tokens, last_compare) {
@@ -997,7 +996,8 @@ fn statement(
         && !sources.is_empty()
     {
         // Without the size: `vsqrt` of `vsqrt.f64`.
-        let name = operation.split('.').next().unwrap_or(operation);
+        let printed_name = crate::arch::printed_name(insn);
+        let name = printed_name.split('.').next().unwrap_or(&printed_name);
         let sources: Vec<String> =
             sources.iter().map(|source| source.trim_start_matches('#').to_string()).collect();
         return Some(format!("{dest} = {name}({})", sources.join(", ")));
@@ -1392,6 +1392,9 @@ mod tests {
 
     #[test]
     fn a_load_of_a_page_is_found_by_the_addiu_after_it() {
+        let lifts = |insns: &[Insn]| -> Vec<Option<Named>> {
+            insns.iter().map(crate::arch::lift_named).collect()
+        };
         use crate::arch::mips16::Mips16;
         let insns = [
             mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
@@ -1401,7 +1404,7 @@ mod tests {
             mips(0x24c6_0020), // addiu a2, a2, 0x20
         ];
         let formed = [Some(0x1000), Some(0x1000), Some(0x1004), Some(0x2010), Some(0x2020)];
-        assert_eq!(page_loads(&insns, &formed), HashSet::from([0, 1]));
+        assert_eq!(page_loads(&insns, &lifts(&insns), &formed), HashSet::from([0, 1]));
 
         // MIPS16e adds to the register it writes.
         let mips16 = |halfword: u16| {
@@ -1409,7 +1412,10 @@ mod tests {
         };
         let insns = [mips16(0x9844), mips16(0x4a10)]; // lw v0, 0x10(s0); addiu v0, 0x10
         assert_eq!(insns[1].to_string(), "addiu v0, v0, 0x10", "as the MIPS32 twin");
-        assert_eq!(page_loads(&insns, &[Some(0x1000), Some(0x2010)]), HashSet::from([0]));
+        assert_eq!(
+            page_loads(&insns, &lifts(&insns), &[Some(0x1000), Some(0x2010)]),
+            HashSet::from([0])
+        );
 
         // A write or a call between them leaves the register holding
         // something else.
@@ -1418,17 +1424,17 @@ mod tests {
             mips(0x0080_1025), // or v0, a0, zero
             mips(0x2442_0010), // addiu v0, v0, 0x10
         ];
-        assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
+        assert!(page_loads(&insns, &lifts(&insns), &[Some(0x1000), None, Some(0x2010)]).is_empty());
         let insns = [
             mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
             mips(0x0320_f809), // jalr t9
             mips(0x2442_0010), // addiu v0, v0, 0x10
         ];
-        assert!(page_loads(&insns, &[Some(0x1000), None, Some(0x2010)]).is_empty());
+        assert!(page_loads(&insns, &lifts(&insns), &[Some(0x1000), None, Some(0x2010)]).is_empty());
 
         // An `addiu` that forms no address joins no page.
         let insns = [mips(0x8f82_8020), mips(0x2442_0001)]; // lw v0, ...; addiu v0, v0, 1
-        assert!(page_loads(&insns, &[Some(0x1000), None]).is_empty());
+        assert!(page_loads(&insns, &lifts(&insns), &[Some(0x1000), None]).is_empty());
     }
 
     #[test]
