@@ -15,7 +15,7 @@ fn research() -> String {
     std::fs::read_to_string(root().join("RESEARCH.md")).expect("RESEARCH.md is at the root")
 }
 
-/// Every Rust source of both crates, as one text.
+/// Every Rust source of the crates, as one text.
 fn sources() -> String {
     fn walk(dir: &Path, text: &mut String) {
         for entry in std::fs::read_dir(dir).expect("a source directory").flatten() {
@@ -28,7 +28,7 @@ fn sources() -> String {
         }
     }
     let mut text = String::new();
-    for dir in ["hereticus/src", "hereticus-cli/src"] {
+    for dir in ["hereticus/src", "hereticus-cli/src", "crates/hereticus-il/src"] {
         walk(&root().join(dir), &mut text);
     }
     text

@@ -9,7 +9,8 @@ pub mod address;
 pub mod arch;
 pub mod callee;
 pub mod dynamic;
-pub mod il;
+/// The IL each architecture lifts to: see [`hereticus_il`].
+pub use hereticus_il as il;
 mod macho;
 pub mod matching;
 pub mod norm;

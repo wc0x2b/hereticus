@@ -1,9 +1,9 @@
 //! A small intermediate language: what an instruction reads, writes and
 //! tests, the same on every architecture.
 //!
-//! The decoders in [`crate::arch`] give an instruction as text and a kind of
-//! control flow. That is enough to compare shapes, but not to see that two
-//! spellings do one thing: `cbnz x8, L` and `cmp x8, #0` with `b.ne L` both
+//! A decoder gives an instruction its opcode and a kind of control flow.
+//! That is enough to compare shapes, but not to see that two spellings do
+//! one thing: `cbnz x8, L` and `cmp x8, #0` with `b.ne L` both
 //! branch where `x8` is not zero, and MIPS `slt t0, a0, a1` with `bnez t0`
 //! tests `a0 < a1` as `cmp a0, a1` with `b.lt` does. A lifter turns one
 //! instruction into a [`Lifted`], and [`find_guards`] turns a compare and
@@ -846,7 +846,7 @@ fn mix(left: u64, right: u64) -> u64 {
 
 /// Most instructions a compiler puts between a compare and the branch that
 /// reads it. GCC schedules other work there, where clang mostly does not.
-const MOST_BETWEEN: usize = 4;
+pub const MOST_BETWEEN: usize = 4;
 
 /// A guard in a body of instructions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
