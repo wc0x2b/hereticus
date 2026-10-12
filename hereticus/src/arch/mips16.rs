@@ -100,6 +100,33 @@ impl Op {
 }
 
 /// The MIPS16e operation `insn` does, where it has no MIPS32 twin.
+/// The frame that a `save` or `restore` makes or drops: whether it saves,
+/// the arguments it stores into the frame of the caller, the size of the
+/// frame, and the registers kept in it, lowest address first.
+pub(crate) struct Frame {
+    pub(crate) saves: bool,
+    pub(crate) arguments: Vec<&'static str>,
+    pub(crate) size: u32,
+    pub(crate) kept: Vec<&'static str>,
+}
+
+/// The frame of `insn`, where it is a `save` or `restore`.
+pub(crate) fn frame(insn: &Insn) -> Option<Frame> {
+    let order = match insn.opcode {
+        super::Opcode::Mips16(_, order) => order,
+        _ => return None,
+    };
+    let decoded = Mips16::of(Mips32::of(order)).decoded(insn.bytes(), 0, insn.address)?;
+    let Reading::Frame { step, size, registers } = decoded.reading else { return None };
+    let name = |reg: u32| REGISTER_NAMES[reg as usize];
+    Some(Frame {
+        saves: step == FrameStep::Save,
+        arguments: (A0..A0 + registers.arguments).map(name).collect(),
+        size,
+        kept: registers.kept.iter().copied().map(name).collect(),
+    })
+}
+
 fn mips16_op(insn: &Insn) -> Option<Op> {
     match decoded(insn)? {
         MipsDecoded::Mips16(op) => Some(op),
@@ -895,6 +922,57 @@ impl Arch for Mips16 {
             }
             Reading::Frame { .. } => None,
         }
+    }
+
+    /// The names are those of the MIPS32 twin, but for a target, which
+    /// counts from the MIPS16e instruction, and the forms MIPS16e alone
+    /// has.
+    fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
+        use compact_str::{CompactString, format_compact};
+        if insn.kind == InsnKind::Unknown {
+            return None;
+        }
+        let lifted = self.lift(insn)?;
+        let decoded = self.decoded(insn.bytes(), 0, insn.address)?;
+        let target = match insn.kind {
+            InsnKind::Call { target } | InsnKind::Jump { target } | InsnKind::Branch { target } => {
+                target
+            }
+            _ => None,
+        };
+        let place = target.map(|target| il::target_name(target.wrapping_sub(insn.address) as i64));
+        let names: il::Names = match decoded.reading {
+            Reading::Word(word) | Reading::Control { test: Some(word), .. } => {
+                let translated = self.as_mips32(word, insn.address)?;
+                let twin = self.base.lift_named(&translated)?;
+                twin.lifted
+                    .operands
+                    .iter()
+                    .zip(twin.names)
+                    .map(|(operand, name)| match (operand, &place) {
+                        (il::Operand::Target(_), Some(place)) => place.clone(),
+                        _ => name,
+                    })
+                    .collect()
+            }
+            Reading::Control { through: Some(number), .. } => {
+                [CompactString::from(REGISTER_NAMES[number as usize])].into_iter().collect()
+            }
+            // `jal` and `jalx` print where they go; a branch prints how far.
+            Reading::Control { kind: InsnKind::Call { target: Some(target) }, .. } => {
+                [format_compact!("{target:#x}")].into_iter().collect()
+            }
+            Reading::Control { .. } => place.into_iter().collect(),
+            Reading::PcRelative { load, dest, address } => {
+                let source = match load {
+                    true => format_compact!("[pc + {address:#x}]"),
+                    false => format_compact!("{address:#x}"),
+                };
+                [CompactString::from(REGISTER_NAMES[dest as usize]), source].into_iter().collect()
+            }
+            Reading::Frame { .. } => return None,
+        };
+        Some(il::Named { lifted, names, write_back: None })
     }
 
     fn stub_arch(&self) -> Option<&'static dyn Arch> {

@@ -401,8 +401,8 @@ fn mips_statement(
             Rabbitizer(MipsOpcode::core_div | MipsOpcode::core_divu),
             [left, right] | ["zero", left, right],
         ) => format!("lo = {left} {sign}/ {right}; hi = {left} {sign}% {right}"),
-        (Mips16(step @ (Mips16Op::Save | Mips16Op::Restore)), _) => {
-            return frame_statement(step, operands);
+        (Mips16(Mips16Op::Save | Mips16Op::Restore), _) => {
+            return frame_statement(&crate::arch::mips16::frame(insn)?);
         }
         (Rabbitizer(MipsOpcode::core_mfhi) | Mips32(Mips32Op::Mfhi), [dest]) => {
             format!("{dest} = hi")
@@ -689,22 +689,21 @@ fn memory_text(token: &str) -> String {
     format!("[{}]", parts.join(" + ").replace("+ -", "- "))
 }
 
-/// The statement of a MIPS16e `save` or `restore`, whose operands are the
-/// arguments `save` stores into the frame of the caller, the size of the
-/// frame, then the registers kept in the frame, lowest address first:
+/// The statement of a MIPS16e `save` or `restore`: the arguments `save`
+/// stores into the frame of the caller, the size of the frame, then the
+/// registers kept in the frame, lowest address first:
 ///
 /// ```text
 /// save    a0, 0x20, s0, ra   store.32 [sp] = a0; store.32 [sp - 8] = s0, ra; sp = sp - 0x20
 /// restore 0x20, s0, ra       s0, ra = load.32 [sp + 0x18]; sp = sp + 0x20
 /// ```
-fn frame_statement(step: Mips16Op, operands: &[&str]) -> Option<String> {
-    let at = operands.iter().position(|operand| operand.starts_with("0x"))?;
-    let (arguments, [size, kept @ ..]) = operands.split_at(at) else { return None };
-    let size = u64::from_str_radix(size.strip_prefix("0x")?, 16).ok()?;
+fn frame_statement(frame: &crate::arch::mips16::Frame) -> Option<String> {
+    let (arguments, kept) = (&frame.arguments, &frame.kept);
+    let size = u64::from(frame.size);
     let kept_size = 4 * kept.len() as u64;
     let mut parts = Vec::new();
-    match step {
-        Mips16Op::Save => {
+    match frame.saves {
+        true => {
             if !arguments.is_empty() {
                 parts.push(format!("store.32 [sp] = {}", arguments.join(", ")));
             }
@@ -1880,12 +1879,13 @@ mod tests {
                 "a2, a3, s0, s1, ra = load.32 [sp + 0xc]; sp = sp + 0x20",
             ]
         );
-        assert_eq!(frame_statement(Mips16Op::Save, &["s0"]), None, "no size");
-        assert_eq!(
-            frame_statement(Mips16Op::Restore, &["0x4", "s0", "ra"]),
-            None,
-            "a frame too small"
-        );
+        let too_small = crate::arch::mips16::Frame {
+            saves: false,
+            arguments: Vec::new(),
+            size: 4,
+            kept: vec!["s0", "ra"],
+        };
+        assert_eq!(frame_statement(&too_small), None, "a frame too small");
     }
 
     #[test]
