@@ -13,23 +13,23 @@ use rabbitizer::opcodes::Opcode;
 pub const HALFWORD: usize = 2;
 
 /// The general register of each 3-bit register field.
-pub const REGISTERS: [u32; 8] = [16, 17, 2, 3, 4, 5, 6, 7];
+pub(crate) const REGISTERS: [u32; 8] = [16, 17, 2, 3, 4, 5, 6, 7];
 
 /// The T register, which compares write, as MIPS32 numbers it.
 pub const T: u32 = 24;
 
 /// The stack pointer and the return address register.
-pub const SP: u32 = 29;
+pub(crate) const SP: u32 = 29;
 
-pub const RA: u32 = 31;
-pub const S0: u32 = 16;
+pub(crate) const RA: u32 = 31;
+pub(crate) const S0: u32 = 16;
 
-pub const S2: u32 = 18;
+pub(crate) const S2: u32 = 18;
 
-pub const S8: u32 = 30;
+pub(crate) const S8: u32 = 30;
 
 /// The registers that `save` and `restore` name.
-pub const A0: u32 = 4;
+pub(crate) const A0: u32 = 4;
 
 /// MIPS16e, in either byte order.
 #[derive(Clone, Copy, Debug)]
@@ -86,9 +86,13 @@ impl Op {
 /// the arguments it stores into the frame of the caller, the size of the
 /// frame, and the registers kept in it, lowest address first.
 pub struct Frame {
+    /// Whether the instruction is a `save`, not a `restore`.
     pub saves: bool,
+    /// The arguments `save` stores into the frame of the caller.
     pub arguments: Vec<&'static str>,
+    /// The size of the frame, in bytes.
     pub size: u32,
+    /// The registers kept in the frame, lowest address first.
     pub kept: Vec<&'static str>,
 }
 
@@ -118,24 +122,46 @@ pub enum Reading {
     /// through, where it goes through one, and the MIPS32 word that tests
     /// what it tests, where it tests anything.
     Control {
+        /// The name it prints with, as `jalrc`.
         name: &'static str,
+        /// The operation, as MIPS32 names it where it can.
         decoded: MipsDecoded,
+        /// The operands as it prints them.
         operands: String,
+        /// How it moves control.
         kind: InsnKind,
+        /// The register it goes through, where it goes through one.
         through: Option<u32>,
+        /// The MIPS32 word that tests what it tests, where it tests anything.
         test: Option<u32>,
     },
     /// A load of a word, or the forming of an address, relative to the
     /// program counter: `lw rx, imm(pc)` and `addiu rx, pc, imm`.
-    PcRelative { load: bool, dest: u32, address: u64 },
+    PcRelative {
+        /// Whether it loads the word, not only forms the address.
+        load: bool,
+        /// The register it writes.
+        dest: u32,
+        /// The address it forms.
+        address: u64,
+    },
     /// `save` or `restore` of the frame.
-    Frame { step: FrameStep, size: u32, registers: FrameRegisters },
+    Frame {
+        /// Whether it makes the frame or drops it.
+        step: FrameStep,
+        /// The size of the frame, in bytes.
+        size: u32,
+        /// The registers it stores or loads.
+        registers: FrameRegisters,
+    },
 }
 
 /// Whether a frame instruction makes the frame or drops it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameStep {
+    /// `save` makes the frame.
     Save,
+    /// `restore` drops it.
     Restore,
 }
 
@@ -194,12 +220,13 @@ impl FrameRegisters {
 
 /// The decoded fields of one instruction, and its width.
 pub struct Read {
+    /// What the instruction reads as.
     pub reading: Reading,
     width: usize,
 }
 
 /// One MIPS32 word of the I format.
-pub fn immediate(op: u32, rs: u32, rt: u32, value: i64) -> u32 {
+pub(crate) fn immediate(op: u32, rs: u32, rt: u32, value: i64) -> u32 {
     op << 26 | rs << 21 | rt << 16 | (value as u32 & 0xffff)
 }
 
@@ -209,14 +236,14 @@ pub fn register(rs: u32, rt: u32, rd: u32, sa: u32, funct: u32) -> u32 {
 }
 
 /// Sign-extend the low `bits` of `value`.
-pub fn signed(value: u32, bits: u32) -> i64 {
+pub(crate) fn signed(value: u32, bits: u32) -> i64 {
     let shift = 64 - bits;
     (i64::from(value) << shift) >> shift
 }
 
 /// Decode the instruction `first`, with the halfword after it, `next`, at
 /// `address`.
-pub fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Read> {
+pub(crate) fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Read> {
     let op = u32::from(first >> 11);
     // `jal` and `jalx` take two halfwords: a 26-bit target, in words.
     if op == 0b00011 {
@@ -405,7 +432,7 @@ pub fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Readi
 }
 
 /// Read an instruction of the RR group, which names two registers.
-pub fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
+pub(crate) fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
     let word = |value: u32| Some(Reading::Word(value));
     match h & 0x1f {
         0b00000 => {
@@ -471,7 +498,7 @@ pub fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
 }
 
 /// The ABI names of the general registers, as `rabbitizer` prints them.
-pub const REGISTER_NAMES: [&str; 32] = [
+pub(crate) const REGISTER_NAMES: [&str; 32] = [
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
     "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "s8",
     "ra",

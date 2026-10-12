@@ -36,7 +36,7 @@ pub fn print(insn: &Insn) -> Option<String> {
 /// `yaxpeax-arm` prints no condition inside the block, so `movgt r0, #0`
 /// reads as `movs r0, 0x0`. A 16-bit form that sets the flags outside a
 /// block does not inside one.
-pub fn conditional_text(text: &str, width: usize, code: ConditionCode) -> String {
+pub(crate) fn conditional_text(text: &str, width: usize, code: ConditionCode) -> String {
     let condition = condition_name(code);
     let (name, operands) = split_printed(text);
     let base = match width == HALFWORD && name.len() > 2 {
@@ -363,7 +363,7 @@ impl Decoder for Thumb2 {
 /// too high, so `movw ip, 0xfaac` reads as `0xf0aac`. Most values a thunk
 /// builds have `imm4` clear, so only a far jump, as from T32 to an A32
 /// function, showed it.
-pub fn wide_move_operands(first: u16, second: u16) -> Option<String> {
+pub(crate) fn wide_move_operands(first: u16, second: u16) -> Option<String> {
     let value = wide_move_value(first, second)?;
     let register = REGISTER_NAMES[usize::from(second >> 8 & 0xf)];
     Some(format!("{register}, {value:#x}"))
@@ -380,7 +380,7 @@ pub fn wide_move_operands(first: u16, second: u16) -> Option<String> {
 /// so `str.w r8, [sp, #0x1c]` read as `str r8, [sp, ip, lsl 1]`. The loads
 /// of the same form read right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WideStore {
+pub(crate) struct WideStore {
     value: u16,
     base: u16,
     offset: u16,
@@ -457,7 +457,7 @@ impl WideStore {
 
 /// The wide store at an offset that `first` and `second` encode, if they
 /// encode one: see [`WideStore`].
-pub fn wide_store(first: u16, second: u16) -> Option<WideStore> {
+pub(crate) fn wide_store(first: u16, second: u16) -> Option<WideStore> {
     use crate::Width;
     let width = match first & 0xfff0 {
         0xf8c0 => Width::Bits32,
@@ -471,7 +471,7 @@ pub fn wide_store(first: u16, second: u16) -> Option<WideStore> {
 }
 
 /// The 16-bit value of a T32 `movw` or `movt`: see [`wide_move_operands`].
-pub fn wide_move_value(first: u16, second: u16) -> Option<u32> {
+pub(crate) fn wide_move_value(first: u16, second: u16) -> Option<u32> {
     const MOVW: u16 = 0xf240;
     const MOVT: u16 = 0xf2c0;
     const OPCODE_MASK: u16 = 0xfbf0;
@@ -500,7 +500,7 @@ pub fn wide_move_value(first: u16, second: u16) -> Option<u32> {
 /// for its width. The shift, the extend and the insert are the operations
 /// A32 encodes too, so they read and lift as [`IntegerWord`] does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WideWord {
+pub(crate) enum WideWord {
     /// `mvn rd, #value`, or `mvns`.
     NotConstant { rd: u32, value: u32, sets_flags: bool },
     /// `lsl rd, rn, rm` and kin, or `lsls`.
@@ -649,7 +649,7 @@ pub fn thumb_expand_constant(constant: u32) -> u32 {
 ///
 /// `yaxpeax-arm` 0.4 prints the field, so `ands.w r3, r3, r1, asr #32`
 /// read as `asr 0`.
-pub fn shift_of_32(first: u16, second: u16, operands: String) -> String {
+pub(crate) fn shift_of_32(first: u16, second: u16, operands: String) -> String {
     let amount = (second >> 12 & 0b111) << 2 | (second >> 6 & 0b11);
     let kind = second >> 4 & 0b11;
     if first & 0xfe00 != 0xea00 || amount != 0 || !matches!(kind, 0b01 | 0b10) {
@@ -670,7 +670,7 @@ pub fn shift_of_32(first: u16, second: u16, operands: String) -> String {
 /// `yaxpeax-arm` 0.4 reads `tbh [pc, r2, lsl 1]` as `tbb [pc, r2, lsl r0]`,
 /// so a table of halfwords read as one of bytes. Measured on Lua built by GCC
 /// at `-Os` for Thumb-2, the `tbh` of `luaV_execute` cut it in 19 pieces.
-pub fn table_branch(first: u16, second: u16) -> Option<(&'static str, String, Opcode)> {
+pub(crate) fn table_branch(first: u16, second: u16) -> Option<(&'static str, String, Opcode)> {
     const TABLE_BRANCH: u16 = 0xe8d0;
     if first & 0xfff0 != TABLE_BRANCH || second & 0xffe0 != 0xf000 {
         return None;
@@ -684,12 +684,12 @@ pub fn table_branch(first: u16, second: u16) -> Option<(&'static str, String, Op
 }
 
 /// `opcode`, with no condition: an `it` before it gives one later.
-pub fn always(opcode: Opcode, flags: Flags) -> Decoded {
+pub(crate) fn always(opcode: Opcode, flags: Flags) -> Decoded {
     Decoded::Core { opcode, condition: ConditionCode::AL, flags }
 }
 
 /// The names of the general registers, as `yaxpeax-arm` prints them.
-pub const REGISTER_NAMES: [&str; 16] = [
+pub(crate) const REGISTER_NAMES: [&str; 16] = [
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "sb", "sl", "fp", "ip", "sp", "lr", "pc",
 ];
 
@@ -700,7 +700,7 @@ pub const REGISTER_NAMES: [&str; 16] = [
 /// NEON element or structure load or store is `1111 1001` in T32 and
 /// `1111 0100` in A32. VFP is the same word in both, with the A32 condition
 /// that means always.
-pub fn as_a32(word: u32) -> u32 {
+pub(crate) fn as_a32(word: u32) -> u32 {
     const LOW: u32 = 0x00ff_ffff;
     match word >> 24 {
         0xef => 0xf200_0000 | word & LOW,
@@ -711,7 +711,7 @@ pub fn as_a32(word: u32) -> u32 {
 }
 
 /// Report whether the halfword `first` opens a 32-bit instruction.
-pub fn is_wide(first: u16) -> bool {
+pub(crate) fn is_wide(first: u16) -> bool {
     matches!(first >> 11, 0b11101..=0b11111)
 }
 
@@ -721,7 +721,7 @@ pub fn is_wide(first: u16) -> bool {
 /// `yaxpeax` reports one more than the encoding holds for a narrow `cbz`,
 /// `cbnz` and conditional `b`, and the encoding itself for the rest. A call
 /// that switches to A32 goes to a word, so its target rounds down.
-pub fn branch_target(inst: &Instruction, address: u64, width: usize) -> Option<u64> {
+pub(crate) fn branch_target(inst: &Instruction, address: u64, width: usize) -> Option<u64> {
     let reported = inst.operands.iter().find_map(|operand| match operand {
         Operand::BranchThumbOffset(halfwords) => Some(i64::from(*halfwords)),
         _ => None,
@@ -762,6 +762,8 @@ pub fn without_suffix(name: &str, letter: u8) -> String {
     kept
 }
 
+/// `operands`, with the target they print named by its distance from
+/// `address`, as `$+0x24`.
 pub fn with_target_text(operands: &str, address: u64, target: u64) -> String {
     // A search for a byte, not for `"$+"`: this runs on every branch.
     let after_dollar = |sign: u8| {

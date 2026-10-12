@@ -95,8 +95,9 @@ pub trait Decoder {
 /// Report whether an operand is a branch target.
 ///
 /// Not on [`Decoder`]: the `$+0x24` form is how every decoder here names a
-/// target it has resolved, not something an architecture chooses. Every decoder must produce
-/// it, so every decoder can be asked about it the same way.
+/// target it has resolved, not something an architecture chooses. Every
+/// decoder must produce it, so every decoder can be asked about it the same
+/// way.
 pub fn is_branch_target(operand: &str) -> bool {
     operand.starts_with('$')
 }
@@ -225,8 +226,11 @@ impl Printing {
 /// The instruction set a decoder reads, which prints what it read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstructionSet {
+    /// A64.
     Aarch64,
+    /// A32.
     Arm,
+    /// T32.
     Thumb,
     /// MIPS32, in the byte order its words are read in.
     Mips(mips::ByteOrder),
@@ -305,11 +309,20 @@ pub enum InsnKind {
     /// either still reports the parts that are readable.
     Unknown,
     /// Branches away and never falls through.
-    Jump { target: Option<u64> },
+    Jump {
+        /// Where it goes, where the decoder knows.
+        target: Option<u64>,
+    },
     /// Branches one way or falls through the other.
-    Branch { target: Option<u64> },
+    Branch {
+        /// Where it goes where taken, where the decoder knows.
+        target: Option<u64>,
+    },
     /// Calls a subroutine and expects control back.
-    Call { target: Option<u64> },
+    Call {
+        /// The subroutine it calls, where the decoder knows.
+        target: Option<u64>,
+    },
     /// Leaves the function.
     Return,
 }
@@ -385,7 +398,7 @@ pub fn decode_raw(
 ///
 /// Only to put text back together, as a decoder rewrites its operands:
 /// nothing decides by the name.
-pub fn split_printed(text: &str) -> (&str, &str) {
+pub(crate) fn split_printed(text: &str) -> (&str, &str) {
     match text.split_once(char::is_whitespace) {
         Some((head, tail)) => (head, tail.trim()),
         None => (text, ""),

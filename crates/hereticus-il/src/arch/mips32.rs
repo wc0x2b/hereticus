@@ -44,46 +44,84 @@ const MFMC0: u32 = 0x0b;
 /// An operation this module reads, named as `rabbitizer` would print it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
+    /// `synci`: makes written code visible to the fetch of instructions.
     Synci,
+    /// `sigrie`: traps, as a filler between functions.
     Sigrie,
+    /// `pref`: fetches memory ahead of use.
     Pref,
+    /// `eret`: returns from an exception.
     Eret,
+    /// `deret`: returns from a debug exception.
     Deret,
+    /// `jr.hb`: jumps through a register once hazards clear.
     JrHb,
+    /// `jalr.hb`: calls through a register once hazards clear.
     JalrHb,
+    /// `movz`: copies where a register is zero.
     Movz,
+    /// `movn`: copies where a register is not zero.
     Movn,
+    /// `rotr`: rotates right by a constant.
     Rotr,
+    /// `rotrv`: rotates right by a register.
     Rotrv,
+    /// `mfhi`: reads `hi`.
     Mfhi,
+    /// `mflo`: reads `lo`.
     Mflo,
+    /// `mthi`: writes `hi`.
     Mthi,
+    /// `mtlo`: writes `lo`.
     Mtlo,
+    /// `mult`: multiplies, signed, into `hi` and `lo`.
     Mult,
+    /// `multu`: multiplies, unsigned, into `hi` and `lo`.
     Multu,
+    /// `madd`: adds a signed product to `hi` and `lo`.
     Madd,
+    /// `maddu`: adds an unsigned product to `hi` and `lo`.
     Maddu,
+    /// `mul`: multiplies into a register.
     Mul,
+    /// `msub`: subtracts a signed product from `hi` and `lo`.
     Msub,
+    /// `msubu`: subtracts an unsigned product from `hi` and `lo`.
     Msubu,
+    /// `clz`: counts the leading zeros.
     Clz,
+    /// `clo`: counts the leading ones.
     Clo,
+    /// `ext`: extracts a field of bits.
     Ext,
+    /// `ins`: inserts a field of bits.
     Ins,
+    /// `wsbh`: swaps the bytes of each halfword.
     Wsbh,
+    /// `seb`: sign-extends a byte.
     Seb,
+    /// `seh`: sign-extends a halfword.
     Seh,
+    /// `rdhwr`: reads a hardware register.
     Rdhwr,
+    /// `rddsp`: reads the DSP control register.
     Rddsp,
+    /// `wrdsp`: writes the DSP control register.
     Wrdsp,
+    /// `mfc0`: reads a register of coprocessor 0.
     Mfc0,
+    /// `mtc0`: writes a register of coprocessor 0.
     Mtc0,
+    /// `di`: turns interrupts off.
     Di,
+    /// `ei`: turns interrupts on.
     Ei,
+    /// `wait`: waits for an interrupt.
     Wait,
 }
 
 impl Op {
+    /// The name `rabbitizer` would print it with, as `movz`.
     pub fn name(self) -> &'static str {
         match self {
             Self::Synci => "synci",
@@ -129,7 +167,7 @@ impl Op {
 
 /// One word this module reads.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Word {
+pub(crate) struct Word {
     pub op: Op,
     pub operands: String,
     pub kind: InsnKind,
@@ -143,7 +181,7 @@ const DERET: u32 = 0x4200_001f;
 /// Report whether `op` returns from an exception.
 ///
 /// Unlike every other MIPS jump, such a return has no delay slot.
-pub fn is_exception_return(op: Op) -> bool {
+pub(crate) fn is_exception_return(op: Op) -> bool {
     matches!(op, Op::Eret | Op::Deret)
 }
 
@@ -151,7 +189,7 @@ pub fn is_exception_return(op: Op) -> bool {
 ///
 /// Returns `None` for a word this module does not know, which leaves it
 /// unreadable.
-pub fn decode(word: u32) -> Option<Word> {
+pub(crate) fn decode(word: u32) -> Option<Word> {
     let fields = Fields::of(word);
     if let Some(found) = control(word, &fields) {
         return Some(found);
@@ -479,14 +517,14 @@ fn cop0(fields: &Fields) -> Option<(Op, String)> {
 /// is `hi` and `lo`, is a register the IL does not name: a move to or from
 /// one names it as another operand, and a multiply into one lifts to
 /// nothing.
-pub fn lift(word: u32) -> Option<il::Lifted> {
+pub(crate) fn lift(word: u32) -> Option<il::Lifted> {
     lift_named(word).map(|named| named.lifted)
 }
 
 /// [`lift`], with the name of each operand as [`decode`] writes it. An
 /// operand it does not write, as the `hi` that `mthi` writes, has an empty
 /// name.
-pub fn lift_named(word: u32) -> Option<il::Named> {
+pub(crate) fn lift_named(word: u32) -> Option<il::Named> {
     use compact_str::{CompactString, format_compact};
     use il::Op;
     let fields = Fields::of(word);
