@@ -251,7 +251,7 @@ impl<'a> App<'a> {
         let entries = pairs.chain(gone).chain(new).collect();
         let mut app = Self {
             diff,
-            paired: PairedLabels::new(diff, before, after),
+            paired: diff.paired_labels(before, after),
             before,
             after,
             files: start.files,

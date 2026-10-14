@@ -1,6 +1,14 @@
 [workspace]
 members = [
     "crates/hereticus-il",
+    "crates/hereticus-recovery",
+    "crates/hereticus-arch",
+    "crates/hereticus-callees",
+    "crates/hereticus-image",
+    "crates/hereticus-match",
+    "crates/hereticus-memory",
+    "crates/hereticus-unpack",
+    "crates/hereticus-view",
     "hereticus-cli",
     "hereticus",
 ]

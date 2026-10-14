@@ -1,0 +1,27 @@
+[package]
+name = "hereticus-view"
+description = "Human-readable output for binary comparison"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version = "1.90"
+
+[lib]
+bench = false
+
+[dependencies]
+hereticus-arch = { path = "../hereticus-arch", version = "0.1.0" }
+hereticus-callees = { path = "../hereticus-callees", version = "0.1.0" }
+hereticus-image = { path = "../hereticus-image", version = "0.1.0" }
+hereticus-il = { path = "../hereticus-il", version = "0.1.0" }
+hereticus-memory = { path = "../hereticus-memory", version = "0.1.0" }
+compact_str = "0.9"
+rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = ["std", "MIPS_II"] }
+yaxpeax-arm = "0.4"
+
+[dev-dependencies]
+bolero = { version = "0.13", features = ["arbitrary"] }

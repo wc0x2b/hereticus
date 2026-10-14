@@ -493,7 +493,7 @@ fn run(args: &Args) -> Result<bool, String> {
             .collect();
         sort_shown(&mut shown, args.sort);
         let paint = Paint::resolve(args.color);
-        let paired = PairedLabels::new(&diff, &before, &after);
+        let paired = diff.paired_labels(&before, &after);
         for (index, pair) in shown.iter().enumerate() {
             if index > 0 {
                 println!();
@@ -916,7 +916,7 @@ fn print_one_diff(
         }
     })?;
 
-    print_pair_diff(pair, &PairedLabels::new(diff, before, after), before, after, view, paint);
+    print_pair_diff(pair, &diff.paired_labels(before, after), before, after, view, paint);
     Ok(())
 }
 

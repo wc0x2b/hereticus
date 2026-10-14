@@ -28,9 +28,10 @@ fn sources() -> String {
         }
     }
     let mut text = String::new();
-    for dir in ["hereticus/src", "hereticus-cli/src", "crates/hereticus-il/src"] {
-        walk(&root().join(dir), &mut text);
-    }
+    walk(&root().join("hereticus/src"), &mut text);
+    walk(&root().join("hereticus-cli/src"), &mut text);
+    // Every crate under `crates/`, so a new crate needs no change here.
+    walk(&root().join("crates"), &mut text);
     text
 }
 

@@ -1,0 +1,27 @@
+[package]
+name = "hereticus-match"
+description = "Compare and match functions between binaries"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version = "1.90"
+
+[lib]
+bench = false
+
+[dependencies]
+hereticus-arch = { path = "../hereticus-arch", version = "0.1.0" }
+hereticus-callees = { path = "../hereticus-callees", version = "0.1.0" }
+hereticus-image = { path = "../hereticus-image", version = "0.1.0" }
+hereticus-il = { path = "../hereticus-il", version = "0.1.0" }
+hereticus-memory = { path = "../hereticus-memory", version = "0.1.0" }
+hereticus-view = { path = "../hereticus-view", version = "0.1.0" }
+smallvec = "1"
+rayon = "1.12.0"
+
+[dev-dependencies]
+bolero = { version = "0.13", features = ["arbitrary"] }
