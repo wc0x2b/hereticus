@@ -51,14 +51,36 @@ twins in different orders, and their callers are twins too.
 
 `scan.rs` and `arch/` find 45795 of 46006 functions exactly in stripped
 libraries, over ARM, Thumb-2, AArch64 and MIPS, and few Rust crates do
-that. The decoders are a crate, `crates/hereticus-il`, and `scan.rs` and
-`raw.rs` read code only through the `Recovery` trait, apart from the
-rules of the matching in `Arch`. What is left is the move: put
-`Recovery`, the implementation of it for each architecture, `scan.rs`,
-`raw.rs` and `address.rs` into a crate of their own. Each file of rules
-in `arch/` holds both traits, so split it first, as the decoders were
-split, and give `scan.rs` its own type of a recovered function in place
-of `obj::Function`.
+that. `scan.rs`, `raw.rs`, `dynamic.rs` and `unwind.rs` are now the crate
+`crates/hereticus-recovery`, and read code only through the `Recovery`
+trait. But `Recovery` and the implementation of it for each architecture
+are still in `crates/hereticus-arch`, in the same files as the rules of
+the matching in `Arch`, so the recovery crate needs those rules too.
+Split each file of rules in `hereticus-arch` in two, as the decoders were
+split, and move the `Recovery` half into `hereticus-recovery`. Then give
+`scan.rs` its own type of a recovered function in place of the shared
+`hereticus_memory::Function`.
+
+## Keep the decoder helpers out of the API of hereticus-arch
+
+`hereticus-view` calls `mips::rabbitizer_opcode` and
+`aarch64::is_named_load`, so the crate split made them public. They
+answer questions about one decoder, not about an architecture. Give `Insn`
+or `Arch` a method for each question that `hereticus-view` asks, and make
+the two functions `pub(crate)` again.
+
+## Split matching.rs
+
+`crates/hereticus-match/src/matching.rs` is 4687 lines, after its tests
+moved to `matching/tests.rs`. It holds the cascade, the alignment of two
+bodies, the classification of a change and the near misses. Give each a
+module of its own, and keep the names that `RESEARCH.md` gives.
+
+## Run the truth tests on the crate split
+
+The crate split passed `just quick-test`, but not the `truth_*` tests,
+which read about 1.6 GB that `just truth` downloads. Run `just test`
+once, and compare the counts with those of master.
 
 ## Unpack more firmware containers
 
