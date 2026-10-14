@@ -27,6 +27,12 @@ backports: fixtures
 firmware:
     python3 fixtures/firmware.py
 
+# Cargo publishes each crate after the crates it needs. Give `--dry-run` to
+# check without upload.
+# Publish every crate of the workspace to crates.io.
+publish *args:
+    cargo publish --workspace {{args}}
+
 # Matches build-test-native
 build:
     cargo build --release
