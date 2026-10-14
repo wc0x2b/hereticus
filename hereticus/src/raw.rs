@@ -448,7 +448,7 @@ fn check_pointers(data: &[u8], base: u64, arch: &dyn Recovery) -> BaseFit {
 /// The tail of a string such as "copy" or "error" reads as a small number,
 /// `0x7970` or `0x726f`, which a low base takes for an address just outside
 /// it. A real pointer almost always holds a byte outside that range.
-pub(crate) fn is_text(word: &[u8]) -> bool {
+pub fn is_text(word: &[u8]) -> bool {
     let printable = word.iter().filter(|byte| (0x20..0x7f).contains(*byte)).count();
     printable >= 2 && word.iter().all(|&byte| byte == 0 || (0x20..0x7f).contains(&byte))
 }
