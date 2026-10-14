@@ -203,6 +203,23 @@ Options:
   -V, --version                Print version
 ```
 
+## Crates
+The `hereticus` crate re-exports the crates below. To use only one part,
+depend on that crate. Each crate in the table needs only the crates in its
+row.
+
+| Crate                | Does                                          | Needs                                       |
+|----------------------|-----------------------------------------------|---------------------------------------------|
+| `hereticus-il`       | Decode machine code, and lift it to an IL     | nothing                                     |
+| `hereticus-memory`   | The address space of a binary                 | nothing                                     |
+| `hereticus-unpack`   | Unpack firmware archives                      | nothing                                     |
+| `hereticus-arch`     | The rules of each architecture                | il, memory                                  |
+| `hereticus-recovery` | Find functions in stripped binaries           | arch, il, memory                            |
+| `hereticus-image`    | Read ELF, Mach-O and raw images               | arch, memory, recovery                      |
+| `hereticus-callees`  | Find the callee of each call                  | arch, image, memory                         |
+| `hereticus-view`     | Show code as instructions or as IL            | arch, callees, il, image, memory            |
+| `hereticus-match`    | Compare the functions of two binaries         | arch, callees, il, image, memory, view      |
+
 ## Development
 All patches/merge requests are welcome!
 

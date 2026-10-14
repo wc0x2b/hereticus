@@ -14,12 +14,13 @@ rust-version = "1.90"
 bench = false
 
 [dependencies]
+hereticus-arch = { path = "../hereticus-arch", version = "0.1.0" }
 hereticus-il = { path = "../hereticus-il", version = "0.1.0" }
-compact_str = "0.9"
+hereticus-memory = { path = "../hereticus-memory", version = "0.1.0" }
 smallvec = "1"
-rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = ["std", "MIPS_II"] }
-yaxpeax-arch = "0.3"
 yaxpeax-arm = "0.4"
+gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
+object = "0.40"
 
 [dev-dependencies]
 bolero = { version = "0.13", features = ["arbitrary"] }

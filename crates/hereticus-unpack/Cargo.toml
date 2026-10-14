@@ -1,0 +1,21 @@
+[package]
+name = "hereticus-unpack"
+description = "Unpack firmware containers and images"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version = "1.90"
+
+[lib]
+bench = false
+
+[dependencies]
+lzma-rs = "0.3"
+tar = "0.4"
+
+[dev-dependencies]
+bolero = { version = "0.13", features = ["arbitrary"] }

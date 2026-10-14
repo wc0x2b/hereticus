@@ -1,0 +1,25 @@
+[package]
+name = "hereticus-image"
+description = "Parse binary files and raw images"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version = "1.90"
+
+[lib]
+bench = false
+
+[dependencies]
+hereticus-arch = { path = "../hereticus-arch", version = "0.1.0" }
+hereticus-memory = { path = "../hereticus-memory", version = "0.1.0" }
+hereticus-recovery = { path = "../hereticus-recovery", version = "0.1.0" }
+smallvec = "1"
+object = "0.40"
+
+[dev-dependencies]
+bolero = { version = "0.13", features = ["arbitrary"] }
+object = { version = "0.40", features = ["write"] }

@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use hereticus::arch::decode_all;
-use hereticus::matching::{DiffLine, Options, PairedLabels, View, diff_with, instruction_diff_in};
+use hereticus::matching::{DiffLine, Options, View, diff_with, instruction_diff_in};
 use hereticus::obj::Binary;
 use hereticus::view::{Context, il_lines_in};
 use rstest::rstest;
@@ -64,7 +64,7 @@ fn the_il_diff_of_a_fix_is_locked(#[values("arm", "aarch64", "mips16")] arch: &s
     let pair = diff.matched.iter().find(|pair| pair.before == index).expect("luaZ_fill pairs");
     let lines = instruction_diff_in(
         View::Il,
-        Some(&PairedLabels::new(&diff, &before, &after)),
+        Some(&diff.paired_labels(&before, &after)),
         &before,
         pair.before,
         &after,
@@ -102,7 +102,7 @@ fn a_call_to_a_stripped_function_names_its_pair(
 ) {
     let (before, after) = (stripped("lua", "before", arch), stripped("lua", "after", arch));
     let diff = diff_with(&before, &after, Options::default());
-    let paired = PairedLabels::new(&diff, &before, &after);
+    let paired = diff.paired_labels(&before, &after);
     let (mut same, mut differ) = (0, Vec::new());
     for pair in &diff.matched {
         let lines =
