@@ -1218,9 +1218,18 @@ fn statement(
                 }
                 Some(Test::Guard(guard)) => {
                     let left = operands.first()?;
-                    let right = match operands.as_slice() {
-                        [_, right, _] => right.clone(),
-                        _ => match guard.right {
+                    // `tbz x0, #31` names the bit it tests, and the guard
+                    // holds the mask of it.
+                    let mask = match (guard.cond, guard.right) {
+                        (Cond::BitsClear | Cond::BitsSet, hereticus_il::Value::Const(mask)) => {
+                            Some(constant_text(mask))
+                        }
+                        _ => None,
+                    };
+                    let right = match (mask, operands.as_slice()) {
+                        (Some(mask), _) => mask,
+                        (None, [_, right, _]) => right.clone(),
+                        (None, _) => match guard.right {
                             hereticus_il::Value::Const(value) => constant_text(value),
                             _ => return None,
                         },
@@ -1322,6 +1331,22 @@ mod tests {
         assert_eq!(
             shown,
             ["w0 = ne ? 1 : 0", "w1 = ~w19", "x0 = x1 * x2", "x1 = sxtw(w1)", "w0 = clz(w1)"]
+        );
+    }
+
+    /// A test of one bit reads with the mask of that bit, not its number.
+    #[test]
+    fn a_test_of_one_bit_reads_as_its_mask() {
+        let shown = lines(&[
+            0x36f8_0080, // tbz w0, #31, $+0x10
+            0xb7f8_0041, // tbnz x1, #63, $+0x8
+        ]);
+        assert_eq!(
+            shown,
+            [
+                "if ((w0 & 0x80000000) == 0) goto $+0x10",
+                "if ((x1 & 0x8000000000000000) != 0) goto $+0x8"
+            ]
         );
     }
 
