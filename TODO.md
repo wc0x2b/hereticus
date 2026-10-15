@@ -3,13 +3,14 @@
 ## Check fixes on Thumb-2
 
 Four Apple CVE fixes, all AArch64, put each fix in the top 19 rows with
-`--sort added`. Two OpenWrt fixes cover A32 and MIPS: `ubusd` for
-CVE-2025-62526 (rows 4 to 7, MIPS16e on MIPS) and `dropbear` for
-CVE-2025-14282 (rows 1 and 2, MIPS32). OpenWrt builds its user space for
+`--sort added`. Three OpenWrt fixes cover A32 and MIPS: `ubusd` for
+CVE-2025-62526 (rows 4 to 7, MIPS16e on MIPS), `dropbear` for
+CVE-2025-14282 (rows 1 and 2, MIPS32) and `uhttpd` for CVE-2026-55614
+(rows 3 and 5, MIPS16e). OpenWrt builds its user space for
 ARMv7 as A32, so no shipped fix reads Thumb-2 yet: find one in the
 firmware of a vendor, or in a distribution built for Thumb-2. More
-OpenWrt fixes with binaries on both sides: the `uhttpd`, `odhcpd`,
-`rpcd` and `dropbear` updates of 24.10.8, and `ltq-ptm` of
+OpenWrt fixes with binaries on both sides: the `odhcpd`, `rpcd` and
+`dropbear` updates of 24.10.8, and `ltq-ptm` of
 CVE-2025-62525, a kernel module of the Lantiq MIPS boards.
 
 ## Tell twins apart that no instruction separates

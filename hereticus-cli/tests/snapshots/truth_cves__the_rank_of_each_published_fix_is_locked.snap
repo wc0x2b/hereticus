@@ -15,3 +15,7 @@ CVE-2025-14282 dropbear AArch64       2    14  changed sub_15048 sub_1513c 0.21 
 CVE-2025-14282 dropbear A32           1    33  changed sub_148b8 sub_14460 0.25 51 1 2
 CVE-2025-14282 dropbear MIPS32 BE     2    51  changed sub_18eb0 sub_18874 0.28 50 3 1
 CVE-2025-14282 dropbear MIPS32 LE     2    44  changed sub_190dc sub_18a4c 0.28 50 3 1
+CVE-2026-55614 uhttpd AArch64         5    13  changed sub_5d78 sub_5dbc 0.96 16 3 3
+CVE-2026-55614 uhttpd A32             3    13  changed sub_4218 sub_424c 0.97 12 3 2
+CVE-2026-55614 uhttpd MIPS16e BE      5    20  changed sub_3f74 sub_3fa8 0.95 16 18 2
+CVE-2026-55614 uhttpd MIPS16e LE      5    21  changed sub_3fc4 sub_3ff8 0.97 15 4 1
