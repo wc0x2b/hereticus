@@ -172,6 +172,29 @@ impl Links {
         self.printable_at(address)
     }
 
+    /// The text that holds `address`, and how far into it `address` is.
+    ///
+    /// A linker merges a text that ends another into it: GNU `ld` keeps one
+    /// `"DEVPATH"` for `procd` of OpenWrt, and a pointer 3 into it for
+    /// `"PATH"`. GCC also reaches a text from the address of another, as
+    /// `"Unexpected character\n"` from 10 bytes on in `jsonfilter`, so a
+    /// pointer into a text is no text of its own. Only the view asks for
+    /// one, to show the text it is in.
+    pub fn text_holding(&self, address: u64) -> Option<(&str, u64)> {
+        if let Some(text) = self.text_at(address) {
+            return Some((text, 0));
+        }
+        let is_text_at = |at: u64| self.bytes_at(at).is_some_and(|bytes| is_text_byte(bytes[0]));
+        let start = (1..=LONGEST as u64)
+            .map_while(|back| address.checked_sub(back))
+            .take_while(|&at| is_text_at(at))
+            .last()?;
+        let whole = self.text_at(start)?;
+        let offset = address - start;
+        let inside = (offset as usize) < whole.len();
+        (inside && self.is_sure_text(start, whole)).then_some((whole, offset))
+    }
+
     /// [`Self::text_at`], or the text right after an instruction of `arch`
     /// that ends a function, a return or a jump, or after padding.
     ///
@@ -463,6 +486,11 @@ mod tests {
         assert_eq!(links.text_at(0x105), None, "not printable");
         assert_eq!(links.text_at(0x108), Some("no end"));
         assert_eq!(links.text_at(0x109), None, "not after a NUL");
+        assert_eq!(links.text_holding(0x109), Some(("no end", 1)), "inside a text");
+        assert_eq!(links.text_holding(0x10d), Some(("no end", 5)), "its last byte");
+        assert_eq!(links.text_holding(0x100), Some(("%d", 0)), "a whole text");
+        assert_eq!(links.text_holding(0x10e), None, "the NUL that ends it");
+        assert_eq!(links.text_holding(0x1010), None, "no NUL near enough");
         assert_eq!(links.text_at(0x2000), None, "nothing before it says it starts");
         let read_only = Links { read_only_starts: BTreeSet::from([0x2000]), ..links.clone() };
         assert_eq!(read_only.text_at(0x2000), Some("at start"), "read-only data starts there");
