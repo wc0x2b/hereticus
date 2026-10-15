@@ -451,6 +451,27 @@ with each other at a score of 1.00.
 Code: `Cascade::match_by_similarity` in `matching/cascade.rs`;
 `RIVAL_MARGIN` in `matching/score.rs`.
 
+## 15. Slots of a table of functions
+
+Source: Pawlowski et al., *Marx: Uncovering Class Hierarchies in C++
+Programs*, NDSS 2017, which finds the vtables of a binary as runs of
+addresses of functions in its data. No paper found pairs functions by
+their slot in such a table; this entry applies the order of a vtable
+the way entry 7 applies the order of the code.
+
+Idea: a C++ vtable lists the virtual functions of a class in the order
+the source declares them, whatever the compiler, and a C table of
+handlers keeps the order of its fields. Where a firm pair joins two
+tables, the functions in the same slot of each are partners, even twins
+that no instruction separates.
+
+Applies to: twins that pair in address order (A4), and free functions
+the code alone leaves unpaired.
+
+Code: `Binary::function_tables` in `crates/hereticus-image`;
+`Links::words` in `crates/hereticus-image`; `Cascade::pair_by_tables`
+in `matching/tables.rs`.
+
 ## Lower fit
 
 - Ye, Zhou and Zhang, *Enhancing Semantic-Aware Binary Diffing with
@@ -590,6 +611,7 @@ Before any change, on the backports: 25260 right, 956 wrong, 6282 gone,
 | 12. Outliers among changes | cosine against the centroid | see below | see below |
 | 13. Unique references | `Cascade::pair_by_unique_references` | +547 right, −135 wrong | Kept |
 | 14. Ratio test | `RIVAL_MARGIN` in `Cascade::match_by_similarity` | −24 right, −159 wrong | Kept |
+| 15. Slots of a table | `Cascade::pair_by_tables` | +275 right, −54 wrong | Kept |
 
 ### 1 and 2: context
 
@@ -1167,6 +1189,65 @@ published fixes and Ubuntu updates. The kernels have no A64 code.
 Not kept: counting a branch on the opposite condition as an edit. A
 compiler flips a branch between levels, so this would make each such
 row an edit, where the normalizer reads it as a free choice.
+
+### 15: slots of a table
+
+All 58 twins that paired wrong between clang and GCC (see "Tell twins
+apart that no instruction separates" in `TODO.md`, as it was) were
+virtual functions of tinyxml2, each in a vtable with functions that
+differ. `Binary::function_tables` reads the runs of addresses of
+functions in the loaded data, and `Cascade::pair_by_tables` pairs by
+slot where a firm pair joins two tables. Against the step before, each
+cell right then wrong:
+
+| Set | Right | Wrong |
+|---|---|---|
+| Backports | +275 | −54 |
+| OpenWrt kernels | +329 | −21 |
+| Ubuntu updates | +9 | −8 |
+
+Against the source files in the DWARF of the kernels
+(`tests/truth_kernels.rs`), which count a renamed function and a twin
+apart, the kernels paired 325 more right and 3 more wrong; the pairs
+by slot are wrong 0.76% of the time. The ranks of the eight published
+fixes did not move. On the backports the rank sum rose from 3015 to 3028 and the MRR fell from 0.568 to
+0.567, as more changed functions now pair; top 1 and top 5 stayed. Of
+the 58 wrong twins, 4 are left: `MemPoolT<52>::SetTracked` and
+`MemPoolT<60>::SetTracked`, in two comparisons.
+
+A shared library fills a vtable through dynamic relocations, so the
+file holds zero there (RELA, as AArch64) or an addend (REL, as ARM).
+`Links::words` reads each word as the loader leaves it: the address an
+`ABS` or `RELATIVE` relocation stores, else the stored word.
+
+Each part, in the order it was tried, against the step before:
+
+| Part | Backports | Kernels |
+|---|---|---|
+| Twins only, after the similarity stage | +54, −54 | +179, −10 |
+| Again at the end | none | +59, −8 |
+| Free functions of similarity 0.5 or more too | +119, none | +147, +1 |
+| Floor 0.3 in place of 0.5 (kept) | +102, none | +84, −5 |
+| Floor 0.1 in place of 0.3 | +90, +5 | +52, +12 |
+| Break pairs by similarity or place too (kept) | none | +12, −14 |
+| Break pairs by callers or references too | none | −4, +2 |
+| No two tables where a firm pair crosses a slot (kept) | none | +6, −6 |
+| A null inside a table | −7, none | +17, −26 |
+
+The Ubuntu updates paired 9 more right and 8 fewer wrong with twins
+only, and moved no further.
+
+A raw image says nothing of where its code ends. In tinyxml2 for
+Thumb-2 as a raw image loaded at zero, two halfwords of code often read
+as the address of a function, and such pairs of words paired four
+functions wrong across the release from 9.0.0 to 10.0.0. A run inside
+a function now needs three addresses. Skipping every word inside a
+function lost the whole gain on the kernels, since a scan of a raw
+kernel takes its data for the end of a function: 77% of the image of
+the EX6100v2 lies inside one. Three addresses everywhere cost the
+backports 4 right pairs. Against two everywhere, the rule of three
+inside a function paired 158 fewer right and 21 more wrong on the
+kernels.
 
 ### Selects as guards (A15)
 

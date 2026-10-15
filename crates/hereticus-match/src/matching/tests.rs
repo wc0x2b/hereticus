@@ -2461,3 +2461,63 @@ fn a_flipped_branch_reads_alike_on_a32_and_a64() {
     assert_eq!(a64([0x5400_0041, 0x5400_0040]), Changed::InDetail);
     assert_eq!(a64([0x5400_004b, 0x5400_004d]), Changed::Yes);
 }
+
+/// A binary of ARM functions placed from 0x1000, each named for what it
+/// returns, as `"52"` or `"0 again"`, and a table at 0x4000 of the
+/// addresses of `table`, by name.
+fn binary_with_table(names: &[&str], table: &[&str]) -> hereticus_image::Binary {
+    let words = |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_le_bytes()).collect() };
+    let codes: Vec<Vec<u8>> = names
+        .iter()
+        .map(|name| {
+            let value: u32 = name.split(' ').next().and_then(|n| n.parse().ok()).expect("a value");
+            // mov r0, #value then bx lr
+            words(&[0xe3a0_0000 | value, 0xe12f_ff1e])
+        })
+        .collect();
+    let functions: Vec<(&str, &[u8])> =
+        names.iter().zip(&codes).map(|(name, code)| (*name, code.as_slice())).collect();
+    let mut binary = binary_of(&functions);
+    for function in &mut binary.functions {
+        function.address += 0x1000;
+    }
+    let address_of = |name: &&str| {
+        let index = names.iter().position(|other| other == name).expect("a function");
+        0x1000 + 0x100 * index as u32
+    };
+    let addresses: Vec<u32> = table.iter().map(address_of).collect();
+    binary.links =
+        hereticus_image::Links::of_parts(vec![(0x4000, words(&addresses))], BTreeMap::new());
+    binary
+}
+
+/// Twins pair by their slot in a table that a firmer pair joins, not in
+/// the order of their addresses.
+#[test]
+fn twins_pair_by_their_slot_in_a_table() {
+    // `52` tells the tables apart; `0` and `0 again` are twins, placed the
+    // other way round in the second binary.
+    let before = binary_with_table(&["52", "0", "0 again"], &["52", "0", "0 again"]);
+    let after = binary_with_table(&["52", "0 again", "0"], &["52", "0", "0 again"]);
+    let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
+    for pair in &diff.matched {
+        assert_eq!(
+            before.functions[pair.before].name, after.functions[pair.after].name,
+            "{:?}",
+            pair.confidence
+        );
+    }
+    assert_eq!(diff.matched.len(), 3);
+    assert!(diff.matched.iter().any(|pair| pair.confidence == Confidence::SameTable));
+}
+
+/// Two tables are not one where a firm pair joins a function of one to
+/// another slot of the other: an edit moved the slots.
+#[test]
+fn a_crossed_slot_keeps_two_tables_apart() {
+    let names = ["52", "7", "0", "0 again"];
+    let before = binary_with_table(&names, &["52", "7", "0", "0 again"]);
+    let after = binary_with_table(&names, &["52", "0 again", "7", "0"]);
+    let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
+    assert!(diff.matched.iter().all(|pair| pair.confidence != Confidence::SameTable));
+}

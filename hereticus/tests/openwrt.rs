@@ -525,7 +525,7 @@ fn slow_the_armada_kernel_report_is_locked() {
 fn slow_the_lantiq_kernel_report_is_locked() {
     check_kernel(
         VR200,
-        17483,
+        17484,
         [
             BaseFit::Plausible { pointers: 52265, examined: 1_630_772 },
             BaseFit::Plausible { pointers: 52465, examined: 1_638_279 },

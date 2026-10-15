@@ -37,6 +37,7 @@ mod change;
 mod lines;
 mod near_miss;
 mod score;
+mod tables;
 
 use cascade::Cascade;
 pub use lines::{DiffLine, View, instruction_diff, instruction_diff_in, line_addresses};
@@ -59,6 +60,9 @@ pub enum Confidence {
     /// paired with its counterpart by position. See
     /// `Cascade::match_twins_in_order`.
     TwinInOrder,
+    /// Twins in the same slot of two tables of functions that firmer pairs
+    /// join, as a vtable. See `Cascade::pair_by_tables`.
+    SameTable,
     /// The two alone hold a text or a constant on both sides. See
     /// `Cascade::pair_by_unique_references`.
     SameReferences,
@@ -876,6 +880,8 @@ pub fn diff_reporting(
         right_free: vec![true; after.functions.len()],
         matched: Vec::new(),
         options,
+        left_tables: before.function_tables(),
+        right_tables: after.function_tables(),
     };
 
     cascade.match_identical_code(progress);
@@ -899,6 +905,9 @@ pub fn diff_reporting(
 
     cascade.align_stubs();
     cascade.repair_twins_by_callees();
+    // Once the similarity stage has paired the functions that tell two
+    // tables apart.
+    cascade.pair_by_tables();
     cascade.uncross_by_callees();
     cascade.pair_by_unique_references_until_settled();
     cascade.pair_by_callers();
@@ -908,6 +917,8 @@ pub fn diff_reporting(
     // that tell two callers apart.
     cascade.pair_by_unique_references_until_settled();
     cascade.pair_leftover_twins();
+    // Again, now that the callers and the order paired more of each table.
+    cascade.pair_by_tables();
     // Last, so that every pair that can serve as context has paired.
     cascade.unpair_without_context();
     cascade.compare_callees();
