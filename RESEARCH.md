@@ -1148,3 +1148,22 @@ two compilers, a function with a look-alike elsewhere is still most
 often the one in its place. At a margin of 0.2 it cost them 1030 and 15.
 It was not kept.
 
+
+### A branch condition on A32 and A64
+
+`Arch::operation_name` kept the condition of an A32 branch and dropped it
+from A64, so a `bne` that became a `beq` showed as a changed row on A32
+and as no change at all on A64. The normalizer already reads a guard's
+branch by its condition either way (`Operation::GuardBranch`): `eq` and
+`ne` are one, since a compiler may branch on the opposite condition and
+swap the code after it, but `lt` and `le` are not. So an off-by-one fix,
+`b.lt` to `b.le`, was already an edit on both.
+
+A64 now keeps the condition too, as `b.ne`. A branch on the opposite
+condition shows as a row changed in detail, with no edit counted, on
+both. The pairs and the ranks of every set stayed the same: backports,
+published fixes and Ubuntu updates. The kernels have no A64 code.
+
+Not kept: counting a branch on the opposite condition as an edit. A
+compiler flips a branch between levels, so this would make each such
+row an edit, where the normalizer reads it as a free choice.

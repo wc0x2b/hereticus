@@ -2432,3 +2432,32 @@ fn similarity_falls_as_bodies_diverge() {
     assert!(similarity(&base, &half) > similarity(&base, &none));
     assert_eq!(similarity(&base, &none), 0.0);
 }
+
+/// A branch on the opposite condition is shown but counts no edit, since
+/// a compiler may flip it and swap the code after it; a branch on another
+/// condition, as `lt` against `le`, is an edit. A32 and A64 agree.
+#[test]
+fn a_flipped_branch_reads_alike_on_a32_and_a64() {
+    const RETURN_A32: u32 = 0xe12f_ff1e; // bx lr
+    const RETURN_A64: u32 = 0xd65f_03c0; // ret
+    const CMP_A32: u32 = 0xe350_0000; // cmp r0, #0
+    const CMP_A64: u32 = 0xf100_001f; // cmp x0, #0
+    let changed = |isa: Isa, branches: [u32; 2], compare: u32, ret: u32| {
+        let binary = |branch: u32| {
+            let code: Vec<u8> =
+                [compare, branch, ret, ret].iter().flat_map(|word| word.to_le_bytes()).collect();
+            hereticus_image::Binary { isa, ..binary_of(&[("f", &code)]) }
+        };
+        let options = Options { threshold: 0.0, use_names: UseNames::No };
+        let diff = diff_with(&binary(branches[0]), &binary(branches[1]), options);
+        diff.matched.first().expect("a threshold of zero pairs anything").changed
+    };
+    // bne and beq, then blt and ble, each to the next instruction but one.
+    let a32 = |branches| changed(Isa::Arm32, branches, CMP_A32, RETURN_A32);
+    assert_eq!(a32([0x1a00_0000, 0x0a00_0000]), Changed::InDetail);
+    assert_eq!(a32([0xba00_0000, 0xda00_0000]), Changed::Yes);
+    // b.ne and b.eq, then b.lt and b.le, the same way.
+    let a64 = |branches| changed(Isa::Aarch64, branches, CMP_A64, RETURN_A64);
+    assert_eq!(a64([0x5400_0041, 0x5400_0040]), Changed::InDetail);
+    assert_eq!(a64([0x5400_004b, 0x5400_004d]), Changed::Yes);
+}

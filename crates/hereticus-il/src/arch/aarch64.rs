@@ -71,8 +71,8 @@ impl Aarch64 {
 }
 
 impl Decoder for Aarch64 {
-    /// The condition of `b.ne` is dropped, so a branch on any condition is
-    /// one operation. A32 keeps it: see `TODO.md`. An alias the decoder
+    /// The condition of a branch is the test it applies, so `b.ne` and
+    /// `b.eq` stay apart, as A32 keeps `bne` and `beq` apart. An alias the decoder
     /// prints names the operation it stands for: a `madd` into the zero
     /// register is `mul`, and a `subs` into it is `cmp`.
     fn operation_name(&self, insn: &Insn) -> CompactString {
@@ -80,8 +80,13 @@ impl Decoder for Aarch64 {
             return UNKNOWN_TEXT.into();
         };
         let name = match (opcode, alias) {
-            (Opcode::B | Opcode::Bcc(_), _) => "b",
-            (Opcode::BCcc(code), _) => return compact_str::format_compact!("bc{code}"),
+            (Opcode::B, _) => "b",
+            (Opcode::Bcc(code), _) => {
+                return compact_str::format_compact!("b.{}", condition_name(code));
+            }
+            (Opcode::BCcc(code), _) => {
+                return compact_str::format_compact!("bc.{}", condition_name(code));
+            }
             (Opcode::SUBS, Alias::Compare) => "cmp",
             (Opcode::ADDS, Alias::Compare) => "cmn",
             (Opcode::ANDS, Alias::Compare) => "tst",
@@ -1503,6 +1508,15 @@ pub(crate) fn operation_width(operands: &[Operand]) -> Width {
         .unwrap_or(Width::Bits64)
 }
 
+/// The name of the condition `code` encodes, as `b.ne` prints it.
+fn condition_name(code: u8) -> &'static str {
+    const NAMES: [&str; 16] = [
+        "eq", "ne", "hs", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al",
+        "nv",
+    ];
+    NAMES[usize::from(code & 0xf)]
+}
+
 pub(crate) fn test_of(inst: &Instruction, alias: Alias, operands: &[Operand]) -> Option<Test> {
     let width = operation_width(operands);
     let value = |index: usize| operands.get(index).map_or(Value::Other, |op| value_of(*op, width));
@@ -1817,6 +1831,15 @@ mod tests {
         for (word, op) in cases {
             assert_eq!(lift_one(word).op, op, "{word:#010x}");
         }
+    }
+
+    /// A branch is named by its condition, as A32 names `bne`.
+    #[test]
+    fn a_branch_is_named_by_its_condition() {
+        let name = |word: u32| Aarch64.operation_name(&decode_one(word));
+        assert_eq!(name(0x5400_0041), "b.ne");
+        assert_eq!(name(0x5400_004d), "b.le");
+        assert_eq!(name(0x1400_0002), "b");
     }
 
     /// The decoder prints an alias in place of the instruction it stands
