@@ -547,92 +547,12 @@ impl Write {
 
 /// The callee each register holds before each instruction of `insns`, on
 /// every path that reaches it.
-///
-/// A compiler loads a callee into a register that a call preserves, once,
-/// and calls through it in a loop or on several paths. The register can
-/// hold another callee on a path that comes before in the code but never
-/// reaches the call, so the order of the code alone names the wrong callee.
 fn callees_held(arch: &dyn Arch, insns: &[Insn], writes: &[Write]) -> Vec<HashMap<String, String>> {
-    let next = successors(arch, insns);
-    let mut held: Vec<Option<HashMap<String, String>>> = vec![None; insns.len()];
-    let Some(entry) = held.first_mut() else { return Vec::new() };
-    *entry = Some(HashMap::new());
-    let mut work = vec![0];
-    while let Some(index) = work.pop() {
-        let mut out = held[index].clone().unwrap_or_default();
-        writes[index].apply(&mut out);
-        for &successor in &next[index] {
-            let joined = match &held[successor] {
-                None => out.clone(),
-                Some(before) => before
-                    .iter()
-                    .filter(|(register, name)| out.get(*register) == Some(name))
-                    .map(|(register, name)| (register.clone(), name.clone()))
-                    .collect(),
-            };
-            if held[successor].as_ref() != Some(&joined) {
-                held[successor] = Some(joined);
-                work.push(successor);
-            }
-        }
-    }
-    held.into_iter().map(Option::unwrap_or_default).collect()
-}
-
-/// The indices of the instructions that can run right after each
-/// instruction of `insns`.
-///
-/// A delay slot runs before its branch goes, so the edges of a branch
-/// leave from its last slot. A jump through a register, as to a case of a
-/// `switch`, can reach any instruction that no other edge reaches.
-fn successors(arch: &dyn Arch, insns: &[Insn]) -> Vec<Vec<usize>> {
-    use hereticus_il::arch::InsnKind;
-    let index_of = |target: u64| insns.binary_search_by_key(&target, |insn| insn.address).ok();
-    let mut next: Vec<Vec<usize>> = vec![Vec::new(); insns.len()];
-    let mut indirect = Vec::new();
-    let mut index = 0;
-    while index < insns.len() {
-        let insn = &insns[index];
-        let slots = match insn.kind {
-            InsnKind::Normal | InsnKind::Unknown => 0,
-            _ => arch.delay_slots(insn),
-        };
-        let after = index + slots + 1;
-        let flow: Vec<usize> = match insn.kind {
-            InsnKind::Normal | InsnKind::Unknown | InsnKind::Call { .. } => vec![after],
-            InsnKind::Branch { target } => {
-                core::iter::once(after).chain(target.and_then(index_of)).collect()
-            }
-            InsnKind::Jump { target: Some(target) } => index_of(target).into_iter().collect(),
-            InsnKind::Jump { target: None } => {
-                indirect.push(index + slots);
-                Vec::new()
-            }
-            InsnKind::Return => Vec::new(),
-        };
-        let end = (index + slots).min(insns.len());
-        for (slot, edges) in next[index..end].iter_mut().enumerate() {
-            *edges = vec![index + slot + 1];
-        }
-        if let Some(last) = next.get_mut(index + slots) {
-            *last = flow;
-        }
-        index = after;
-    }
-    for edges in &mut next {
-        edges.retain(|&successor| successor < insns.len());
-    }
-    let mut reached = vec![false; insns.len()];
-    for &successor in next.iter().flatten() {
-        reached[successor] = true;
-    }
-    let unreached: Vec<usize> = (1..insns.len()).filter(|&index| !reached[index]).collect();
-    for from in indirect {
-        if let Some(edges) = next.get_mut(from) {
-            edges.extend(&unreached);
-        }
-    }
-    next
+    hereticus_il::flow::held_on_every_path(
+        insns,
+        |insn| arch.delay_slots(insn),
+        |index, held| writes[index].apply(held),
+    )
 }
 
 /// Whether the decoder prints `insn` with `ld` first, as a load of a GOT

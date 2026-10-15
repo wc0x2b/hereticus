@@ -68,8 +68,14 @@ pub fn callees_in(
     functions: &[Function],
     insns: &[Insn],
 ) -> Vec<Callee> {
+    let register_slots: std::collections::HashMap<usize, u64> =
+        arch.register_call_slots(insns).into_iter().collect();
     arch.call_targets(insns)
         .into_iter()
+        .map(|(index, target)| {
+            let slot = || register_slots.get(&index).copied().map(CallTarget::Slot);
+            (index, target.or_else(slot))
+        })
         .map(|(index, target)| match links.site_name(insns[index].address) {
             Some(name) => Callee::Named(name.to_string()),
             None => {

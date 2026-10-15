@@ -45,6 +45,7 @@
 #![warn(missing_docs)]
 
 pub mod arch;
+pub mod flow;
 
 use compact_str::CompactString;
 use smallvec::SmallVec;
