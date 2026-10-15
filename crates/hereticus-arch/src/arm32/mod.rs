@@ -187,10 +187,13 @@ mod tests {
             let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
             let (insns, _) = hereticus_recovery::arch::decode_all(&Arm32, &code, base);
             let space = AddressSpace::of_raw_image(base, 0x2000);
-            Arm32.constant_kinds(&code, &insns, &space)[1]
+            let memory = Memory::new(&[]);
+            let formed = Arm32.formed_addresses(&code, &insns, &space, &memory)[0];
+            (Arm32.constant_kinds(&code, &insns, &space)[1], formed)
         };
-        assert_eq!(pool_word_at(0x0800_0000), ConstantKind::StoredAddress);
-        assert_eq!(pool_word_at(0), ConstantKind::Value);
+        let high = pool_word_at(0x0800_0000);
+        assert_eq!(high, (ConstantKind::StoredAddress, Some(0x0800_0100)), "the load forms it");
+        assert_eq!(pool_word_at(0), (ConstantKind::Value, None));
     }
 
     /// GCC copies the address of the global offset table with `mov` before

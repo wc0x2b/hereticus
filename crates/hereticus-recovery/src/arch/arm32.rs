@@ -681,9 +681,10 @@ pub fn track_pool_words(
     let mut kinds = vec![ConstantKind::Value; body.len()];
     let mut formed = vec![None; body.len()];
     let mut addresses = Vec::new();
-    // Pool words whose value lies in the image, by where they sit. PIC code
-    // adds such a word to `pc`, and then the value is only a distance.
-    let mut whole: Vec<(u64, u64)> = Vec::new();
+    // Pool words whose value lies in the image, by where they sit, with
+    // the load of each. PIC code adds such a word to `pc`, and then the
+    // value is only a distance.
+    let mut whole: Vec<(u64, u64, usize)> = Vec::new();
     let mut distances: BTreeSet<u64> = BTreeSet::new();
     let Some(start) = body.first().map(|insn| insn.address) else {
         return PoolWords { kinds, addresses, formed, distances };
@@ -837,7 +838,7 @@ pub fn track_pool_words(
                 forget(&mut literal, &mut relative, destination);
                 if let Some(value) = word_at(pool) {
                     if space.contains(u64::from(value)) {
-                        whole.push((pool, u64::from(value)));
+                        whole.push((pool, u64::from(value), index));
                     }
                     literal.push((destination, pool, value));
                 }
@@ -889,19 +890,22 @@ pub fn track_pool_words(
         }
     }
 
-    let stored: Vec<(u64, u64)> =
-        whole.into_iter().filter(|(pool, _)| !distances.contains(pool)).collect();
+    let stored: Vec<(u64, u64, usize)> =
+        whole.into_iter().filter(|(pool, ..)| !distances.contains(pool)).collect();
     // In an image linked high, a pool word that holds an address in it is
-    // that address, as Cortex-M firmware loads its globals. In a PIC library
-    // linked at zero, such a word is more likely a number.
+    // that address, as Cortex-M firmware loads its globals, and so does
+    // the load of it, as a static Mirai for ARM loads each payload it
+    // sends. In a PIC library linked at zero, such a word is more likely a
+    // number.
     if space.starts_high() {
-        for &(pool, _) in &stored {
+        for &(pool, value, load) in &stored {
             if let Ok(index) = body.binary_search_by_key(&pool, |insn| insn.address) {
                 kinds[index] = ConstantKind::StoredAddress;
             }
+            formed[load] = Some(value);
         }
     }
-    addresses.extend(stored.into_iter().map(|(_, value)| value));
+    addresses.extend(stored.into_iter().map(|(_, value, _)| value));
     PoolWords { kinds, addresses, formed, distances }
 }
 
