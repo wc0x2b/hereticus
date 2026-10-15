@@ -963,6 +963,23 @@ fn an_il_statement_with_another_callee_is_no_same_line() {
     assert!(matches!(folded[..], [DiffLine::Same(_)]), "{folded:?}");
 }
 
+/// A text that changed only in a mark, as `"PATH"` to `"PATH="` in the
+/// `procd` fix of CVE-2026-30874, is no same line, though its words agree.
+#[test]
+fn an_il_statement_with_another_text_is_no_same_line() {
+    let side = |text: &str| {
+        // `adr x3, $+0x40`, so the instruction is the same on both sides.
+        let mut side = il_side(&[0x1000_0203]);
+        side.statements[0].text = text.to_string();
+        side
+    };
+    let steps = [Step::Left, Step::Right];
+    let folded = fold_il_runs(&steps, &side("x3 = &\"PATH\""), &side("x3 = &\"PATH=\""));
+    assert!(!matches!(folded[..], [DiffLine::Same(_)]), "{folded:?}");
+    let folded = fold_il_runs(&steps, &side("x3 = &\"PATH\""), &side("x3 = &\"PATH\""));
+    assert!(matches!(folded[..], [DiffLine::Same(_)]), "{folded:?}");
+}
+
 #[test]
 fn texts_differ_by_what_they_do_not_share() {
     assert_eq!(texts_that_differ(&[], &[]), 0);
