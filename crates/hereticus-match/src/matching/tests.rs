@@ -889,6 +889,11 @@ fn an_il_shape_collapses_numbers_but_not_names() {
     assert_eq!(il_key("store.64 [sp + 0x20] = x22, x21"), "store.64 [sp + ] = x22, x21");
     assert_eq!(il_key("sp = sp - 0x40"), "sp = sp - 0x40", "the frame size stays");
     assert_eq!(il_key("x1 = &\"usage\""), "x1 = &\"usage\"");
+    assert_eq!(il_key("x1 = &\"DEVPATH\"[3]"), "x1 = &@", "a pointer into a text moves");
+    assert_eq!(il_key("x1 = load.64 [\"a\\\"b\"[1]]"), "x1 = load.64 [@]", "past an escaped quote");
+    assert_eq!(il_key("x1 = &\"[2]\""), "x1 = &\"[2]\"", "a text that holds brackets");
+    assert_eq!(il_key("x = \"a\"[x]"), "x = \"a\"[x]", "no number in the brackets");
+    assert_eq!(il_key("x = \"open"), "x = \"open", "a text with no end");
     assert_ne!(il_shape("w0 = w1 + 1"), il_shape("w0 = w1 - 1"));
 }
 

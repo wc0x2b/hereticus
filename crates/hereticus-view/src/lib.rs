@@ -215,8 +215,6 @@ fn instruction_lines(
     let mut last_compare: Option<Compared> = None;
     let is_mips = arch.triple().starts_with("mips");
     let mut float_condition: Option<String> = None;
-    // The callee each register holds, from a load of a GOT slot.
-    let mut callees: HashMap<String, String> = HashMap::new();
     // The callee of each call, as the architecture follows it, as through
     // a slot on MIPS.
     let named_calls: HashMap<usize, String> = match context {
@@ -227,11 +225,24 @@ fn instruction_lines(
             .collect(),
         None => HashMap::new(),
     };
+    let pointed: Vec<Option<Pointed>> = formed
+        .into_iter()
+        .map(|formed| formed.zip(context).map(|(address, context)| Pointed::of(address, context)))
+        .collect();
+    let writes: Vec<Write> = insns
+        .iter()
+        .enumerate()
+        .map(|(index, insn)| {
+            let relocated = context.and_then(|context| context.links.site_name(insn.address));
+            Write::of(insn, &shown_names(lifts[index].as_ref()), &pointed[index], relocated)
+        })
+        .collect();
+    let held = callees_held(arch, insns, &writes);
     insns
         .iter()
-        .zip(formed)
+        .zip(pointed)
         .enumerate()
-        .map(|(index, (insn, formed))| {
+        .map(|(index, (insn, address))| {
             let named = lifts[index].as_ref();
             let names: &[CompactString] = named.map_or(&[], |named| &named.names);
             let tokens: Vec<&str> = names.iter().map(CompactString::as_str).collect();
@@ -261,15 +272,7 @@ fn instruction_lines(
             {
                 return conditional(format!("call {name}"), None);
             }
-            let address =
-                formed.zip(context).map(|(address, context)| Pointed::of(address, context));
-            let text = named_line(arch, insn, &shown, &address, context, &mut callees);
-            // The register a relocated `lui` or `addiu` writes holds the
-            // address of the symbol, for a call through it.
-            if let (Some(name), Some(dest)) = (relocated, shown.first()) {
-                callees.insert(dest.to_string(), name.to_string());
-            }
-            if let Some(text) = text {
+            if let Some(text) = named_line(arch, insn, &shown, context, &held[index]) {
                 return conditional(text, None);
             }
             if pages.contains(&index)
@@ -460,17 +463,17 @@ fn float_test(opcode: MipsOpcode, left: &str, right: &str) -> Option<String> {
     })
 }
 
-/// The line of a call that a name can say better than an address, and
-/// what a load of a GOT slot leaves in its register for one.
+/// The line of a call that a name can say better than an address.
+///
+/// `held` is the callee each register holds before `insn` on every path
+/// that reaches it, as [`callees_held`] finds it.
 fn named_line(
     arch: &dyn Arch,
     insn: &Insn,
     operands: &[&str],
-    address: &Option<Pointed>,
     context: Option<Context<'_>>,
-    callees: &mut HashMap<String, String>,
+    held: &HashMap<String, String>,
 ) -> Option<String> {
-    let written = operands.first().map(|first| first.to_string());
     match insn.kind {
         hereticus_il::arch::InsnKind::Call { target: Some(target) } => {
             Some(format!("call {}", context?.callee_at(arch, target)?))
@@ -480,23 +483,156 @@ fn named_line(
             Some(format!("goto {}", context?.callee_at(arch, target)?))
         }
         hereticus_il::arch::InsnKind::Call { target: None } => {
-            let register = operands.last()?.to_string();
-            Some(format!("call {}", callees.get(&register)?))
+            let register = operands.last()?;
+            Some(format!("call {}", held.get(*register)?))
         }
-        _ => {
-            if let Some(written) = written {
-                match address {
-                    Some(Pointed::Slot(name)) if is_named_load(insn) => {
-                        callees.insert(written, name.clone());
-                    }
-                    _ => {
-                        callees.remove(&written);
-                    }
-                }
+        _ => None,
+    }
+}
+
+/// What an instruction leaves in the register it writes, for a call
+/// through that register later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Write {
+    /// The address of a callee, by its name.
+    Callee { register: String, name: String },
+    /// Any other value.
+    Other { register: String },
+    /// No register a call can name.
+    Nothing,
+}
+
+impl Write {
+    /// The write of `insn`, which shows `operands`, points at `address`,
+    /// and has the relocation of `relocated` where it is unlinked.
+    fn of(
+        insn: &Insn,
+        operands: &[&str],
+        address: &Option<Pointed>,
+        relocated: Option<&str>,
+    ) -> Self {
+        use hereticus_il::arch::InsnKind;
+        if matches!(insn.kind, InsnKind::Call { .. } | InsnKind::Jump { .. }) {
+            return Self::Nothing;
+        }
+        let Some(register) = operands.first().map(|first| first.to_string()) else {
+            return Self::Nothing;
+        };
+        // The register a relocated `lui` or `addiu` writes holds the
+        // address of the symbol.
+        if let Some(name) = relocated {
+            return Self::Callee { register, name: name.to_string() };
+        }
+        match address {
+            Some(Pointed::Slot(name)) if is_named_load(insn) => {
+                Self::Callee { register, name: name.clone() }
             }
-            None
+            _ => Self::Other { register },
         }
     }
+
+    /// Apply the write to `held`.
+    fn apply(&self, held: &mut HashMap<String, String>) {
+        match self {
+            Self::Callee { register, name } => {
+                held.insert(register.clone(), name.clone());
+            }
+            Self::Other { register } => {
+                held.remove(register);
+            }
+            Self::Nothing => {}
+        }
+    }
+}
+
+/// The callee each register holds before each instruction of `insns`, on
+/// every path that reaches it.
+///
+/// A compiler loads a callee into a register that a call preserves, once,
+/// and calls through it in a loop or on several paths. The register can
+/// hold another callee on a path that comes before in the code but never
+/// reaches the call, so the order of the code alone names the wrong callee.
+fn callees_held(arch: &dyn Arch, insns: &[Insn], writes: &[Write]) -> Vec<HashMap<String, String>> {
+    let next = successors(arch, insns);
+    let mut held: Vec<Option<HashMap<String, String>>> = vec![None; insns.len()];
+    let Some(entry) = held.first_mut() else { return Vec::new() };
+    *entry = Some(HashMap::new());
+    let mut work = vec![0];
+    while let Some(index) = work.pop() {
+        let mut out = held[index].clone().unwrap_or_default();
+        writes[index].apply(&mut out);
+        for &successor in &next[index] {
+            let joined = match &held[successor] {
+                None => out.clone(),
+                Some(before) => before
+                    .iter()
+                    .filter(|(register, name)| out.get(*register) == Some(name))
+                    .map(|(register, name)| (register.clone(), name.clone()))
+                    .collect(),
+            };
+            if held[successor].as_ref() != Some(&joined) {
+                held[successor] = Some(joined);
+                work.push(successor);
+            }
+        }
+    }
+    held.into_iter().map(Option::unwrap_or_default).collect()
+}
+
+/// The indices of the instructions that can run right after each
+/// instruction of `insns`.
+///
+/// A delay slot runs before its branch goes, so the edges of a branch
+/// leave from its last slot. A jump through a register, as to a case of a
+/// `switch`, can reach any instruction that no other edge reaches.
+fn successors(arch: &dyn Arch, insns: &[Insn]) -> Vec<Vec<usize>> {
+    use hereticus_il::arch::InsnKind;
+    let index_of = |target: u64| insns.binary_search_by_key(&target, |insn| insn.address).ok();
+    let mut next: Vec<Vec<usize>> = vec![Vec::new(); insns.len()];
+    let mut indirect = Vec::new();
+    let mut index = 0;
+    while index < insns.len() {
+        let insn = &insns[index];
+        let slots = match insn.kind {
+            InsnKind::Normal | InsnKind::Unknown => 0,
+            _ => arch.delay_slots(insn),
+        };
+        let after = index + slots + 1;
+        let flow: Vec<usize> = match insn.kind {
+            InsnKind::Normal | InsnKind::Unknown | InsnKind::Call { .. } => vec![after],
+            InsnKind::Branch { target } => {
+                core::iter::once(after).chain(target.and_then(index_of)).collect()
+            }
+            InsnKind::Jump { target: Some(target) } => index_of(target).into_iter().collect(),
+            InsnKind::Jump { target: None } => {
+                indirect.push(index + slots);
+                Vec::new()
+            }
+            InsnKind::Return => Vec::new(),
+        };
+        let end = (index + slots).min(insns.len());
+        for (slot, edges) in next[index..end].iter_mut().enumerate() {
+            *edges = vec![index + slot + 1];
+        }
+        if let Some(last) = next.get_mut(index + slots) {
+            *last = flow;
+        }
+        index = after;
+    }
+    for edges in &mut next {
+        edges.retain(|&successor| successor < insns.len());
+    }
+    let mut reached = vec![false; insns.len()];
+    for &successor in next.iter().flatten() {
+        reached[successor] = true;
+    }
+    let unreached: Vec<usize> = (1..insns.len()).filter(|&index| !reached[index]).collect();
+    for from in indirect {
+        if let Some(edges) = next.get_mut(from) {
+            edges.extend(&unreached);
+        }
+    }
+    next
 }
 
 /// Whether the decoder prints `insn` with `ld` first, as a load of a GOT
@@ -543,6 +679,8 @@ fn is_named_load(insn: &Insn) -> bool {
 enum Pointed {
     /// A text, which it shows in quotes.
     Text(String),
+    /// A byte inside a text, past its start, which it shows as `"text"[3]`.
+    InText { text: String, offset: u64 },
     /// A slot of the global offset table, by the symbol it holds.
     Slot(String),
     /// Anything else, by its address.
@@ -553,14 +691,20 @@ impl Pointed {
     fn of(address: u64, context: Context<'_>) -> Self {
         /// More of a text than a line shows.
         const LONGEST: usize = 40;
-        if let Some(text) =
-            context.links.text_at(address).filter(|text| context.links.is_sure_text(address, text))
+        if let Some((text, offset)) = context
+            .links
+            .text_holding(address)
+            .filter(|(text, offset)| context.links.is_sure_text(address - offset, text))
         {
             let mut shown: String = text.chars().take(LONGEST).collect();
             if text.len() > LONGEST {
                 shown.push_str("...");
             }
-            return Self::Text(shown.escape_debug().to_string());
+            let text = shown.escape_debug().to_string();
+            return match offset {
+                0 => Self::Text(text),
+                offset => Self::InText { text, offset },
+            };
         }
         match context.links.slot_name(address) {
             Some(name) => Self::Slot(name.to_string()),
@@ -572,6 +716,7 @@ impl Pointed {
     fn as_value(&self) -> String {
         match self {
             Self::Text(text) => format!("&\"{text}\""),
+            Self::InText { text, offset } => format!("&\"{text}\"[{offset}]"),
             Self::Slot(name) => format!("&@{name}"),
             Self::Address(address) => format!("@{address:#x}"),
         }
@@ -581,6 +726,7 @@ impl Pointed {
     fn as_place(&self) -> String {
         match self {
             Self::Text(text) => format!("[\"{text}\"]"),
+            Self::InText { text, offset } => format!("[\"{text}\"[{offset}]]"),
             Self::Slot(name) => format!("[@{name}]"),
             Self::Address(address) => format!("[@{address:#x}]"),
         }
@@ -1280,6 +1426,7 @@ mod tests {
     use hereticus_il::arch::Decoder as _;
     use hereticus_il::arch::aarch64::Aarch64;
     use hereticus_recovery::arch::decode_all;
+    use std::collections::BTreeMap;
 
     fn lines(words: &[u32]) -> Vec<String> {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -1770,6 +1917,34 @@ mod tests {
         let context = Context { links: &links, space: &space, functions: &functions, paired: None };
         let (insns, _) = decode_all(arch, code, 0x1000);
         il_lines_in(arch, code, &insns, Some(context))
+    }
+
+    /// A call through a register names the callee it holds on every path
+    /// that reaches the call, not the callee loaded last in the code.
+    #[test]
+    fn a_call_through_a_register_names_what_every_path_loads() {
+        let words: [u32; 9] = [
+            0xf000_001a, // 0x1000 adrp x26, 0x4000
+            0xf940_075a, // 0x1004 ldr x26, [x26, #8]: strcmp
+            0xb400_00a0, // 0x1008 cbz x0, 0x101c
+            0xf000_001a, // 0x100c adrp x26, 0x4000
+            0xf940_0b5a, // 0x1010 ldr x26, [x26, #16]: free
+            0xd63f_0340, // 0x1014 blr x26, from 0x1010 and 0x1020
+            0xd65f_03c0, // 0x1018 ret
+            0xd63f_0340, // 0x101c blr x26, from 0x1008 only
+            0x17ff_fffd, // 0x1020 b 0x1014
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let links = Links::of_parts(
+            vec![(0x4000, vec![0; 0x18])],
+            BTreeMap::from([(0x4008, "strcmp".to_string()), (0x4010, "free".to_string())]),
+        );
+        let space = AddressSpace::default();
+        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
+        let shown = il_lines_in(&Aarch64, &code, &insns, Some(context));
+        assert_eq!(shown[5], "call x26", "strcmp on one path, free on the other");
+        assert_eq!(shown[7], "call strcmp");
     }
 
     #[test]

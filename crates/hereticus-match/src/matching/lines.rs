@@ -291,7 +291,46 @@ pub(super) fn il_key(line: &str) -> String {
         collapsed.push_str(rest);
         key = collapsed;
     }
-    key
+    collapse_into_texts(&key)
+}
+
+/// `line` with each pointer into a text, as `"Unexpected character\n"[10]`,
+/// collapsed to `@`: the code reaches some other data from the text's
+/// address, and the distance moves as an address does.
+fn collapse_into_texts(line: &str) -> String {
+    let mut collapsed = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find('"') {
+        // The text ends at the next quote that no backslash escapes.
+        let after_open = &rest[open + 1..];
+        let mut escaped = false;
+        let Some(close) = after_open.find(|character: char| {
+            let ends = character == '"' && !escaped;
+            escaped = character == '\\' && !escaped;
+            ends
+        }) else {
+            break;
+        };
+        let text_end = open + 1 + close + 1;
+        let index = rest[text_end..].strip_prefix('[').and_then(|inside| {
+            let digits =
+                inside.len() - inside.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            (digits > 0 && inside[digits..].starts_with(']')).then_some(digits + 2)
+        });
+        match index {
+            Some(length) => {
+                collapsed.push_str(&rest[..open]);
+                collapsed.push('@');
+                rest = &rest[text_end + length..];
+            }
+            None => {
+                collapsed.push_str(&rest[..text_end]);
+                rest = &rest[text_end..];
+            }
+        }
+    }
+    collapsed.push_str(rest);
+    collapsed
 }
 
 /// An IL statement with every number collapsed, so two that differ only in
