@@ -7,7 +7,7 @@ matched 22612
 {No: 20422, Reordered: 10, Data: 5, InDetail: 1512, Yes: 663}
 gone 136
 new 238
-fingerprint 0x12019966369bd0ed
+fingerprint 0x363599a34fe9155a
 
 strongest changes:
 0x80006cac -> 0x80006cb4 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
@@ -46,7 +46,7 @@ strongest changes:
 0x8059f768 -> 0x805a812c score=0.997 edits=Edits { added: 2, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 1, callees: 0, texts: 0 }
 0x806122c0 -> 0x8061adfc score=0.997 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0, texts: 0 }
 0x8069b9e4 -> 0x806a49e4 score=0.996 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0, texts: 0 }
-0x80464fc4 -> 0x8046aed0 score=0.996 edits=Edits { added: 2, removed: 3, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 4, other: 1, opaque: 0, constants: 0, callees: 0, texts: 0 }
+0x80464fc4 -> 0x8046aed0 score=0.996 edits=Edits { added: 2, removed: 3, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 4, other: 1, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x8059eec0 -> 0x805a787c score=0.996 edits=Edits { added: 3, removed: 1, edited: 1 } kinds=EditKinds { branches: 0, calls: 2, jumps: 0, memory: 0, other: 3, opaque: 0, constants: 1, callees: 0, texts: 0 }
 0x805ce5f8 -> 0x805d719c score=0.996 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0, texts: 0 }
 0x806a0f38 -> 0x806a9f44 score=0.996 edits=Edits { added: 1, removed: 4, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 2, other: 4, opaque: 0, constants: 2, callees: 0, texts: 0 }

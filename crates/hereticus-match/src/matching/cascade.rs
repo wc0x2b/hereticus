@@ -6,7 +6,7 @@ use crate::norm::{NormInsn, Operation};
 use hereticus_callees::Callee;
 use rayon::prelude::*;
 
-use super::align::{Layout, align_by_scores, longest_increasing_chain};
+use super::align::{Layout, Step, align, align_by_scores, longest_increasing_chain};
 use super::change::{classify_change, count_edits};
 use super::score::{
     CLOSE_SIMILARITY, CONSTANT_WEIGHT, Context, FEWEST_SHARED_EDGES, FLOW_RESCUE,
@@ -1089,12 +1089,13 @@ impl Cascade<'_> {
     }
 
     /// Mark each pair whose code agrees but whose calls reach different
+    /// functions, and count the calls of a pair whose code differs that the
+    /// alignment of the two bodies keeps in place but that reach different
     /// functions.
     ///
     /// Run once every function has paired, because a callee is the same
     /// function on both sides exactly when the two pair. A pair whose code
-    /// already differs keeps its verdict: its calls cannot be lined up one
-    /// for one.
+    /// already differs keeps its verdict.
     ///
     /// See RESEARCH.md, A11.
     pub(super) fn compare_callees(&mut self) {
@@ -1147,6 +1148,47 @@ impl Cascade<'_> {
         };
 
         for pair in &mut self.matched {
+            if pair.changed == Changed::Yes {
+                let (left, right) = (&left_side[pair.before], &right_side[pair.after]);
+                // Where the edit adds or removes a call, the alignment can
+                // line up two calls of different functions that both
+                // builds still make, as every `jal` normalizes alike. So a
+                // call counts only where its earlier callee lost a call and
+                // its later callee gained one.
+                let key_of_left = |callee: &Callee| match callee {
+                    Callee::Named(name) => Some(CalleeKey::Named(name.clone())),
+                    Callee::Function(index) => {
+                        partner_of_before.get(index).map(|&after| CalleeKey::After(after))
+                    }
+                    Callee::Unknown => None,
+                };
+                let key_of_right = |callee: &Callee| match callee {
+                    Callee::Named(name) => Some(CalleeKey::Named(name.clone())),
+                    Callee::Function(index) => Some(CalleeKey::After(*index)),
+                    Callee::Unknown => None,
+                };
+                let count = |keys: &mut dyn Iterator<Item = Option<CalleeKey>>| {
+                    let mut counts: HashMap<CalleeKey, isize> = HashMap::new();
+                    keys.flatten().for_each(|key| *counts.entry(key).or_default() += 1);
+                    counts
+                };
+                let before_counts = count(&mut left.linked_calls().iter().map(key_of_left));
+                let after_counts = count(&mut right.linked_calls().iter().map(key_of_right));
+                let uses = |counts: &HashMap<CalleeKey, isize>, key: &CalleeKey| {
+                    counts.get(key).copied().unwrap_or(0)
+                };
+                let lost = |key: Option<CalleeKey>| {
+                    key.is_some_and(|key| uses(&before_counts, &key) > uses(&after_counts, &key))
+                };
+                let gained = |key: Option<CalleeKey>| {
+                    key.is_some_and(|key| uses(&after_counts, &key) > uses(&before_counts, &key))
+                };
+                pair.kinds.callees += calls_kept_in_place(left, right)
+                    .filter(|(left, right)| differ(left, right, Unpaired::SayNothing))
+                    .filter(|(left, right)| lost(key_of_left(left)) && gained(key_of_right(right)))
+                    .count();
+                continue;
+            }
             if !matches!(pair.changed, Changed::No | Changed::InDetail) {
                 continue;
             }
@@ -1174,7 +1216,8 @@ impl Cascade<'_> {
         }
     }
 
-    /// Mark each pair whose code agrees but whose texts differ.
+    /// Mark each pair whose code agrees but whose texts differ, and count
+    /// the texts that differ in a pair whose code differs.
     ///
     /// A fix can change only a format, as `"%s"` to `"%.*s"`, and leave the
     /// code around it as it was. A changed text counts as a changed value.
@@ -1184,7 +1227,10 @@ impl Cascade<'_> {
     /// See RESEARCH.md, A11.
     pub(super) fn compare_texts(&mut self) {
         for pair in &mut self.matched {
-            if !matches!(pair.changed, Changed::No | Changed::Reordered | Changed::InDetail) {
+            if !matches!(
+                pair.changed,
+                Changed::No | Changed::Reordered | Changed::InDetail | Changed::Yes
+            ) {
                 continue;
             }
             let (left, right) = (&self.left[pair.before], &self.right[pair.after]);
@@ -1194,7 +1240,10 @@ impl Cascade<'_> {
                     (&right.texts, &right.sure_texts),
                 );
             if differ > 0 {
-                pair.changed = Changed::InDetail;
+                // A pair whose code differs keeps that verdict.
+                if pair.changed != Changed::Yes {
+                    pair.changed = Changed::InDetail;
+                }
                 pair.kinds.texts += differ;
             }
         }
@@ -1905,6 +1954,14 @@ enum Repaired {
     Some,
 }
 
+/// A callee as the later build names it: by its name, or as the function
+/// of the later build that it is or that it paired with.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum CalleeKey {
+    Named(String),
+    After(usize),
+}
+
 /// What two callees that each paired with nothing say about a call.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Unpaired {
@@ -1921,4 +1978,44 @@ fn work_of(body: &[NormInsn]) -> std::borrow::Cow<'_, [NormInsn]> {
         return std::borrow::Cow::Borrowed(body);
     }
     body.iter().filter(|insn| insn.operation != Operation::AddressTail).cloned().collect()
+}
+
+/// The callees of the calls of `left` and `right` that the alignment of the
+/// two bodies keeps in place, as the diff lines them up.
+///
+/// The fix of CVE-2026-30874 in `procd` adds one instruction and turns a
+/// call of `strcmp` into one of `strncmp`. Normalizing hides the callee, so
+/// the two calls align, and only their callees tell the change.
+fn calls_kept_in_place<'a>(
+    left: &'a Prepared<'_>,
+    right: &'a Prepared<'_>,
+) -> impl Iterator<Item = (&'a Callee, &'a Callee)> {
+    let by_place = |side: &'a Prepared<'_>| -> HashMap<usize, &'a Callee> {
+        side.call_places
+            .iter()
+            .zip(side.linked_calls())
+            .filter_map(|(place, callee)| Some(((*place)?, callee)))
+            .collect()
+    };
+    let (left_calls, right_calls) = (by_place(left), by_place(right));
+    let (mut at_left, mut at_right) = (0, 0);
+    let mut kept = Vec::new();
+    if !left_calls.is_empty() && !right_calls.is_empty() {
+        for step in align(&left.ordered, &right.ordered) {
+            match step {
+                Step::Both => {
+                    if let (Some(&left), Some(&right)) =
+                        (left_calls.get(&at_left), right_calls.get(&at_right))
+                    {
+                        kept.push((left, right));
+                    }
+                    at_left += 1;
+                    at_right += 1;
+                }
+                Step::Left => at_left += 1,
+                Step::Right => at_right += 1,
+            }
+        }
+    }
+    kept.into_iter()
 }

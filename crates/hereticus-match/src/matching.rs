@@ -23,9 +23,10 @@ use std::collections::HashMap;
 use hereticus_memory::{AddressSpace, Contents};
 
 use crate::norm::{
-    FlowShape, NormInsn, OperandShape, constant_signature, flow_features, normalize_body_in,
+    FlowShape, NormInsn, OperandShape, constant_signature, flow_features,
+    normalize_body_with_sources,
 };
-use hereticus_callees::{Callee, callees_in};
+use hereticus_callees::{Callee, call_sites_in};
 use hereticus_il::arch::InsnKind;
 use hereticus_image::{Binary, FoundBy, Function, Isa};
 use hereticus_recovery::arch::{Memory, decode_all};
@@ -571,6 +572,9 @@ struct Prepared<'a> {
     /// [`Self::calls`]: without names, a callee the symbol table names is
     /// known only as the function it is. See [`Self::linked_calls`].
     linked_calls: Option<Vec<Callee>>,
+    /// The place in [`Self::body`] of each call of [`Self::calls`], where
+    /// normalizing kept the call.
+    call_places: Vec<Option<usize>>,
     /// The texts the function points at, sorted.
     texts: Vec<&'a str>,
     /// Those of [`Self::texts`] sure enough that a change to one is
@@ -727,10 +731,19 @@ fn prepare<'a>(
             // both bodies; normalizing them again for it took a sixth of a
             // comparison of a kernel, and keeping them costs a twelfth of
             // its peak memory.
-            let body = normalize_body_in(arch, &function.code, &insns, &binary.addresses);
+            let (body, sources) =
+                normalize_body_with_sources(arch, &function.code, &insns, &binary.addresses);
             let flow = flow_features(arch, &insns, FLOW_DEPTH);
             let contents = arch.contents(&function.code, &insns, &binary.addresses);
-            let linked_calls = callees_in(arch, &binary.links, &binary.functions, &insns);
+            let sites = call_sites_in(arch, &binary.links, &binary.functions, &insns);
+            let call_places: Vec<Option<usize>> = sites
+                .iter()
+                .map(|&(index, _)| {
+                    let at = sources.partition_point(|&source| source < index);
+                    (sources.get(at) == Some(&index)).then_some(at)
+                })
+                .collect();
+            let linked_calls: Vec<Callee> = sites.into_iter().map(|(_, callee)| callee).collect();
             let calls: Vec<Callee> = linked_calls
                 .iter()
                 .cloned()
@@ -785,6 +798,7 @@ fn prepare<'a>(
                 contents,
                 calls,
                 linked_calls,
+                call_places,
                 texts,
                 sure_texts,
                 flow,

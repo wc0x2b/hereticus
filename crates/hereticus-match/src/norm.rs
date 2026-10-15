@@ -281,6 +281,18 @@ pub fn normalize_body_in(
     insns: &[Insn],
     space: &AddressSpace,
 ) -> Vec<NormInsn> {
+    normalize_body_with_sources(arch, code, insns, space).0
+}
+
+/// [`normalize_body_in`], with the index in `insns` that each normalized
+/// instruction comes from, so a caller can find the instruction of `insns`
+/// that a step of an alignment of two bodies stands for.
+pub fn normalize_body_with_sources(
+    arch: &dyn Arch,
+    code: &[u8],
+    insns: &[Insn],
+    space: &AddressSpace,
+) -> (Vec<NormInsn>, Vec<usize>) {
     let kinds = arch.constant_kinds(code, insns, space);
     let lifted = lift_all(arch, insns);
     let guards = find_guards(&lifted);
@@ -304,6 +316,7 @@ pub fn normalize_body_in(
         matches!(kinds.get(at), Some(ConstantKind::Address | ConstantKind::StoredAddress))
     };
     let mut out = Vec::with_capacity(insns.len());
+    let mut sources = Vec::with_capacity(insns.len());
     let mut index = 0;
 
     while index < insns.len() {
@@ -323,15 +336,15 @@ pub fn normalize_body_in(
         if let Some(found) = starting[index].map(|at| &guards[at]) {
             let address = [found.compare, Some(found.branch)].into_iter().flatten().any(is_address);
             let guard = found.guard.canonical();
-            out.push(normalize_test(&Test::of_guard(guard), address));
+            push(&mut out, &mut sources, index, normalize_test(&Test::of_guard(guard), address));
             if found.compare.is_none() {
-                out.push(guard_branch(guard.cond));
+                push(&mut out, &mut sources, index, guard_branch(guard.cond));
             }
             index += 1;
             continue;
         }
         if let Some(found) = branching[index].map(|at| &guards[at]) {
-            out.push(guard_branch(found.guard.canonical().cond));
+            push(&mut out, &mut sources, index, guard_branch(found.guard.canonical().cond));
             index += 1;
             continue;
         }
@@ -340,7 +353,12 @@ pub fn normalize_body_in(
         if let Some(Some(Lifted { test: Some(il::Test::Compare { comparison, .. }), .. })) =
             lifted.get(index)
         {
-            out.push(normalize_test(&Test::of_comparison(*comparison), is_address(index)));
+            push(
+                &mut out,
+                &mut sources,
+                index,
+                normalize_test(&Test::of_comparison(*comparison), is_address(index)),
+            );
             index += 1;
             continue;
         }
@@ -352,12 +370,17 @@ pub fn normalize_body_in(
             // Whether an address takes this instruction is the linker's
             // choice: see [`ConstantKind::AddressTail`]. It still tells two
             // functions apart, so it stays, as a token of its own.
-            Some(ConstantKind::AddressTail) => out.push(NormInsn {
-                operation: Operation::AddressTail,
-                operands: Operands::new(),
-                flow: FlowShape::Linear,
-                constants: Constants::new(),
-            }),
+            Some(ConstantKind::AddressTail) => push(
+                &mut out,
+                &mut sources,
+                index,
+                NormInsn {
+                    operation: Operation::AddressTail,
+                    operands: Operands::new(),
+                    flow: FlowShape::Linear,
+                    constants: Constants::new(),
+                },
+            ),
             _ if arch.is_frame_management(&insns[index]) => {}
             // A `nop` does nothing, and a compiler puts one where alignment
             // asks, as before a pool of doubles.
@@ -374,18 +397,24 @@ pub fn normalize_body_in(
                         *shape = OperandShape::Target;
                     }
                 }
-                out.push(named_by_op(normalized, lifted));
+                push(&mut out, &mut sources, index, named_by_op(normalized, lifted));
             }
             Some(ConstantKind::Value) | None => {
                 let lifted = lifted.get(index).and_then(Option::as_ref);
                 let normalized = normalize_lifted(arch, &insns[index], lifted);
-                out.push(named_by_op(normalized, lifted));
+                push(&mut out, &mut sources, index, named_by_op(normalized, lifted));
             }
         }
         index += 1;
     }
 
-    out
+    (out, sources)
+}
+
+/// Push `insn`, normalized from the instruction at `source`.
+fn push(out: &mut Vec<NormInsn>, sources: &mut Vec<usize>, source: usize, insn: NormInsn) {
+    out.push(insn);
+    sources.push(source);
 }
 
 /// The distinct constants a function uses.

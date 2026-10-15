@@ -68,6 +68,16 @@ pub fn callees_in(
     functions: &[Function],
     insns: &[Insn],
 ) -> Vec<Callee> {
+    call_sites_in(arch, links, functions, insns).into_iter().map(|(_, callee)| callee).collect()
+}
+
+/// [`callees_in`], with the index in `insns` of each call.
+pub fn call_sites_in(
+    arch: &dyn Arch,
+    links: &Links,
+    functions: &[Function],
+    insns: &[Insn],
+) -> Vec<(usize, Callee)> {
     let register_slots: std::collections::HashMap<usize, u64> =
         arch.register_call_slots(insns).into_iter().collect();
     arch.call_targets(insns)
@@ -76,11 +86,14 @@ pub fn callees_in(
             let slot = || register_slots.get(&index).copied().map(CallTarget::Slot);
             (index, target.or_else(slot))
         })
-        .map(|(index, target)| match links.site_name(insns[index].address) {
-            Some(name) => Callee::Named(name.to_string()),
-            None => {
-                target.map_or(Callee::Unknown, |target| resolve(arch, links, functions, target))
-            }
+        .map(|(index, target)| {
+            let callee = match links.site_name(insns[index].address) {
+                Some(name) => Callee::Named(name.to_string()),
+                None => {
+                    target.map_or(Callee::Unknown, |target| resolve(arch, links, functions, target))
+                }
+            };
+            (index, callee)
         })
         .collect()
 }
