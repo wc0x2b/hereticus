@@ -17,6 +17,7 @@ use hereticus_il::arch::thumb::Thumb2;
 use hereticus_memory::AddressSpace;
 pub use hereticus_memory::Function;
 use hereticus_recovery::dynamic::Dynamic;
+use hereticus_recovery::mips_stubs;
 use hereticus_recovery::scan;
 use hereticus_recovery::unwind;
 
@@ -459,6 +460,10 @@ impl Binary {
         if code.is_empty() {
             return Err(ObjError::NoCode);
         }
+        // The lazy binding stubs of MIPS are read apart, as MIPS32 whatever
+        // the code around them is, and named for the import each resolves.
+        let stubs = lazy_stubs(isa, &code);
+        let code = without(&code, stubs.iter().map(|stub| stub.range.clone()));
 
         // The index of ARM lies after the code, so the whole segment is
         // searched for it. The call frame information of the others is
@@ -523,13 +528,32 @@ impl Binary {
             *name_of = (*name_of).min(export.name);
         }
         let links = Links::of_object(file);
-        let functions = functions
+        let mut functions: Vec<Function> = functions
             .into_iter()
             .map(|function| match exported.get(&function.address) {
                 Some(name) => Function { name: stable_name(name).to_string(), ..function },
                 None => name_stub(function, arch, &links),
             })
             .collect();
+        for stub in &stubs {
+            let Some(bytes) = loaded.iter().find_map(|&(base, data)| {
+                let start = usize::try_from(stub.range.start.checked_sub(base)?).ok()?;
+                data.get(start..start + mips_stubs::STUB_LENGTH as usize)
+            }) else {
+                continue;
+            };
+            let name = dynamic
+                .as_ref()
+                .and_then(|dynamic| dynamic.symbol_name(stub.symbol))
+                .map(|name| format!("{name}@plt"))
+                .unwrap_or_default();
+            // A stub is MIPS32, so in MIPS16e code it is in the other set.
+            if set_of_symbol(isa, Encoding::Full) != isa {
+                other_set.insert(stub.range.start);
+            }
+            functions.push(Function { name, address: stub.range.start, code: bytes.to_vec() });
+        }
+        functions.sort_by_key(|function| function.address);
 
         Ok(Self {
             isa,
@@ -743,6 +767,39 @@ fn name_stub(function: Function, arch: &dyn Arch, links: &Links) -> Function {
     }
 }
 
+/// The lazy binding stubs of MIPS in `code`: see [`mips_stubs`]. None
+/// for another architecture.
+fn lazy_stubs(isa: Isa, code: &[(u64, &[u8])]) -> Vec<mips_stubs::LazyStub> {
+    let order = match isa {
+        Isa::Mips32 | Isa::Mips16 => mips_stubs::ByteOrder::Little,
+        Isa::Mips32Be | Isa::Mips16Be => mips_stubs::ByteOrder::Big,
+        Isa::Arm32 | Isa::Thumb2 | Isa::Aarch64 => return Vec::new(),
+    };
+    code.iter().flat_map(|&(base, data)| mips_stubs::lazy_stubs(base, data, order)).collect()
+}
+
+/// The parts of `regions` outside every one of `cuts`, which are sorted.
+fn without<'a>(
+    regions: &[(u64, &'a [u8])],
+    cuts: impl Iterator<Item = core::ops::Range<u64>> + Clone,
+) -> Vec<(u64, &'a [u8])> {
+    let mut parts = Vec::new();
+    for &(base, data) in regions {
+        let end = base + data.len() as u64;
+        let mut from = base;
+        for cut in cuts.clone().filter(|cut| cut.start < end && cut.end > base) {
+            if cut.start > from {
+                parts.push((from, &data[(from - base) as usize..(cut.start - base) as usize]));
+            }
+            from = from.max(cut.end.min(end));
+        }
+        if from < end {
+            parts.push((from, &data[(from - base) as usize..]));
+        }
+    }
+    parts
+}
+
 /// The bytes of `data`, at `base`, that lie in `range`, where the two
 /// overlap. Where they do not, all of `data`.
 fn clip(base: u64, data: &[u8], range: core::ops::Range<u64>) -> (u64, &[u8]) {
@@ -832,6 +889,17 @@ mod tests {
             binary.function_tables(),
             [vec![0, 1], vec![2, 0], vec![1, 2], vec![1, 0], vec![0, 1, 0]]
         );
+    }
+
+    /// Cuts take their bytes out of the regions they overlap, and a cut
+    /// that covers a whole region removes it.
+    #[test]
+    fn without_cuts_out_ranges() {
+        let data = [0u8, 1, 2, 3, 4, 5, 6, 7];
+        let regions = [(0x100, &data[..]), (0x200, &data[..4])];
+        let parts = without(&regions, [0x102..0x104, 0x106..0x10a, 0x200..0x204].into_iter());
+        assert_eq!(parts, [(0x100, &data[..2]), (0x104, &data[4..6])]);
+        assert_eq!(without(&regions, core::iter::empty()), regions);
     }
 
     #[test]

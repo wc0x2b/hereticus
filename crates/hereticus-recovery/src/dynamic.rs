@@ -90,6 +90,12 @@ impl<'data> Dynamic<'data> {
         names
     }
 
+    /// The name of dynamic symbol number `index`.
+    pub fn symbol_name(&self, index: u64) -> Option<&'data str> {
+        let name = self.name(self.symbol(index)?.name)?;
+        (!name.is_empty()).then_some(name)
+    }
+
     /// The functions the dynamic symbol table names, as many as a hash
     /// table, or on MIPS `DT_MIPS_SYMTABNO`, says it holds.
     pub fn exports(&self) -> Vec<Export<'data>> {

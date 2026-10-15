@@ -714,8 +714,13 @@ impl Cascade<'_> {
     fn assess(&self, before: usize, after: usize, confidence: Confidence, score: f64) -> Match {
         let (left, right) = (&self.left[before], &self.right[after]);
         // The same bytes edit nothing. Most pairs of a release are such, and
-        // normalizing their bodies again cost a quarter of a comparison.
-        if left.function.code == right.function.code {
+        // normalizing their bodies again cost a quarter of a comparison. Nor
+        // do two PLT stubs of one import: where the slot sits is the
+        // linker's choice, and an import added moves every slot after it.
+        // Measured on odhcpd of OpenWrt 24.10.8 for A32, 18 stubs read as
+        // changed.
+        let same_stub = left.stub_of.is_some() && left.stub_of == right.stub_of;
+        if left.function.code == right.function.code || same_stub {
             return Match {
                 before,
                 after,
