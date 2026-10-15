@@ -1,7 +1,8 @@
-//! The decoder and the lifter of T32, which read one instruction at a
-//! time, with the condition of the `it` that covers it, and know nothing
-//! of the binary around it. The rules that read Thumb-2 code, as table
-//! branches and the switch to A32 after `bx pc`, are in `hereticus`.
+//! The decoder and the lifter of T32, which read one instruction at a time,
+//! with the condition of the `it` that covers it, and know nothing of the
+//! binary around it. The rules that read Thumb-2 code, as table branches
+//! and the switch to A32 after `bx pc`, are in `hereticus-recovery`, and
+//! the rules the matching reads in `hereticus-arch`.
 
 use crate::arch::arm32::{
     Arm32, Decoded, Encoding, Extend, Flags, IntegerWord, NEON_LOAD_STORE, NEON_TEXT, UNKNOWN_TEXT,

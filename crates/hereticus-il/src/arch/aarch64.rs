@@ -1,7 +1,8 @@
-//! The decoder and the lifter of A64, which read one instruction at a
-//! time and know nothing of the binary around it. The rules that read A64
-//! code, as the pages that `adrp` forms and the tables a `switch` jumps
-//! through, are in `hereticus`.
+//! The decoder and the lifter of A64, which read one instruction at a time
+//! and know nothing of the binary around it. The rules that read A64 code,
+//! as the pages that `adrp` forms and the tables a `switch` jumps through,
+//! are in `hereticus-recovery`, and the rules the matching reads in
+//! `hereticus-arch`.
 
 use crate as il;
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};

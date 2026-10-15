@@ -64,7 +64,7 @@
 
 use std::collections::HashMap;
 
-use hereticus_arch::Recovery;
+use crate::arch::Recovery;
 use hereticus_memory::SMALLEST_ADDRESS;
 
 /// How far outside the image still counts as "nearly pointing at it", as a
@@ -278,7 +278,7 @@ impl Calls {
     fn read(data: &[u8], arch: &dyn Recovery) -> Option<Self> {
         let width = arch.instruction_width();
         let mut calls = data.chunks_exact(width).filter_map(|word| arch.absolute_call(word));
-        let hereticus_arch::AbsoluteCall { region, .. } = calls.clone().next()?;
+        let crate::arch::AbsoluteCall { region, .. } = calls.clone().next()?;
 
         let mut counts: HashMap<u64, usize> = HashMap::new();
         for call in calls.by_ref().filter(|call| call.region == region) {
@@ -481,8 +481,8 @@ fn lands_near(value: u64, base: u64, length: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hereticus_arch::arm32::Arm32;
-    use hereticus_arch::mips::Mips32;
+    use hereticus_il::arch::arm32::Arm32;
+    use hereticus_il::arch::mips::Mips32;
 
     /// Build a blob from words, little endian.
     ///
