@@ -9,30 +9,6 @@ stubs are the 7 functions of the C library that 24.10.4 calls first. Find
 more published fixes of OpenWrt or router firmware, for A32 and Thumb-2
 too, and add a report to `real-life-reports/` for each.
 
-## Lift more of what a guard can be
-
-`il` reads a compare and the branch on it as one guard on AArch64, A32,
-Thumb-2 and MIPS32. Measured against the symbols, that paired 231 more
-functions right and 61 more wrong over the cross builds, mostly twins
-such as `math_max` and `math_min`. A compiler picks a branch or a select
-freely, so a select should read as the branch of a guard. Measured again
-against the source files in the DWARF:
-
-- A `csel`, `cset`, `csinc` or `csneg` of A64 as the branch of the
-  guard its compare starts, with or without its own token: 5 or 6 more
-  right and 2 to 4 more wrong over the backports, with one fix fewer
-  ranked first, and the Ubuntu fixes ranked a little higher.
-- The conditional instructions of A32 the same way: 28 fewer right and
-  23 more wrong over the kernels, and 10 more wrong over the backports.
-- A `ccmp` as the branch of the guard before it and the compare of the
-  guard after it, so that a chain reads as two guards: 3 more right and
-  none wrong over the backports, and the Ubuntu fixes ranked 4 places
-  lower in sum. With the A64 selects: 12 more right and 2 more wrong,
-  and one fix fewer ranked first.
-
-None of these is clearly better, so none is kept. A select reads as a
-plain `select`, and the compare before it as a guard's test.
-
 ## Tell twins apart that no instruction separates
 
 The twins this entry named, Lua's `math_ceil` and `math_floor` and
@@ -133,20 +109,6 @@ MIPS32r6 re-encodes branches, removes `lwl` and `lwr` and the branch
 likely forms, and adds compact branches with no delay slot. The decoder
 assumes release 2. Few shipped parts use r6, so first confirm a target
 worth reading.
-
-## Weigh instructions by how rare they are
-
-Ghidra's BSim weighs each feature by how rare it is across a corpus.
-Measured again against the source files in the DWARF, with each
-instruction weighed by its inverse document frequency over the functions
-of both binaries: weighing every code score, or only the scores the
-similarity stage chooses by, at a threshold of 0.55 to 0.65, never beat
-the plain score on the backports, and always ranked the fixes lower
-(top 1 from 64 to 61 to 63). On the kernels, choosing by the weighed
-score at 0.6 paired 223 more right and 35 more wrong, a better trade than
-the plain score at 0.6 (365 and 203), but the backports paired 10 fewer
-right and 26 more wrong. It would also move every score a report shows.
-Leave it unless a new corpus favours it.
 
 ## Show the last instructions as IL
 
