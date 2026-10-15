@@ -89,14 +89,14 @@ dispatch
 + r0 = r0 + 4
 + sp = sp + 8
   r4, lr = load.32 [sp]; sp = sp + 8
-+ goto $+0x0
++ goto crypto_verify
 + r1 = load.16 [r0]
 + r3 = 0x5a5a
 + flags = compare(r1, r3)
 + if (r1 != r3) goto $+0x24
 + r1 = load.16 [r0 + 0x2]
 + r0 = r0 + 4
-+ call $+0x0
++ call crypto_verify
 + r2 = r0
 + flags = compare(r0, 0)
 + if (ne) r2 = -0x2
@@ -120,7 +120,7 @@ check_header
 + store.32 [sp - 8] = fp, lr; sp = sp - 8
 + r1 = load.16 [r2 + 0x2]
 + r0 = r2 + 4
-+ call $+0x0
++ call crypto_verify
 + flags = compare(r0, 0)
 + if (ne) r0 = -0x2
 + fp, lr = load.32 [sp]; sp = sp + 8
@@ -148,9 +148,7 @@ handle
 + r5 = r4 + 4
 + r1 = load.16 [r4 + 0x2]
 + r0 = r5
-  call $+0x0
-- r1 = -0x1
-- r0 = r1
++ call crypto_verify
 + flags = compare(r0, 0)
 + if (r0 != 0) goto $+0x14
 + r1 = load.16 [r4 + 0x2]
@@ -158,7 +156,9 @@ handle
 + flags = compare(r1, 0x200)
 + if (r1 u<= 0x200) goto $+0x18
 + r0 = r6
-+ call $+0x0
+  call log_event
+- r1 = -0x1
+- r0 = r1
 + r0 = -0x1
   sp = sp + 8
   return
