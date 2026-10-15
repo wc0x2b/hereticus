@@ -27,7 +27,11 @@
 //! A raw image has no relocations, so only the first source and the address a
 //! slot holds are left there.
 
-use hereticus_arch::{Arch, CallTarget, Insn, decode_all};
+use hereticus_arch::Arch;
+
+use hereticus_recovery::arch::{CallTarget, decode_all};
+
+use hereticus_il::arch::Insn;
 use hereticus_image::Links;
 use hereticus_memory::Function;
 
@@ -137,7 +141,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use hereticus_arch::arm32::Arm32;
+    use hereticus_il::arch::arm32::Arm32;
 
     fn function(name: &str, address: u64) -> Function {
         Function { name: name.to_string(), address, code: vec![0; 4] }

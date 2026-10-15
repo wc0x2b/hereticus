@@ -4,7 +4,7 @@
 
 use super::{Arch, Insn, InsnKind, Memory};
 use hereticus_il as il;
-pub use hereticus_il::arch::arm32::*;
+use hereticus_il::arch::arm32::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
 use hereticus_recovery::arch::arm32::{PcModel, track_pool_words};
 use yaxpeax_arm::armv7::Opcode;
@@ -168,7 +168,7 @@ mod tests {
         // movw r2, 0x9de8; movt r2, 0x800
         let words = [0xe309_2de8_u32, 0xe340_2800];
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-        let (insns, _) = crate::decode_all(&Arm32, &code, 0x0800_0000);
+        let (insns, _) = hereticus_recovery::arch::decode_all(&Arm32, &code, 0x0800_0000);
         let space = AddressSpace::of_raw_image(0x0800_0000, 0x1_0000);
         let kinds = Arm32.constant_kinds(&code, &insns, &space);
         assert_eq!(kinds, [ConstantKind::Address, ConstantKind::Address]);
@@ -185,7 +185,7 @@ mod tests {
             // address 0x100 into the image.
             let words = [0xe51f_0004_u32, (base + 0x100) as u32];
             let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-            let (insns, _) = crate::decode_all(&Arm32, &code, base);
+            let (insns, _) = hereticus_recovery::arch::decode_all(&Arm32, &code, base);
             let space = AddressSpace::of_raw_image(base, 0x2000);
             Arm32.constant_kinds(&code, &insns, &space)[1]
         };
@@ -209,7 +209,7 @@ mod tests {
         ];
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
         // Numbers below a page are never addresses, so the code sits higher.
-        let (insns, _) = crate::decode_all(&Arm32, &code, 0x8000);
+        let (insns, _) = hereticus_recovery::arch::decode_all(&Arm32, &code, 0x8000);
         let space = AddressSpace::of_raw_image(0x8000, 0x100);
         let kinds = Arm32.constant_kinds(&code, &insns, &space);
         assert_eq!(kinds[5], ConstantKind::StoredAddress, "the table's distance");
@@ -227,7 +227,7 @@ mod tests {
             (0x0bc8_i32 - 0x1_000c) as u32, // 0x10008 the distance to 0xbc8
         ];
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-        let (insns, _) = crate::decode_all(&Arm32, &code, 0x1_0000);
+        let (insns, _) = hereticus_recovery::arch::decode_all(&Arm32, &code, 0x1_0000);
         let space = AddressSpace::from_ranges([0x870..0xd40, 0x1_0000..0x1_0100]);
         let kinds = Arm32.constant_kinds(&code, &insns, &space);
         assert_eq!(kinds[2], ConstantKind::StoredAddress);
@@ -239,7 +239,7 @@ mod tests {
         let space = AddressSpace::none();
         let judge = |words: &[u32]| {
             let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-            let (insns, _) = crate::decode_all(&Arm32, &code, 0);
+            let (insns, _) = hereticus_recovery::arch::decode_all(&Arm32, &code, 0);
             Arm32.contents(&code, &insns, &space)
         };
         let code = [0xe92d_4010_u32, 0xe1a0_4000, 0x0a00_0002, 0xe594_0000, 0xe8bd_8010];

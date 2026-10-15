@@ -22,19 +22,14 @@
 //! cost decides whether the comparison runs at all. The text stays until a
 //! second decoder shows what a shared operand type would have to be.
 
-pub mod aarch64;
-pub mod arm32;
-pub mod mips;
-pub mod mips16;
-pub mod thumb;
+mod aarch64;
+mod arm32;
+mod mips;
+mod mips16;
+mod thumb;
 
-/// The decoders, and what one instruction is: see [`hereticus_il::arch`].
-pub use hereticus_il::arch::*;
-/// The rules that find functions: see [`hereticus_recovery::arch`].
-pub use hereticus_recovery::arch::{
-    AbsoluteCall, CallTarget, DataAmongCode, JumpTable, Memory, Recovery, TableJumps, VectorTable,
-    decode_all, leaves,
-};
+use hereticus_il::arch::*;
+use hereticus_recovery::arch::{Memory, Recovery};
 
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
 
@@ -141,16 +136,22 @@ pub trait Arch: Recovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hereticus_il::arch::aarch64::Aarch64;
+    use hereticus_il::arch::arm32::Arm32;
+    use hereticus_il::arch::mips::Mips32;
+    use hereticus_il::arch::mips16::Mips16;
+    use hereticus_il::arch::thumb::Thumb2;
+    use hereticus_recovery::arch::decode_all;
 
     /// Every architecture, by name.
     const ARCHES: [(&str, &dyn Arch); 7] = [
-        ("A64", &aarch64::Aarch64),
-        ("A32", &arm32::Arm32),
-        ("T32", &thumb::Thumb2),
-        ("MIPS", &mips::Mips32::BIG),
-        ("MIPSel", &mips::Mips32::LITTLE),
-        ("MIPS16e", &mips16::Mips16::BIG),
-        ("MIPS16el", &mips16::Mips16::LITTLE),
+        ("A64", &Aarch64),
+        ("A32", &Arm32),
+        ("T32", &Thumb2),
+        ("MIPS", &Mips32::BIG),
+        ("MIPSel", &Mips32::LITTLE),
+        ("MIPS16e", &Mips16::BIG),
+        ("MIPS16el", &Mips16::LITTLE),
     ];
 
     /// The names stay in step with the operands: a lift with names lifts

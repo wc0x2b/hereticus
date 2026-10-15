@@ -15,6 +15,7 @@ bench = false
 
 [dependencies]
 hereticus-arch = { path = "../hereticus-arch", version = "0.1.0" }
+hereticus-recovery = { path = "../hereticus-recovery", version = "0.1.0" }
 hereticus-callees = { path = "../hereticus-callees", version = "0.1.0" }
 hereticus-image = { path = "../hereticus-image", version = "0.1.0" }
 hereticus-il = { path = "../hereticus-il", version = "0.1.0" }

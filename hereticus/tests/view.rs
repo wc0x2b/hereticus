@@ -3,9 +3,9 @@
 
 use std::path::Path;
 
-use hereticus::arch::decode_all;
 use hereticus::matching::{DiffLine, Options, View, diff_with, instruction_diff_in};
 use hereticus::obj::Binary;
+use hereticus::recovery::arch::decode_all;
 use hereticus::view::{Context, il_lines_in};
 use rstest::rstest;
 

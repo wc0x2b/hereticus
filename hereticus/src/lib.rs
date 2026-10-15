@@ -19,6 +19,8 @@ pub use hereticus_match::{matching, norm};
 pub mod address {
     pub use hereticus_memory::{AddressSpace, ConstantKind, Contents};
 }
+/// The scan that finds functions: see [`hereticus_recovery`].
+pub use hereticus_recovery as recovery;
 pub use hereticus_recovery::{dynamic, raw, scan, unwind};
 pub use hereticus_unpack as unpack;
 pub use hereticus_view as view;

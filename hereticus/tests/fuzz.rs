@@ -12,12 +12,12 @@
 use bolero::check;
 
 use hereticus::address::AddressSpace;
-use hereticus::arch::{
-    Arch, DecodeError, Decoder, InsnKind, arm32::Arm32, decode_all, mips::Mips32,
-};
+use hereticus::arch::Arch;
+use hereticus::il::arch::{DecodeError, Decoder, InsnKind, arm32::Arm32, mips::Mips32};
 use hereticus::norm::{OperandShape, normalize, normalize_body, normalize_body_in};
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};
+use hereticus::recovery::arch::decode_all;
 
 /// Reading a file must never panic, whatever it holds.
 #[test]
@@ -484,10 +484,10 @@ fn mips_byte_orders_decode_alike() {
 
         // The bytes differ by the order; what they mean must not.
         // The opcode records the order it was read in, which differs too.
-        let meaning = |decoded: Result<hereticus::arch::Insn, _>| {
+        let meaning = |decoded: Result<hereticus::il::arch::Insn, _>| {
             decoded.map(|insn| {
                 let operation = match insn.opcode {
-                    hereticus::arch::Opcode::Mips(operation, _) => Some(operation),
+                    hereticus::il::arch::Opcode::Mips(operation, _) => Some(operation),
                     _ => None,
                 };
                 (insn.address, insn.bytes_len, insn.to_string(), insn.kind, operation)

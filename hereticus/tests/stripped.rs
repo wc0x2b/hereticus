@@ -237,7 +237,7 @@ fn recovers_the_start_of_a_pic_function() {
 fn a_real_address_load_survives_normalizing() {
     use hereticus::il::Op;
     use hereticus::norm::Operation;
-    use hereticus::{arch::decode_all, norm::normalize_body};
+    use hereticus::{norm::normalize_body, recovery::arch::decode_all};
 
     let Some(binary) = read("mips-nopic-O2", "globals") else { return };
     let arch = binary.isa.arch();
@@ -285,7 +285,7 @@ fn the_pic_preamble_does_not_make_unrelated_functions_look_alike() {
 
 /// The body of the test above, run once per byte order.
 fn pic_costs_the_comparison_nothing(pic_build: &str, nopic_build: &str) {
-    use hereticus::{arch::decode_all, matching::similarity, norm::normalize_body};
+    use hereticus::{matching::similarity, norm::normalize_body, recovery::arch::decode_all};
 
     let (Some(pic), Some(nopic)) = (read(pic_build, "calls"), read(nopic_build, "calls")) else {
         return;
@@ -338,7 +338,7 @@ fn pic_costs_the_comparison_nothing(pic_build: &str, nopic_build: &str) {
 /// matters.
 #[test]
 fn the_pic_rules_do_not_depend_on_byte_order() {
-    use hereticus::{arch::decode_all, norm::normalize_body};
+    use hereticus::{norm::normalize_body, recovery::arch::decode_all};
 
     let (Some(little), Some(big)) = (read("mips-pic-O2", "calls"), read("mipsbe-pic-O2", "calls"))
     else {

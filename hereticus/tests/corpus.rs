@@ -11,9 +11,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use hereticus::arch::decode_all;
 use hereticus::norm::{NormInsn, constant_signature, normalize_body};
 use hereticus::obj::Binary;
+use hereticus::recovery::arch::decode_all;
 
 /// Optimization levels that `hereticus` claims to match across.
 const LEVELS: [&str; 3] = ["O1", "O2", "Os"];
