@@ -114,13 +114,34 @@ closer free function costs more right pairs than it saves
 11% of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
+## Rank a fix of one instruction that changes a callee
+
+The `procd` fix of CVE-2026-30874 adds one instruction and turns a call
+of `strcmp` into one of `strncmp`, with `"PATH"` now `"PATH="`. It ranks
+18 to 20 of 25 to 29 under every order, as `added` counts only the one
+instruction, and `compare_callees` and the texts count only in a pair
+whose code is otherwise the same. Count a changed callee or text in a
+changed pair too, where the diff lines up the two calls, and measure
+the backports and the Ubuntu updates for noise.
+
+## Name the PLT stubs of a MIPS16e executable
+
+`jsonfilter` of OpenWrt for `malta` is a MIPS16e executable that is not
+PIC, and calls each import through a MIPS16e PLT stub, as
+`b203 9a60 651a eb00` with `DT_MIPS_PLTGOT`. The view shows the call of
+the CVE-2026-30873 fix as `call 0x403460`, not `call free`, and the scan
+finds 31 functions where the ARM builds of the same source find 86.
+
 ## Measure on more published fixes, and faster
 
-Twenty-five cases of ten published fixes, in `examples/research_bench.rs
---cves`, decide between the orders of the report: each fix of
-`real-life-reports/`, and each OpenWrt fix for four architectures. No
-order wins on them (`RESEARCH.md`, "Published fixes, again"). Every
-OpenWrt advisory since 2025 with binaries on both sides is in; older
+Thirty-three cases of twelve published fixes, in
+`examples/research_bench.rs --cves`, decide between the orders of the
+report: each fix of `real-life-reports/`, and each OpenWrt fix for four
+architectures. No order wins on them (`RESEARCH.md`, "Published fixes,
+again"). Every OpenWrt advisory since 2025 with binaries on both sides
+is in, but the `umdns` fixes of 24.10.6 (CVE-2026-30871 and
+CVE-2026-30872): `umdns` is in no root file system, and the package
+feeds keep only the latest build. Older
 ones (the 19.07 fixes of `libubox`, `relayd`, `umdns` and `uhttpd`) and
 the fixes of a vendor's firmware are next, and a published fix in a
 kernel module for ARM: `tun`, `nf_conntrack` and `wireguard` of OpenWrt

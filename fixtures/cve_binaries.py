@@ -5,7 +5,8 @@
 `real-life-reports/`. Each binary is pinned by its SHA-256, so a snapshot
 always tells of the same bytes.
 
-The `ubusd`, `dropbear`, `uhttpd` and `odhcpd` builds of OpenWrt come
+The `ubusd`, `dropbear`, `uhttpd`, `odhcpd`, `procd` and `jsonfilter`
+builds of OpenWrt come
 from the root file system of each release, and the `ltq-ptm` kernel
 module from its package, which this script downloads. The Apple binaries
 come from an IPSW with the `ipsw` tool, which this script does not run: a
@@ -125,6 +126,38 @@ PINNED = {
         "6cc99aa25d942d3d9cd5a23fc76c32f6029e09fb0f40b04d0e5ee1c935a74a1d",
     "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/dropbear":
         "0916a47632470d571b0ec1c144a331ca6242ab0249f46b4db42fefeb06cc1945",
+    "hereticus-openwrt-cve/24.10.5/armsr-armv7/sbin/procd":
+        "d11654f4151d509144f6b98325edc490fa3e6ae629938cbf909655ee528c12d4",
+    "hereticus-openwrt-cve/24.10.5/armsr-armv8/sbin/procd":
+        "7112955bab62ef58d90b456c4e8e74a6a6a7880db66931239465e149c3df8630",
+    "hereticus-openwrt-cve/24.10.5/malta-be/sbin/procd":
+        "24a88ed01acc1179a00495d3e95bff46a6236a7a49c359f271aeef810964b31d",
+    "hereticus-openwrt-cve/24.10.5/malta-le/sbin/procd":
+        "0b40f209887f0a1789667fd9c4ddea0e2a92f262a56247380a4cd0d79774ab7f",
+    "hereticus-openwrt-cve/24.10.6/armsr-armv7/sbin/procd":
+        "1fa7fd8e46f987f5272d0fb9030c06b6afaad347089f3645994d2c8bd1fee191",
+    "hereticus-openwrt-cve/24.10.6/armsr-armv8/sbin/procd":
+        "d95bbc2d7e6859ecda95018916a3cb959731a0e4d3ca120e0aac9348ec5cd751",
+    "hereticus-openwrt-cve/24.10.6/malta-be/sbin/procd":
+        "38437a6b4e363461b4e9d53a637228b2e2250f1b4f28cb614ac10edcee604496",
+    "hereticus-openwrt-cve/24.10.6/malta-le/sbin/procd":
+        "0986a9fd489f756102183b9fbe390e70284009ed0eefc7e34fc645666226bdfb",
+    "hereticus-openwrt-cve/24.10.5/armsr-armv7/usr/bin/jsonfilter":
+        "18bd0efd2245e34be7054109129428deb1b835fe9fc1a2e25dd66f139cc93f40",
+    "hereticus-openwrt-cve/24.10.5/armsr-armv8/usr/bin/jsonfilter":
+        "c5422e061f558766371c656a7fcf328d769c61f3246d34c15f9032769be6313f",
+    "hereticus-openwrt-cve/24.10.5/malta-be/usr/bin/jsonfilter":
+        "9f6f3432188fd3c065a5fa34a720584982cef4b597258c62e7dd6b8063dc938b",
+    "hereticus-openwrt-cve/24.10.5/malta-le/usr/bin/jsonfilter":
+        "2b1b21c752ee348fe41aa135774fec40aaf1629ef713352572a9e018763d0838",
+    "hereticus-openwrt-cve/24.10.6/armsr-armv7/usr/bin/jsonfilter":
+        "aec8d23dc84576770a739debad201adb982a5dfa7ef45769c79154cf9d0e8568",
+    "hereticus-openwrt-cve/24.10.6/armsr-armv8/usr/bin/jsonfilter":
+        "35f002a6b55f04993880a2ce635aa3581aaa1d4feb8a341b2bf6fdd4567f7cd9",
+    "hereticus-openwrt-cve/24.10.6/malta-be/usr/bin/jsonfilter":
+        "1ce3171e3503e0af6893c6732dc4f50a9ca8cc865c8fc04c8c19d32fd73a76f3",
+    "hereticus-openwrt-cve/24.10.6/malta-le/usr/bin/jsonfilter":
+        "aac0c73dd4e872c902e4043a552d83872631790666be7414d604e82f02b5d13d",
     "hereticus-openwrt-cve/24.10.3/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko":
         "894254504b177e26a17b0d84ce3776ec23065373fc3e9594e4ab754e78be5509",
     "hereticus-openwrt-cve/24.10.4/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko":
