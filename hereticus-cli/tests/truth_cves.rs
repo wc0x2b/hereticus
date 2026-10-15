@@ -71,6 +71,30 @@ const FIXES: &[Fix] = &[
         after: "hereticus-openwrt-cve/24.10.4/malta-le/sbin/ubusd",
         function: "sub_3b0c",
     },
+    Fix {
+        name: "CVE-2025-14282 dropbear AArch64",
+        before: "hereticus-openwrt-cve/24.10.4/armsr-armv8/usr/sbin/dropbear",
+        after: "hereticus-openwrt-cve/24.10.5/armsr-armv8/usr/sbin/dropbear",
+        function: "sub_15048",
+    },
+    Fix {
+        name: "CVE-2025-14282 dropbear A32",
+        before: "hereticus-openwrt-cve/24.10.4/armsr-armv7/usr/sbin/dropbear",
+        after: "hereticus-openwrt-cve/24.10.5/armsr-armv7/usr/sbin/dropbear",
+        function: "sub_148b8",
+    },
+    Fix {
+        name: "CVE-2025-14282 dropbear MIPS32 BE",
+        before: "hereticus-openwrt-cve/24.10.4/malta-be/usr/sbin/dropbear",
+        after: "hereticus-openwrt-cve/24.10.5/malta-be/usr/sbin/dropbear",
+        function: "sub_18eb0",
+    },
+    Fix {
+        name: "CVE-2025-14282 dropbear MIPS32 LE",
+        before: "hereticus-openwrt-cve/24.10.4/malta-le/usr/sbin/dropbear",
+        after: "hereticus-openwrt-cve/24.10.5/malta-le/usr/sbin/dropbear",
+        function: "sub_190dc",
+    },
 ];
 
 fn cache() -> PathBuf {
