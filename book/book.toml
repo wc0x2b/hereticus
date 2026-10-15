@@ -1,0 +1,9 @@
+[book]
+title = "hereticus"
+authors = ["wc0x2b"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/wc0x2b/hereticus"
+additional-css = ["theme/custom.css"]
