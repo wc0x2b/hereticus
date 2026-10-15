@@ -25,9 +25,10 @@ use hereticus_memory::{AddressSpace, Contents};
 use crate::norm::{
     FlowShape, NormInsn, OperandShape, constant_signature, flow_features, normalize_body_in,
 };
-use hereticus_arch::{InsnKind, Memory, decode_all};
 use hereticus_callees::{Callee, callees_in};
+use hereticus_il::arch::InsnKind;
 use hereticus_image::{Binary, FoundBy, Function, Isa};
+use hereticus_recovery::arch::{Memory, decode_all};
 pub use hereticus_view::PairedLabels;
 
 mod align;

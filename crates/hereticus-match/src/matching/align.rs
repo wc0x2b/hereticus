@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use hereticus_arch::{Arch, Insn};
+use hereticus_arch::Arch;
+
+use hereticus_il::arch::Insn;
 
 use super::change::{Difference, FrameSlots, difference};
 use super::lines::DiffLine;

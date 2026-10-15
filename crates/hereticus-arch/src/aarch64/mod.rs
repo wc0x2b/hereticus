@@ -4,7 +4,7 @@
 
 use super::{Arch, Insn, Memory};
 use hereticus_il::Reg;
-pub use hereticus_il::arch::aarch64::*;
+use hereticus_il::arch::aarch64::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
 use hereticus_recovery::arch::aarch64::{SP, memory_base, operands_of, track_pages};
 use yaxpeax_arm::armv8::a64::{Opcode, Operand, SizeCode};
@@ -82,9 +82,10 @@ fn is_stack_or_frame(operand: Operand) -> bool {
 mod tests {
     use super::*;
 
-    use crate::{Decoder as _, Recovery as _};
+    use hereticus_il::arch::Decoder as _;
+    use hereticus_recovery::arch::Recovery as _;
 
-    use crate::decode_all;
+    use hereticus_recovery::arch::decode_all;
 
     use hereticus_il::{self as il, Lifted};
 

@@ -6,8 +6,8 @@ use super::lines::*;
 use super::score::*;
 use super::*;
 use hereticus_arch::Arch;
-use hereticus_arch::Decoder as _;
 use hereticus_il as il;
+use hereticus_il::arch::Decoder as _;
 use hereticus_memory::ConstantKind;
 
 /// The bit-parallel table walks as the table of cells does, ties and
@@ -52,7 +52,7 @@ fn the_bit_table_walks_as_the_cell_table() {
 /// with targets left out, and what no lift reads aligns by its bytes.
 #[test]
 fn a_diff_aligns_on_the_names_of_the_lift() {
-    use hereticus_arch::aarch64::Aarch64;
+    use hereticus_il::arch::aarch64::Aarch64;
     let a32 = |word: u32, at: u64| Arm32.decode(&word.to_le_bytes(), 0, at).expect("decodes");
     let a64 = |word: u32, at: u64| Aarch64.decode(&word.to_le_bytes(), 0, at).expect("decodes");
     // bl $+0x100 and bl $+0x200, at two places: the target moves.
@@ -73,7 +73,7 @@ fn a_diff_aligns_on_the_names_of_the_lift() {
 }
 
 use crate::norm::normalize;
-use hereticus_arch::arm32::Arm32;
+use hereticus_il::arch::arm32::Arm32;
 
 /// One A32 instruction for each name, normalized. Each has the same
 /// registers as every other of its name, so only the names differ.
@@ -894,7 +894,7 @@ fn an_il_shape_collapses_numbers_but_not_names() {
 
 /// The IL statements of the AArch64 `words`, with their instructions.
 fn il_side(words: &[u32]) -> IlSide<'static> {
-    let arch: &dyn Arch = &hereticus_arch::aarch64::Aarch64;
+    let arch: &dyn Arch = &hereticus_il::arch::aarch64::Aarch64;
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
     let insns = decode_all(arch, &code, 0x1000).0;
     IlSide::new(arch, &code, insns, None)

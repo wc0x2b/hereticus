@@ -26,11 +26,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use hereticus::arch::decode_all;
 use hereticus::callee::{Callee, callees};
 use hereticus::matching::{Match, Options, UseNames, diff_with, similarity};
 use hereticus::norm::{NormInsn, normalize_body_in};
 use hereticus::obj::{Binary, Isa};
+use hereticus::recovery::arch::decode_all;
 
 #[path = "common/dwarf.rs"]
 mod dwarf;

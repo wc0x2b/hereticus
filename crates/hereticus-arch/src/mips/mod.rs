@@ -4,7 +4,7 @@
 
 use super::{Arch, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory, Recovery};
 use hereticus_il as il;
-pub use hereticus_il::arch::mips::*;
+use hereticus_il::arch::mips::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
 use hereticus_recovery::arch::mips::{
     GP, LowerHalf, SP, SP_REG, T9, TableRules as _, first_register, gp_disp_consumer,
@@ -823,7 +823,7 @@ const FP: u8 = 30;
 mod tests {
     use super::*;
 
-    use crate::decode_all;
+    use hereticus_recovery::arch::decode_all;
 
     /// Decode one instruction from a little-endian word at address 0.
     fn decode_one(word: u32) -> Insn {

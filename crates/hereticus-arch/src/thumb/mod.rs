@@ -2,9 +2,9 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::thumb`].
 
-use super::arm32::Arm32;
 use super::{Arch, Insn, Memory};
-pub use hereticus_il::arch::thumb::*;
+use hereticus_il::arch::arm32::Arm32;
+use hereticus_il::arch::thumb::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
 use hereticus_recovery::arch::arm32::{PcModel, track_pool_words};
 use hereticus_recovery::arch::thumb::split_at_switch;
@@ -49,7 +49,7 @@ impl Arch for Thumb2 {
 mod tests {
     use super::*;
 
-    use crate::decode_all;
+    use hereticus_recovery::arch::decode_all;
 
     /// T32 code from halfwords, little endian.
     fn halfwords(values: &[u16]) -> Vec<u8> {

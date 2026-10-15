@@ -13,8 +13,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use hereticus::arch::{InsnKind, decode_all};
+use hereticus::il::arch::InsnKind;
+
 use hereticus::obj::{Binary, Isa};
+use hereticus::recovery::arch::decode_all;
 
 /// One instruction as `llvm-objdump` reported it.
 #[derive(Debug, PartialEq, Eq)]
@@ -43,7 +45,7 @@ struct ObjdumpInsn {
 /// a wrong entry hides a real bug.
 /// The name and the operands `insn` prints with, which this test checks
 /// against objdump's.
-fn printed(insn: &hereticus::arch::Insn) -> (String, String) {
+fn printed(insn: &hereticus::il::arch::Insn) -> (String, String) {
     let text = insn.to_string();
     match text.split_once(' ') {
         Some((name, operands)) => (name.to_string(), operands.to_string()),

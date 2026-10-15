@@ -23,8 +23,10 @@ use std::collections::BTreeSet;
 
 use smallvec::SmallVec;
 
-use hereticus_arch::{Arch, Insn, InsnKind};
+use hereticus_arch::Arch;
+
 use hereticus_il as il;
+use hereticus_il::arch::{Insn, InsnKind};
 use hereticus_il::{Comparison, Cond, Guard, Lifted, Reg, Value, find_guards};
 use hereticus_memory::{AddressSpace, ConstantKind};
 
@@ -55,7 +57,7 @@ pub enum Operation {
     /// branch on the opposite condition and swap the code after it.
     GuardBranch(Cond),
     /// An instruction the lifter names no operation for, by a key of the
-    /// operation its opcode does: see [`hereticus_arch::Decoder::operation_name`].
+    /// operation its opcode does: see [`hereticus_il::arch::Decoder::operation_name`].
     Decoded(u64),
     /// Bytes no decoder reads, by the bytes. Without them, a NEON `vmax`
     /// and a NEON `vmin` would normalize alike, and an edit between them
@@ -625,9 +627,9 @@ fn normalize_test(test: &Test, address: bool) -> NormInsn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hereticus_arch::Decoder as _;
-    use hereticus_arch::aarch64::Aarch64;
-    use hereticus_arch::arm32::Arm32;
+    use hereticus_il::arch::Decoder as _;
+    use hereticus_il::arch::aarch64::Aarch64;
+    use hereticus_il::arch::arm32::Arm32;
 
     /// One A32 word, as the decoder reads it.
     fn a32(word: u32) -> Insn {
@@ -642,7 +644,7 @@ mod tests {
     /// A body of A32 words, normalized.
     fn body(words: &[u32]) -> Vec<NormInsn> {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-        let (insns, _) = hereticus_arch::decode_all(&Arm32, &code, 0);
+        let (insns, _) = hereticus_recovery::arch::decode_all(&Arm32, &code, 0);
         normalize_body(&Arm32, &insns)
     }
 
@@ -751,9 +753,9 @@ mod tests {
 
     /// The body of MIPS32 little-endian `words`, decoded and normalized.
     fn mips_body(words: &[u32]) -> (Vec<String>, Vec<NormInsn>) {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-        let (insns, _) = hereticus_arch::decode_all(&Mips32::LITTLE, &code, 0);
+        let (insns, _) = hereticus_recovery::arch::decode_all(&Mips32::LITTLE, &code, 0);
         let text = insns.iter().map(ToString::to_string).collect();
         (text, normalize_body(&Mips32::LITTLE, &insns))
     }
@@ -927,7 +929,7 @@ mod tests {
         // far one.
         let body = |word: u32| {
             let code = word.to_le_bytes();
-            let (insns, _) = hereticus_arch::decode_all(&Aarch64, &code, 0x1000);
+            let (insns, _) = hereticus_recovery::arch::decode_all(&Aarch64, &code, 0x1000);
             normalize_body_in(&Aarch64, &code, &insns, &AddressSpace::none())
         };
         let (near, far) = (body(0xf940_0441), body(0xf942_0041));
@@ -944,7 +946,7 @@ mod tests {
     }
 
     fn body_of(arch: &dyn Arch, code: &[u8]) -> Vec<NormInsn> {
-        let (insns, _) = hereticus_arch::decode_all(arch, code, 0x1000);
+        let (insns, _) = hereticus_recovery::arch::decode_all(arch, code, 0x1000);
         normalize_body_in(arch, code, &insns, &AddressSpace::none())
     }
 
@@ -982,7 +984,7 @@ mod tests {
     fn flow_features_of_any_code_never_panic() {
         bolero::check!().with_type::<Vec<u32>>().for_each(|words| {
             let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-            let (insns, _) = hereticus_arch::decode_all(&Aarch64, &code, 0x1000);
+            let (insns, _) = hereticus_recovery::arch::decode_all(&Aarch64, &code, 0x1000);
             for depth in 0..4 {
                 let features = flow_features(&Aarch64, &insns, depth);
                 assert!(features.len() <= insns.len());
@@ -1001,9 +1003,9 @@ mod tests {
     /// The rules of MIPS32 that only show once an instruction is normalized.
     mod mips {
         use super::*;
-        use hereticus_arch::decode_all;
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
         use hereticus_memory::AddressSpace;
+        use hereticus_recovery::arch::decode_all;
 
         const BASE: u64 = 0x8000_0000;
         const V0: u32 = 2;
@@ -1055,7 +1057,7 @@ mod tests {
             let arch = &Mips32::LITTLE;
             let normalized = |words: &[u32]| {
                 let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-                let (insns, _) = hereticus_arch::decode_all(arch, &code, 0);
+                let (insns, _) = hereticus_recovery::arch::decode_all(arch, &code, 0);
                 normalize_body(arch, &insns)
             };
             let without = [0x0085_1021]; // addu v0, a0, a1
@@ -1082,8 +1084,8 @@ mod tests {
             // b, which is `beq zero, zero, offset`, and j to an absolute address.
             let relative = decode_one(0x1000_0002);
             let absolute = decode_one(0x0800_0010);
-            assert_eq!(hereticus_arch::printed_name(&relative), "b");
-            assert_eq!(hereticus_arch::printed_name(&absolute), "j");
+            assert_eq!(hereticus_il::arch::printed_name(&relative), "b");
+            assert_eq!(hereticus_il::arch::printed_name(&absolute), "j");
 
             let arch = &Mips32::LITTLE;
             assert_eq!(normalize(arch, &relative), normalize(arch, &absolute));
@@ -1099,7 +1101,7 @@ mod tests {
             // beq a0, v0, offset: a real test, not `b`.
             let conditional = decode_one(0x1082_0005);
             let unconditional = decode_one(0x1000_0002);
-            assert_eq!(hereticus_arch::printed_name(&conditional), "beq");
+            assert_eq!(hereticus_il::arch::printed_name(&conditional), "beq");
             assert_ne!(
                 normalize(arch, &conditional),
                 normalize(arch, &unconditional),

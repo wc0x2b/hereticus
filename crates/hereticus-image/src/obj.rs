@@ -9,10 +9,10 @@ use object::{
 
 use crate::Links;
 use hereticus_arch::Arch;
-use hereticus_arch::aarch64::Aarch64;
-use hereticus_arch::arm32::Arm32;
-use hereticus_arch::mips::Mips32;
-use hereticus_arch::thumb::Thumb2;
+use hereticus_il::arch::aarch64::Aarch64;
+use hereticus_il::arch::arm32::Arm32;
+use hereticus_il::arch::mips::Mips32;
+use hereticus_il::arch::thumb::Thumb2;
 use hereticus_memory::AddressSpace;
 pub use hereticus_memory::Function;
 use hereticus_recovery::dynamic::Dynamic;
@@ -92,8 +92,8 @@ impl Isa {
             Self::Aarch64 => &Aarch64,
             Self::Mips32 => &Mips32::LITTLE,
             Self::Mips32Be => &Mips32::BIG,
-            Self::Mips16 => &hereticus_arch::mips16::Mips16::LITTLE,
-            Self::Mips16Be => &hereticus_arch::mips16::Mips16::BIG,
+            Self::Mips16 => &hereticus_il::arch::mips16::Mips16::LITTLE,
+            Self::Mips16Be => &hereticus_il::arch::mips16::Mips16::BIG,
         }
     }
 
@@ -367,7 +367,7 @@ impl Binary {
             &linked,
             scan::Regions::CodeAndData,
             arch,
-            &hereticus_arch::Memory::new(&loaded),
+            &hereticus_recovery::arch::Memory::new(&loaded),
         )
         .into_iter()
         .map(unnamed)

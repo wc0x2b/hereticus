@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use object::{Object, ObjectKind, ObjectSection, ObjectSegment, ObjectSymbol, SectionKind};
 
 use crate::obj::stable_name;
-use hereticus_arch::{Arch, InsnKind};
+use hereticus_arch::Arch;
+use hereticus_il::arch::InsnKind;
 use hereticus_recovery::dynamic::slot_names;
 
 /// What the linker left that names the callees of a binary.
@@ -117,7 +118,7 @@ impl Links {
     /// The loaded bytes, each section at its address, as [`Memory`] reads
     /// them.
     ///
-    /// [`Memory`]: hereticus_arch::Memory
+    /// [`Memory`]: hereticus_recovery::arch::Memory
     pub fn regions(&self) -> Vec<(u64, &[u8])> {
         self.memory.iter().map(|(start, data)| (*start, data.as_slice())).collect()
     }
@@ -264,7 +265,7 @@ fn call_site_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
 mod tests {
     use super::*;
 
-    use hereticus_arch::aarch64::Aarch64;
+    use hereticus_il::arch::aarch64::Aarch64;
 
     #[test]
     fn text_is_printable_up_to_a_nul() {

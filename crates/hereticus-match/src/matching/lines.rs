@@ -2,8 +2,12 @@
 
 use std::collections::HashSet;
 
-use hereticus_arch::{Arch, Insn, decode_all, is_branch_target};
+use hereticus_arch::Arch;
+
+use hereticus_il::arch::{Insn, is_branch_target};
+
 use hereticus_image::{Binary, Function, Isa};
+use hereticus_recovery::arch::decode_all;
 use hereticus_view::PairedLabels;
 
 use super::align::{Step, align, lines_from_alignment};
@@ -114,7 +118,7 @@ impl<'a> IlSide<'a> {
         let statements = hereticus_view::il_statements_in(arch, code, &insns, context);
         let printed = insns
             .iter()
-            .filter_map(hereticus_arch::lift_named)
+            .filter_map(hereticus_il::arch::lift_named)
             .flat_map(|named| named.names)
             .flat_map(|name| words_of(&name))
             .collect();
@@ -362,7 +366,7 @@ pub fn instruction_diff(
 /// decide the alignment. Everything else, the constant included, stays: a
 /// changed value is a real difference the reader came to see.
 pub(super) fn diff_key(insn: &Insn) -> String {
-    match hereticus_arch::lift_named(insn) {
+    match hereticus_il::arch::lift_named(insn) {
         Some(named) => {
             let names = named.names.iter().map(|name| match is_branch_target(name) {
                 true => "$",

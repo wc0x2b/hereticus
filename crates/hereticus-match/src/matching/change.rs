@@ -1,9 +1,11 @@
 //! How two paired functions differ, and what kind of change that is.
 
 use crate::norm::{FlowShape, NormInsn};
-use hereticus_arch::{Arch, DataAmongCode, Insn, decode_all};
+use hereticus_arch::Arch;
 use hereticus_il as il;
+use hereticus_il::arch::Insn;
 use hereticus_memory::{ConstantKind, Contents};
+use hereticus_recovery::arch::{DataAmongCode, decode_all};
 
 use super::align::{Step, align};
 use super::{

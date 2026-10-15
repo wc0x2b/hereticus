@@ -5,7 +5,7 @@
 use super::mips::register_name;
 use super::{Arch, Decoder, GlobalPointerSetup, Insn, Memory};
 use hereticus_il as il;
-pub use hereticus_il::arch::mips16::*;
+use hereticus_il::arch::mips16::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
 use hereticus_recovery::arch::mips::first_register;
 use hereticus_recovery::arch::mips16::{

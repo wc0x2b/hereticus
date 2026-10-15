@@ -14,11 +14,12 @@
 use std::collections::{HashMap, HashSet};
 
 use compact_str::CompactString;
-use hereticus_arch::arm32::{self, Step, Vfp};
-use hereticus_arch::mips::{self, Decoded as MipsDecoded};
-use hereticus_arch::mips16::Op as Mips16Op;
-use hereticus_arch::mips32::Op as Mips32Op;
-use hereticus_arch::{Arch, Insn, aarch64, is_branch_target};
+use hereticus_arch::Arch;
+use hereticus_il::arch::arm32::{self, Step, Vfp};
+use hereticus_il::arch::mips::{self, Decoded as MipsDecoded};
+use hereticus_il::arch::mips16::Op as Mips16Op;
+use hereticus_il::arch::mips32::Op as Mips32Op;
+use hereticus_il::arch::{Insn, aarch64, is_branch_target};
 use hereticus_il::{AccessKind, Comparison, Cond, Lifted, Named, Op, Operand, Reg, Test};
 use hereticus_image::Links;
 use hereticus_memory::{AddressSpace, Function};
@@ -74,8 +75,12 @@ impl Context<'_> {
     }
 
     /// The name of the callee a call target reaches.
-    fn callee_of(&self, arch: &dyn Arch, target: hereticus_arch::CallTarget) -> Option<String> {
-        use hereticus_arch::CallTarget;
+    fn callee_of(
+        &self,
+        arch: &dyn Arch,
+        target: hereticus_recovery::arch::CallTarget,
+    ) -> Option<String> {
+        use hereticus_recovery::arch::CallTarget;
         match target {
             CallTarget::Address(address) => self.callee_at(arch, address),
             CallTarget::Slot(slot) => self.links.slot_name(slot).map(str::to_string),
@@ -161,7 +166,7 @@ enum Fold {
 fn folds(arch: &dyn Arch, insns: &[Insn]) -> Vec<Fold> {
     let mut folds = vec![Fold::Own; insns.len()];
     for index in 0..insns.len() {
-        if hereticus_arch::thumb::is_it(&insns[index]) {
+        if hereticus_il::arch::thumb::is_it(&insns[index]) {
             folds[index] = Fold::Hidden;
         }
         let Some(setup) = hereticus_arch::Arch::global_pointer_setup(arch, &insns[index..]) else {
@@ -199,13 +204,13 @@ fn instruction_lines(
     let formed = match context {
         Some(context) => {
             let regions = context.links.regions();
-            let memory = hereticus_arch::Memory::new(&regions);
+            let memory = hereticus_recovery::arch::Memory::new(&regions);
             arch.formed_addresses(code, insns, context.space, &memory)
         }
         None => vec![None; insns.len()],
     };
     // Each instruction lifted once, with its names, for every reader below.
-    let lifts: Vec<Option<Named>> = insns.iter().map(hereticus_arch::lift_named).collect();
+    let lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
     let pages = page_loads(insns, &lifts, &formed);
     let mut last_compare: Option<Compared> = None;
     let is_mips = arch.triple().starts_with("mips");
@@ -240,7 +245,7 @@ fn instruction_lines(
                 None => text,
             };
             if let Some(name) = named_calls.get(&index)
-                && matches!(insn.kind, hereticus_arch::InsnKind::Call { .. })
+                && matches!(insn.kind, hereticus_il::arch::InsnKind::Call { .. })
             {
                 return conditional(format!("call {name}"), None);
             }
@@ -311,7 +316,7 @@ fn page_loads(insns: &[Insn], lifts: &[Option<Named>], formed: &[Option<u64>]) -
             };
             let at = (index.saturating_sub(LOOK_BACK)..index).rev().find(|&at| {
                 let earlier = &insns[at];
-                matches!(earlier.kind, hereticus_arch::InsnKind::Call { .. })
+                matches!(earlier.kind, hereticus_il::arch::InsnKind::Call { .. })
                     || shown_names(lifts[at].as_ref()).first() == Some(&source)
             })?;
             let loads = mips::is(&insns[at], MipsOpcode::core_lw);
@@ -359,7 +364,7 @@ fn mips_statement(
             [left, right] | ["zero", left, right],
         ) => format!("lo = {left} {sign}/ {right}; hi = {left} {sign}% {right}"),
         (Mips16(Mips16Op::Save | Mips16Op::Restore), _) => {
-            return frame_statement(&hereticus_arch::mips16::frame(insn)?);
+            return frame_statement(&hereticus_il::arch::mips16::frame(insn)?);
         }
         (Rabbitizer(MipsOpcode::core_mfhi) | Mips32(Mips32Op::Mfhi), [dest]) => {
             format!("{dest} = hi")
@@ -450,14 +455,14 @@ fn named_line(
 ) -> Option<String> {
     let written = operands.first().map(|first| first.to_string());
     match insn.kind {
-        hereticus_arch::InsnKind::Call { target: Some(target) } => {
+        hereticus_il::arch::InsnKind::Call { target: Some(target) } => {
             Some(format!("call {}", context?.callee_at(arch, target)?))
         }
         // A jump to a function is a tail call.
-        hereticus_arch::InsnKind::Jump { target: Some(target) } => {
+        hereticus_il::arch::InsnKind::Jump { target: Some(target) } => {
             Some(format!("goto {}", context?.callee_at(arch, target)?))
         }
-        hereticus_arch::InsnKind::Call { target: None } => {
+        hereticus_il::arch::InsnKind::Call { target: None } => {
             let register = operands.last()?.to_string();
             Some(format!("call {}", callees.get(&register)?))
         }
@@ -604,7 +609,7 @@ enum CompareKind {
 /// save    a0, 0x20, s0, ra   store.32 [sp] = a0; store.32 [sp - 8] = s0, ra; sp = sp - 0x20
 /// restore 0x20, s0, ra       s0, ra = load.32 [sp + 0x18]; sp = sp + 0x20
 /// ```
-fn frame_statement(frame: &hereticus_arch::mips16::Frame) -> Option<String> {
+fn frame_statement(frame: &hereticus_il::arch::mips16::Frame) -> Option<String> {
     let (arguments, kept) = (&frame.arguments, &frame.kept);
     let size = u64::from(frame.size);
     let kept_size = 4 * kept.len() as u64;
@@ -675,7 +680,7 @@ fn aarch64_statement(
             format!("{dest} = {source}")
         }
         (A64Opcode::SMOV | A64Opcode::DUP, [dest, source]) => {
-            format!("{dest} = {}({source})", hereticus_arch::printed_name(insn))
+            format!("{dest} = {}({source})", hereticus_il::arch::printed_name(insn))
         }
         _ => return None,
     };
@@ -993,7 +998,7 @@ fn statement(
         && !sources.is_empty()
     {
         // Without the size: `vsqrt` of `vsqrt.f64`.
-        let printed_name = hereticus_arch::printed_name(insn);
+        let printed_name = hereticus_il::arch::printed_name(insn);
         let name = printed_name.split('.').next().unwrap_or(&printed_name);
         let sources: Vec<String> =
             sources.iter().map(|source| source.trim_start_matches('#').to_string()).collect();
@@ -1246,9 +1251,9 @@ fn statement(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hereticus_arch::Decoder as _;
-    use hereticus_arch::aarch64::Aarch64;
-    use hereticus_arch::decode_all;
+    use hereticus_il::arch::Decoder as _;
+    use hereticus_il::arch::aarch64::Aarch64;
+    use hereticus_recovery::arch::decode_all;
 
     fn lines(words: &[u32]) -> Vec<String> {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -1322,7 +1327,7 @@ mod tests {
 
     #[test]
     fn a_shifted_register_reads_as_one_operand() {
-        use hereticus_arch::arm32::Arm32;
+        use hereticus_il::arch::arm32::Arm32;
         let code = 0xe081_3204_u32.to_le_bytes(); // add r3, r1, r4, lsl #4
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         assert_eq!(il_lines(&Arm32, &code, &insns), ["r3 = r1 + (r4 lsl 4)"]);
@@ -1330,7 +1335,7 @@ mod tests {
 
     #[test]
     fn a_list_of_registers_reads_as_one_access() {
-        use hereticus_arch::arm32::Arm32;
+        use hereticus_il::arch::arm32::Arm32;
         let words = [
             0xe92d_4010_u32, // push {r4, lr}
             0xe890_0006,     // ldm r0, {r1, r2}
@@ -1362,15 +1367,15 @@ mod tests {
 
     #[test]
     fn a_list_order_names_where_the_access_starts() {
-        use hereticus_arch::arm32::Arm32;
-        use hereticus_arch::thumb::Thumb2;
+        use hereticus_il::arch::arm32::Arm32;
+        use hereticus_il::arch::thumb::Thumb2;
         let a32 = |word: u32| Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word decodes");
         // push.w {r4, lr}
         let push = Thumb2.decode(&[0x2d, 0xe9, 0x10, 0x40], 0, 0).expect("the word decodes");
-        assert_eq!(hereticus_arch::printed_name(&push), "push");
+        assert_eq!(hereticus_il::arch::printed_name(&push), "push");
         assert_eq!(ListOrder::of(&push), Some((ListOrder::DecrementBefore, WriteBack::Yes)));
         let vpop = a32(0xecbd_8b02); // vpop {d8}
-        assert_eq!(hereticus_arch::printed_name(&vpop), "vpop");
+        assert_eq!(hereticus_il::arch::printed_name(&vpop), "vpop");
         assert_eq!(ListOrder::of(&vpop), Some((ListOrder::IncrementAfter, WriteBack::Yes)));
         let stmdb = a32(0xe900_0002); // stmdb r0, {r1}
         assert_eq!(ListOrder::of(&stmdb), Some((ListOrder::DecrementBefore, WriteBack::No)));
@@ -1385,16 +1390,16 @@ mod tests {
 
     /// The little-endian MIPS32 `word`, decoded.
     fn mips(word: u32) -> Insn {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
         Mips32::LITTLE.decode(&word.to_le_bytes(), 0, 0).expect("the word decodes")
     }
 
     #[test]
     fn a_load_of_a_page_is_found_by_the_addiu_after_it() {
         let lifts = |insns: &[Insn]| -> Vec<Option<Named>> {
-            insns.iter().map(hereticus_arch::lift_named).collect()
+            insns.iter().map(hereticus_il::arch::lift_named).collect()
         };
-        use hereticus_arch::mips16::Mips16;
+        use hereticus_il::arch::mips16::Mips16;
         let insns = [
             mips(0x8f82_8020), // lw v0, -0x7fe0(gp)
             mips(0x8f86_8020), // lw a2, -0x7fe0(gp)
@@ -1438,7 +1443,7 @@ mod tests {
 
     #[test]
     fn mips_hi_and_lo_read_as_registers() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
         let words: [u32; 7] = [
             0x0085_0018, // mult a0, a1
             0x0000_1012, // mflo v0
@@ -1466,7 +1471,7 @@ mod tests {
 
     #[test]
     fn a_mips_float_compare_and_its_branch_read_as_one_test() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
         let words: [u32; 6] = [
             0x4622_003c, // c.lt.d fv0, fv1
             0x4501_0002, // bc1t $+0xc
@@ -1488,7 +1493,7 @@ mod tests {
 
     #[test]
     fn every_mips_float_compare_reads_as_a_test() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
         let expected = [
             "fcc = 0",
             "fcc = unordered(fv0, fv1)",
@@ -1510,7 +1515,7 @@ mod tests {
 
     #[test]
     fn a_branch_on_false_negates_the_float_compare() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
         let words: [u32; 3] = [
             0x4622_0035, // c.ult.d fv0, fv1
             0x4500_0002, // bc1f $+0xc
@@ -1524,7 +1529,7 @@ mod tests {
 
     #[test]
     fn a_conditional_compare_leaves_the_branch_on_the_flags() {
-        use hereticus_arch::arm32::Arm32;
+        use hereticus_il::arch::arm32::Arm32;
         // cmp r2, r3; cmpne r6, r3; beq
         let code: Vec<u8> = [0xe152_0003_u32, 0x1156_0003, 0x0a00_0002]
             .iter()
@@ -1538,7 +1543,7 @@ mod tests {
 
     #[test]
     fn a_conditional_a32_instruction_names_its_condition() {
-        use hereticus_arch::arm32::Arm32;
+        use hereticus_il::arch::arm32::Arm32;
         // cmp r2, r3; addne r6, r4, #1
         let code: Vec<u8> =
             [0xe152_0003_u32, 0x1284_6001].iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -1549,11 +1554,11 @@ mod tests {
         assert_eq!(a32_condition(&insns[1], Some(Op::Add)), Some("ne"));
         // mls r0, r1, r2, r3 ends in the letters of a condition.
         let mls = Arm32.decode(&0xe060_3291_u32.to_le_bytes(), 0, 0).expect("the word decodes");
-        assert_eq!(hereticus_arch::printed_name(&mls), "mls");
+        assert_eq!(hereticus_il::arch::printed_name(&mls), "mls");
         assert_eq!(a32_condition(&mls, Some(Op::MultiplyAdd)), None, "a multiply-subtract");
         // adcs r0, r0, r1 ends in `cs` too, and runs always.
         let adcs = Arm32.decode(&0xe0b0_0001_u32.to_le_bytes(), 0, 0).expect("the word decodes");
-        assert_eq!(hereticus_arch::printed_name(&adcs), "adcs");
+        assert_eq!(hereticus_il::arch::printed_name(&adcs), "adcs");
         assert_eq!(a32_condition(&adcs, Some(Op::Add)), None, "an add with carry");
     }
 
@@ -1596,7 +1601,7 @@ mod tests {
 
     #[test]
     fn a_vfp_compare_and_its_moves_read_plainly() {
-        use hereticus_arch::arm32::Arm32;
+        use hereticus_il::arch::arm32::Arm32;
         let words: [u32; 8] = [
             0xe150_0001, // cmp r0, r1
             0xeeb4_0b41, // vcmp.f64 d0, d1
@@ -1625,7 +1630,7 @@ mod tests {
 
     #[test]
     fn a_mips16e_frame_reads_as_its_stores_and_loads() {
-        use hereticus_arch::mips16::Mips16;
+        use hereticus_il::arch::mips16::Mips16;
         // save a0,32,ra,s0; restore 32,ra,s0; save 128; restore 32,ra,s0-s1,a2-a3
         let halfwords: [u16; 7] = [0xf004, 0x64e4, 0x6464, 0x6480, 0xf002, 0x6474, 0x6500];
         let code: Vec<u8> = halfwords.iter().flat_map(|half| half.to_be_bytes()).collect();
@@ -1639,7 +1644,7 @@ mod tests {
                 "a2, a3, s0, s1, ra = load.32 [sp + 0xc]; sp = sp + 0x20",
             ]
         );
-        let too_small = hereticus_arch::mips16::Frame {
+        let too_small = hereticus_il::arch::mips16::Frame {
             saves: false,
             arguments: Vec::new(),
             size: 4,
@@ -1660,7 +1665,7 @@ mod tests {
         let (links, space) = (Links::default(), AddressSpace::default());
         let context =
             |paired| Context { links: &links, space: &space, functions: &functions, paired };
-        let arch = &hereticus_arch::aarch64::Aarch64;
+        let arch = &hereticus_il::arch::aarch64::Aarch64;
         let named = |paired, address| context(paired).callee_at(arch, address);
         assert_eq!(named(None, 0x100).as_deref(), Some("main"));
         assert_eq!(named(None, 0x200).as_deref(), Some("sub_200"));
@@ -1671,7 +1676,7 @@ mod tests {
 
     #[test]
     fn a_conditional_return_names_its_condition() {
-        use hereticus_arch::arm32::Arm32;
+        use hereticus_il::arch::arm32::Arm32;
         // cmp r1, r3; bxne lr; popne {r11, pc}; bxne r3; bne $+0x8
         let code: Vec<u8> = [0xe151_0003_u32, 0x112f_ff1e, 0x18bd_8800, 0x112f_ff13, 0x1a00_0000]
             .iter()
@@ -1701,7 +1706,7 @@ mod tests {
 
     #[test]
     fn an_it_shows_no_line_and_its_call_keeps_the_condition() {
-        use hereticus_arch::thumb::Thumb2;
+        use hereticus_il::arch::thumb::Thumb2;
         // cmp r0, #0; it ne; blne foo; bx lr; foo: bx lr
         let halfwords: [u16; 6] = [0x2800, 0xbf18, 0xf000, 0xf801, 0x4770, 0x4770];
         let code: Vec<u8> = halfwords.iter().flat_map(|half| half.to_le_bytes()).collect();
@@ -1713,7 +1718,7 @@ mod tests {
 
     #[test]
     fn a_conditional_a32_call_keeps_its_condition() {
-        use hereticus_arch::arm32::Arm32;
+        use hereticus_il::arch::arm32::Arm32;
         // cmp r0, #0; blne foo; bx lr; foo: bx lr
         let words: [u32; 4] = [0xe350_0000, 0x1b00_0000, 0xe12f_ff1e, 0xe12f_ff1e];
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -1722,7 +1727,7 @@ mod tests {
 
     #[test]
     fn the_making_of_the_global_pointer_reads_as_one_line() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
         let words: [u32; 5] = [
             0x3c1c_0002, // lui gp, 0x2
             0x279c_59ec, // addiu gp, gp, 0x59ec
@@ -1741,7 +1746,7 @@ mod tests {
 
     #[test]
     fn the_mips16e_global_pointer_reads_as_one_line() {
-        use hereticus_arch::mips16::Mips16;
+        use hereticus_il::arch::mips16::Mips16;
         // The opening of `adler32_combine_` in zlib, by GCC 14 at `-Os`.
         let halfwords: [u16; 7] = [0xf000, 0x6a02, 0xf0a8, 0x0b0c, 0xf400, 0x3240, 0xe269];
         let code: Vec<u8> = halfwords.iter().flat_map(|half| half.to_be_bytes()).collect();
@@ -1751,7 +1756,7 @@ mod tests {
 
     #[test]
     fn a_constant_built_alone_is_no_global_pointer() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
         // lui gp, 0x2; addiu gp, gp, 0x59ec; with no `addu` of `t9`
         let words: [u32; 2] = [0x3c1c_0002, 0x279c_59ec];
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
@@ -1761,7 +1766,7 @@ mod tests {
 
     #[test]
     fn any_code_shows_without_a_panic() {
-        use hereticus_arch::{arm32::Arm32, mips::Mips32, mips16::Mips16, thumb::Thumb2};
+        use hereticus_il::arch::{arm32::Arm32, mips::Mips32, mips16::Mips16, thumb::Thumb2};
         bolero::check!().with_type::<Vec<u8>>().for_each(|code| {
             let arches: [&dyn Arch; 6] =
                 [&Aarch64, &Arm32, &Thumb2, &Mips32::BIG, &Mips16::LITTLE, &Mips16::BIG];
@@ -1786,8 +1791,8 @@ mod tests {
     /// operand it is, and an `rsb` reads its values the way it subtracts.
     #[test]
     fn each_operand_reads_by_its_name_from_the_lift() {
-        use hereticus_arch::arm32::Arm32;
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::arm32::Arm32;
+        use hereticus_il::arch::mips::Mips32;
         let words = |words: &[u32], order: fn(u32) -> [u8; 4]| -> Vec<u8> {
             words.iter().flat_map(|&word| order(word)).collect()
         };

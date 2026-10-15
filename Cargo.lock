@@ -899,8 +899,10 @@ version = "0.1.0"
 dependencies = [
  "bolero",
  "hereticus-arch",
+ "hereticus-il",
  "hereticus-image",
  "hereticus-memory",
+ "hereticus-recovery",
  "object",
 ]
 
@@ -940,6 +942,7 @@ version = "0.1.0"
 dependencies = [
  "bolero",
  "hereticus-arch",
+ "hereticus-il",
  "hereticus-memory",
  "hereticus-recovery",
  "object",
@@ -956,6 +959,7 @@ dependencies = [
  "hereticus-il",
  "hereticus-image",
  "hereticus-memory",
+ "hereticus-recovery",
  "hereticus-view",
  "rayon",
  "smallvec",
@@ -1005,6 +1009,7 @@ dependencies = [
  "hereticus-il",
  "hereticus-image",
  "hereticus-memory",
+ "hereticus-recovery",
  "rabbitizer",
  "yaxpeax-arm",
 ]

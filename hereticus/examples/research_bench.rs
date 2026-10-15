@@ -139,8 +139,11 @@ fn measure(project: &str, arch: &str, first: &str, second: &str, totals: &mut To
                     let binary = &stripped[side];
                     let function = &binary.functions[index];
                     let arch = binary.isa_of(function).arch();
-                    let (insns, _) =
-                        hereticus::arch::decode_all(arch, &function.code, function.address);
+                    let (insns, _) = hereticus::recovery::arch::decode_all(
+                        arch,
+                        &function.code,
+                        function.address,
+                    );
                     hereticus::norm::normalize_body_in(
                         arch,
                         &function.code,
@@ -304,7 +307,7 @@ fn body_tokens(binary: &Binary, index: usize) -> Vec<(u64, hereticus::norm::Flow
     use core::hash::{Hash, Hasher};
     let function = &binary.functions[index];
     let arch = binary.isa_of(function).arch();
-    let (insns, _) = hereticus::arch::decode_all(arch, &function.code, function.address);
+    let (insns, _) = hereticus::recovery::arch::decode_all(arch, &function.code, function.address);
     hereticus::norm::normalize_body_in(arch, &function.code, &insns, &binary.addresses)
         .into_iter()
         .map(|insn| {

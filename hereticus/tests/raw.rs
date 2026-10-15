@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use hereticus::arch::arm32::Arm32;
+use hereticus::il::arch::arm32::Arm32;
 use hereticus::matching::{Options, UseNames, diff_with};
 use hereticus::obj::{Binary, FoundBy, Isa};
 use hereticus::raw::{BaseFit, check_base};
