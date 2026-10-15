@@ -80,6 +80,18 @@ impl Links {
         Self { memory, slots, stubs, sites: BTreeMap::new(), read_only_starts, relocated }
     }
 
+    /// Links for a kernel module, or another unlinked object, whose code
+    /// sections lie at the addresses `bases` gives, by section index: the
+    /// symbol each call relocation names, and the code as memory.
+    pub fn of_module(file: &object::File<'_>, bases: &BTreeMap<usize, u64>) -> Self {
+        let base_of = |section: &object::Section<'_, '_>| bases.get(&section.index().0).copied();
+        let memory = file
+            .sections()
+            .filter_map(|section| Some((base_of(&section)?, section.data().ok()?.to_vec())))
+            .collect();
+        Self { memory, sites: call_site_names_at(file, base_of), ..Self::default() }
+    }
+
     /// The symbol whose stub is at `address`: a Mach-O stub, or a PLT stub
     /// whose slot a relocation names.
     pub fn stub_callee(&self, arch: &dyn Arch, address: u64) -> Option<&str> {
@@ -109,6 +121,12 @@ impl Links {
     ) -> Option<String> {
         let slot = arch.stub_slot(&function.code, function.address)?;
         self.slots.get(&slot).map(|name| format!("{name}@plt"))
+    }
+
+    /// These links, with `sites` as the symbol each relocation at a call or
+    /// at an address names, for a test to build.
+    pub fn with_sites(self, sites: BTreeMap<u64, String>) -> Self {
+        Self { sites, ..self }
     }
 
     /// Links from loaded bytes and named slots, for a test to build.
@@ -242,6 +260,15 @@ impl Links {
     }
 }
 
+/// Report whether `name` is a local symbol that OpenWrt's
+/// `strip-kmod.sh` renamed to a number, as `_7`, which names nothing from
+/// one build to the next.
+pub fn is_renamed_local(name: &str) -> bool {
+    name.strip_prefix('_').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
 /// The width of an address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Width {
@@ -272,7 +299,7 @@ pub enum ByteOrder {
 
 impl ByteOrder {
     /// The value of `bytes`, four or eight of them.
-    fn read(self, bytes: &[u8]) -> u64 {
+    pub fn read(self, bytes: &[u8]) -> u64 {
         let fold = |value: u64, &byte: &u8| (value << 8) | u64::from(byte);
         match self {
             Self::Little => bytes.iter().rev().fold(0, fold),
@@ -352,19 +379,29 @@ fn is_text_byte(byte: u8) -> bool {
 /// Every section of an unlinked object starts at zero, so two sections can
 /// put a call at the same offset. Such an offset names no callee.
 fn call_site_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
+    call_site_names_at(file, |section| Some(section.address()))
+}
+
+/// [`call_site_names`], with each code section at the address `base_of`
+/// gives it, where it gives one.
+fn call_site_names_at(
+    file: &object::File<'_>,
+    base_of: impl Fn(&object::Section<'_, '_>) -> Option<u64>,
+) -> BTreeMap<u64, String> {
     let mut names: BTreeMap<u64, Option<String>> = BTreeMap::new();
     for section in file.sections().filter(|section| section.kind() == object::SectionKind::Text) {
+        let Some(base) = base_of(&section) else { continue };
         for (offset, relocation) in section.relocations() {
             let object::RelocationTarget::Symbol(index) = relocation.target() else { continue };
             let Some(name) = file
                 .symbol_by_index(index)
                 .ok()
                 .and_then(|symbol| symbol.name().ok().map(|name| stable_name(name).to_string()))
-                .filter(|name| !name.is_empty())
+                .filter(|name| !name.is_empty() && !is_renamed_local(name))
             else {
                 continue;
             };
-            let site = section.address() + offset;
+            let site = base + offset;
             names
                 .entry(site)
                 .and_modify(|known| {
@@ -401,6 +438,15 @@ mod tests {
         let words: Vec<_> = wide.words(Width::Bits64, ByteOrder::Little).collect();
         assert_eq!(words, [(0x100, 0x0807_0605_0403_0201)]);
         assert_eq!(Links::default().words(Width::Bits64, ByteOrder::Big).count(), 0);
+    }
+
+    #[test]
+    fn a_local_renamed_to_a_number_names_nothing() {
+        assert!(is_renamed_local("_0"));
+        assert!(is_renamed_local("_17"));
+        assert!(!is_renamed_local("_"));
+        assert!(!is_renamed_local("_init"));
+        assert!(!is_renamed_local("ptm_ioctl"));
     }
 
     #[test]

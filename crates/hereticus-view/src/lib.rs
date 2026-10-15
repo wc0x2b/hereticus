@@ -244,6 +244,18 @@ fn instruction_lines(
                 Some(cond) => format!("if ({cond}) {text}"),
                 None => text,
             };
+            // In an unlinked object a call holds no target yet: the
+            // relocation at it names the callee.
+            let relocated = context.and_then(|context| context.links.site_name(insn.address));
+            match (relocated, insn.kind) {
+                (Some(name), hereticus_il::arch::InsnKind::Call { .. }) => {
+                    return conditional(format!("call {name}"), None);
+                }
+                (Some(name), hereticus_il::arch::InsnKind::Jump { .. }) => {
+                    return conditional(format!("goto {name}"), None);
+                }
+                _ => {}
+            }
             if let Some(name) = named_calls.get(&index)
                 && matches!(insn.kind, hereticus_il::arch::InsnKind::Call { .. })
             {
@@ -252,6 +264,11 @@ fn instruction_lines(
             let address =
                 formed.zip(context).map(|(address, context)| Pointed::of(address, context));
             let text = named_line(arch, insn, &shown, &address, context, &mut callees);
+            // The register a relocated `lui` or `addiu` writes holds the
+            // address of the symbol, for a call through it.
+            if let (Some(name), Some(dest)) = (relocated, shown.first()) {
+                callees.insert(dest.to_string(), name.to_string());
+            }
             if let Some(text) = text {
                 return conditional(text, None);
             }
@@ -1332,6 +1349,32 @@ mod tests {
             shown,
             ["w0 = ne ? 1 : 0", "w1 = ~w19", "x0 = x1 * x2", "x1 = sxtw(w1)", "w0 = clz(w1)"]
         );
+    }
+
+    /// In an unlinked object, the relocation at a call names its callee,
+    /// and those at a `lui` and `addiu` name what a call through the
+    /// register they write reaches.
+    #[test]
+    fn a_relocation_names_the_callee_of_an_unlinked_call() {
+        use hereticus_il::arch::mips::Mips32;
+        let words = [
+            0x0c00_0000_u32, // jal 0, a relocation names capable
+            0x0000_0000,     // nop
+            0x3c01_0000,     // lui at, 0
+            0x2421_0000,     // addiu at, at, 0
+            0x0020_f809,     // jalr at
+            0x0000_0000,     // nop
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0);
+        let sites = [(0, "capable"), (8, "__raw_copy_to_user"), (0xc, "__raw_copy_to_user")];
+        let links = Links::default()
+            .with_sites(sites.iter().map(|&(at, name)| (at, name.to_string())).collect());
+        let space = AddressSpace::none();
+        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let shown = il_lines_in(&Mips32::BIG, &code, &insns, Some(context));
+        assert!(shown.contains(&"call capable".to_string()), "{shown:?}");
+        assert!(shown.contains(&"call __raw_copy_to_user".to_string()), "{shown:?}");
     }
 
     /// A test of one bit reads with the mask of that bit, not its number.
