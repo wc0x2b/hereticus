@@ -122,9 +122,10 @@ Twenty-five cases of ten published fixes, in `examples/research_bench.rs
 order wins on them (`RESEARCH.md`, "Published fixes, again"). Every
 OpenWrt advisory since 2025 with binaries on both sides is in; older
 ones (the 19.07 fixes of `libubox`, `relayd`, `umdns` and `uhttpd`) and
-the fixes of a vendor's firmware are next. A kernel module is read as
-stripped code where its symbols name little of it; only `ltq_ptm_vr9.ko`
-for MIPS checks that, so add a module for ARM.
+the fixes of a vendor's firmware are next, and a published fix in a
+kernel module for ARM: `tun`, `nf_conntrack` and `wireguard` of OpenWrt
+24.10.3 and 24.10.4 for ARMv7 read as unchanged but for constants, which
+checks the reading but ranks no fix.
 
 `tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 151
 wrong pairs left, many are byte-identical twins (see "Tell twins apart

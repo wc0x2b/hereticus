@@ -347,7 +347,9 @@ impl Binary {
             });
         }
 
-        if file.kind() == ObjectKind::Relocatable && covers_little_code(&file, &functions) {
+        if file.kind() == ObjectKind::Relocatable
+            && (covers_little_code(&file, &functions) || has_renamed_locals(&functions))
+        {
             return Self::parse_module(&file, isa);
         }
         if !functions.is_empty() {
@@ -417,14 +419,16 @@ impl Binary {
         })
     }
 
-    /// Read an unlinked object whose symbols name little of its code, as a
-    /// kernel module OpenWrt ships.
+    /// Read an unlinked object whose symbols name little of its code, or
+    /// name it by numbers, as a kernel module OpenWrt ships.
     ///
     /// OpenWrt's `strip-kmod.sh` keeps only the symbols that relocations
     /// need, and renames the local ones to numbers, as `_7`: measured on
     /// `ltq_ptm_vr9.ko` of 24.10.3, 8 symbols named 1.5 KiB of 12 KiB of
-    /// code. So the code is scanned as a stripped binary's, with each
-    /// global function as a start the symbols give. An unlinked object
+    /// code. On ARM more are kept, but named `_41` in one build and `_43`
+    /// in the next for one function. So the code is scanned as a stripped
+    /// binary's, with each function a symbol bounds as a start, and only
+    /// the names that are not numbers kept. An unlinked object
     /// starts every section at zero, so each code section is placed after
     /// the one before it.
     fn parse_module(file: &object::File<'_>, isa: Isa) -> Result<Self, ObjError> {
@@ -457,16 +461,16 @@ impl Binary {
             let Some(base) = symbol.section_index().and_then(|index| bases.get(&index.0)) else {
                 continue;
             };
-            if symbol.kind() != SymbolKind::Text
-                || symbol.size() == 0
-                || name.is_empty()
-                || crate::links::is_renamed_local(name)
-            {
+            if symbol.kind() != SymbolKind::Text || symbol.size() == 0 {
                 continue;
             }
+            // A local renamed to a number still bounds its function, but
+            // its name says nothing.
             let start = base + symbol.address();
             exported.push(start..start + symbol.size());
-            named.insert(start, name);
+            if !name.is_empty() && !crate::links::is_renamed_local(name) {
+                named.insert(start, name);
+            }
         }
         let linked =
             scan::Linked { exported, pointers: code_pointers(file, &bases), ..Default::default() };
@@ -988,6 +992,12 @@ fn without_switch_tables(mut words: Vec<(u64, u64)>, width: u64) -> Vec<u64> {
         .collect()
 }
 
+/// Report whether any of `functions` is named by a local that OpenWrt's
+/// `strip-kmod.sh` renamed to a number: see [`crate::links::is_renamed_local`].
+fn has_renamed_locals(functions: &[Function]) -> bool {
+    functions.iter().any(|function| crate::links::is_renamed_local(&function.name))
+}
+
 /// Report whether `functions`, read from the symbols of `file`, cover less
 /// than half of its code.
 fn covers_little_code(file: &object::File<'_>, functions: &[Function]) -> bool {
@@ -1072,6 +1082,49 @@ mod tests {
         assert_eq!(without_switch_tables(callbacks, 4), [0x100, 0x2000, 0x2100, 0x2200]);
         let far: Vec<(u64, u64)> = (0..4).map(|slot| (slot * 4, slot * 0x1000)).collect();
         assert_eq!(without_switch_tables(far, 4), [0, 0x1000, 0x2000, 0x3000]);
+    }
+
+    /// An unlinked object whose functions are named by numbers, as a kernel
+    /// module OpenWrt ships, reads with the symbols as bounds and no names
+    /// but the real ones.
+    #[test]
+    fn a_kernel_module_keeps_no_name_that_is_a_number() {
+        use object::write::{Object as Written, Symbol, SymbolSection};
+        let mut written = Written::new(
+            object::BinaryFormat::Elf,
+            object::Architecture::Arm,
+            object::Endianness::Little,
+        );
+        let text = written.section_id(object::write::StandardSection::Text);
+        // mov r0, #1; bx lr, and mov r0, #2; bx lr.
+        let code: Vec<u8> = [0xe3a0_0001_u32, 0xe12f_ff1e, 0xe3a0_0002, 0xe12f_ff1e]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        written.append_section_data(text, &code, 4);
+        for (name, value, scope) in [
+            ("_3", 0, object::SymbolScope::Compilation),
+            ("tun_init", 8, object::SymbolScope::Dynamic),
+        ] {
+            written.add_symbol(Symbol {
+                name: name.as_bytes().to_vec(),
+                value,
+                size: 8,
+                kind: SymbolKind::Text,
+                scope,
+                weak: false,
+                section: SymbolSection::Section(text),
+                flags: object::SymbolFlags::None,
+            });
+        }
+        let binary = Binary::parse(&written.write().expect("the object writes")).expect("parses");
+        let found: Vec<(u64, &str)> = binary
+            .functions
+            .iter()
+            .map(|function| (function.address, function.name.as_str()))
+            .collect();
+        assert_eq!(found, [(0, ""), (8, "tun_init")]);
+        assert_eq!(binary.found_by, FoundBy::Scanning);
     }
 
     #[test]
