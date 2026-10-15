@@ -1249,6 +1249,14 @@ backports 4 right pairs. Against two everywhere, the rule of three
 inside a function paired 158 fewer right and 21 more wrong on the
 kernels.
 
+Tried again with the rule of three and the recovery fixes in place, for
+the kernel upgrades, each against that step: a null inside a table
+paired 9 more right and 14 fewer wrong on the kernels, but 2 fewer
+right on the backports; moving a pair by similarity or place to a free
+function of its slot that scores as well paired 5 more right on the
+kernels, but 4 fewer right and 2 more wrong on the backports. Neither
+is kept.
+
 ### Function recovery, again (A16)
 
 `tests/boundaries.rs` checks the functions the scan finds in each
