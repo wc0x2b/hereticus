@@ -834,6 +834,24 @@ for AArch64, A32 and MIPS16e in both byte orders, the same way:
 The update holds 17 patches, and the larger ones rank above the fix
 under `added`.
 
+Over all sixteen cases of seven fixes, no order wins:
+
+| Order | Rank sum | Top 1 | Top 5 | MRR |
+|---|---|---|---|---|
+| added | 78 | 3 | 12 | 0.396 |
+| rare | 64 | 3 | 11 | 0.407 |
+| rare × (0.5 + outlier) | 61 | 3 | 10 | 0.421 |
+| rare × outlier | 63 | 3 | 13 | 0.391 |
+| added × outlier | 66 | 3 | 13 | 0.383 |
+
+The outlier score ranked the first eight cases best of all, but ranks
+the eight OpenWrt cases added here worse than `added` does, so `added`
+stays the default.
+
+The OpenWrt cases cover A32, MIPS32 and MIPS16e; OpenWrt builds no user
+space as Thumb-2. Ubuntu builds armhf as Thumb-2, so the 109 armhf
+updates of `tests/truth_ubuntu.rs` are the published fixes on Thumb-2.
+
 ### The Ubuntu updates, checked again
 
 `tests/truth_ubuntu.rs` locks the counts of the 218 updates, which
