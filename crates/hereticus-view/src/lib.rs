@@ -299,8 +299,7 @@ fn page_loads(insns: &[Insn], lifts: &[Option<Named>], formed: &[Option<u64>]) -
         .iter()
         .enumerate()
         .filter(|&(index, insn)| {
-            let opcode = mips::rabbitizer_opcode(insn);
-            matches!(opcode, Some(MipsOpcode::core_addiu | MipsOpcode::core_ori))
+            (mips::is(insn, MipsOpcode::core_addiu) || mips::is(insn, MipsOpcode::core_ori))
                 && formed[index].is_some()
         })
         .filter_map(|(index, _)| {
@@ -315,7 +314,7 @@ fn page_loads(insns: &[Insn], lifts: &[Option<Named>], formed: &[Option<u64>]) -
                 matches!(earlier.kind, hereticus_arch::InsnKind::Call { .. })
                     || shown_names(lifts[at].as_ref()).first() == Some(&source)
             })?;
-            let loads = mips::rabbitizer_opcode(&insns[at]) == Some(MipsOpcode::core_lw);
+            let loads = mips::is(&insns[at], MipsOpcode::core_lw);
             (loads && formed[at].is_some()).then_some(at)
         })
         .collect()
@@ -1079,7 +1078,7 @@ fn statement(
                 format!("{dest} = &page")
             }
             // `lui` puts its constant in the upper half.
-            ([dest, _], None) if mips::rabbitizer_opcode(insn) == Some(MipsOpcode::core_lui) => {
+            ([dest, _], None) if mips::is(insn, MipsOpcode::core_lui) => {
                 match canonical.operands.get(1) {
                     Some(Operand::Const(high)) => format!("{dest} = {}", constant(high << 16)),
                     _ => return None,
