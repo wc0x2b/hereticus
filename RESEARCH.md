@@ -982,6 +982,23 @@ same pairs and ranks on the truth tests:
   `mrc2` and `andeq`, and its words move with each release. The
   assembly diff shows them as `.word`, and the IL view hides them.
 
+### Two builds of Mirai
+
+Two static builds of one Mirai variant for ARM, with symbols, from
+theZoo (`malware-reports/mirai-arm.md`). Paired with `--ignore-names`
+and checked against the symbols, 514 of the 520 functions both builds
+have pair right and none wrong; 6 stay unpaired, 3 that changed and 3
+template copies, as each `*_IPGen` differs from the others only in its
+callee.
+
+The IL view showed the load of a pool word as `r1 = load.32 [pc + 0x4c]`
+where the word holds the address of a text, in an image linked high.
+`track_pool_words` read the word as an address for matching, but did not
+give the load the address it forms. In `exploit_socket_edimax` the old
+build sends an F5 BIG-IP request and the new one an Edimax request, and
+the diff showed that line as unchanged. The load now reads as
+`r1 = &"GET /tmui/..."`; the pairs are the same.
+
 ### Two ways MIPS loads an address
 
 PIC code of MIPS loads the address of a static object either from the

@@ -38,6 +38,8 @@ For real fixes found with `hereticus`, such as the iOS kernel fix for
 CVE-2024-23265 and the OpenWrt fixes of `ubusd`, `dropbear`, `uhttpd`,
 `odhcpd`, `procd`, `jsonfilter` and the `ltq-ptm` kernel module, see
 [real-life-reports](real-life-reports).
+For two builds of Mirai for ARM compared, see
+[malware-reports](malware-reports).
 
 Two OpenWrt releases for the same device, 22.03.2 and 22.03.5 for the Netgear
 EX6100v2. The ARM decompressor stub is 15 KB of shipped code with no symbols,
