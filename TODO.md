@@ -187,13 +187,6 @@ The CLI on the MIPS kernel of the VR200 takes 12 seconds built for musl,
 the target `.cargo/config.toml` picks; "Make the matching faster" below
 says where the time goes.
 
-## Treat a branch condition alike on A32 and A64
-
-`Arch::operation_name` keeps the condition of an A32 branch, so a `bne`
-that became a `beq` reads as a change, but drops it from `b.ne` of A64.
-Both kept what the names did before. A flipped condition is a real edit;
-decide one rule for both and measure it.
-
 ## Make the matching faster
 
 Every architecture decides by the opcode that `Insn::opcode` holds, and
