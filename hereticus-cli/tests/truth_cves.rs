@@ -167,6 +167,12 @@ const FIXES: &[Fix] = &[
         after: "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/dropbear",
         function: "sub_1a34c",
     },
+    Fix {
+        name: "CVE-2025-62525 ltq-ptm MIPS32 BE",
+        before: "hereticus-openwrt-cve/24.10.3/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko",
+        after: "hereticus-openwrt-cve/24.10.4/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko",
+        function: "sub_267c",
+    },
 ];
 
 fn cache() -> PathBuf {

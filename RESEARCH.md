@@ -895,6 +895,25 @@ With the `scp` fix of CVE-2026-35385 in `dropbear`, OpenWrt 24.10.7 to
 Ubuntu updates at first; it also ranks the backports lower (top 1 from
 64 to 60), so `added` stays.
 
+The `ltq-ptm` fix of CVE-2025-62525, from OpenWrt 24.10.3 to 24.10.4, is
+in a kernel module for MIPS32 big endian, and ranks 1 of 1 under every
+order. Over all twenty-five cases of ten fixes, `added` has a rank sum
+of 90, 10 first, 21 in the top 5 and an MRR of 0.563, and `rare` 75, 11,
+20 and 0.590.
+
+OpenWrt's `strip-kmod.sh` keeps only the symbols a module's relocations
+need, and renames the local ones to numbers. Read by its symbols, the
+module was 8 functions over 1.5 KiB of 12 KiB of code, named `_0` to
+`_8` in each build, which paired by name with whatever had the same
+number. `Binary::parse_module` now reads an unlinked object whose symbols
+cover less than half its code as stripped: each code section after the
+one before, the global functions as starts, and the starts that the
+relocations of its data point at, but for a run of four or more words in
+a row that point within 2 KiB, which is the table of a `switch`. The
+`ioctl` handler, which only a `net_device_ops` table points at, was
+merged into the probe function before that; with the tables of each
+`switch` as starts, it split at each case.
+
 This case showed two kinds of noise in the report, both fixed, with no
 pair moved on the backports or the Ubuntu updates:
 

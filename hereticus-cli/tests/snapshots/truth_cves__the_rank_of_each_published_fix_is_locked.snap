@@ -27,3 +27,4 @@ CVE-2026-35385 dropbear AArch64       1    19  changed sub_1650c sub_1623c 0.69 
 CVE-2026-35385 dropbear A32           1    21  changed sub_157bc sub_15424 0.72 297 37 34
 CVE-2026-35385 dropbear MIPS32 BE     1    19  changed sub_1a378 sub_1a524 0.56 85 189 95
 CVE-2026-35385 dropbear MIPS32 LE     2    37  changed sub_1a34c sub_1a200 0.56 72 176 108
+CVE-2025-62525 ltq-ptm MIPS32 BE      1     2  changed sub_267c sub_267c 0.70 69 37 9

@@ -347,6 +347,9 @@ impl Binary {
             });
         }
 
+        if file.kind() == ObjectKind::Relocatable && covers_little_code(&file, &functions) {
+            return Self::parse_module(&file, isa);
+        }
         if !functions.is_empty() {
             // A stable order keeps output and snapshots reproducible; the
             // symbol table order is not guaranteed.
@@ -411,6 +414,82 @@ impl Binary {
             addresses: address_space(&file),
             links,
             other_set,
+        })
+    }
+
+    /// Read an unlinked object whose symbols name little of its code, as a
+    /// kernel module OpenWrt ships.
+    ///
+    /// OpenWrt's `strip-kmod.sh` keeps only the symbols that relocations
+    /// need, and renames the local ones to numbers, as `_7`: measured on
+    /// `ltq_ptm_vr9.ko` of 24.10.3, 8 symbols named 1.5 KiB of 12 KiB of
+    /// code. So the code is scanned as a stripped binary's, with each
+    /// global function as a start the symbols give. An unlinked object
+    /// starts every section at zero, so each code section is placed after
+    /// the one before it.
+    fn parse_module(file: &object::File<'_>, isa: Isa) -> Result<Self, ObjError> {
+        /// The least alignment of a section, so that a function starts
+        /// where it would in the module.
+        const LEAST_ALIGNMENT: u64 = 16;
+
+        let arch = isa.arch();
+        let mut bases: BTreeMap<usize, u64> = BTreeMap::new();
+        let mut code: Vec<(u64, &[u8])> = Vec::new();
+        let mut next: u64 = 0;
+        for section in file.sections() {
+            if section.kind() != object::SectionKind::Text || section.size() == 0 {
+                continue;
+            }
+            let Ok(data) = section.data() else { continue };
+            let base = next.next_multiple_of(section.align().max(LEAST_ALIGNMENT));
+            bases.insert(section.index().0, base);
+            code.push((base, data));
+            next = base + data.len() as u64;
+        }
+        if code.is_empty() {
+            return Err(ObjError::NoCode);
+        }
+
+        let mut named: BTreeMap<u64, &str> = BTreeMap::new();
+        let mut exported = Vec::new();
+        for symbol in file.symbols() {
+            let Ok(name) = symbol.name() else { continue };
+            let Some(base) = symbol.section_index().and_then(|index| bases.get(&index.0)) else {
+                continue;
+            };
+            if symbol.kind() != SymbolKind::Text
+                || symbol.size() == 0
+                || name.is_empty()
+                || crate::links::is_renamed_local(name)
+            {
+                continue;
+            }
+            let start = base + symbol.address();
+            exported.push(start..start + symbol.size());
+            named.insert(start, name);
+        }
+        let linked =
+            scan::Linked { exported, pointers: code_pointers(file, &bases), ..Default::default() };
+        let memory = hereticus_recovery::arch::Memory::new(&code);
+        let functions: Vec<Function> =
+            scan::recover_in_memory(&code, &[], &linked, scan::Regions::CodeOnly, arch, &memory)
+                .into_iter()
+                .map(unnamed)
+                .map(|function| match named.get(&function.address) {
+                    Some(name) => Function { name: stable_name(name).to_string(), ..function },
+                    None => function,
+                })
+                .collect();
+        if functions.is_empty() {
+            return Err(ObjError::NoFunctions);
+        }
+        Ok(Self {
+            isa,
+            functions,
+            found_by: FoundBy::Scanning,
+            addresses: AddressSpace::none(),
+            links: Links::of_module(file, &bases),
+            other_set: BTreeSet::new(),
         })
     }
 
@@ -841,6 +920,86 @@ fn address_space(file: &object::File<'_>) -> AddressSpace {
     )
 }
 
+/// The addresses in code, as `bases` places each code section, that the
+/// data of the unlinked `file` points at: a table of callbacks, as the
+/// `net_device_ops` of a driver, holds the address of each, and a
+/// relocation of the table names the section and the offset in it.
+///
+/// The table a `switch` jumps through points into code too, at each case.
+/// Its words lie in a row and point into one function, where a table of
+/// callbacks has gaps, or points at functions far apart. Measured on
+/// `ltq_ptm_vr9.ko`, the cases of the `ioctl` handler cut it in eight.
+fn code_pointers(file: &object::File<'_>, bases: &BTreeMap<usize, u64>) -> Vec<u64> {
+    let order = if file.is_little_endian() {
+        crate::links::ByteOrder::Little
+    } else {
+        crate::links::ByteOrder::Big
+    };
+    let width: u64 = if file.is_64() { 8 } else { 4 };
+    let mut pointers = Vec::new();
+    for section in file.sections().filter(|section| section.kind() != object::SectionKind::Text) {
+        let data = section.data().unwrap_or_default();
+        // Each word that points into code, by its offset in the section.
+        let words: Vec<(u64, u64)> = section
+            .relocations()
+            .filter_map(|(offset, relocation)| {
+                let object::RelocationTarget::Symbol(index) = relocation.target() else {
+                    return None;
+                };
+                let symbol = file.symbol_by_index(index).ok()?;
+                let base = bases.get(&symbol.section_index()?.0)?;
+                let addend = match relocation.has_implicit_addend() {
+                    true => {
+                        let start = usize::try_from(offset).ok()?;
+                        order.read(data.get(start..start + width as usize)?)
+                    }
+                    false => relocation.addend() as u64,
+                };
+                Some((offset, base.wrapping_add(symbol.address()).wrapping_add(addend)))
+            })
+            .collect();
+        pointers.extend(without_switch_tables(words, width));
+    }
+    pointers.sort_unstable();
+    pointers.dedup();
+    pointers
+}
+
+/// The targets of `words`, each `(offset, target)` of one section, but for
+/// those of a run that looks like the table of a `switch`: see
+/// [`code_pointers`].
+fn without_switch_tables(mut words: Vec<(u64, u64)>, width: u64) -> Vec<u64> {
+    /// A table this long, of words in a row, may be a `switch`.
+    const LEAST_CASES: usize = 4;
+    /// Wider than the cases of any `switch` in one function.
+    const WIDEST_CASES: u64 = 0x800;
+
+    words.sort_unstable();
+    words
+        .chunk_by(|before, after| after.0 == before.0 + width)
+        .filter(|run| {
+            let (low, high) = run.iter().fold((u64::MAX, 0), |(low, high), &(_, target)| {
+                (low.min(target), high.max(target))
+            });
+            run.len() < LEAST_CASES || high - low >= WIDEST_CASES
+        })
+        .flatten()
+        .map(|&(_, target)| target)
+        .collect()
+}
+
+/// Report whether `functions`, read from the symbols of `file`, cover less
+/// than half of its code.
+fn covers_little_code(file: &object::File<'_>, functions: &[Function]) -> bool {
+    let code: u64 = file
+        .sections()
+        .filter(|section| section.kind() == object::SectionKind::Text)
+        .map(|section| section.size())
+        .sum();
+    let covered: u64 = functions.iter().map(|function| function.code.len() as u64).sum();
+    covered * 2 < code
+}
+
 fn has_code_section(file: &object::File<'_>) -> bool {
     file.sections().any(|section| section.kind() == object::SectionKind::Text && section.size() > 0)
 }
@@ -900,6 +1059,19 @@ mod tests {
         let parts = without(&regions, [0x102..0x104, 0x106..0x10a, 0x200..0x204].into_iter());
         assert_eq!(parts, [(0x100, &data[..2]), (0x104, &data[4..6])]);
         assert_eq!(without(&regions, core::iter::empty()), regions);
+    }
+
+    /// A run of four or more words in a row that point close together is
+    /// the table of a `switch`; a table of callbacks has gaps, or points
+    /// far apart.
+    #[test]
+    fn a_switch_table_points_at_no_function() {
+        let switch: Vec<(u64, u64)> = (0..4).map(|case| (case * 4, 0x2700 + case * 0x20)).collect();
+        assert!(without_switch_tables(switch, 4).is_empty());
+        let callbacks = vec![(0x80, 0x100), (0x90, 0x2000), (0x94, 0x2100), (0x98, 0x2200)];
+        assert_eq!(without_switch_tables(callbacks, 4), [0x100, 0x2000, 0x2100, 0x2200]);
+        let far: Vec<(u64, u64)> = (0..4).map(|slot| (slot * 4, slot * 0x1000)).collect();
+        assert_eq!(without_switch_tables(far, 4), [0, 0x1000, 0x2000, 0x3000]);
     }
 
     #[test]
