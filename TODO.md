@@ -92,18 +92,6 @@ likely forms, and adds compact branches with no delay slot. The decoder
 assumes release 2. Few shipped parts use r6, so first confirm a target
 worth reading.
 
-## Read the two ways MIPS loads an address alike
-
-PIC code of MIPS loads the address of a static object in one of two
-ways: the page from a local slot of the global offset table, then
-`addiu` of the offset, or the whole address from a slot of its own. The
-linker picks per object, and a release can move an object from one way
-to the other. Measured on `dropbear` of OpenWrt 24.10.7 and 24.10.8 for
-MIPS32 little endian, 18 functions read as changed by one or two
-instructions for this alone (`real-life-reports/cve-2026-35385.md`).
-Read the slot the load names, from the global pointer the function sets
-up, and fold the pair into one address, as an idiom.
-
 ## Show the last instructions as IL
 
 `--view il` still shows NEON work as the code prints it: the lift names

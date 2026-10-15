@@ -98,6 +98,12 @@ pub enum ConstantKind {
     /// The whole word is data holding an address, such as a literal pool
     /// entry, and decodes as an instruction only by accident.
     StoredAddress,
+    /// The low half of an address, added to what the code read out of the
+    /// global offset table. The linker chooses whether an object has a
+    /// slot of its own, which holds its whole address, or shares the slot
+    /// of its page, which needs this half too: an instruction that only a
+    /// choice of the linker adds.
+    AddressTail,
 }
 
 /// What a stretch of bytes holds, as far as its words show.

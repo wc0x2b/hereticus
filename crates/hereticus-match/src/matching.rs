@@ -50,6 +50,9 @@ use score::{CLOSE_SIMILARITY, FLOW_DEPTH, LARGEST_PLAIN_CONSTANT, sorted_shared}
 /// sorts before a weaker one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Confidence {
+    /// Two stubs of one import, as the linker names it. See
+    /// `Cascade::pair_stubs_by_import`.
+    SameImport,
     /// The machine code is byte for byte the same.
     IdenticalCode,
     /// The normalized instructions agree exactly.
@@ -894,6 +897,7 @@ pub fn diff_reporting(
         right_tables: after.function_tables(),
     };
 
+    cascade.pair_stubs_by_import();
     cascade.match_identical_code(progress);
     cascade.match_identical_shape(progress);
     if options.use_names == UseNames::Yes {

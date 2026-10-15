@@ -45,15 +45,17 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
 
     // Padding does nothing, and alignment puts it where it likes: GCC pads
     // a pool of doubles to eight bytes, so one more `nop` came before it.
-    let work =
-        |arch: &dyn Arch, insns: &[Insn], kinds: &[ConstantKind]| -> Vec<(Insn, ConstantKind)> {
-            insns
-                .iter()
-                .zip(kinds)
-                .filter(|(insn, _)| !arch.is_padding(insn))
-                .map(|(insn, kind)| (insn.clone(), *kind))
-                .collect()
-        };
+    let work = |arch: &dyn Arch,
+                insns: &[Insn],
+                kinds: &[ConstantKind]|
+     -> Vec<(Insn, ConstantKind)> {
+        insns
+            .iter()
+            .zip(kinds)
+            .filter(|(insn, kind)| !arch.is_padding(insn) && **kind != ConstantKind::AddressTail)
+            .map(|(insn, kind)| (insn.clone(), *kind))
+            .collect()
+    };
     let before_work = work(before_arch, &before_insns, &before_kinds);
     let after_work = work(after_arch, &after_insns, &after_kinds);
     if before_work.len() != after_work.len() {

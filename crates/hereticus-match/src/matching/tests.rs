@@ -2546,3 +2546,49 @@ fn a_stub_whose_slot_moved_is_unchanged() {
     assert_ne!(changed(["free@plt", "malloc@plt"]), Changed::No, "another import");
     assert_ne!(changed(["", ""]), Changed::No, "no stub known");
 }
+
+/// MIPS loads an address from the slot of its page with a low half added,
+/// or from a slot of its own: the linker's choice, and no edit.
+#[test]
+fn a_mips_address_from_a_slot_of_its_own_edits_nothing() {
+    let words = |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_be_bytes()).collect() };
+    let page = words(&[
+        0x8f82_8024, // lw v0, -0x7fdc(gp)
+        0x2442_1080, // addiu v0, v0, 0x1080
+        0x8c43_0024, // lw v1, 0x24(v0)
+        0x03e0_0008, // jr ra
+        0x0000_0000, // nop
+    ]);
+    let own = words(&[
+        0x8f82_830c, // lw v0, -0x7cf4(gp)
+        0x8c43_0024, // lw v1, 0x24(v0)
+        0x03e0_0008, // jr ra
+        0x0000_0000, // nop
+    ]);
+    let binary =
+        |code: &[u8]| hereticus_image::Binary { isa: Isa::Mips32Be, ..binary_of(&[("f", code)]) };
+    let options = Options { threshold: 0.0, use_names: UseNames::No };
+    let diff = diff_with(&binary(&page), &binary(&own), options);
+    let pair = diff.matched.first().expect("a threshold of zero pairs anything");
+    assert_eq!(pair.edits, Edits::default());
+    assert_ne!(pair.changed, Changed::Yes);
+}
+
+/// Two stubs of one import pair by its name, though each has the bytes of
+/// the other's stub: a lazy binding stub holds the number of its symbol.
+#[test]
+fn stubs_pair_by_their_import_before_their_bytes() {
+    let (first, second) = ([0xe3a0_0001_u32, 0xe12f_ff1e], [0xe3a0_0002_u32, 0xe12f_ff1e]);
+    let bytes =
+        |words: [u32; 2]| -> Vec<u8> { words.iter().flat_map(|w| w.to_le_bytes()).collect() };
+    let (first, second) = (bytes(first), bytes(second));
+    let before = binary_of(&[("a@plt", &first), ("b@plt", &second)]);
+    let after = binary_of(&[("a@plt", &second), ("b@plt", &first)]);
+    let options = Options { threshold: 0.0, use_names: UseNames::No };
+    let diff = diff_with(&before, &after, options);
+    for pair in &diff.matched {
+        assert_eq!(before.functions[pair.before].name, after.functions[pair.after].name);
+        assert_eq!(pair.confidence, Confidence::SameImport);
+    }
+    assert_eq!(diff.matched.len(), 2);
+}
