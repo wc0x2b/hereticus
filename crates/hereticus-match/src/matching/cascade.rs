@@ -7,6 +7,7 @@ use hereticus_callees::Callee;
 use rayon::prelude::*;
 
 use super::align::{Layout, Step, align, align_by_scores, longest_increasing_chain};
+use super::bounded::is_bounded_swap;
 use super::change::{classify_change, count_edits};
 use super::score::{
     CLOSE_SIMILARITY, CONSTANT_WEIGHT, Context, FEWEST_SHARED_EDGES, FLOW_RESCUE,
@@ -730,6 +731,7 @@ impl Cascade<'_> {
                 edits: Edits::default(),
                 kinds: EditKinds::default(),
                 rarity: 0.0,
+                bounded_calls: 0,
             };
         }
         let (left_body, right_body) = (work_of(left.body()), work_of(right.body()));
@@ -744,6 +746,7 @@ impl Cascade<'_> {
             edits,
             kinds,
             rarity: 0.0,
+            bounded_calls: 0,
         }
     }
 
@@ -1147,6 +1150,11 @@ impl Cascade<'_> {
             _ => false,
         };
 
+        let bounded = |left: &Callee, right: &Callee| match (left, right) {
+            (Callee::Named(left), Callee::Named(right)) => is_bounded_swap(left, right),
+            _ => false,
+        };
+
         for pair in &mut self.matched {
             if pair.changed == Changed::Yes {
                 let (left, right) = (&left_side[pair.before], &right_side[pair.after]);
@@ -1183,10 +1191,12 @@ impl Cascade<'_> {
                 let gained = |key: Option<CalleeKey>| {
                     key.is_some_and(|key| uses(&after_counts, &key) > uses(&before_counts, &key))
                 };
-                pair.kinds.callees += calls_kept_in_place(left, right)
+                let changed: Vec<(&Callee, &Callee)> = calls_kept_in_place(left, right)
                     .filter(|(left, right)| differ(left, right, Unpaired::SayNothing))
                     .filter(|(left, right)| lost(key_of_left(left)) && gained(key_of_right(right)))
-                    .count();
+                    .collect();
+                pair.kinds.callees += changed.len();
+                pair.bounded_calls += changed.iter().filter(|(l, r)| bounded(l, r)).count();
                 continue;
             }
             if !matches!(pair.changed, Changed::No | Changed::InDetail) {
@@ -1204,14 +1214,15 @@ impl Cascade<'_> {
             if left.len() != right.len() {
                 continue;
             }
-            let changed = left
+            let changed: Vec<(&Callee, &Callee)> = left
                 .iter()
                 .zip(right)
                 .filter(|(left, right)| differ(left, right, unpaired))
-                .count();
-            if changed > 0 {
+                .collect();
+            if !changed.is_empty() {
                 pair.changed = Changed::Yes;
-                pair.kinds.callees += changed;
+                pair.kinds.callees += changed.len();
+                pair.bounded_calls += changed.iter().filter(|(l, r)| bounded(l, r)).count();
             }
         }
     }

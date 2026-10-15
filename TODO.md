@@ -112,15 +112,13 @@ closer free function costs more right pairs than it saves
 11% of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
-## Rank a fix of one instruction that changes a callee
+## Rank a small fix that swaps no call
 
-The `procd` fix of CVE-2026-30874 adds one instruction and turns a call
-of `strcmp` into one of `strncmp`, with `"PATH"` now `"PATH="`. Its row
-counts the callee and the text, but it ranks 18 to 20 of 25 to 29 under
-`added`. An order that adds the two counts lifts it to 16 or 17, and
-ranks the backports and the Ubuntu updates worse (`RESEARCH.md`,
-"Callees and texts in a changed pair"). Find what else tells such a fix
-from the other edits of a large update that change a callee or a text.
+A call swapped for its bounded form, as `strcmp` for `strncmp`, now goes
+first (`RESEARCH.md`, "Calls swapped for their bounded form"). A small
+fix of another shape still ranks low under `added`, as one that only
+tightens a bound. SPIDER (IEEE S&P 2020) tells a fix that only narrows
+what a function accepts; such a test over the IL could rank them.
 
 ## Measure on more published fixes, and faster
 

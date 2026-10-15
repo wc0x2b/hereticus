@@ -1237,6 +1237,34 @@ fn a_changed_pair_counts_a_call_kept_in_place_to_another_function() {
     }
 }
 
+/// A call that turns from `strcmp` into `strncmp` counts as bounded, in a
+/// pair whose code changed and in one whose code agrees; a call that turns
+/// into `memcmp` does not.
+#[test]
+fn a_call_turned_into_its_bounded_form_counts() {
+    let options = Options { threshold: 0.0, ..Options::default() };
+    let side = |callee: u64, work: &[u32]| {
+        binary_of(&[
+            ("caller", &caller_running(callee, work)),
+            ("strcmp", &returns(1)),
+            ("strncmp", &returns(2)),
+            ("memcmp", &returns(3)),
+        ])
+    };
+    let before = side(0x100, &[ADD, ADD, ADD, BX_LR]);
+    for (after_work, changed) in
+        [(&[ADD, ADD, SUB, ADD, BX_LR][..], "code changed"), (&[ADD, ADD, ADD, BX_LR], "same code")]
+    {
+        let diff = diff_with(&before, &side(0x200, after_work), options);
+        let caller = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!((caller.kinds.callees, caller.bounded_calls), (1, 1), "{changed}");
+
+        let diff = diff_with(&before, &side(0x300, after_work), options);
+        let caller = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!((caller.kinds.callees, caller.bounded_calls), (1, 0), "memcmp, {changed}");
+    }
+}
+
 /// A call the edit removes lines up with no call, so its callee counts
 /// as no changed callee.
 #[test]

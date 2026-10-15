@@ -1018,6 +1018,34 @@ edits of the update that change a callee or a text too, so `added`
 stays the default. The second alignment of each changed pair took the
 MIPS kernel of the VR200 from 9.25 s to 9.4 s.
 
+### Calls swapped for their bounded form
+
+The `procd` fix swaps `strcmp` for `strncmp`, the form of the function
+that takes a limit. Such a swap is a common shape of a fix of a memory or
+parsing bug, as `sprintf` for `snprintf` and `strcpy` for `strlcpy`, and
+it adds only the instruction that loads the limit. Li and Paxson ("A
+Large-Scale Empirical Study of Security Patches", CCS 2017) found
+security fixes smaller and more local than other fixes, which is the
+case `added` ranks worst.
+
+`matching::bounded` holds the functions of the C library that have a
+bounded form, and their `_chk` forms that `_FORTIFY_SOURCE` calls. A
+pair counts each changed callee of the last entry that swaps a function
+for its bounded form, as `Match::bounded_calls`. The default order now
+puts such a pair first, before the count of instructions added:
+
+| Corpus | Rank sum before | Rank sum now | Rows with a swap |
+|---|---|---|---|
+| Backports (130) | 2970, 64 first | 2970, 64 first | none moved a fix |
+| Ubuntu (218) | 304, 121 first | 304, 121 first | none moved a fix |
+| Published (33) | 165, 15 first | 95, 19 first | the 4 `procd` fixes |
+
+The `procd` fix rises from rows 20, 18, 18 and 18 to row 1 on all four
+builds, and is the only row with a swap in each. No row of the backports
+or the Ubuntu updates with a swap stands above a fix. One case is little
+evidence that the list finds other fixes, but it costs no other fix
+its rank: a swap for a bounded form is rare outside a fix.
+
 ### Two builds of Mirai
 
 Two static builds of one Mirai variant for ARM, with symbols, from

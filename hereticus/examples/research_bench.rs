@@ -268,6 +268,8 @@ struct Features {
     /// Calls kept in place that reach another function, and texts that
     /// differ: see `EditKinds::callees` and `EditKinds::texts`.
     referents: usize,
+    /// See `Match::bounded_calls`.
+    bounded: usize,
 }
 
 type Order = fn(&Features) -> f64;
@@ -277,8 +279,15 @@ fn guards(f: &Features) -> f64 {
 }
 
 const ORDERS: &[(&str, Order)] = &[
-    // The default of the report: a rescheduled pair last.
+    // The default of the report: a call turned into its bounded form
+    // first, and a rescheduled pair last.
     ("added", |f| {
+        let rescheduled = f.reordered && !f.control_flow;
+        f.edits.added as f64 + if f.bounded > 0 { 1e5 } else { 0.0 }
+            - f.score * 1e-3
+            - if rescheduled { 1e6 } else { 0.0 }
+    }),
+    ("added, bounded not first", |f| {
         let rescheduled = f.reordered && !f.control_flow;
         f.edits.added as f64 - f.score * 1e-3 - if rescheduled { 1e6 } else { 0.0 }
     }),
@@ -429,6 +438,7 @@ fn features_of(rows: &[&Match], stripped: &[Binary; 2]) -> Vec<Features> {
                 added_calls: count(FlowShape::Call),
                 added_returns: count(FlowShape::Return) + count(FlowShape::Jump),
                 referents: pair.kinds.callees + pair.kinds.texts,
+                bounded: pair.bounded_calls,
             }
         })
         .collect()
@@ -679,7 +689,10 @@ fn measure_cves() {
             }
         };
         let features = features_of(&ranked, &stripped);
-        let mut line = format!("{cve} ({} rows):", ranked.len());
+        let bounded = ranked.iter().filter(|pair| pair.bounded_calls > 0).count();
+        let fix_bounded = ranked.iter().any(|pair| is_fix(pair) && pair.bounded_calls > 0);
+        let mut line =
+            format!("{cve} ({} rows, {bounded} bounded, fix bounded {fix_bounded}):", ranked.len());
         for (name, order) in ORDERS {
             let mut keyed: Vec<(f64, usize)> =
                 features.iter().enumerate().map(|(row, f)| (order(f), row)).collect();

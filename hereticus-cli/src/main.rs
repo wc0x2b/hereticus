@@ -153,6 +153,8 @@ struct Args {
     /// adds a check, so it rises above the many functions that changed only
     /// a value or a text. Measured on four Apple CVE fixes, this put each fix
     /// in the top 19 rows, where `confidence` put each near the bottom.
+    /// Above them all goes a function that turned a call into its bounded
+    /// form, as `strcmp` into `strncmp`, a fix that adds almost nothing.
     #[arg(long, value_enum, default_value_t = Sort::Added, verbatim_doc_comment)]
     sort: Sort,
 
@@ -288,7 +290,8 @@ impl From<ViewName> for View {
 enum Sort {
     /// Strongest match first, then closest score.
     Confidence,
-    /// Most instructions added first. The default.
+    /// Most instructions added first, after the functions that turned a
+    /// call into its bounded form. The default.
     Added,
     /// Most instructions removed first.
     Removed,
@@ -986,8 +989,24 @@ fn rank(a: &Match, b: &Match, sort: Sort) -> core::cmp::Ordering {
     let b_key = sort.key_of(b).unwrap_or(0.0);
     is_rescheduled(a)
         .cmp(&is_rescheduled(b))
+        .then_with(|| match sort {
+            Sort::Added => bounds_a_call(b).cmp(&bounds_a_call(a)),
+            _ => core::cmp::Ordering::Equal,
+        })
         .then_with(|| b_key.total_cmp(&a_key))
         .then_with(|| a.score.partial_cmp(&b.score).unwrap_or(core::cmp::Ordering::Equal))
+}
+
+/// Report whether a pair turned a call into its bounded form, as `strcmp`
+/// into `strncmp`.
+///
+/// Such a fix adds only the instruction that loads the limit, so a count
+/// of the instructions added put the `procd` fix of CVE-2026-30874 on row
+/// 18 to 20. Measured on the published fixes, this put it on row 1 for all
+/// four builds, and moved no fix of the backports or the Ubuntu updates.
+/// See RESEARCH.md, "Calls swapped for their bounded form".
+fn bounds_a_call(pair: &Match) -> bool {
+    pair.bounded_calls > 0
 }
 
 /// Report whether a pair only moved instructions that are not control
@@ -1343,6 +1362,22 @@ mod tests {
         assert_eq!(shown[0].edits.removed, 5, "removed ranks by the - column");
     }
 
+    /// A call turned into its bounded form goes first under `added`, and
+    /// only there.
+    #[test]
+    fn a_bounded_call_goes_first_under_added() {
+        let large = pair_with(Edits { added: 30, removed: 0, edited: 0 }, 0.9);
+        let bounded =
+            Match { bounded_calls: 1, ..pair_with(Edits { added: 1, removed: 0, edited: 0 }, 1.0) };
+        let mut shown = vec![&large, &bounded];
+
+        sort_shown(&mut shown, Sort::Added);
+        assert_eq!(shown[0].bounded_calls, 1, "the bounded call is first");
+        sort_shown(&mut shown, Sort::Removed);
+        sort_shown(&mut shown, Sort::Rare);
+        assert_eq!(shown[0].edits.added, 30, "another order ignores it");
+    }
+
     /// `--sort rare` ranks by the weighted additions, not by their count.
     #[test]
     fn sort_by_rare_ranks_by_rarity() {
@@ -1386,6 +1421,7 @@ mod tests {
     fn edited_pair(changed: Changed) -> Match {
         Match {
             rarity: 0.0,
+            bounded_calls: 0,
             before: 0,
             after: 0,
             confidence: Confidence::IdenticalCode,
