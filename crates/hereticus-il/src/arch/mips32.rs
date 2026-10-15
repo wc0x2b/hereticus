@@ -306,6 +306,18 @@ pub(crate) fn branch_distance(word: u32) -> Option<i64> {
     }
 }
 
+/// The floating-point condition code that a compare this module reads
+/// writes, or that a branch it reads tests: 1 to 7. `None` for any other
+/// word.
+pub(crate) fn condition_code(word: u32) -> Option<u8> {
+    let fields = Fields::of(word);
+    match decode(word)?.op {
+        Op::FloatBranch(_) => Some((fields.rt >> 2) as u8),
+        Op::FloatCompare(_) => Some((fields.sa >> 2) as u8),
+        _ => None,
+    }
+}
+
 /// The words that move control: the exception returns, and `jr` and `jalr`
 /// with the hazard barrier bit.
 ///

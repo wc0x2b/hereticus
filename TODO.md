@@ -95,9 +95,7 @@ worth reading.
 ## Show the last instructions as IL
 
 `--view il` still shows NEON work as the code prints it: the lift names
-it `Vector` only. A MIPS float compare and branch on a condition code
-other than 0, as `c.lt.d $fcc1` and `bc1t $fcc1`, also show as the code
-prints them: the view follows code 0 alone.
+it `Vector` only.
 
 ## Pair better across a kernel upgrade
 

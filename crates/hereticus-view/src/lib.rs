@@ -219,7 +219,7 @@ fn instruction_lines(
     let pages = page_loads(insns, &lifts, &formed);
     let mut last_compare: Option<Compared> = None;
     let is_mips = arch.triple().starts_with("mips");
-    let mut float_condition: Option<String> = None;
+    let mut float_conditions = FloatConditions::default();
     // The callee of each call, as the architecture follows it, as through
     // a slot on MIPS.
     let named_calls: HashMap<usize, String> = match context {
@@ -294,7 +294,7 @@ fn instruction_lines(
             {
                 return format!("{dest} = &page");
             }
-            if is_mips && let Some(text) = mips_statement(insn, &shown, &mut float_condition) {
+            if is_mips && let Some(text) = mips_statement(insn, &shown, &mut float_conditions) {
                 return text;
             }
             let moves = moving.get(index).copied().unwrap_or(false);
@@ -358,19 +358,62 @@ fn page_loads(insns: &[Insn], lifts: &[Option<Named>], formed: &[Option<u64>]) -
         .collect()
 }
 
+/// The test of the last float compare into each of the eight condition
+/// codes, so a branch on a code reads as `if (fv0 < fv1) goto $+0xc`.
+#[derive(Default)]
+struct FloatConditions([Option<String>; 8]);
+
+impl FloatConditions {
+    /// The name of condition code `code`. Code 0 is the only one MIPS I
+    /// has, and most code uses no other, so it keeps the short name.
+    fn name(code: u8) -> String {
+        match code {
+            0 => "fcc".to_string(),
+            code => format!("fcc{code}"),
+        }
+    }
+
+    /// Keep `test` as what code `code` holds, and give the statement that
+    /// sets it.
+    fn set(&mut self, code: u8, test: String) -> String {
+        let line = format!("{} = {test}", Self::name(code));
+        self.0[usize::from(code & 7)] = Some(test);
+        line
+    }
+
+    /// The statement of a branch to `target` where code `code` is `when`.
+    fn branch(&self, code: u8, when: Truth, target: &str) -> String {
+        let test = self.0[usize::from(code & 7)].as_deref();
+        match (when, test) {
+            (Truth::True, Some(test)) => format!("if ({test}) goto {target}"),
+            (Truth::True, None) => format!("if ({}) goto {target}", Self::name(code)),
+            (Truth::False, Some(test)) if test.starts_with("!(") => {
+                format!("if ({}) goto {target}", &test[2..test.len() - 1])
+            }
+            (Truth::False, Some(test)) => format!("if (!({test})) goto {target}"),
+            (Truth::False, None) => format!("if (!{}) goto {target}", Self::name(code)),
+        }
+    }
+}
+
+/// Which value of a condition code a branch takes.
+#[derive(Clone, Copy)]
+enum Truth {
+    True,
+    False,
+}
+
 /// The statement of a MIPS instruction whose operands the code does not
 /// print: the `hi` and `lo` that a multiply or divide writes, the
-/// condition bit that a float compare sets and `bc1t` and `bc1f` test, and
-/// the stores and loads of the MIPS16e `save` and `restore`.
-///
-/// `float_condition` keeps the test of the last float compare, so a branch
-/// on it reads as `if (fv0 < fv1) goto $+0xc`.
+/// condition code that a float compare sets and `bc1t` and `bc1f` test,
+/// and the stores and loads of the MIPS16e `save` and `restore`.
 fn mips_statement(
     insn: &Insn,
     operands: &[&str],
-    float_condition: &mut Option<String>,
+    float_conditions: &mut FloatConditions,
 ) -> Option<String> {
     use MipsDecoded::{Mips16, Mips32, Rabbitizer};
+    use hereticus_il::arch::mips32::{FloatBranch, FloatCompare};
     let decoded = mips::decoded(insn)?;
     // `multu` and `divu` read their operands unsigned, as `u>>` does.
     let unsigned = matches!(
@@ -411,69 +454,71 @@ fn mips_statement(
         (Rabbitizer(MipsOpcode::core_mtlo) | Mips32(Mips32Op::Mtlo), [source]) => {
             format!("lo = {source}")
         }
-        (Rabbitizer(MipsOpcode::core_bc1t), [target]) => {
-            let test = float_condition.as_deref().unwrap_or("fcc");
-            format!("if ({test}) goto {target}")
+        (
+            Rabbitizer(MipsOpcode::core_bc1t) | Mips32(Mips32Op::FloatBranch(FloatBranch::True)),
+            [target],
+        ) => float_conditions.branch(mips::float_condition_code(insn)?, Truth::True, target),
+        (
+            Rabbitizer(MipsOpcode::core_bc1f) | Mips32(Mips32Op::FloatBranch(FloatBranch::False)),
+            [target],
+        ) => float_conditions.branch(mips::float_condition_code(insn)?, Truth::False, target),
+        (Rabbitizer(opcode), [left, right]) => {
+            let test = float_test(compare_condition(opcode)?, left, right);
+            float_conditions.set(0, test)
         }
-        (Rabbitizer(MipsOpcode::core_bc1f), [target]) => match float_condition.as_deref() {
-            Some(test) if test.starts_with("!(") => {
-                format!("if ({}) goto {target}", &test[2..test.len() - 1])
-            }
-            Some(test) => format!("if (!({test})) goto {target}"),
-            None => format!("if (!fcc) goto {target}"),
-        },
-        (Rabbitizer(opcode), [left, right]) if float_test(opcode, left, right).is_some() => {
-            let test = float_test(opcode, left, right)?;
-            *float_condition = Some(test.clone());
-            format!("fcc = {test}")
+        (Mips32(Mips32Op::FloatCompare(FloatCompare { condition, .. })), [left, right]) => {
+            let test = float_test(condition, left, right);
+            float_conditions.set(mips::float_condition_code(insn)?, test)
         }
         _ => return None,
     };
     Some(line)
 }
 
-/// What a MIPS float compare tests, as an expression of `left` and
-/// `right`. Each operator is false on a NaN, so a compare that is true on
-/// one reads as the negation of its opposite: `c.ult` is `!(a >= b)`. The
-/// signaling forms test the same; `rabbitizer` spells `c.sf.d` as `c.df.d`.
-fn float_test(opcode: MipsOpcode, left: &str, right: &str) -> Option<String> {
-    Some(match opcode {
-        MipsOpcode::core_c_f_s
-        | MipsOpcode::core_c_f_d
-        | MipsOpcode::core_c_sf_s
-        | MipsOpcode::core_c_df_d => "0".to_string(),
-        MipsOpcode::core_c_un_s
-        | MipsOpcode::core_c_un_d
-        | MipsOpcode::core_c_ngle_s
-        | MipsOpcode::core_c_ngle_d => format!("unordered({left}, {right})"),
-        MipsOpcode::core_c_eq_s
-        | MipsOpcode::core_c_eq_d
-        | MipsOpcode::core_c_seq_s
-        | MipsOpcode::core_c_seq_d => format!("{left} == {right}"),
-        MipsOpcode::core_c_ueq_s
-        | MipsOpcode::core_c_ueq_d
-        | MipsOpcode::core_c_ngl_s
-        | MipsOpcode::core_c_ngl_d => {
-            format!("!({left} < {right} || {left} > {right})")
-        }
-        MipsOpcode::core_c_olt_s
-        | MipsOpcode::core_c_olt_d
-        | MipsOpcode::core_c_lt_s
-        | MipsOpcode::core_c_lt_d => format!("{left} < {right}"),
-        MipsOpcode::core_c_ult_s
-        | MipsOpcode::core_c_ult_d
-        | MipsOpcode::core_c_nge_s
-        | MipsOpcode::core_c_nge_d => format!("!({left} >= {right})"),
-        MipsOpcode::core_c_ole_s
-        | MipsOpcode::core_c_ole_d
-        | MipsOpcode::core_c_le_s
-        | MipsOpcode::core_c_le_d => format!("{left} <= {right}"),
-        MipsOpcode::core_c_ule_s
-        | MipsOpcode::core_c_ule_d
-        | MipsOpcode::core_c_ngt_s
-        | MipsOpcode::core_c_ngt_d => format!("!({left} > {right})"),
-        _ => return None,
-    })
+/// The condition of a MIPS float compare that `rabbitizer` reads, by its
+/// number in the encoding: from 0 (`c.f`) to 15 (`c.ngt`). `rabbitizer`
+/// spells `c.sf.d` as `c.df.d`.
+fn compare_condition(opcode: MipsOpcode) -> Option<u8> {
+    use MipsOpcode as O;
+    const COMPARES: [(MipsOpcode, MipsOpcode); 16] = [
+        (O::core_c_f_s, O::core_c_f_d),
+        (O::core_c_un_s, O::core_c_un_d),
+        (O::core_c_eq_s, O::core_c_eq_d),
+        (O::core_c_ueq_s, O::core_c_ueq_d),
+        (O::core_c_olt_s, O::core_c_olt_d),
+        (O::core_c_ult_s, O::core_c_ult_d),
+        (O::core_c_ole_s, O::core_c_ole_d),
+        (O::core_c_ule_s, O::core_c_ule_d),
+        (O::core_c_sf_s, O::core_c_df_d),
+        (O::core_c_ngle_s, O::core_c_ngle_d),
+        (O::core_c_seq_s, O::core_c_seq_d),
+        (O::core_c_ngl_s, O::core_c_ngl_d),
+        (O::core_c_lt_s, O::core_c_lt_d),
+        (O::core_c_nge_s, O::core_c_nge_d),
+        (O::core_c_le_s, O::core_c_le_d),
+        (O::core_c_ngt_s, O::core_c_ngt_d),
+    ];
+    let found =
+        COMPARES.iter().position(|&(single, double)| opcode == single || opcode == double)?;
+    u8::try_from(found).ok()
+}
+
+/// What a MIPS float compare of condition `condition` tests, as an
+/// expression of `left` and `right`. Each operator is false on a NaN, so a
+/// compare that is true on one reads as the negation of its opposite:
+/// `c.ult` is `!(a >= b)`. The signaling eight, 8 to 15, test as the quiet
+/// eight do.
+fn float_test(condition: u8, left: &str, right: &str) -> String {
+    match condition & 7 {
+        0 => "0".to_string(),
+        1 => format!("unordered({left}, {right})"),
+        2 => format!("{left} == {right}"),
+        3 => format!("!({left} < {right} || {left} > {right})"),
+        4 => format!("{left} < {right}"),
+        5 => format!("!({left} >= {right})"),
+        6 => format!("{left} <= {right}"),
+        _ => format!("!({left} > {right})"),
+    }
 }
 
 /// The line of a call that a name can say better than an address.
@@ -1669,6 +1714,43 @@ mod tests {
         let shown = il_lines(&Mips32::BIG, &code, &insns);
         assert_eq!(shown[..8], expected);
         assert_eq!(shown[8..], expected);
+    }
+
+    #[test]
+    fn each_float_condition_code_keeps_its_own_test() {
+        use hereticus_il::arch::mips::Mips32;
+        let words: [u32; 7] = [
+            0x4622_0032, // c.eq.d fv0, fv1
+            0x4620_113c, // c.lt.d fcc1, fv1, fv0
+            0x4501_0002, // bc1t $+0xc
+            0x4504_0002, // bc1f fcc1, $+0xc
+            0x4505_0002, // bc1t fcc1, $+0xc
+            0x4509_0002, // bc1t fcc2, $+0xc
+            0x4508_0002, // bc1f fcc2, $+0xc
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0x1000);
+        assert_eq!(
+            il_lines(&Mips32::BIG, &code, &insns),
+            [
+                "fcc = fv0 == fv1",
+                "fcc1 = fv1 < fv0",
+                "if (fv0 == fv1) goto $+0xc",
+                "if (!(fv1 < fv0)) goto $+0xc",
+                "if (fv1 < fv0) goto $+0xc",
+                "if (fcc2) goto $+0xc",
+                "if (!fcc2) goto $+0xc",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_signaling_compare_into_another_code_tests_as_its_quiet_twin() {
+        use hereticus_il::arch::mips::Mips32;
+        // c.ngt.s fcc3, fa0, fa1: true on a NaN.
+        let code: Vec<u8> = 0x460e_633f_u32.to_be_bytes().to_vec();
+        let (insns, _) = decode_all(&Mips32::BIG, &code, 0x1000);
+        assert_eq!(il_lines(&Mips32::BIG, &code, &insns), ["fcc3 = !(fa0 > fa1)"]);
     }
 
     #[test]

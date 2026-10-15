@@ -39,6 +39,23 @@ pub fn decoded(insn: &Insn) -> Option<Decoded> {
     }
 }
 
+/// The floating-point condition code that `insn` writes or tests, where it
+/// is a float compare or branch.
+///
+/// MIPS I has only code 0, so this is 0 for each word `rabbitizer` reads.
+/// MIPS IV adds codes 1 to 7, which [`crate::arch::mips32`] reads. `None`
+/// for a word of that module that is no float compare or branch, and for
+/// MIPS16e, which has no float instructions.
+pub fn float_condition_code(insn: &Insn) -> Option<u8> {
+    match insn.opcode {
+        crate::arch::Opcode::Mips(Decoded::Mips32(_), order) => {
+            crate::arch::mips32::condition_code(order.read_word(insn.bytes().try_into().ok()?))
+        }
+        crate::arch::Opcode::Mips(Decoded::Rabbitizer(_), _) => Some(0),
+        _ => None,
+    }
+}
+
 /// `insn` lifted in the instruction set and the byte order that decoded
 /// it, MIPS32 or MIPS16e. A rule both read can take either.
 pub fn lifted(insn: &Insn) -> Option<il::Lifted> {
