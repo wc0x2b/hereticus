@@ -1,5 +1,14 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::align::*;
+use super::change::*;
+use super::lines::*;
+use super::score::*;
 use super::*;
+use hereticus_arch::Arch;
 use hereticus_arch::Decoder as _;
+use hereticus_il as il;
+use hereticus_memory::ConstantKind;
 
 /// The bit-parallel table walks as the table of cells does, ties and
 /// all, on runs of every length across the edges of a word.
@@ -2163,7 +2172,7 @@ fn two_instructions_differ_in_choices_values_or_shape() {
     assert_eq!(difference(0xe58d_4000, 0xe58d_4004), Difference::FreeChoices);
     let (store, store_farther) = (insn(0xe58d_4000), insn(0xe58d_4004));
     assert_eq!(
-        super::difference(&Arm32, &store, &Arm32, &store_farther, FrameSlots::Stay),
+        super::change::difference(&Arm32, &store, &Arm32, &store_farther, FrameSlots::Stay),
         Difference::Values
     );
     // `ldr r0, [pc, 8]` against `ldr r0, [pc, 0x10]`: the pool moved.
