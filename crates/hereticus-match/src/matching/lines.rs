@@ -52,11 +52,27 @@ pub enum View {
 pub fn line_addresses(view: View, binary: &Binary, index: usize) -> Vec<u64> {
     let function = &binary.functions[index];
     let arch = binary.isa_of(function).arch();
-    let insns = decode_all(arch, &function.code, function.address).0;
+    let insns = decode_shown(arch, function);
     match view {
         View::Assembly => insns.iter().map(|insn| insn.address).collect(),
         View::Il => hereticus_view::il_line_addresses(arch, &insns),
     }
+}
+
+/// The instructions of `function` as a diff shows them, with each word of
+/// a literal pool as data.
+///
+/// A32 keeps its pool words as wide as its instructions, so the decoder
+/// reads them as whatever their bits spell, as `mrc2` or `andeq`. Their
+/// values move with each release, which put ten lines of noise after the
+/// `procd` fix of CVE-2026-30874.
+fn decode_shown(arch: &dyn Arch, function: &Function) -> Vec<Insn> {
+    let mut insns = decode_all(arch, &function.code, function.address).0;
+    let pool: HashSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
+    for insn in insns.iter_mut().filter(|insn| pool.contains(&insn.address)) {
+        *insn = hereticus_il::arch::data_word(insn.address, insn.bytes());
+    }
+    insns
 }
 
 /// [`instruction_diff`], or the same diff with each instruction shown as
@@ -81,7 +97,7 @@ pub fn instruction_diff_in(
     }
     let side = |binary: &Binary, function: &Function, isa: Isa, paired| {
         let arch = isa.arch();
-        let insns = decode_all(arch, &function.code, function.address).0;
+        let insns = decode_shown(arch, function);
         let context = hereticus_view::Context {
             links: &binary.links,
             space: &binary.addresses,
@@ -392,8 +408,8 @@ pub fn instruction_diff(
 ) -> Vec<DiffLine> {
     let before_arch = before_isa.arch();
     let after_arch = after_isa.arch();
-    let before_insns = decode_all(before_arch, &before.code, before.address).0;
-    let after_insns = decode_all(after_arch, &after.code, after.address).0;
+    let before_insns = decode_shown(before_arch, before);
+    let after_insns = decode_shown(after_arch, after);
 
     // Align on the printed text, but with branch targets collapsed. Keeping the
     // constant in the key is what lets a new `tst r5, #4` stand apart from an
