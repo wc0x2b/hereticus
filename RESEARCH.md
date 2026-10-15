@@ -1249,6 +1249,43 @@ backports 4 right pairs. Against two everywhere, the rule of three
 inside a function paired 158 fewer right and 21 more wrong on the
 kernels.
 
+### Function recovery, again (A16)
+
+`tests/boundaries.rs` checks the functions the scan finds in each
+stripped release against its symbols. Three causes, each fixed alone,
+over 46006 functions:
+
+| Fix | Exact | Invented | Missed |
+|---|---|---|---|
+| Before | 45919 | 25 | 16 |
+| Step past padding after an exported function | 45921 | 11 | 13 |
+| Read MIPS float branches and compares on any condition code | 45929 | 3 | 13 |
+| A frame right after a pool opens a function | 45937 | 3 | 9 |
+
+- An exported function ends where its dynamic symbol says, and the scan
+  guessed that the next starts there. GCC for Thumb-2 pads with `nop`
+  and zero halfwords to the next 8 bytes, so each gap became a function
+  of padding, and clang's `nop`s after `crc32_combine` took in
+  `crc32_combine_`. The guess now steps over the padding, and a guess
+  that holds only padding makes no function.
+- `rabbitizer` reads MIPS I to III, where `bc1t` and `c.lt.d` use
+  condition code 0 alone. GCC puts a second compare in `$fcc1`, so
+  `bc1t $fcc1` read as no branch, and the code it reaches after an
+  internal return read as a new function: `math_ceil` and `math_floor`
+  of Lua split in two on every MIPS build by GCC. They lift as the forms
+  on code 0 do.
+- An unwind entry that cannot unwind covers many functions, and the
+  scan reads its range as if there were no index. There, a frame that a
+  jump from the function before reaches was taken for a frame made late.
+  No code falls into the word after a pool, so a frame there opens a
+  function: `codebinexpval` of Lua by clang for ARM and Thumb-2.
+
+The pairs moved little: the backports paired 1 more right, the Ubuntu
+updates 29 more right with no more wrong, 27 fewer gone and 20 fewer
+new, and one more fix first; the kernels did not move. In
+`tests/versions.rs` a few counts of right pairs fell by 2, where the two
+halves of `math_ceil` had each paired right.
+
 ### Selects as guards (A15)
 
 `il` reads a compare and the branch on it as one guard on AArch64, A32,

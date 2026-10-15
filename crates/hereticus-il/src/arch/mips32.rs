@@ -34,6 +34,7 @@ use crate as il;
 const SPECIAL: u32 = 0x00;
 const REGIMM: u32 = 0x01;
 const COP0: u32 = 0x10;
+const COP1: u32 = 0x11;
 const SPECIAL2: u32 = 0x1c;
 const SPECIAL3: u32 = 0x1f;
 const PREF: u32 = 0x33;
@@ -118,7 +119,64 @@ pub enum Op {
     Ei,
     /// `wait`: waits for an interrupt.
     Wait,
+    /// `bc1f`, `bc1t`, `bc1fl` or `bc1tl` on a floating-point condition
+    /// code other than 0, which MIPS IV added.
+    FloatBranch(FloatBranch),
+    /// `c.cond.fmt` into a floating-point condition code other than 0.
+    FloatCompare(FloatCompare),
 }
+
+/// A branch on a floating-point condition code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatBranch {
+    /// `bc1f`: branches where the code is false.
+    False,
+    /// `bc1t`: branches where the code is true.
+    True,
+    /// `bc1fl`: as `bc1f`, and runs its delay slot only where taken.
+    FalseLikely,
+    /// `bc1tl`: as `bc1t`, and runs its delay slot only where taken.
+    TrueLikely,
+}
+
+/// A compare of two floats into a condition code: which condition, by its
+/// number in the encoding, and of which format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FloatCompare {
+    /// The condition, from 0 (`f`) to 15 (`ngt`).
+    pub condition: u8,
+    /// The format of the floats.
+    pub format: FloatFormat,
+}
+
+/// The format of a float.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatFormat {
+    /// Single precision, `.s`.
+    Single,
+    /// Double precision, `.d`.
+    Double,
+}
+
+/// The name of each compare of single floats, by its condition.
+const SINGLE_COMPARES: [&str; 16] = [
+    "c.f.s", "c.un.s", "c.eq.s", "c.ueq.s", "c.olt.s", "c.ult.s", "c.ole.s", "c.ule.s", "c.sf.s",
+    "c.ngle.s", "c.seq.s", "c.ngl.s", "c.lt.s", "c.nge.s", "c.le.s", "c.ngt.s",
+];
+
+/// The name of each compare of double floats, by its condition.
+const DOUBLE_COMPARES: [&str; 16] = [
+    "c.f.d", "c.un.d", "c.eq.d", "c.ueq.d", "c.olt.d", "c.ult.d", "c.ole.d", "c.ule.d", "c.sf.d",
+    "c.ngle.d", "c.seq.d", "c.ngl.d", "c.lt.d", "c.nge.d", "c.le.d", "c.ngt.d",
+];
+
+/// The ABI names of the floating-point registers, as `rabbitizer` prints
+/// them.
+const FLOAT_REGISTERS: [&str; 32] = [
+    "fv0", "fv0f", "fv1", "fv1f", "ft0", "ft0f", "ft1", "ft1f", "ft2", "ft2f", "ft3", "ft3f",
+    "fa0", "fa0f", "fa1", "fa1f", "ft4", "ft4f", "ft5", "ft5f", "fs0", "fs0f", "fs1", "fs1f",
+    "fs2", "fs2f", "fs3", "fs3f", "fs4", "fs4f", "fs5", "fs5f",
+];
 
 impl Op {
     /// The name `rabbitizer` would print it with, as `movz`.
@@ -161,7 +219,22 @@ impl Op {
             Self::Di => "di",
             Self::Ei => "ei",
             Self::Wait => "wait",
+            Self::FloatBranch(FloatBranch::False) => "bc1f",
+            Self::FloatBranch(FloatBranch::True) => "bc1t",
+            Self::FloatBranch(FloatBranch::FalseLikely) => "bc1fl",
+            Self::FloatBranch(FloatBranch::TrueLikely) => "bc1tl",
+            Self::FloatCompare(FloatCompare { condition, format }) => match format {
+                FloatFormat::Single => SINGLE_COMPARES[usize::from(condition & 0xf)],
+                FloatFormat::Double => DOUBLE_COMPARES[usize::from(condition & 0xf)],
+            },
         }
+    }
+
+    /// The name of the operation, as `rabbitizer` names its own: a compare
+    /// is `c_lt_d`, so that a compare into condition code 1 is the same
+    /// operation as one into code 0, which `rabbitizer` reads.
+    pub fn operation_name(self) -> compact_str::CompactString {
+        self.name().replace('.', "_").into()
     }
 }
 
@@ -200,6 +273,7 @@ pub(crate) fn decode(word: u32) -> Option<Word> {
         SPECIAL2 => special2(&fields),
         SPECIAL3 => special3(&fields),
         COP0 => cop0(&fields),
+        COP1 => cop1(&fields),
         // `synci offset(base)` makes a written instruction visible. It sits
         // under REGIMM, in the `rt` MIPS II leaves reserved.
         REGIMM if fields.rt == 0x1f => {
@@ -215,7 +289,21 @@ pub(crate) fn decode(word: u32) -> Option<Word> {
         }
         _ => None,
     }?;
-    Some(Word { op, operands, kind: InsnKind::Normal })
+    // The target of a branch needs its address: see [`branch_distance`].
+    let kind = match op {
+        Op::FloatBranch(_) => InsnKind::Branch { target: None },
+        _ => InsnKind::Normal,
+    };
+    Some(Word { op, operands, kind })
+}
+
+/// How far a branch this module reads goes, from the branch to its target,
+/// or `None` for a word that is no such branch.
+pub(crate) fn branch_distance(word: u32) -> Option<i64> {
+    match decode(word)?.op {
+        Op::FloatBranch(_) => Some(Fields::of(word).branch_distance()),
+        _ => None,
+    }
 }
 
 /// The words that move control: the exception returns, and `jr` and `jalr`
@@ -257,6 +345,47 @@ fn control(word: u32, fields: &Fields) -> Option<Word> {
     Some(Word { op, operands, kind })
 }
 
+/// `rs` of the COP1 group of branches on a condition code.
+const BC1: u32 = 0x08;
+/// `rs` of the COP1 groups of single and double floats.
+const FMT_S: u32 = 0x10;
+const FMT_D: u32 = 0x11;
+/// The top two bits of `function` of a compare, `c.cond.fmt`.
+const COMPARE: u32 = 0x30;
+
+/// The words of coprocessor 1 that use a condition code other than 0.
+/// `rabbitizer` reads code 0, the only one MIPS I to III have.
+fn cop1(fields: &Fields) -> Option<(Op, String)> {
+    match fields.rs {
+        BC1 => {
+            let condition = fields.rt >> 2;
+            let branch = match fields.rt & 0b11 {
+                0 => FloatBranch::False,
+                1 => FloatBranch::True,
+                2 => FloatBranch::FalseLikely,
+                _ => FloatBranch::TrueLikely,
+            };
+            let distance = fields.branch_distance();
+            let target = super::mips::with_target("", distance);
+            (condition != 0).then(|| (Op::FloatBranch(branch), format!("fcc{condition}, {target}")))
+        }
+        FMT_S | FMT_D => {
+            // The condition code sits in the top three bits of `sa`; the
+            // two below it are zero.
+            let condition = fields.sa >> 2;
+            if fields.function & 0x30 != COMPARE || fields.sa & 0b11 != 0 || condition == 0 {
+                return None;
+            }
+            let format = if fields.rs == FMT_S { FloatFormat::Single } else { FloatFormat::Double };
+            let compare = FloatCompare { condition: (fields.function & 0xf) as u8, format };
+            let (fs, ft) =
+                (FLOAT_REGISTERS[fields.rd as usize], FLOAT_REGISTERS[fields.rt as usize]);
+            Some((Op::FloatCompare(compare), format!("fcc{condition}, {fs}, {ft}")))
+        }
+        _ => None,
+    }
+}
+
 /// The fields of an instruction word.
 struct Fields {
     opcode: u32,
@@ -291,6 +420,12 @@ impl Fields {
 
     fn rd_name(&self) -> &'static str {
         REGISTERS[self.rd as usize]
+    }
+
+    /// How far a branch goes: from the branch, past its delay slot, by
+    /// the signed offset in words.
+    fn branch_distance(&self) -> i64 {
+        4 + i64::from(self.immediate as u16 as i16) * 4
     }
 
     /// The signed 16-bit offset, written as `rabbitizer` writes one.
@@ -619,6 +754,19 @@ pub(crate) fn lift_named(word: u32) -> Option<il::Named> {
             (Op::Move, vec![rt.clone(), register], Some(rt.0))
         }
         self::Op::JrHb => (Op::Jump, vec![rs], None),
+        self::Op::FloatBranch(_) => {
+            let target = super::mips::with_target("", fields.branch_distance());
+            (Op::Branch, vec![(il::Operand::Target(None), target.into())], None)
+        }
+        self::Op::FloatCompare(_) => {
+            let float = |number: u32| -> Named {
+                (
+                    il::Operand::Reg(il::Reg::Vector(number as u8)),
+                    FLOAT_REGISTERS[number as usize].into(),
+                )
+            };
+            (Op::Float, vec![float(fields.rd), float(fields.rt)], None)
+        }
         self::Op::JalrHb => {
             // `jalr` names its link register only when it is not `ra`.
             let link = match fields.rd {
@@ -711,6 +859,37 @@ mod tests {
     }
 
     /// `jr.hb $ra`, `jr.hb $3` and `jalr.hb $25`, as LLVM assembles them.
+    /// A branch and a compare on a floating-point condition code other
+    /// than 0, as GCC emits for a second compare, read and lift as the same
+    /// words on code 0 do.
+    #[test]
+    fn reads_the_float_condition_codes() {
+        // bc1t $fcc1, bc1fl $fcc7 and bc1tl $fcc1, each 0x28 ahead.
+        assert_eq!(text(0x4505_0009).as_deref(), Some("bc1t fcc1, $+0x28"));
+        assert_eq!(text(0x451e_0009).as_deref(), Some("bc1fl fcc7, $+0x28"));
+        assert_eq!(text(0x4507_0009).as_deref(), Some("bc1tl fcc1, $+0x28"));
+        assert_eq!(kind(0x4505_0009), Some(InsnKind::Branch { target: None }));
+        assert_eq!(branch_distance(0x4505_0009), Some(0x28));
+        // bc1t $fcc1 back by 4 words: 0x4505fffc.
+        assert_eq!(branch_distance(0x4505_fffc), Some(-12));
+        // c.lt.d $fcc1, $f2, $f0 and c.eq.s $fcc3, $f12, $f14.
+        assert_eq!(text(0x4620_113c).as_deref(), Some("c.lt.d fcc1, fv1, fv0"));
+        assert_eq!(text(0x460e_6332).as_deref(), Some("c.eq.s fcc3, fa0, fa1"));
+        let compare = decode(0x4620_113c).expect("reads").op;
+        assert_eq!(compare.operation_name(), "c_lt_d");
+        let lifted = lift(0x4620_113c).expect("lifts");
+        assert_eq!(lifted.op, il::Op::Float);
+        assert_eq!(
+            lifted.operands.as_slice(),
+            [il::Operand::Reg(il::Reg::Vector(2)), il::Operand::Reg(il::Reg::Vector(0))]
+        );
+        assert_eq!(lift(0x4505_0009).expect("lifts").op, il::Op::Branch);
+        // Code 0 is `rabbitizer`'s, and a compare with stray bits is no compare.
+        assert_eq!(decode(0x4501_0009), None, "bc1t on code 0");
+        assert_eq!(decode(0x4622_003e), None, "c.le.d on code 0");
+        assert_eq!(decode(0x4620_117c), None, "a compare with stray bits");
+    }
+
     #[test]
     fn reads_the_hazard_barrier_jumps() {
         assert_eq!(text(0x03e0_0408).as_deref(), Some("jr.hb ra"));
