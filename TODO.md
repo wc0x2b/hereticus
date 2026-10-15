@@ -61,13 +61,6 @@ split, and move the `Recovery` half into `hereticus-recovery`. Then give
 `scan.rs` its own type of a recovered function in place of the shared
 `hereticus_memory::Function`.
 
-## Split matching.rs
-
-`crates/hereticus-match/src/matching.rs` is 4687 lines, after its tests
-moved to `matching/tests.rs`. It holds the cascade, the alignment of two
-bodies, the classification of a change and the near misses. Give each a
-module of its own, and keep the names that `RESEARCH.md` gives.
-
 ## Unpack more firmware containers
 
 `--unpack` reads the containers the OpenWrt fixtures use: a zImage, alone

@@ -26,7 +26,7 @@ Version Tracking work the same way; BinDiff calls the later rounds
 
 ### A1. Identical bytes
 
-Code: `Cascade::match_identical_code` in `matching.rs`.
+Code: `Cascade::match_identical_code` in `matching/cascade.rs`.
 
 Pair two functions whose machine code is byte for byte the same, where
 each is the only one of its bytes. BinDiff: *hash matching*. Ghidra:
@@ -34,8 +34,8 @@ each is the only one of its bytes. BinDiff: *hash matching*. Ghidra:
 
 ### A2. Identical normalized shape
 
-Code: `Cascade::match_identical_shape` in `matching.rs`;
-`normalize_body_in` in `norm.rs`; `AddressSpace` in `address.rs`.
+Code: `Cascade::match_identical_shape` in `matching/cascade.rs`;
+`normalize_body_in` in `norm.rs`; `AddressSpace` in `crates/hereticus-memory`.
 
 Normalize each instruction to its operation and the kinds of its
 operands, without registers, branch targets, addresses or constants, and
@@ -46,14 +46,14 @@ and SAFE do the same before they learn.
 
 ### A3. Names
 
-Code: `Cascade::match_by_name` in `matching.rs`.
+Code: `Cascade::match_by_name` in `matching/cascade.rs`.
 
 BinDiff: *name hash matching*. Ghidra: *Symbol Name Match*. Diaphora:
 *Same name* and its *Perfect match, same name*.
 
 ### A4. Twins in address order
 
-Code: `Cascade::match_twins_in_order` in `matching.rs`.
+Code: `Cascade::match_twins_in_order` in `matching/cascade.rs`.
 
 Several functions with one normalized body pair first with first, where
 both sides hold as many. BinDiff: *address sequence*, which "matches
@@ -64,7 +64,7 @@ this to functions that are not twins.
 
 ### A5. Stubs aligned in order
 
-Code: `Cascade::align_stubs` in `matching.rs`.
+Code: `Cascade::align_stubs` in `matching/cascade.rs`.
 
 The PLT stubs, which are all one code but for their slot, align as two
 ordered lists, with the calls of matched callers as votes: a weighted
@@ -73,8 +73,9 @@ its *call reference matching*.
 
 ### A6. Twins told apart by what they reach
 
-Code: `Cascade::pair_leftover_twins`, `Cascade::repair_twins_by_callees`
-and `group_by_shape_and_references` in `matching.rs`.
+Code: `Cascade::pair_leftover_twins` and `Cascade::repair_twins_by_callees`
+in `matching/cascade.rs`; `group_by_shape_and_references` in
+`matching/score.rs`.
 
 Functions of one shape pair where their constants, callees and texts
 single one out. Diaphora: *Same constants*, *Same KOKA hash and
@@ -82,8 +83,9 @@ constants*, *Import names hash*.
 
 ### A7. Bag of normalized instructions
 
-Code: `similarity_of_symbols`, `Cascade::match_by_similarity`,
-`keep_best_candidates` and `CLOSE_SIMILARITY` in `matching.rs`.
+Code: `Cascade::match_by_similarity` in `matching/cascade.rs`;
+`similarity_of_symbols`, `keep_best_candidates` and `CLOSE_SIMILARITY` in
+`matching/score.rs`.
 
 The score of two functions is the Jaccard similarity of their normalized
 instructions as multisets, so order does not count. The free pairs above
@@ -96,8 +98,8 @@ Diaphora; entry 9 measured the optimal one, which did worse.
 
 ### A8. References as a tie-breaker
 
-Code: `reference_agreement`, `REFERENCE_WEIGHT` and
-`Cascade::reference_keys` in `matching.rs`.
+Code: `reference_agreement` and `REFERENCE_WEIGHT` in `matching/score.rs`;
+`Cascade::reference_keys` in `matching/cascade.rs`.
 
 What a function calls and the texts it points at rank its candidates.
 BinDiff: *string references* and *call reference matching*. Diaphora:
@@ -105,7 +107,8 @@ BinDiff: *string references* and *call reference matching*. Diaphora:
 
 ### A9. Data-flow features
 
-Code: `flow_features` in `il.rs`; `FLOW_RESCUE` in `matching.rs`.
+Code: `flow_features` in `crates/hereticus-il`; `FLOW_RESCUE` in
+`matching/score.rs`.
 
 Each value hashes with the operation that defines it and the values that
 operation reads, for two rounds, and a pair whose code scores under the
@@ -116,7 +119,7 @@ a Weisfeiler-Lehman hash of the data-flow graph (entry 11).
 ### A10. Callers vote
 
 Code: `Cascade::pair_by_callers` and `Cascade::uncross_by_callees` in
-`matching.rs`.
+`matching/cascade.rs`.
 
 The calls of a matched pair whose code agrees line up one for one, and
 each votes that its two callees are one function: weak pairs swap or move
@@ -127,8 +130,9 @@ objective.
 
 ### A11. A call or a text that changed
 
-Code: `Cascade::compare_callees`, `Cascade::compare_texts` and
-`differ_only_by_build_path` in `matching.rs`; `callees_in` in `callee.rs`.
+Code: `Cascade::compare_callees` and `Cascade::compare_texts` in
+`matching/cascade.rs`; `differ_only_by_build_path` in `matching/score.rs`;
+`callees_in` in `crates/hereticus-callees`.
 
 Normalizing hides a call target, so a call to another function, the most
 common shape of a fix (`strcpy` to `strlcpy`), is found by resolving each
@@ -140,8 +144,8 @@ entry 4 compare the arguments of calls.
 
 ### A12. Kinds of change
 
-Code: `classify_change`, `Changed`, `EditKind` and `count_edits` in
-`matching.rs`.
+Code: `classify_change` and `count_edits` in `matching/change.rs`;
+`Changed` and `EditKind` in `matching.rs`.
 
 A pair is unchanged, reordered, changed in data, changed in a value,
 changed where the decoder cannot read, or changed in its instructions,
@@ -151,8 +155,9 @@ similarity and confidence; this splits them further, as a reader triages.
 
 ### A13. Instruction diff
 
-Code: `count_edits`, `longest_common_subsequence`, `instruction_diff`,
-`lines_from_alignment` and `difference` in `matching.rs`.
+Code: `count_edits` and `difference` in `matching/change.rs`;
+`longest_common_subsequence` and `lines_from_alignment` in
+`matching/align.rs`; `instruction_diff` in `matching/lines.rs`.
 
 The two bodies align as a longest common subsequence, the diff of Hunt
 and McIlroy, and a removal next to an addition of the same shape folds
@@ -160,7 +165,8 @@ into one changed line. Entry 3 aligns a body too large for the table.
 
 ### A14. Near misses
 
-Code: `Cascade::near_misses`, `NearMiss` in `matching.rs`.
+Code: `Cascade::near_misses` in `matching/near_miss.rs`; `NearMiss` in
+`matching.rs`.
 
 Each function left unpaired names its closest candidate and the score.
 Ghidra Version Tracking lists every candidate with its score in the same
@@ -168,8 +174,8 @@ way; BinDiff lists unmatched functions without one.
 
 ### A15. Lifting to an IL, and guards
 
-Code: `Lifted`, `Lifted::canonical` and `find_guards` in `il.rs`;
-`view.rs`.
+Code: `Lifted`, `Lifted::canonical` and `find_guards` in `crates/hereticus-il`;
+`crates/hereticus-view`.
 
 Each instruction lifts to what it reads, writes and tests, the same on
 every architecture, and a compare and the branch on it read as one guard.
@@ -203,7 +209,7 @@ Computers & Security 88, 2020.
 
 ### A18. Unpacking firmware
 
-Code: `unpack` in `unpack.rs`.
+Code: `unpack` in `crates/hereticus-unpack`.
 
 zImage, FIT, uImage, sysupgrade, lzma-loader and TP-Link containers. Tool:
 binwalk, which finds such containers by their signatures.
@@ -221,12 +227,12 @@ versions.
 
 Applies to: twins that no instruction separates (see `TODO.md`). Two
 byte-identical functions get different callers, and the callers often pair
-first. `Cascade::pair_by_callers` in `matching.rs` already does a part of
-this.
+first. `Cascade::pair_by_callers` in `matching/cascade.rs` already does a
+part of this.
 
-Code: `Cascade::realign_by_context`, `Cascade::paired_callers`,
-`sorted_shared`, `common_keys` and `MOST_HOLDERS_OF_AN_EDGE` in
-`matching.rs`.
+Code: `Cascade::realign_by_context` and `Cascade::paired_callers` in
+`matching/cascade.rs`; `sorted_shared`, `common_keys` and
+`MOST_HOLDERS_OF_AN_EDGE` in `matching/score.rs`.
 
 ## 2. Diff as network alignment
 
@@ -244,7 +250,7 @@ Applies to: the last scoring stage of the cascade, where pairs are chosen
 greedily by score.
 
 Code: the count of kept edges in `Cascade::realign_by_context`, in
-`matching.rs`. The swap of entry 2 was measured and not kept.
+`matching/cascade.rs`. The swap of entry 2 was measured and not kept.
 
 ## 3. Seed, chain, extend
 
@@ -255,11 +261,11 @@ Idea: from genomics. Find short exact matches that are unique on both sides
 (anchors). Keep the longest chain of anchors that is in order on both sides.
 Align only the gaps between the anchors. Patience diff uses the same idea.
 
-Applies to: `instruction_diff` and `longest_common_subsequence` in
-`matching.rs`. Fewer bad alignments in long functions, and less time.
+Applies to: `instruction_diff` in `matching/lines.rs` and
+`longest_common_subsequence` in `matching/align.rs`. Fewer bad alignments in long functions, and less time.
 
 Code: `align`, `align_within`, `chain_of_unique_items`,
-`longest_increasing_chain` and `steps_by_position` in `matching.rs`.
+`longest_increasing_chain` and `steps_by_position` in `matching/align.rs`.
 
 ## 4. Constants as anchors for the fix
 
@@ -273,8 +279,8 @@ Use them as anchors in the control-flow graph to find the code of the patch.
 
 Applies to: show *where* in a changed function the fix is.
 
-Code: `CONSTANT_WEIGHT`, `constant_agreement`, `LARGEST_PLAIN_CONSTANT`
-and `Prepared::shares_an_anchor_with` in `matching.rs`;
+Code: `CONSTANT_WEIGHT`, `constant_agreement` and `LARGEST_PLAIN_CONSTANT`
+in `matching/score.rs`; `Prepared::shares_an_anchor_with` in `matching.rs`;
 `constant_signature` in `norm.rs`.
 
 ## 5. Rank changes by security features
@@ -306,8 +312,8 @@ the build. An edit that occurs in one function is a signal.
 
 Applies to: the sort order of the report, as a weight on each edit.
 
-Code: `Match::rarity`, `Cascade::weigh_additions` and `sorted_only_in` in
-`matching.rs`; `Sort::Rare` in `hereticus-cli/src/main.rs`.
+Code: `Match::rarity` in `matching.rs`; `Cascade::weigh_additions` in
+`matching/cascade.rs`; `sorted_only_in` in `matching/score.rs`; `Sort::Rare` in `hereticus-cli/src/main.rs`.
 
 ## 7. Conserved order (synteny)
 
@@ -333,9 +339,10 @@ score. A pair that breaks the order is more likely wrong.
 
 Applies to: `Cascade::pair_by_layout`.
 
-Code: `Cascade::pair_by_layout`, `LOWEST_LAYOUT_SIMILARITY`,
-`LEAST_ANCHORED_SHARE`, `Confidence::SameLayout`, `Cascade::same_places`
-and `NearMiss::in_place` in `matching.rs`.
+Code: `Cascade::pair_by_layout` and `Cascade::same_places` in
+`matching/cascade.rs`; `LOWEST_LAYOUT_SIMILARITY` and `LEAST_ANCHORED_SHARE`
+in `matching/score.rs`; `Confidence::SameLayout` and `NearMiss::in_place`
+in `matching.rs`.
 
 ## 8. Saturate repeated evidence (BM25)
 
@@ -349,7 +356,7 @@ occurrence adds less. The term frequency saturates as
 Applies to: `Match::rarity`, so that forty copies of one moved instruction
 do not outrank three rare ones.
 
-Code: `saturated` and `SATURATION` in `matching.rs`.
+Code: `saturated` and `SATURATION` in `matching/score.rs`.
 
 ## 9. Optimal assignment
 
@@ -382,7 +389,7 @@ Idea: label each node with its own label and the multiset of its
 neighbors' labels, and repeat. The labels hash the structure around each
 node in linear time.
 
-Code: none; `flow_features` in `il.rs` (A9) hashes the data flow this way.
+Code: none; `flow_features` in `crates/hereticus-il` (A9) hashes the data flow this way.
 
 ## 12. Outliers among the changes
 
@@ -417,12 +424,12 @@ Applies to: functions that a fix or another build rewrote past the
 similarity threshold, and pairs by similarity with a look-alike that lacks
 the text.
 
-Code: `Cascade::pair_by_unique_references`,
-`Cascade::pair_by_unique_references_until_settled`,
+Code: `Cascade::pair_by_unique_references` and
+`Cascade::pair_by_unique_references_until_settled` in `matching/cascade.rs`;
 `unique_reference_holders`, `paired_callee_set`, `UniqueReference`,
-`LOWEST_UNIQUE_REFERENCE_SIMILARITY`, `MOST_UNIQUE_REFERENCE_ROUNDS`,
-`FEWEST_CALLEES_IN_A_SET` and `Confidence::SameReferences` in
-`matching.rs`.
+`LOWEST_UNIQUE_REFERENCE_SIMILARITY`, `MOST_UNIQUE_REFERENCE_ROUNDS` and
+`FEWEST_CALLEES_IN_A_SET` in `matching/score.rs`;
+`Confidence::SameReferences` in `matching.rs`.
 
 ## 14. Ratio test
 
@@ -441,8 +448,8 @@ Applies to: the similarity stage. A kernel holds many small functions
 alike in shape, as `return 2;` or a getter of one field, which paired
 with each other at a score of 1.00.
 
-Code: `Cascade::match_by_similarity` and `RIVAL_MARGIN` in
-`matching.rs`.
+Code: `Cascade::match_by_similarity` in `matching/cascade.rs`;
+`RIVAL_MARGIN` in `matching/score.rs`.
 
 ## Lower fit
 
