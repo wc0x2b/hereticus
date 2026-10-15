@@ -280,6 +280,14 @@ fn instruction_lines(
             if let Some(text) = named_line(arch, insn, &shown, context, &held[index]) {
                 return conditional(text, None);
             }
+            // An A32 or T32 load of a pool word that holds an address
+            // gives the address itself, as `r1 = &"GET /"`.
+            if arm32::core_opcode(insn).is_some()
+                && named.is_some_and(is_literal_load)
+                && let (Some(address), Some(dest)) = (&address, shown.first())
+            {
+                return conditional(format!("{dest} = {}", address.as_value()), None);
+            }
             if pages.contains(&index)
                 && matches!(address, Some(Pointed::Address(_)))
                 && let Some(dest) = shown.first()
@@ -558,6 +566,16 @@ fn callees_held(arch: &dyn Arch, insns: &[Insn], writes: &[Write]) -> Vec<HashMa
         |insn| arch.delay_slots(insn),
         |index, held| writes[index].apply(held),
     )
+}
+
+/// Whether `named` loads one word at a distance from `pc`, as
+/// `ldr r1, [pc, #0x4c]` reads a word of a literal pool.
+fn is_literal_load(named: &Named) -> bool {
+    named.lifted.op == Op::Load
+        && matches!(
+            named.lifted.operands.as_slice(),
+            [Operand::Reg(_), Operand::Memory { base: Some(Reg::ProgramCounter), index: None, .. }]
+        )
 }
 
 /// Whether the decoder prints `insn` with `ld` first, as a load of a GOT
@@ -1870,6 +1888,26 @@ mod tests {
         let shown = il_lines_in(&Aarch64, &code, &insns, Some(context));
         assert_eq!(shown[5], "call x26", "strcmp on one path, free on the other");
         assert_eq!(shown[7], "call strcmp");
+    }
+
+    /// An A32 load of a pool word that holds the address of a text, in an
+    /// image linked high, reads as the address of the text.
+    #[test]
+    fn a_pool_word_of_a_text_reads_as_its_address() {
+        use hereticus_il::arch::arm32::Arm32;
+        let base = 0x8000;
+        // ldr r1, [pc, -0x4]: the word after it holds the text's address.
+        let words = [0xe51f_1004_u32, base + 0x100];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let mut image = code.clone();
+        image.resize(0x100, 0);
+        image.extend(b"GET /tmui\0next\0");
+        let links = Links::of_parts(vec![(u64::from(base), image)], BTreeMap::new());
+        let space = AddressSpace::of_raw_image(u64::from(base), 0x200);
+        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let (insns, _) = decode_all(&Arm32, &code, u64::from(base));
+        let shown = il_lines_in(&Arm32, &code, &insns, Some(context));
+        assert_eq!(shown[0], "r1 = &\"GET /tmui\"");
     }
 
     #[test]
