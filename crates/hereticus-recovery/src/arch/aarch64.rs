@@ -161,6 +161,46 @@ impl Recovery for Aarch64 {
 
     /// `br x16` and `br x17`: the ABI keeps these two for a jump the linker
     /// adds, a PLT stub or a veneer. A `switch` jumps through another.
+    fn register_call_slots(&self, insns: &[Insn]) -> Vec<(usize, u64)> {
+        let code: Vec<u8> = insns.iter().flat_map(|insn| insn.bytes().iter().copied()).collect();
+        let formed = track_pages(&code, insns, &AddressSpace::default()).formed;
+        let held = hereticus_il::flow::held_on_every_path(
+            insns,
+            |_| 0,
+            |index, held: &mut std::collections::HashMap<Tracked, u64>| {
+                let insn = &insns[index];
+                if matches!(insn.kind, InsnKind::Call { .. }) {
+                    // A call leaves nothing known in a register it may change.
+                    held.retain(|register, _| register.is_preserved_by_a_call());
+                    return;
+                }
+                let operands = operands_of(insn);
+                let Some(destination) = operands.first().and_then(|&first| Tracked::of(first))
+                else {
+                    return;
+                };
+                if !may_write_first(insn) {
+                    return;
+                }
+                let loads_a_pointer = opcode_of(insn) == Some(Opcode::LDR)
+                    && matches!(operands[0], Operand::Register(SizeCode::X, _));
+                match formed[index] {
+                    Some(slot) if loads_a_pointer => drop(held.insert(destination, slot)),
+                    _ => drop(held.remove(&destination)),
+                }
+            },
+        );
+        insns
+            .iter()
+            .enumerate()
+            .filter(|(_, insn)| insn.kind == InsnKind::Call { target: None })
+            .filter_map(|(index, insn)| {
+                let register = operands_of(insn).first().and_then(|&first| Tracked::of(first))?;
+                Some((index, *held[index].get(&register)?))
+            })
+            .collect()
+    }
+
     fn is_tail_call(&self, insn: &Insn) -> bool {
         opcode_of(insn) == Some(Opcode::BR)
             && matches!(operands_of(insn).as_slice(), [target] if is_x(*target, 16) || is_x(*target, 17))
@@ -417,12 +457,18 @@ pub fn track_pages(code: &[u8], body: &[Insn], space: &AddressSpace) -> Pages {
 /// A register [`track_pages`] follows: a general register by its number,
 /// whichever width names it, or the stack pointer, as 31. The zero
 /// register holds nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Tracked(u8);
 
 impl Tracked {
     /// How many registers there are to follow.
     const COUNT: usize = 32;
+
+    /// Whether a call leaves the register as it found it: `x19` to `x28`,
+    /// the frame pointer and the stack pointer, as the AAPCS64 says.
+    fn is_preserved_by_a_call(self) -> bool {
+        (19..=29).contains(&self.0) || self.0 == 31
+    }
 
     fn of(operand: Operand) -> Option<Self> {
         match operand {
@@ -665,6 +711,34 @@ mod tests {
 
     /// Encodings from `llvm-mc --triple=aarch64 -mattr=+lse --show-encoding`.
     mod words {}
+
+    /// A call through a register reads its callee from the slot that every
+    /// path loads the register from, and a call clears what it may change.
+    #[test]
+    fn a_call_through_a_register_reads_the_slot_every_path_loads() {
+        let words = [
+            0xf000_001a, // 0x1000 adrp x26, 0x4000
+            0xf940_075a, // 0x1004 ldr x26, [x26, #8]
+            0xb400_00a0, // 0x1008 cbz x0, 0x101c
+            0xf000_001a, // 0x100c adrp x26, 0x4000
+            0xf940_0b5a, // 0x1010 ldr x26, [x26, #16]
+            0xd63f_0340, // 0x1014 blr x26, from 0x1010 and 0x1020
+            0xd65f_03c0, // 0x1018 ret
+            0xd63f_0340, // 0x101c blr x26, from 0x1008 only
+            0x17ff_fffd, // 0x1020 b 0x1014
+        ];
+        let (insns, _) = decode_all(&Aarch64, &code(&words), 0x1000);
+        assert_eq!(Aarch64.register_call_slots(&insns), [(7, 0x4008)]);
+
+        let words = [
+            0xf000_0001, // 0x1000 adrp x1, 0x4000
+            0xf940_0421, // 0x1004 ldr x1, [x1, #8]
+            0xd63f_0020, // 0x1008 blr x1
+            0xd63f_0020, // 0x100c blr x1: the call before may change x1
+        ];
+        let (insns, _) = decode_all(&Aarch64, &code(&words), 0x1000);
+        assert_eq!(Aarch64.register_call_slots(&insns), [(2, 0x4008)]);
+    }
 
     #[test]
     fn the_frame_record_opens_a_function() {

@@ -150,6 +150,17 @@ pub trait Recovery: Decoder {
             .collect()
     }
 
+    /// The slot of the global offset table that each call through a
+    /// register reads its callee from, where every path to the call loads
+    /// the register from the same slot, with the index of the call.
+    ///
+    /// `insns` must be one function: the paths are read from its branches.
+    /// AArch64 code built with `-fno-plt`, as OpenWrt builds it, calls each
+    /// import so. Defaults to none.
+    fn register_call_slots(&self, _insns: &[Insn]) -> Vec<(usize, u64)> {
+        Vec::new()
+    }
+
     /// The slot of the global offset table that a PLT stub jumps through, or
     /// `None` when `code`, found at `address`, is no such stub.
     ///
