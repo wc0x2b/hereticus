@@ -108,6 +108,34 @@ impl Recovery for Mips16 {
             .collect()
     }
 
+    /// An executable that is not PIC calls each import through a PLT stub
+    /// that GNU `ld` writes in MIPS16e, where `DT_MIPS_PLTGOT` names the
+    /// slots:
+    ///
+    /// ```text
+    /// lw   v0, 12(pc)    ; the address of the slot, in the last word
+    /// lw   v1, 0(v0)
+    /// move t8, v0
+    /// jr   v1
+    /// move t9, v1
+    /// nop
+    /// .word slot
+    /// ```
+    ///
+    /// The stub holds the address of its slot, so no instruction needs to
+    /// decode.
+    fn stub_slot(&self, code: &[u8], _address: u64) -> Option<u64> {
+        const STUB: [u16; 6] = [0xb203, 0x9a60, 0x651a, 0xeb00, 0x653b, 0x6500];
+        let (halfwords, _) = code.get(..STUB.len() * HALFWORD)?.as_chunks::<HALFWORD>();
+        let is_stub = halfwords
+            .iter()
+            .zip(STUB)
+            .all(|(&bytes, expected)| self.base.read_halfword(bytes) == expected);
+        let slot = code.get(STUB.len() * HALFWORD..(STUB.len() + 2) * HALFWORD)?;
+        let slot = self.base.order().read_word(slot.try_into().ok()?);
+        is_stub.then_some(u64::from(slot))
+    }
+
     fn is_function_entry(&self, body: &[Insn]) -> bool {
         body.get(..GP_PREAMBLE_LENGTH).is_some_and(is_gp_preamble)
     }
@@ -614,5 +642,55 @@ mod tests {
         let insns = decode_all_big(&[0x6a02, 0x3240, 0x3240, 0xe269]);
         assert!(!Mips16::BIG.is_function_entry(&insns));
         assert_eq!(Mips16::BIG.preamble_before_prologue(&insns), 0);
+    }
+
+    /// The stub of `free` in `jsonfilter` of OpenWrt 24.10.6 for `malta`,
+    /// as GNU `ld` writes it: six halfwords, then the slot as a word.
+    const FREE_STUB: [u16; 6] = [0xb203, 0x9a60, 0x651a, 0xeb00, 0x653b, 0x6500];
+    const FREE_SLOT: u32 = 0x0041_fffc;
+
+    fn stub_bytes(
+        halfwords: &[u16],
+        slot: u32,
+        order: hereticus_il::arch::mips::ByteOrder,
+    ) -> Vec<u8> {
+        use hereticus_il::arch::mips::ByteOrder;
+        let mut bytes: Vec<u8> = halfwords
+            .iter()
+            .flat_map(|halfword| match order {
+                ByteOrder::Big => halfword.to_be_bytes(),
+                ByteOrder::Little => halfword.to_le_bytes(),
+            })
+            .collect();
+        bytes.extend(match order {
+            ByteOrder::Big => slot.to_be_bytes(),
+            ByteOrder::Little => slot.to_le_bytes(),
+        });
+        bytes
+    }
+
+    #[test]
+    fn a_plt_stub_names_its_slot_in_either_byte_order() {
+        use hereticus_il::arch::mips::ByteOrder;
+        for (arch, order) in [(Mips16::BIG, ByteOrder::Big), (Mips16::LITTLE, ByteOrder::Little)] {
+            let stub = stub_bytes(&FREE_STUB, FREE_SLOT, order);
+            assert_eq!(arch.stub_slot(&stub, 0x403460), Some(u64::from(FREE_SLOT)));
+            assert_eq!(arch.stub_slot(&stub[..14], 0x403460), None, "no slot");
+        }
+    }
+
+    #[test]
+    fn code_that_differs_from_a_plt_stub_is_none() {
+        use hereticus_il::arch::mips::ByteOrder;
+        for at in 0..FREE_STUB.len() {
+            let mut other = FREE_STUB;
+            other[at] ^= 0x0100;
+            let stub = stub_bytes(&other, FREE_SLOT, ByteOrder::Big);
+            assert_eq!(Mips16::BIG.stub_slot(&stub, 0x403460), None, "halfword {at}");
+        }
+        // The right halfwords in the other byte order.
+        let swapped = stub_bytes(&FREE_STUB, FREE_SLOT, ByteOrder::Little);
+        assert_eq!(Mips16::BIG.stub_slot(&swapped, 0x403460), None);
+        assert_eq!(Mips16::BIG.stub_slot(&[], 0x403460), None);
     }
 }

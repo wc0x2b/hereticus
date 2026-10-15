@@ -260,3 +260,32 @@ fn the_rank_of_each_published_fix_is_locked() {
     }
     insta::assert_snapshot!(out);
 }
+
+/// The output of the tool on two files of the cache.
+fn run(before: &str, after: &str, options: &[&str]) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_hereticus"))
+        .args(["--progress", "never"])
+        .args(options)
+        .args([cache().join(before), cache().join(after)])
+        .output()
+        .expect("the tool runs");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).expect("the output is UTF-8")
+}
+
+/// `jsonfilter` for `malta` is a MIPS16e executable that is not PIC, and
+/// GNU `ld` puts its PLT after `.fini`. Each stub is a function named for
+/// its import, and the call the CVE-2026-30873 fix adds names `free`.
+#[test]
+fn each_plt_stub_of_a_mips16e_executable_names_its_import() {
+    for fix in FIXES.iter().filter(|fix| fix.name.starts_with("CVE-2026-30873 jsonfilter MIPS16e"))
+    {
+        let report = run(fix.before, fix.after, &["--all", "--format", "compact"]);
+        let stubs = report.lines().filter(|row| row.contains("@plt")).count();
+        assert!(stubs >= 50, "{}: {stubs} stubs\n{report}", fix.name);
+        assert!(report.contains("free@plt"), "{}", fix.name);
+
+        let diff = run(fix.before, fix.after, &["--diff", fix.function, "--view", "il"]);
+        assert!(diff.contains("+ call free"), "{}:\n{diff}", fix.name);
+    }
+}
