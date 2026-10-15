@@ -5,8 +5,8 @@
 `real-life-reports/`. Each binary is pinned by its SHA-256, so a snapshot
 always tells of the same bytes.
 
-The `ubusd` builds of OpenWrt come from the root file system of each
-release, which this script downloads. The Apple binaries come from an IPSW
+The `ubusd` and `dropbear` builds of OpenWrt come from the root file
+system of each release, which this script downloads. The Apple binaries come from an IPSW
 with the `ipsw` tool, which this script does not run: a missing one stops
 it with the commands that get it.
 
@@ -57,6 +57,22 @@ PINNED = {
         "4bd440a4a9ff97036b52126eb474fbdaa888dd5a01d5e5db0cec8e12ccc1e1b4",
     "hereticus-openwrt-cve/24.10.4/malta-le/sbin/ubusd":
         "cffa52774419885a10052f06aaf1257bb226aa34fa999365db2674586f47916f",
+    "hereticus-openwrt-cve/24.10.4/armsr-armv7/usr/sbin/dropbear":
+        "b0773a24dfbff1a511c582831a36a6572eb7dd1cc637a4a87189dbbf6d5949af",
+    "hereticus-openwrt-cve/24.10.4/armsr-armv8/usr/sbin/dropbear":
+        "cce48e316b43bcefb5c5457fd5bd2e9a838ca58e9da006f7b2695a09396911d0",
+    "hereticus-openwrt-cve/24.10.4/malta-be/usr/sbin/dropbear":
+        "7512316d87ff5c6c3e3f9ccc4f0c4384a52adcdc9d57289fb56c31bae9ebb90b",
+    "hereticus-openwrt-cve/24.10.4/malta-le/usr/sbin/dropbear":
+        "9b4470c6f642f0549f5185299de272dd003f81b1e79d505932a99025569d944e",
+    "hereticus-openwrt-cve/24.10.5/armsr-armv7/usr/sbin/dropbear":
+        "279b9f3973593ac5c6575e1b933da5faa374725b29f4270afa0045f26b140e5c",
+    "hereticus-openwrt-cve/24.10.5/armsr-armv8/usr/sbin/dropbear":
+        "87c5cebea6fc4d6d5474af37453d1d54382451d0730ea93594a757c466e0e26f",
+    "hereticus-openwrt-cve/24.10.5/malta-be/usr/sbin/dropbear":
+        "50a3fb3996a73ebf1ed32b8320c411ad5becead2d94128a893b443064fa578fa",
+    "hereticus-openwrt-cve/24.10.5/malta-le/usr/sbin/dropbear":
+        "c21e21d8fdd80dc67fc46504973021fd0490a776db72a976c3b01eb3e3402726",
 }
 
 # The commands that put the Apple binaries in CACHE / "hereticus-apple/cve",
@@ -103,10 +119,10 @@ def cpio_member(archive: bytes, wanted: str) -> bytes:
     raise FileNotFoundError(wanted)
 
 
-def fetch_ubusd(path: str) -> bytes:
-    """Download `ubusd` from the root file system of its release."""
-    # hereticus-openwrt-cve/<release>/<target>-<subtarget>/sbin/ubusd
-    _, release, target, *_ = path.split("/")
+def fetch_from_rootfs(path: str) -> bytes:
+    """Download a file of the root file system of its release."""
+    # hereticus-openwrt-cve/<release>/<target>-<subtarget>/<file>
+    _, release, target, *member = path.split("/")
     board, subtarget = target.split("-")
     url = (
         f"{MIRROR}/{release}/targets/{board}/{subtarget}/"
@@ -115,7 +131,7 @@ def fetch_ubusd(path: str) -> bytes:
     print(f"cve_binaries: downloading {url}", file=sys.stderr)
     with urllib.request.urlopen(url, timeout=600) as response:
         archive = gzip.decompress(response.read())
-    return cpio_member(archive, "sbin/ubusd")
+    return cpio_member(archive, "/".join(member))
 
 
 def main() -> int:
@@ -125,7 +141,7 @@ def main() -> int:
         if out.exists():
             data = out.read_bytes()
         elif path.startswith("hereticus-openwrt-cve/"):
-            data = fetch_ubusd(path)
+            data = fetch_from_rootfs(path)
         else:
             missing_apple.append(path)
             continue

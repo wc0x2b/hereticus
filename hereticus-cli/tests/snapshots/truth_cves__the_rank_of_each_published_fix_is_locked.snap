@@ -11,3 +11,7 @@ CVE-2025-62526 ubusd AArch64          5     9  changed sub_4a3c sub_49a0 0.98 4 
 CVE-2025-62526 ubusd A32              4    21  changed sub_3e34 sub_3d80 0.94 5 8 2
 CVE-2025-62526 ubusd MIPS16e BE       7    32  changed sub_39e0 sub_38a4 0.98 5 5 1
 CVE-2025-62526 ubusd MIPS16e LE       7    32  changed sub_3b0c sub_39d0 0.98 5 5 1
+CVE-2025-14282 dropbear AArch64       2    14  changed sub_15048 sub_1513c 0.21 64 2 0
+CVE-2025-14282 dropbear A32           1    33  changed sub_148b8 sub_14460 0.25 51 1 2
+CVE-2025-14282 dropbear MIPS32 BE     2    51  changed sub_18eb0 sub_18874 0.28 50 3 1
+CVE-2025-14282 dropbear MIPS32 LE     2    44  changed sub_190dc sub_18a4c 0.28 50 3 1

@@ -803,6 +803,24 @@ best there too. But the four builds of `ubusd` are one fix, not four, so
 the set holds five independent fixes, still too few to trust over the
 backports and the Ubuntu updates.
 
+### Twelve published fixes
+
+`--cves` now holds the `dropbear` fix of CVE-2025-14282 too, from
+OpenWrt 24.10.4 to 24.10.5, for AArch64, A32 and MIPS32 in both byte
+orders. The rank of the fix:
+
+| Order | AArch64 | A32 | MIPS32 BE | MIPS32 LE |
+|---|---|---|---|---|
+| added | 2 | 1 | 2 | 2 |
+| rare | 2 | 1 | 2 | 2 |
+| rare × (0.5 + outlier) | 2 | 1 | 2 | 2 |
+| rare × outlier | 6 | 1 | 5 | 4 |
+
+The function of the fix scores 0.21 to 0.28 on its code, since the
+compiler inlined the new `svr_switch_user` into it, and pairs by its
+place (entry 7). The outlier orders rank it lower: its edit is large
+and like the other large edits.
+
 ### The Ubuntu updates, checked again
 
 `tests/truth_ubuntu.rs` locks the counts of the 218 updates, which
