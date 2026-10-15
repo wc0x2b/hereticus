@@ -852,6 +852,47 @@ The OpenWrt cases cover A32, MIPS32 and MIPS16e; OpenWrt builds no user
 space as Thumb-2. Ubuntu builds armhf as Thumb-2, so the 109 armhf
 updates of `tests/truth_ubuntu.rs` are the published fixes on Thumb-2.
 
+### Published fixes, again
+
+`--cves` now holds the `odhcpd` fix of CVE-2026-53921 too, from OpenWrt
+24.10.7 to 24.10.8, for AArch64, A32 and MIPS16e in both byte orders:
+
+| Order | AArch64 | A32 | MIPS16e BE | MIPS16e LE |
+|---|---|---|---|---|
+| added | 5 | 1 | 1 | 1 |
+| rare | 5 | 1 | 1 | 1 |
+| rare × (0.5 + outlier) | 4 | 1 | 1 | 1 |
+| rare × outlier | 6 | 2 | 1 | 1 |
+| added × outlier | 5 | 3 | 1 | 1 |
+
+Over all twenty cases of eight fixes:
+
+| Order | Rank sum | Top 1 | Top 5 | MRR |
+|---|---|---|---|---|
+| added | 84 | 6 | 16 | 0.479 |
+| rare | 70 | 6 | 15 | 0.488 |
+| rare × (0.5 + outlier) | 62 | 6 | 18 | 0.508 |
+| rare × outlier | 69 | 5 | 16 | 0.458 |
+| added × outlier | 72 | 5 | 17 | 0.444 |
+
+`rare × (0.5 + outlier)` leads by a little here, but ranks the
+backports and the Ubuntu updates lower (see "8 and 12: ranking,
+again"), so `added` stays the default.
+
+This case showed two kinds of noise in the report, both fixed, with no
+pair moved on the backports or the Ubuntu updates:
+
+- Two PLT stubs of one import read as unchanged. An import added moves
+  every slot of the global offset table, and each A32 stub loads its slot
+  at an offset from itself: 18 stubs of `odhcpd` read as changed.
+- On MIPS, the lazy binding stubs (`hereticus_recovery::mips_stubs`) are
+  read as MIPS32 and named for the symbol each resolves, where `sstrip`
+  left no section to find them. In MIPS16e code they decoded as MIPS16e
+  and ran together, and a new import moved them all: `odhcpd` showed 14
+  gone and 18 new. The reports of `ubusd` on MIPS16e lost 15 rows, and
+  the fix rose from row 7 to row 6; those of `dropbear` on MIPS32 lost
+  24 rows each.
+
 ### The Ubuntu updates, checked again
 
 `tests/truth_ubuntu.rs` locks the counts of the 218 updates, which

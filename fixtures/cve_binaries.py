@@ -5,7 +5,7 @@
 `real-life-reports/`. Each binary is pinned by its SHA-256, so a snapshot
 always tells of the same bytes.
 
-The `ubusd`, `dropbear` and `uhttpd` builds of OpenWrt come from the root file
+The `ubusd`, `dropbear`, `uhttpd` and `odhcpd` builds of OpenWrt come from the root file
 system of each release, which this script downloads. The Apple binaries come from an IPSW
 with the `ipsw` tool, which this script does not run: a missing one stops
 it with the commands that get it.
@@ -89,6 +89,22 @@ PINNED = {
         "43239e6a246c35897123c12c1ccc2f64842174b24a8545b5b93ef2cd663dba56",
     "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/uhttpd":
         "d8f0c68027892eaa1106ff63868d467f550e55915538f587a767dc1e57c8182b",
+    "hereticus-openwrt-cve/24.10.7/armsr-armv7/usr/sbin/odhcpd":
+        "9a6fa1e61cafaf9d7ea16704972450bb2f71948d6eed0f51f25dd18bb00f033b",
+    "hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/odhcpd":
+        "e8dc4908a656aa91f0bb707cc798abbb7614974c6cecbd7fed4173907ddbcc1c",
+    "hereticus-openwrt-cve/24.10.7/malta-be/usr/sbin/odhcpd":
+        "e083b82c75e01a175aad25a0c2cf2e9f4eb1010d517e1e8d20aa9746b774f160",
+    "hereticus-openwrt-cve/24.10.7/malta-le/usr/sbin/odhcpd":
+        "03843f30c6ea82c374adcbfd39adb2c04bb2a3e2b62255abce6149ecab10338c",
+    "hereticus-openwrt-cve/24.10.8/armsr-armv7/usr/sbin/odhcpd":
+        "9b4cd5b86e2909a7d2737540608948bf396548c5ef85aa6d9024990cc308e420",
+    "hereticus-openwrt-cve/24.10.8/armsr-armv8/usr/sbin/odhcpd":
+        "db21cfb72e4bdfd4e5eaa3cf05b69d0d86e2047049a2eb25db3653c211f861d3",
+    "hereticus-openwrt-cve/24.10.8/malta-be/usr/sbin/odhcpd":
+        "92eb5b2bdb1dec79f53793dbc3b8b286db0e6efb20052caeea54bcc1c033ff83",
+    "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/odhcpd":
+        "440e1659e44aec570fb502136ddcf2d24e6cb1d496929e08dad98e487eb33ef0",
 }
 
 # The commands that put the Apple binaries in CACHE / "hereticus-apple/cve",

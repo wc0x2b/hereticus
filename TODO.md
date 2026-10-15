@@ -116,14 +116,13 @@ on their context to undo.
 
 ## Measure on more published fixes, and faster
 
-Sixteen cases of seven published fixes, in `examples/research_bench.rs
+Twenty cases of eight published fixes, in `examples/research_bench.rs
 --cves`, decide between the orders of the report: each fix of
 `real-life-reports/`, and each OpenWrt fix for four architectures. No
-order wins on them: the mean reciprocal rank runs from 0.38 to 0.42,
-with `added` at 0.40 (`RESEARCH.md`, "Sixteen published fixes"). Add
-more advisories with shipped binaries before and after: the `odhcpd`,
-`rpcd` and `dropbear` updates of OpenWrt 24.10.8, and `ltq-ptm` of
-CVE-2025-62525, a kernel module of the Lantiq MIPS boards.
+order wins on them (`RESEARCH.md`, "Published fixes, again"). Add more
+advisories with shipped binaries before and after: the `rpcd` and
+`dropbear` updates of OpenWrt 24.10.8, and `ltq-ptm` of CVE-2025-62525,
+a kernel module of the Lantiq MIPS boards.
 
 `tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 151
 wrong pairs left, many are byte-identical twins (see "Tell twins apart
