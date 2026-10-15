@@ -572,6 +572,12 @@ const CVES: &[(&str, &str, &str, &str)] = &[
         "0x1a34c",
     ),
     (
+        "CVE-2025-62525",
+        "hereticus-openwrt-cve/24.10.3/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko",
+        "hereticus-openwrt-cve/24.10.4/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko",
+        "0x267c",
+    ),
+    (
         "CVE-2021-30883",
         "hereticus-apple/cve/15.0.1/19A348__iPhone12,1/kernelcache.release.iPhone12,1",
         "hereticus-apple/cve/15.0.2/19A404__iPhone12,1/kernelcache.release.iPhone12,1",

@@ -128,12 +128,15 @@ on their context to undo.
 
 ## Measure on more published fixes, and faster
 
-Twenty-four cases of nine published fixes, in `examples/research_bench.rs
+Twenty-five cases of ten published fixes, in `examples/research_bench.rs
 --cves`, decide between the orders of the report: each fix of
 `real-life-reports/`, and each OpenWrt fix for four architectures. No
-order wins on them (`RESEARCH.md`, "Published fixes, again"). Add more
-advisories with shipped binaries before and after: `ltq-ptm` of
-CVE-2025-62525, a kernel module of the Lantiq MIPS boards.
+order wins on them (`RESEARCH.md`, "Published fixes, again"). Every
+OpenWrt advisory since 2025 with binaries on both sides is in; older
+ones (the 19.07 fixes of `libubox`, `relayd`, `umdns` and `uhttpd`) and
+the fixes of a vendor's firmware are next. A kernel module is read as
+stripped code where its symbols name little of it; only `ltq_ptm_vr9.ko`
+for MIPS checks that, so add a module for ARM.
 
 `tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 151
 wrong pairs left, many are byte-identical twins (see "Tell twins apart

@@ -5,10 +5,11 @@
 `real-life-reports/`. Each binary is pinned by its SHA-256, so a snapshot
 always tells of the same bytes.
 
-The `ubusd`, `dropbear`, `uhttpd` and `odhcpd` builds of OpenWrt come from the root file
-system of each release, which this script downloads. The Apple binaries come from an IPSW
-with the `ipsw` tool, which this script does not run: a missing one stops
-it with the commands that get it.
+The `ubusd`, `dropbear`, `uhttpd` and `odhcpd` builds of OpenWrt come
+from the root file system of each release, and the `ltq-ptm` kernel
+module from its package, which this script downloads. The Apple binaries
+come from an IPSW with the `ipsw` tool, which this script does not run: a
+missing one stops it with the commands that get it.
 
 The files land in ~/.cache, where `examples/research_bench.rs --cves` reads
 them too.
@@ -16,7 +17,10 @@ them too.
 
 import gzip
 import hashlib
+import io
+import re
 import sys
+import tarfile
 import urllib.request
 from pathlib import Path
 
@@ -121,6 +125,10 @@ PINNED = {
         "6cc99aa25d942d3d9cd5a23fc76c32f6029e09fb0f40b04d0e5ee1c935a74a1d",
     "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/dropbear":
         "0916a47632470d571b0ec1c144a331ca6242ab0249f46b4db42fefeb06cc1945",
+    "hereticus-openwrt-cve/24.10.3/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko":
+        "894254504b177e26a17b0d84ce3776ec23065373fc3e9594e4ab754e78be5509",
+    "hereticus-openwrt-cve/24.10.4/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko":
+        "36acfb05c54365983c94ba27516870dad3c19c29226f5635c7ac7c4d0c5c131e",
 }
 
 # The commands that put the Apple binaries in CACHE / "hereticus-apple/cve",
@@ -182,12 +190,36 @@ def fetch_from_rootfs(path: str) -> bytes:
     return cpio_member(archive, "/".join(member))
 
 
+def fetch_kmod(path: str) -> bytes:
+    """Download a kernel module from the package of its release."""
+    # hereticus-openwrt-cve/<release>/<target>-<subtarget>/kmod/<package>/<file>.ko
+    _, release, target, _, package, name = path.split("/")
+    board, subtarget = target.split("-")
+    kmods = f"{MIRROR}/{release}/targets/{board}/{subtarget}/kmods/"
+    with urllib.request.urlopen(kmods, timeout=600) as response:
+        listing = response.read().decode()
+    # The one directory of the kernel the release builds.
+    kernel = re.findall(r'href="([0-9][^"]*/)"', listing)[0]
+    with urllib.request.urlopen(kmods + kernel, timeout=600) as response:
+        listing = response.read().decode()
+    ipk = re.findall(rf'href="({re.escape(package)}_[^"]*\.ipk)"', listing)[0]
+    print(f"cve_binaries: downloading {kmods}{kernel}{ipk}", file=sys.stderr)
+    with urllib.request.urlopen(kmods + kernel + ipk, timeout=600) as response:
+        outer = tarfile.open(fileobj=io.BytesIO(response.read()))
+    data = outer.extractfile("./data.tar.gz").read()
+    inner = tarfile.open(fileobj=io.BytesIO(data))
+    member = next(member for member in inner.getmembers() if member.name.endswith("/" + name))
+    return inner.extractfile(member).read()
+
+
 def main() -> int:
     missing_apple = []
     for path, expected in PINNED.items():
         out = CACHE / path
         if out.exists():
             data = out.read_bytes()
+        elif path.startswith("hereticus-openwrt-cve/") and "/kmod/" in path:
+            data = fetch_kmod(path)
         elif path.startswith("hereticus-openwrt-cve/"):
             data = fetch_from_rootfs(path)
         else:
