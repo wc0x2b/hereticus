@@ -2521,3 +2521,28 @@ fn a_crossed_slot_keeps_two_tables_apart() {
     let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
     assert!(diff.matched.iter().all(|pair| pair.confidence != Confidence::SameTable));
 }
+
+/// Two PLT stubs of one import edit nothing where only their slot moved.
+#[test]
+fn a_stub_whose_slot_moved_is_unchanged() {
+    // adr ip, pc, 0; add ip, ip, 0x13000; ldr pc, [ip, 0x144]! and 0xe4.
+    let stub = |offset: u32| -> Vec<u8> {
+        [0xe28f_c600_u32, 0xe28c_ca13, 0xe5bc_f000 | offset]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect()
+    };
+    let (before, after) = (stub(0x144), stub(0xe4));
+    let options = Options { threshold: 0.0, use_names: UseNames::No };
+    let changed = |names: [&str; 2]| {
+        let diff = diff_with(
+            &binary_of(&[(names[0], &before)]),
+            &binary_of(&[(names[1], &after)]),
+            options,
+        );
+        diff.matched.first().expect("a threshold of zero pairs anything").changed
+    };
+    assert_eq!(changed(["free@plt", "free@plt"]), Changed::No);
+    assert_ne!(changed(["free@plt", "malloc@plt"]), Changed::No, "another import");
+    assert_ne!(changed(["", ""]), Changed::No, "no stub known");
+}

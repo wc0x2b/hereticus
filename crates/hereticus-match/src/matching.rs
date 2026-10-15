@@ -582,6 +582,9 @@ struct Prepared<'a> {
     /// The normalized body, kept so that a pair need not decode and
     /// normalize it again.
     body: Vec<NormInsn>,
+    /// The import this function jumps to, where it is a PLT stub whose
+    /// slot the linker names.
+    stub_of: Option<&'a str>,
 }
 
 /// What a function refers to that its normalized code does not show.
@@ -764,6 +767,12 @@ fn prepare<'a>(
             let mut symbols = ordered.clone();
             symbols.sort_unstable();
 
+            // Only a stub is named `free@plt`: by its slot, or on MIPS by
+            // the symbol its lazy binding stub resolves.
+            let stub_of = binary
+                .links
+                .stub_callee(arch, function.address)
+                .or_else(|| function.name.strip_suffix("@plt"));
             Prepared {
                 function,
                 symbols,
@@ -778,6 +787,7 @@ fn prepare<'a>(
                 flow,
                 constants,
                 body,
+                stub_of,
             }
         })
         .collect()
