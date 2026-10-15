@@ -879,6 +879,22 @@ Over all twenty cases of eight fixes:
 backports and the Ubuntu updates lower (see "8 and 12: ranking,
 again"), so `added` stays the default.
 
+With the `scp` fix of CVE-2026-35385 in `dropbear`, OpenWrt 24.10.7 to
+24.10.8, on the same four builds, the fix ranks 1, 1, 1 and 2 under
+`added`. Over all twenty-four cases of nine fixes:
+
+| Order | Rank sum | Top 1 | Top 5 | MRR |
+|---|---|---|---|---|
+| added | 89 | 9 | 20 | 0.545 |
+| rare | 74 | 10 | 19 | 0.573 |
+| rare × (0.5 + outlier) | 70 | 8 | 22 | 0.535 |
+| rare × outlier | 88 | 5 | 19 | 0.420 |
+| added × outlier | 88 | 5 | 20 | 0.418 |
+
+`rare` now leads on the published fixes, by a little, as it did on the
+Ubuntu updates at first; it also ranks the backports lower (top 1 from
+64 to 60), so `added` stays.
+
 This case showed two kinds of noise in the report, both fixed, with no
 pair moved on the backports or the Ubuntu updates:
 

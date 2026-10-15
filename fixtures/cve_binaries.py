@@ -105,6 +105,22 @@ PINNED = {
         "92eb5b2bdb1dec79f53793dbc3b8b286db0e6efb20052caeea54bcc1c033ff83",
     "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/odhcpd":
         "440e1659e44aec570fb502136ddcf2d24e6cb1d496929e08dad98e487eb33ef0",
+    "hereticus-openwrt-cve/24.10.7/armsr-armv7/usr/sbin/dropbear":
+        "279b9f3973593ac5c6575e1b933da5faa374725b29f4270afa0045f26b140e5c",
+    "hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/dropbear":
+        "87c5cebea6fc4d6d5474af37453d1d54382451d0730ea93594a757c466e0e26f",
+    "hereticus-openwrt-cve/24.10.7/malta-be/usr/sbin/dropbear":
+        "50a3fb3996a73ebf1ed32b8320c411ad5becead2d94128a893b443064fa578fa",
+    "hereticus-openwrt-cve/24.10.7/malta-le/usr/sbin/dropbear":
+        "c21e21d8fdd80dc67fc46504973021fd0490a776db72a976c3b01eb3e3402726",
+    "hereticus-openwrt-cve/24.10.8/armsr-armv7/usr/sbin/dropbear":
+        "79cc7cdaff6e81d8c4f1db8e83ff2ec646655255e71eb23981e1aa2a730f0152",
+    "hereticus-openwrt-cve/24.10.8/armsr-armv8/usr/sbin/dropbear":
+        "613a87671b6a3a361da41ff330a69e34bf00926f5cbdf92e7da7126cb65930a6",
+    "hereticus-openwrt-cve/24.10.8/malta-be/usr/sbin/dropbear":
+        "6cc99aa25d942d3d9cd5a23fc76c32f6029e09fb0f40b04d0e5ee1c935a74a1d",
+    "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/dropbear":
+        "0916a47632470d571b0ec1c144a331ca6242ab0249f46b4db42fefeb06cc1945",
 }
 
 # The commands that put the Apple binaries in CACHE / "hereticus-apple/cve",

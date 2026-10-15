@@ -92,6 +92,18 @@ likely forms, and adds compact branches with no delay slot. The decoder
 assumes release 2. Few shipped parts use r6, so first confirm a target
 worth reading.
 
+## Read the two ways MIPS loads an address alike
+
+PIC code of MIPS loads the address of a static object in one of two
+ways: the page from a local slot of the global offset table, then
+`addiu` of the offset, or the whole address from a slot of its own. The
+linker picks per object, and a release can move an object from one way
+to the other. Measured on `dropbear` of OpenWrt 24.10.7 and 24.10.8 for
+MIPS32 little endian, 18 functions read as changed by one or two
+instructions for this alone (`real-life-reports/cve-2026-35385.md`).
+Read the slot the load names, from the global pointer the function sets
+up, and fold the pair into one address, as an idiom.
+
 ## Show the last instructions as IL
 
 `--view il` still shows NEON work as the code prints it: the lift names
@@ -116,13 +128,12 @@ on their context to undo.
 
 ## Measure on more published fixes, and faster
 
-Twenty cases of eight published fixes, in `examples/research_bench.rs
+Twenty-four cases of nine published fixes, in `examples/research_bench.rs
 --cves`, decide between the orders of the report: each fix of
 `real-life-reports/`, and each OpenWrt fix for four architectures. No
 order wins on them (`RESEARCH.md`, "Published fixes, again"). Add more
-advisories with shipped binaries before and after: the `rpcd` and
-`dropbear` updates of OpenWrt 24.10.8, and `ltq-ptm` of CVE-2025-62525,
-a kernel module of the Lantiq MIPS boards.
+advisories with shipped binaries before and after: `ltq-ptm` of
+CVE-2025-62525, a kernel module of the Lantiq MIPS boards.
 
 `tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 151
 wrong pairs left, many are byte-identical twins (see "Tell twins apart

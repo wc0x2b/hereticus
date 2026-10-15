@@ -143,6 +143,30 @@ const FIXES: &[Fix] = &[
         after: "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/odhcpd",
         function: "dhcpv6_ia_handle_IAs",
     },
+    Fix {
+        name: "CVE-2026-35385 dropbear AArch64",
+        before: "hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/dropbear",
+        after: "hereticus-openwrt-cve/24.10.8/armsr-armv8/usr/sbin/dropbear",
+        function: "sub_1650c",
+    },
+    Fix {
+        name: "CVE-2026-35385 dropbear A32",
+        before: "hereticus-openwrt-cve/24.10.7/armsr-armv7/usr/sbin/dropbear",
+        after: "hereticus-openwrt-cve/24.10.8/armsr-armv7/usr/sbin/dropbear",
+        function: "sub_157bc",
+    },
+    Fix {
+        name: "CVE-2026-35385 dropbear MIPS32 BE",
+        before: "hereticus-openwrt-cve/24.10.7/malta-be/usr/sbin/dropbear",
+        after: "hereticus-openwrt-cve/24.10.8/malta-be/usr/sbin/dropbear",
+        function: "sub_1a378",
+    },
+    Fix {
+        name: "CVE-2026-35385 dropbear MIPS32 LE",
+        before: "hereticus-openwrt-cve/24.10.7/malta-le/usr/sbin/dropbear",
+        after: "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/dropbear",
+        function: "sub_1a34c",
+    },
 ];
 
 fn cache() -> PathBuf {

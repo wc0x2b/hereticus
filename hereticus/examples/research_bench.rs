@@ -548,6 +548,30 @@ const CVES: &[(&str, &str, &str, &str)] = &[
         "0xbba8",
     ),
     (
+        "CVE-2026-35385",
+        "hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/dropbear",
+        "hereticus-openwrt-cve/24.10.8/armsr-armv8/usr/sbin/dropbear",
+        "0x1650c",
+    ),
+    (
+        "CVE-2026-35385 A32",
+        "hereticus-openwrt-cve/24.10.7/armsr-armv7/usr/sbin/dropbear",
+        "hereticus-openwrt-cve/24.10.8/armsr-armv7/usr/sbin/dropbear",
+        "0x157bc",
+    ),
+    (
+        "CVE-2026-35385 MIPS32 BE",
+        "hereticus-openwrt-cve/24.10.7/malta-be/usr/sbin/dropbear",
+        "hereticus-openwrt-cve/24.10.8/malta-be/usr/sbin/dropbear",
+        "0x1a378",
+    ),
+    (
+        "CVE-2026-35385 MIPS32 LE",
+        "hereticus-openwrt-cve/24.10.7/malta-le/usr/sbin/dropbear",
+        "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/dropbear",
+        "0x1a34c",
+    ),
+    (
         "CVE-2021-30883",
         "hereticus-apple/cve/15.0.1/19A348__iPhone12,1/kernelcache.release.iPhone12,1",
         "hereticus-apple/cve/15.0.2/19A404__iPhone12,1/kernelcache.release.iPhone12,1",
