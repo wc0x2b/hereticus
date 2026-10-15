@@ -261,7 +261,7 @@ impl Binary {
         let links = Links::of_object(&file);
         let scanned: Vec<Function> = scan::recover_functions(data, isa.arch())
             .into_iter()
-            .map(|found| found.function)
+            .map(unnamed)
             .map(|function| match exported.get(&function.address) {
                 Some(name) => Function { name: stable_name(name).to_string(), ..function },
                 None => name_stub(function, isa.arch(), &links),
@@ -370,7 +370,7 @@ impl Binary {
             &hereticus_arch::Memory::new(&loaded),
         )
         .into_iter()
-        .map(|found| found.function)
+        .map(unnamed)
         .collect();
         if functions.is_empty() {
             return Err(ObjError::NoFunctions);
@@ -451,7 +451,7 @@ impl Binary {
         }
         let functions: Vec<Function> = scan::recover_from_regions(&regions, &index, isa.arch())
             .into_iter()
-            .map(|found| found.function)
+            .map(unnamed)
             .collect();
 
         if functions.is_empty() {
@@ -597,6 +597,11 @@ fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
         true => Encoding::Compact,
         false => Encoding::Full,
     }
+}
+
+/// The function the scan found, with no name yet.
+fn unnamed(found: scan::Recovered) -> Function {
+    Function { name: String::new(), address: found.address, code: found.code }
 }
 
 /// `function`, named for its callee where it is a PLT stub whose slot a

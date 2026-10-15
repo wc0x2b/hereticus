@@ -54,7 +54,6 @@ use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind,
 use crate::arch::{CallTarget, DataAmongCode, Memory, Recovery, TableJumps, decode_all};
 use hereticus_il::arch::{Insn, InsnKind};
 use hereticus_memory::AddressSpace;
-use hereticus_memory::Function;
 
 /// Bytes in one ARM EHABI unwind entry: a function address and one word
 /// that says how to unwind it.
@@ -114,17 +113,21 @@ impl Source {
     }
 }
 
-/// A function found without help from the symbol table.
-#[derive(Clone, Debug)]
+/// A function found without help from the symbol table. It has no name: a
+/// stripped binary has nothing to read one from.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recovered {
-    pub function: Function,
+    /// The address of the first instruction.
+    pub address: u64,
+    /// The machine code, exactly the bytes of the function.
+    pub code: Vec<u8>,
+    /// What told the scan where the function starts.
     pub source: Source,
 }
 
 /// Find the functions in a binary with no usable symbol table.
 ///
-/// Returns them in address order. The name of each is empty, because there is
-/// nothing to read a name from.
+/// Returns them in address order.
 ///
 /// See RESEARCH.md, A16.
 pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
@@ -182,7 +185,7 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
     {
         let none = Linked::default();
         found.extend(recover_in_memory(&stubs, &[], &none, Regions::CodeOnly, stub_arch, &memory));
-        found.sort_by_key(|recovered| recovered.function.address);
+        found.sort_by_key(|recovered| recovered.address);
     }
     found
 }
@@ -818,10 +821,7 @@ fn build_functions(
             continue;
         }
 
-        out.push(Recovered {
-            function: Function { name: String::new(), address: *address, code: bytes.to_vec() },
-            source: *source,
-        });
+        out.push(Recovered { address: *address, code: bytes.to_vec(), source: *source });
     }
 
     out
@@ -2462,7 +2462,7 @@ mod tests {
                 &Memory::new(&regions),
             )
             .iter()
-            .map(|found| found.function.address)
+            .map(|found| found.address)
             .collect()
         };
         assert_eq!(starts(Regions::CodeOnly), [0x0, 0x10]);
@@ -2503,7 +2503,7 @@ mod tests {
                 &memory,
             )
             .iter()
-            .map(|found| found.function.address)
+            .map(|found| found.address)
             .collect()
         };
         assert_eq!(starts(&[(0, code.as_slice()), (0xff0, slot.as_slice())]), [0x0, 0x20]);
@@ -2779,7 +2779,7 @@ mod tests {
         assert_eq!(function_entries(&Mips32::LITTLE, &insns), vec![0x08]);
         let starts: Vec<u64> = recover_from_regions(&[(0, &code)], &[], &Mips32::LITTLE)
             .iter()
-            .map(|found| found.function.address)
+            .map(|found| found.address)
             .collect();
         assert_eq!(starts, [0x00, 0x08]);
     }

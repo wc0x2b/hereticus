@@ -47,15 +47,6 @@ code tells them apart; only names or callers could. The stages of
 order of the functions, did not move these 58: clang and GCC place the
 twins in different orders, and their callers are twins too.
 
-## Make function recovery a library
-
-`scan.rs` and the rules of `crates/hereticus-recovery/src/arch/` find
-45795 of 46006 functions exactly in stripped libraries, over ARM, Thumb-2,
-AArch64 and MIPS, and few Rust crates do that. The crate needs only the
-decoders of `hereticus-il` and the address space of `hereticus-memory`.
-What is left: give `scan.rs` its own type of a recovered function in place
-of the shared `hereticus_memory::Function`.
-
 ## Unpack more firmware containers
 
 `--unpack` reads the containers the OpenWrt fixtures use: a zImage, alone
