@@ -700,6 +700,7 @@ fn describe_confidence(confidence: Confidence) -> &'static str {
         Confidence::SameName => "same name",
         Confidence::TwinInOrder => "twin, in order",
         Confidence::SameTable => "same slot of a table",
+        Confidence::SameImport => "same import",
         Confidence::SameReferences => "same references",
         Confidence::SameCallers => "same callers",
         Confidence::SameLayout => "same place",

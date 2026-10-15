@@ -267,10 +267,16 @@ fn track_addresses(
                         upper.forget(destination);
                     }
                 }
-                // An offset from the global pointer, or from an address
-                // read out of the global offset table, is the linker's.
-                Held::GlobalPointer | Held::Somewhere => {
+                // An offset from the global pointer is the linker's.
+                Held::GlobalPointer => {
                     kinds[index] = ConstantKind::Address;
+                    upper.set(destination, Held::Somewhere);
+                }
+                // So is the low half added to an address read out of the
+                // global offset table, and the linker may give the object a
+                // slot of its own, which needs none.
+                Held::Somewhere => {
+                    kinds[index] = ConstantKind::AddressTail;
                     upper.set(destination, Held::Somewhere);
                 }
                 Held::PerhapsGlobalPointer => upper.forget(destination),
@@ -845,7 +851,7 @@ mod tests {
         use super::*;
         use hereticus_memory::{
             AddressSpace,
-            ConstantKind::{Address, Value},
+            ConstantKind::{Address, AddressTail, Value},
         };
 
         const V0: u32 = 2;
@@ -1034,6 +1040,16 @@ mod tests {
             // Nor do two addresses.
             let words = [lui(V0, 0x8001), lui(S1, 0x8002), addu(V0, V0, S1), lw(V0, 0x10, V0)];
             assert_eq!(kinds(&words)[3], Value);
+        }
+
+        /// The low half added to an address read out of the global offset
+        /// table is a tail the linker's choice adds, not an address of its
+        /// own: an object with a slot of its own needs none.
+        #[test]
+        fn the_low_half_after_a_table_slot_is_an_address_tail() {
+            const GP: u32 = 28;
+            let words = [lw(V0, 0x8024, GP), addiu(V0, V0, 0x1080), lw(A0, 0x8, V0)];
+            assert_eq!(kinds(&words), [Address, AddressTail, Address]);
         }
 
         /// GCC stores the global pointer in a stack slot and loads it back

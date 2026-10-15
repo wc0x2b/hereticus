@@ -63,6 +63,10 @@ pub enum Operation {
     /// and a NEON `vmin` would normalize alike, and an edit between them
     /// would read as no change.
     Unreadable(u64),
+    /// The low half added to an address read out of the global offset
+    /// table, which only the linker's choice adds: see
+    /// [`ConstantKind::AddressTail`]. No edit counts it.
+    AddressTail,
 }
 
 /// What a test computes, as the ARM compares name it on every
@@ -345,6 +349,15 @@ pub fn normalize_body_in(
             // A stored address is data, not an instruction: comparing what it
             // happens to decode as would report every move of its target.
             Some(ConstantKind::StoredAddress) => {}
+            // Whether an address takes this instruction is the linker's
+            // choice: see [`ConstantKind::AddressTail`]. It still tells two
+            // functions apart, so it stays, as a token of its own.
+            Some(ConstantKind::AddressTail) => out.push(NormInsn {
+                operation: Operation::AddressTail,
+                operands: Operands::new(),
+                flow: FlowShape::Linear,
+                constants: Constants::new(),
+            }),
             _ if arch.is_frame_management(&insns[index]) => {}
             // A `nop` does nothing, and a compiler puts one where alignment
             // asks, as before a pool of doubles.

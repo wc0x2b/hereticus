@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::norm::NormInsn;
+use crate::norm::{NormInsn, Operation};
 use hereticus_callees::Callee;
 use rayon::prelude::*;
 
@@ -732,7 +732,8 @@ impl Cascade<'_> {
                 rarity: 0.0,
             };
         }
-        let (left_body, right_body) = (left.body(), right.body());
+        let (left_body, right_body) = (work_of(left.body()), work_of(right.body()));
+        let (left_body, right_body) = (left_body.as_ref(), right_body.as_ref());
         let (edits, kinds) = count_edits(left_body, right_body);
         Match {
             before,
@@ -759,6 +760,37 @@ impl Cascade<'_> {
                 (left.len() == right.len()).then(|| (index, left.to_vec(), right.to_vec()))
             })
             .collect()
+    }
+
+    /// Pair two stubs that jump to one import, by the name the linker
+    /// gives it, before any stage that reads their code.
+    ///
+    /// A lazy binding stub of MIPS holds the number of the symbol it
+    /// resolves, so the stub of number 5 in one release has the same bytes
+    /// as the stub of number 5 in the next, which an added import made
+    /// another function. Measured on `ubusd` of OpenWrt 24.10.3 and 24.10.4
+    /// for MIPS16e, the stages of identical code paired 7 stubs by their
+    /// number and left the stubs of the same imports as new.
+    pub(super) fn pair_stubs_by_import(&mut self) {
+        fn by_import<'a>(side: &[Prepared<'a>]) -> HashMap<&'a str, Option<usize>> {
+            let mut found: HashMap<&'a str, Option<usize>> = HashMap::new();
+            for (index, prepared) in side.iter().enumerate() {
+                if let Some(import) = prepared.stub_of {
+                    // An import with two stubs pairs neither.
+                    found.entry(import).and_modify(|only| *only = None).or_insert(Some(index));
+                }
+            }
+            found
+        }
+        let (left, right) = (by_import(&self.left), by_import(&self.right));
+        let mut pairs: Vec<(usize, usize)> = left
+            .iter()
+            .filter_map(|(import, &before)| Some((before?, (*right.get(import)?)?)))
+            .collect();
+        pairs.sort_unstable();
+        for (before, after) in pairs {
+            self.take_pair(before, after, Confidence::SameImport, 1.0);
+        }
     }
 
     /// Pair the PLT stubs of the two binaries as two ordered lists.
@@ -1880,4 +1912,13 @@ enum Unpaired {
     Differ,
     /// Nothing: they may be one function that changed too much to pair.
     SayNothing,
+}
+
+/// The instructions of `body` that an edit can touch: all but the ones that
+/// only the linker's choice adds, as [`Operation::AddressTail`].
+fn work_of(body: &[NormInsn]) -> std::borrow::Cow<'_, [NormInsn]> {
+    if body.iter().all(|insn| insn.operation != Operation::AddressTail) {
+        return std::borrow::Cow::Borrowed(body);
+    }
+    body.iter().filter(|insn| insn.operation != Operation::AddressTail).cloned().collect()
 }

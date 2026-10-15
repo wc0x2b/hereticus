@@ -928,6 +928,35 @@ pair moved on the backports or the Ubuntu updates:
   the fix rose from row 7 to row 6; those of `dropbear` on MIPS32 lost
   24 rows each.
 
+### Two ways MIPS loads an address
+
+PIC code of MIPS loads the address of a static object either from the
+slot of its page in the global offset table, then adds the low half with
+`addiu`, or from a slot of its own. The linker picks per object, and
+`dropbear` of OpenWrt 24.10.8 for MIPS32 little endian moved some
+objects from one way to the other: 18 functions read as changed by that
+alone. The added half is now a `ConstantKind::AddressTail`: it stays in
+the normalized body as a token of its own, `Operation::AddressTail`, so
+it still tells functions apart, but no edit counts it.
+
+Dropping it from the body as well paired 22 fewer right and 10 more
+wrong on the backports. Kept as a token, the backports paired 2 fewer
+right and the same wrong, and the rank sum fell from 3028 to 2970; the
+kernels paired 1 fewer wrong, and the Ubuntu updates did not move. The
+fix of CVE-2026-35385 in `dropbear` for MIPS32 little endian rose from
+row 2 to row 1, among 28 rows in place of 37, and the `ubusd` fix of
+CVE-2025-62526 on MIPS16e from row 6 to row 5.
+
+A lazy binding stub of MIPS holds the number of the symbol it resolves,
+so the stub of number 5 in 24.10.3 had the same bytes as the stub of
+number 5 in 24.10.4, which an added import made another function. The
+stage of identical bytes paired 7 stubs of `ubusd` so, and left the
+stubs of the same imports as new. `Cascade::pair_stubs_by_import` now
+pairs two stubs of one import by the name the linker gives it, before
+any stage reads code. No pair the symbols check moved; the backports and
+the Ubuntu updates each lost one pair of stubs whose import is on one
+side only.
+
 ### The Ubuntu updates, checked again
 
 `tests/truth_ubuntu.rs` locks the counts of the 218 updates, which
