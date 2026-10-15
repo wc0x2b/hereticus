@@ -52,11 +52,22 @@ pub(super) struct Cascade<'a> {
     pub(super) right_free: Vec<bool>,
     pub(super) matched: Vec<Match>,
     pub(super) options: Options,
+    /// The tables of functions of the first binary: see
+    /// [`hereticus_image::Binary::function_tables`].
+    pub(super) left_tables: Vec<Vec<usize>>,
+    /// The tables of functions of the second binary.
+    pub(super) right_tables: Vec<Vec<usize>>,
 }
 
 impl Cascade<'_> {
     /// Record a pair and take both functions out of the pool.
-    fn take_pair(&mut self, before: usize, after: usize, confidence: Confidence, score: f64) {
+    pub(super) fn take_pair(
+        &mut self,
+        before: usize,
+        after: usize,
+        confidence: Confidence,
+        score: f64,
+    ) {
         self.left_free[before] = false;
         self.right_free[after] = false;
         let pair = self.assess(before, after, confidence, score);

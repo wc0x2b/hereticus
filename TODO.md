@@ -11,17 +11,12 @@ too, and add a report to `real-life-reports/` for each.
 
 ## Tell twins apart that no instruction separates
 
-The twins this entry named, Lua's `math_ceil` and `math_floor` and
-`math_deg` and `math_rad`, paired the wrong way round because every float
-operation lifted alike; they pair right now. Of the wrong pairs left
-between clang and GCC, 72 score 1.00, and 58 of those paired as twins in
-order (`Cascade::match_twins_in_order`): byte-identical twins, as
-tinyxml2's `XMLNode::ToComment` and `XMLNode::ToText`, which both return
-null, and `MemPool<52>::Free` and `MemPool<60>::Free`. Nothing in their
-code tells them apart; only names or callers could. The stages of
-`RESEARCH.md` entries 1, 2 and 7, which pair by callers, callees and the
-order of the functions, did not move these 58: clang and GCC place the
-twins in different orders, and their callers are twins too.
+The slots of a vtable (`RESEARCH.md` entry 15) paired 54 of the 58
+byte-identical twins that paired wrong between clang and GCC. The 4 left
+are `MemPoolT<52>::SetTracked` and `MemPoolT<60>::SetTracked` of
+tinyxml2, in two comparisons: find what keeps their tables apart. A twin
+in no table, as a C function reached only by calls from twins, can only
+be told apart by its name.
 
 ## Unpack more firmware containers
 

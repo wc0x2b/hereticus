@@ -1,6 +1,6 @@
 //! Read binaries and find the functions in them.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use object::elf::PF_X;
 use object::{
@@ -8,6 +8,7 @@ use object::{
 };
 
 use crate::Links;
+use crate::links::{ByteOrder, Width};
 use hereticus_arch::Arch;
 use hereticus_il::arch::aarch64::Aarch64;
 use hereticus_il::arch::arm32::Arm32;
@@ -111,6 +112,22 @@ impl Isa {
         }
     }
 
+    /// The width of an address.
+    pub fn address_width(self) -> Width {
+        match self {
+            Self::Aarch64 => Width::Bits64,
+            _ => Width::Bits32,
+        }
+    }
+
+    /// The order of the bytes of a word of data.
+    pub fn byte_order(self) -> ByteOrder {
+        match self {
+            Self::Mips32Be | Self::Mips16Be => ByteOrder::Big,
+            _ => ByteOrder::Little,
+        }
+    }
+
     /// Choose a decoder for what an object file says it holds.
     ///
     /// `little_endian` decides nothing for ARM, which is only read in that
@@ -123,6 +140,84 @@ impl Isa {
             object::Architecture::Mips => Ok(Self::Mips32Be),
             _ => Err(ObjError::UnsupportedArch(arch)),
         }
+    }
+}
+
+/// Where a word lies, as [`Coverage::place_of`] tells.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Place {
+    /// Outside every function.
+    #[default]
+    Outside,
+    /// Inside a function: code, a literal pool, or data that a scan of a
+    /// raw image took for the end of a function.
+    InFunction,
+}
+
+/// The extent of the functions of a binary.
+struct Coverage {
+    /// The start of each function in order, and the furthest end of it
+    /// and every function before it, so that one search answers.
+    starts_and_ends: Vec<(u64, u64)>,
+}
+
+impl Coverage {
+    fn of(functions: &[Function]) -> Self {
+        let mut starts_and_ends: Vec<(u64, u64)> = functions
+            .iter()
+            .map(|function| (function.address, function.address + function.code.len() as u64))
+            .collect();
+        starts_and_ends.sort_unstable();
+        let mut furthest = 0;
+        for (_, end) in &mut starts_and_ends {
+            furthest = furthest.max(*end);
+            *end = furthest;
+        }
+        Self { starts_and_ends }
+    }
+
+    /// Where `address` lies.
+    fn place_of(&self, address: u64) -> Place {
+        let after = self.starts_and_ends.partition_point(|&(start, _)| start <= address);
+        match after.checked_sub(1).map(|last| self.starts_and_ends[last].1) {
+            Some(end) if address < end => Place::InFunction,
+            _ => Place::Outside,
+        }
+    }
+}
+
+/// A run of addresses of functions that may make a table.
+#[derive(Default)]
+struct Run {
+    functions: Vec<usize>,
+    /// Inside a function where any word of the run is.
+    place: Place,
+}
+
+impl Run {
+    /// Add the function whose address lies at `place`.
+    fn push(&mut self, function: usize, place: Place) {
+        self.functions.push(function);
+        if place == Place::InFunction {
+            self.place = place;
+        }
+    }
+
+    /// The table this run makes, if any, and start a new run.
+    ///
+    /// Two addresses make a table outside every function. Inside one, as
+    /// in a literal pool, it takes three: two words of code can read as
+    /// addresses by chance. Measured on tinyxml2 for Thumb-2 as a raw image
+    /// loaded at zero, such pairs paired four functions wrong. A scan of a
+    /// raw kernel takes its data for the end of a function, so its tables
+    /// count as inside too.
+    fn end(&mut self) -> Option<Vec<usize>> {
+        let shortest = match self.place {
+            Place::InFunction => 3,
+            Place::Outside => 2,
+        };
+        let run = core::mem::take(self);
+        (run.functions.len() >= shortest).then_some(run.functions)
     }
 }
 
@@ -166,6 +261,40 @@ impl Binary {
             Some(other) if self.other_set.contains(&function.address) => other,
             _ => self.isa,
         }
+    }
+
+    /// The tables of functions the data holds, each as the indices of its
+    /// functions in order: runs of words in a row, each the address of a
+    /// function, as a C++ vtable or a C table of handlers.
+    ///
+    /// Bit 0 of an address is dropped, since on ARM and MIPS it only says
+    /// the function runs as Thumb-2 or MIPS16e.
+    pub fn function_tables(&self) -> Vec<Vec<usize>> {
+        let starts: HashMap<u64, usize> = self
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(index, function)| (function.address, index))
+            .collect();
+        let covered = Coverage::of(&self.functions);
+        let width = self.isa.address_width().bytes() as u64;
+        let mut tables = Vec::new();
+        let mut run = Run::default();
+        let mut next = None;
+        for (address, value) in self.links.words(self.isa.address_width(), self.isa.byte_order()) {
+            // A zero word is a null pointer, even where a function starts
+            // at zero.
+            let function = (value != 0).then(|| starts.get(&(value & !1)).copied()).flatten();
+            if next != Some(address) || function.is_none() {
+                tables.extend(run.end());
+            }
+            if let Some(index) = function {
+                run.push(index, covered.place_of(address));
+            }
+            next = Some(address + width);
+        }
+        tables.extend(run.end());
+        tables
     }
 
     /// Read a binary and find the functions in it.
@@ -666,6 +795,43 @@ mod tests {
     #[test]
     fn rejects_bytes_that_are_not_an_object() {
         assert!(matches!(Binary::parse(b"not an elf"), Err(ObjError::Parse(_))));
+    }
+
+    /// A table is two or more addresses of functions in a row, or three
+    /// inside a function. A null, a word that is no function, or a gap ends
+    /// one, and bit 0 of an address is dropped.
+    #[test]
+    fn a_table_is_a_run_of_function_addresses() {
+        let functions: Vec<Function> = (0..3)
+            .map(|index| Function {
+                name: String::new(),
+                address: 0x1000 + index * 0x10,
+                code: vec![0; if index == 2 { 0x18 } else { 4 }],
+            })
+            .collect();
+        let words = |words: &[u32]| -> Vec<u8> {
+            words.iter().flat_map(|word| word.to_le_bytes()).collect()
+        };
+        let memory = vec![
+            (0x2000, words(&[0x1000, 0x1011, 0x5555, 0x1020, 0x1000, 0, 0x1010, 0x1020])),
+            // One address alone, then a table that the gap before it ends.
+            (0x3000, words(&[0x1000])),
+            (0x3008, words(&[0x1010, 0x1000])),
+            // Inside the function at 0x1020: two are not enough, three are.
+            (0x1020, words(&[0x1000, 0x1010, 0, 0x1000, 0x1010, 0x1000])),
+        ];
+        let binary = Binary {
+            isa: Isa::Arm32,
+            functions,
+            found_by: FoundBy::Symbols,
+            addresses: AddressSpace::none(),
+            links: Links::of_parts(memory, BTreeMap::new()),
+            other_set: BTreeSet::new(),
+        };
+        assert_eq!(
+            binary.function_tables(),
+            [vec![0, 1], vec![2, 0], vec![1, 2], vec![1, 0], vec![0, 1, 0]]
+        );
     }
 
     #[test]

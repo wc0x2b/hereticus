@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use object::{Object, ObjectKind, ObjectSection, ObjectSegment, ObjectSymbol, SectionKind};
+use object::{
+    Object, ObjectKind, ObjectSection, ObjectSegment, ObjectSymbol, ObjectSymbolTable, SectionKind,
+};
 
 use crate::obj::stable_name;
 use hereticus_arch::Arch;
@@ -24,6 +26,10 @@ pub struct Links {
     /// Where each section of read-only data starts, whose first string
     /// follows whatever the section before it ends with.
     read_only_starts: BTreeSet<u64>,
+    /// The address each dynamic relocation stores, by the address of the
+    /// word it writes. A shared library fills its vtables this way, so
+    /// the file holds zero or an addend where the loader puts a function.
+    relocated: BTreeMap<u64, u64>,
 }
 
 impl Links {
@@ -70,7 +76,8 @@ impl Links {
             .map(|section| section.address())
             .filter(|&address| address != 0)
             .collect();
-        Self { memory, slots, stubs, sites: BTreeMap::new(), read_only_starts }
+        let relocated = relocated_addresses(file, &memory);
+        Self { memory, slots, stubs, sites: BTreeMap::new(), read_only_starts, relocated }
     }
 
     /// The symbol whose stub is at `address`: a Mach-O stub, or a PLT stub
@@ -112,6 +119,7 @@ impl Links {
             stubs: BTreeMap::new(),
             sites: BTreeMap::new(),
             read_only_starts: BTreeSet::new(),
+            relocated: BTreeMap::new(),
         }
     }
 
@@ -206,6 +214,25 @@ impl Links {
         length >= SHORTEST && rest.get(length) == Some(&0)
     }
 
+    /// Each word of `width` bytes the loaded bytes hold, by its address,
+    /// as the loader leaves it: the address a dynamic relocation stores
+    /// where one writes the word, else the stored value.
+    pub fn words(&self, width: Width, order: ByteOrder) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let size = width.bytes();
+        self.memory.iter().flat_map(move |(start, data)| {
+            // A word of a table is aligned to its width.
+            let skip = (size - (*start % size as u64) as usize) % size;
+            data.get(skip..).unwrap_or_default().chunks_exact(size).enumerate().map(
+                move |(index, bytes)| {
+                    let address = start + (skip + index * size) as u64;
+                    let value =
+                        self.relocated.get(&address).copied().unwrap_or_else(|| order.read(bytes));
+                    (address, value)
+                },
+            )
+        })
+    }
+
     /// The loaded bytes from `address` to the end of their section.
     pub fn bytes_at(&self, address: u64) -> Option<&[u8]> {
         self.memory.iter().find_map(|(start, data)| {
@@ -213,6 +240,96 @@ impl Links {
             data.get(offset..).filter(|rest| !rest.is_empty())
         })
     }
+}
+
+/// The width of an address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Width {
+    /// Four bytes, as on ARM32 and MIPS32.
+    Bits32,
+    /// Eight bytes, as on AArch64.
+    Bits64,
+}
+
+impl Width {
+    /// The number of bytes.
+    pub fn bytes(self) -> usize {
+        match self {
+            Self::Bits32 => 4,
+            Self::Bits64 => 8,
+        }
+    }
+}
+
+/// The order of the bytes of a word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByteOrder {
+    /// Least significant byte first.
+    Little,
+    /// Most significant byte first.
+    Big,
+}
+
+impl ByteOrder {
+    /// The value of `bytes`, four or eight of them.
+    fn read(self, bytes: &[u8]) -> u64 {
+        let fold = |value: u64, &byte: &u8| (value << 8) | u64::from(byte);
+        match self {
+            Self::Little => bytes.iter().rev().fold(0, fold),
+            Self::Big => bytes.iter().fold(0, fold),
+        }
+    }
+}
+
+/// The address each dynamic relocation of `file` stores in a word, by the
+/// address of the word: see [`Links::words`].
+///
+/// Only the relocations that store an address are read: an absolute one,
+/// which adds the address of a symbol, and a relative one, which adds the
+/// load address, zero as the file is linked.
+fn relocated_addresses(file: &object::File<'_>, memory: &[(u64, Vec<u8>)]) -> BTreeMap<u64, u64> {
+    use object::elf::{R_AARCH64_ABS64, R_AARCH64_RELATIVE, R_ARM_ABS32, R_ARM_RELATIVE};
+    use object::elf::{R_MIPS_32, R_MIPS_REL32};
+    let Some(relocations) = file.dynamic_relocations() else { return BTreeMap::new() };
+    let symbols = file.dynamic_symbol_table();
+    let order = if file.is_little_endian() { ByteOrder::Little } else { ByteOrder::Big };
+    let width = if file.is_64() { Width::Bits64 } else { Width::Bits32 };
+    let stored = |address: u64| -> Option<u64> {
+        memory.iter().find_map(|(start, data)| {
+            let offset = usize::try_from(address.checked_sub(*start)?).ok()?;
+            Some(order.read(data.get(offset..offset + width.bytes())?))
+        })
+    };
+    relocations
+        .filter_map(|(address, relocation)| {
+            let object::RelocationFlags::Elf { r_type } = relocation.flags() else { return None };
+            if ![
+                R_AARCH64_ABS64,
+                R_AARCH64_RELATIVE,
+                R_ARM_ABS32,
+                R_ARM_RELATIVE,
+                R_MIPS_32,
+                R_MIPS_REL32,
+            ]
+            .contains(&r_type)
+            {
+                return None;
+            }
+            let base = match relocation.target() {
+                object::RelocationTarget::Symbol(index) => {
+                    symbols.as_ref()?.symbol_by_index(index).ok()?.address()
+                }
+                object::RelocationTarget::Absolute => 0,
+                _ => return None,
+            };
+            let addend = if relocation.has_implicit_addend() {
+                stored(address)?
+            } else {
+                relocation.addend() as u64
+            };
+            Some((address, base.wrapping_add(addend)))
+        })
+        .collect()
 }
 
 /// Fewer bytes than this are as likely a small number as text: the word
@@ -266,6 +383,25 @@ mod tests {
     use super::*;
 
     use hereticus_il::arch::aarch64::Aarch64;
+
+    /// A word is read at its alignment, in its byte order, and where a
+    /// relocation writes it, as the address the relocation stores.
+    #[test]
+    fn a_word_reads_as_the_loader_leaves_it() {
+        // Two bytes before the first aligned word, and one after the last.
+        let data = vec![0xaa, 0xbb, 1, 2, 3, 4, 0, 0, 0, 0, 5];
+        let links = Links {
+            relocated: BTreeMap::from([(0x108, 0x4000)]),
+            ..Links::of_parts(vec![(0x102, data)], BTreeMap::new())
+        };
+        let words = |order| links.words(Width::Bits32, order).collect::<Vec<_>>();
+        assert_eq!(words(ByteOrder::Little), [(0x104, 0x0403_0201), (0x108, 0x4000)]);
+        assert_eq!(words(ByteOrder::Big), [(0x104, 0x0102_0304), (0x108, 0x4000)]);
+        let wide = Links::of_parts(vec![(0x100, (1..=9).collect())], BTreeMap::new());
+        let words: Vec<_> = wide.words(Width::Bits64, ByteOrder::Little).collect();
+        assert_eq!(words, [(0x100, 0x0807_0605_0403_0201)]);
+        assert_eq!(Links::default().words(Width::Bits64, ByteOrder::Big).count(), 0);
+    }
 
     #[test]
     fn text_is_printable_up_to_a_nul() {
