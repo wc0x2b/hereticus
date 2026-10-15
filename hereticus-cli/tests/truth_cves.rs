@@ -119,6 +119,30 @@ const FIXES: &[Fix] = &[
         after: "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/uhttpd",
         function: "sub_3fc4",
     },
+    Fix {
+        name: "CVE-2026-53921 odhcpd AArch64",
+        before: "hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/odhcpd",
+        after: "hereticus-openwrt-cve/24.10.8/armsr-armv8/usr/sbin/odhcpd",
+        function: "sub_e12c",
+    },
+    Fix {
+        name: "CVE-2026-53921 odhcpd A32",
+        before: "hereticus-openwrt-cve/24.10.7/armsr-armv7/usr/sbin/odhcpd",
+        after: "hereticus-openwrt-cve/24.10.8/armsr-armv7/usr/sbin/odhcpd",
+        function: "sub_c1b8",
+    },
+    Fix {
+        name: "CVE-2026-53921 odhcpd MIPS16e BE",
+        before: "hereticus-openwrt-cve/24.10.7/malta-be/usr/sbin/odhcpd",
+        after: "hereticus-openwrt-cve/24.10.8/malta-be/usr/sbin/odhcpd",
+        function: "dhcpv6_ia_handle_IAs",
+    },
+    Fix {
+        name: "CVE-2026-53921 odhcpd MIPS16e LE",
+        before: "hereticus-openwrt-cve/24.10.7/malta-le/usr/sbin/odhcpd",
+        after: "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/odhcpd",
+        function: "dhcpv6_ia_handle_IAs",
+    },
 ];
 
 fn cache() -> PathBuf {
