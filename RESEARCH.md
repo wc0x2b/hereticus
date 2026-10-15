@@ -1139,6 +1139,20 @@ code, references and constants, once more pairs are known, cut 45 wrong
 kernel pairs at a margin of 0.15, but cost the backports 332 right and
 added 332 wrong. At 0.05 it was worse on both sets.
 
+Two functions that a pair by similarity or by place joins, where each
+points at texts and they share none, are often different: a kernel
+function names its own messages. Undoing such pairs, each cell right
+then wrong, against no rule:
+
+| Rule | Backports | Kernels |
+|---|---|---|
+| one sure text or more on each side | −8, −11 | −212, −74 |
+| two or more on each side | none | −58, −30 |
+| one or more, under a score of 0.8 | −8, −9 | −88, −62 |
+
+Each undoes more right pairs than wrong on the kernels: a release edits
+the messages of a function it keeps. None is kept.
+
 ### 13: unique references
 
 A text or a constant above `LARGEST_PLAIN_CONSTANT` that one function
