@@ -4,11 +4,12 @@
 [<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/wc0x2b/hereticus/main.yml?branch=master&style=for-the-badge" height="20">](https://github.com/wc0x2b/hereticus/actions?query=branch%3Amaster)
 
 > [!NOTE]
-> Written heavily with the assistance of AI.
+> Coding agents wrote much of this code.
 
 Compare two versions of a binary or firmware and find the functions that changed.
 
-* **No IDA or Ghidra**: No frameworks and no GUIs. Great for programmers and agents alike.
+* **No IDA or Ghidra**: It needs no framework and no GUI. Programmers and agents can use it from a shell.
+* See the [book](https://wc0x2b.github.io/hereticus/) for usage, examples, and real-life examples.
 
 ## Installation
 Either build from published source in crates.io.

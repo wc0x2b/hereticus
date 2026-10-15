@@ -1,0 +1,19 @@
+# Summary
+
+[Introduction](./introduction.md)
+
+- [Installation](./installation.md)
+- [Usage](./usage.md)
+- [Examples](./examples.md)
+- [Real-Life Examples](./real-life-examples.md)
+  - [CVE-2021-30883: AppleCLCD](./real-life-examples/cve-2021-30883.md)
+  - [CVE-2024-23265: AppleDiskImages2](./real-life-examples/cve-2024-23265.md)
+  - [CVE-2025-14282: dropbear](./real-life-examples/cve-2025-14282.md)
+  - [CVE-2025-24257: IOGPUFamily](./real-life-examples/cve-2025-24257.md)
+  - [CVE-2025-62525: the `ltq-ptm` kernel module](./real-life-examples/cve-2025-62525.md)
+  - [CVE-2025-62526: ubusd](./real-life-examples/cve-2025-62526.md)
+  - [CVE-2026-28825: smbfs](./real-life-examples/cve-2026-28825.md)
+  - [CVE-2026-35385: dropbear `scp`](./real-life-examples/cve-2026-35385.md)
+  - [CVE-2026-53921: odhcpd](./real-life-examples/cve-2026-53921.md)
+  - [CVE-2026-55614: uhttpd](./real-life-examples/cve-2026-55614.md)
+- [Development](./development.md)
