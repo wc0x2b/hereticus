@@ -11,6 +11,8 @@ function in the report.
 - [CVE-2025-62525: the `ltq-ptm` kernel module, OpenWrt 24.10.3 to 24.10.4](./real-life-examples/cve-2025-62525.md)
 - [CVE-2025-62526: ubusd, OpenWrt 24.10.3 to 24.10.4](./real-life-examples/cve-2025-62526.md)
 - [CVE-2026-28825: smbfs, macOS 26.3.1 to 26.4](./real-life-examples/cve-2026-28825.md)
+- [CVE-2026-30873: jsonfilter, OpenWrt 24.10.5 to 24.10.6](./real-life-examples/cve-2026-30873.md)
+- [CVE-2026-30874: procd, OpenWrt 24.10.5 to 24.10.6](./real-life-examples/cve-2026-30874.md)
 - [CVE-2026-35385: dropbear `scp`, OpenWrt 24.10.7 to 24.10.8](./real-life-examples/cve-2026-35385.md)
 - [CVE-2026-53921: odhcpd, OpenWrt 24.10.7 to 24.10.8](./real-life-examples/cve-2026-53921.md)
 - [CVE-2026-55614: uhttpd, OpenWrt 24.10.7 to 24.10.8](./real-life-examples/cve-2026-55614.md)

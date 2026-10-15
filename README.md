@@ -36,7 +36,7 @@ $ hereticus --raw --arch mips32 --unpack stub a.bin b.bin  # the decompressor in
 
 For real fixes found with `hereticus`, such as the iOS kernel fix for
 CVE-2024-23265 and the OpenWrt fixes of `ubusd`, `dropbear`, `uhttpd`,
-`odhcpd` and the `ltq-ptm` kernel module, see
+`odhcpd`, `procd`, `jsonfilter` and the `ltq-ptm` kernel module, see
 [real-life-reports](real-life-reports).
 
 Two OpenWrt releases for the same device, 22.03.2 and 22.03.5 for the Netgear

@@ -173,6 +173,54 @@ const FIXES: &[Fix] = &[
         after: "hereticus-openwrt-cve/24.10.4/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko",
         function: "sub_267c",
     },
+    Fix {
+        name: "CVE-2026-30874 procd AArch64",
+        before: "hereticus-openwrt-cve/24.10.5/armsr-armv8/sbin/procd",
+        after: "hereticus-openwrt-cve/24.10.6/armsr-armv8/sbin/procd",
+        function: "sub_7630",
+    },
+    Fix {
+        name: "CVE-2026-30874 procd A32",
+        before: "hereticus-openwrt-cve/24.10.5/armsr-armv7/sbin/procd",
+        after: "hereticus-openwrt-cve/24.10.6/armsr-armv7/sbin/procd",
+        function: "sub_5254",
+    },
+    Fix {
+        name: "CVE-2026-30874 procd MIPS32 BE",
+        before: "hereticus-openwrt-cve/24.10.5/malta-be/sbin/procd",
+        after: "hereticus-openwrt-cve/24.10.6/malta-be/sbin/procd",
+        function: "sub_4528",
+    },
+    Fix {
+        name: "CVE-2026-30874 procd MIPS32 LE",
+        before: "hereticus-openwrt-cve/24.10.5/malta-le/sbin/procd",
+        after: "hereticus-openwrt-cve/24.10.6/malta-le/sbin/procd",
+        function: "sub_45b8",
+    },
+    Fix {
+        name: "CVE-2026-30873 jsonfilter AArch64",
+        before: "hereticus-openwrt-cve/24.10.5/armsr-armv8/usr/bin/jsonfilter",
+        after: "hereticus-openwrt-cve/24.10.6/armsr-armv8/usr/bin/jsonfilter",
+        function: "sub_402c48",
+    },
+    Fix {
+        name: "CVE-2026-30873 jsonfilter A32",
+        before: "hereticus-openwrt-cve/24.10.5/armsr-armv7/usr/bin/jsonfilter",
+        after: "hereticus-openwrt-cve/24.10.6/armsr-armv7/usr/bin/jsonfilter",
+        function: "sub_12580",
+    },
+    Fix {
+        name: "CVE-2026-30873 jsonfilter MIPS16e BE",
+        before: "hereticus-openwrt-cve/24.10.5/malta-be/usr/bin/jsonfilter",
+        after: "hereticus-openwrt-cve/24.10.6/malta-be/usr/bin/jsonfilter",
+        function: "sub_401c2c",
+    },
+    Fix {
+        name: "CVE-2026-30873 jsonfilter MIPS16e LE",
+        before: "hereticus-openwrt-cve/24.10.5/malta-le/usr/bin/jsonfilter",
+        after: "hereticus-openwrt-cve/24.10.6/malta-le/usr/bin/jsonfilter",
+        function: "sub_401c2c",
+    },
 ];
 
 fn cache() -> PathBuf {
@@ -197,7 +245,7 @@ fn report(fix: &Fix) -> String {
 #[test]
 fn the_rank_of_each_published_fix_is_locked() {
     let mut out = String::new();
-    writeln!(out, "{:34} {:>4} {:>5}  row", "fix", "rank", "rows").unwrap();
+    writeln!(out, "{:36} {:>4} {:>5}  row", "fix", "rank", "rows").unwrap();
     for fix in FIXES {
         let report = report(fix);
         let rows: Vec<&str> = report.lines().collect();
@@ -208,7 +256,7 @@ fn the_rank_of_each_published_fix_is_locked() {
             Some(at) => ((at + 1).to_string(), rows[at].replace('\t', " ")),
             None => ("-".to_owned(), String::new()),
         };
-        writeln!(out, "{:34} {rank:>4} {:>5}  {row}", fix.name, rows.len()).unwrap();
+        writeln!(out, "{:36} {rank:>4} {:>5}  {row}", fix.name, rows.len()).unwrap();
     }
     insta::assert_snapshot!(out);
 }

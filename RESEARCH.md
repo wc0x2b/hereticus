@@ -937,6 +937,51 @@ pair moved on the backports or the Ubuntu updates:
   the fix rose from row 7 to row 6; those of `dropbear` on MIPS32 lost
   24 rows each.
 
+Two fixes of OpenWrt 24.10.6, from the audit of Trail of Bits, on the
+same four builds of 24.10.5 and 24.10.6:
+
+- CVE-2026-30873, `jsonfilter`: the lexer frees the text that
+  `match_token` copies. The fix is one `if` and one call to `free`, and
+  ranks 1 on all four, of 1 to 4 rows.
+- CVE-2026-30874, `procd`: the filter of `hotplug-dispatch` compared
+  each variable to `"PATH"` with `strcmp`, and now to `"PATH="` with
+  `strncmp`. 24 commits came in the same update, and the fix ranks 20 of
+  25 on AArch64 and 18 of 28 or 29 on the others under every order.
+
+The `procd` fix is the shape no order here ranks well: one added
+instruction, `x2 = 5`, and a callee and a text that changed. `added`
+counts the instruction alone. A callee counts only in a pair whose code
+is otherwise the same (`compare_callees`), and a text only so too. Over
+all thirty-three cases of twelve fixes:
+
+| Order | Rank sum | Top 1 | Top 5 | MRR |
+|---|---|---|---|---|
+| added | 165 | 15 | 27 | 0.572 |
+| rare | 157 | 15 | 24 | 0.575 |
+| rare × (0.5 + outlier) | 151 | 13 | 27 | 0.557 |
+| rare × outlier | 163 | 10 | 26 | 0.476 |
+| added × outlier | 158 | 10 | 25 | 0.474 |
+
+The `procd` case showed four faults of the view, all fixed, with the
+same pairs and ranks on the truth tests:
+
+- `--view il` named a call through a register by the last load of the
+  register in the order of the code, and a load on another path came
+  first: the `strncmp` of the fix read as `avl_delete`, and `strchr` as
+  `free`. `hereticus_il::flow` now names a callee only where every path
+  that reaches the call loads the same one. AArch64 code of OpenWrt,
+  built with `-fno-plt`, calls each import so, and the callees of the
+  matcher now read these calls too (`Recovery::register_call_slots`).
+- GNU `ld` merged `"PATH"` into `"DEVPATH"`, and the old side read as
+  `@0x133f7`. A pointer into a text now reads as `&"DEVPATH"[3]`. GCC
+  also reaches data from inside a text, as `"Unexpected character\n"[10]`
+  in `jsonfilter`, so the diff aligns such a pointer as an address.
+- On A32, `"PATH"` against `"PATH="` folded to one unchanged line, as the
+  words of the two lines agree; the texts must now agree whole.
+- The literal pool after each A32 function read as instructions, as
+  `mrc2` and `andeq`, and its words move with each release. The
+  assembly diff shows them as `.word`, and the IL view hides them.
+
 ### Two ways MIPS loads an address
 
 PIC code of MIPS loads the address of a static object either from the
