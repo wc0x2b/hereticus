@@ -68,12 +68,6 @@ moved to `matching/tests.rs`. It holds the cascade, the alignment of two
 bodies, the classification of a change and the near misses. Give each a
 module of its own, and keep the names that `RESEARCH.md` gives.
 
-## Run the truth tests on the crate split
-
-The crate split passed `just quick-test`, but not the `truth_*` tests,
-which read about 1.6 GB that `just truth` downloads. Run `just test`
-once, and compare the counts with those of master.
-
 ## Unpack more firmware containers
 
 `--unpack` reads the containers the OpenWrt fixtures use: a zImage, alone
