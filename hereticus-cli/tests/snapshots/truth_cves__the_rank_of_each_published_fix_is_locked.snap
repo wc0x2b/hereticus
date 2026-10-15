@@ -28,10 +28,10 @@ CVE-2026-35385 dropbear A32             1    21  changed sub_157bc sub_15424 0.7
 CVE-2026-35385 dropbear MIPS32 BE       1    16  changed sub_1a378 sub_1a524 0.56 116 172 64
 CVE-2026-35385 dropbear MIPS32 LE       1    28  changed sub_1a34c sub_1a200 0.56 106 162 74
 CVE-2025-62525 ltq-ptm MIPS32 BE        1     2  changed sub_267c sub_267c 0.70 69 37 9
-CVE-2026-30874 procd AArch64           20    25  changed sub_7630 sub_75c0 1.00 1 0 0
-CVE-2026-30874 procd A32               18    29  changed sub_5254 sub_51e4 1.00 1 0 0
-CVE-2026-30874 procd MIPS32 BE         18    28  changed sub_4528 sub_44a4 1.00 1 0 0
-CVE-2026-30874 procd MIPS32 LE         18    28  changed sub_45b8 sub_4534 1.00 1 0 0
+CVE-2026-30874 procd AArch64            1    25  changed sub_7630 sub_75c0 1.00 1 0 0
+CVE-2026-30874 procd A32                1    29  changed sub_5254 sub_51e4 1.00 1 0 0
+CVE-2026-30874 procd MIPS32 BE          1    28  changed sub_4528 sub_44a4 1.00 1 0 0
+CVE-2026-30874 procd MIPS32 LE          1    28  changed sub_45b8 sub_4534 1.00 1 0 0
 CVE-2026-30873 jsonfilter AArch64       1     1  changed sub_402c48 sub_402c48 0.92 5 0 0
 CVE-2026-30873 jsonfilter A32           1     4  changed sub_12580 sub_12580 0.89 5 0 1
 CVE-2026-30873 jsonfilter MIPS16e BE    1     2  changed sub_401c2c sub_401c2c 0.83 11 0 0

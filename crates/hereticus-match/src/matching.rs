@@ -33,6 +33,7 @@ use hereticus_recovery::arch::{Memory, decode_all};
 pub use hereticus_view::PairedLabels;
 
 mod align;
+mod bounded;
 mod cascade;
 mod change;
 mod lines;
@@ -128,6 +129,9 @@ pub struct Match {
     /// See RESEARCH.md, entry 6: this is the inverse document frequency of
     /// information retrieval, over the instructions each pair added.
     pub rarity: f64,
+    /// Calls that the edit kept in place but turned into their bounded
+    /// form, as `strcmp` into `strncmp`: see [`bounded`].
+    pub bounded_calls: usize,
 }
 
 /// The size of an edit, in normalized instructions.
