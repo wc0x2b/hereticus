@@ -1,18 +1,5 @@
 # TODO
 
-## Check fixes on Thumb-2
-
-Four Apple CVE fixes, all AArch64, put each fix in the top 19 rows with
-`--sort added`. Three OpenWrt fixes cover A32 and MIPS: `ubusd` for
-CVE-2025-62526 (rows 4 to 7, MIPS16e on MIPS), `dropbear` for
-CVE-2025-14282 (rows 1 and 2, MIPS32) and `uhttpd` for CVE-2026-55614
-(rows 3 and 5, MIPS16e). OpenWrt builds its user space for
-ARMv7 as A32, so no shipped fix reads Thumb-2 yet: find one in the
-firmware of a vendor, or in a distribution built for Thumb-2. More
-OpenWrt fixes with binaries on both sides: the `odhcpd`, `rpcd` and
-`dropbear` updates of 24.10.8, and `ltq-ptm` of
-CVE-2025-62525, a kernel module of the Lantiq MIPS boards.
-
 ## Tell twins apart that no instruction separates
 
 The slots of a vtable (`RESEARCH.md` entry 15) paired 54 of the 58
@@ -129,15 +116,16 @@ on their context to undo.
 
 ## Measure on more published fixes, and faster
 
-Eight cases of five published fixes, in `examples/research_bench.rs
+Sixteen cases of seven published fixes, in `examples/research_bench.rs
 --cves`, decide between the orders of the report: each fix of
-`real-life-reports/`, and `ubusd` for four architectures. The outlier
-score of `RESEARCH.md` entry 12 ranks those best of all, but ranks the
-backports and the Ubuntu updates worse, and five fixes are too few to say
-which is right. Add more advisories with shipped binaries before and
-after.
+`real-life-reports/`, and each OpenWrt fix for four architectures. No
+order wins on them: the mean reciprocal rank runs from 0.38 to 0.42,
+with `added` at 0.40 (`RESEARCH.md`, "Sixteen published fixes"). Add
+more advisories with shipped binaries before and after: the `odhcpd`,
+`rpcd` and `dropbear` updates of OpenWrt 24.10.8, and `ltq-ptm` of
+CVE-2025-62525, a kernel module of the Lantiq MIPS boards.
 
-`tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 159
+`tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 151
 wrong pairs left, many are byte-identical twins (see "Tell twins apart
 that no instruction separates"), and the fix shows on no changed row in
 42 updates.
