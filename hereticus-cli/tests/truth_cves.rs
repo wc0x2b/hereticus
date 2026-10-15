@@ -95,6 +95,30 @@ const FIXES: &[Fix] = &[
         after: "hereticus-openwrt-cve/24.10.5/malta-le/usr/sbin/dropbear",
         function: "sub_190dc",
     },
+    Fix {
+        name: "CVE-2026-55614 uhttpd AArch64",
+        before: "hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/24.10.8/armsr-armv8/usr/sbin/uhttpd",
+        function: "sub_5d78",
+    },
+    Fix {
+        name: "CVE-2026-55614 uhttpd A32",
+        before: "hereticus-openwrt-cve/24.10.7/armsr-armv7/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/24.10.8/armsr-armv7/usr/sbin/uhttpd",
+        function: "sub_4218",
+    },
+    Fix {
+        name: "CVE-2026-55614 uhttpd MIPS16e BE",
+        before: "hereticus-openwrt-cve/24.10.7/malta-be/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/24.10.8/malta-be/usr/sbin/uhttpd",
+        function: "sub_3f74",
+    },
+    Fix {
+        name: "CVE-2026-55614 uhttpd MIPS16e LE",
+        before: "hereticus-openwrt-cve/24.10.7/malta-le/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/24.10.8/malta-le/usr/sbin/uhttpd",
+        function: "sub_3fc4",
+    },
 ];
 
 fn cache() -> PathBuf {
