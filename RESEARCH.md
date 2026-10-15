@@ -914,6 +914,15 @@ a row that point within 2 KiB, which is the table of a `switch`. The
 merged into the probe function before that; with the tables of each
 `switch` as starts, it split at each case.
 
+A module for ARM keeps more symbols: `tun.ko` of OpenWrt 24.10.3 for
+ARMv7 has 49, over 54% of its code, so it took the path of the symbols,
+and each function paired by its number, `_41` with `_41`, whatever it
+was. A module with a local renamed to a number now takes the path of a
+module too, where a symbol bounds its function but only a name that is
+no number names it. `tun.ko` then reads as 70 functions, and `tun`,
+`nf_conntrack` and `wireguard` read as unchanged from 24.10.3 to
+24.10.4 but for constants.
+
 This case showed two kinds of noise in the report, both fixed, with no
 pair moved on the backports or the Ubuntu updates:
 
