@@ -636,6 +636,7 @@ impl Binary {
             }
             functions.push(Function { name, address: stub.range.start, code: bytes.to_vec() });
         }
+        functions.extend(plt_stubs_after(arch, &executable, &code, &links));
         functions.sort_by_key(|function| function.address);
 
         Ok(Self {
@@ -848,6 +849,50 @@ fn name_stub(function: Function, arch: &dyn Arch, links: &Links) -> Function {
         Some(name) => Function { name, ..function },
         None => function,
     }
+}
+
+/// The PLT stubs in `executable` past the end of `code`, each named for
+/// its callee, where a relocation names the slot it jumps through.
+///
+/// GNU `ld` puts the PLT of a MIPS16e executable that is not PIC after
+/// `.fini`, which the scan of the code between `DT_INIT` and `DT_FINI`
+/// does not reach. The stubs lie in a row, so each runs to the next.
+fn plt_stubs_after(
+    arch: &dyn Arch,
+    executable: &[(u64, &[u8])],
+    code: &[(u64, &[u8])],
+    links: &Links,
+) -> Vec<Function> {
+    /// Each stub starts on a word.
+    const STUB_ALIGNMENT: u64 = 4;
+    /// More bytes than any PLT stub holds.
+    const STUB_BYTES: u64 = 16;
+
+    let code_end = code.iter().map(|&(base, data)| base + data.len() as u64).max().unwrap_or(0);
+    let starts: Vec<(u64, &[u8])> = executable
+        .iter()
+        .flat_map(|&(base, data)| {
+            let end = base + data.len() as u64;
+            let first = code_end.max(base).next_multiple_of(STUB_ALIGNMENT);
+            (first..end).step_by(STUB_ALIGNMENT as usize).filter_map(move |address| {
+                let offset = usize::try_from(address - base).ok()?;
+                let stub = &data[offset..(offset + STUB_BYTES as usize).min(data.len())];
+                arch.stub_slot(stub, address).and_then(|slot| links.slot_name(slot))?;
+                Some((address, stub))
+            })
+        })
+        .collect();
+    let next_starts = starts.iter().skip(1).map(|&(address, _)| Some(address)).chain([None]);
+    starts
+        .iter()
+        .zip(next_starts)
+        .filter_map(|(&(address, stub), next)| {
+            let length = next.map_or(STUB_BYTES, |next| (next - address).min(STUB_BYTES));
+            let code = stub.get(..usize::try_from(length).ok()?).unwrap_or(stub).to_vec();
+            let function = Function { name: String::new(), address, code };
+            Some(Function { name: links.stub_name(arch, &function)?, ..function })
+        })
+        .collect()
 }
 
 /// The lazy binding stubs of MIPS in `code`: see [`mips_stubs`]. None

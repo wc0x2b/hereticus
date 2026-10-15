@@ -122,14 +122,6 @@ whose code is otherwise the same. Count a changed callee or text in a
 changed pair too, where the diff lines up the two calls, and measure
 the backports and the Ubuntu updates for noise.
 
-## Name the PLT stubs of a MIPS16e executable
-
-`jsonfilter` of OpenWrt for `malta` is a MIPS16e executable that is not
-PIC, and calls each import through a MIPS16e PLT stub, as
-`b203 9a60 651a eb00` with `DT_MIPS_PLTGOT`. The view shows the call of
-the CVE-2026-30873 fix as `call 0x403460`, not `call free`, and the scan
-finds 31 functions where the ARM builds of the same source find 86.
-
 ## Measure on more published fixes, and faster
 
 Thirty-three cases of twelve published fixes, in
