@@ -1054,6 +1054,41 @@ fn a_changed_text_is_a_change() {
     assert_eq!(same.matched[0].changed, Changed::No);
 }
 
+/// [`passes_text`], with `sub r0, r0, r1` added before the return.
+fn passes_text_and_subtracts(text: &str) -> hereticus_image::Binary {
+    let words = [
+        0xe59f_0008_u32, // 0x8000 ldr r0, [pc, 0x8]: the word at 0x8010
+        0xe08f_0000,     // 0x8004 add r0, pc, r0
+        SUB,             // 0x8008
+        0xe12f_ff1e,     // 0x800c bx lr
+        0x9001 - 0x800c, // 0x8010 the distance to the text
+    ];
+    let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+    let mut binary = passes_text(text);
+    binary.links = hereticus_image::Links::of_parts(
+        vec![(0x8000, code.clone()), (0x9000, [&[0], text.as_bytes(), &[0]].concat())],
+        BTreeMap::new(),
+    );
+    binary.functions[0].code = code;
+    binary
+}
+
+/// A text that changes in a pair whose code changed too counts, and the
+/// pair keeps its verdict.
+#[test]
+fn a_changed_text_counts_in_a_changed_pair() {
+    let diff =
+        diff_with(&passes_text("hello"), &passes_text_and_subtracts("howdy"), Options::default());
+    let pair = &diff.matched[0];
+    assert_eq!(pair.changed, Changed::Yes);
+    assert_eq!(pair.kinds.texts, 1);
+
+    let same =
+        diff_with(&passes_text("hello"), &passes_text_and_subtracts("hello"), Options::default());
+    assert_eq!(same.matched[0].changed, Changed::Yes);
+    assert_eq!(same.matched[0].kinds.texts, 0);
+}
+
 /// A text shorter than a word can be a pointer or a number by chance.
 #[test]
 fn a_changed_short_text_is_no_change() {
@@ -1165,6 +1200,62 @@ fn a_call_to_a_different_function_is_a_change() {
         assert_eq!(caller.kinds.callees, 1, "names {names:?}");
         assert!(caller.kinds.touches_control_flow());
     }
+}
+
+/// A caller at 0x0 that calls the function at `callee`, then runs `work`.
+fn caller_running(callee: u64, work: &[u32]) -> Vec<u8> {
+    bl(0, callee).into_iter().chain(work.iter().flat_map(|word| word.to_le_bytes())).collect()
+}
+
+/// Code that adds an instruction and calls a different function in the
+/// same place counts the callee too, as the `procd` fix of CVE-2026-30874
+/// does: the diff lines up the two calls.
+#[test]
+fn a_changed_pair_counts_a_call_kept_in_place_to_another_function() {
+    let options = Options { threshold: 0.0, ..Options::default() };
+    let before_work = [ADD, ADD, ADD, BX_LR];
+    let after_work = [ADD, ADD, SUB, ADD, BX_LR];
+    for names in [["caller", "one", "two"], ["", "", ""]] {
+        let side = |callee: u64, work: &[u32]| {
+            binary_of(&[
+                (names[0], &caller_running(callee, work)),
+                (names[1], &returns(1)),
+                (names[2], &returns(2)),
+            ])
+        };
+        let before = side(0x100, &before_work);
+
+        let diff = diff_with(&before, &side(0x200, &after_work), options);
+        let caller = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!(caller.changed, Changed::Yes, "names {names:?}");
+        assert_eq!(caller.edits.added, 1, "names {names:?}");
+        assert_eq!(caller.kinds.callees, 1, "names {names:?}");
+
+        let diff = diff_with(&before, &side(0x100, &after_work), options);
+        let caller = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+        assert_eq!(caller.kinds.callees, 0, "the same callee, names {names:?}");
+    }
+}
+
+/// A call the edit removes lines up with no call, so its callee counts
+/// as no changed callee.
+#[test]
+fn a_call_the_edit_removes_counts_no_changed_callee() {
+    let options = Options { threshold: 0.0, ..Options::default() };
+    let before = binary_of(&[
+        ("caller", &caller_running(0x100, &[ADD, ADD, ADD, BX_LR])),
+        ("one", &returns(1)),
+        ("two", &returns(2)),
+    ]);
+    let after = binary_of(&[
+        ("caller", &arm(&[ADD, ADD, ADD, SUB, BX_LR])),
+        ("one", &returns(1)),
+        ("two", &returns(2)),
+    ]);
+    let diff = diff_with(&before, &after, options);
+    let caller = diff.matched.iter().find(|pair| pair.before == 0).expect("paired");
+    assert_eq!(caller.changed, Changed::Yes);
+    assert_eq!(caller.kinds.callees, 0);
 }
 
 /// Four leaves at 0x0 to 0x300 that pair by their bytes, and at 0x400 a

@@ -115,12 +115,12 @@ on their context to undo.
 ## Rank a fix of one instruction that changes a callee
 
 The `procd` fix of CVE-2026-30874 adds one instruction and turns a call
-of `strcmp` into one of `strncmp`, with `"PATH"` now `"PATH="`. It ranks
-18 to 20 of 25 to 29 under every order, as `added` counts only the one
-instruction, and `compare_callees` and the texts count only in a pair
-whose code is otherwise the same. Count a changed callee or text in a
-changed pair too, where the diff lines up the two calls, and measure
-the backports and the Ubuntu updates for noise.
+of `strcmp` into one of `strncmp`, with `"PATH"` now `"PATH="`. Its row
+counts the callee and the text, but it ranks 18 to 20 of 25 to 29 under
+`added`. An order that adds the two counts lifts it to 16 or 17, and
+ranks the backports and the Ubuntu updates worse (`RESEARCH.md`,
+"Callees and texts in a changed pair"). Find what else tells such a fix
+from the other edits of a large update that change a callee or a text.
 
 ## Measure on more published fixes, and faster
 

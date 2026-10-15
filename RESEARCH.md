@@ -982,6 +982,42 @@ same pairs and ranks on the truth tests:
   `mrc2` and `andeq`, and its words move with each release. The
   assembly diff shows them as `.word`, and the IL view hides them.
 
+### Callees and texts in a changed pair
+
+A pair whose code changed now counts its changed callees and texts too.
+A text counts as in a pair whose code agrees. A call counts where the
+alignment of the two bodies keeps it in place, as the diff lines it up,
+and its callee differs. Normalizing hides the callee, so the `strcmp`
+and the `strncmp` of the `procd` fix align, and the row of the fix now
+reads `1 callee, 1 text` where it read `-`.
+
+The alignment alone made noise. At `-O0`, every `jal` normalizes alike,
+so where an edit adds a call, the alignment can line up two calls of
+functions that both builds still make: `dispatch` of the MIPS `firmware`
+fixture gains a case that calls `crypto_verify`, and the object read 3
+changed callees, though no call changed its callee. So a call counts
+only where its earlier callee lost a call in the pair and its later
+callee gained one. On `procd` for A32, that cut the other rows with a
+changed callee from 7 to 2, and kept the fix.
+
+These counts change no verdict and no rank. Each order of
+`research_bench` that adds them, `r`, to `added` ranks the published
+fixes better and the backports and the Ubuntu updates worse:
+
+| Order | Backports (130) | Ubuntu (218) | Published (33) |
+|---|---|---|---|
+| added | 2970, 64 first | 304, 121 first | 165, 15 first |
+| added + r | 3098, 64 | 318, 117 | 146, 16 |
+| added + 2r | 3288, 64 | 324, 117 | 140, 16 |
+| added + min(r, 2) | 3037, 64 | 311, 120 | 153, 15 |
+| added + 5r | 3928, 64 | 378, 107 | 145, 17 |
+
+Under `added + r`, the `procd` fix rises from 20, 18, 18 and 18 to 17,
+17, 16 and 17. A fix in a large update shares its shape with many other
+edits of the update that change a callee or a text too, so `added`
+stays the default. The second alignment of each changed pair took the
+MIPS kernel of the VR200 from 9.25 s to 9.4 s.
+
 ### Two builds of Mirai
 
 Two static builds of one Mirai variant for ARM, with symbols, from

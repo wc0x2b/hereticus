@@ -265,6 +265,9 @@ struct Features {
     added_calls: usize,
     /// Jumps and returns added, by bag.
     added_returns: usize,
+    /// Calls kept in place that reach another function, and texts that
+    /// differ: see `EditKinds::callees` and `EditKinds::texts`.
+    referents: usize,
 }
 
 type Order = fn(&Features) -> f64;
@@ -280,6 +283,28 @@ const ORDERS: &[(&str, Order)] = &[
         f.edits.added as f64 - f.score * 1e-3 - if rescheduled { 1e6 } else { 0.0 }
     }),
     ("added, as before", |f| f.edits.added as f64 - f.score * 1e-3),
+    ("a+r", |f| {
+        let rescheduled = f.reordered && !f.control_flow;
+        (f.edits.added + f.referents) as f64 - f.score * 1e-3 - if rescheduled { 1e6 } else { 0.0 }
+    }),
+    ("a+2r", |f| {
+        let rescheduled = f.reordered && !f.control_flow;
+        (f.edits.added + 2 * f.referents) as f64
+            - f.score * 1e-3
+            - if rescheduled { 1e6 } else { 0.0 }
+    }),
+    ("a+min(r,2)", |f| {
+        let rescheduled = f.reordered && !f.control_flow;
+        (f.edits.added + f.referents.min(2)) as f64
+            - f.score * 1e-3
+            - if rescheduled { 1e6 } else { 0.0 }
+    }),
+    ("a+5r", |f| {
+        let rescheduled = f.reordered && !f.control_flow;
+        (f.edits.added + 5 * f.referents) as f64
+            - f.score * 1e-3
+            - if rescheduled { 1e6 } else { 0.0 }
+    }),
     ("added, reordered last", |f| {
         f.edits.added as f64 - f.score * 1e-3 - if f.reordered { 1e6 } else { 0.0 }
     }),
@@ -403,6 +428,7 @@ fn features_of(rows: &[&Match], stripped: &[Binary; 2]) -> Vec<Features> {
                 added_branches: count(FlowShape::Branch),
                 added_calls: count(FlowShape::Call),
                 added_returns: count(FlowShape::Return) + count(FlowShape::Jump),
+                referents: pair.kinds.callees + pair.kinds.texts,
             }
         })
         .collect()
