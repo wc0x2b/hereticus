@@ -1,6 +1,6 @@
 [package]
 name = "hereticus-arch"
-description = "Architecture-specific binary analysis (decode, lift, recovery)"
+description = "The architecture-specific rules that the matching of functions reads"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -16,6 +16,7 @@ bench = false
 [dependencies]
 hereticus-il = { path = "../hereticus-il", version = "0.1.0" }
 hereticus-memory = { path = "../hereticus-memory", version = "0.1.0" }
+hereticus-recovery = { path = "../hereticus-recovery", version = "0.1.0" }
 compact_str = "0.9"
 rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = ["std", "MIPS_II"] }
 yaxpeax-arch = "0.3"

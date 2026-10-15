@@ -51,9 +51,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind, SymbolKind};
 
-use hereticus_arch::{
-    CallTarget, DataAmongCode, Insn, InsnKind, Memory, Recovery, TableJumps, decode_all,
-};
+use crate::arch::{CallTarget, DataAmongCode, Memory, Recovery, TableJumps, decode_all};
+use hereticus_il::arch::{Insn, InsnKind};
 use hereticus_memory::AddressSpace;
 use hereticus_memory::Function;
 
@@ -1163,7 +1162,7 @@ fn pops_a_frame_it_did_not_make(arch: &dyn Recovery, insns: &[Insn], target: u64
         }
         match insn.kind {
             InsnKind::Return => {
-                return hereticus_arch::arm32::core_opcode(insn)
+                return hereticus_il::arch::arm32::core_opcode(insn)
                     == Some(yaxpeax_arm::armv7::Opcode::POP)
                     && arch.lift(insn).is_some_and(|lifted| {
                         // `pop {pc}` alone lifts as the register, not a list.
@@ -1208,7 +1207,7 @@ fn starts_after_returns(arch: &dyn Recovery, code: &[u8], base: u64) -> Vec<u64>
     starts_after_returns_in(arch, &region, &Memory::new(&regions), &Linked::default())
 }
 
-/// [`starts_after_returns`], where `memory` holds what else the binary loads.
+/// `starts_after_returns`, where `memory` holds what else the binary loads.
 fn starts_after_returns_in(
     arch: &dyn Recovery,
     region: &Region<'_>,
@@ -1752,15 +1751,15 @@ fn prologue_past_pool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hereticus_arch::Decoder as _;
-    use hereticus_arch::arm32::Arm32;
+    use hereticus_il::arch::Decoder as _;
+    use hereticus_il::arch::arm32::Arm32;
 
     /// A `pop` that loads `pc` returns from a frame, in its list form and
     /// alone; a `bx lr` pops no frame.
     #[test]
     fn a_pop_of_pc_in_either_form_pops_a_frame() {
         let pops = |word: u32| {
-            let insns = hereticus_arch::decode_all(&Arm32, &word.to_le_bytes(), 0).0;
+            let insns = crate::arch::decode_all(&Arm32, &word.to_le_bytes(), 0).0;
             pops_a_frame_it_did_not_make(&Arm32, &insns, 0)
         };
         assert!(pops(0xe8bd_8010), "pop {{r4, pc}}");
@@ -1787,7 +1786,7 @@ mod tests {
 
     #[test]
     fn a_call_to_a_callee_that_never_returns_is_found_by_its_slot() {
-        let arch = &hereticus_arch::mips::Mips32::BIG;
+        let arch = &hereticus_il::arch::mips::Mips32::BIG;
         let code = mips_call_through_slot();
         let (insns, _) = decode_all(arch, &code, 0);
         let regions = [(0, code.as_slice())];
@@ -1805,7 +1804,7 @@ mod tests {
         let ranges = [0x6fd1..0x7095, 0x7095..0x70a1, 0x70b1..0x70c1];
         let entry = |address, unwinding| IndexEntry { address, unwinding };
         assert_eq!(
-            index_from_ranges(&ranges, &hereticus_arch::mips16::Mips16::LITTLE),
+            index_from_ranges(&ranges, &hereticus_il::arch::mips16::Mips16::LITTLE),
             [
                 entry(0x6fd0, Unwinding::Listed),
                 entry(0x7094, Unwinding::Listed),
@@ -1816,7 +1815,7 @@ mod tests {
         );
         let mips32 = index_from_ranges(
             core::slice::from_ref(&(0x100..0x110)),
-            &hereticus_arch::mips::Mips32::LITTLE,
+            &hereticus_il::arch::mips::Mips32::LITTLE,
         );
         assert_eq!(
             mips32,
@@ -1826,7 +1825,7 @@ mod tests {
 
     /// A two-byte Thumb instruction at `address` that moves control as `kind`.
     fn thumb_insn(address: u64, kind: InsnKind) -> Insn {
-        Insn::new(address, &[0; 2], kind, hereticus_arch::Opcode::None)
+        Insn::new(address, &[0; 2], kind, hereticus_il::arch::Opcode::None)
     }
 
     /// Instructions from 0x1000 up to 0x1100, all but `branches` plain.
@@ -1914,7 +1913,8 @@ mod tests {
     fn a_word_with_bit_0_set_tags_a_thumb_function() {
         let bytes = [0x01, 0x10, 0, 0, 0x00, 0x20, 0, 0];
         let regions = [(0x100, &bytes[..])];
-        let tagged = tagged_functions(&hereticus_arch::thumb::Thumb2, &regions, &BTreeSet::new());
+        let tagged =
+            tagged_functions(&hereticus_il::arch::thumb::Thumb2, &regions, &BTreeSet::new());
         assert_eq!(tagged, [0x1000]);
     }
 
@@ -1923,7 +1923,7 @@ mod tests {
         let bytes = [0x01, 0x10, 0, 0];
         let regions = [(0x100, &bytes[..])];
         let distances = BTreeSet::from([0x100]);
-        let tagged = tagged_functions(&hereticus_arch::thumb::Thumb2, &regions, &distances);
+        let tagged = tagged_functions(&hereticus_il::arch::thumb::Thumb2, &regions, &distances);
         assert!(tagged.is_empty());
     }
 
@@ -1932,7 +1932,8 @@ mod tests {
         // `"ue"` of `"true"` reads as 0x6575, which has bit 0 set.
         let bytes = *b"\0\0tr\x75\x65\0\0";
         let regions = [(0x100, &bytes[..])];
-        let tagged = tagged_functions(&hereticus_arch::thumb::Thumb2, &regions, &BTreeSet::new());
+        let tagged =
+            tagged_functions(&hereticus_il::arch::thumb::Thumb2, &regions, &BTreeSet::new());
         assert!(tagged.is_empty());
     }
 
@@ -1954,7 +1955,7 @@ mod tests {
 
     fn pool_span_survivors(code: &[u8], starts: &[(u64, Source)]) -> Vec<u64> {
         let regions = [(0x1000, code)];
-        let arch = &hereticus_arch::thumb::Thumb2;
+        let arch = &hereticus_il::arch::thumb::Thumb2;
         let kept = outside_pool_spans(
             starts.iter().copied().collect(),
             arch,
@@ -2025,14 +2026,14 @@ mod tests {
     #[test]
     fn padding_after_a_loop_back_ends_the_function() {
         let code = loop_then(&[0xbf00, 0xbf00]);
-        let starts = starts_after_returns(&hereticus_arch::thumb::Thumb2, &code, 0x1000);
+        let starts = starts_after_returns(&hereticus_il::arch::thumb::Thumb2, &code, 0x1000);
         assert!(starts.contains(&0x100c), "{starts:x?}");
     }
 
     #[test]
     fn where_no_jump_goes_unread_a_loop_back_ends_the_function() {
         let code = loop_then(&[]);
-        let starts = starts_after_returns(&hereticus_arch::thumb::Thumb2, &code, 0x1000);
+        let starts = starts_after_returns(&hereticus_il::arch::thumb::Thumb2, &code, 0x1000);
         assert!(starts.contains(&0x1008), "{starts:x?}");
     }
 
@@ -2062,7 +2063,7 @@ mod tests {
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect();
-        let starts = starts_after_returns(&hereticus_arch::thumb::Thumb2, &code, 0x1000);
+        let starts = starts_after_returns(&hereticus_il::arch::thumb::Thumb2, &code, 0x1000);
         assert!(!starts.contains(&0x100c), "{starts:x?}");
     }
 
@@ -2110,8 +2111,8 @@ mod tests {
             0xb510, 0xf000, 0xf803, 0xf000, 0xf803, 0x2000, 0xb002, 0xbd10, 0xb510, 0xbd10,
         ]);
         let targets = call_targets(
-            &hereticus_arch::thumb::Thumb2,
-            &Region::decode(&hereticus_arch::thumb::Thumb2, 0x1000, &code),
+            &hereticus_il::arch::thumb::Thumb2,
+            &Region::decode(&hereticus_il::arch::thumb::Thumb2, 0x1000, &code),
         );
         assert_eq!(targets, [0x1010], "the epilogue at 0x100c is no function");
     }
@@ -2121,7 +2122,8 @@ mod tests {
         // The region starts two bytes before a word boundary.
         let bytes = [0xff, 0xff, 0x01, 0x10, 0, 0];
         let regions = [(0x102, &bytes[..])];
-        let tagged = tagged_functions(&hereticus_arch::thumb::Thumb2, &regions, &BTreeSet::new());
+        let tagged =
+            tagged_functions(&hereticus_il::arch::thumb::Thumb2, &regions, &BTreeSet::new());
         assert_eq!(tagged, [0x1000]);
     }
 
@@ -2471,7 +2473,7 @@ mod tests {
     /// offset table, and the slot holds its address.
     #[test]
     fn a_function_called_through_a_slot_starts_there() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         let code: Vec<u8> = [
             0x3c02_0000_u32, // 0x00 lui v0, 0
@@ -2585,7 +2587,7 @@ mod tests {
     /// pool, and the frame does not start a function.
     #[test]
     fn a_frame_made_late_does_not_split_its_function() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         let with_first = |first: u32| {
             mips_code(&[
@@ -2667,7 +2669,7 @@ mod tests {
     /// not hide the leaf function after the return.
     #[test]
     fn a_branch_from_before_a_prologue_does_not_cross_a_return() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         // The branch is in the function before, which returns at 0x08.
         let with_frame = |frame: u32| {
@@ -2720,7 +2722,7 @@ mod tests {
     /// `luaC_linkupval`, so the branch still crosses the return after it.
     #[test]
     fn a_frame_made_on_one_path_is_no_sure_start() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         let code = mips_code(&[
             0x1080_0006,     // 0x00 beq a0, zero, 0x1c
@@ -2762,7 +2764,7 @@ mod tests {
     /// not return, and even with no frame.
     #[test]
     fn a_mips_entry_sequence_starts_a_function() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         let code = mips_code(&[
             0x0320_f809,     // 0x00 jalr t9, as to _Unwind_Resume
@@ -2801,7 +2803,7 @@ mod tests {
     /// function start.
     #[test]
     fn a_branch_from_an_earlier_function_does_not_block_a_start() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         let code = mips_code(&[
             0x1080_0006,     // 0x00 beq a0, zero, 0x1c
@@ -2827,7 +2829,7 @@ mod tests {
     /// removed were all the same stray `addiu sp, sp, N`.
     #[test]
     fn a_delay_slot_does_not_start_a_function() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         // jr ra, then the frame unwind in its delay slot, then a real
         // function that opens by saving the return address.
@@ -2857,7 +2859,7 @@ mod tests {
     /// function and the prologue follows them.
     #[test]
     fn a_pic_function_starts_at_its_global_pointer_setup() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         let mut code = Vec::new();
         for word in [
@@ -2884,7 +2886,7 @@ mod tests {
     /// before it, so the start stays at the prologue itself.
     #[test]
     fn a_prologue_without_a_preamble_starts_where_it_sits() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         let mut code = Vec::new();
         for word in [
@@ -2908,7 +2910,7 @@ mod tests {
     /// delay slot rather than the slot itself.
     #[test]
     fn a_start_after_a_delay_slot_skips_the_slot() {
-        use hereticus_arch::mips::Mips32;
+        use hereticus_il::arch::mips::Mips32;
 
         let mut code = Vec::new();
         for word in [

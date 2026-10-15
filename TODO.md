@@ -49,17 +49,12 @@ twins in different orders, and their callers are twins too.
 
 ## Make function recovery a library
 
-`scan.rs` and `arch/` find 45795 of 46006 functions exactly in stripped
-libraries, over ARM, Thumb-2, AArch64 and MIPS, and few Rust crates do
-that. `scan.rs`, `raw.rs`, `dynamic.rs` and `unwind.rs` are now the crate
-`crates/hereticus-recovery`, and read code only through the `Recovery`
-trait. But `Recovery` and the implementation of it for each architecture
-are still in `crates/hereticus-arch`, in the same files as the rules of
-the matching in `Arch`, so the recovery crate needs those rules too.
-Split each file of rules in `hereticus-arch` in two, as the decoders were
-split, and move the `Recovery` half into `hereticus-recovery`. Then give
-`scan.rs` its own type of a recovered function in place of the shared
-`hereticus_memory::Function`.
+`scan.rs` and the rules of `crates/hereticus-recovery/src/arch/` find
+45795 of 46006 functions exactly in stripped libraries, over ARM, Thumb-2,
+AArch64 and MIPS, and few Rust crates do that. The crate needs only the
+decoders of `hereticus-il` and the address space of `hereticus-memory`.
+What is left: give `scan.rs` its own type of a recovered function in place
+of the shared `hereticus_memory::Function`.
 
 ## Unpack more firmware containers
 

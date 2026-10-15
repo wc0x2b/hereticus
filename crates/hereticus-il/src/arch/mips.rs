@@ -1,7 +1,8 @@
-//! The decoder and the lifter of MIPS32, which read one word at a time
-//! and know nothing of the binary around it. The rules that read MIPS
-//! code, as the addresses it forms through `gp` and the tables a `switch`
-//! jumps through, are in `hereticus`.
+//! The decoder and the lifter of MIPS32, which read one word at a time and
+//! know nothing of the binary around it. The rules that read MIPS code, as
+//! the addresses it forms through `gp` and the tables a `switch` jumps
+//! through, are in `hereticus-recovery`, and the rules the matching reads
+//! in `hereticus-arch`.
 
 use crate as il;
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};
@@ -71,6 +72,14 @@ pub fn constant(operand: &il::Operand) -> Option<u64> {
 pub fn access(operand: &il::Operand) -> Option<(Option<il::Reg>, u64)> {
     match operand {
         il::Operand::Memory { base, offset: Some(offset), .. } => Some((*base, *offset as u64)),
+        _ => None,
+    }
+}
+
+/// The opcode `rabbitizer` read for `insn`, where it read it.
+pub fn rabbitizer_opcode(insn: &Insn) -> Option<Opcode> {
+    match decoded(insn)? {
+        Decoded::Rabbitizer(opcode) => Some(opcode),
         _ => None,
     }
 }

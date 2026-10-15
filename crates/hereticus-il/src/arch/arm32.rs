@@ -1,7 +1,8 @@
 //! The decoder and the lifter of A32, which read one word at a time and
 //! know nothing of the binary around it. T32 shares much of it. The rules
 //! that read ARM code, as literal pools, long thunks and jump tables, are
-//! in `hereticus`.
+//! in `hereticus-recovery`, and the rules the matching reads in
+//! `hereticus-arch`.
 
 use crate as il;
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};

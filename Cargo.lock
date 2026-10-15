@@ -886,6 +886,7 @@ dependencies = [
  "compact_str",
  "hereticus-il",
  "hereticus-memory",
+ "hereticus-recovery",
  "rabbitizer",
  "rstest",
  "yaxpeax-arch",
@@ -972,13 +973,15 @@ name = "hereticus-recovery"
 version = "0.1.0"
 dependencies = [
  "bolero",
+ "compact_str",
  "gimli",
- "hereticus-arch",
  "hereticus-il",
  "hereticus-memory",
  "object",
+ "rabbitizer",
  "rstest",
  "smallvec",
+ "yaxpeax-arch",
  "yaxpeax-arm",
 ]
 

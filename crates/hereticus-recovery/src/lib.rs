@@ -6,9 +6,10 @@
 //! look for the patterns that only a function starts: prologues, calls, and
 //! the words that follow a return.
 //!
-//! A scan asks an architecture through the [`hereticus_arch::Recovery`] trait,
-//! which each architecture implements.
+//! A scan asks an architecture through the [`arch::Recovery`] trait, which
+//! [`arch`] implements for each instruction set.
 
+pub mod arch;
 pub mod dynamic;
 pub mod raw;
 pub mod scan;

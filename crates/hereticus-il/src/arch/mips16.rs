@@ -1,7 +1,8 @@
 //! The decoder and the lifter of MIPS16e, which read one instruction at a
 //! time, by the MIPS32 instruction it does where it has one. The rules that
 //! read MIPS16e code, as its preamble of the global pointer and its jump
-//! tables, are in `hereticus`.
+//! tables, are in `hereticus-recovery`, and the rules the matching reads in
+//! `hereticus-arch`.
 
 use crate as il;
 use crate::arch::mips::{Decoded as MipsDecoded, Mips32, decoded};
