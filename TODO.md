@@ -61,14 +61,6 @@ split, and move the `Recovery` half into `hereticus-recovery`. Then give
 `scan.rs` its own type of a recovered function in place of the shared
 `hereticus_memory::Function`.
 
-## Keep the decoder helpers out of the API of hereticus-arch
-
-`hereticus-view` calls `mips::rabbitizer_opcode` and
-`aarch64::is_named_load`, so the crate split made them public. They
-answer questions about one decoder, not about an architecture. Give `Insn`
-or `Arch` a method for each question that `hereticus-view` asks, and make
-the two functions `pub(crate)` again.
-
 ## Split matching.rs
 
 `crates/hereticus-match/src/matching.rs` is 4687 lines, after its tests

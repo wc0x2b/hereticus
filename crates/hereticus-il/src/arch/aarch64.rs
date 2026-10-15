@@ -1058,6 +1058,25 @@ pub(crate) fn is_atomic_store(inst: &Instruction) -> bool {
     order & ACQUIRE == 0 && is_zero_register(inst.operands[1])
 }
 
+/// A load, or an atomic access that `yaxpeax-arm` names as one: every
+/// instruction it prints with `ld` first.
+pub fn is_named_load(decoded: Decoded) -> bool {
+    match role_of(decoded.opcode, decoded.alias) {
+        Role::Load { .. } => true,
+        Role::Atomic => !matches!(
+            decoded.opcode,
+            Opcode::CAS(_)
+                | Opcode::CASB(_)
+                | Opcode::CASH(_)
+                | Opcode::CASP(_)
+                | Opcode::SWP(_)
+                | Opcode::SWPB(_)
+                | Opcode::SWPH(_)
+        ),
+        _ => false,
+    }
+}
+
 /// What an instruction of `opcode`, printed as `alias`, does with its operands.
 pub fn role_of(opcode: Opcode, alias: Alias) -> Role {
     if alias == Alias::AtomicStore {

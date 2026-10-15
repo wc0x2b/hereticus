@@ -293,25 +293,6 @@ fn opcode_of(insn: &Insn) -> Option<Opcode> {
     decoded(insn).map(|decoded| decoded.opcode)
 }
 
-/// A load, or an atomic access that `yaxpeax-arm` names as one: every
-/// instruction it prints with `ld` first.
-pub fn is_named_load(decoded: Decoded) -> bool {
-    match role_of(decoded.opcode, decoded.alias) {
-        Role::Load { .. } => true,
-        Role::Atomic => !matches!(
-            decoded.opcode,
-            Opcode::CAS(_)
-                | Opcode::CASB(_)
-                | Opcode::CASH(_)
-                | Opcode::CASP(_)
-                | Opcode::SWP(_)
-                | Opcode::SWPB(_)
-                | Opcode::SWPH(_)
-        ),
-        _ => false,
-    }
-}
-
 /// A load, a store or an atomic access of memory.
 fn accesses_memory(decoded: Decoded) -> bool {
     !matches!(role_of(decoded.opcode, decoded.alias), Role::Compute | Role::ReadOnly)

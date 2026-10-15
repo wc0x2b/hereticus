@@ -1481,7 +1481,7 @@ pub(super) fn is_store(insn: &Insn) -> bool {
 }
 
 /// The opcode `rabbitizer` read for `insn`, where it read it.
-pub fn rabbitizer_opcode(insn: &Insn) -> Option<Opcode> {
+pub(crate) fn rabbitizer_opcode(insn: &Insn) -> Option<Opcode> {
     match decoded(insn)? {
         Decoded::Rabbitizer(opcode) => Some(opcode),
         _ => None,
