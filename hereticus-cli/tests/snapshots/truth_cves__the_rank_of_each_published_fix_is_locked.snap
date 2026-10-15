@@ -23,3 +23,7 @@ CVE-2026-53921 odhcpd AArch64         5    18  changed sub_e12c sub_e338 0.97 21
 CVE-2026-53921 odhcpd A32             1    20  changed sub_c1b8 sub_c354 0.95 65 39 18
 CVE-2026-53921 odhcpd MIPS16e BE      1    21  changed dhcpv6_ia_handle_IAs dhcpv6_ia_handle_IAs 0.96 231 198 14
 CVE-2026-53921 odhcpd MIPS16e LE      1    22  changed dhcpv6_ia_handle_IAs dhcpv6_ia_handle_IAs 0.97 239 210 14
+CVE-2026-35385 dropbear AArch64       1    19  changed sub_1650c sub_1623c 0.69 369 64 14
+CVE-2026-35385 dropbear A32           1    21  changed sub_157bc sub_15424 0.72 297 37 34
+CVE-2026-35385 dropbear MIPS32 BE     1    19  changed sub_1a378 sub_1a524 0.56 85 189 95
+CVE-2026-35385 dropbear MIPS32 LE     2    37  changed sub_1a34c sub_1a200 0.56 72 176 108
