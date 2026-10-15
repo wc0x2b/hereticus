@@ -174,10 +174,16 @@ impl Mips32 {
             // `rabbitizer` stops at MIPS IV, so a MIPS32 word it refuses may
             // still be one this crate reads.
             if let Some(word32) = crate::arch::mips32::decode(raw) {
+                let kind = match crate::arch::mips32::branch_distance(raw) {
+                    Some(distance) => {
+                        InsnKind::Branch { target: insn_address.checked_add_signed(distance) }
+                    }
+                    None => word32.kind,
+                };
                 let insn = Insn::new(
                     insn_address,
                     word,
-                    word32.kind,
+                    kind,
                     crate::arch::Opcode::Mips(Decoded::Mips32(word32.op), self.order),
                 );
                 let text = printing.text(|| format!("{} {}", word32.op.name(), word32.operands));
@@ -268,7 +274,7 @@ impl Decoder for Mips32 {
                 let name = compact_str::format_compact!("{opcode:?}");
                 name.strip_prefix("core_").unwrap_or(&name).into()
             }
-            Some(Decoded::Mips32(op)) => op.name().into(),
+            Some(Decoded::Mips32(op)) => op.operation_name(),
             Some(Decoded::Mips16(op)) => op.name().into(),
             None => UNKNOWN_TEXT.into(),
         }

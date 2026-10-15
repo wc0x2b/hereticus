@@ -36,18 +36,14 @@ through stubs that the cache builder has bound or removed.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 45919 of 46006 exact, 16 starts missed and 25 invented,
+stripped releases: 45937 of 46006 exact, 9 starts missed and 3 invented,
 over ARM, Thumb-2, AArch64 and MIPS, with the PLT and the lazy binding
-stubs of MIPS left out. By cause:
-
-- Missed after a pool that no load names, as `codebinexpval` and
-  `auxsetnode` of Lua 5.3 by clang for ARM and Thumb-2.
-- Missed one by one: `luaV_shiftl` for MIPS, `getS` for ARM and
-  `db_getregistry` for Thumb-2, all by GCC, and `crc32_combine_` of zlib
-  1.2.11 by clang for Thumb-2.
-- Invented inside a function after an internal return, as in Lua's
-  `math_ceil` and `math_floor` for MIPS, and in the `luaopen_` functions
-  of Lua 5.3 and in zlib 1.2.11 by GCC for Thumb-2.
+stubs of MIPS left out (`RESEARCH.md`, "Function recovery, again"). 8 of
+the 9 missed follow a call that never returns, to a function of the
+library, and open with no frame: `auxsetnode` of Lua 5.3 by clang for
+ARM and Thumb-2, which a pointer reaches, and `luaV_shiftl` by GCC for
+MIPS, which only tail calls reach. Telling such a call from one that
+returns needs to know which functions of the library never return.
 
 ## Scan a raw binary that mixes two instruction sets
 
@@ -108,7 +104,9 @@ worth reading.
 ## Show the last instructions as IL
 
 `--view il` still shows NEON work as the code prints it: the lift names
-it `Vector` only.
+it `Vector` only. A MIPS float compare and branch on a condition code
+other than 0, as `c.lt.d $fcc1` and `bc1t $fcc1`, also show as the code
+prints them: the view follows code 0 alone.
 
 ## Pair better across a kernel upgrade
 

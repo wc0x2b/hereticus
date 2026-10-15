@@ -359,11 +359,14 @@ pub fn recover_in_memory(
     let regions = split.as_slice();
     let decoded: Vec<Region<'_>> =
         regions.iter().map(|&(base, code)| Region::decode(arch, base, code)).collect();
-    // An exported function is exact at both ends, and what follows it starts
-    // another function, or padding that is trimmed away.
+    // An exported function is exact at both ends, and what follows it,
+    // past the padding, starts another function.
     for range in &linked.exported {
         starts.insert((range.start, Source::Symbol));
         starts.insert((range.end, Source::AfterReturn));
+        if let Some(next) = past_padding(regions, range.end, arch) {
+            starts.insert((next, Source::AfterReturn));
+        }
     }
     for entry in exception_index {
         starts.insert((entry.address, Source::ExceptionIndex));
@@ -414,6 +417,11 @@ pub fn recover_in_memory(
                     starts.insert((address, Source::AfterReturn));
                 }
             }
+            for address in function_entries(arch, &region.insns) {
+                if blind.iter().any(|range| range.contains(&address)) {
+                    starts.insert((address, Source::Entry));
+                }
+            }
         }
         let starts =
             outside_pool_spans(within_exports(starts, &linked.exported), arch, &decoded, memory);
@@ -439,6 +447,30 @@ pub fn recover_in_memory(
     let starts =
         outside_pool_spans(within_exports(starts, &linked.exported), arch, &decoded, memory);
     build_functions(&starts, regions, arch)
+}
+
+/// The first address from `address` on that holds no padding, in the
+/// region that holds `address`, or `None` where padding runs to its end.
+///
+/// A linker pads after a function to align the next. GCC for Thumb-2 pads
+/// with `nop` and zero halfwords, and `trim_padding` keeps zeros there, as
+/// a pool can end with them. A start at the padding made a function of it,
+/// and where the padding was `nop`s it took in the function after it too:
+/// measured on zlib 1.2.11 by clang for Thumb-2, `crc32_combine_`. A word
+/// of data that decodes as padding is not padding, but no start is guessed
+/// inside a pool: see [`outside_pool_spans`].
+fn past_padding(regions: &[(u64, &[u8])], address: u64, arch: &dyn Recovery) -> Option<u64> {
+    let &(base, code) = regions
+        .iter()
+        .find(|&&(base, code)| (base..base + code.len() as u64).contains(&address))?;
+    let mut offset = usize::try_from(address - base).ok()?;
+    while offset < code.len() {
+        match arch.decode(code, offset, base + offset as u64) {
+            Ok(insn) if arch.is_padding(&insn) => offset += insn.bytes().len(),
+            _ => return Some(base + offset as u64),
+        }
+    }
+    None
 }
 
 /// The width of a word of a literal pool or of a jump table, the widest
@@ -818,6 +850,12 @@ fn build_functions(
         // function look changed when only its neighbour moved.
         let bytes = arch.trim_padding(bytes);
         if bytes.is_empty() {
+            continue;
+        }
+        // A guess that holds only padding is the gap between two functions.
+        if *source == Source::AfterReturn
+            && past_padding(&[(*address, bytes)], *address, arch).is_none()
+        {
             continue;
         }
 
@@ -1303,6 +1341,14 @@ fn starts_after_returns_in(
         while start < index && arch.is_padding(&insns[start]) {
             start += 1;
         }
+        // No code runs into a frame made right after a pool, and a function
+        // makes its frame first: a pool inside a function sits after a
+        // jump, before more of the body. Clang for ARM puts `codebinexpval`
+        // of Lua after the pool of `luaK_posfix`, which reaches it by a tail
+        // call.
+        if start == index && index > 0 && !is_code(&&insns[index - 1]) {
+            return false;
+        }
         // A conditional branch never comes from another function, and nor
         // does any branch from after the last sure start: a tail call comes
         // from the function before. Clang on MIPS jumps with `b` to the late
@@ -1753,6 +1799,40 @@ mod tests {
     use super::*;
     use hereticus_il::arch::Decoder as _;
     use hereticus_il::arch::arm32::Arm32;
+
+    /// Thumb-2 halfwords as little-endian bytes.
+    fn halfwords(halfwords: &[u16]) -> Vec<u8> {
+        halfwords.iter().flat_map(|halfword| halfword.to_le_bytes()).collect()
+    }
+
+    /// The padding GCC puts after a Thumb-2 function, `nop` and zero
+    /// halfwords, is stepped over to the next function.
+    #[test]
+    fn a_start_steps_past_padding() {
+        use hereticus_il::arch::thumb::Thumb2;
+        // bx lr, nop, two zero halfwords, then push {r4, lr}.
+        let code = halfwords(&[0x4770, 0xbf00, 0x0000, 0x0000, 0xb510]);
+        let regions = [(0x100, code.as_slice())];
+        assert_eq!(past_padding(&regions, 0x102, &Thumb2), Some(0x108));
+        assert_eq!(past_padding(&regions, 0x100, &Thumb2), Some(0x100), "no padding");
+        assert_eq!(past_padding(&regions, 0x200, &Thumb2), None, "outside the region");
+        let padding = halfwords(&[0xbf00, 0x0000]);
+        assert_eq!(past_padding(&[(0x100, padding.as_slice())], 0x100, &Thumb2), None);
+    }
+
+    /// A guess that holds only padding makes no function; a fact does.
+    #[test]
+    fn a_guess_of_only_padding_makes_no_function() {
+        use hereticus_il::arch::thumb::Thumb2;
+        // bx lr, then a nop and two zero halfwords up to 0x108.
+        let code = halfwords(&[0x4770, 0xbf00, 0x0000, 0x0000]);
+        let regions = [(0x100, code.as_slice())];
+        let starts = |source| BTreeSet::from([(0x100, Source::Symbol), (0x102, source)]);
+        let found = build_functions(&starts(Source::AfterReturn), &regions, &Thumb2);
+        assert_eq!(found.iter().map(|function| function.address).collect::<Vec<_>>(), [0x100]);
+        let found = build_functions(&starts(Source::CallTarget), &regions, &Thumb2);
+        assert_eq!(found.len(), 2, "something calls it");
+    }
 
     /// A `pop` that loads `pc` returns from a frame, in its list form and
     /// alone; a `bx lr` pops no frame.
