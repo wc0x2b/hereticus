@@ -419,7 +419,7 @@ pub fn printed_operands(insn: &Insn) -> String {
 }
 
 /// A word of data among code, as one instruction no decoder reads.
-fn data_word(at: u64, bytes: &[u8]) -> Insn {
+pub fn data_word(at: u64, bytes: &[u8]) -> Insn {
     Insn::new(at, bytes, InsnKind::Unknown, Opcode::Data)
 }
 

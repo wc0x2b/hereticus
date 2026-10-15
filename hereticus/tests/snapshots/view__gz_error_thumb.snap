@@ -1,6 +1,5 @@
 ---
 source: hereticus/tests/view.rs
-assertion_line: 55
 expression: "gz_error(arch).join(\"\\n\")"
 ---
 store.32 [sp - 0x14] = r4, r5, r6, r7, lr; sp = sp - 0x14
@@ -62,5 +61,3 @@ goto $-0x72
 r3 = -0x4
 store.32 [r4 + 0x64] = r3
 goto $-0x24
-.word 00005ab8
-.word 00005aa4

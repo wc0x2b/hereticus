@@ -99,7 +99,8 @@ pub struct Statement {
 /// The IL statements of `insns`, which were decoded from `code`: one for
 /// each instruction, but where an idiom of several instructions shows as
 /// one, as the making of the global pointer on MIPS, and an `it`, whose
-/// condition sits on each instruction it covers, shows as none.
+/// condition sits on each instruction it covers, and a word of data show
+/// as none.
 pub fn il_lines(arch: &dyn Arch, code: &[u8], insns: &[Insn]) -> Vec<String> {
     il_lines_in(arch, code, insns, None)
 }
@@ -166,7 +167,11 @@ enum Fold {
 fn folds(arch: &dyn Arch, insns: &[Insn]) -> Vec<Fold> {
     let mut folds = vec![Fold::Own; insns.len()];
     for index in 0..insns.len() {
-        if hereticus_il::arch::thumb::is_it(&insns[index]) {
+        // A word of a literal pool is data: the load of it shows what it
+        // holds.
+        if hereticus_il::arch::thumb::is_it(&insns[index])
+            || insns[index].opcode == hereticus_il::arch::Opcode::Data
+        {
             folds[index] = Fold::Hidden;
         }
         let Some(setup) = hereticus_arch::Arch::global_pointer_setup(arch, &insns[index..]) else {
