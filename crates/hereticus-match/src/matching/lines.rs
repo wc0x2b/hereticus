@@ -239,9 +239,20 @@ impl IlRun<'_> {
     /// A name the IL view gives, as of a callee or a string, is no word of
     /// an instruction. It changes where the target or the pool the
     /// instruction reads changed, which [`difference`] lets move.
+    ///
+    /// A text is compared whole, as its words alone read `"PATH"` and
+    /// `"PATH="` as one: the fix of CVE-2026-30874 in `procd`.
     fn only_printed_words_differ(&self, before_at: usize, after_at: usize) -> bool {
-        let before = words_of(&il_key(self.before_text(before_at)));
-        let after = words_of(&il_key(self.after_text(after_at)));
+        let (before_key, after_key) =
+            (il_key(self.before_text(before_at)), il_key(self.after_text(after_at)));
+        let texts = |key: &str| -> Vec<String> {
+            key.split('"').skip(1).step_by(2).map(str::to_string).collect()
+        };
+        if texts(&before_key) != texts(&after_key) {
+            return false;
+        }
+        let before = words_of(&before_key);
+        let after = words_of(&after_key);
         before.len() == after.len()
             && before.iter().zip(&after).all(|(a, b)| {
                 a == b || (self.before.printed.contains(a) && self.after.printed.contains(b))
