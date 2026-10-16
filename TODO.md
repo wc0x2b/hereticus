@@ -128,19 +128,18 @@ the next measure.
 
 ## Measure on more published fixes, and faster
 
-Thirty-seven cases of fourteen published fixes, in
+Thirty-nine cases of fourteen published fixes, in
 `examples/research_bench.rs --cves`, decide between the orders of the
 report: each fix of `real-life-reports/`, and each OpenWrt fix for four
-architectures, or for two before 21.02. No order wins on them
+architectures, or for three before 21.02, where `malta` ships its root
+file system only in the initramfs of its kernel. No order wins on them
 (`RESEARCH.md`, "Published fixes, again"). Every OpenWrt advisory since
 2025 with binaries on both sides is in, and the 2019 and 2020 fixes of
 `libubox` and `uhttpd`. The `umdns` fixes of 24.10.6 (CVE-2026-30871 and
 CVE-2026-30872), and the 2020 fixes of `relayd` and `umdns`
 (CVE-2020-11752 and CVE-2020-11750), are out: neither package is in a
 root file system, and the package feeds, on `archive.openwrt.org` too,
-keep only the fixed build. `malta` before 21.02 ships no root file system
-but a `vmlinux-initramfs.elf` that holds one, which would add MIPS to the
-older fixes. The fixes of a vendor's firmware are next, and a published
+keep only the fixed build. The fixes of a vendor's firmware are next, and a published
 fix in a kernel module for ARM: `tun`, `nf_conntrack` and `wireguard` of
 OpenWrt 24.10.3 and 24.10.4 for ARMv7 read as unchanged but for
 constants, which checks the reading but ranks no fix.

@@ -7,7 +7,8 @@ always tells of the same bytes.
 
 The `ubusd`, `dropbear`, `uhttpd`, `odhcpd`, `procd`, `jsonfilter` and
 `libblobmsg_json` builds of OpenWrt come
-from the root file system of each release, and the `ltq-ptm` kernel
+from the root file system of each release, or from the initramfs of its
+kernel where it ships none, and the `ltq-ptm` kernel
 module from its package, which this script downloads. The Apple binaries
 come from an IPSW with the `ipsw` tool, which this script does not run: a
 missing one stops it with the commands that get it.
@@ -22,6 +23,7 @@ import io
 import re
 import sys
 import tarfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -178,6 +180,14 @@ PINNED = {
         "adcf264d25fab36d12ca943025dd55060edfc01403f34e0c199b2209ffa356f8",
     "hereticus-openwrt-cve/18.06.6/armvirt-64/usr/sbin/uhttpd":
         "a3f9cf3f3656ecb35e629aa3c8d16b2330b76ed9c603654a74241bd01ed1bec9",
+    "hereticus-openwrt-cve/19.07.0/malta-be/lib/libblobmsg_json.so":
+        "f5748a9e250fe610a038ee4d5645549e65d1e8bb8819ae94877a6fbbea4a1d55",
+    "hereticus-openwrt-cve/19.07.1/malta-be/lib/libblobmsg_json.so":
+        "03507b37509b4c9ebf19a65ecbf08ddc1f1f9a7b0a161fa0b179c30c6e0b0c21",
+    "hereticus-openwrt-cve/18.06.5/malta-be/usr/sbin/uhttpd":
+        "b78a5c0e2735bfe84f5712b32c561fa6d5f7f7568e2762b71193411461580247",
+    "hereticus-openwrt-cve/18.06.6/malta-be/usr/sbin/uhttpd":
+        "02492c2cc82d2c9c611e46c85974b2732ad636ff00916c530fb981f54d5528a3",
 }
 
 # The commands that put the Apple binaries in CACHE / "hereticus-apple/cve",
@@ -228,7 +238,9 @@ def fetch_from_rootfs(path: str) -> bytes:
     """Download a file of the root file system of its release.
 
     Releases before 21.02 ship an empty `rootfs.cpio.gz` for `armvirt`, and
-    the same files in `default-rootfs.tar.gz`, which is read instead.
+    the same files in `default-rootfs.tar.gz`, which is read instead. They
+    ship no root file system for `malta` at all, but a kernel that holds it
+    as its initramfs, which is read then.
     """
     # hereticus-openwrt-cve/<release>/<target>-<subtarget>/<file>
     _, release, target, *member = path.split("/")
@@ -236,8 +248,13 @@ def fetch_from_rootfs(path: str) -> bytes:
     base = f"{MIRROR}/{release}/targets/{board}/{subtarget}/openwrt-{release}-{target}"
     url = f"{base}-rootfs.cpio.gz"
     print(f"cve_binaries: downloading {url}", file=sys.stderr)
-    with urllib.request.urlopen(url, timeout=600) as response:
-        archive = gzip.decompress(response.read())
+    try:
+        with urllib.request.urlopen(url, timeout=600) as response:
+            archive = gzip.decompress(response.read())
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+        return initramfs_member(f"{base}-vmlinux-initramfs.elf", "/".join(member))
     if archive:
         return cpio_member(archive, "/".join(member))
     url = f"{base}-default-rootfs.tar.gz"
@@ -245,6 +262,20 @@ def fetch_from_rootfs(path: str) -> bytes:
     with urllib.request.urlopen(url, timeout=600) as response:
         tar = tarfile.open(fileobj=io.BytesIO(response.read()))
     return tar.extractfile("./" + "/".join(member)).read()
+
+
+def initramfs_member(url: str, wanted: str) -> bytes:
+    """The bytes of one file of the initramfs that the kernel at `url`
+    holds, as an uncompressed `newc` cpio archive."""
+    print(f"cve_binaries: downloading {url}", file=sys.stderr)
+    with urllib.request.urlopen(url, timeout=600) as response:
+        kernel = response.read()
+    # The kernel holds the text `070701` too, so the archive starts at the
+    # first one that a header of hex digits follows.
+    start = re.search(rb"070701[0-9A-Fa-f]{104}", kernel)
+    if not start:
+        raise FileNotFoundError(f"no initramfs in {url}")
+    return cpio_member(kernel[start.start() :], wanted)
 
 
 def fetch_kmod(path: str) -> bytes:
