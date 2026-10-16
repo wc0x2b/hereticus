@@ -27,7 +27,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use hereticus::callee::{Callee, callees};
-use hereticus::matching::{Match, Options, UseNames, diff_with, similarity};
+use hereticus::matching::{Diff, Match, Options, UseNames, diff_with, similarity};
 use hereticus::norm::{NormInsn, normalize_body_in};
 use hereticus::obj::{Binary, Isa};
 use hereticus::recovery::arch::decode_all;
@@ -137,6 +137,28 @@ const SAME_NEIGHBOURS: f64 = 0.5;
 /// can share all their neighbours.
 const FEWEST_NEIGHBOURS: usize = 4;
 
+/// The score from which a missed pair counts as close.
+const CLOSE: f64 = 0.7;
+
+/// The functions that stayed free on both sides, though the symbols say they
+/// are one function: they share a name and a source file.
+#[derive(Clone, Copy, Default)]
+struct Missed {
+    pairs: usize,
+    /// Pairs that score [`CLOSE`] or more.
+    close: usize,
+    /// Pairs whose normalized instructions are the same.
+    identical: usize,
+}
+
+impl core::ops::AddAssign for Missed {
+    fn add_assign(&mut self, other: Missed) {
+        self.pairs += other.pairs;
+        self.close += other.close;
+        self.identical += other.identical;
+    }
+}
+
 /// The pairs of one kernel upgrade, checked against the symbols.
 #[derive(Default)]
 struct Tally {
@@ -151,6 +173,7 @@ struct Tally {
     undescribed: usize,
     /// The verdicts, by the stage that paired them.
     stages: BTreeMap<String, Counts>,
+    missed: Missed,
 }
 
 fn firmware() -> PathBuf {
@@ -451,7 +474,53 @@ fn measure(board: &Board, older: &str, newer: &str) -> Tally {
         tally.verdicts[verdict as usize] += 1;
         tally.stages.entry(stage).or_default()[verdict as usize] += 1;
     }
+    tally.missed = missed(&sides, &moves, &diff);
     tally
+}
+
+/// The pairs of a function gone and a function new that share a name and
+/// a source file, where the debug file describes both.
+fn missed(sides: &[Side; 2], moves: &FileMoves, diff: &Diff) -> Missed {
+    let mut new_by_name: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for &after in diff.added.iter().filter(|&&after| sides[1].described[after]) {
+        for name in sides[1].names(after) {
+            new_by_name.entry(name).or_default().push(after);
+        }
+    }
+    let pairs: BTreeSet<(usize, usize)> = diff
+        .removed
+        .iter()
+        .filter(|&&before| sides[0].described[before])
+        .flat_map(|&before| {
+            let files = sides[0].files(before);
+            sides[0]
+                .names(before)
+                .into_iter()
+                .filter_map(|name| new_by_name.get(name))
+                .flatten()
+                .filter(move |&&after| {
+                    let after_files = sides[1].files(after);
+                    files.iter().any(|&b| after_files.iter().any(|&a| moves.corresponds(b, a)))
+                })
+                .map(move |&after| (before, after))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    pairs
+        .par_iter()
+        .map(|&(before, after)| {
+            let bodies = [sides[0].body(before), sides[1].body(after)];
+            let score = similarity(&bodies[0], &bodies[1]);
+            Missed {
+                pairs: 1,
+                close: usize::from(score >= CLOSE),
+                identical: usize::from(bodies[0] == bodies[1]),
+            }
+        })
+        .reduce(Missed::default, |mut sum, one| {
+            sum += one;
+            sum
+        })
 }
 
 fn add(sum: &mut Counts, counts: &Counts) {
@@ -480,6 +549,17 @@ fn heading(out: &mut String, label: &str) {
         "right", "renamed", "unproven", "twin", "homonym", "wrong", "wrong%", "at most"
     )
     .unwrap();
+}
+
+/// Whether two releases run different kernels: their series differ, as
+/// 22.03 and 23.05 do, where 22.03.2 and 22.03.5 share one.
+fn is_upgrade(older: &str, newer: &str) -> bool {
+    series(older) != series(newer)
+}
+
+/// The series of a release: `22.03` of `22.03.5`.
+fn series(release: &str) -> &str {
+    release.rsplit_once('.').map_or(release, |(series, _)| series)
 }
 
 fn percent(part: usize, whole: usize) -> f64 {
@@ -544,5 +624,25 @@ fn the_kernel_pairs_checked_against_their_symbols_are_locked() {
     for (stage, counts) in &stages {
         row(&mut out, stage, counts);
     }
+
+    writeln!(out, "\n{:36} {:>7} {:>7} {:>9}", "missed", "pairs", "close", "identical").unwrap();
+    let mut missed: BTreeMap<(&str, &str), Missed> = BTreeMap::new();
+    for (&(_, older, newer), tally) in cases.iter().zip(&tallies) {
+        *missed.entry((older, newer)).or_default() += tally.missed;
+    }
+    // The point release changes too little to miss much; the upgrades are
+    // where the pairs go missing.
+    let mut upgrades = Missed::default();
+    let mut missed_row = |label: &str, counts: &Missed| {
+        writeln!(out, "{label:36} {:>7} {:>7} {:>9}", counts.pairs, counts.close, counts.identical)
+            .unwrap();
+    };
+    for (&(older, newer), counts) in &missed {
+        missed_row(&format!("{older}/{newer}"), counts);
+        if is_upgrade(older, newer) {
+            upgrades += *counts;
+        }
+    }
+    missed_row("upgrades", &upgrades);
     insta::assert_snapshot!(out);
 }
