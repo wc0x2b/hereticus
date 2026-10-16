@@ -76,8 +76,40 @@ impl Arch for Mips16 {
         kinds
     }
 
-    fn contents(&self, _code: &[u8], _insns: &[Insn], _space: &AddressSpace) -> Contents {
-        Contents::Code
+    /// GCC puts the table of each `switch` after its function in MIPS16e
+    /// code, as the absolute addresses of its cases where the code is not
+    /// PIC, and a scan reads such a table as a function of its own. Its
+    /// addresses move with each release. So a function whose aligned words
+    /// are at least half addresses inside the image is data.
+    ///
+    /// A function's literal pool holds addresses too. Measured on the
+    /// MIPS16e builds of `uhttpd`, `ubusd`, `odhcpd`, `jsonfilter` and
+    /// `libblobmsg_json` of OpenWrt, code of 8 words or more reaches at
+    /// most 40%, and the tables of `uhttpd` of 18.06 at least 70%.
+    ///
+    /// A shorter run is data only where every word is an address: the scan
+    /// splits a literal pool of addresses off the function it ends, as one
+    /// of 5 words in that `uhttpd`. A word of MIPS16e code whose top
+    /// halfword is the top of an address, as `addiu s0, sp, 0x100` for
+    /// `0x0040`, is rare, and every word of a run of such is rarer.
+    fn contents(&self, code: &[u8], insns: &[Insn], space: &AddressSpace) -> Contents {
+        const FEWEST_WORDS: usize = 8;
+        const FEWEST_POOL_WORDS: usize = 2;
+        const WORD: usize = 4;
+
+        let Some(first) = insns.first() else { return Contents::Code };
+        // The words of a table start on a word, and a function on a
+        // halfword.
+        let skip =
+            usize::try_from((WORD as u64 - first.address % WORD as u64) % WORD as u64).unwrap_or(0);
+        let words = code.get(skip..).unwrap_or_default().as_chunks::<WORD>().0;
+        // A pointer to a MIPS16e function has bit 0 set.
+        let addresses =
+            words.iter().filter(|word| space.contains(self.read_pointer(*word) & !1)).count();
+        let is_table = words.len() >= FEWEST_WORDS && addresses * 2 >= words.len();
+        let is_pool =
+            (FEWEST_POOL_WORDS..FEWEST_WORDS).contains(&words.len()) && addresses == words.len();
+        if is_table || is_pool { Contents::Data } else { Contents::Code }
     }
 
     /// What [`crate::Recovery::data_addresses`] finds, and also the slot of the
@@ -129,5 +161,66 @@ mod tests {
         let insn = Mips16::BIG.decode(&code, 0, 0).expect("decodes");
         assert!(Mips16::BIG.is_frame_management(&insn));
         assert!(Mips16::BIG.is_prologue(&insn));
+    }
+
+    /// The contents of the words `words`, big endian, at `address`, in an
+    /// image from 0x400000 to 0x420000.
+    fn contents_of(words: &[u32], address: u64) -> Contents {
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = hereticus_recovery::arch::decode_all(&Mips16::BIG, &code, address);
+        let space = AddressSpace::of_raw_image(0x40_0000, 0x2_0000);
+        Mips16::BIG.contents(&code, &insns, &space)
+    }
+
+    /// The pool that ends a function of `uhttpd` of OpenWrt 18.06.5.
+    const POOL: [u32; 5] = [0x0041_81b0, 0x0040_663c, 0x0040_65a8, 0x0040_6648, 0x0040_665c];
+    /// The function after it: `save`, and on.
+    const CODE: [u32; 8] = [
+        0x64e4_6d0c,
+        0x6704_1a00,
+        0x1e14_6c01,
+        0xb305_da02,
+        0x9b81_da60,
+        0xda81_db41,
+        0xdc40_6464,
+        0xe8a0_6500,
+    ];
+
+    #[test]
+    fn a_table_of_addresses_is_data() {
+        let table: Vec<u32> = (0..8).map(|at| 0x0040_6600 + at * 0x10 + 1).collect();
+        assert_eq!(contents_of(&table, 0x40_4250), Contents::Data);
+        let mut half = table.clone();
+        half[..4].copy_from_slice(&CODE[..4]);
+        assert_eq!(contents_of(&half, 0x40_4250), Contents::Data, "half addresses");
+        half[4] = CODE[4];
+        assert_eq!(contents_of(&half, 0x40_4250), Contents::Code, "fewer than half");
+    }
+
+    #[test]
+    fn a_pool_of_addresses_alone_is_data() {
+        assert_eq!(contents_of(&POOL, 0x40_3ad0), Contents::Data);
+        let mut mixed = POOL;
+        mixed[2] = CODE[0];
+        assert_eq!(contents_of(&mixed, 0x40_3ad0), Contents::Code, "one word of code");
+        assert_eq!(contents_of(&POOL[..1], 0x40_3ad0), Contents::Code, "one word");
+    }
+
+    #[test]
+    fn code_with_its_pool_is_code() {
+        let function: Vec<u32> = CODE.iter().chain(&POOL[..2]).copied().collect();
+        assert_eq!(contents_of(&function, 0x40_3ae4), Contents::Code);
+        assert_eq!(contents_of(&CODE, 0x40_3ae4), Contents::Code);
+        assert_eq!(contents_of(&[], 0x40_3ae4), Contents::Code);
+    }
+
+    /// A function on a halfword reads its words from the next word.
+    #[test]
+    fn the_words_start_on_a_word() {
+        let mut code = 0x6500_u16.to_be_bytes().to_vec();
+        code.extend(POOL.iter().flat_map(|word| word.to_be_bytes()));
+        let (insns, _) = hereticus_recovery::arch::decode_all(&Mips16::BIG, &code, 0x40_3ace);
+        let space = AddressSpace::of_raw_image(0x40_0000, 0x2_0000);
+        assert_eq!(Mips16::BIG.contents(&code, &insns, &space), Contents::Data);
     }
 }
