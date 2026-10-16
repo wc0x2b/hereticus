@@ -1149,6 +1149,21 @@ So a fix counts as in the library now only where a function that holds
 it, by its symbol or an inlined copy, has other bytes in the other
 build. Every fix that changed the code is on a row: 193 of 193.
 
+### Two older OpenWrt fixes
+
+The `libubox` fix of CVE-2020-7248, from OpenWrt 19.07.0 to 19.07.1, and
+the `uhttpd` fix of CVE-2019-19945, from 18.06.5 to 18.06.6, each for
+`armvirt` 32 and 64, which before 21.02 ships its root file system as a
+tar. The `libubox` fix turns each `sprintf` of `blobmsg_format_element`
+into `snprintf`, and ranks 1 of 3 on both, as a call turned into its
+bounded form. Without that rule it ranks 2, below the change to 64-bit
+values in `blobmsg_add_json_element`: the second fix that the rule
+lifts, and the first that it was not made on. The `uhttpd` fix adds a
+test of the sign of the length to `client_parse_header` and to
+`client_poll_post_data`, which rank 3 and 2 of 5 on both. Over all
+thirty-seven cases of fourteen fixes, the default order has a rank sum
+of 105, with 21 first.
+
 ### Two builds of Mirai
 
 Two static builds of one Mirai variant for ARM, with symbols, from

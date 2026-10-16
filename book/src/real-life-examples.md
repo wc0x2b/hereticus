@@ -4,6 +4,8 @@ Each page uses `hereticus` on a published security fix. It compares the binary
 before the fix with the binary after the fix, and shows the rank of the fixed
 function in the report.
 
+- [CVE-2019-19945: uhttpd, OpenWrt 18.06.5 to 18.06.6](./real-life-examples/cve-2019-19945.md)
+- [CVE-2020-7248: libubox, OpenWrt 19.07.0 to 19.07.1](./real-life-examples/cve-2020-7248.md)
 - [CVE-2021-30883: AppleCLCD, iOS 15.0.1 to 15.0.2](./real-life-examples/cve-2021-30883.md)
 - [CVE-2024-23265: AppleDiskImages2, iOS 17.3.1 to 17.4](./real-life-examples/cve-2024-23265.md)
 - [CVE-2025-14282: dropbear, OpenWrt 24.10.4 to 24.10.5](./real-life-examples/cve-2025-14282.md)
