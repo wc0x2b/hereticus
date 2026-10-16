@@ -840,6 +840,28 @@ fn a_callee_twins_share_does_not_pair_them() {
     assert_eq!(by_shape, 0);
 }
 
+/// Where a release deletes one of two twins, the twin that comes first
+/// does not take the one left by its shape alone: the constant decides.
+#[test]
+fn a_deleted_twin_does_not_take_the_one_left() {
+    // `mov` the value into `register`, then return.
+    let moves = |register: u32, value: u32| -> Vec<u8> {
+        [0xe3a0_0000 | register << 12 | value, 0xe12f_ff1e]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect()
+    };
+    let before = binary_of(&[("", &moves(0, 1)), ("", &moves(0, 2))]);
+    // Another register, so that no byte agrees and only the shape does.
+    let after = binary_of(&[("", &moves(1, 2))]);
+    let diff =
+        diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+    let partner =
+        |index: usize| diff.matched.iter().find(|pair| pair.before == index).map(|pair| pair.after);
+    assert_eq!(partner(1), Some(0), "the function that returns 2");
+    assert_eq!(diff.removed, [0], "the function that returns 1");
+}
+
 /// Twins that differ only in a constant pair by it, even where there
 /// are more twins than similarity keeps candidates for, and one side has
 /// one more.

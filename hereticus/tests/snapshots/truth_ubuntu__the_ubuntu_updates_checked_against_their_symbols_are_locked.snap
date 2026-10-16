@@ -3,13 +3,13 @@ source: hereticus/tests/truth_ubuntu.rs
 expression: out
 ---
 library                cases  right homo wrong  gone   new | in lib found inline ranks top1 top5
-libarchive13 arm64         9  13100    0    33    18    19 |     8     8      4    40    5    7
+libarchive13 arm64         9  13102    0    31    18    19 |     8     8      4    40    5    7
 libarchive13 armhf         9  13200    0     2    20    20 |     8     8      3    40    5    7
-libcurl4 arm64            25  19339    0     0    26    36 |    23    23     11    23   23   23
-libcurl4 armhf            25  26409    0     7    11    22 |    23    23     10    27   21   23
-libexpat1 arm64           10   2800    0    19     9    12 |    10    10      0    10   10   10
+libcurl4 arm64            25  19339    0     0    28    38 |    23    23     11    23   23   23
+libcurl4 armhf            25  26410    0     6    11    22 |    23    23     10    27   21   23
+libexpat1 arm64           10   2802    0    17     9    12 |    10    10      0    10   10   10
 libexpat1 armhf           10   2929    0    24     3     8 |    10    10      0    10   10   10
-libgnutls30 arm64          9  20468    0    20    49    48 |     9     9      1    20    6    8
+libgnutls30 arm64          9  20479    0     9    50    49 |     9     9      1    20    6    8
 libgnutls30 armhf          9  23706    0     3    19    27 |     9     9      2    12    8    9
 libksba8 arm64             2    610    0     0     0     0 |     2     2      1     2    2    2
 libksba8 armhf             2    962    0     0     0     1 |     2     2      1     2    2    2
@@ -20,13 +20,13 @@ libpng16-16 armhf          5   2434    0     0     0     1 |     5     5      0 
 libsqlite3-0 arm64         7  18298    0     0     5     3 |     5     5      1    43    2    4
 libsqlite3-0 armhf         7  18311    0     2     1     1 |     5     5      1     6    4    5
 libssh-4 arm64             9   6361    0    10     5    13 |     8     8      0    39    5    7
-libssh-4 armhf             9   8696    0     4    19    32 |     8     8      0    10    6    8
+libssh-4 armhf             9   8697    0     3    19    32 |     8     8      0    10    6    8
 libtiff5 arm64            17  10978    0    10     4     7 |    11    11      0    12   10   11
 libtiff5 armhf            17  11170    0    10     3     7 |    10    10      0    10   10   10
 libwebp7 arm64             2   1079    0     0     1     0 |     2     2      1     2    2    2
 libwebp7 armhf             2   1606    0     1     1     2 |     2     2      1     2    2    2
-libxml2 arm64             12  30198    0     5    37    40 |    12    12      6    27    6   11
+libxml2 arm64             12  30209    0     0    36    39 |    12    12      6    27    6   11
 libxml2 armhf             12  29375    0     1     7    11 |    12    12      6    12   12   12
 zlib1g arm64               1    118    0     0     0     0 |     1     1      0     1    1    1
 zlib1g armhf               1    127    0     0     0     0 |     1     1      0     2    0    1
-all                      218 264923    0   151   242   315 |   193   193     52   365  163  187
+all                      218 264951    0   129   244   317 |   193   193     52   365  163  187

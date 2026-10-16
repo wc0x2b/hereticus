@@ -1814,3 +1814,47 @@ the symbols in each piece.
 | 21.02.7 to 22.03.2 | 3.19% | 2.60% |
 | 22.03.5 to 23.05.5 | 1.61% | 1.45% |
 | all | 1.14% | 0.97% |
+
+The wrong pairs of the upgrades, by the stage that paired them and by
+where the true partner of each side is, show one fault of the shape
+stage (A2). It asked only whether a function of
+the first binary had one candidate of its shape on the second. Where a
+release deletes one of two twins, the twin that comes first took the
+one left, deleted or not, and the true partner then paired elsewhere by
+similarity: 111 wrong pairs over the upgrades, counted before the
+truth was set right. The stage now pairs only
+where the second function has no other free twin on the first side that
+could take it, by the same tests of names and of what the twins refer
+to. Each cell right, then wrong, against the step before:
+
+| Set | Right | Wrong |
+|---|---|---|
+| OpenWrt kernels | +218 | −42 |
+| Backports | +23 | −30 |
+| Ubuntu updates | +28 | −22 |
+
+The wrong kernel pairs fall to 2.56% and 1.41% over the upgrades, and to
+0.95% over all twelve. The ranks of the backports, the published fixes
+and the Ubuntu updates did not move. Between `gcc-O2` and `gcc-Os` the
+backports pair 5 fewer right: GCC folds `gzopen` and `gzopen64` of zlib
+into one function at `-Os`, so both twins of `-O2` fit it, and now
+neither takes it.
+
+Not kept:
+
+- The same test in the stage of identical code paired 10 more right and
+  1 fewer wrong over the kernels, but 4 fewer right and 5 fewer wrong
+  over the backports.
+- The shape stage once more after the close pairs by similarity, so that
+  a twin they pair stops being a rival, paired 2 more right kernel pairs
+  and changed nothing else.
+- Over the upgrades, neither the score nor the ratio of the sizes of the
+  two bodies tells right from wrong in any weak stage: the pairs by
+  callers are wrong 10% to 20% of the time at every score from 0.3 to
+  0.6, and the pairs by similarity 1% to 9% at every ratio from 0.4 up.
+- Before the truth was set right, of the 314 wrong pairs by similarity
+  whose first side keeps its name on the second side, free, 283 score
+  at least as high as that namesake does:
+  the code moved into a new function and left the old name on a small
+  wrapper, as `generic_file_read_iter` to `generic_file_buffered_read`.
+  The pair follows the code, and the names call it wrong.
