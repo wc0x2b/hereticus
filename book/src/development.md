@@ -35,6 +35,22 @@ just test         # the same, plus slow tests
 just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
 ```
 
+## Numbers in the Docs
+
+A number that the docs quote from a locked test names its source in a
+comment right after it, and `tests/docs.rs` checks that the two agree:
+
+```markdown
+0.95%<!-- from truth_kernels: all / wrong% --> of the pairs are wrong
+45937<!-- from boundaries.rs: exact --> exact
+```
+
+A source without `.rs` is a snapshot of `hereticus/tests/snapshots`, and
+the key is a row and a column of its tables. A source with `.rs` is a test,
+and the key is a field that the test sets once. When a snapshot changes,
+`just quick-test` fails until the docs quote the new numbers. The entries
+of `RESEARCH.md` record the numbers of their own time, so they have no tag.
+
 ## The Book
 
 Each page of [Real-Life Examples](./real-life-examples.md) includes a file of

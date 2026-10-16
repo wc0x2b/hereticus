@@ -27,7 +27,9 @@ through stubs that the cache builder has bound or removed.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 45937 of 46006 exact, 9 starts missed and 3 invented,
+stripped releases: 45937<!-- from boundaries.rs: exact --> of
+46006<!-- from boundaries.rs: functions --> exact, 9<!-- from boundaries.rs: missed -->
+starts missed and 3<!-- from boundaries.rs: invented --> invented,
 over ARM, Thumb-2, AArch64 and MIPS, with the PLT and the lazy binding
 stubs of MIPS left out (`RESEARCH.md`, "Function recovery, again"). 8 of
 the 9 missed follow a call that never returns, to a function of the
@@ -103,9 +105,12 @@ it `Vector` only.
 the symbols and the source files in the DWARF of their builds, so a
 renamed function, a twin and two static functions of one name each count
 apart, and code that the debug file does not describe is left out. Over
-the kernels, 0.95% of the pairs are wrong, and at most 1.15% where the
-518 pairs only the source file calls renamed are wrong too. Across a
-kernel upgrade it is 1.4% to 2.5%.
+the kernels, 0.95%<!-- from truth_kernels: all / wrong% --> of the pairs are
+wrong, and at most 1.15%<!-- from truth_kernels: all / at most --> where the
+518<!-- from truth_kernels: all / unproven --> pairs only the source file calls
+renamed are wrong too. Across a kernel upgrade it is
+1.4%<!-- from truth_kernels: 22.03.5/23.05.5 / wrong% --> to
+2.5%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% -->.
 
 Most wrong pairs join a function the upgrade deleted to one of similar
 code from another source file, with no paired caller or callee to say
@@ -113,8 +118,9 @@ otherwise; a score floor, a floor on the ratio of the sizes, or a move
 to a closer free function costs more right pairs than it saves. Many
 wrong pairs by similarity, callers and references follow code that moved
 into a new function and left the old name on a wrapper, which the names
-cannot judge. The pairs by callers and by references are wrong 7% and
-11% of the time; the pairs by references out of place split too evenly
+cannot judge. The pairs by callers and by references are wrong
+7%<!-- from truth_kernels: SameCallers / wrong% --> and
+11%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
 About 5400 functions over the upgrades stay free where their namesake on
@@ -156,8 +162,9 @@ fix in a kernel module for ARM: `tun`, `nf_conntrack` and `wireguard` of
 OpenWrt 24.10.3 and 24.10.4 for ARMv7 read as unchanged but for
 constants, which checks the reading but ranks no fix.
 
-`tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 151
-wrong pairs left, many are byte-identical twins (see "Tell twins apart
+`tests/truth_ubuntu.rs` locks 218<!-- from truth_ubuntu: all / cases --> Ubuntu
+security updates. Of the 129<!-- from truth_ubuntu: all / wrong --> wrong pairs
+left, many are byte-identical twins (see "Tell twins apart
 that no instruction separates"). Every fix that changed the code shows
 on a changed row.
 
