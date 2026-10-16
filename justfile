@@ -50,6 +50,10 @@ rivals-ghidra: backports
         --workdir /work \
         {{rivals_image}}-ghidra ./fixtures/rivals.sh ghidra
 
+# Show how long hereticus, radiff2 and Ghidra take on each backport pair.
+rival-times: build rivals rivals-ghidra
+    cargo nextest run --release --no-capture -E 'test(/times/)'
+
 # Cargo publishes each crate after the crates it needs. Give `--dry-run` to
 # check without upload.
 # Publish every crate of the workspace to crates.io.

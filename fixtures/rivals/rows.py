@@ -1,6 +1,6 @@
 """Turn what a diff tool writes into the rows of fixtures/rivals.sh.
 
-Usage: rows.py radare2|ghidra TOOL_OUTPUT ROWS_JSON
+Usage: rows.py radare2|ghidra TOOL_OUTPUT ROWS_JSON SECONDS
 
 Each tool reports in its own form. This writes the rows each one shows as
 changed, gone or new, the lowest score first, as a reader of that tool sorts
@@ -44,13 +44,13 @@ def by_score(row):
 
 
 def main():
-    tool, source, target = sys.argv[1:]
+    tool, source, target, seconds = sys.argv[1:]
     with open(source, encoding="utf-8") as file:
         report = json.load(file)
     rows = {"radare2": radare2_rows, "ghidra": ghidra_rows}[tool](report)
     rows.sort(key=by_score)
     with open(target, "w", encoding="utf-8") as file:
-        json.dump({"rows": rows}, file, indent=1)
+        json.dump({"seconds": float(seconds), "rows": rows}, file, indent=1)
         file.write("\n")
 
 

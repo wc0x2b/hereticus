@@ -5,6 +5,9 @@
 //! fix, rank it no lower than radiff2 does, and report no more functions
 //! that the fix did not touch. `rivals/mod.rs` says how each report is
 //! scored. The snapshot locks the scores of both tools.
+//!
+//! On these small libraries both tools take a fraction of a second, so the
+//! times are shown, not checked. `just rival-times` shows them.
 
 mod rivals;
 
@@ -21,6 +24,13 @@ fn hereticus_does_no_worse_than_radiff2() {
 fn the_scores_against_radiff2_are_locked() {
     let contests = rivals::contests(Rival::Radare2);
     insta::assert_snapshot!(rivals::table(Rival::Radare2, &contests));
+}
+
+#[test]
+fn the_times_against_radiff2_are_shown() {
+    let contests = rivals::contests(Rival::Radare2);
+    assert!(contests.iter().all(|contest| contest.rival_seconds > 0.0));
+    println!("{}", rivals::times(Rival::Radare2, &contests));
 }
 
 mod reading_order {
