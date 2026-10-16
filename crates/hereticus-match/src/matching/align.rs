@@ -252,6 +252,30 @@ pub(super) fn align_gap(scores: &[Vec<f64>], floor: f64, margin: f64) -> Vec<(us
     if sum(&by_score) > sum(&in_order) + margin { by_score } else { in_order }
 }
 
+/// Align a gap of unequal counts, as `scores[x][y]` scores item `x` of the
+/// first side against item `y` of the second.
+///
+/// The items pair in order where they score `floor` or more, by
+/// [`align_by_scores`], and where no other item of the gap scores within
+/// `margin` of the pair with either.
+pub(super) fn align_uneven_gap(
+    scores: &[Vec<f64>],
+    floor: f64,
+    margin: f64,
+) -> Vec<(usize, usize)> {
+    let width = scores.first().map_or(0, Vec::len);
+    let aligned = align_by_scores(scores.len(), width, |x, y| scores[x][y] - floor);
+    aligned
+        .into_iter()
+        .filter(|&(x, y)| {
+            let close = |score: f64| score >= scores[x][y] - margin;
+            let rival_after = (0..width).any(|other| other != y && close(scores[x][other]));
+            let rival_before = (0..scores.len()).any(|other| other != x && close(scores[other][y]));
+            !(rival_after || rival_before)
+        })
+        .collect()
+}
+
 /// The longest subsequence of `seeds`, sorted by their left position, whose
 /// right positions increase too.
 ///

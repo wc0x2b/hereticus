@@ -1882,3 +1882,30 @@ place of moving it, where another function of the gap scores 0.1 to 0.3
 more with either side, cost the backports 57 to 303 right pairs: between
 two compilers, the first function of a gap is most often the first
 one's partner, even where another looks closer.
+
+A gap whose counts differ paired nothing, since a function went or came
+and nothing says which. But in a kernel upgrade, close code in such a
+gap is often left free: the similarity stage takes no pair with a rival
+elsewhere in the binary within 0.03 (entry 14), and the place tells the
+two apart. Such a gap now pairs in order by score, each pair less a
+floor, where the pair scores `LOWEST_UNEVEN_GAP_SIMILARITY`, 0.8, or
+more, no other function of the gap scores within 0.03 of it with either
+side, and the two call the same named functions. Each cell right, then
+wrong, with homonyms counted wrong, against no such pairs:
+
+| Rule | Kernels | Backports | Ubuntu updates |
+|---|---|---|---|
+| Floor 0.5, gaps one or two apart | +1379, +44 | +64, +81 | +2, +5 |
+| Floor 0.7 | +987, +17 | −7, +26 | +3, +5 |
+| Floor 0.8 | +933, +6 | +8, +17 | +3, +5 |
+| Floor 0.8, one apart, no rival | +454, −5 | +8, none | +3, +5 |
+| Named calls the same | the same | the same | +3, none |
+| Any gap (kept) | +752, +3 | +10, none | +4, none |
+| Floor 0.7, two apart, no rival, named calls | +643, −6 | +2, +5 | +3, none |
+
+The five wrong Ubuntu pairs were wrappers of libssh that score 1.00 and
+call other imports, as `md5_update` with `md5_ctx_free`. A rival margin
+of 0.02 to 0.1 did the same within a few pairs. Over the upgrades the
+wrong pairs fall to 2.53% and 1.39%, and the pairs by place are wrong
+3.23% of the time, from 3.44%, over 1005 more of them. The ranks of every
+set stayed the same.

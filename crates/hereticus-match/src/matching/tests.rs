@@ -1941,9 +1941,10 @@ fn unrelated_binaries_pair_nothing_by_place() {
 }
 
 /// Where one side holds more free functions between two pairs, one
-/// went or came, and the place says nothing of which.
+/// went or came, and the place says nothing of which: code that is not
+/// close does not pair by it.
 #[test]
-fn a_gap_of_unequal_counts_pairs_nothing() {
+fn a_gap_of_unequal_counts_pairs_no_distant_code() {
     let first = arm(&[ADC, SBC, RSB, BX_LR]);
     let last = arm(&[MUL, MUL, ADC, BX_LR]);
     let before_code = arm(&[ADD, SUB, ORR, EOR, AND, BIC, BX_LR]);
@@ -2045,6 +2046,44 @@ fn a_gap_pairs_in_order_unless_scores_say_clearly_otherwise() {
     let scores = vec![vec![0.5, 0.1], vec![0.6, 0.4]];
     assert_eq!(align_gap(&scores, 0.1, 0.3), vec![(0, 0), (1, 1)]);
     assert!(align_gap(&[], 0.1, 0.3).is_empty());
+}
+
+/// A gap where a function came pairs the close code around it in order.
+#[test]
+fn an_uneven_gap_pairs_close_code_in_order() {
+    // `a b` became `a n b`.
+    let scores = vec![vec![0.95, 0.2, 0.1], vec![0.1, 0.3, 0.9]];
+    assert_eq!(align_uneven_gap(&scores, 0.8, 0.03), vec![(0, 0), (1, 2)]);
+}
+
+/// A pair with a rival in its gap, or under the floor, does not pair.
+#[test]
+fn an_uneven_gap_leaves_a_pair_with_a_close_rival() {
+    let scores = vec![vec![0.9, 0.89, 0.1], vec![0.1, 0.1, 0.7]];
+    assert!(align_uneven_gap(&scores, 0.8, 0.03).is_empty());
+    assert!(align_uneven_gap(&[], 0.8, 0.03).is_empty());
+}
+
+/// An uneven gap pairs in order, each pair at the floor or more and with
+/// no rival in the gap within the margin.
+#[test]
+fn an_aligned_uneven_gap_is_ordered_and_without_rivals() {
+    bolero::check!().with_type::<(u8, u8, [u8; 25])>().for_each(|&(left, right, cells)| {
+        let (left, right) = (usize::from(left % 6), usize::from(right % 6));
+        let scores: Vec<Vec<f64>> = (0..left)
+            .map(|x| (0..right).map(|y| f64::from(cells[x * 5 + y] % 5) / 4.0).collect())
+            .collect();
+        let aligned = align_uneven_gap(&scores, 0.5, 0.1);
+        for step in aligned.windows(2) {
+            assert!(step[0].0 < step[1].0 && step[0].1 < step[1].1, "{aligned:?}");
+        }
+        for &(x, y) in &aligned {
+            let score = scores[x][y];
+            assert!(score >= 0.5);
+            assert!((0..right).all(|other| other == y || scores[x][other] < score - 0.1));
+            assert!((0..left).all(|other| other == x || scores[other][y] < score - 0.1));
+        }
+    });
 }
 
 /// An aligned gap keeps the order on both sides, and sums no less than

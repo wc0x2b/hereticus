@@ -103,8 +103,8 @@ it `Vector` only.
 the symbols and the source files in the DWARF of their builds, so a
 renamed function, a twin and two static functions of one name each count
 apart, and code that the debug file does not describe is left out. Over
-the kernels, 0.95% of the pairs are wrong, and at most 1.15% where the
-509 pairs only the source file calls renamed are wrong too. Across a
+the kernels, 0.95% of the pairs are wrong, and at most 1.16% where the
+518 pairs only the source file calls renamed are wrong too. Across a
 kernel upgrade it is 1.4% to 2.5%. Most wrong pairs join a function the
 upgrade deleted to one of similar code from another source file, with
 no paired caller or callee to say otherwise; a score floor, a floor on
