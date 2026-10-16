@@ -2,10 +2,9 @@
 source: hereticus-cli/tests/rivals_radare2.rs
 expression: "rivals::table(Rival::Radare2, &contests)"
 ---
-tool       found first   rows extras
-hereticus     35    20     85      0
-radare2       20     9   2457   2418
-builds        35
+tool       builds found first   rows extras
+hereticus      35    35    20     85      0
+radare2        35    20     9   2457   2418
 
 build                      rank:hereticus     rank:radare2   rows:hereticus     rows:radare2 extras:hereticus   extras:radare2
 zlib-arm-O2                             1                1                1               53                0               52

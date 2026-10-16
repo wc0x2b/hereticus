@@ -1,0 +1,63 @@
+# Comparison With Other Tools
+
+Tests compare `hereticus` with radiff2 of radare2 6.2.4 and with Ghidra
+12.1.4 Version Tracking. All three tools read the same
+35<!-- from rivals_radare2: hereticus / builds --> pairs of stripped libraries. Each pair
+is one release of zlib, Lua, tinyxml2 or smallvec, before and after one
+upstream fix, for ARM, Thumb-2, AArch64 or MIPS. The functions that the fix
+edits are known, so each report gets a score.
+
+| Tool      | Fixes found | Fix on row 1 | Rows | Rows the fix did not touch |
+|-----------|-------------|--------------|------|----------------------------|
+| hereticus | 35<!-- from rivals_radare2: hereticus / found --> | 20<!-- from rivals_radare2: hereticus / first --> | 85<!-- from rivals_radare2: hereticus / rows --> | 0<!-- from rivals_radare2: hereticus / extras --> |
+| radiff2   | 20<!-- from rivals_radare2: radare2 / found --> | 9<!-- from rivals_radare2: radare2 / first --> | 2457<!-- from rivals_radare2: radare2 / rows --> | 2418<!-- from rivals_radare2: radare2 / extras --> |
+| Ghidra    | 33<!-- from truth_ghidra: ghidra / found --> | 18<!-- from truth_ghidra: ghidra / first --> | 759<!-- from truth_ghidra: ghidra / rows --> | 629<!-- from truth_ghidra: ghidra / extras --> |
+
+A tool **finds** a fix when its report shows every function that the fix
+edits. The **row** of a fix is the last row that a reader must read to see
+all of those functions. A fix that edits more than one function cannot be
+on row 1: the smallvec fix edits six copies of `insert_many`, so it takes
+six rows.
+
+A **row the fix did not touch** names no function that the fix edits or
+that can change with it. Such rows are noise: most come from code that
+moved, and thus has new addresses in it. For example, radiff2 shows the
+zlib fix for MIPS, built by GCC at `-O2`, on
+row 33<!-- from rivals_radare2: zlib-mips-gcc-O2 / rank:radare2 --> of
+80<!-- from rivals_radare2: zlib-mips-gcc-O2 / rows:radare2 -->. `hereticus` shows it
+on row 1<!-- from rivals_radare2: zlib-mips-gcc-O2 / rank:hereticus -->, and on no
+other row.
+
+## How the Tests Score Each Tool
+
+- `hereticus` runs with no options, as a user runs it. Its rows are read
+  as it lists them.
+- radiff2 runs as `radiff2 -A -C`. A row counts as changed when its
+  similarity is below 1, or when radiff2 labels it `UNMATCH`.
+- Ghidra runs Auto Version Tracking with the options of its own
+  `AutoVersionTrackingScript`. Version Tracking pairs functions, but does
+  not say which pairs changed. Thus a pair counts as changed by the rule of
+  `FindChangedFunctionsScript`, which ships with Ghidra: no exact match of
+  the instructions pairs it.
+- The rows of radiff2 and Ghidra are read the lowest score first. Rows with
+  the same score have no order, so the rows of the fix are read first among
+  them. This rule helps the other tool.
+
+On each build, `hereticus` must find the fix, show it on the same row as
+the other tool or on an earlier row, and show no more rows that the fix did
+not touch. If a change makes `hereticus` worse than the other tool on one
+build, the test fails.
+
+## Run the Tests
+
+```
+just rivals         # run radiff2 on the pairs
+just quick-test     # compare with radiff2, in rivals_radare2.rs
+just rivals-ghidra  # run Ghidra on the pairs
+just test           # compare with Ghidra too, in truth_ghidra.rs
+```
+
+The Ghidra image is large and a first run takes a long time, so only
+`just test` compares with Ghidra. `fixtures/rivals/builds.txt` lists the
+pairs. The snapshots of the two tests hold the score of each tool on each
+pair.

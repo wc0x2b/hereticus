@@ -2,10 +2,9 @@
 source: hereticus-cli/tests/truth_ghidra.rs
 expression: "rivals::table(Rival::Ghidra, &contests)"
 ---
-tool       found first   rows extras
-hereticus     35    20     85      0
-ghidra        33    18    759    629
-builds        35
+tool       builds found first   rows extras
+hereticus      35    35    20     85      0
+ghidra         35    33    18    759    629
 
 build                      rank:hereticus      rank:ghidra   rows:hereticus      rows:ghidra extras:hereticus    extras:ghidra
 zlib-arm-O2                             1                1                1                4                0                3
