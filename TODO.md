@@ -119,9 +119,10 @@ an early exit counts as five instructions added (`RESEARCH.md`, "Calls
 swapped for their bounded form" and "Checks before an early exit"). A
 larger weight for a check lifts the Lua backport further but sinks
 tinyxml2 and five published fixes. SPIDER's test that the code on the
-way that does not exit stays the same did no better. Tell a check that
-guards an input from one that a refactoring moves by what it tests: an
-argument, or a length or count that the function reads.
+way that does not exit stays the same did no better, nor did where the
+value a check tests comes from. On the Ubuntu updates and the published
+fixes, the fixes on a row are near the floor of their rank: what is
+left is the 42 Ubuntu updates whose fix shows on no changed row.
 
 ## Measure on more published fixes, and faster
 
