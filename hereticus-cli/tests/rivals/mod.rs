@@ -17,8 +17,9 @@
 //!   that may change with it.
 //!
 //! The other tools sort by a score, and rows with the same score have no
-//! order, so such a row ranks as the first of its score. That favours the
-//! other tool. This tool sorts its rows itself, so a row ranks where it is.
+//! order, so a reader of such a tool reads the rows of the fix first among
+//! those of their score. That favours the other tool. This tool sorts its
+//! rows itself, so a reader reads them as listed.
 //!
 //! The functions that must and may change are those of
 //! `hereticus/tests/backports.rs`, which says why.
@@ -169,11 +170,11 @@ struct Row {
 
 /// How a report places its rows.
 #[derive(Clone, Copy, Debug)]
-enum Order {
-    /// Each row ranks where it is.
+pub enum Order {
+    /// The rows are read as listed.
     AsListed,
-    /// The rows are sorted by score, so a row ranks as the first of its
-    /// score, and a row with no score as the first after every scored row.
+    /// The rows are read the lowest score first, and the rows with no score
+    /// last. Among the rows of one score, the rows of the fix come first.
     ByScore,
 }
 
@@ -307,6 +308,23 @@ pub struct Score {
     pub extras: usize,
 }
 
+/// The rows in the order a reader reads them: their index in `scores`.
+/// `fix[at]` tells if the row `at` names a function the fix edits.
+pub fn reading_order(scores: &[Option<f64>], fix: &[bool], order: Order) -> Vec<usize> {
+    let mut rows: Vec<usize> = (0..scores.len()).collect();
+    if let Order::ByScore = order {
+        rows.sort_by(|&a, &b| {
+            let unscored = |at: usize| scores[at].is_none();
+            unscored(a)
+                .cmp(&unscored(b))
+                .then(scores[a].unwrap_or(0.0).total_cmp(&scores[b].unwrap_or(0.0)))
+                .then(fix[b].cmp(&fix[a]))
+                .then(a.cmp(&b))
+        });
+    }
+    rows
+}
+
 fn score(build: &Build, symbols: &Symbols, rows: &[Row], order: Order) -> Score {
     let must = symbols.named(must_change(&build.project), Side::Before);
     assert!(!must.is_empty(), "{}: no symbol is named as the fix", build.name());
@@ -317,20 +335,13 @@ fn score(build: &Build, symbols: &Symbols, rows: &[Row], order: Order) -> Score 
         .collect();
 
     let names: Vec<BTreeSet<String>> = rows.iter().map(|&row| symbols.names(row)).collect();
-    let rank_of = |at: usize| match order {
-        Order::AsListed => at + 1,
-        Order::ByScore => {
-            let lower = |other: &Row| match (other.score, rows[at].score) {
-                (Some(other), Some(this)) => other < this,
-                (Some(_), None) => true,
-                (None, _) => false,
-            };
-            1 + rows.iter().filter(|other| lower(other)).count()
-        }
-    };
+    let scores: Vec<Option<f64>> = rows.iter().map(|row| row.score).collect();
+    let fix: Vec<bool> = names.iter().map(|row| !row.is_disjoint(&must)).collect();
+    let read: Vec<&BTreeSet<String>> =
+        reading_order(&scores, &fix, order).into_iter().map(|at| &names[at]).collect();
     let rank = must
         .iter()
-        .map(|function| names.iter().position(|row| row.contains(function)).map(rank_of))
+        .map(|function| read.iter().position(|row| row.contains(function)).map(|at| at + 1))
         .collect::<Option<Vec<usize>>>()
         .map(|ranks| ranks.into_iter().max().expect("the fix names a function"));
     let extras = names.iter().filter(|row| row.is_disjoint(&allowed)).count();
