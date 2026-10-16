@@ -1923,3 +1923,14 @@ right and 1 more wrong; the Ubuntu updates stayed the same. A floor of
 0.7 in place of 0.8 then paired 83 more right kernel pairs, but 8 fewer
 right and 7 more wrong over the backports. Over the upgrades the wrong
 pairs fall to 2.52% and 1.39%.
+
+The layout stage runs once, before the stages that pair by references,
+by twins and by tables, so a gap they narrow to one function each side
+stays free. Of the 423 pairs at 1.00 still missed over the upgrades, 61
+sat in a gap of equal counts at the end. Running the whole layout stage
+again before the context check paired 25 more right and 13 more wrong
+over the kernels, and after it, 97 more right and 313 more wrong, as it
+undoes and pairs again what that check undid. Pairing only close code,
+by the rule for gaps whose counts differ, and undoing nothing, paired
+34 more right and none wrong before the check, with every other set the
+same; that is kept. 194 of the 423 sit out of place: the code moved.

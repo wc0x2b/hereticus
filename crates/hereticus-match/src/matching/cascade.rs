@@ -459,16 +459,7 @@ impl Cascade<'_> {
             if cells == 0 || cells > MOST_PLACE_CELLS {
                 continue;
             }
-            let scores: Vec<Vec<f64>> = lefts
-                .iter()
-                .map(|&x| {
-                    let symbols = &self.left[x].symbols;
-                    rights
-                        .iter()
-                        .map(|&y| similarity_of_symbols(symbols, &self.right[y].symbols))
-                        .collect()
-                })
-                .collect();
+            let scores = self.gap_scores(&lefts, &rights);
             if lefts.len() == rights.len() {
                 for (a, b) in align_gap(&scores, LOWEST_LAYOUT_SIMILARITY, SHIFTED_GAP_MARGIN) {
                     if scores[a][b] >= LOWEST_LAYOUT_SIMILARITY {
@@ -476,15 +467,7 @@ impl Cascade<'_> {
                     }
                 }
             } else {
-                // A function went or came, so only close code pairs, and
-                // two wrappers that call other imports are not one.
-                for (a, b) in align_uneven_gap(&scores, LOWEST_UNEVEN_GAP_SIMILARITY, RIVAL_MARGIN)
-                {
-                    let (x, y) = (lefts[a], rights[b]);
-                    if self.left[x].named_calls() == self.right[y].named_calls() {
-                        pairs.push((x, y, scores[a][b]));
-                    }
-                }
+                pairs.extend(self.close_code_in_gap(&lefts, &rights, &scores));
             }
         }
         // A pair undone above can be close code that moved: its functions
@@ -513,6 +496,67 @@ impl Cascade<'_> {
                 self.right_free[pair.after] = false;
                 self.matched.push(pair);
             }
+        }
+    }
+
+    /// The scores of each free function of the first side of a gap against
+    /// each of the second.
+    fn gap_scores(&self, lefts: &[usize], rights: &[usize]) -> Vec<Vec<f64>> {
+        lefts
+            .iter()
+            .map(|&x| {
+                let symbols = &self.left[x].symbols;
+                rights
+                    .iter()
+                    .map(|&y| similarity_of_symbols(symbols, &self.right[y].symbols))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The pairs of close code in order in a gap where a function may have
+    /// gone or come: see [`LOWEST_UNEVEN_GAP_SIMILARITY`]. Two wrappers that
+    /// call other imports are not one.
+    fn close_code_in_gap(
+        &self,
+        lefts: &[usize],
+        rights: &[usize],
+        scores: &[Vec<f64>],
+    ) -> Vec<(usize, usize, f64)> {
+        align_uneven_gap(scores, LOWEST_UNEVEN_GAP_SIMILARITY, RIVAL_MARGIN)
+            .into_iter()
+            .map(|(a, b)| (lefts[a], rights[b], scores[a][b]))
+            .filter(|&(x, y, _)| self.left[x].named_calls() == self.right[y].named_calls())
+            .collect()
+    }
+
+    /// Pair the close code in order in each gap, once the stages after
+    /// [`Self::pair_by_layout`] have paired more of the functions around
+    /// it, so that more gaps hold one function each side.
+    ///
+    /// Unlike [`Self::pair_by_layout`], this undoes no pair, and a gap of
+    /// equal counts pairs only close code too. Measured against the
+    /// symbols, this paired 34 more right and no more wrong over the OpenWrt
+    /// kernels, and changed nothing over the backports and the Ubuntu
+    /// updates. Run after [`Self::unpair_without_context`], it paired 51
+    /// more right and 2 more wrong; with a floor of 0.7, 121 more right and
+    /// 17 more wrong, and 5 more wrong over the backports.
+    pub(super) fn pair_close_code_in_gaps(&mut self) {
+        let layout = self.layout();
+        if layout.is_unanchored() {
+            return;
+        }
+        let mut pairs = Vec::new();
+        for (lefts, rights) in layout.gaps(&self.left_free, &self.right_free) {
+            let cells = lefts.len().saturating_mul(rights.len());
+            if cells == 0 || cells > MOST_PLACE_CELLS {
+                continue;
+            }
+            let scores = self.gap_scores(&lefts, &rights);
+            pairs.extend(self.close_code_in_gap(&lefts, &rights, &scores));
+        }
+        for (x, y, score) in pairs {
+            self.take_pair(x, y, Confidence::SameLayout, score);
         }
     }
 

@@ -3,11 +3,11 @@ source: hereticus/tests/openwrt.rs
 expression: kernel_digest(&comparison)
 ---
 functions 23393 -> 24444
-matched 21649
-{No: 7229, Reordered: 472, Data: 17, InDetail: 3095, Unreadable: 7, Yes: 10829}
-gone 1744
-new 2795
-fingerprint 0x1a191f66ee683330
+matched 21650
+{No: 7230, Reordered: 472, Data: 17, InDetail: 3095, Unreadable: 7, Yes: 10829}
+gone 1743
+new 2794
+fingerprint 0xb64d85df348b4f6d
 
 strongest changes:
 0xc030b6f8 -> 0xc030bb40 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
