@@ -55,9 +55,10 @@ struct Tally {
     wrong: usize,
     gone: usize,
     new: usize,
-    /// Cases where a function the fix touched is in the library at all.
-    /// A patch can touch only a tool or a test of the same source, as
-    /// `tiffcrop` of libtiff, which no row can show.
+    /// Cases where a function the fix touched is in the library at all,
+    /// and its code changed. A patch can touch only a tool or a test of
+    /// the same source, as `tiffcrop` of libtiff, or compile to the same
+    /// code, and no row can show either.
     in_library: usize,
     /// Cases where a changed row holds a function the fix touched.
     found: usize,
@@ -238,8 +239,10 @@ fn inlined_copies(path: &Path) -> Vec<Symbol> {
 }
 
 /// The rows the report shows by default, in the order of `--sort added`:
-/// a rescheduled pair last, then most instructions added first, then the
-/// lowest score. See `is_rescheduled` in `hereticus-cli/src/main.rs`.
+/// a rescheduled pair last, a call turned into its bounded form first,
+/// then most instructions added, with a check before an early exit as
+/// five more, then the lowest score. See `rank` in
+/// `hereticus-cli/src/main.rs`.
 fn rows(diff: &Diff) -> Vec<&Match> {
     let mut shown: Vec<&Match> = diff
         .changed()
@@ -253,10 +256,13 @@ fn rows(diff: &Diff) -> Vec<&Match> {
         .collect();
     let rescheduled =
         |pair: &Match| pair.changed == Changed::Reordered && !pair.kinds.touches_control_flow();
+    let added = |pair: &Match| pair.edits.added + if pair.early_exits > 0 { 5 } else { 0 };
+    let bounded = |pair: &Match| pair.bounded_calls > 0;
     shown.sort_by(|a, b| {
         rescheduled(a)
             .cmp(&rescheduled(b))
-            .then_with(|| b.edits.added.cmp(&a.edits.added))
+            .then_with(|| bounded(b).cmp(&bounded(a)))
+            .then_with(|| added(b).cmp(&added(a)))
             .then_with(|| a.score.partial_cmp(&b.score).unwrap_or(core::cmp::Ordering::Equal))
     });
     shown
@@ -271,6 +277,17 @@ fn overlapping<'a>(found: &'a [Symbol], function: &Function) -> BTreeSet<&'a str
         .filter(|(low, high, _)| *low < end && *high > start)
         .map(|(_, _, name)| name.as_str())
         .collect()
+}
+
+/// The bytes of `binary` from `low` to `high`, where one function holds
+/// them all.
+fn code_in(binary: &Binary, low: u64, high: u64) -> Option<&[u8]> {
+    binary.functions.iter().find_map(|function| {
+        let start = function.address & !1;
+        let from = usize::try_from(low.checked_sub(start)?).ok()?;
+        let to = usize::try_from(high.checked_sub(start)?).ok()?;
+        function.code.get(from..to)
+    })
 }
 
 fn measure(case: &Case) -> Tally {
@@ -324,8 +341,35 @@ fn measure(case: &Case) -> Tally {
     let holds_fix = |side: usize, index: usize| {
         holds_fix_in(side, index, &symbols[side]) || holds_fix_in(side, index, &copies[side])
     };
-    let in_library =
-        symbols.iter().chain(&copies).flatten().any(|(_, _, name)| case.fixes.contains(name));
+    // A fix can compile to the same code: Debian builds sqlite from its
+    // amalgamation, which a patch of `src/main.c` does not reach, and a
+    // cast to `size_t` changes nothing where it is 32 bits wide. Such a
+    // fix counts as in the library only where a function that holds it
+    // has other bytes in the other build.
+    let holders = |side: usize| -> Vec<&Symbol> {
+        symbols[side]
+            .iter()
+            .filter(|(low, high, name)| {
+                case.fixes.contains(name)
+                    || copies[side].iter().any(|(start, end, copy)| {
+                        start < high && end > low && case.fixes.contains(copy)
+                    })
+            })
+            .collect()
+    };
+    let changed_code = |side: usize| {
+        holders(side).into_iter().any(|(low, high, name)| {
+            let other = symbols[1 - side].iter().find(|(_, _, other)| other == name);
+            let code = other.map(|(other_low, other_high, _)| {
+                (
+                    code_in(&binaries[side], *low, *high),
+                    code_in(&binaries[1 - side], *other_low, *other_high),
+                )
+            });
+            !matches!(code, Some((Some(this), Some(that))) if this == that)
+        })
+    };
+    let in_library = changed_code(0) || changed_code(1);
     tally.in_library = usize::from(in_library);
     let is_fix = |pair: &&Match| holds_fix(0, pair.before) || holds_fix(1, pair.after);
     let shown = rows(&diff);

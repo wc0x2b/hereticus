@@ -1121,6 +1121,34 @@ fixes, each order moves the rank sum by one or two. The ranks of the
 fixes found there are near their floor: of the 176 Ubuntu fixes on a
 row, 122 are on row 1 and 172 in the first five.
 
+### The fixes no row shows
+
+`research_bench --ubuntu` found no row for the fix in 42 of the 218
+updates, but it reads only the symbols, and in 38 of them no symbol of
+the library is a function the patches touched. Most of those patches
+touch code outside the library: `tiffcrop` of libtiff, the shell of
+sqlite, `bsdtar` of libarchive, the Python binding of libxml2, the test
+programs of libssh and curl, and the GnuTLS backend of curl, which
+`libcurl4` does not build; the rest live only as inlined copies.
+`tests/truth_ubuntu.rs` reads the inlined copies too, and found the fix
+in 193 of the 196 updates where a function it touched is in the library.
+
+In each of the other 3, the fix compiled to the same code:
+
+- sqlite, 3.37.2-2ubuntu0.3 to 0.4, for arm64 and armhf: the fix of
+  CVE-2025-29088 adds two bounds to `setupLookaside` in `src/main.c`,
+  but Debian builds the library from the amalgamation, which the patch
+  does not change. The two libraries are of one size, and neither loads
+  65528 or 0x7fff0000.
+- libtiff, 4.3.0-6ubuntu0.2 to 0.3, for armhf: the fix of CVE-2022-3970
+  casts each offset in `TIFFReadRGBATileExt` to `size_t`, which is 32
+  bits there, as the offset is. The two libraries differ in 65 bytes, the
+  build ID among them; for arm64 they differ in 205134.
+
+So a fix counts as in the library now only where a function that holds
+it, by its symbol or an inlined copy, has other bytes in the other
+build. Every fix that changed the code is on a row: 193 of 193.
+
 ### Two builds of Mirai
 
 Two static builds of one Mirai variant for ARM, with symbols, from

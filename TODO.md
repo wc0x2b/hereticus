@@ -121,8 +121,10 @@ larger weight for a check lifts the Lua backport further but sinks
 tinyxml2 and five published fixes. SPIDER's test that the code on the
 way that does not exit stays the same did no better, nor did where the
 value a check tests comes from. On the Ubuntu updates and the published
-fixes, the fixes on a row are near the floor of their rank: what is
-left is the 42 Ubuntu updates whose fix shows on no changed row.
+fixes, the fixes on a row are near the floor of their rank, and every
+Ubuntu fix that changed the code is on a row (`RESEARCH.md`, "The fixes
+no row shows"). More published fixes, with binaries on both sides, are
+the next measure.
 
 ## Measure on more published fixes, and faster
 
@@ -142,8 +144,8 @@ checks the reading but ranks no fix.
 
 `tests/truth_ubuntu.rs` locks 218 Ubuntu security updates. Of the 151
 wrong pairs left, many are byte-identical twins (see "Tell twins apart
-that no instruction separates"), and the fix shows on no changed row in
-42 updates.
+that no instruction separates"). Every fix that changed the code shows
+on a changed row.
 
 The CLI on the MIPS kernel of the VR200 takes 12 seconds built for musl,
 the target `.cargo/config.toml` picks; "Make the matching faster" below
