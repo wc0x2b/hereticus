@@ -1,5 +1,6 @@
 # Usage
 
+<!-- output: -h -->
 ```console
 Command line tool to compare functions between two binaries
 
@@ -32,6 +33,7 @@ Options:
   -h, --help                   Print help (see more with '--help')
   -V, --version                Print version
 ```
+<!-- end output -->
 
 ## The Report
 
@@ -59,12 +61,15 @@ same place, between the same two pairs. A fix can rewrite a function so much
 that no score pairs it, or split it in two; its place still shows where it
 went. Zlib built for ARM at `-O1` and then `-O2`, stripped:
 
+<!-- output: --ignore-names fixtures/build/backports/zlib-before/arm-O1/lib-stripped.so fixtures/build/backports/zlib-after/arm-O2/lib-stripped.so -->
 ```text
 inflateInit_: gone, same place as inflateInit_
 inflate_table: gone, closest inflate_table at 0.57, same place as inflate_table
 ```
+<!-- end output -->
 
-A place is a hint and not a pair: over the backports, 61% of them are right.
+A place is a hint and not a pair: over the backports,
+61%<!-- from cross_build: all / right% --> of them are right.
 
 ## Terminal Interface
 

@@ -3,8 +3,8 @@
 All patches/merge requests are welcome!
 
 ```
-just quick-test   # about five seconds
-just test         # the same, plus slow tests
+just quick-test   # about a minute
+just test         # the same, plus the slow and the `truth_*` tests
 just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
 ```
 
@@ -30,8 +30,8 @@ row.
 All patches/merge requests are welcome!
 
 ```
-just quick-test   # about five seconds
-just test         # the same, plus slow tests
+just quick-test   # about a minute
+just test         # the same, plus the slow and the `truth_*` tests
 just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
 ```
 
@@ -50,6 +50,16 @@ the key is a row and a column of its tables. A source with `.rs` is a test,
 and the key is a field that the test sets once. When a snapshot changes,
 `just quick-test` fails until the docs quote the new numbers. The entries
 of `RESEARCH.md` record the numbers of their own time, so they have no tag.
+
+An output that the docs show names the arguments that make it, and
+`hereticus-cli/tests/docs_output.rs` runs the tool with them and checks
+that the docs show a part of what it prints:
+
+```markdown
+<!-- output: --diff mul_by_constant fixtures/build/O2/basic.o fixtures/build/O2/basic_v2.o -->
+...
+<!-- end output -->
+```
 
 ## The Book
 

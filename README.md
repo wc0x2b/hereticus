@@ -45,6 +45,7 @@ Two OpenWrt releases for the same device, 22.03.2 and 22.03.5 for the Netgear
 EX6100v2. The ARM decompressor stub is 15 KB of shipped code with no symbols,
 and 43 of its 15,351 bytes changed:
 
+<!-- output: --format markdown --raw --base 0x80208000 fixtures/build/openwrt/arm-ex6100v2-stub-22.03.2.bin fixtures/build/openwrt/arm-ex6100v2-stub-22.03.5.bin -->
 ```console
 $ hereticus --format markdown --raw --base 0x80208000 stub-22.03.2.bin stub-22.03.5.bin
 ```
@@ -65,6 +66,7 @@ $ hereticus --format markdown --raw --base 0x80208000 stub-22.03.2.bin stub-22.0
 1 changed only a constant, hidden. Use --show-retouched to list them.
 
 1 data region changed, hidden. Use --show-data to list them.
+<!-- end output -->
 
 The `+/-/~` column counts the instructions the edit added, removed and rewrote.
 A score of 1.00 with no instruction touched means only a constant changed, so
@@ -83,6 +85,7 @@ rather than `1 const`.
 
 Two versions of one firmware, built the same way, one release apart:
 
+<!-- output: --format markdown --show-retouched fixtures/build/O2/firmware.o fixtures/build/O2/firmware_v2.o -->
 ```console
 $ hereticus --format markdown --show-retouched fw-v1.elf fw-v2.elf
 ```
@@ -93,6 +96,7 @@ $ hereticus --format markdown --show-retouched fw-v1.elf fw-v2.elf
 | `check_header`    | changed        | 0.31  | 8/1/0   | 1 branch, 1 call, 1 mem                            | same name       |
 | `handle`          | changed        | 0.76  | 8/4/4   | 1 branch, 1 call, 1 jump, 1 mem, 1 const, 2 unread | same name       |
 | `validate_length` | changed values | 1.00  | -       | -                                                  | identical shape |
+<!-- end output -->
 
 The `1 call` on `check_header` is an added call to an authentication routine.
 The `1 const` on `handle` is a bound that moved from 1024 to 512, arriving
@@ -110,15 +114,19 @@ same place, between the same two pairs. A fix can rewrite a function so much
 that no score pairs it, or split it in two; its place still shows where it
 went. Zlib built for ARM at `-O1` and then `-O2`, stripped:
 
+<!-- output: --ignore-names fixtures/build/backports/zlib-before/arm-O1/lib-stripped.so fixtures/build/backports/zlib-after/arm-O2/lib-stripped.so -->
 ```text
 inflateInit_: gone, same place as inflateInit_
 inflate_table: gone, closest inflate_table at 0.57, same place as inflate_table
 ```
+<!-- end output -->
 
-A place is a hint and not a pair: over the backports, 61% of them are right.
+A place is a hint and not a pair: over the backports,
+61%<!-- from cross_build: all / right% --> of them are right.
 
 To see what changed inside one function:
 
+<!-- output: --diff mul_by_constant fixtures/build/O2/basic.o fixtures/build/O2/basic_v2.o -->
 ```console
 $ hereticus --diff mul_by_constant before.elf after.elf
 mul_by_constant
@@ -127,11 +135,13 @@ mul_by_constant
   mul r0, r0, r1
   bx lr
 ```
+<!-- end output -->
 
 `--view il` shows each instruction as the IL reads it, the same on every
 architecture, and a branch with the compare it tests, as
 `if (w0 <= 0) goto $-0x40`:
 
+<!-- output: --view il --diff mul_by_constant fixtures/build/O2/basic.o fixtures/build/O2/basic_v2.o -->
 ```console
 $ hereticus --view il --diff mul_by_constant before.elf after.elf
 mul_by_constant
@@ -140,6 +150,7 @@ mul_by_constant
   r0 = r0 * r1
   return
 ```
+<!-- end output -->
 
 `--tui` compares the two binaries once, then shows the report as a table to
 browse, with the functions gone and new after the pairs. `s` changes the
@@ -174,6 +185,7 @@ and 2 when the input could not be read.
   built optimized.
 
 ## Usage
+<!-- output: -h -->
 ```console
 Command line tool to compare functions between two binaries
 
@@ -206,6 +218,7 @@ Options:
   -h, --help                   Print help (see more with '--help')
   -V, --version                Print version
 ```
+<!-- end output -->
 
 ## Crates
 The `hereticus` crate re-exports the crates below. To use only one part,
@@ -228,8 +241,8 @@ row.
 All patches/merge requests are welcome!
 
 ```
-just quick-test   # about five seconds
-just test         # the same, plus slow tests
+just quick-test   # about a minute
+just test         # the same, plus the slow and the `truth_*` tests
 just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
 ```
 
