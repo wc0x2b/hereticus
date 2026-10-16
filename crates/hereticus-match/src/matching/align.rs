@@ -238,6 +238,20 @@ pub(super) fn align_by_scores(
     aligned
 }
 
+/// Align a gap of as many items on each side, as `scores[x][y]` scores
+/// item `x` of the first side against item `y` of the second.
+///
+/// The first pairs with the first, and so on, unless [`align_by_scores`],
+/// with each score less `floor`, sums `margin` more.
+pub(super) fn align_gap(scores: &[Vec<f64>], floor: f64, margin: f64) -> Vec<(usize, usize)> {
+    let in_order: Vec<(usize, usize)> = (0..scores.len()).map(|place| (place, place)).collect();
+    let sum = |pairs: &[(usize, usize)]| -> f64 {
+        pairs.iter().map(|&(x, y)| (scores[x][y] - floor).max(0.0)).sum()
+    };
+    let by_score = align_by_scores(scores.len(), scores.len(), |x, y| scores[x][y] - floor);
+    if sum(&by_score) > sum(&in_order) + margin { by_score } else { in_order }
+}
+
 /// The longest subsequence of `seeds`, sorted by their left position, whose
 /// right positions increase too.
 ///

@@ -6,7 +6,7 @@ use crate::norm::{NormInsn, Operation};
 use hereticus_callees::Callee;
 use rayon::prelude::*;
 
-use super::align::{Layout, Step, align, align_by_scores, longest_increasing_chain};
+use super::align::{Layout, Step, align, align_by_scores, align_gap, longest_increasing_chain};
 use super::bounded::is_bounded_swap;
 use super::change::{classify_change, count_edits};
 use super::exits::exits_early;
@@ -15,10 +15,10 @@ use super::score::{
     LOWEST_CONTEXT_SIMILARITY, LOWEST_LAYOUT_SIMILARITY, LOWEST_MOVED_SIMILARITY,
     LOWEST_UNIQUE_REFERENCE_SIMILARITY, MOST_HOLDERS_OF_AN_EDGE, MOST_PLACE_CELLS,
     MOST_UNIQUE_REFERENCE_ROUNDS, MOVED_SIMILARITY_MARGIN, Place, REFERENCE_WEIGHT, RIVAL_MARGIN,
-    ReferenceKey, common_keys, constant_agreement, group_by_shape_and_references,
-    keep_best_candidates, lacks_context, long_texts, reference_agreement, saturated,
-    short_texts_changed, similarity_of_symbols, sorted_only_in, sorted_shared, texts_that_differ,
-    unique_reference_holders,
+    ReferenceKey, SHIFTED_GAP_MARGIN, common_keys, constant_agreement,
+    group_by_shape_and_references, keep_best_candidates, lacks_context, long_texts,
+    reference_agreement, saturated, short_texts_changed, similarity_of_symbols, sorted_only_in,
+    sorted_shared, texts_that_differ, unique_reference_holders,
 };
 use super::{
     Changed, Confidence, Diff, EditKinds, Edits, LOWEST_JOINED_SIMILARITY, Match, Options, Phase,
@@ -409,7 +409,8 @@ impl Cascade<'_> {
     /// `b`–`b′` keep their order, and as many free functions sit between
     /// `a` and `b` as between `a′` and `b′`, the first pairs with the first,
     /// and so on, where each pair scores [`LOWEST_LAYOUT_SIMILARITY`] or
-    /// more.
+    /// more. Where the code says one function went and another came, the
+    /// gap pairs in order by score instead: see [`SHIFTED_GAP_MARGIN`].
     ///
     /// A weak pair that breaks the order is undone first, so that its
     /// functions can pair by place, and comes back where neither does.
@@ -455,10 +456,20 @@ impl Cascade<'_> {
             if lefts.is_empty() || lefts.len() != rights.len() {
                 continue;
             }
-            for (&x, &y) in lefts.iter().zip(&rights) {
-                let score = similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols);
+            let scores: Vec<Vec<f64>> = lefts
+                .iter()
+                .map(|&x| {
+                    let symbols = &self.left[x].symbols;
+                    rights
+                        .iter()
+                        .map(|&y| similarity_of_symbols(symbols, &self.right[y].symbols))
+                        .collect()
+                })
+                .collect();
+            for (a, b) in align_gap(&scores, LOWEST_LAYOUT_SIMILARITY, SHIFTED_GAP_MARGIN) {
+                let score = scores[a][b];
                 if score >= LOWEST_LAYOUT_SIMILARITY {
-                    pairs.push((x, y, score));
+                    pairs.push((lefts[a], rights[b], score));
                 }
             }
         }
