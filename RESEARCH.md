@@ -1086,6 +1086,20 @@ pair. No published fix has such a check, so none rose. It cost no time
 measured on the MIPS kernel of the VR200, as the pass runs on every
 changed pair at once.
 
+SPIDER also asks that the way out of the check that does not exit runs
+into the code it guarded, unchanged. A count of the checks whose other
+way runs into code that the alignment keeps in place did no better:
+
+| Order | Backports (130) | Ubuntu (218) | Published (33) |
+|---|---|---|---|
+| added + 5 if exit | 2489, 64 | 300, 122 | 97, 19 |
+| added + 10 if guarded | 2323, 58 | 297, 122 | 98, 19 |
+| added + 5 if exit, + 15 if guarded | 1946, 57 | 300, 123 | 101, 18 |
+| guarded first | 1768, 44 | 289, 132 | 105, 16 |
+
+Each trades fixes on row 1 for a lower rank sum, as the weights of the
+plain check did, so it is not kept.
+
 ### Two builds of Mirai
 
 Two static builds of one Mirai variant for ARM, with symbols, from
