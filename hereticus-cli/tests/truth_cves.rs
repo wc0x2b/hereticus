@@ -245,6 +245,18 @@ const FIXES: &[Fix] = &[
         after: "hereticus-openwrt-cve/18.06.6/armvirt-32/usr/sbin/uhttpd",
         function: "sub_134d8",
     },
+    Fix {
+        name: "CVE-2020-7248 libubox MIPS16e BE",
+        before: "hereticus-openwrt-cve/19.07.0/malta-be/lib/libblobmsg_json.so",
+        after: "hereticus-openwrt-cve/19.07.1/malta-be/lib/libblobmsg_json.so",
+        function: "sub_e50",
+    },
+    Fix {
+        name: "CVE-2019-19945 uhttpd MIPS16e BE",
+        before: "hereticus-openwrt-cve/18.06.5/malta-be/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/18.06.6/malta-be/usr/sbin/uhttpd",
+        function: "sub_402aac",
+    },
 ];
 
 fn cache() -> PathBuf {

@@ -721,6 +721,18 @@ const CVES: &[(&str, &str, &str, &str)] = &[
         "hereticus-openwrt-cve/18.06.6/armvirt-32/usr/sbin/uhttpd",
         "0x134d8",
     ),
+    (
+        "CVE-2020-7248 MIPS16e BE",
+        "hereticus-openwrt-cve/19.07.0/malta-be/lib/libblobmsg_json.so",
+        "hereticus-openwrt-cve/19.07.1/malta-be/lib/libblobmsg_json.so",
+        "0xe50",
+    ),
+    (
+        "CVE-2019-19945 MIPS16e BE",
+        "hereticus-openwrt-cve/18.06.5/malta-be/usr/sbin/uhttpd",
+        "hereticus-openwrt-cve/18.06.6/malta-be/usr/sbin/uhttpd",
+        "0x402aac",
+    ),
 ];
 
 /// Rank each published fix under each order, with names as the tool uses
