@@ -5,8 +5,8 @@
 `real-life-reports/`. Each binary is pinned by its SHA-256, so a snapshot
 always tells of the same bytes.
 
-The `ubusd`, `dropbear`, `uhttpd`, `odhcpd`, `procd` and `jsonfilter`
-builds of OpenWrt come
+The `ubusd`, `dropbear`, `uhttpd`, `odhcpd`, `procd`, `jsonfilter` and
+`libblobmsg_json` builds of OpenWrt come
 from the root file system of each release, and the `ltq-ptm` kernel
 module from its package, which this script downloads. The Apple binaries
 come from an IPSW with the `ipsw` tool, which this script does not run: a
@@ -162,6 +162,22 @@ PINNED = {
         "894254504b177e26a17b0d84ce3776ec23065373fc3e9594e4ab754e78be5509",
     "hereticus-openwrt-cve/24.10.4/lantiq-xrx200/kmod/kmod-ltq-ptm-vr9/ltq_ptm_vr9.ko":
         "36acfb05c54365983c94ba27516870dad3c19c29226f5635c7ac7c4d0c5c131e",
+    "hereticus-openwrt-cve/19.07.0/armvirt-32/lib/libblobmsg_json.so":
+        "72f059db90c6ac5a44ccb3aa67f2e9e8664698c18679d5b608de5fd7e5122694",
+    "hereticus-openwrt-cve/19.07.0/armvirt-64/lib/libblobmsg_json.so":
+        "4077a1da5237228ce55d8aa2008cbfa745234c32ac194c074683fe9ac152854c",
+    "hereticus-openwrt-cve/19.07.1/armvirt-32/lib/libblobmsg_json.so":
+        "3f91cca8e214c38bb1084d857bf9c9b8b575c915f14f8711578571cc9a84c865",
+    "hereticus-openwrt-cve/19.07.1/armvirt-64/lib/libblobmsg_json.so":
+        "8f811f00b500887ffdd8640eacb9bbbbca8f4c4f247ebabe2f21a39abd4a134e",
+    "hereticus-openwrt-cve/18.06.5/armvirt-32/usr/sbin/uhttpd":
+        "f30a12be242c2e64d4f2709bce10ad44966210fe4f647e15641a1fb7aff1040f",
+    "hereticus-openwrt-cve/18.06.5/armvirt-64/usr/sbin/uhttpd":
+        "b32ccb39fa690761a641ff09d7710b86fbefcfeab322e3e321c48d585069645d",
+    "hereticus-openwrt-cve/18.06.6/armvirt-32/usr/sbin/uhttpd":
+        "adcf264d25fab36d12ca943025dd55060edfc01403f34e0c199b2209ffa356f8",
+    "hereticus-openwrt-cve/18.06.6/armvirt-64/usr/sbin/uhttpd":
+        "a3f9cf3f3656ecb35e629aa3c8d16b2330b76ed9c603654a74241bd01ed1bec9",
 }
 
 # The commands that put the Apple binaries in CACHE / "hereticus-apple/cve",
@@ -209,18 +225,26 @@ def cpio_member(archive: bytes, wanted: str) -> bytes:
 
 
 def fetch_from_rootfs(path: str) -> bytes:
-    """Download a file of the root file system of its release."""
+    """Download a file of the root file system of its release.
+
+    Releases before 21.02 ship an empty `rootfs.cpio.gz` for `armvirt`, and
+    the same files in `default-rootfs.tar.gz`, which is read instead.
+    """
     # hereticus-openwrt-cve/<release>/<target>-<subtarget>/<file>
     _, release, target, *member = path.split("/")
     board, subtarget = target.split("-")
-    url = (
-        f"{MIRROR}/{release}/targets/{board}/{subtarget}/"
-        f"openwrt-{release}-{target}-rootfs.cpio.gz"
-    )
+    base = f"{MIRROR}/{release}/targets/{board}/{subtarget}/openwrt-{release}-{target}"
+    url = f"{base}-rootfs.cpio.gz"
     print(f"cve_binaries: downloading {url}", file=sys.stderr)
     with urllib.request.urlopen(url, timeout=600) as response:
         archive = gzip.decompress(response.read())
-    return cpio_member(archive, "/".join(member))
+    if archive:
+        return cpio_member(archive, "/".join(member))
+    url = f"{base}-default-rootfs.tar.gz"
+    print(f"cve_binaries: downloading {url}", file=sys.stderr)
+    with urllib.request.urlopen(url, timeout=600) as response:
+        tar = tarfile.open(fileobj=io.BytesIO(response.read()))
+    return tar.extractfile("./" + "/".join(member)).read()
 
 
 def fetch_kmod(path: str) -> bytes:

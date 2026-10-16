@@ -6,6 +6,8 @@
 - [Usage](./usage.md)
 - [Examples](./examples.md)
 - [Real-Life Examples](./real-life-examples.md)
+  - [CVE-2019-19945: uhttpd](./real-life-examples/cve-2019-19945.md)
+  - [CVE-2020-7248: libubox](./real-life-examples/cve-2020-7248.md)
   - [CVE-2021-30883: AppleCLCD](./real-life-examples/cve-2021-30883.md)
   - [CVE-2024-23265: AppleDiskImages2](./real-life-examples/cve-2024-23265.md)
   - [CVE-2025-14282: dropbear](./real-life-examples/cve-2025-14282.md)

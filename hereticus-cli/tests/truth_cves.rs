@@ -221,6 +221,30 @@ const FIXES: &[Fix] = &[
         after: "hereticus-openwrt-cve/24.10.6/malta-le/usr/bin/jsonfilter",
         function: "sub_401c2c",
     },
+    Fix {
+        name: "CVE-2020-7248 libubox A64",
+        before: "hereticus-openwrt-cve/19.07.0/armvirt-64/lib/libblobmsg_json.so",
+        after: "hereticus-openwrt-cve/19.07.1/armvirt-64/lib/libblobmsg_json.so",
+        function: "sub_1184",
+    },
+    Fix {
+        name: "CVE-2020-7248 libubox A32",
+        before: "hereticus-openwrt-cve/19.07.0/armvirt-32/lib/libblobmsg_json.so",
+        after: "hereticus-openwrt-cve/19.07.1/armvirt-32/lib/libblobmsg_json.so",
+        function: "sub_e80",
+    },
+    Fix {
+        name: "CVE-2019-19945 uhttpd A64",
+        before: "hereticus-openwrt-cve/18.06.5/armvirt-64/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/18.06.6/armvirt-64/usr/sbin/uhttpd",
+        function: "sub_404288",
+    },
+    Fix {
+        name: "CVE-2019-19945 uhttpd A32",
+        before: "hereticus-openwrt-cve/18.06.5/armvirt-32/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/18.06.6/armvirt-32/usr/sbin/uhttpd",
+        function: "sub_134d8",
+    },
 ];
 
 fn cache() -> PathBuf {
