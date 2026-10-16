@@ -57,6 +57,16 @@ fn function_name(symbol: &str) -> &str {
 }
 
 /// The functions whose symbols overlap `range` in `symbols`.
+/// The hints of a place that the rows of the functions gone and new give,
+/// `NearMiss::in_place`, checked against the symbols.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Places {
+    /// Hints whose two functions share a symbol.
+    right: usize,
+    /// Hints whose two functions share none.
+    wrong: usize,
+}
+
 fn names_over(symbols: &Binary, range: core::ops::Range<u64>) -> BTreeSet<String> {
     symbols
         .functions
@@ -71,6 +81,11 @@ fn names_over(symbols: &Binary, range: core::ops::Range<u64>) -> BTreeSet<String
 /// Compare `project` built at `first` with the fixed build at `second`,
 /// stripped, and count the pairs against the symbols.
 fn tally(project: &str, arch: &str, first: &str, second: &str) -> Tally {
+    compare(project, arch, first, second).0
+}
+
+/// As [`tally`], and count the hints of a place too.
+fn compare(project: &str, arch: &str, first: &str, second: &str) -> (Tally, Places) {
     let symbols = [
         read(project, "before", arch, first, "lib.so"),
         read(project, "after", arch, second, "lib.so"),
@@ -102,25 +117,52 @@ fn tally(project: &str, arch: &str, first: &str, second: &str) -> Tally {
             tally.right += 1;
         }
     }
-    tally
+
+    let hints: BTreeSet<(usize, usize)> = diff
+        .near_misses
+        .iter()
+        .filter_map(|miss| Some((miss.unmatched, miss.in_place?)))
+        .chain(
+            diff.added_near_misses.iter().filter_map(|miss| Some((miss.in_place?, miss.unmatched))),
+        )
+        .collect();
+    let mut places = Places::default();
+    for &(before, after) in &hints {
+        let (left, right) = (names(0, before), names(1, after));
+        if left.is_empty() || right.is_empty() {
+            continue;
+        }
+        if left.is_disjoint(&right) {
+            places.wrong += 1;
+        } else {
+            places.right += 1;
+        }
+    }
+    (tally, places)
 }
+
+/// The projects built at `first` and at `second`.
+fn projects(first: &str, second: &str) -> &'static [&'static str] {
+    // Rust is built by LLVM alone, so it has no GCC builds.
+    let built_by_gcc = first.starts_with("gcc") || second.starts_with("gcc");
+    if built_by_gcc {
+        &["zlib", "lua", "tinyxml2"]
+    } else {
+        &["zlib", "lua", "tinyxml2", "smallvec"]
+    }
+}
+
+const ARCHES: &[&str] = &["arm", "thumb", "aarch64", "mips", "mipsel"];
 
 /// Every project and architecture of one comparison, summed.
 fn tally_all(first: &str, second: &str) -> Tally {
-    tally_arches(first, second, &["arm", "thumb", "aarch64", "mips", "mipsel"])
+    tally_arches(first, second, ARCHES)
 }
 
 /// Every project of one comparison on `arches`, summed.
 fn tally_arches(first: &str, second: &str, arches: &[&str]) -> Tally {
-    // Rust is built by LLVM alone, so it has no GCC builds.
-    let built_by_gcc = first.starts_with("gcc") || second.starts_with("gcc");
-    let projects: &[&str] = if built_by_gcc {
-        &["zlib", "lua", "tinyxml2"]
-    } else {
-        &["zlib", "lua", "tinyxml2", "smallvec"]
-    };
     let mut total = Tally::default();
-    for project in projects {
+    for project in projects(first, second) {
         for &arch in arches {
             let one = tally(project, arch, first, second);
             total.right += one.right;
@@ -156,4 +198,41 @@ fn pairs_across_builds_are_locked(
 fn mips16_pairs_across_builds_are_locked() {
     let found = tally_arches("gcc-O2", "gcc-Os", &["mips16"]);
     assert_eq!(found, Tally { right: 835, wrong: 19, gone: 49, new: 131 });
+}
+
+/// The hints of a place over every comparison.
+///
+/// `README.md` and the book quote the share of right hints.
+#[test]
+fn the_place_hints_are_locked() {
+    use std::fmt::Write as _;
+    let levels = [
+        ("O1", "O2"),
+        ("O2", "O3"),
+        ("O2", "Os"),
+        ("O3", "Os"),
+        ("gcc-O2", "gcc-Os"),
+        ("O2", "gcc-O2"),
+    ];
+    let mut out = format!("{:16} {:>6} {:>6} {:>7}\n", "places", "right", "wrong", "right%");
+    let mut row = |label: &str, places: &Places| {
+        let right = 100.0 * places.right as f64 / (places.right + places.wrong) as f64;
+        writeln!(out, "{label:16} {:>6} {:>6} {right:>6.1}%", places.right, places.wrong).unwrap();
+    };
+    let mut all = Places::default();
+    for (first, second) in levels {
+        let mut sum = Places::default();
+        for project in projects(first, second) {
+            for arch in ARCHES {
+                let (_, places) = compare(project, arch, first, second);
+                sum.right += places.right;
+                sum.wrong += places.wrong;
+            }
+        }
+        row(&format!("{first}/{second}"), &sum);
+        all.right += sum.right;
+        all.wrong += sum.wrong;
+    }
+    row("all", &all);
+    insta::assert_snapshot!(out);
 }

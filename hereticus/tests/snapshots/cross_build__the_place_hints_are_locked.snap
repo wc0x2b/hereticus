@@ -1,0 +1,12 @@
+---
+source: hereticus/tests/cross_build.rs
+expression: out
+---
+places            right  wrong  right%
+O1/O2                27     11   71.1%
+O2/O3                24      0  100.0%
+O2/Os               170    108   61.2%
+O3/Os               199    132   60.1%
+gcc-O2/gcc-Os       101     55   64.7%
+O2/gcc-O2           201    152   56.9%
+all                 722    458   61.2%
