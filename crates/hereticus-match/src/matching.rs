@@ -960,6 +960,8 @@ pub fn diff_reporting(
     cascade.pair_leftover_twins();
     // Again, now that the callers and the order paired more of each table.
     cascade.pair_by_tables();
+    // Again, now that more of the functions around each gap have paired.
+    cascade.pair_close_code_in_gaps();
     // Last, so that every pair that can serve as context has paired.
     cascade.unpair_without_context();
     cascade.compare_callees();
