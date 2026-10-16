@@ -290,8 +290,9 @@ pub(super) const SHIFTED_GAP_MARGIN: f64 = 0.3;
 /// Where a function went or came, nothing says which, but close code in
 /// order still pairs: the similarity stage leaves it where a rival elsewhere
 /// in the binary scores within [`RIVAL_MARGIN`], and the place tells the
-/// two apart. Each pair is the one of its functions within the gap that
-/// scores best by that margin, and calls the same named functions: five
+/// two apart. No function of the gap that the alignment leaves out scores
+/// within that margin of a pair, and the two call the same named
+/// functions: five
 /// hash wrappers of libssh, as `md5_update` and `md5_ctx_free`, score 1.00
 /// and call other imports. Measured against the symbols, this paired 752
 /// more right and 3 more wrong over the OpenWrt kernels, 10 more right over

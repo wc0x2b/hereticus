@@ -194,7 +194,7 @@ fn tally_all(project: &str, versions: [&str; 2], reading: Reading) -> Tally {
 
 #[rstest]
 #[case::zlib_1_2_11("zlib", ["1.2.11", "1.2.12"], Tally { right: 1218, wrong: 0, gone: 32, new: 55, missed: 0 },
-        Tally { right: 1199, wrong: 1, gone: 87, new: 104, missed: 0 })]
+        Tally { right: 1200, wrong: 2, gone: 85, new: 102, missed: 0 })]
 #[case::zlib_1_2_12("zlib", ["1.2.12", "1.2.13"], Tally { right: 1268, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 1247, wrong: 3, gone: 2, new: 3, missed: 0 })]
 #[case::zlib_1_2_13("zlib", ["1.2.13", "1.3"], Tally { right: 1268, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 1250, wrong: 0, gone: 3, new: 6, missed: 0 })]
 #[case::lua_5_1("lua", ["5.1.4", "5.1.5"], Tally { right: 4927, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 4916, wrong: 0, gone: 2, new: 1, missed: 0 })]
