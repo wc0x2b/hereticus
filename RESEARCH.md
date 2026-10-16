@@ -1858,3 +1858,27 @@ Not kept:
   the code moved into a new function and left the old name on a small
   wrapper, as `generic_file_read_iter` to `generic_file_buffered_read`.
   The pair follows the code, and the names call it wrong.
+
+Of the wrong pairs by place (entry 7) over the upgrades, 104 have a true
+partner left free that is closer in code. Most sit in a gap of equal
+counts where the release deleted one function and added another, so
+pairing first with first puts the functions after it one off, as
+`lockref_put_or_lock` with `lockref_get`. Such a gap now pairs in order
+by score, where that sums `SHIFTED_GAP_MARGIN`, 0.3, more than first
+with first, each pair counted at its score less the floor of 0.1. Each
+cell right, then wrong, against the step before:
+
+| Margin | Kernels | Backports | Ubuntu updates |
+|---|---|---|---|
+| none | +50, −18 | −135, +90 | none |
+| 0.1 | +51, −9 | −33, +23 | none |
+| 0.2 | +43, −16 | −16, +15 | none |
+| 0.3 (kept) | +39, −12 | +5, none | none |
+| 0.5 | +30, −10 | none | none |
+
+The ranks of every set stayed the same. A floor of 0 or 0.2 in place of
+0.1 did as well or worse. Undoing the pair by place in such a gap, in
+place of moving it, where another function of the gap scores 0.1 to 0.3
+more with either side, cost the backports 57 to 303 right pairs: between
+two compilers, the first function of a gap is most often the first
+one's partner, even where another looks closer.

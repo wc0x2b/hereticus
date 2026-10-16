@@ -204,7 +204,7 @@ fn tally_all(project: &str, versions: [&str; 2], reading: Reading) -> Tally {
         Tally { right: 2408, wrong: 7, gone: 231, new: 288, missed: 0 })]
 #[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 2, new: 27, missed: 0 }, Tally { right: 2547, wrong: 25, gone: 78, new: 100, missed: 0 })]
 #[case::expat_2_4_4("expat", ["2.4.4", "2.4.5"], Tally { right: 2928, wrong: 0, gone: 10, new: 0, missed: 0 },
-        Tally { right: 2877, wrong: 0, gone: 44, new: 22, missed: 0 })]
+        Tally { right: 2877, wrong: 0, gone: 45, new: 23, missed: 0 })]
 #[case::expat_2_4_8("expat", ["2.4.8", "2.4.9"], Tally { right: 2928, wrong: 0, gone: 0, new: 0, missed: 0 },
         Tally { right: 2877, wrong: 1, gone: 3, new: 6, missed: 0 })]
 fn releases_pair_and_show_their_changes(

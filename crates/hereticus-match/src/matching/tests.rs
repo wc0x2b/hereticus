@@ -2029,6 +2029,45 @@ fn alignment_by_scores_takes_the_highest_sum_in_order() {
     assert!(align_by_scores(3, 0, |_, _| 1.0).is_empty());
 }
 
+/// A gap where one function went and another came pairs the rest by
+/// score, one place off.
+#[test]
+fn a_gap_with_one_function_gone_and_one_new_pairs_by_score() {
+    // `a b c` became `b c d`.
+    let scores = vec![vec![0.2, 0.1, 0.1], vec![0.9, 0.2, 0.1], vec![0.1, 0.9, 0.2]];
+    assert_eq!(align_gap(&scores, 0.1, 0.3), vec![(1, 0), (2, 1)]);
+}
+
+/// A gap pairs first with first where scores in another order sum
+/// little more, as two builds of one source often do.
+#[test]
+fn a_gap_pairs_in_order_unless_scores_say_clearly_otherwise() {
+    let scores = vec![vec![0.5, 0.1], vec![0.6, 0.4]];
+    assert_eq!(align_gap(&scores, 0.1, 0.3), vec![(0, 0), (1, 1)]);
+    assert!(align_gap(&[], 0.1, 0.3).is_empty());
+}
+
+/// An aligned gap keeps the order on both sides, and sums no less than
+/// first with first.
+#[test]
+fn an_aligned_gap_is_ordered_and_no_worse_than_in_order() {
+    bolero::check!().with_type::<(u8, [u8; 25])>().for_each(|&(size, cells)| {
+        let size = usize::from(size % 6);
+        let scores: Vec<Vec<f64>> = (0..size)
+            .map(|x| (0..size).map(|y| f64::from(cells[x * 5 + y] % 5) / 4.0).collect())
+            .collect();
+        let aligned = align_gap(&scores, 0.1, 0.3);
+        for step in aligned.windows(2) {
+            assert!(step[0].0 < step[1].0 && step[0].1 < step[1].1, "{aligned:?}");
+        }
+        let sum = |pairs: &[(usize, usize)]| -> f64 {
+            pairs.iter().map(|&(x, y)| (scores[x][y] - 0.1).max(0.0)).sum()
+        };
+        let in_order: Vec<(usize, usize)> = (0..size).map(|place| (place, place)).collect();
+        assert!(sum(&aligned) >= sum(&in_order));
+    });
+}
+
 /// The highest sum of scores of any alignment in order, by trying
 /// every one.
 fn best_alignment_sum(left: usize, right: usize, score: &dyn Fn(usize, usize) -> f64) -> f64 {

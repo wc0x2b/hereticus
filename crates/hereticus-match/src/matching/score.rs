@@ -268,6 +268,22 @@ pub(super) fn constant_agreement(left: &[u64], right: &[u64]) -> f64 {
 /// [`Cascade::pair_by_layout`]: super::cascade::Cascade::pair_by_layout
 pub(super) const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
 
+/// How much more the pairs of a gap of equal counts must score, aligned in
+/// order by their scores, than paired first with first, for
+/// [`Cascade::pair_by_layout`] to take them.
+///
+/// Where a release deletes one function of a gap and adds another, the
+/// functions after it pair one off, as `lockref_put_or_lock` with
+/// `lockref_get`. Each pair counts its score less
+/// [`LOWEST_LAYOUT_SIMILARITY`]. Measured against the symbols, this paired
+/// 39 more right and 12 fewer wrong over the OpenWrt kernels, and 5 more
+/// right over the backports built two ways, with every rank the same. At
+/// 0.2 or less, the backports paired more wrong: between two compilers, the
+/// first function of a gap is still most often the first one's partner.
+///
+/// [`Cascade::pair_by_layout`]: super::cascade::Cascade::pair_by_layout
+pub(super) const SHIFTED_GAP_MARGIN: f64 = 0.3;
+
 /// Whether a pair sits between the pairs around it on both sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Place {
