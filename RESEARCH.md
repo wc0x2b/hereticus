@@ -1909,3 +1909,17 @@ of 0.02 to 0.1 did the same within a few pairs. Over the upgrades the
 wrong pairs fall to 2.53% and 1.39%, and the pairs by place are wrong
 3.23% of the time, from 3.44%, over 1005 more of them. The ranks of every
 set stayed the same.
+
+Over the upgrades, 5725 functions stayed free where their namesake on
+the other side was free too, and 673 of those pairs score 1.00: twins of
+one source file, as `atomic64_add` and `atomic64_sub`, which no caller
+tells apart, since a kernel calls such functions through pointers. In a
+gap whose counts differ, each twin was the rival of the other, so
+neither paired. A rival now counts only where the alignment of the gap
+leaves it out: twins that align in order are no rivals of each other.
+That paired 331 more right and 2 more wrong over the kernels, and 4 more
+right over the backports. Raw zlib from 1.2.11 to 1.2.12 paired 1 more
+right and 1 more wrong; the Ubuntu updates stayed the same. A floor of
+0.7 in place of 0.8 then paired 83 more right kernel pairs, but 8 fewer
+right and 7 more wrong over the backports. Over the upgrades the wrong
+pairs fall to 2.52% and 1.39%.

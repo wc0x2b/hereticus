@@ -256,8 +256,11 @@ pub(super) fn align_gap(scores: &[Vec<f64>], floor: f64, margin: f64) -> Vec<(us
 /// first side against item `y` of the second.
 ///
 /// The items pair in order where they score `floor` or more, by
-/// [`align_by_scores`], and where no other item of the gap scores within
-/// `margin` of the pair with either.
+/// [`align_by_scores`], and where no item of the gap left out of the
+/// alignment scores within `margin` of the pair with either. Twins that
+/// the alignment pairs in order are no rivals of each other: two of one
+/// source file, as `atomic64_add` and `atomic64_sub`, sit side by side on
+/// both sides.
 pub(super) fn align_uneven_gap(
     scores: &[Vec<f64>],
     floor: f64,
@@ -265,12 +268,19 @@ pub(super) fn align_uneven_gap(
 ) -> Vec<(usize, usize)> {
     let width = scores.first().map_or(0, Vec::len);
     let aligned = align_by_scores(scores.len(), width, |x, y| scores[x][y] - floor);
+    let mut left_out = (vec![true; scores.len()], vec![true; width]);
+    for &(x, y) in &aligned {
+        left_out.0[x] = false;
+        left_out.1[y] = false;
+    }
     aligned
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|&(x, y)| {
             let close = |score: f64| score >= scores[x][y] - margin;
-            let rival_after = (0..width).any(|other| other != y && close(scores[x][other]));
-            let rival_before = (0..scores.len()).any(|other| other != x && close(scores[other][y]));
+            let rival_after = (0..width).any(|other| left_out.1[other] && close(scores[x][other]));
+            let rival_before =
+                (0..scores.len()).any(|other| left_out.0[other] && close(scores[other][y]));
             !(rival_after || rival_before)
         })
         .collect()

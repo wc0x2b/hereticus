@@ -2064,8 +2064,21 @@ fn an_uneven_gap_leaves_a_pair_with_a_close_rival() {
     assert!(align_uneven_gap(&[], 0.8, 0.03).is_empty());
 }
 
-/// An uneven gap pairs in order, each pair at the floor or more and with
-/// no rival in the gap within the margin.
+/// Twins that an uneven gap aligns in order pair, where a twin left out
+/// of the alignment would make the one it rivals stay free.
+#[test]
+fn an_uneven_gap_pairs_twins_in_order() {
+    // `add sub` became `add sub new`.
+    let scores = vec![vec![1.0, 1.0, 0.1], vec![1.0, 1.0, 0.1]];
+    assert_eq!(align_uneven_gap(&scores, 0.8, 0.03), vec![(0, 0), (1, 1)]);
+    // `add sub` became `add sub add`: which `add` is the old one?
+    let scores = vec![vec![1.0, 0.5, 1.0], vec![0.5, 1.0, 0.5]];
+    assert_eq!(align_uneven_gap(&scores, 0.8, 0.03), vec![(1, 1)]);
+}
+
+/// An uneven gap pairs a subset of its alignment by score, each pair at
+/// the floor or more and with no rival left out of that alignment within
+/// the margin.
 #[test]
 fn an_aligned_uneven_gap_is_ordered_and_without_rivals() {
     bolero::check!().with_type::<(u8, u8, [u8; 25])>().for_each(|&(left, right, cells)| {
@@ -2077,11 +2090,15 @@ fn an_aligned_uneven_gap_is_ordered_and_without_rivals() {
         for step in aligned.windows(2) {
             assert!(step[0].0 < step[1].0 && step[0].1 < step[1].1, "{aligned:?}");
         }
+        let by_score = align_by_scores(left, right, |x, y| scores[x][y] - 0.5);
+        assert!(aligned.iter().all(|pair| by_score.contains(pair)), "{aligned:?}");
+        let left_out_x = |x: usize| by_score.iter().all(|pair| pair.0 != x);
+        let left_out_y = |y: usize| by_score.iter().all(|pair| pair.1 != y);
         for &(x, y) in &aligned {
             let score = scores[x][y];
             assert!(score >= 0.5);
-            assert!((0..right).all(|other| other == y || scores[x][other] < score - 0.1));
-            assert!((0..left).all(|other| other == x || scores[other][y] < score - 0.1));
+            assert!((0..right).all(|other| !left_out_y(other) || scores[x][other] < score - 0.1));
+            assert!((0..left).all(|other| !left_out_x(other) || scores[other][y] < score - 0.1));
         }
     });
 }
