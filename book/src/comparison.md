@@ -7,6 +7,11 @@ is one release of zlib, Lua, tinyxml2 or smallvec, before and after one
 upstream fix, for ARM, Thumb-2, AArch64 or MIPS. The functions that the fix
 edits are known, so each report gets a score.
 
+> [!WARNING]
+> These numbers are a narrow test, not a full measure of the three tools.
+> Read [How Accurate These Numbers Are](#how-accurate-these-numbers-are)
+> before you quote them.
+
 | Tool      | Fixes found | Fix on row 1 | Rows | Rows the fix did not touch |
 |-----------|-------------|--------------|------|----------------------------|
 | hereticus | 35<!-- from rivals_radare2: hereticus / found --> | 20<!-- from rivals_radare2: hereticus / first --> | 85<!-- from rivals_radare2: hereticus / rows --> | 0<!-- from rivals_radare2: hereticus / extras --> |
@@ -55,6 +60,37 @@ small libraries, `hereticus` and radiff2 each take less than a second, and
 Ghidra takes much longer, as it analyses each program and then tracks the
 versions. The test checks only that `hereticus` takes less time than
 Ghidra in all. A time depends on the machine, so this page quotes none.
+
+## How Accurate These Numbers Are
+
+The numbers are correct for these pairs and these settings. They do not
+show that one tool is better than another in general. Know these limits:
+
+- **The pairs are small and few.** Each pair is a small library with one
+  small fix. A large binary, or a release with many changes, can give a
+  different result.
+- **No kernel is compared.** A raw kernel of a few megabytes takes radiff2
+  and Ghidra many minutes for each pair, so the tests do not compare the
+  OpenWrt kernels. `tests/truth_kernels.rs` checks only `hereticus` on them.
+- **The other tools run with their default settings.** Other options, or
+  a person who reads the results, can make radiff2 or Ghidra do better.
+  For example, Ghidra can run more correlators, and radiff2 can analyse
+  more deeply.
+- **The rules that score the other tools are ours.** Ghidra does not mark
+  a pair as changed, so the tests use the rule of its own script. radiff2
+  gives no clear label for a change, so the tests count a row below a
+  similarity of 1 as changed. Other rules give other numbers.
+- **The scores favour what `hereticus` is made for.** The tests count the
+  rows that a reader must read to find a fix. Ghidra Version Tracking is
+  made to carry names and comments from one version to the next, not to
+  rank changes, so this score is not its aim.
+- **`hereticus` was developed with these pairs.** Its tests use the same
+  backports, so its rules can fit these pairs better than other binaries.
+- **The libraries are not fully stripped.** A shared library keeps the
+  names of the functions it exports, and all three tools can read them.
+  Without names, the results can be different.
+- **Times depend on the machine.** The other tools ran alone, and
+  `hereticus` ran while other tests ran.
 
 ## Run the Tests
 
