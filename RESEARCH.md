@@ -1934,3 +1934,10 @@ undoes and pairs again what that check undid. Pairing only close code,
 by the rule for gaps whose counts differ, and undoing nothing, paired
 34 more right and none wrong before the check, with every other set the
 same; that is kept. 194 of the 423 sit out of place: the code moved.
+
+Of the pairs still missed at 0.7 or more, 143 have no free rival within
+0.03 at the end, most of them out of place. The context check undoes a
+pair by similarity out of place where its one paired neighbour each side
+disagrees, at any score. Keeping such pairs at 0.9 or more paired 18
+more right and 20 more wrong over the kernels, and at 0.7 or more, 55
+more right and 164 more wrong. The check stays as it is.
