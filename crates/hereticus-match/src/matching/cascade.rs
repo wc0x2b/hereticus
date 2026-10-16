@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use super::align::{Layout, Step, align, align_by_scores, longest_increasing_chain};
 use super::bounded::is_bounded_swap;
 use super::change::{classify_change, count_edits};
+use super::exits::exits_early;
 use super::score::{
     CLOSE_SIMILARITY, CONSTANT_WEIGHT, Context, FEWEST_SHARED_EDGES, FLOW_RESCUE,
     LOWEST_CONTEXT_SIMILARITY, LOWEST_LAYOUT_SIMILARITY, LOWEST_MOVED_SIMILARITY,
@@ -23,6 +24,8 @@ use super::{
     Changed, Confidence, Diff, EditKinds, Edits, LOWEST_JOINED_SIMILARITY, Match, Options, Phase,
     Prepared, Progress, Symbol, UseNames, same_detail,
 };
+use crate::norm::FlowShape;
+use hereticus_recovery::arch::decode_all;
 
 /// Which functions a question covers.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -732,6 +735,7 @@ impl Cascade<'_> {
                 kinds: EditKinds::default(),
                 rarity: 0.0,
                 bounded_calls: 0,
+                early_exits: 0,
             };
         }
         let (left_body, right_body) = (work_of(left.body()), work_of(right.body()));
@@ -747,6 +751,7 @@ impl Cascade<'_> {
             kinds,
             rarity: 0.0,
             bounded_calls: 0,
+            early_exits: 0,
         }
     }
 
@@ -1225,6 +1230,34 @@ impl Cascade<'_> {
                 pair.bounded_calls += changed.iter().filter(|(l, r)| bounded(l, r)).count();
             }
         }
+    }
+
+    /// Count the conditional branches that the edit of each changed pair
+    /// added, and from which one way leaves the function at once: see
+    /// [`super::exits`].
+    pub(super) fn find_early_exits(&mut self) {
+        let (left_side, right_side) = (&self.left, &self.right);
+        self.matched.par_iter_mut().filter(|pair| pair.changed == Changed::Yes).for_each(|pair| {
+            let (left, right) = (&left_side[pair.before], &right_side[pair.after]);
+            let mut at_right = 0;
+            let mut added = Vec::new();
+            for step in align(&left.ordered, &right.ordered) {
+                if step != Step::Left {
+                    if step == Step::Right && right.body[at_right].flow == FlowShape::Branch {
+                        added.push(right.sources[at_right] as usize);
+                    }
+                    at_right += 1;
+                }
+            }
+            if added.is_empty() {
+                return;
+            }
+            let arch = right.isa.arch();
+            let function = right.function;
+            let (insns, _) = decode_all(arch, &function.code, function.address);
+            pair.early_exits =
+                added.into_iter().filter(|&index| exits_early(arch, &insns, index)).count();
+        });
     }
 
     /// Mark each pair whose code agrees but whose texts differ, and count

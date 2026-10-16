@@ -1046,6 +1046,46 @@ or the Ubuntu updates with a swap stands above a fix. One case is little
 evidence that the list finds other fixes, but it costs no other fix
 its rank: a swap for a bounded form is rare outside a fix.
 
+### Checks before an early exit
+
+Many fixes narrow what a function accepts: they add a test, and where it
+fails the function returns at once, so every input the old code handled
+well runs as before. SPIDER (Machiry and others, IEEE S&P 2020) finds
+such a patch in source by that shape. In machine code, `matching::exits`
+reads it as a conditional branch the edit added, from which one way
+returns within 8 instructions, through calls and through jumps within
+the function, as to a shared exit. `Match::early_exits` counts them.
+
+First, a coarser test: an edit that adds a conditional branch and
+removes or rewrites at most 4 instructions, first. It cut the rank sum
+of the backports from 2970 to 1808, but raised that of the Ubuntu
+updates from 304 to 315 and of the published fixes from 95 to 246: many
+edits of a large update only add a branch.
+
+With the early exit, over the rank sum and the fixes on row 1:
+
+| Order | Backports (130) | Ubuntu (218) | Published (33) |
+|---|---|---|---|
+| added | 2970, 64 | 304, 121 | 95, 19 |
+| exit first | 1802, 42 | 280, 136 | 111, 15 |
+| exit and narrow (4) first | 1641, 60 | 293, 126 | 104, 17 |
+| added + 3 if exit | 2626, 64 | 299, 121 | 96, 19 |
+| added + 5 if exit | 2489, 64 | 300, 122 | 97, 19 |
+| added + 7 if exit | 2387, 62 | 300, 122 | 98, 19 |
+| added + 5 if exit, + 20 if narrow (4) | 1896, 65 | 297, 123 | 104, 19 |
+| added + 3 if exit, + 20 if narrow (4) | 1933, 65 | 296, 122 | 103, 19 |
+
+The backports hold four fixes, and the fix of `luaZ_fill` in Lua gives
+almost all of their gain: its rank sum fell from 2486 to 2017 under
+`added + 5 if exit`, and to 1419 with the more for a narrow edit. That
+more sank tinyxml2, from 412 to 441, and five published fixes by one to
+three rows; `added + 5 if exit` lifted tinyxml2 to 399, and moved only
+the `uhttpd` fix for A32 from row 3 to row 5. So the default now counts
+a check before an early exit as five instructions added, once for each
+pair. No published fix has such a check, so none rose. It cost no time
+measured on the MIPS kernel of the VR200, as the pass runs on every
+changed pair at once.
+
 ### Two builds of Mirai
 
 Two static builds of one Mirai variant for ARM, with symbols, from

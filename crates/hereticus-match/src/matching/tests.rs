@@ -1265,6 +1265,31 @@ fn a_call_turned_into_its_bounded_form_counts() {
     }
 }
 
+/// An edit that adds a test and a return where it fails counts one check
+/// before an early exit; one that adds a test before more work does not.
+#[test]
+fn a_check_before_an_early_return_counts() {
+    const CMP_R0_0: u32 = 0xe350_0000;
+    const BNE_OVER_TWO: u32 = 0x1a00_0000;
+    const MVN_R0_0: u32 = 0xe3e0_0000;
+    let options = Options { threshold: 0.0, ..Options::default() };
+    let before = binary_of(&[("f", &arm(&[ADD, ADD, ADD, BX_LR]))]);
+
+    let checked = [CMP_R0_0, BNE_OVER_TWO, MVN_R0_0, BX_LR, ADD, ADD, ADD, BX_LR];
+    let diff = diff_with(&before, &binary_of(&[("f", &arm(&checked))]), options);
+    assert_eq!(diff.matched[0].changed, Changed::Yes);
+    assert_eq!(diff.matched[0].early_exits, 1);
+
+    let mut longer = vec![CMP_R0_0, 0x1a00_0001]; // bne into the work
+    longer.extend([SUB; 10]);
+    longer.extend([ADD, ADD, ADD, BX_LR]);
+    let diff = diff_with(&before, &binary_of(&[("f", &arm(&longer))]), options);
+    assert_eq!(diff.matched[0].early_exits, 0, "the branch leads to more work");
+
+    let diff = diff_with(&before, &before, options);
+    assert_eq!(diff.matched[0].early_exits, 0, "no edit");
+}
+
 /// A call the edit removes lines up with no call, so its callee counts
 /// as no changed callee.
 #[test]

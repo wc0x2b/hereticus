@@ -21,8 +21,8 @@ exit_code: 0
 │ FUNCTION                     │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                  │ MATCHED BY      │
 ├──────────────────────────────┼────────────────┼───────┼─────────┼──────────────────────────────────────────┼─────────────────┤
 │ sub_80000058 -> sub_80000090 │ changed        │  0.40 │ 21/12/5 │ 4 branch, 2 call, 7 jump, 6 mem, 1 const │ same place      │
-│ sub_800000dc -> sub_8000016c │ changed        │  0.82 │ 8/2/0   │ 1 branch, 3 call, 1 mem, 1 const         │ similar         │
 │ sub_80000010                 │ changed        │  0.20 │ 7/1/2   │ 1 branch, 1 call, 1 mem                  │ same place      │
+│ sub_800000dc -> sub_8000016c │ changed        │  0.82 │ 8/2/0   │ 1 branch, 3 call, 1 mem, 1 const         │ similar         │
 │ sub_80000000                 │ changed values │  1.00 │ -       │ -                                        │ identical shape │
 ╰──────────────────────────────┴────────────────┴───────┴─────────┴──────────────────────────────────────────┴─────────────────╯
 

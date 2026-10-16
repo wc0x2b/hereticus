@@ -290,8 +290,9 @@ impl From<ViewName> for View {
 enum Sort {
     /// Strongest match first, then closest score.
     Confidence,
-    /// Most instructions added first, after the functions that turned a
-    /// call into its bounded form. The default.
+    /// Most instructions added first, with a check before an early exit
+    /// as five more, after the functions that turned a call into its
+    /// bounded form. The default.
     Added,
     /// Most instructions removed first.
     Removed,
@@ -311,7 +312,7 @@ impl Sort {
     fn key_of(self, pair: &Match) -> Option<f64> {
         match self {
             Self::Confidence => None,
-            Self::Added => Some(pair.edits.added as f64),
+            Self::Added => Some(pair.edits.added as f64 + early_exit_weight(pair)),
             Self::Removed => Some(pair.edits.removed as f64),
             Self::Modified => Some(pair.edits.edited as f64),
             Self::Rare => Some(pair.rarity),
@@ -997,6 +998,22 @@ fn rank(a: &Match, b: &Match, sort: Sort) -> core::cmp::Ordering {
         .then_with(|| a.score.partial_cmp(&b.score).unwrap_or(core::cmp::Ordering::Equal))
 }
 
+/// What a check before an early exit adds to the count of instructions
+/// added: as much as five instructions, once for each pair.
+///
+/// A fix that narrows what a function accepts adds a test and an early
+/// return where it fails, as the fix of `luaZ_fill` in Lua does, and adds
+/// few instructions. Measured on the backports, this cut the rank sum of
+/// the fixes from 2970 to 2489, and on the Ubuntu updates from 304 to 300,
+/// with one more first; on the published fixes it moved one fix from row 3
+/// to row 5. A larger weight, or more for an edit that removes nothing,
+/// lifted Lua further but sank tinyxml2 and more published fixes. See
+/// RESEARCH.md, "Checks before an early exit".
+fn early_exit_weight(pair: &Match) -> f64 {
+    const WEIGHT: f64 = 5.0;
+    if pair.early_exits > 0 { WEIGHT } else { 0.0 }
+}
+
 /// Report whether a pair turned a call into its bounded form, as `strcmp`
 /// into `strncmp`.
 ///
@@ -1378,6 +1395,23 @@ mod tests {
         assert_eq!(shown[0].edits.added, 30, "another order ignores it");
     }
 
+    /// A check before an early exit weighs as five instructions added
+    /// under `added`, once for each pair.
+    #[test]
+    fn a_check_before_an_early_exit_weighs_five_instructions() {
+        let larger = pair_with(Edits { added: 6, removed: 0, edited: 0 }, 0.9);
+        let checked =
+            Match { early_exits: 2, ..pair_with(Edits { added: 2, removed: 0, edited: 0 }, 0.9) };
+        let mut shown = vec![&larger, &checked];
+        sort_shown(&mut shown, Sort::Added);
+        assert_eq!(shown[0].edits.added, 2, "2 + 5 is more than 6");
+
+        let much_larger = pair_with(Edits { added: 8, removed: 0, edited: 0 }, 0.9);
+        let mut shown = vec![&checked, &much_larger];
+        sort_shown(&mut shown, Sort::Added);
+        assert_eq!(shown[0].edits.added, 8, "two checks weigh as one");
+    }
+
     /// `--sort rare` ranks by the weighted additions, not by their count.
     #[test]
     fn sort_by_rare_ranks_by_rarity() {
@@ -1422,6 +1456,7 @@ mod tests {
         Match {
             rarity: 0.0,
             bounded_calls: 0,
+            early_exits: 0,
             before: 0,
             after: 0,
             confidence: Confidence::IdenticalCode,

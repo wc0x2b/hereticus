@@ -227,8 +227,12 @@ fn measure(project: &str, arch: &str, first: &str, second: &str, totals: &mut To
             totals.orders[slot].1 += usize::from(rank == 0);
             totals.orders[slot].2 += usize::from(rank < 5);
             totals.orders[slot].3 += 1.0 / (rank + 1) as f64;
-            if std::env::var_os("BENCH_VERBOSE").is_some() && slot == 2 {
-                println!("  a+1idf: rank {}", rank + 1);
+            // `BENCH_ORDERS=added,a+5exit` prints the rank of each case
+            // under those orders.
+            let name = ORDERS[slot].0;
+            if std::env::var("BENCH_ORDERS").is_ok_and(|names| names.split(',').any(|n| n == name))
+            {
+                println!("{project:9} {arch:8} {first:7} {second:7} {name}={}", rank + 1);
             }
         }
     }
@@ -270,6 +274,8 @@ struct Features {
     referents: usize,
     /// See `Match::bounded_calls`.
     bounded: usize,
+    /// See `Match::early_exits`.
+    exits: usize,
 }
 
 type Order = fn(&Features) -> f64;
@@ -278,15 +284,38 @@ fn guards(f: &Features) -> f64 {
     (f.added_branches.min(3) + f.added_returns.min(2) + f.added_calls.min(2)) as f64
 }
 
+/// The key of the default order of the report, but for the check before
+/// an early exit.
+fn default_key(f: &Features) -> f64 {
+    let rescheduled = f.reordered && !f.control_flow;
+    f.edits.added as f64 + if f.bounded > 0 { 1e5 } else { 0.0 }
+        - f.score * 1e-3
+        - if rescheduled { 1e6 } else { 0.0 }
+}
+
+/// `per_exit` for an edit that adds a check before an early exit, and
+/// `narrow` more where it also removes or rewrites at most `slack`
+/// instructions.
+fn exit_bonus(f: &Features, per_exit: f64, narrow: f64, slack: usize) -> f64 {
+    match f.exits {
+        0 => 0.0,
+        _ if narrows(f, slack) => per_exit + narrow,
+        _ => per_exit,
+    }
+}
+
+/// Report whether an edit adds a conditional branch and removes or
+/// rewrites at most `slack` instructions.
+fn narrows(f: &Features, slack: usize) -> bool {
+    f.added_branches > 0 && f.edits.removed + f.edits.edited <= slack
+}
+
 const ORDERS: &[(&str, Order)] = &[
     // The default of the report: a call turned into its bounded form
-    // first, and a rescheduled pair last.
-    ("added", |f| {
-        let rescheduled = f.reordered && !f.control_flow;
-        f.edits.added as f64 + if f.bounded > 0 { 1e5 } else { 0.0 }
-            - f.score * 1e-3
-            - if rescheduled { 1e6 } else { 0.0 }
-    }),
+    // first, a check before an early exit as five instructions added, and
+    // a rescheduled pair last.
+    ("added", |f| default_key(f) + exit_bonus(f, 5.0, 0.0, 0)),
+    ("added, no exit", default_key),
     ("added, bounded not first", |f| {
         let rescheduled = f.reordered && !f.control_flow;
         f.edits.added as f64 - f.score * 1e-3 - if rescheduled { 1e6 } else { 0.0 }
@@ -439,6 +468,7 @@ fn features_of(rows: &[&Match], stripped: &[Binary; 2]) -> Vec<Features> {
                 added_returns: count(FlowShape::Return) + count(FlowShape::Jump),
                 referents: pair.kinds.callees + pair.kinds.texts,
                 bounded: pair.bounded_calls,
+                exits: pair.early_exits,
             }
         })
         .collect()
