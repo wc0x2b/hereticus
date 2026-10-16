@@ -280,8 +280,11 @@ fn report(fix: &Fix) -> String {
 
 #[test]
 fn the_rank_of_each_published_fix_is_locked() {
-    let mut out = String::new();
-    writeln!(out, "{:36} {:>4} {:>5}  row", "fix", "rank", "rows").unwrap();
+    // The ranks, and then the row of each fix, in a table of their own: the
+    // reports quote the numbers of the first, which `hereticus/tests/docs.rs`
+    // reads.
+    let mut ranks = format!("{:36} {:>4} {:>5}\n", "fix", "rank", "rows");
+    let mut fix_rows = format!("\n{:36} row\n", "fix");
     for fix in FIXES {
         let report = report(fix);
         let rows: Vec<&str> = report.lines().collect();
@@ -292,9 +295,10 @@ fn the_rank_of_each_published_fix_is_locked() {
             Some(at) => ((at + 1).to_string(), rows[at].replace('\t', " ")),
             None => ("-".to_owned(), String::new()),
         };
-        writeln!(out, "{:36} {rank:>4} {:>5}  {row}", fix.name, rows.len()).unwrap();
+        writeln!(ranks, "{:36} {rank:>4} {:>5}", fix.name, rows.len()).unwrap();
+        writeln!(fix_rows, "{:36} {row}", fix.name).unwrap();
     }
-    insta::assert_snapshot!(out);
+    insta::assert_snapshot!(ranks + &fix_rows);
 }
 
 /// The output of the tool on two files of the cache.

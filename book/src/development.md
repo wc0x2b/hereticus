@@ -45,7 +45,8 @@ comment right after it, and `tests/docs.rs` checks that the two agree:
 45937<!-- from boundaries.rs: exact --> exact
 ```
 
-A source without `.rs` is a snapshot of `hereticus/tests/snapshots`, and
+A source without `.rs` is a snapshot of `hereticus/tests/snapshots` or of
+`hereticus-cli/tests/snapshots`, and
 the key is a row and a column of its tables. A source with `.rs` is a test,
 and the key is a field that the test sets once. When a snapshot changes,
 `just quick-test` fails until the docs quote the new numbers. The entries
