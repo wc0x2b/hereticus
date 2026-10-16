@@ -148,8 +148,12 @@ fn pairs_across_builds_are_locked(
 }
 
 /// MIPS16e, which GCC alone builds, so only its two levels compare.
+///
+/// The literal pool after a function is its data. Read as a function of
+/// its own, as before, a pool made a pair of its own: 2 more right, 1 more
+/// wrong, 3 more gone and 6 more new.
 #[test]
 fn mips16_pairs_across_builds_are_locked() {
     let found = tally_arches("gcc-O2", "gcc-Os", &["mips16"]);
-    assert_eq!(found, Tally { right: 835, wrong: 22, gone: 52, new: 137 });
+    assert_eq!(found, Tally { right: 833, wrong: 21, gone: 49, new: 131 });
 }

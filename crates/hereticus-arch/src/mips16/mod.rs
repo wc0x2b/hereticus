@@ -3,7 +3,7 @@
 //! functions are in [`hereticus_recovery::arch::mips16`].
 
 use super::mips::register_name;
-use super::{Arch, Decoder, GlobalPointerSetup, Insn, Memory};
+use super::{Arch, Decoder, GlobalPointerSetup, Insn, Memory, Recovery as _};
 use hereticus_il as il;
 use hereticus_il::arch::mips16::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
@@ -71,6 +71,22 @@ impl Arch for Mips16 {
             let reading = self.decoded(insn.bytes(), 0, insn.address).map(|found| found.reading);
             if matches!(reading, Some(Reading::PcRelative { .. })) {
                 kinds[index] = ConstantKind::Address;
+            }
+        }
+        // A word of the literal pool that holds an address is data, and
+        // each of its halfwords decodes as an instruction only by accident.
+        // The address moves with each release where the code is not PIC.
+        let index_at = |address: u64| body.binary_search_by_key(&address, |insn| insn.address).ok();
+        for (_, word) in self.literal_pool_loads(body) {
+            let (Some(high), Some(low)) = (index_at(word), index_at(word + HALFWORD as u64)) else {
+                continue;
+            };
+            let bytes = [body[high].bytes(), body[low].bytes()].concat();
+            let Ok(bytes) = <[u8; 4]>::try_from(bytes.as_slice()) else { continue };
+            // A pointer to a MIPS16e function has bit 0 set.
+            if space.contains(self.read_pointer(&bytes) & !1) {
+                kinds[high] = ConstantKind::StoredAddress;
+                kinds[low] = ConstantKind::StoredAddress;
             }
         }
         kinds
@@ -145,7 +161,6 @@ impl Arch for Mips16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Recovery as _;
 
     /// The text of the halfwords `values`, big endian, at `address`.
     fn text(values: &[u16], address: u64) -> String {
@@ -222,5 +237,23 @@ mod tests {
         let (insns, _) = hereticus_recovery::arch::decode_all(&Mips16::BIG, &code, 0x40_3ace);
         let space = AddressSpace::of_raw_image(0x40_0000, 0x2_0000);
         assert_eq!(Mips16::BIG.contents(&code, &insns, &space), Contents::Data);
+    }
+
+    /// A pool word that holds an address is data, and one that holds a
+    /// number is not judged so.
+    #[test]
+    fn a_pool_word_that_holds_an_address_is_data() {
+        let kinds_of = |pool_word: u32| {
+            let mut code: Vec<u8> =
+                [0xb401_u16, 0xe8a0].iter().flat_map(|h| h.to_be_bytes()).collect();
+            code.extend(pool_word.to_be_bytes());
+            let (insns, _) = hereticus_recovery::arch::decode_all(&Mips16::BIG, &code, 0x40_1000);
+            let space = AddressSpace::of_raw_image(0x40_0000, 0x2_0000);
+            Mips16::BIG.constant_kinds(&code, &insns, &space)
+        };
+        let kinds = kinds_of(0x0041_81b0);
+        assert_eq!(kinds[2..], [ConstantKind::StoredAddress, ConstantKind::StoredAddress]);
+        let kinds = kinds_of(0x0000_0010);
+        assert!(!kinds.contains(&ConstantKind::StoredAddress), "{kinds:?}");
     }
 }

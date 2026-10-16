@@ -1187,6 +1187,21 @@ The report of `uhttpd` fell to 13 rows, with the fix on rows 2 and 4,
 and those of `jsonfilter` for MIPS16e from 2 rows to 1. No other test
 moved.
 
+One row still lost 265 instructions to a new function in the later
+build: the scan guessed a start at the pool after a `jrc ra` in one
+build and not in the other, as the pool words decode as branches whose
+targets move with their values. The MIPS16e reading named no word a
+`lw rx, imm(pc)` loads, so no pool was data, as on Thumb-2 it is. Now
+both halfwords of each such word are data to the scan, which keeps the
+pool with its function, and a pool word that holds an address in the
+image is a stored address to the matching, which drops it. The report
+of `uhttpd` fell to 6 rows, with the fix on rows 1 and 2, as on ARM;
+the fix of `jsonfilter` for MIPS16e reads 5 instructions added, as on
+AArch64, where its pool made 11; `odhcpd` for MIPS16e little endian lost
+a row. Over the MIPS16e backports built by GCC at `-O2` and `-Os`, 3
+fewer functions went and 6 fewer came, with 2 fewer right pairs and 1
+fewer wrong.
+
 ### Two builds of Mirai
 
 Two static builds of one Mirai variant for ARM, with symbols, from
