@@ -123,11 +123,14 @@ cannot judge. The pairs by callers and by references are wrong
 11%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
-About 5400 functions over the upgrades stay free where their namesake on
-the other side is free too, more than twice the wrong pairs. Of the 921
-that score 0.7 or more, most sit out of place, where the context check
-undoes them rightly or a rival scores within 0.03; 390 score 1.00,
-mostly small twins that no caller tells apart. See `RESEARCH.md`,
+Over the upgrades, 7565<!-- from truth_kernels: upgrades / pairs --> pairs of
+functions stay free on both sides, though they share a name and a source
+file: more than three times the wrong pairs. Of these,
+1209<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
+those sit out of place, where the context check undoes them rightly or a
+rival scores within 0.03;
+532<!-- from truth_kernels: upgrades / identical --> have the same
+instructions, mostly small twins that no caller tells apart. See `RESEARCH.md`,
 "The kernel upgrades, checked again".
 
 ## Rank a small fix that swaps no call
