@@ -1054,8 +1054,66 @@ fn measure_ubuntu_case(case: &Case, use_names: UseNames) -> (String, Totals, Str
     }
     if !any {
         totals.missed += 1;
+        if std::env::var_os("BENCH_MISSED").is_some() {
+            println!("MISSED {}", why_missed(case, &binaries, &diff, &names));
+        }
     }
     (format!("{} {}", case.library, case.arch), one, line)
+}
+
+/// Why no row of `diff` shows a fix of `case`: what became of each
+/// function of the earlier build that a fixed symbol covers, and of each
+/// of the later build.
+fn why_missed(
+    case: &Case,
+    binaries: &[Binary; 2],
+    diff: &Diff,
+    names: &dyn Fn(usize, usize) -> BTreeSet<String>,
+) -> String {
+    let holds_fix =
+        |side: usize, index: usize| names(side, index).iter().any(|n| case.fixes.contains(n));
+    let mut out = format!(
+        "{} {} {} -> {} fixes {:?}:",
+        case.library, case.arch, case.before, case.after, case.fixes
+    );
+    let mut found = false;
+    for side in [0, 1] {
+        for index in (0..binaries[side].functions.len()).filter(|&i| holds_fix(side, i)) {
+            found = true;
+            let pair = diff.matched.iter().find(|pair| match side {
+                0 => pair.before == index,
+                _ => pair.after == index,
+            });
+            let state = match pair {
+                None => "unpaired".to_owned(),
+                Some(pair) => {
+                    let other = match side {
+                        0 => pair.after,
+                        _ => pair.before,
+                    };
+                    let right = holds_fix(1 - side, other);
+                    format!(
+                        "{} {:?} {:.2} +{}/-{}/~{} c{} t{} k{}",
+                        if right { "paired" } else { "WRONG" },
+                        pair.changed,
+                        pair.score,
+                        pair.edits.added,
+                        pair.edits.removed,
+                        pair.edits.edited,
+                        pair.kinds.callees,
+                        pair.kinds.texts,
+                        pair.kinds.constants,
+                    )
+                }
+            };
+            let size = binaries[side].functions[index].code.len();
+            out += &format!(" [{side} {index} {size}B {state}]");
+        }
+    }
+    if !found {
+        out += " NO-SYMBOL";
+    }
+    out
 }
 
 fn add(all: &mut Totals, one: &Totals) {
