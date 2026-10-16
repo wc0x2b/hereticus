@@ -1100,6 +1100,27 @@ way runs into code that the alignment keeps in place did no better:
 Each trades fixes on row 1 for a lower rank sum, as the weights of the
 plain check did, so it is not kept.
 
+Nor did where the value a check tests comes from. A trace back from the
+check, through moves, to the first write before it in address order,
+reads the value as an input (nothing wrote it), a load, the result of a
+call, or a computation:
+
+| Order | Backports (130) | Ubuntu (218) | Published (33) |
+|---|---|---|---|
+| added + 5 if exit | 2489, 64 | 300, 122 | 97, 19 |
+| + 5 if it tests a load | 2109, 64 | 298, 122 | 98, 19 |
+| + 10 if it tests a load | 1864, 64 | 298, 122 | 99, 18 |
+| + 10 if it tests an input | 2534, 64 | 301, 122 | 98, 19 |
+| + 5 if it tests a call's result | 2482, 60 | 298, 123 | 98, 19 |
+| − 5 if it tests a computation | 2458, 65 | 304, 122 | 97, 19 |
+
+The fix of `luaZ_fill` tests a length it loads, and gives the whole gain
+on the backports: 2017 to 1371 under `+ 10 if it tests a load`, while
+tinyxml2 sank from 399 to 420. On the Ubuntu updates and the published
+fixes, each order moves the rank sum by one or two. The ranks of the
+fixes found there are near their floor: of the 176 Ubuntu fixes on a
+row, 122 are on row 1 and 172 in the first five.
+
 ### Two builds of Mirai
 
 Two static builds of one Mirai variant for ARM, with symbols, from
