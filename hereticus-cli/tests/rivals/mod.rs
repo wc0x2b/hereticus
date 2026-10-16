@@ -401,8 +401,10 @@ fn rank_text(rank: Option<usize>) -> String {
 /// The totals of both tools, and then the scores of each build, as tables.
 pub fn table(rival: Rival, contests: &[Contest]) -> String {
     let other = rival.directory();
-    let mut totals =
-        format!("{:10} {:>5} {:>5} {:>6} {:>6}\n", "tool", "found", "first", "rows", "extras");
+    let mut totals = format!(
+        "{:10} {:>6} {:>5} {:>5} {:>6} {:>6}\n",
+        "tool", "builds", "found", "first", "rows", "extras"
+    );
     let total = |pick: fn(&Contest) -> Score| {
         let scores: Vec<Score> = contests.iter().map(pick).collect();
         let found = scores.iter().filter(|score| score.rank.is_some()).count();
@@ -416,9 +418,10 @@ pub fn table(rival: Rival, contests: &[Contest]) -> String {
         (other, |contest: &Contest| contest.rival),
     ] {
         let (found, first, rows, extras) = total(pick);
-        writeln!(totals, "{tool:10} {found:>5} {first:>5} {rows:>6} {extras:>6}").unwrap();
+        let builds = contests.len();
+        writeln!(totals, "{tool:10} {builds:>6} {found:>5} {first:>5} {rows:>6} {extras:>6}")
+            .unwrap();
     }
-    writeln!(totals, "{:10} {:>5}", "builds", contests.len()).unwrap();
 
     let columns = ["rank", "rows", "extras"]
         .map(|column| {
