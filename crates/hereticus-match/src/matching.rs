@@ -36,6 +36,7 @@ mod align;
 mod bounded;
 mod cascade;
 mod change;
+mod exits;
 mod lines;
 mod near_miss;
 mod score;
@@ -132,6 +133,10 @@ pub struct Match {
     /// Calls that the edit kept in place but turned into their bounded
     /// form, as `strcmp` into `strncmp`: see [`bounded`].
     pub bounded_calls: usize,
+    /// Conditional branches that the edit added, and from which one way
+    /// leaves the function within a few instructions: the check that a fix
+    /// adds before an early return. See [`exits`].
+    pub early_exits: usize,
 }
 
 /// The size of an edit, in normalized instructions.
@@ -593,6 +598,9 @@ struct Prepared<'a> {
     /// The normalized body, kept so that a pair need not decode and
     /// normalize it again.
     body: Vec<NormInsn>,
+    /// The index of the decoded instruction each entry of [`Self::body`]
+    /// comes from.
+    sources: Vec<u32>,
     /// The import this function jumps to, where it is a PLT stub whose
     /// slot the linker names.
     stub_of: Option<&'a str>,
@@ -808,6 +816,7 @@ fn prepare<'a>(
                 flow,
                 constants,
                 body,
+                sources: sources.iter().map(|&source| source as u32).collect(),
                 stub_of,
             }
         })
@@ -954,6 +963,7 @@ pub fn diff_reporting(
     // Last, so that every pair that can serve as context has paired.
     cascade.unpair_without_context();
     cascade.compare_callees();
+    cascade.find_early_exits();
     cascade.compare_texts();
     cascade.finish(progress)
 }

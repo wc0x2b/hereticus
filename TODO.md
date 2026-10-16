@@ -114,11 +114,13 @@ on their context to undo.
 
 ## Rank a small fix that swaps no call
 
-A call swapped for its bounded form, as `strcmp` for `strncmp`, now goes
-first (`RESEARCH.md`, "Calls swapped for their bounded form"). A small
-fix of another shape still ranks low under `added`, as one that only
-tightens a bound. SPIDER (IEEE S&P 2020) tells a fix that only narrows
-what a function accepts; such a test over the IL could rank them.
+A call swapped for its bounded form now goes first, and a check before
+an early exit counts as five instructions added (`RESEARCH.md`, "Calls
+swapped for their bounded form" and "Checks before an early exit"). A
+larger weight for a check lifts the Lua backport further but sinks
+tinyxml2 and five published fixes. Tell a check that guards an input
+from one that a refactoring moves: SPIDER also asks that the code on
+the way that does not exit stays the same.
 
 ## Measure on more published fixes, and faster
 
