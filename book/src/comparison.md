@@ -48,6 +48,14 @@ the other tool or on an earlier row, and show no more rows that the fix did
 not touch. If a change makes `hereticus` worse than the other tool on one
 build, the test fails.
 
+## Time
+
+`just rival-times` shows how long each tool takes on each pair. On these
+small libraries, `hereticus` and radiff2 each take less than a second, and
+Ghidra takes much longer, as it analyses each program and then tracks the
+versions. The test checks only that `hereticus` takes less time than
+Ghidra in all. A time depends on the machine, so this page quotes none.
+
 ## Run the Tests
 
 ```
@@ -55,6 +63,7 @@ just rivals         # run radiff2 on the pairs
 just quick-test     # compare with radiff2, in rivals_radare2.rs
 just rivals-ghidra  # run Ghidra on the pairs
 just test           # compare with Ghidra too, in truth_ghidra.rs
+just rival-times    # show how long each tool takes
 ```
 
 The Ghidra image is large and a first run takes a long time, so only

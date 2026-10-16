@@ -9,8 +9,10 @@
 # build/rivals/<tool>/<project>-<arch>-<level>.json, which holds the rows the
 # tool reports, the lowest score first:
 #
-#   {"rows": [{"before": 1234, "after": 1250, "score": 0.82}, ...]}
+#   {"seconds": 0.14, "rows": [{"before": 1234, "after": 1250, "score": 0.82}, ...]}
 #
+# "seconds" is the wall time of the tool on the pair, from the start of the
+# analysis to the report.
 # A row with no "after" is a function that is gone, and a row with no
 # "before" is a new function. An address is where the file links the
 # function. hereticus-cli/tests/rivals.rs reads these files.
@@ -55,15 +57,14 @@ trap 'rm -rf "$work"' EXIT
 
 # radiff2 with the analysis of `aaa`, as its manual shows for a code diff.
 run_radare2() {
-    local before="$1" after="$2" result="$3"
-    radiff2 -A -C -j "$before" "$after" 2>/dev/null >"$work/radiff2.json"
-    python3 "$here/rivals/rows.py" radare2 "$work/radiff2.json" "$result"
+    local before="$1" after="$2" report="$3"
+    radiff2 -A -C -j "$before" "$after" 2>/dev/null >"$report"
 }
 
 # Ghidra analyses each program with its default analyzers, and then Auto
 # Version Tracking pairs them.
 run_ghidra() {
-    local before="$1" after="$2" result="$3"
+    local before="$1" after="$2" report="$3"
     local project="$work/ghidra"
     rm -rf "$project"
     mkdir -p "$project"
@@ -75,22 +76,25 @@ run_ghidra() {
         || { cat "$work/ghidra-import.log" >&2; return 1; }
     "$headless" "$project" rivals -process after.so -noanalysis \
         -scriptPath "$here/rivals" \
-        -postScript HereticusVersionTracking.java before.so "$work/ghidra.json" \
+        -postScript HereticusVersionTracking.java before.so "$report" \
         >"$work/ghidra-vt.log" 2>&1 \
         || { cat "$work/ghidra-vt.log" >&2; return 1; }
     # The headless analyzer exits with zero when a script throws.
-    [ -f "$work/ghidra.json" ] || { cat "$work/ghidra-vt.log" >&2; return 1; }
-    python3 "$here/rivals/rows.py" ghidra "$work/ghidra.json" "$result"
-    rm "$work/ghidra.json"
+    [ -f "$report" ] || { cat "$work/ghidra-vt.log" >&2; return 1; }
 }
 
 grep -v '^#' "$builds" | while read -r project arch level; do
     name="$project-$arch-$level"
     echo "rivals: $tool $name"
+    rm -f "$work/report.json"
+    start="$(date +%s.%N)"
     "run_$tool" \
         "$backports/$project-before/$arch-$level/lib-stripped.so" \
         "$backports/$project-after/$arch-$level/lib-stripped.so" \
-        "$out/$name.json"
+        "$work/report.json"
+    end="$(date +%s.%N)"
+    python3 "$here/rivals/rows.py" "$tool" "$work/report.json" "$out/$name.json" \
+        "$(python3 -c "print(round($end - $start, 3))")"
 done
 echo "$version" | head -n 1 >"$out/VERSION"
 echo "$inputs_hash" >"$stamp"

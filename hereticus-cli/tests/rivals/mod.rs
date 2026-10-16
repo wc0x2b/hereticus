@@ -31,6 +31,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use hereticus::obj::Binary;
 
@@ -188,11 +189,20 @@ fn address(value: &serde_json::Value) -> Option<u64> {
     value.as_u64()
 }
 
-/// The rows the other tool reports for `build`.
-fn rival_rows(rival: Rival, build: &Build) -> Vec<Row> {
+/// What one tool reports for one build, and how long it took.
+struct Report {
+    rows: Vec<Row>,
+    seconds: f64,
+}
+
+/// What the other tool reports for `build`.
+fn rival_report(rival: Rival, build: &Build) -> Report {
     let path = fixtures().join("build/rivals").join(rival.directory()).join(build.name() + ".json");
     let report = read_json(&path, rival.recipe());
-    report["rows"]
+    let seconds = report["seconds"].as_f64().unwrap_or_else(|| {
+        panic!("{}: no seconds, run `{}` again", path.display(), rival.recipe())
+    });
+    let rows = report["rows"]
         .as_array()
         .expect("the rows are a list")
         .iter()
@@ -201,17 +211,20 @@ fn rival_rows(rival: Rival, build: &Build) -> Vec<Row> {
             after: address(&row["after"]),
             score: row["score"].as_f64(),
         })
-        .collect()
+        .collect();
+    Report { rows, seconds }
 }
 
-/// The rows this tool reports for `build`, run as a user runs it.
-fn hereticus_rows(build: &Build) -> Vec<Row> {
+/// What this tool reports for `build`, run as a user runs it.
+fn hereticus_report(build: &Build) -> Report {
+    let start = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_hereticus"))
         .args(["--progress", "never", "--format", "json"])
         .arg(build.file(Variant::Before, "lib-stripped.so"))
         .arg(build.file(Variant::After, "lib-stripped.so"))
         .output()
         .expect("the tool runs");
+    let seconds = start.elapsed().as_secs_f64();
     assert!(
         output.status.success(),
         "{}: {}",
@@ -237,7 +250,7 @@ fn hereticus_rows(build: &Build) -> Vec<Row> {
         after: address(&function["address"]),
         score: None,
     });
-    pairs.chain(gone).chain(new).collect()
+    Report { rows: pairs.chain(gone).chain(new).collect(), seconds }
 }
 
 /// The symbols of each side of a build, which name the rows.
@@ -353,6 +366,10 @@ pub struct Contest {
     pub build: Build,
     pub hereticus: Score,
     pub rival: Score,
+    /// The wall time of this tool on the build, in seconds.
+    pub hereticus_seconds: f64,
+    /// The wall time of the other tool, as `fixtures/rivals.sh` measured it.
+    pub rival_seconds: f64,
 }
 
 /// Score both tools on every build.
@@ -361,9 +378,15 @@ pub fn contests(rival: Rival) -> Vec<Contest> {
         .into_iter()
         .map(|build| {
             let symbols = Symbols::of(&build);
-            let hereticus = score(&build, &symbols, &hereticus_rows(&build), Order::AsListed);
-            let rival = score(&build, &symbols, &rival_rows(rival, &build), Order::ByScore);
-            Contest { build, hereticus, rival }
+            let ours = hereticus_report(&build);
+            let theirs = rival_report(rival, &build);
+            Contest {
+                hereticus: score(&build, &symbols, &ours.rows, Order::AsListed),
+                rival: score(&build, &symbols, &theirs.rows, Order::ByScore),
+                hereticus_seconds: ours.seconds,
+                rival_seconds: theirs.seconds,
+                build,
+            }
         })
         .collect()
 }
@@ -445,4 +468,28 @@ pub fn table(rival: Rival, contests: &[Contest]) -> String {
         .unwrap();
     }
     totals + &builds
+}
+
+/// The wall time of both tools on each build, and in all, as a table.
+///
+/// A time depends on the machine and on what else runs on it, so no
+/// snapshot locks it. This tool runs in the test, while other tests run;
+/// the other tool ran alone, in `fixtures/rivals.sh`.
+pub fn times(rival: Rival, contests: &[Contest]) -> String {
+    let other = rival.directory();
+    let mut table = format!("{:24} {:>12} {:>12}\n", "build", "hereticus s", format!("{other} s"));
+    for contest in contests {
+        writeln!(
+            table,
+            "{:24} {:>12.3} {:>12.3}",
+            contest.build.name(),
+            contest.hereticus_seconds,
+            contest.rival_seconds
+        )
+        .unwrap();
+    }
+    let ours: f64 = contests.iter().map(|contest| contest.hereticus_seconds).sum();
+    let theirs: f64 = contests.iter().map(|contest| contest.rival_seconds).sum();
+    writeln!(table, "{:24} {ours:>12.3} {theirs:>12.3}", "all").unwrap();
+    table
 }
