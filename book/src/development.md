@@ -6,6 +6,8 @@ All patches/merge requests are welcome!
 just quick-test   # about a minute
 just test         # the same, plus the slow and the `truth_*` tests
 just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
+just rivals       # run radiff2 on the backports, which `quick-test` compares with
+just rivals-ghidra  # run Ghidra Version Tracking on them, which `test` compares with
 ```
 
 ## Crates
@@ -33,6 +35,8 @@ All patches/merge requests are welcome!
 just quick-test   # about a minute
 just test         # the same, plus the slow and the `truth_*` tests
 just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
+just rivals       # run radiff2 on the backports, which `quick-test` compares with
+just rivals-ghidra  # run Ghidra Version Tracking on them, which `test` compares with
 ```
 
 ## Numbers in the Docs

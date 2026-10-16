@@ -27,6 +27,29 @@ backports: fixtures
 firmware:
     python3 fixtures/firmware.py
 
+rivals_image := "hereticus-rivals"
+
+# Give the stripped backports to radiff2, so a test can check the comparison
+# against what radiff2 reports on the same pairs.
+rivals: backports
+    docker build --quiet --target radare2 --tag {{rivals_image}}-radare2 fixtures/rivals
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --volume "{{justfile_directory()}}:/work" \
+        --workdir /work \
+        {{rivals_image}}-radare2 ./fixtures/rivals.sh radare2
+
+# The same with Ghidra Version Tracking. The image is about 2 GB and a first
+# run takes about ten minutes, so only `test` runs it.
+rivals-ghidra: backports
+    docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --env HOME=/tmp \
+        --volume "{{justfile_directory()}}:/work" \
+        --workdir /work \
+        {{rivals_image}}-ghidra ./fixtures/rivals.sh ghidra
+
 # Cargo publishes each crate after the crates it needs. Give `--dry-run` to
 # check without upload.
 # Publish every crate of the workspace to crates.io.
@@ -46,7 +69,7 @@ truth_tests := "binary(/^truth_/)"
 
 # Fetch and pin what the `truth_*` tests read. The Apple binaries need the
 # `ipsw` tool; `fixtures/cve_binaries.py` names the commands.
-truth: firmware
+truth: firmware rivals-ghidra
     python3 fixtures/openwrt_debug.py
     python3 fixtures/cve_binaries.py
     python3 fixtures/ubuntu_cves.py
@@ -55,7 +78,7 @@ test *args: build fixtures firmware backports truth
     cargo nextest run --release {{args}}
 
 # Skips tests marked slow and the `truth_*` tests, for a fast inner loop
-quick-test *args: build fixtures firmware backports
+quick-test *args: build fixtures firmware backports rivals
     cargo nextest run --release -E 'not test(/slow/) and not {{truth_tests}}' {{args}}
 
 # Compare the two firmware fixtures, as a reader would compare two releases.

@@ -1,0 +1,37 @@
+# The backport builds that fixtures/rivals.sh gives each tool, one per line:
+# project, arch and level, as the directories of fixtures/build/backports name them.
+zlib arm O2
+zlib arm gcc-O2
+zlib thumb O2
+zlib thumb gcc-O2
+zlib aarch64 O2
+zlib aarch64 gcc-O2
+zlib mips O2
+zlib mips gcc-O2
+zlib mipsel O2
+zlib mipsel gcc-O2
+lua arm O2
+lua arm gcc-O2
+lua thumb O2
+lua thumb gcc-O2
+lua aarch64 O2
+lua aarch64 gcc-O2
+lua mips O2
+lua mips gcc-O2
+lua mipsel O2
+lua mipsel gcc-O2
+tinyxml2 arm O2
+tinyxml2 arm gcc-O2
+tinyxml2 thumb O2
+tinyxml2 thumb gcc-O2
+tinyxml2 aarch64 O2
+tinyxml2 aarch64 gcc-O2
+tinyxml2 mips O2
+tinyxml2 mips gcc-O2
+tinyxml2 mipsel O2
+tinyxml2 mipsel gcc-O2
+smallvec arm O2
+smallvec thumb O2
+smallvec aarch64 O2
+smallvec mips O2
+smallvec mipsel O2
