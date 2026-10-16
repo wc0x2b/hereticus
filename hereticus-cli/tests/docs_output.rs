@@ -12,7 +12,10 @@
 //! The text between the two, without code fences and the `$ ` lines of a
 //! shown command, must appear as one run in what the tool prints with those
 //! arguments, run from the root of the repository. The docs may show a part
-//! of the output.
+//! of the output. An argument that starts with `~/` names a file under the
+//! home folder: the binaries of the reports, which `just truth` fetches to
+//! `~/.cache`. Those reports are checked by a slow test, so `just
+//! quick-test` skips them.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,18 +27,31 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-/// The docs that can show output: the README, and the pages of the book.
-fn docs() -> Vec<PathBuf> {
-    let mut found = vec![root().join("README.md")];
-    let book = root().join("book/src");
-    for entry in std::fs::read_dir(&book).expect("the book").flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|extension| extension == "md") {
-            found.push(path);
+/// The Markdown files of the folders `dirs` of the repository.
+fn markdown_in(dirs: &[&str]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in dirs {
+        for entry in std::fs::read_dir(root().join(dir)).expect("a docs folder").flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|extension| extension == "md") {
+                found.push(path);
+            }
         }
     }
     found.sort();
     found
+}
+
+fn home() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").expect("HOME is set"))
+}
+
+/// An argument of a marker, with a leading `~/` made the home folder.
+fn expand(arg: &str) -> String {
+    match arg.strip_prefix("~/") {
+        Some(rest) => home().join(rest).display().to_string(),
+        None => arg.to_owned(),
+    }
 }
 
 /// An output a doc shows, and the arguments that make it.
@@ -104,19 +120,52 @@ fn run(args: &[String]) -> String {
 }
 
 /// Whether `shown` appears in `printed` as one run, line by line, with the
-/// spaces at the ends of the lines left out.
+/// spaces at the ends of the lines left out. A line `...` in `shown`, or a
+/// table row of `...`, stands for lines left out, so the runs between such
+/// lines must appear in order.
 fn appears_in(shown: &str, printed: &str) -> bool {
-    let trimmed = |text: &str| text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
-    trimmed(printed).contains(&trimmed(shown))
+    let printed: Vec<&str> = printed.lines().map(str::trim_end).collect();
+    let printed = format!("\n{}\n", printed.join("\n"));
+    let shown: Vec<&str> = shown.lines().map(str::trim_end).collect();
+    let mut rest = printed.as_str();
+    for run in shown.split(|line| is_elision(line)).filter(|run| !run.is_empty()) {
+        let run = format!("\n{}\n", run.join("\n"));
+        let Some(at) = rest.find(&run) else { return false };
+        // The next run may start on the line this one ends with.
+        rest = &rest[at + run.len() - 1..];
+    }
+    true
 }
 
+/// Whether `line` stands for lines left out: `...`, or a table row whose
+/// cells are `...` or empty.
+fn is_elision(line: &str) -> bool {
+    let cells: Vec<&str> = line.trim().trim_matches('|').split('|').map(str::trim).collect();
+    cells.contains(&"...") && cells.iter().all(|cell| cell.is_empty() || *cell == "...")
+}
+
+/// The README and the pages of the book, which read only the fixtures.
 #[test]
 fn every_output_the_docs_show_is_what_the_tool_prints() {
+    let mut docs = markdown_in(&["book/src"]);
+    docs.push(root().join("README.md"));
+    check(&docs);
+}
+
+/// The reports, which read the binaries that `just truth` fetches.
+#[test]
+fn slow_every_output_the_reports_show_is_what_the_tool_prints() {
+    check(&markdown_in(&["real-life-reports", "malware-reports"]));
+}
+
+/// Run the tool for each output that `docs` show, and fail on the first
+/// doc that shows another.
+fn check(docs: &[PathBuf]) {
     let mut problems = Vec::new();
     let mut checked = 0;
-    for doc in docs() {
-        let text = std::fs::read_to_string(&doc).expect("a doc");
-        let name = doc.strip_prefix(root()).unwrap_or(&doc).display().to_string();
+    for doc in docs {
+        let text = std::fs::read_to_string(doc).expect("a doc");
+        let name = doc.strip_prefix(root()).unwrap_or(doc).display().to_string();
         let found = match shown(&text) {
             Ok(found) => found,
             Err(problem) => {
@@ -126,13 +175,14 @@ fn every_output_the_docs_show_is_what_the_tool_prints() {
         };
         for one in found {
             checked += 1;
-            for arg in &one.args {
-                let path = root().join(arg);
-                if arg.starts_with("fixtures/") && !path.exists() {
-                    panic!("{arg} is missing, run `just fixtures firmware backports` first");
+            let args: Vec<String> = one.args.iter().map(|arg| expand(arg)).collect();
+            for (arg, expanded) in one.args.iter().zip(&args) {
+                let fetched = arg.starts_with("fixtures/") || arg.starts_with("~/");
+                if fetched && !root().join(expanded).exists() {
+                    panic!("{arg} is missing, run `just test` to fetch it");
                 }
             }
-            let printed = run(&one.args);
+            let printed = run(&args);
             if !appears_in(&one.text, &printed) {
                 problems.push(format!(
                     "{name}:{}: `hereticus {}` prints\n{printed}\nand not\n{}",
@@ -210,6 +260,15 @@ fn a_shown_output_may_be_a_part_of_what_is_printed() {
     assert!(appears_in("b\nc", "a\nb  \nc\nd"));
     assert!(!appears_in("b\nd", "a\nb\nc\nd"));
     assert!(!appears_in("b\nc", "a\nb\nC"));
+    assert!(appears_in("...\nb\n...\nd\n...", "a\nb\nc\nd\ne"));
+    assert!(!appears_in("d\n...\nb", "a\nb\nc\nd"));
+    assert!(!appears_in("b\n...\nx", "a\nb\nc\nd"));
+    assert!(!appears_in("b", "ab\nc"));
+    assert!(appears_in("| a |\n| ... |   |\n| d |", "| a |\n| b |\n| c |\n| d |"));
+    assert!(is_elision("..."));
+    assert!(is_elision("| ...  |    |  |"));
+    assert!(!is_elision("|    |    |"));
+    assert!(!is_elision("| ... | x |"));
 }
 
 #[test]
@@ -218,4 +277,11 @@ fn large_numbers_take_commas() {
     assert_eq!(with_commas(999), "999");
     assert_eq!(with_commas(15351), "15,351");
     assert_eq!(with_commas(1234567), "1,234,567");
+}
+
+#[test]
+fn an_argument_under_home_is_expanded() {
+    assert_eq!(expand("~/.cache/a"), home().join(".cache/a").display().to_string());
+    assert_eq!(expand("fixtures/a.o"), "fixtures/a.o");
+    assert_eq!(expand("a~/b"), "a~/b");
 }
