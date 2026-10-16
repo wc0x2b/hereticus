@@ -1790,3 +1790,27 @@ score at 0.6 paired 223 more right and 35 more wrong, a better trade than
 the plain score at 0.6 (365 and 203), but the backports paired 10 fewer
 right and 26 more wrong. It would also move every score a report shows.
 It is not kept. Measure it again only if a new corpus favours it.
+
+### The kernel upgrades, checked again
+
+Over the six kernel upgrades, 2723 pairs were wrong by
+`tests/truth_kernels.rs`. A third of the wrong pairs of `mipsel-r6220`
+from 21.02.7 to 22.03.2 joined init functions that score 0.95 or more,
+as `ip_rt_init` with `neigh_init`, and the function of the later side
+overlapped the symbols of several others. The cause is in the truth, not
+in the pairs: the end of `.init.text` in the shipped ramips and lantiq
+kernels sits apart from where the debug file puts it. In 22.03.2 for
+`mipsel-r6220`, from 0x80863148 on, the code is 0xc8c bytes before its
+symbols; 549 of the 943 functions of the section start on a symbol, and
+409 do 0xc8c bytes on. The test now leaves out a function where one
+shift of the addresses puts more of the 17 functions around it on a
+symbol than no shift does, and half of them. That holds about 360
+functions of each such kernel and none of the ARM or ath79 kernels, as a
+function the scan splits into pieces lies at a different distance from
+the symbols in each piece.
+
+| Releases | Wrong before | Wrong after |
+|---|---|---|
+| 21.02.7 to 22.03.2 | 3.19% | 2.60% |
+| 22.03.5 to 23.05.5 | 1.61% | 1.45% |
+| all | 1.14% | 0.97% |

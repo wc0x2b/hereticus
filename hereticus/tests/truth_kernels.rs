@@ -146,6 +146,9 @@ struct Tally {
     verdicts: Counts,
     gone: usize,
     new: usize,
+    /// Pairs left unjudged, where the debug file does not describe the code
+    /// of a side.
+    undescribed: usize,
     /// The verdicts, by the stage that paired them.
     stages: BTreeMap<String, Counts>,
 }
@@ -209,13 +212,22 @@ struct Side<'a> {
     /// The names of the callers, as `<name`, and of the callees, as
     /// `>name`, of each function.
     neighbours: Vec<BTreeSet<String>>,
+    /// Whether the debug file describes the code around each function.
+    described: Vec<bool>,
 }
 
 impl<'a> Side<'a> {
     fn new(kernel: &'a Binary, symbols: &'a [Symbol], sources: &'a [Symbol]) -> Self {
         let by_start =
             kernel.functions.iter().enumerate().map(|(index, f)| (f.address, index)).collect();
-        let mut side = Self { kernel, symbols, sources, by_start, neighbours: Vec::new() };
+        let mut side = Self {
+            kernel,
+            symbols,
+            sources,
+            by_start,
+            neighbours: Vec::new(),
+            described: described(kernel, symbols),
+        };
         let calls: Vec<Vec<usize>> = kernel
             .functions
             .par_iter()
@@ -277,6 +289,60 @@ impl<'a> Side<'a> {
         let (insns, _) = decode_all(arch, &function.code, function.address);
         normalize_body_in(arch, &function.code, &insns, &self.kernel.addresses)
     }
+}
+
+/// How many recovered functions on each side of a function
+/// [`described`] looks at.
+const DESCRIBED_REACH: usize = 8;
+
+/// The farthest [`described`] looks for a shift between the code and the
+/// symbols, in bytes.
+const FARTHEST_SHIFT: u64 = 0x4000;
+
+/// Whether the debug file describes the code around each function of
+/// `kernel`: no shift of the addresses puts more of the recovered functions
+/// within [`DESCRIBED_REACH`] of it on the start of a symbol than none does,
+/// nor half of them.
+///
+/// Most kernels start 98% or more of their functions on a symbol. But the
+/// end of `.init.text` in the shipped ramips and lantiq kernels sits apart
+/// from where the debug file puts it: in 22.03.2 for `mipsel-r6220`, from
+/// 0x80863148 on, 0xc8c bytes before. There the names tell nothing of the
+/// pairs, and about 400 functions a kernel overlap the symbols of others.
+/// A function the scan splits into pieces has no such shift: each piece
+/// lies at another distance from the symbols.
+fn described(kernel: &Binary, symbols: &[Symbol]) -> Vec<bool> {
+    let starts: Vec<u64> = symbols.iter().map(|symbol| symbol.0).collect();
+    let mut by_address: Vec<usize> = (0..kernel.functions.len()).collect();
+    by_address.sort_by_key(|&index| kernel.functions[index].address);
+    // For each function, the distances from its start to the starts of the
+    // symbols near it.
+    let shifts: Vec<BTreeSet<i64>> = by_address
+        .iter()
+        .map(|&index| {
+            let address = kernel.functions[index].address;
+            let first = starts.partition_point(|&start| start + FARTHEST_SHIFT < address);
+            starts[first..]
+                .iter()
+                .take_while(|&&start| start <= address + FARTHEST_SHIFT)
+                .map(|&start| start as i64 - address as i64)
+                .collect()
+        })
+        .collect();
+    let mut described = vec![true; kernel.functions.len()];
+    for (place, &index) in by_address.iter().enumerate() {
+        let near = &shifts[place.saturating_sub(DESCRIBED_REACH)
+            ..(place + DESCRIBED_REACH + 1).min(shifts.len())];
+        let mut votes: BTreeMap<i64, usize> = BTreeMap::new();
+        for shift in near.iter().flatten() {
+            *votes.entry(*shift).or_default() += 1;
+        }
+        let unshifted = votes.get(&0).copied().unwrap_or(0);
+        let shifted = votes.iter().filter(|&(&shift, _)| shift != 0).map(|(_, &n)| n).max();
+        described[index] =
+            shifted.is_none_or(|shifted| shifted <= unshifted || 2 * shifted < near.len());
+    }
+    described
 }
 
 /// Judge one pair of functions whose names are `names`, both known.
@@ -361,13 +427,21 @@ fn measure(board: &Board, older: &str, newer: &str) -> Tally {
         Side::new(&kernels[0], &symbols[0], &sources[0]),
         Side::new(&kernels[1], &symbols[1], &sources[1]),
     ];
+    tally.undescribed = diff
+        .matched
+        .iter()
+        .filter(|pair| !(sides[0].described[pair.before] && sides[1].described[pair.after]))
+        .count();
     let judged: Vec<(String, Verdict)> = diff
         .matched
         .par_iter()
         .filter_map(|pair| {
             let names = [sides[0].names(pair.before), sides[1].names(pair.after)];
-            // A function that overlaps no symbol has no answer to check.
-            if names.iter().any(BTreeSet::is_empty) {
+            // A function that overlaps no symbol, or whose code the debug
+            // file does not describe, has no answer to check.
+            if names.iter().any(BTreeSet::is_empty)
+                || !(sides[0].described[pair.before] && sides[1].described[pair.after])
+            {
                 return None;
             }
             Some((format!("{:?}", pair.confidence), judge(&sides, &moves, pair, &names)))
@@ -422,7 +496,12 @@ fn the_kernel_pairs_checked_against_their_symbols_are_locked() {
         cases.par_iter().map(|&(board, older, newer)| measure(board, older, newer)).collect();
 
     let mut out = String::new();
-    writeln!(out, "{:36} {:>7} {:>6} {:>6}", "kernel", "starts", "gone", "new").unwrap();
+    writeln!(
+        out,
+        "{:36} {:>7} {:>6} {:>6} {:>11}",
+        "kernel", "starts", "gone", "new", "undescribed"
+    )
+    .unwrap();
     for (&(board, older, _), tally) in cases.iter().zip(&tallies) {
         // Most recovered functions start on a symbol only when the debug
         // file belongs to the same build.
@@ -433,10 +512,11 @@ fn the_kernel_pairs_checked_against_their_symbols_are_locked() {
         let starts = percent(tally.starts_on_symbol, tally.functions);
         writeln!(
             out,
-            "{:36} {starts:>6.1}% {:>6} {:>6}",
+            "{:36} {starts:>6.1}% {:>6} {:>6} {:>11}",
             format!("{} {older}/{newer}", board.name),
             tally.gone,
-            tally.new
+            tally.new,
+            tally.undescribed
         )
         .unwrap();
     }
