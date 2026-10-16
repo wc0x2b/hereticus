@@ -7,8 +7,8 @@
 //! 45937<!-- from boundaries.rs: exact -->
 //! ```
 //!
-//! A source without `.rs` is the one snapshot of `tests/snapshots` whose
-//! name starts with it, and the key is a row and a column of a table in
+//! A source without `.rs` is the one snapshot of `tests/snapshots` or of
+//! `hereticus-cli/tests/snapshots` whose name starts with it, and the key is a row and a column of a table in
 //! it. A source with `.rs` is a test of `tests`, and the key is a field
 //! that it sets once, as `exact: 45937`. The doc may round the number.
 //!
@@ -235,9 +235,11 @@ fn source_text(source: &str) -> Result<String, String> {
         tests_dir().join(source)
     } else {
         let prefix = format!("{source}__");
-        let mut matching: Vec<PathBuf> = std::fs::read_dir(tests_dir().join("snapshots"))
-            .expect("the snapshots folder")
-            .flatten()
+        let snapshot_dirs =
+            [tests_dir().join("snapshots"), root().join("hereticus-cli/tests/snapshots")];
+        let mut matching: Vec<PathBuf> = snapshot_dirs
+            .iter()
+            .flat_map(|dir| std::fs::read_dir(dir).expect("a snapshots folder").flatten())
             .map(|entry| entry.path())
             .filter(|path| {
                 path.file_name()
