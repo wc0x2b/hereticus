@@ -1164,6 +1164,29 @@ test of the sign of the length to `client_parse_header` and to
 thirty-seven cases of fourteen fixes, the default order has a rank sum
 of 105, with 21 first.
 
+### Tables of addresses in MIPS16e code
+
+The MIPS16e build of `uhttpd` of OpenWrt 18.06 is not PIC. GCC puts the
+table of each `switch` after its function, as the absolute address of
+each case, and a function's literal pool holds the addresses it loads.
+The scan read each such table, and each pool it split off, as a function
+of its own, and each changed with the code it points into: 25 rows, the
+fix on rows 3 and 5. The MIPS16e reading had no test of data at all.
+
+Over the MIPS16e builds of `uhttpd`, `ubusd`, `odhcpd`, `jsonfilter` and
+`libblobmsg_json`, the share of the aligned words of a function of 8
+words or more that hold an address inside the image is at most 40% for
+code, a short function whose pool is most of it, and at least 70% for
+the tables. So such a function is data at half. A shorter one is data
+where every word is an address, as a pool of 5 words that ends a
+function; the top halfword of an address, as `0x0040`, reads as
+`addiu s0, sp, 0x100`, which code rarely holds, and never in every word
+of a run.
+
+The report of `uhttpd` fell to 13 rows, with the fix on rows 2 and 4,
+and those of `jsonfilter` for MIPS16e from 2 rows to 1. No other test
+moved.
+
 ### Two builds of Mirai
 
 Two static builds of one Mirai variant for ARM, with symbols, from
