@@ -136,6 +136,28 @@ impl Recovery for Mips16 {
         is_stub.then_some(u64::from(slot))
     }
 
+    /// Both halfwords of each word that a `lw rx, imm(pc)` loads: each
+    /// decodes as an instruction of its own.
+    fn literal_pool_words(&self, insns: &[Insn]) -> Vec<u64> {
+        self.literal_pool_loads(insns)
+            .into_iter()
+            .flat_map(|(_, word)| [word, word + HALFWORD as u64])
+            .collect()
+    }
+
+    /// `lw rx, imm(pc)` loads a word of the literal pool that GCC puts
+    /// after the code of a function, as the addresses it reads where it is
+    /// not PIC.
+    fn literal_pool_loads(&self, insns: &[Insn]) -> Vec<(u64, u64)> {
+        insns
+            .iter()
+            .filter_map(|insn| match self.decoded(insn.bytes(), 0, insn.address)?.reading {
+                Reading::PcRelative { load: true, address, .. } => Some((insn.address, address)),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn is_function_entry(&self, body: &[Insn]) -> bool {
         body.get(..GP_PREAMBLE_LENGTH).is_some_and(is_gp_preamble)
     }
@@ -692,5 +714,18 @@ mod tests {
         let swapped = stub_bytes(&FREE_STUB, FREE_SLOT, ByteOrder::Little);
         assert_eq!(Mips16::BIG.stub_slot(&swapped, 0x403460), None);
         assert_eq!(Mips16::BIG.stub_slot(&[], 0x403460), None);
+    }
+
+    /// `lw a0, 0x1004(pc)`, `jrc ra`, then the word it loads.
+    const LOADS_ITS_POOL: [u16; 4] = [0xb401, 0xe8a0, 0x0040, 0x1234];
+
+    #[test]
+    fn a_load_from_pc_reads_a_word_of_the_pool() {
+        let code: Vec<u8> = LOADS_ITS_POOL.iter().flat_map(|half| half.to_be_bytes()).collect();
+        let insns = crate::arch::decode_all(&Mips16::BIG, &code, 0x1000).0;
+        assert_eq!(Mips16::BIG.literal_pool_loads(&insns), [(0x1000, 0x1004)]);
+        assert_eq!(Mips16::BIG.literal_pool_words(&insns), [0x1004, 0x1006], "both halfwords");
+        let no_load = crate::arch::decode_all(&Mips16::BIG, &code[2..], 0x1002).0;
+        assert!(Mips16::BIG.literal_pool_loads(&no_load).is_empty());
     }
 }
