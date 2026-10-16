@@ -284,6 +284,23 @@ pub(super) const LOWEST_LAYOUT_SIMILARITY: f64 = 0.1;
 /// [`Cascade::pair_by_layout`]: super::cascade::Cascade::pair_by_layout
 pub(super) const SHIFTED_GAP_MARGIN: f64 = 0.3;
 
+/// The lowest code similarity at which [`Cascade::pair_by_layout`] pairs
+/// two functions in a gap whose counts differ.
+///
+/// Where a function went or came, nothing says which, but close code in
+/// order still pairs: the similarity stage leaves it where a rival elsewhere
+/// in the binary scores within [`RIVAL_MARGIN`], and the place tells the
+/// two apart. Each pair is the one of its functions within the gap that
+/// scores best by that margin, and calls the same named functions: five
+/// hash wrappers of libssh, as `md5_update` and `md5_ctx_free`, score 1.00
+/// and call other imports. Measured against the symbols, this paired 752
+/// more right and 3 more wrong over the OpenWrt kernels, 10 more right over
+/// the backports built two ways, and 4 more right over the Ubuntu updates,
+/// with every rank the same. At 0.7 the backports paired 5 more wrong.
+///
+/// [`Cascade::pair_by_layout`]: super::cascade::Cascade::pair_by_layout
+pub(super) const LOWEST_UNEVEN_GAP_SIMILARITY: f64 = 0.8;
+
 /// Whether a pair sits between the pairs around it on both sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Place {

@@ -201,7 +201,7 @@ fn tally_all(project: &str, versions: [&str; 2], reading: Reading) -> Tally {
 #[case::lua_5_3("lua", ["5.3.5", "5.3.6"], Tally { right: 5723, wrong: 0, gone: 1, new: 1, missed: 0 },
         Tally { right: 5709, wrong: 1, gone: 57, new: 78, missed: 0 })]
 #[case::tinyxml2_8("tinyxml2", ["8.0.0", "9.0.0"], Tally { right: 2482, wrong: 0, gone: 129, new: 167, missed: 0 },
-        Tally { right: 2408, wrong: 7, gone: 231, new: 288, missed: 0 })]
+        Tally { right: 2408, wrong: 7, gone: 227, new: 284, missed: 0 })]
 #[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 2, new: 27, missed: 0 }, Tally { right: 2547, wrong: 25, gone: 78, new: 100, missed: 0 })]
 #[case::expat_2_4_4("expat", ["2.4.4", "2.4.5"], Tally { right: 2928, wrong: 0, gone: 10, new: 0, missed: 0 },
         Tally { right: 2877, wrong: 0, gone: 45, new: 23, missed: 0 })]
