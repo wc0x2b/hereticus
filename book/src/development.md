@@ -8,6 +8,7 @@ just test         # the same, plus the slow and the `truth_*` tests
 just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
 just rivals       # run radiff2 on the backports, which `quick-test` compares with
 just rivals-ghidra  # run Ghidra Version Tracking on them, which `test` compares with
+just ghidra-extension  # build the Ghidra extension and run it in Ghidra, which `test` checks
 ```
 
 ## Crates
@@ -37,6 +38,7 @@ just test         # the same, plus the slow and the `truth_*` tests
 just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
 just rivals       # run radiff2 on the backports, which `quick-test` compares with
 just rivals-ghidra  # run Ghidra Version Tracking on them, which `test` compares with
+just ghidra-extension  # build the Ghidra extension and run it in Ghidra, which `test` checks
 ```
 
 ## Numbers in the Docs

@@ -9,6 +9,16 @@ tinyxml2, in two comparisons: find what keeps their tables apart. A twin
 in no table, as a C function reached only by calls from twins, can only
 be told apart by its name.
 
+## Split the PLT of a stripped library into its entries
+
+The scan lists the whole `.plt` of a stripped library as one function. In a
+Thumb-2 library it also lists it as Thumb-2, but each entry is A32 code.
+The Ghidra extension skips such a start, because its body holds the PLT
+entries that Ghidra marks up, so the Ghidra test does not show the fault.
+List each entry as its own function, in the instruction set it is in. This
+changes the reports of every stripped library, so their snapshots change
+with it.
+
 ## Unpack more firmware containers
 
 `--unpack` reads the containers the OpenWrt fixtures use: a zImage, alone

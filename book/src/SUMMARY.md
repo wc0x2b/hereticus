@@ -22,5 +22,6 @@
   - [CVE-2026-55614: uhttpd](./real-life-examples/cve-2026-55614.md)
 - [Malware](./malware.md)
   - [Mirai, two builds for ARM](./malware/mirai-arm.md)
+- [Ghidra Extension](./ghidra.md)
 - [Comparison With Other Tools](./comparison.md)
 - [Development](./development.md)
