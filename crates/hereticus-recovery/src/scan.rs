@@ -1608,6 +1608,24 @@ fn starts_after_returns_in(
     let mut out = Vec::new();
     // The last return before the current instruction. The code after it is
     // the function the current instruction is in, or the start of it.
+    // The functions other than the one around `end` whose unconditional
+    // jumps reach `address`, the code right after `end`. A tail call comes
+    // from another function, but a cold part of the function can jump back
+    // into it too, so only two of them prove a start.
+    let tail_callers = |end: u64, address: u64| {
+        let start = anchors.range(..=end).next_back().copied().unwrap_or(base);
+        let next_start = anchors.range(address + 1..).next().copied().unwrap_or(u64::MAX);
+        sources_of.get(&address).map_or(0, |sources| {
+            sources
+                .iter()
+                .filter(|&&(from, transfer)| {
+                    transfer == Transfer::Always && (from < start || from >= next_start)
+                })
+                .map(|&(from, _)| anchors.range(..=from).next_back().copied())
+                .collect::<BTreeSet<_>>()
+                .len()
+        })
+    };
     let mut previous_return = None;
     for (index, insn) in insns.iter().enumerate() {
         // A call that does not return, as to `exit`, is followed by the next
@@ -1639,16 +1657,14 @@ fn starts_after_returns_in(
             // Thumb-2 tail calls libpng's `png_write_IEND` from far before,
             // after `png_error` and the pool that end `png_write_PLTE`, and
             // `png_write_IEND` loads from its pool before its frame.
+            //
+            // With no pool to prove that the call does not return, tail
+            // calls from two other functions do: GCC for MIPS reaches zstd's
+            // `HUF_decompress1X1_usingDTable_internal.constprop.0` so, after
+            // the call to `__stack_chk_fail` that ends the function before.
             let tail_called = |following: &Insn| {
-                let start = anchors.range(..=insn.address).next_back().copied().unwrap_or(base);
-                let next_start =
-                    anchors.range(following.address + 1..).next().copied().unwrap_or(u64::MAX);
-                past_pool
-                    && sources_of.get(&following.address).is_some_and(|sources| {
-                        sources.iter().any(|&(from, transfer)| {
-                            transfer == Transfer::Always && (from < start || from >= next_start)
-                        })
-                    })
+                let callers = tail_callers(insn.address, following.address);
+                callers >= 2 || (past_pool && callers >= 1)
             };
             let opens = |following: &Insn| {
                 arch.is_prologue(following)
@@ -1657,7 +1673,9 @@ fn starts_after_returns_in(
             };
             if let Some(following) = insns.get(next)
                 && opens(following)
-                && (past_pool || !sources_of.contains_key(&following.address))
+                && (past_pool
+                    || tail_called(following)
+                    || !sources_of.contains_key(&following.address))
                 && !is_inside_a_function(next)
             {
                 out.push(start_of(insns, next, arch));
@@ -1712,8 +1730,16 @@ fn starts_after_returns_in(
                 let padded = insns
                     .get(index + 1 + arch.delay_slots(insn))
                     .is_some_and(|next| arch.is_padding(next) || !is_code(&next));
+                // Where tail calls from two other functions reach what
+                // follows, it is a function, as zstd's
+                // `HUF_decompress1X2_usingDTable_internal.constprop.0` for
+                // MIPS is after a loop of the function before.
+                let tail_called = insns
+                    .get(index + 1 + arch.delay_slots(insn))
+                    .is_some_and(|next| tail_callers(insn.address, next.address) >= 2);
                 (anchors.contains(&target) && Some(target) != function_start)
-                    || (closes_a_loop && (padded || all_jumps_read(function_start, insn.address)))
+                    || (closes_a_loop
+                        && (padded || tail_called || all_jumps_read(function_start, insn.address)))
             }
             _ => false,
         };
@@ -2753,6 +2779,35 @@ mod tests {
             0xe8bd_8010, // 0x1c pop {r4, pc}
         ]);
         assert!(!starts_after_returns(&Arm32, &code, 0).contains(&0x18));
+    }
+
+    /// What follows a loop that closes with a jump, or a call with no pool
+    /// after it, starts a function where tail calls from two other functions
+    /// reach it. From one, it may be the cold part of the function jumping
+    /// back.
+    #[rstest::rstest]
+    #[case::loop_two_callers(0xeaff_fffc, 0xeaff_fff9, true)] // b 0x04; b 0x10
+    #[case::loop_one_caller(0xeaff_fffc, 0xe8bd_8010, false)] // b 0x04; pop {r4, pc}
+    #[case::call_two_callers(0xeb00_003b, 0xeaff_fff9, true)] // bl 0x100; b 0x10
+    #[case::call_one_caller(0xeb00_003b, 0xe8bd_8010, false)] // bl 0x100; pop {r4, pc}
+    fn code_that_two_tail_calls_reach_starts_a_function(
+        #[case] end: u32,
+        #[case] last: u32,
+        #[case] starts: bool,
+    ) {
+        let code = arm_code(&[
+            0xe92d_4010, // 0x00 push {r4, lr}
+            0xe250_0001, // 0x04 subs r0, r0, 1
+            0x1aff_fffd, // 0x08 bne 0x04
+            end,         // 0x0c
+            0xe3a0_0001, // 0x10 mov r0, 1
+            0xe12f_ff1e, // 0x14 bx lr
+            0xe92d_4010, // 0x18 push {r4, lr}
+            0xeaff_fffb, // 0x1c b 0x10
+            0xe92d_4010, // 0x20 push {r4, lr}
+            last,        // 0x24
+        ]);
+        assert_eq!(starts_after_returns(&Arm32, &code, 0).contains(&0x10), starts);
     }
 
     /// Padding between functions must not be mistaken for their start.
