@@ -28,6 +28,10 @@ ratatui = "0.30.2"
 # The allocator of musl, the default target, serves threads one at a time.
 mimalloc = { version = "0.1.52", default-features = false }
 
+[target.'cfg(unix)'.dependencies]
+# Ends the tool quietly when a reader closes the pipe, as `head` does.
+libc = "0.2"
+
 [dev-dependencies]
 insta = "1.48"
 # Checks that the JSON report parses.

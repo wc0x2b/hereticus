@@ -918,6 +918,7 @@ dependencies = [
  "indicatif",
  "insta",
  "insta-cmd",
+ "libc",
  "mimalloc",
  "ratatui",
  "serde_json",

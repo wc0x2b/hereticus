@@ -627,6 +627,35 @@ fn lists_the_functions_of_one_binary() {
     assert_cmd_snapshot!(hereticus().args(["--functions", "fixtures/build/O2/basic.o"]));
 }
 
+/// A reader that closes the pipe early, as `head` does, ends the tool with
+/// no panic.
+#[cfg(unix)]
+#[test]
+fn a_closed_pipe_ends_the_tool_quietly() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    // The reading end closes before the tool starts, so its first write
+    // finds no reader.
+    let (reader, writer) = std::io::pipe().expect("a pipe opens");
+    drop(reader);
+    let output = hereticus()
+        .args(["--functions", "fixtures/build/O2/basic.o"])
+        .stdout(writer)
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the tool runs");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    // `SIGPIPE` is 13 on every Unix.
+    assert_eq!(output.status.signal(), Some(13), "{:?}", output.status);
+}
+
 /// The JSON listing is for tools, as a Ghidra script, so its fields must stay
 /// put.
 #[test]
