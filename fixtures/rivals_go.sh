@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Let Ghidra find the functions of each garbled Go fixture, and write where
-# each starts. Run by `just rivals-go`, in the `ghidra` stage of
+# Let Ghidra find the functions of each garbled build of the newer Go
+# fixture, and write where each starts. Run by `just rivals-go`, in the `ghidra` stage of
 # fixtures/rivals/Dockerfile.
 #
 # Each run writes build/rivals/ghidra-go/<build>.txt, one hexadecimal entry
@@ -14,7 +14,7 @@ out="$here/build/rivals/ghidra-go"
 # A second run with the same inputs keeps what the first wrote.
 inputs_hash="$(
     {
-        cat "$here/rivals_go.sh" "$here/rivals/Dockerfile" "$in"/*.bin \
+        cat "$here/rivals_go.sh" "$here/rivals/Dockerfile" "$in"/shfmt-3.12.0-*.bin \
             "$here/rivals/HereticusFunctionStarts.java"
         cat "$GHIDRA_HOME/Ghidra/application.properties"
     } | sha256sum | cut -d' ' -f1
@@ -33,7 +33,7 @@ trap 'rm -rf "$work"' EXIT
 # Ghidra picks the language from the ELF header, as for any file it is
 # given, and runs its default analyzers.
 export GHIDRA_MAXMEM=4G
-for bin in "$in"/*.bin; do
+for bin in "$in"/shfmt-3.12.0-*.bin; do
     name="$(basename "$bin" .bin)"
     (
         mkdir -p "$work/$name"
