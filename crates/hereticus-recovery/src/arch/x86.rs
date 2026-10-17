@@ -560,12 +560,30 @@ fn nearest_cases(body: &[Insn]) -> Vec<Vec<usize>> {
             nearest = Some(index);
         }
     }
+    // How many edges reach each instruction from code that is no padding.
+    let mut reached = vec![0usize; body.len()];
+    for (from, edges) in next.iter().enumerate() {
+        if !is_nop(&body[from]) {
+            edges.iter().for_each(|&to| reached[to] += 1);
+        }
+    }
+    // Padding is a case only where the code after it has no other way in:
+    // before a loop it aligns the loop, which its branches reach.
+    let opens_a_case = |case: usize| {
+        let after = (case..body.len()).find(|&at| !is_nop(&body[at]));
+        !is_nop(&body[case]) || after.is_none_or(|after| reached[after] == 0)
+    };
     for (index, insn) in body.iter().enumerate() {
         if insn.kind == (InsnKind::Jump { target: None }) {
-            next[index].retain(|&case| dispatch[case] == Some(index));
+            next[index].retain(|&case| dispatch[case] == Some(index) && opens_a_case(case));
         }
     }
     next
+}
+
+/// Whether `insn` is `nop` or `int3`, which pad code.
+fn is_nop(insn: &Insn) -> bool {
+    instruction(insn).is_some_and(|inst| matches!(inst.mnemonic(), Mnemonic::Nop | Mnemonic::Int3))
 }
 
 /// What holds the table after `step`, from what `held` held before it.
@@ -1097,6 +1115,32 @@ mod tests {
             stack_offsets(&insns),
             [Some(0), Some(-0x10), Some(-0x10), Some(-0x14), Some(-0x10), Some(-0x10)]
         );
+    }
+
+    #[test]
+    fn a_case_is_the_nearest_table_jump_and_no_padding() {
+        let code = [
+            0xff, 0xe0, // 0x1000 jmp eax
+            0xc3, //       0x1002 ret, a case
+            0xff, 0xe1, // 0x1003 jmp ecx, which nothing else reaches
+            0xc3, //       0x1005 ret, a case of the nearer jump
+            0x90, //       0x1006 nop, before a case that nothing else reaches
+            0xc3, //       0x1007 ret
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        let next = nearest_cases(&insns);
+        assert_eq!(next[0], [1, 2]);
+        assert_eq!(next[2], [3, 4]);
+        // Padding that runs into a loop its branches reach is no case.
+        let code = [
+            0xff, 0xe0, // 0x1000 jmp eax
+            0x90, //       0x1002 nop
+            0x40, //       0x1003 inc eax
+            0x75, 0xfd, // 0x1004 jne 0x1003
+            0xc3, //       0x1006 ret
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert!(nearest_cases(&insns)[0].is_empty());
     }
 
     #[test]
