@@ -105,7 +105,12 @@ impl Project {
             Self::Lua => {
                 &[Name::Exact("lua_load"), Name::Exact("luaZ_read"), Name::Exact("luaZ_lookahead")]
             }
-            Self::Smallvec => &[Name::Containing("E6insert")],
+            // Rust packs its strings with no NUL between them, so a text
+            // runs on to the next NUL. The fix adds an assertion message to
+            // the run that holds `"capacity overflow"`, which `extend`
+            // reads, so on x86-64, where the reader follows the address, that
+            // text differs.
+            Self::Smallvec => &[Name::Containing("E6insert"), Name::Containing("E6extend")],
         }
     }
 }
