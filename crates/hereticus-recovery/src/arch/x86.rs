@@ -236,150 +236,219 @@ pub fn formed_address(insn: &Insn, space: &AddressSpace) -> Option<u64> {
 /// add  ebx, 0x106ac
 /// ```
 ///
-/// The add is part of the address, and so is each offset from the register
-/// after it, as `lea eax, [ebx - 0x18768]`, until something else writes the
-/// register. A copy of it holds the table too.
+/// The add is part of the address, and so is each offset from a register
+/// that holds the table, as `lea eax, [ebx - 0x18768]`.
+///
+/// A register or a slot of the frame holds the table everywhere when each
+/// write to it puts the table there, as GCC keeps it in `ebx` for the whole
+/// function. That needs no order of the code, which a compiler lays out
+/// freely. Each other register holds it from a write of the table to the
+/// next write of something else, as clang loads it from a slot just before
+/// it uses it.
 pub fn global_offset_table_uses(body: &[Insn]) -> Vec<bool> {
-    let mut uses = vec![false; body.len()];
-    let mut table = TableHolders::default();
-    for (index, insn) in body.iter().enumerate() {
-        if let Some(register) = table_setup(&body[..=index]) {
+    let steps: Vec<Step> = steps_of(body);
+    if !steps.iter().any(|step| step.setup.is_some()) {
+        return vec![false; body.len()];
+    }
+    // Start from every register and slot, and take away each that some
+    // write fills with anything else, until none changes.
+    let mut holders = Holders {
+        registers: (0..8).map(Reg::General).filter(|&reg| reg != Reg::General(4)).collect(),
+        slots: steps.iter().filter_map(|step| step.slot).collect(),
+    };
+    loop {
+        let (uses, refuted) = walk(&steps, &holders);
+        if refuted.registers.is_empty() && refuted.slots.is_empty() {
+            return uses;
+        }
+        holders.registers =
+            holders.registers.iter().filter(|&reg| !refuted.registers.contains(reg)).collect();
+        holders.slots.retain(|slot| !refuted.slots.contains(slot));
+    }
+}
+
+/// What [`global_offset_table_uses`] reads of one instruction.
+struct Step {
+    /// The register the instruction leaves the table in, where it ends the
+    /// setup.
+    setup: Option<Reg>,
+    /// The register its memory operand starts from.
+    base: Option<Reg>,
+    /// Where it moves a value to, and from where.
+    to: Holder,
+    from: Holder,
+    /// The slot of the frame it names, where it names one.
+    slot: Option<(Reg, i64)>,
+    /// The registers it writes, with those a call may change.
+    writes: RegSet,
+}
+
+/// The registers and the slots that hold the table everywhere they are
+/// read.
+#[derive(Clone, Debug, Default)]
+struct Holders {
+    registers: RegSet,
+    slots: Vec<(Reg, i64)>,
+}
+
+/// Read each instruction of `body` once.
+fn steps_of(body: &[Insn]) -> Vec<Step> {
+    let moved = stack_offsets(body);
+    body.iter()
+        .enumerate()
+        .map(|(index, insn)| {
+            let setup = table_setup(&body[..=index]);
+            let Some(inst) = instruction(insn) else {
+                return Step {
+                    setup,
+                    base: None,
+                    to: Holder::None,
+                    from: Holder::None,
+                    slot: None,
+                    writes: RegSet::EMPTY,
+                };
+            };
+            let slot = frame_slot(&inst, moved[index]);
+            let register_of = |operand| match inst.op_kind(operand) {
+                OpKind::Register => {
+                    il_register(inst.op_register(operand)).map_or(Holder::None, Holder::Register)
+                }
+                OpKind::Memory => slot.map_or(Holder::None, Holder::Slot),
+                _ => Holder::None,
+            };
+            let pushed = moved[index]
+                .map(|moved| (Reg::Stack, moved + i64::from(inst.stack_pointer_increment())));
+            let (to, from) = match inst.mnemonic() {
+                Mnemonic::Mov => (register_of(0), register_of(1)),
+                Mnemonic::Push => (pushed.map_or(Holder::None, Holder::Slot), register_of(0)),
+                Mnemonic::Pop => {
+                    let popped = moved[index].map(|moved| (Reg::Stack, moved));
+                    (register_of(0), popped.map_or(Holder::None, Holder::Slot))
+                }
+                _ => (Holder::None, Holder::None),
+            };
+            let mut writes = x86_lift(&inst).writes;
+            if matches!(insn.kind, InsnKind::Call { .. }) {
+                // A callee may change the registers the ABI does not keep.
+                (0..8)
+                    .map(Reg::General)
+                    .filter(|&reg| !is_preserved_by_a_call(reg))
+                    .for_each(|reg| writes.insert(reg));
+            }
+            Step { setup, base: il_register(inst.memory_base()), to, from, slot, writes }
+        })
+        .collect()
+}
+
+/// Walk `steps` with `holders` taken to hold the table, and give whether
+/// each step reaches memory from it, and the holders some write refutes.
+fn walk(steps: &[Step], holders: &Holders) -> (Vec<bool>, Holders) {
+    let mut uses = vec![false; steps.len()];
+    let mut refuted = Holders::default();
+    let mut local = RegSet::EMPTY;
+    for (index, step) in steps.iter().enumerate() {
+        if let Some(register) = step.setup {
             uses[index] = true;
-            table.registers.insert(register);
+            local.insert(register);
             continue;
         }
-        let Some(inst) = instruction(insn) else { continue };
-        uses[index] = table.step(insn, &inst);
-    }
-    uses
-}
-
-/// Where a walk of [`global_offset_table_uses`] knows the table to be: in
-/// registers, and in slots of the frame that code spilled it to, as
-/// clang spills it where registers run short.
-struct TableHolders {
-    /// The registers that hold the table.
-    registers: RegSet,
-    /// The slots of the frame that hold it, each as a base and an offset:
-    /// `rsp` by its offset from the stack pointer at the entry, and `ebp`
-    /// as the code names it.
-    slots: Vec<(Reg, i64)>,
-    /// How far the stack pointer has moved since the entry, where pushes,
-    /// pops and constant adds say. `None` once something else moved it.
-    stack_moved: Option<i64>,
-}
-
-impl Default for TableHolders {
-    fn default() -> Self {
-        Self { registers: RegSet::EMPTY, slots: Vec::new(), stack_moved: Some(0) }
-    }
-}
-
-impl TableHolders {
-    /// Walk `inst`, and say whether it reaches memory from the table.
-    fn step(&mut self, insn: &Insn, inst: &iced_x86::Instruction) -> bool {
-        let has_memory =
-            (0..inst.op_count()).any(|operand| inst.op_kind(operand) == OpKind::Memory);
-        let base = il_register(inst.memory_base());
-        let reaches_table = has_memory && base.is_some_and(|base| self.registers.contains(base));
-        let register_of = |operand| {
-            (inst.op_kind(operand) == OpKind::Register)
-                .then(|| il_register(inst.op_register(operand)))
-                .flatten()
+        let holds = |reg: Reg| local.contains(reg) || holders.registers.contains(reg);
+        uses[index] = step.base.is_some_and(holds);
+        let moves_the_table = match step.from {
+            Holder::Register(reg) => holds(reg),
+            Holder::Slot(slot) => holders.slots.contains(&slot),
+            Holder::None => false,
         };
-        let pushed = -i64::from(inst.stack_pointer_increment());
-        // What the instruction moves, from where to where.
-        let (to, from) = match inst.mnemonic() {
-            Mnemonic::Mov if inst.op0_kind() == OpKind::Memory => (
-                Holder::Slot(self.slot(inst)),
-                register_of(1).map_or(Holder::None, Holder::Register),
-            ),
-            Mnemonic::Mov if inst.op1_kind() == OpKind::Memory => (
-                register_of(0).map_or(Holder::None, Holder::Register),
-                Holder::Slot(self.slot(inst)),
-            ),
-            Mnemonic::Mov => (
-                register_of(0).map_or(Holder::None, Holder::Register),
-                register_of(1).map_or(Holder::None, Holder::Register),
-            ),
-            Mnemonic::Push => (
-                Holder::Slot(self.stack_moved.map(|moved| (Reg::Stack, moved - pushed))),
-                register_of(0).map_or(Holder::None, Holder::Register),
-            ),
-            Mnemonic::Pop => (
-                register_of(0).map_or(Holder::None, Holder::Register),
-                Holder::Slot(self.stack_moved.map(|moved| (Reg::Stack, moved))),
-            ),
-            _ => (Holder::None, Holder::None),
-        };
-        let holds_table = match from {
-            Holder::Register(reg) => self.registers.contains(reg),
-            Holder::Slot(Some(slot)) => self.slots.contains(&slot),
-            Holder::Slot(None) | Holder::None => false,
-        };
-
-        let written = x86_lift(inst).writes;
-        self.registers = self.registers.iter().filter(|&reg| !written.contains(reg)).collect();
-        if let Holder::Slot(Some(slot)) = to {
-            self.slots.retain(|&held| held != slot);
+        for written in step.writes.iter() {
+            if !(moves_the_table && step.to == Holder::Register(written)) {
+                if holders.registers.contains(written) {
+                    refuted.registers.insert(written);
+                }
+                local = local.iter().filter(|&reg| reg != written).collect();
+            }
         }
-        match to {
-            Holder::Register(reg) if holds_table => self.registers.insert(reg),
-            Holder::Slot(Some(slot)) if holds_table => self.slots.push(slot),
+        match step.to {
+            Holder::Register(reg) if moves_the_table => local.insert(reg),
+            Holder::Slot(slot) if !moves_the_table && holders.slots.contains(&slot) => {
+                refuted.slots.push(slot);
+            }
             _ => {}
         }
-        if matches!(insn.kind, InsnKind::Call { .. }) {
-            // `ebx` holds the table across a call by the ABI, as each callee
-            // preserves it. The registers a callee may change do not.
-            self.registers =
-                self.registers.iter().filter(|&reg| is_preserved_by_a_call(reg)).collect();
-        }
-        self.move_stack(inst, written);
-        reaches_table
     }
+    (uses, refuted)
+}
 
-    /// The slot that the memory operand of `inst` names, where it names one
-    /// of the frame.
-    fn slot(&self, inst: &iced_x86::Instruction) -> Option<(Reg, i64)> {
-        if inst.memory_index() != Register::None {
-            return None;
-        }
-        let offset = inst.memory_displacement64() as i64;
-        match il_register(inst.memory_base())? {
-            Reg::Stack => Some((Reg::Stack, self.stack_moved? + offset)),
-            frame @ Reg::General(5) => Some((frame, offset)),
-            _ => None,
-        }
+/// The slot of the frame the memory operand of `inst` names, where it names
+/// one: through the stack pointer, by its offset from the stack pointer at
+/// the entry, where `moved` says how far that is, or through `ebp`.
+fn frame_slot(inst: &iced_x86::Instruction, moved: Option<i64>) -> Option<(Reg, i64)> {
+    let has_memory = (0..inst.op_count()).any(|operand| inst.op_kind(operand) == OpKind::Memory);
+    if !has_memory || inst.memory_index() != Register::None {
+        return None;
     }
+    let offset = inst.memory_displacement64() as i64;
+    match il_register(inst.memory_base())? {
+        Reg::Stack => Some((Reg::Stack, moved? + offset)),
+        frame @ Reg::General(5) => Some((frame, offset)),
+        _ => None,
+    }
+}
 
-    /// Follow the stack pointer past `inst`, which writes `written`.
-    fn move_stack(&mut self, inst: &iced_x86::Instruction, written: RegSet) {
-        if !written.contains(Reg::Stack) {
-            return;
-        }
-        let constant = (inst.op_count() == 2
-            && inst.op0_kind() == OpKind::Register
-            && il_register(inst.op0_register()) == Some(Reg::Stack)
-            && matches!(
-                inst.op1_kind(),
-                OpKind::Immediate8to32
-                    | OpKind::Immediate32
-                    | OpKind::Immediate8to64
-                    | OpKind::Immediate32to64
-            ))
-        .then(|| inst.immediate(1) as i64);
-        let moved = match (inst.mnemonic(), constant) {
-            (Mnemonic::Sub, Some(amount)) => Some(-amount),
-            (Mnemonic::Add, Some(amount)) => Some(amount),
-            (Mnemonic::Push | Mnemonic::Pop, _) => Some(i64::from(inst.stack_pointer_increment())),
-            // `call` pushes the return address, and the callee pops it.
-            (Mnemonic::Call, _) => Some(0),
+/// How far the stack pointer has moved from the entry before each
+/// instruction of `body`, where pushes, pops and constant adds say.
+///
+/// After a jump or a return, the code goes on at the offset the branches to
+/// it had, or the offset of the last branch: the code after an epilogue
+/// runs with the frame still made.
+fn stack_offsets(body: &[Insn]) -> Vec<Option<i64>> {
+    let mut at_targets: std::collections::HashMap<u64, Option<i64>> = Default::default();
+    let mut moved = Some(0);
+    let mut at_last_branch = Some(0);
+    let mut ended = false;
+    body.iter()
+        .map(|insn| {
+            if ended {
+                moved = at_targets.get(&insn.address).copied().unwrap_or(at_last_branch);
+            }
+            let before = moved;
+            match insn.kind {
+                InsnKind::Branch { target } | InsnKind::Jump { target } => {
+                    at_last_branch = before;
+                    if let Some(target) = target {
+                        at_targets.entry(target).or_insert(before);
+                    }
+                }
+                _ => {}
+            }
+            ended = matches!(insn.kind, InsnKind::Return | InsnKind::Jump { .. });
+            moved = moved.and_then(|moved| Some(moved + stack_change(insn)?));
+            before
+        })
+        .collect()
+}
+
+/// How far `insn` moves the stack pointer, where it says.
+fn stack_change(insn: &Insn) -> Option<i64> {
+    let inst = instruction(insn)?;
+    let moves_stack = inst.op_count() >= 1
+        && inst.op0_kind() == OpKind::Register
+        && il_register(inst.op0_register()) == Some(Reg::Stack);
+    let constant = (moves_stack && inst.op_count() == 2)
+        .then(|| match inst.op1_kind() {
+            OpKind::Immediate8to32
+            | OpKind::Immediate32
+            | OpKind::Immediate8to64
+            | OpKind::Immediate32to64 => Some(inst.immediate(1) as i64),
             _ => None,
-        };
-        self.stack_moved = self.stack_moved.zip(moved).map(|(before, moved)| before + moved);
-        if self.stack_moved.is_none() {
-            self.slots.retain(|&(base, _)| base != Reg::Stack);
-        }
+        })
+        .flatten();
+    match (inst.mnemonic(), constant) {
+        (Mnemonic::Sub, Some(amount)) => Some(-amount),
+        (Mnemonic::Add, Some(amount)) => Some(amount),
+        // `call` pushes the return address, and the callee pops it.
+        (Mnemonic::Call, _) => Some(0),
+        _ if moves_stack => None,
+        _ => Some(i64::from(inst.stack_pointer_increment())),
     }
 }
 
@@ -388,9 +457,9 @@ impl TableHolders {
 enum Holder {
     /// A register.
     Register(Reg),
-    /// A slot of the frame, or `None` for one the walk cannot name.
-    Slot(Option<(Reg, i64)>),
-    /// Nothing that can hold it.
+    /// A slot of the frame.
+    Slot((Reg, i64)),
+    /// Nothing that can hold it, or a slot the walk cannot name.
     None,
 }
 
