@@ -387,8 +387,9 @@ fn walk(steps: &[Step], holders: &Holders) -> (Vec<bool>, Holders) {
             Holder::Slot(slot) => holders.slots.contains(&slot),
             Holder::None => false,
         };
+        // The code after a return runs as the code before the epilogue left
+        // it, so an epilogue changes nothing the walk knows.
         if step.writes_count == WritesCount::No {
-            local = RegSet::EMPTY;
             continue;
         }
         for written in step.writes.iter() {
@@ -729,7 +730,29 @@ mod tests {
         // A `pop` with no return after it writes something else.
         let code = [&code[..], &[0x5b, 0x8b, 0x43, 0x10]].concat();
         let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
-        assert!(!global_offset_table_uses(&insns).iter().skip(4).any(|&uses| uses));
+        assert_eq!(global_offset_table_uses(&insns)[7..], [false, false]);
+    }
+
+    #[test]
+    fn the_code_after_an_early_return_keeps_the_table() {
+        let code = [
+            0x56, //                               push esi
+            0xe8, 0x00, 0x00, 0x00, 0x00, //       call $+5
+            0x59, //                               pop ecx
+            0x81, 0xc1, 0x02, 0xb6, 0x00, 0x00, // add ecx, 0xb602
+            0x75, 0x02, //                         jne $+4
+            0x5e, //                               pop esi
+            0xc3, //                               ret
+            0x8d, 0x81, 0xac, 0x7b, 0xfe, 0xff, // lea eax, [ecx - 0x18454]
+            0x5e, //                               pop esi
+            0xc3, //                               ret
+            0x31, 0xc9, //                         xor ecx, ecx
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(
+            global_offset_table_uses(&insns),
+            [false, false, false, true, false, false, false, true, false, false, false]
+        );
     }
 
     #[test]
