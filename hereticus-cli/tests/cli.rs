@@ -615,3 +615,77 @@ fn a_function_gone_names_the_one_in_its_place() {
     assert_eq!(init["in_place"]["name"], "inflateInit_");
     assert!(gone.iter().all(|gone| gone.get("in_place").is_some()), "every row holds the field");
 }
+
+/// `--functions` lists one binary as a table for a person to read.
+#[test]
+fn lists_the_functions_of_one_binary() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(hereticus().args(["--functions", "fixtures/build/O2/basic.o"]));
+}
+
+/// The JSON listing is for tools, as a Ghidra script, so its fields must stay
+/// put.
+#[test]
+fn the_json_function_listing_is_stable() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(hereticus().args([
+        "--functions",
+        "--format",
+        "json",
+        "fixtures/build/O2/basic.o",
+    ]));
+}
+
+/// The JSON listing parses, and its functions are in address order and do
+/// not overlap, so a tool can make one function at each address.
+#[test]
+fn the_json_function_listing_parses_in_address_order() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    let output = hereticus()
+        .args(["--functions", "--format", "json", "fixtures/build/O2/firmware.o"])
+        .output()
+        .expect("hereticus runs");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let listing: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the listing is JSON");
+    assert_eq!(listing["isa"], "arm32");
+    assert_eq!(listing["found_by"], "symbols");
+    let functions = listing["functions"].as_array().expect("a list");
+    assert!(!functions.is_empty());
+    let spans: Vec<(u64, u64)> = functions
+        .iter()
+        .map(|function| {
+            assert!(function["name"].is_string());
+            assert_eq!(function["holds"], "code");
+            let address = function["address"].as_u64().expect("a number");
+            (address, address + function["size"].as_u64().expect("a number"))
+        })
+        .collect();
+    for pair in spans.windows(2) {
+        assert!(pair[0].1 <= pair[1].0, "{pair:x?} overlap or are out of order");
+    }
+}
+
+/// `--functions` reads one binary, so a second is a mistake to report.
+#[test]
+fn listing_functions_rejects_a_second_binary() {
+    assert_cmd_snapshot!(hereticus().args(["--functions", "a.o", "b.o"]));
+}
+
+/// A comparison still needs two binaries.
+#[test]
+fn a_comparison_needs_a_second_binary() {
+    assert_cmd_snapshot!(hereticus().arg("a.o"));
+}

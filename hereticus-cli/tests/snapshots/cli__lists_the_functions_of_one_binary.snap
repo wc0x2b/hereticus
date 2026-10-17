@@ -1,0 +1,26 @@
+---
+source: hereticus-cli/tests/cli.rs
+assertion_line: 627
+info:
+  program: hereticus
+  args:
+    - "--functions"
+    - fixtures/build/O2/basic.o
+---
+success: true
+exit_code: 0
+----- stdout -----
+╭─────────┬──────┬───────┬───────┬─────────────────╮
+│ ADDRESS │ SIZE │ ISA   │ HOLDS │ FUNCTION        │
+├─────────┼──────┼───────┼───────┼─────────────────┤
+│ 0x0     │    8 │ arm32 │ code  │ add             │
+│ 0x8     │   12 │ arm32 │ code  │ mul_by_constant │
+│ 0x14    │   40 │ arm32 │ code  │ sum_to          │
+│ 0x3c    │   40 │ arm32 │ code  │ classify        │
+│ 0x64    │   28 │ arm32 │ code  │ switch_dense    │
+│ 0x80    │   16 │ arm32 │ code  │ call_chain      │
+│ 0x90    │  144 │ arm32 │ code  │ array_max       │
+│ 0x120   │  144 │ arm32 │ code  │ factorial       │
+╰─────────┴──────┴───────┴───────┴─────────────────╯
+
+----- stderr -----

@@ -4,17 +4,18 @@
 ```console
 Command line tool to compare functions between two binaries
 
-Usage: hereticus [OPTIONS] <BEFORE> <AFTER>
+Usage: hereticus [OPTIONS] <BEFORE> [AFTER]
 
 Arguments:
-  <BEFORE>  The earlier binary
-  <AFTER>   The later binary
+  <BEFORE>  The earlier binary, or with `--functions` the one binary to list
+  [AFTER]   The later binary
 
 Options:
   -a, --all                    Report every function, not only the ones that changed
       --diff <FUNCTION>        Show the instruction-level diff of one function, then stop
       --diff-all               Show the instruction-level diff of every changed function, then stop
       --tui                    Browse the report in the terminal, and change its order, its filters and the diff it shows without a second run
+      --functions              List the functions of one binary, then stop
       --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il]
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
@@ -85,6 +86,35 @@ next and the previous function. `?` shows every key.
 
 Exit status is 0 when nothing changed, 1 with `--exit-code` when something did,
 and 2 when the input could not be read.
+
+## Listing Functions
+
+`--functions` reads one binary, lists the functions it finds, and compares
+nothing. Each row gives the address, the size in bytes, the instruction set,
+and whether the function holds code or data. `--raw`, `--base`, `--arch` and
+`--unpack` read the binary as they do for a comparison.
+
+<!-- output: --functions fixtures/build/O2/basic.o -->
+```console
+╭─────────┬──────┬───────┬───────┬─────────────────╮
+│ ADDRESS │ SIZE │ ISA   │ HOLDS │ FUNCTION        │
+├─────────┼──────┼───────┼───────┼─────────────────┤
+│ 0x0     │    8 │ arm32 │ code  │ add             │
+│ 0x8     │   12 │ arm32 │ code  │ mul_by_constant │
+│ 0x14    │   40 │ arm32 │ code  │ sum_to          │
+│ 0x3c    │   40 │ arm32 │ code  │ classify        │
+│ 0x64    │   28 │ arm32 │ code  │ switch_dense    │
+│ 0x80    │   16 │ arm32 │ code  │ call_chain      │
+│ 0x90    │  144 │ arm32 │ code  │ array_max       │
+│ 0x120   │  144 │ arm32 │ code  │ factorial       │
+╰─────────┴──────┴───────┴───────┴─────────────────╯
+```
+<!-- end output -->
+
+`--format json` gives the same list to another tool, as a Ghidra script that
+makes a function at each address Ghidra missed. Each address is the one the
+binary is linked at. A tool that loads the binary at another base must move
+each address by the difference.
 
 ## Limits
 * **Little-endian A32 (ARMv5TE and later), Thumb-2 (Cortex-M too) and

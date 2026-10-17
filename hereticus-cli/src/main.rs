@@ -4,6 +4,7 @@
 //! results, and chooses an exit status.
 
 mod formats;
+mod functions;
 mod tui;
 
 /// The allocator of musl, the default target, serves the threads of the
@@ -36,11 +37,12 @@ use tabled::{Table, Tabled};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// The earlier binary.
+    /// The earlier binary, or with `--functions` the one binary to list.
     before: PathBuf,
 
     /// The later binary.
-    after: PathBuf,
+    #[arg(required_unless_present = "functions")]
+    after: Option<PathBuf>,
 
     /// Report every function, not only the ones that changed.
     #[arg(short, long)]
@@ -67,6 +69,17 @@ struct Args {
     /// and the diff it shows without a second run.
     #[arg(long, conflicts_with_all = ["diff", "diff_all", "format", "exit_code"])]
     tui: bool,
+
+    /// List the functions of one binary, then stop.
+    ///
+    /// Each line gives the address, the size, the instruction set and whether
+    /// the function holds code or data. With `--format json`, another tool,
+    /// such as a Ghidra script, can make a function at each address.
+    #[arg(
+        long,
+        conflicts_with_all = ["after", "diff", "diff_all", "tui", "exit_code"]
+    )]
+    functions: bool,
 
     /// How `--diff`, `--diff-all` and `--tui` show each instruction.
     #[arg(long, value_enum, default_value_t = ViewName::Asm)]
@@ -426,31 +439,20 @@ fn run(args: &Args) -> Result<bool, String> {
     if args.tui && !Term::stdout().is_term() {
         return Err("--tui needs a terminal on standard output".to_string());
     }
+    if args.functions {
+        let binary = read_one(args, &args.before)?;
+        functions::print_functions(&binary, args.format);
+        return Ok(false);
+    }
+    let after_path = args.after.as_deref().ok_or("needs a later binary to compare with")?;
     let (before_bytes, load) = unpack_part(read_file(&args.before)?, args.unpack, &args.before)?;
-    let (after_bytes, _) = unpack_part(read_file(&args.after)?, args.unpack, &args.after)?;
-
-    let (before, after) = if args.raw {
-        let isa: Isa = args.arch.into();
-        let base = args.base.or(load).ok_or_else(|| missing_base(&before_bytes, isa))?;
-
-        check_and_report_base(&before_bytes, base, isa, &args.before);
-        // Comparing a file with itself is a normal way to inspect one image,
-        // and saying the same thing twice about it helps nobody.
-        if args.after != args.before {
-            check_and_report_base(&after_bytes, base, isa, &args.after);
-        }
-        eprintln!(
-            "hereticus: a raw image has no exception index, so function boundaries \
-             are recovered from the code and are approximate"
-        );
-
-        (
-            parse_raw(&before_bytes, base, isa, &args.before)?,
-            parse_raw(&after_bytes, base, isa, &args.after)?,
-        )
-    } else {
-        (parse(&before_bytes, &args.before)?, parse(&after_bytes, &args.after)?)
-    };
+    let (after_bytes, _) = unpack_part(read_file(after_path)?, args.unpack, after_path)?;
+    let before = read_binary(args, &before_bytes, load, &args.before, BaseCheck::Report)?;
+    // Comparing a file with itself is a normal way to inspect one image,
+    // and saying the same thing twice about it helps nobody.
+    let after_check = if after_path == args.before { BaseCheck::Skip } else { BaseCheck::Report };
+    let after = read_binary(args, &after_bytes, load, after_path, after_check)?;
+    warn_if_raw(args);
 
     if before.isa != after.isa {
         return Err(format!(
@@ -480,7 +482,7 @@ fn run(args: &Args) -> Result<bool, String> {
             )
         };
         let start = tui::Start {
-            files: [file_name(&args.before), file_name(&args.after)],
+            files: [file_name(&args.before), file_name(after_path)],
             sort: args.sort,
             view: args.view.into(),
             scope: if args.all { tui::Scope::All } else { tui::Scope::Changed },
@@ -541,6 +543,51 @@ fn run(args: &Args) -> Result<bool, String> {
     }
 
     Ok(diff.changed().count() > 0 || !diff.removed.is_empty() || !diff.added.is_empty())
+}
+
+/// Whether to warn when the load address looks wrong for an image.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum BaseCheck {
+    Report,
+    Skip,
+}
+
+/// Say once that the functions of a raw image are only approximate.
+fn warn_if_raw(args: &Args) {
+    if args.raw {
+        eprintln!(
+            "hereticus: a raw image has no exception index, so function boundaries \
+             are recovered from the code and are approximate"
+        );
+    }
+}
+
+/// Read one binary for `--functions`, unpacked and raw as the arguments say.
+fn read_one(args: &Args, path: &Path) -> Result<Binary, String> {
+    let (bytes, load) = unpack_part(read_file(path)?, args.unpack, path)?;
+    let binary = read_binary(args, &bytes, load, path, BaseCheck::Report)?;
+    warn_if_raw(args);
+    Ok(binary)
+}
+
+/// Read `bytes` as a binary, or as a raw image at the base the arguments or
+/// its container, `load`, give.
+fn read_binary(
+    args: &Args,
+    bytes: &[u8],
+    load: Option<u64>,
+    path: &Path,
+    check: BaseCheck,
+) -> Result<Binary, String> {
+    if !args.raw {
+        return parse(bytes, path);
+    }
+    let isa: Isa = args.arch.into();
+    let base = args.base.or(load).ok_or_else(|| missing_base(bytes, isa))?;
+    if check == BaseCheck::Report {
+        check_and_report_base(bytes, base, isa, path);
+    }
+    parse_raw(bytes, base, isa, path)
 }
 
 fn read_file(path: &Path) -> Result<Vec<u8>, String> {

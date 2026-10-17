@@ -215,3 +215,27 @@ fn slow_hides_the_data_regions_that_go_or_come() {
         ["changed data", ": gone data", ": new data"].map(|word| shown.matches(word).count());
     assert_eq!(listed, [5, 1, 0], "changed, gone and new data regions");
 }
+
+/// `--functions` on a raw stub lists what the scan recovered, and marks the
+/// tables after the code as data, so a tool does not make functions there.
+#[test]
+fn lists_the_functions_a_scan_recovers_from_a_raw_stub() {
+    let stub = "fixtures/build/openwrt/arm-ex6100v2-stub-22.03.2.bin";
+    if !Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(stub).exists() {
+        eprintln!("skipped: run `just firmware` first");
+        return;
+    }
+
+    let output = hereticus()
+        .args(["--raw", "--base", "0x80208000", "--arch", "arm32"])
+        .args(["--functions", "--format", "json", stub])
+        .output()
+        .expect("the tool runs");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let listing: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the listing is JSON");
+    assert_eq!(listing["found_by"], "scanning");
+    let functions = listing["functions"].as_array().expect("a list");
+    assert_eq!(functions[0]["address"].as_u64(), Some(0x8020_8000), "the scan starts at the base");
+    assert!(functions.iter().any(|function| function["holds"] == "code"));
+}
