@@ -16,7 +16,10 @@
 
 use super::{CallTarget, Insn, InsnKind, Memory, Recovery, leaves};
 use hereticus_il::arch::Decoder as _;
-use hereticus_il::arch::x86::{MOST_BYTES, Mode, X86, instruction, mode_of};
+use hereticus_il::arch::x86::{
+    MOST_BYTES, Mode, X86, il_register, instruction, lift as x86_lift, mode_of,
+};
+use hereticus_il::{Reg, RegSet};
 use hereticus_memory::AddressSpace;
 use iced_x86::{Mnemonic, OpKind, Register};
 
@@ -218,6 +221,216 @@ pub fn formed_address(insn: &Insn, space: &AddressSpace) -> Option<u64> {
     })
 }
 
+/// For each instruction of `body`, whether its constant is a distance from
+/// the global offset table, which moves whenever the data it reaches does.
+///
+/// 32-bit PIC has no `rip` to reach data from, so a function reads its own
+/// address and adds the distance to the table, in one of two forms:
+///
+/// ```text
+/// call __x86.get_pc_thunk.bx      ; GCC
+/// add  ebx, 0x2e5b
+///
+/// call $+5                        ; clang
+/// pop  ebx
+/// add  ebx, 0x106ac
+/// ```
+///
+/// The add is part of the address, and so is each offset from the register
+/// after it, as `lea eax, [ebx - 0x18768]`, until something else writes the
+/// register. A copy of it holds the table too.
+pub fn global_offset_table_uses(body: &[Insn]) -> Vec<bool> {
+    let mut uses = vec![false; body.len()];
+    let mut table = TableHolders::default();
+    for (index, insn) in body.iter().enumerate() {
+        if let Some(register) = table_setup(&body[..=index]) {
+            uses[index] = true;
+            table.registers.insert(register);
+            continue;
+        }
+        let Some(inst) = instruction(insn) else { continue };
+        uses[index] = table.step(insn, &inst);
+    }
+    uses
+}
+
+/// Where a walk of [`global_offset_table_uses`] knows the table to be: in
+/// registers, and in slots of the frame that code spilled it to, as
+/// clang spills it where registers run short.
+struct TableHolders {
+    /// The registers that hold the table.
+    registers: RegSet,
+    /// The slots of the frame that hold it, each as a base and an offset:
+    /// `rsp` by its offset from the stack pointer at the entry, and `ebp`
+    /// as the code names it.
+    slots: Vec<(Reg, i64)>,
+    /// How far the stack pointer has moved since the entry, where pushes,
+    /// pops and constant adds say. `None` once something else moved it.
+    stack_moved: Option<i64>,
+}
+
+impl Default for TableHolders {
+    fn default() -> Self {
+        Self { registers: RegSet::EMPTY, slots: Vec::new(), stack_moved: Some(0) }
+    }
+}
+
+impl TableHolders {
+    /// Walk `inst`, and say whether it reaches memory from the table.
+    fn step(&mut self, insn: &Insn, inst: &iced_x86::Instruction) -> bool {
+        let has_memory =
+            (0..inst.op_count()).any(|operand| inst.op_kind(operand) == OpKind::Memory);
+        let base = il_register(inst.memory_base());
+        let reaches_table = has_memory && base.is_some_and(|base| self.registers.contains(base));
+        let register_of = |operand| {
+            (inst.op_kind(operand) == OpKind::Register)
+                .then(|| il_register(inst.op_register(operand)))
+                .flatten()
+        };
+        let pushed = -i64::from(inst.stack_pointer_increment());
+        // What the instruction moves, from where to where.
+        let (to, from) = match inst.mnemonic() {
+            Mnemonic::Mov if inst.op0_kind() == OpKind::Memory => (
+                Holder::Slot(self.slot(inst)),
+                register_of(1).map_or(Holder::None, Holder::Register),
+            ),
+            Mnemonic::Mov if inst.op1_kind() == OpKind::Memory => (
+                register_of(0).map_or(Holder::None, Holder::Register),
+                Holder::Slot(self.slot(inst)),
+            ),
+            Mnemonic::Mov => (
+                register_of(0).map_or(Holder::None, Holder::Register),
+                register_of(1).map_or(Holder::None, Holder::Register),
+            ),
+            Mnemonic::Push => (
+                Holder::Slot(self.stack_moved.map(|moved| (Reg::Stack, moved - pushed))),
+                register_of(0).map_or(Holder::None, Holder::Register),
+            ),
+            Mnemonic::Pop => (
+                register_of(0).map_or(Holder::None, Holder::Register),
+                Holder::Slot(self.stack_moved.map(|moved| (Reg::Stack, moved))),
+            ),
+            _ => (Holder::None, Holder::None),
+        };
+        let holds_table = match from {
+            Holder::Register(reg) => self.registers.contains(reg),
+            Holder::Slot(Some(slot)) => self.slots.contains(&slot),
+            Holder::Slot(None) | Holder::None => false,
+        };
+
+        let written = x86_lift(inst).writes;
+        self.registers = self.registers.iter().filter(|&reg| !written.contains(reg)).collect();
+        if let Holder::Slot(Some(slot)) = to {
+            self.slots.retain(|&held| held != slot);
+        }
+        match to {
+            Holder::Register(reg) if holds_table => self.registers.insert(reg),
+            Holder::Slot(Some(slot)) if holds_table => self.slots.push(slot),
+            _ => {}
+        }
+        if matches!(insn.kind, InsnKind::Call { .. }) {
+            // `ebx` holds the table across a call by the ABI, as each callee
+            // preserves it. The registers a callee may change do not.
+            self.registers =
+                self.registers.iter().filter(|&reg| is_preserved_by_a_call(reg)).collect();
+        }
+        self.move_stack(inst, written);
+        reaches_table
+    }
+
+    /// The slot that the memory operand of `inst` names, where it names one
+    /// of the frame.
+    fn slot(&self, inst: &iced_x86::Instruction) -> Option<(Reg, i64)> {
+        if inst.memory_index() != Register::None {
+            return None;
+        }
+        let offset = inst.memory_displacement64() as i64;
+        match il_register(inst.memory_base())? {
+            Reg::Stack => Some((Reg::Stack, self.stack_moved? + offset)),
+            frame @ Reg::General(5) => Some((frame, offset)),
+            _ => None,
+        }
+    }
+
+    /// Follow the stack pointer past `inst`, which writes `written`.
+    fn move_stack(&mut self, inst: &iced_x86::Instruction, written: RegSet) {
+        if !written.contains(Reg::Stack) {
+            return;
+        }
+        let constant = (inst.op_count() == 2
+            && inst.op0_kind() == OpKind::Register
+            && il_register(inst.op0_register()) == Some(Reg::Stack)
+            && matches!(
+                inst.op1_kind(),
+                OpKind::Immediate8to32
+                    | OpKind::Immediate32
+                    | OpKind::Immediate8to64
+                    | OpKind::Immediate32to64
+            ))
+        .then(|| inst.immediate(1) as i64);
+        let moved = match (inst.mnemonic(), constant) {
+            (Mnemonic::Sub, Some(amount)) => Some(-amount),
+            (Mnemonic::Add, Some(amount)) => Some(amount),
+            (Mnemonic::Push | Mnemonic::Pop, _) => Some(i64::from(inst.stack_pointer_increment())),
+            // `call` pushes the return address, and the callee pops it.
+            (Mnemonic::Call, _) => Some(0),
+            _ => None,
+        };
+        self.stack_moved = self.stack_moved.zip(moved).map(|(before, moved)| before + moved);
+        if self.stack_moved.is_none() {
+            self.slots.retain(|&(base, _)| base != Reg::Stack);
+        }
+    }
+}
+
+/// What an instruction moves the table from or to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Holder {
+    /// A register.
+    Register(Reg),
+    /// A slot of the frame, or `None` for one the walk cannot name.
+    Slot(Option<(Reg, i64)>),
+    /// Nothing that can hold it.
+    None,
+}
+
+/// The register the last instruction of `body` leaves the global offset
+/// table in, where it is the add that ends the setup.
+fn table_setup(body: &[Insn]) -> Option<Reg> {
+    let (add, before) = body.split_last()?;
+    if mode_of(add) != Some(Mode::Bits32) {
+        return None;
+    }
+    let inst = instruction(add)?;
+    let adds_a_constant = inst.mnemonic() == Mnemonic::Add
+        && inst.op0_kind() == OpKind::Register
+        && inst.op1_kind() == OpKind::Immediate32;
+    if !adds_a_constant {
+        return None;
+    }
+    let register = il_register(inst.op0_register())?;
+    let follows_a_call = |insn: &Insn| matches!(insn.kind, InsnKind::Call { target: Some(_) });
+    let set_up = match before {
+        [.., call, pop] => {
+            follows_a_call(pop)
+                || (call.kind == InsnKind::Call { target: Some(pop.address) }
+                    && instruction(pop).is_some_and(|pop| {
+                        pop.mnemonic() == Mnemonic::Pop
+                            && il_register(pop.op0_register()) == Some(register)
+                    }))
+        }
+        [call] => follows_a_call(call),
+        [] => false,
+    };
+    set_up.then_some(register)
+}
+
+/// Whether a callee keeps `reg` as it found it, by the System V ABI for
+/// i386: `ebx`, `esi`, `edi`, `ebp` and the stack pointer.
+fn is_preserved_by_a_call(reg: Reg) -> bool {
+    matches!(reg, Reg::Stack | Reg::General(3 | 5 | 6 | 7))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +535,70 @@ mod tests {
             X86::BITS64.data_addresses(&code, &insns, &space, &Memory::new(&regions)),
             [0x2000, 0x2008, 0x2100]
         );
+    }
+
+    #[test]
+    fn a_distance_from_the_global_offset_table_moves_with_the_data() {
+        let code = [
+            0xe8, 0x00, 0x00, 0x00, 0x00, //       0x1000 call 0x1005
+            0x5b, //                               0x1005 pop ebx
+            0x81, 0xc3, 0xac, 0x06, 0x01, 0x00, // 0x1006 add ebx, 0x106ac
+            0x8d, 0x83, 0x98, 0x87, 0xfe, 0xff, // 0x100c lea eax, [ebx - 0x18768]
+            0x89, 0xde, //                         0x1012 mov esi, ebx
+            0x8b, 0x46, 0x10, //                   0x1014 mov eax, [esi + 0x10]
+            0x8b, 0x41, 0x10, //                   0x1017 mov eax, [ecx + 0x10]
+            0xbb, 0x00, 0x00, 0x00, 0x00, //       0x101a mov ebx, 0
+            0x8b, 0x43, 0x10, //                   0x101f mov eax, [ebx + 0x10]
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(
+            global_offset_table_uses(&insns),
+            [false, false, true, true, false, true, false, false, false]
+        );
+    }
+
+    #[test]
+    fn the_table_spilled_to_the_frame_comes_back_from_it() {
+        let code = [
+            0xe8, 0x00, 0x00, 0x00, 0x00, //       call 0x1005
+            0x58, //                               pop eax
+            0x05, 0xdc, 0xfe, 0x00, 0x00, //       add eax, 0xfedc
+            0x89, 0x04, 0x24, //                   mov [esp], eax
+            0x51, //                               push ecx
+            0x58, //                               pop eax
+            0x31, 0xc0, //                         xor eax, eax
+            0x8b, 0x0c, 0x24, //                   mov ecx, [esp]
+            0x8b, 0x6c, 0x81, 0x10, //             mov ebp, [ecx + 4*eax + 0x10]
+            0x83, 0xec, 0x04, //                   sub esp, 4
+            0x8b, 0x14, 0x24, //                   mov edx, [esp]
+            0x8b, 0x72, 0x10, //                   mov esi, [edx + 0x10]
+            0x8b, 0x54, 0x24, 0x04, //             mov edx, [esp + 4]
+            0x8b, 0x72, 0x10, //                   mov esi, [edx + 0x10]
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(
+            global_offset_table_uses(&insns),
+            [
+                false, false, true, false, false, false, false, false, true, false, false, false,
+                false, true
+            ]
+        );
+    }
+
+    #[test]
+    fn a_thunk_call_and_an_add_find_the_table() {
+        let code = [
+            0xe8, 0x10, 0x00, 0x00, 0x00, //       call __x86.get_pc_thunk.bx
+            0x81, 0xc3, 0x5b, 0x2e, 0x00, 0x00, // add ebx, 0x2e5b
+            0xe8, 0x10, 0x00, 0x00, 0x00, //       call elsewhere
+            0x8b, 0x43, 0x10, //                   mov eax, [ebx + 0x10]
+            0x8b, 0x48, 0x10, //                   mov ecx, [eax + 0x10]
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(global_offset_table_uses(&insns), [false, true, false, true, false]);
+        // 64-bit code reaches its data from `rip`, and adds no such distance.
+        let insns = decode_all(&X86::BITS64, &code[..11], 0x1000).0;
+        assert_eq!(global_offset_table_uses(&insns), [false, false]);
     }
 
     #[test]
