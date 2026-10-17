@@ -281,6 +281,19 @@ struct Step {
     slot: Option<(Reg, i64)>,
     /// The registers it writes, with those a call may change.
     writes: RegSet,
+    /// Whether what it writes counts against a holder of the table.
+    writes_count: WritesCount,
+}
+
+/// Whether what an instruction writes counts against a holder of the table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WritesCount {
+    /// It counts.
+    Yes,
+    /// It does not: a `pop` in an epilogue gives the caller back its own
+    /// value, which no code of the function reads after it, and the `pop`
+    /// of clang's setup is the first half of the table.
+    No,
 }
 
 /// The registers and the slots that hold the table everywhere they are
@@ -306,6 +319,7 @@ fn steps_of(body: &[Insn]) -> Vec<Step> {
                     from: Holder::None,
                     slot: None,
                     writes: RegSet::EMPTY,
+                    writes_count: WritesCount::Yes,
                 };
             };
             let slot = frame_slot(&inst, moved[index]);
@@ -335,7 +349,21 @@ fn steps_of(body: &[Insn]) -> Vec<Step> {
                     .filter(|&reg| !is_preserved_by_a_call(reg))
                     .for_each(|reg| writes.insert(reg));
             }
-            Step { setup, base: il_register(inst.memory_base()), to, from, slot, writes }
+            let opens_setup = inst.mnemonic() == Mnemonic::Pop
+                && body.get(..index + 2).and_then(table_setup) == il_register(inst.op0_register());
+            let writes_count = match is_epilogue(&body[index..]) || opens_setup {
+                true => WritesCount::No,
+                false => WritesCount::Yes,
+            };
+            Step {
+                setup,
+                base: il_register(inst.memory_base()),
+                to,
+                from,
+                slot,
+                writes,
+                writes_count,
+            }
         })
         .collect()
 }
@@ -359,6 +387,10 @@ fn walk(steps: &[Step], holders: &Holders) -> (Vec<bool>, Holders) {
             Holder::Slot(slot) => holders.slots.contains(&slot),
             Holder::None => false,
         };
+        if step.writes_count == WritesCount::No {
+            local = RegSet::EMPTY;
+            continue;
+        }
         for written in step.writes.iter() {
             if !(moves_the_table && step.to == Holder::Register(written)) {
                 if holders.registers.contains(written) {
@@ -376,6 +408,30 @@ fn walk(steps: &[Step], holders: &Holders) -> (Vec<bool>, Holders) {
         }
     }
     (uses, refuted)
+}
+
+/// Whether `rest` opens with a `pop` or a `leave` that only more of them,
+/// or a constant add to the stack pointer, separate from a return.
+fn is_epilogue(rest: &[Insn]) -> bool {
+    let restores = |insn: &Insn| {
+        instruction(insn)
+            .is_some_and(|inst| matches!(inst.mnemonic(), Mnemonic::Pop | Mnemonic::Leave))
+    };
+    if !rest.first().is_some_and(restores) {
+        return false;
+    }
+    for insn in rest {
+        if insn.kind == InsnKind::Return {
+            return true;
+        }
+        let frees_the_frame = instruction(insn)
+            .is_some_and(|inst| inst.mnemonic() == Mnemonic::Add)
+            && stack_change(insn).is_some_and(|change| change > 0);
+        if !(restores(insn) || frees_the_frame) {
+            return false;
+        }
+    }
+    false
 }
 
 /// The slot of the frame the memory operand of `inst` names, where it names
@@ -652,6 +708,28 @@ mod tests {
                 false, true
             ]
         );
+    }
+
+    #[test]
+    fn an_epilogue_that_gives_the_caller_back_ebx_keeps_the_table() {
+        let code = [
+            0x53, //                               push ebx
+            0xe8, 0x00, 0x00, 0x00, 0x00, //       call $+5
+            0x5b, //                               pop ebx
+            0x81, 0xc3, 0xac, 0x06, 0x01, 0x00, // add ebx, 0x106ac
+            0x5b, //                               pop ebx
+            0xc3, //                               ret
+            0x8b, 0x43, 0x10, //                   mov eax, [ebx + 0x10]
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(
+            global_offset_table_uses(&insns),
+            [false, false, false, true, false, false, true]
+        );
+        // A `pop` with no return after it writes something else.
+        let code = [&code[..], &[0x5b, 0x8b, 0x43, 0x10]].concat();
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert!(!global_offset_table_uses(&insns).iter().skip(4).any(|&uses| uses));
     }
 
     #[test]
