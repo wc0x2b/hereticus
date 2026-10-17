@@ -941,6 +941,12 @@ mod tests {
         assert_eq!(word(0xf260_0644), word(0xf260_0644));
     }
 
+    /// A move from another lane of one register moves another value.
+    #[test]
+    fn neon_lanes_normalize_apart() {
+        assert_ne!(word(0xee10_0b90), word(0xee30_0b90), "vmov.32 r0, d16[0] and d16[1]");
+    }
+
     #[test]
     fn handles_instructions_without_operands() {
         // nop.

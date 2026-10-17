@@ -7,8 +7,9 @@
 //! and section A7.8, the transfers between core and extension registers.
 //!
 //! The IL names a `d` register as [`il::Reg::Vector`] by its number, and a
-//! `q` register as the two `d` registers it is. A lane is part of the text
-//! alone, as on AArch64.
+//! `q` register as the two `d` registers it is. A lane follows its register
+//! as a constant operand with no name, so that a move from `d16[1]` and one
+//! from `d16[0]` lift apart, and the text still names `d16[1]` once.
 
 use crate as il;
 use crate::arch::arm32::{ARM_REGISTERS, expand_float_constant, il_reg};
@@ -367,7 +368,13 @@ impl NeonWord {
 
     /// The name of each operand of [`NeonWord::lift`].
     pub(crate) fn names(&self) -> il::Names {
-        self.operands.iter().map(|value| value.text()).collect()
+        self.operands
+            .iter()
+            .flat_map(|value| {
+                let lane = matches!(value, Value::Scalar { .. }).then(CompactString::default);
+                core::iter::once(value.text()).chain(lane)
+            })
+            .collect()
     }
 
     /// The IL form of this word. A `vmov` moves, and the rest is
@@ -378,7 +385,17 @@ impl NeonWord {
                 NeonOperation::Vmov => il::Op::Move,
                 _ => il::Op::Vector,
             },
-            operands: self.operands.iter().map(|value| value.operand()).collect(),
+            operands: self
+                .operands
+                .iter()
+                .flat_map(|value| {
+                    let lane = match value {
+                        Value::Scalar { lane, .. } => Some(il::Operand::Const(u64::from(*lane))),
+                        _ => None,
+                    };
+                    core::iter::once(value.operand()).chain(lane)
+                })
+                .collect(),
             ..il::Lifted::default()
         };
         let (written, read_too) = match self.role {
@@ -1094,6 +1111,18 @@ mod tests {
         assert_eq!(lifted.op, il::Op::Move);
         assert_eq!(lifted.writes, [il::Reg::General(0)].into_iter().collect());
         assert_eq!(lifted.reads, [il::Reg::Vector(16)].into_iter().collect());
+    }
+
+    #[test]
+    fn a_lane_lifts_after_its_register() {
+        let lane = |word: u32| NeonWord::of(word).expect("vmov.32 r0, d16[x]").lift().operands;
+        let (first, second) = (lane(0xee10_0b90), lane(0xee30_0b90));
+        let d16 = il::Operand::Reg(il::Reg::Vector(16));
+        let r0 = il::Operand::Reg(il::Reg::General(0));
+        assert_eq!(first.as_slice(), [r0, d16, il::Operand::Const(0)]);
+        assert_eq!(second.as_slice(), [r0, d16, il::Operand::Const(1)]);
+        let names = NeonWord::of(0xee30_0b90).expect("vmov.32 r0, d16[1]").names();
+        assert_eq!(names.as_slice(), ["r0", "d16[1]", ""]);
     }
 
     #[test]

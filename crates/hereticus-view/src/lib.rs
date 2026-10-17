@@ -19,6 +19,7 @@ use hereticus_il::arch::arm32::{self, Step, Vfp};
 use hereticus_il::arch::mips::{self, Decoded as MipsDecoded};
 use hereticus_il::arch::mips16::Op as Mips16Op;
 use hereticus_il::arch::mips32::Op as Mips32Op;
+use hereticus_il::arch::neon::NeonOperation;
 use hereticus_il::arch::{Insn, aarch64, is_branch_target};
 use hereticus_il::{AccessKind, Comparison, Cond, Lifted, Named, Op, Operand, Reg, Test};
 use hereticus_image::Links;
@@ -838,6 +839,19 @@ fn aarch64_statement(
     Some(line)
 }
 
+/// The statement of a NEON move to or from one lane, as `r1 = d16[1]`. The
+/// IL holds the lane as an operand of its own, which the text names with
+/// its register.
+fn lane_move_statement(insn: &Insn, tokens: &[&str]) -> Option<String> {
+    let Some(arm32::Decoded::Neon(neon)) = arm32::decoded(insn) else { return None };
+    match (neon.operation, tokens) {
+        (NeonOperation::Vmov, [dest, source]) if dest.contains('[') || source.contains('[') => {
+            Some(format!("{dest} = {source}"))
+        }
+        _ => None,
+    }
+}
+
 /// The statement of an A32 or T32 VFP instruction that the IL names only
 /// `Float`: a compare, the move of its result to the flags, and a move of a
 /// double between two general registers, low half first.
@@ -1110,6 +1124,9 @@ fn statement(
         return Some(line);
     }
     if let Some(line) = vfp_statement(insn, &tokens, last_compare) {
+        return Some(line);
+    }
+    if let Some(line) = lane_move_statement(insn, &tokens) {
         return Some(line);
     }
     // `lsl` and `lsr` of AArch64 are aliases of a field move, which the IL
