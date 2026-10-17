@@ -99,9 +99,15 @@ impl Recovery for Thumb2 {
     /// `tbb [pc, rI]` and `tbh [pc, rI, lsl 1]` read a table of distances
     /// right after themselves, in halfwords from `pc`, which is 4 bytes past
     /// the jump. A `cmp rI, n` before it bounds the case number.
+    ///
+    /// GCC for PIC can read a table of word distances instead; see
+    /// [`word_table_extent`].
     fn jump_tables(&self, memory: &Memory<'_>, code: Range<u64>, insns: &[Insn]) -> Vec<JumpTable> {
         (0..insns.len())
-            .filter_map(|index| read_branch_table(memory, &code, insns, index))
+            .filter_map(|index| {
+                read_branch_table(memory, &code, insns, index)
+                    .or_else(|| read_word_table(memory, &code, insns, index))
+            })
             .collect()
     }
 
@@ -269,8 +275,6 @@ fn table_extent(insns: &[Insn], index: usize) -> Option<(Range<u64>, usize)> {
         }) => 2,
         _ => return None,
     };
-    let operands =
-        |insn: &Insn| Thumb2.lift(insn).map(|lifted| lifted.operands).unwrap_or_default();
     // `tbb [pc, rI]` and `tbh [pc, rI, lsl #1]`.
     let index_register = operands(jump).iter().find_map(|operand| match operand {
         hereticus_il::Operand::Memory {
@@ -281,7 +285,14 @@ fn table_extent(insns: &[Insn], index: usize) -> Option<(Range<u64>, usize)> {
         _ => None,
     })?;
 
-    // `cmp rI, n`: the cases run from 0 to n.
+    let cases = cases_below(insns, index, index_register)?;
+    let table = jump.address + WORD as u64;
+    Some((table..table + (cases * width) as u64, width))
+}
+
+/// The number of cases that a `cmp rI, n` before `insns[index]` bounds:
+/// the cases run from 0 to n.
+fn cases_below(insns: &[Insn], index: usize, index_register: hereticus_il::Reg) -> Option<usize> {
     let bound = insns[index.saturating_sub(TABLE_LOOK_BACK)..index].iter().rev().find_map(
         |insn| match (core_opcode(insn), operands(insn).as_slice()) {
             (
@@ -291,21 +302,117 @@ fn table_extent(insns: &[Insn], index: usize) -> Option<(Range<u64>, usize)> {
             _ => None,
         },
     )?;
-    let cases = usize::try_from(bound).ok()?.checked_add(1).filter(|&cases| cases <= MOST_CASES)?;
-    let table = jump.address + WORD as u64;
-    Some((table..table + (cases * width) as u64, width))
+    usize::try_from(bound).ok()?.checked_add(1).filter(|&cases| cases <= MOST_CASES)
+}
+
+fn operands(insn: &Insn) -> Vec<hereticus_il::Operand> {
+    Thumb2.lift(insn).map(|lifted| lifted.operands.to_vec()).unwrap_or_default()
+}
+
+/// The words of the table that the `bx rB` at `insns[index]` jumps
+/// through, where GCC for PIC reads a word distance from it:
+///
+/// ```text
+/// cmp   rI, n
+/// adr   rB, table
+/// ldr.w rX, [rB, rI, lsl 2]
+/// add   rB, rX
+/// bx    rB
+/// ```
+///
+/// T32 cannot add to `pc` as A32 does, so the sum goes through `bx`, and
+/// each distance has bit 0 set to stay in T32. Unread, the words of such a
+/// table decode as calls into the middle of other functions: measured on
+/// SQLite of Ubuntu 22.04 for armhf, one split `isDate` in two.
+fn word_table_extent(insns: &[Insn], index: usize) -> Option<Range<u64>> {
+    use hereticus_il::Operand;
+
+    let jump = &insns[index];
+    let table_register = match (core_opcode(jump), operands(jump).as_slice()) {
+        (Some(Opcode::BX), [Operand::Reg(register)]) => *register,
+        _ => return None,
+    };
+    let earlier = &insns[index.saturating_sub(TABLE_LOOK_BACK)..index];
+    // The last instruction before `insns[before]` to write `register`.
+    let last_write = |before: usize, register: hereticus_il::Reg| {
+        earlier[..before]
+            .iter()
+            .rposition(|insn| operands(insn).first() == Some(&Operand::Reg(register)))
+    };
+
+    let add = last_write(earlier.len(), table_register)?;
+    let offset_register = match (core_opcode(&earlier[add]), operands(&earlier[add]).as_slice()) {
+        (Some(Opcode::ADD), [_, Operand::Reg(augend), Operand::Reg(addend)])
+            if *augend == table_register =>
+        {
+            *addend
+        }
+        _ => return None,
+    };
+    let load = last_write(add, offset_register)?;
+    let index_register = match (core_opcode(&earlier[load]), operands(&earlier[load]).as_slice()) {
+        (
+            Some(Opcode::LDR),
+            [
+                _,
+                Operand::Memory {
+                    base: Some(base),
+                    offset: None,
+                    index: Some((index, 2)),
+                    update: hereticus_il::Update::None,
+                },
+            ],
+        ) if *base == table_register => *index,
+        _ => return None,
+    };
+    let address = last_write(load, table_register)?;
+    let table = match (core_opcode(&earlier[address]), operands(&earlier[address]).as_slice()) {
+        (Some(Opcode::ADR), [_, Operand::Const(distance)]) => {
+            PcModel::T32.of_literal_load(earlier[address].address).wrapping_add(*distance)
+        }
+        _ => return None,
+    };
+    let first = index.saturating_sub(TABLE_LOOK_BACK);
+    let cases = cases_below(insns, first + load, index_register)?;
+    Some(table..table + (cases * WORD) as u64)
+}
+
+/// Read the table of word distances behind `insns[index]`: see
+/// [`word_table_extent`].
+fn read_word_table(
+    memory: &Memory<'_>,
+    code: &Range<u64>,
+    insns: &[Insn],
+    index: usize,
+) -> Option<JumpTable> {
+    let words = word_table_extent(insns, index)?;
+    let targets = words
+        .clone()
+        .step_by(WORD)
+        .map(|word| {
+            let bytes = memory.bytes(word, WORD)?;
+            let distance = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let target =
+                Thumb2.tagged_function(words.start.checked_add_signed(distance.into())?)?;
+            code.contains(&target).then_some(target)
+        })
+        .collect::<Option<Vec<u64>>>()?;
+    Some(JumpTable { jump: insns[index].address, words, targets })
 }
 
 /// The loads from a literal pool in `insns`, but for those that are the
-/// bytes of a `tbb` or `tbh` table read as code.
+/// bytes of a jump table read as code.
 ///
 /// An entry of such a table can read as `ldr rX, [pc, imm]`, which names a
 /// word of code as a pool word. Measured on zlib built by clang at `-O1` for
 /// Cortex-M3, one such load put `deflateResetKeep` out of step.
 fn loads_outside_tables(insns: &[Insn]) -> Vec<(u64, u64)> {
     let tables: Vec<Range<u64>> = (0..insns.len())
-        .filter_map(|index| table_extent(insns, index))
-        .map(|(bytes, _)| bytes)
+        .filter_map(|index| {
+            table_extent(insns, index)
+                .map(|(bytes, _)| bytes)
+                .or_else(|| word_table_extent(insns, index))
+        })
         .collect();
     pool_loads(insns, PcModel::T32)
         .into_iter()
@@ -535,6 +642,78 @@ mod tests {
                 targets: vec![0x100c, 0x100e, 0x1010]
             }]
         );
+    }
+
+    /// GCC for PIC adds a word distance from the table to the table's
+    /// address, and jumps there with `bx`.
+    #[test]
+    fn reads_a_word_table_before_bx() {
+        let mut code = halfwords(&[
+            0x2b02, // 0x1000 cmp r3, 2
+            0xd80b, // 0x1002 bhi
+            0xa202, // 0x1004 adr r2, 8: (0x1008 & !3) + 8 = 0x1010
+            0xf852, 0x3023, // 0x1006 ldr.w r3, [r2, r3, lsl 2]
+            0x441a, // 0x100a add r2, r3
+            0x4710, // 0x100c bx r2
+            0xbf00, // 0x100e nop
+        ]);
+        // 0x1010 the table: 0x101c, 0x101e and 0x1020, each with bit 0 set
+        code.extend([0x0d_u32, 0x0f, 0x11].iter().flat_map(|word| word.to_le_bytes()));
+        code.extend(halfwords(&[0x4770, 0x4770, 0x4770])); // 0x101c the cases
+        let (insns, _) = decode_all(&Thumb2, &code[..0x10], 0x1000);
+        let regions = [(0x1000, code.as_slice())];
+        let expected = JumpTable {
+            jump: 0x100c,
+            words: 0x1010..0x101c,
+            targets: vec![0x101c, 0x101e, 0x1020],
+        };
+        assert_eq!(Thumb2.jump_tables(&Memory::new(&regions), 0x1000..0x1022, &insns), [expected]);
+    }
+
+    /// A jump through a register that no `cmp` bounds, or that another
+    /// instruction wrote, reads no table.
+    #[rstest::rstest]
+    #[case::no_bound(&[0xbf00, 0xbf00])]
+    #[case::bound_on_another_register(&[0x2a02, 0xd80b])]
+    fn a_word_table_needs_its_bound(#[case] before: &[u16]) {
+        let mut code = halfwords(before);
+        code.extend(halfwords(&[0xa202, 0xf852, 0x3023, 0x441a, 0x4710, 0xbf00]));
+        code.extend([0x0d_u32, 0x0f, 0x11].iter().flat_map(|word| word.to_le_bytes()));
+        code.extend(halfwords(&[0x4770, 0x4770, 0x4770]));
+        let (insns, _) = decode_all(&Thumb2, &code[..0x10], 0x1000);
+        let regions = [(0x1000, code.as_slice())];
+        assert_eq!(Thumb2.jump_tables(&Memory::new(&regions), 0x1000..0x1022, &insns), []);
+    }
+
+    /// `adr` sets a register to a pool, and a load through it reads the
+    /// pool, as `ldrd` of a double does.
+    #[test]
+    fn a_load_through_adr_reads_the_pool() {
+        // 0x1000 adr r3, 4: (0x1004 & !3) + 4 = 0x1008; ldrd r2, r3, [r3]
+        let (insns, _) = decode_all(&Thumb2, &halfwords(&[0xa301, 0xe9d3, 0x2300]), 0x1000);
+        assert_eq!(Thumb2.literal_pool_words(&insns), [0x1008, 0x100c]);
+    }
+
+    /// A register that another instruction wrote after the `adr`, or that
+    /// a branch came between, no longer holds the pool.
+    #[rstest::rstest]
+    #[case::written(0x2300)] // movs r3, 0
+    #[case::branch(0xd000)] // beq
+    fn a_load_through_a_changed_register_reads_no_pool(#[case] between: u16) {
+        let code = halfwords(&[0xa301, between, 0xe9d3, 0x2300]);
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        assert_eq!(Thumb2.literal_pool_words(&insns), []);
+    }
+
+    /// A table whose distance leaves the code is no table.
+    #[test]
+    fn a_word_table_stays_in_the_code() {
+        let mut code = halfwords(&[0x2b02, 0xd80b, 0xa202, 0xf852, 0x3023, 0x441a, 0x4710, 0xbf00]);
+        code.extend([0x0d_u32, 0x0f, 0x1001].iter().flat_map(|word| word.to_le_bytes()));
+        code.extend(halfwords(&[0x4770, 0x4770, 0x4770]));
+        let (insns, _) = decode_all(&Thumb2, &code[..0x10], 0x1000);
+        let regions = [(0x1000, code.as_slice())];
+        assert_eq!(Thumb2.jump_tables(&Memory::new(&regions), 0x1000..0x1022, &insns), []);
     }
 
     /// PIC code loads a distance from the pool, word aligned, and adds `pc`
