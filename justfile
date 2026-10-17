@@ -61,6 +61,18 @@ rivals-kernel: firmware
         --workdir /work \
         {{rivals_image}}-ghidra ./fixtures/rivals_kernel.sh
 
+# Build the Ghidra extension of ghidra/ with its unit tests, and run it in
+# headless Ghidra on stripped backports, a raw stub and two backport pairs, so
+# a test can check what it finds and pairs.
+ghidra-extension: build backports firmware
+    docker build --quiet --target ghidra-extension --tag {{rivals_image}}-ghidra-extension fixtures/rivals
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --env HOME=/tmp \
+        --volume "{{justfile_directory()}}:/work" \
+        --workdir /work \
+        {{rivals_image}}-ghidra-extension ./fixtures/ghidra_extension.sh
+
 # Show how long hereticus, radiff2 and Ghidra take on each backport pair.
 rival-times: build rivals rivals-ghidra
     cargo nextest run --release --no-capture -E 'test(/times/)'
@@ -89,12 +101,17 @@ truth: firmware rivals-ghidra rivals-kernel
     python3 fixtures/cve_binaries.py
     python3 fixtures/ubuntu_cves.py
 
-test *args: build fixtures firmware backports truth
+# `ghidra_extension` runs the Ghidra extension in headless Ghidra, from an
+# image of about 2 GB, so `quick-test` skips it too.
+ghidra_tests := "binary(ghidra_extension)"
+
+test *args: build fixtures firmware backports truth ghidra-extension
     cargo nextest run --release {{args}}
 
-# Skips tests marked slow and the `truth_*` tests, for a fast inner loop
+# Skips tests marked slow, the `truth_*` tests and the Ghidra extension tests,
+# for a fast inner loop
 quick-test *args: build fixtures firmware backports rivals
-    cargo nextest run --release -E 'not test(/slow/) and not {{truth_tests}}' {{args}}
+    cargo nextest run --release -E 'not test(/slow/) and not {{truth_tests}} and not {{ghidra_tests}}' {{args}}
 
 # Compare the two firmware fixtures, as a reader would compare two releases.
 #

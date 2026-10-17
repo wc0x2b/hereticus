@@ -11,6 +11,7 @@ import ghidra.app.util.importer.MessageLog;
 import ghidra.framework.options.Options;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.Program;
+import ghidra.util.Msg;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.task.TaskMonitor;
 
@@ -79,8 +80,12 @@ public class HereticusFunctionAnalyzer extends AbstractAnalyzer {
 		}
 		Map<FunctionMaker.Outcome, Integer> counts =
 			new FunctionMaker(program, addresses).make(listing, set, monitor);
-		log.appendMsg(NAME, "Of " + listing.functions().size() + " starts hereticus found: " +
-			FunctionMaker.summary(counts));
+		String summary = "Of " + listing.functions().size() + " starts hereticus found in " +
+			program.getName() + ": " + FunctionMaker.summary(counts);
+		log.appendMsg(NAME, summary);
+		// The log of the analysis shows only failures, so the summary goes to
+		// the application log too, where a headless run shows it.
+		Msg.info(this, summary);
 		return true;
 	}
 }
