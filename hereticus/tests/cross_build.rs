@@ -175,10 +175,10 @@ fn tally_arches(first: &str, second: &str, arches: &[&str]) -> Tally {
 }
 
 #[rstest]
-#[case::o1_o2("O1", "O2", Tally { right: 4596, wrong: 46, gone: 165, new: 78 })]
+#[case::o1_o2("O1", "O2", Tally { right: 4596, wrong: 46, gone: 163, new: 78 })]
 #[case::o2_o3("O2", "O3", Tally { right: 4639, wrong: 17, gone: 67, new: 38 })]
-#[case::o2_os("O2", "Os", Tally { right: 4271, wrong: 123, gone: 326, new: 1048 })]
-#[case::o3_os("O3", "Os", Tally { right: 4193, wrong: 123, gone: 381, new: 1132 })]
+#[case::o2_os("O2", "Os", Tally { right: 4271, wrong: 123, gone: 326, new: 1046 })]
+#[case::o3_os("O3", "Os", Tally { right: 4193, wrong: 123, gone: 381, new: 1130 })]
 #[case::gcc_o2_gcc_os("gcc-O2", "gcc-Os", Tally { right: 4181, wrong: 36, gone: 268, new: 722 })]
 #[case::clang_gcc("O2", "gcc-O2", Tally { right: 3163, wrong: 57, gone: 1141, new: 1341 })]
 fn pairs_across_builds_are_locked(

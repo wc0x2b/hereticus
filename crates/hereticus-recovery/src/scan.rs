@@ -1198,6 +1198,13 @@ fn call_targets(arch: &dyn Recovery, region: &Region<'_>) -> Vec<u64> {
         .iter()
         .filter(|insn| !pool.contains(&insn.address) && !is_text(insn))
         .filter_map(|insn| match insn.kind {
+            // A call to the next instruction only reads its own address, as
+            // `call $+5` of 32-bit x86 PIC does: no function starts there.
+            InsnKind::Call { target: Some(target) }
+                if target == insn.address + insn.bytes_len as u64 =>
+            {
+                None
+            }
             InsnKind::Call { target } => target.map(|target| (insn.address, target)),
             InsnKind::Jump { target: Some(target) } if is_stub(target) => {
                 Some((insn.address, target))
