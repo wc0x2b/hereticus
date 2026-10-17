@@ -521,7 +521,12 @@ fn number(token: &str) -> Option<i128> {
 ///   `mov w1, #2`.
 fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
     let mips = matches!(isa, Isa::Mips32 | Isa::Mips32Be | Isa::Mips16 | Isa::Mips16Be);
-    let mut operands = operands.to_string();
+    let (mnemonic, operands) = match isa {
+        Isa::X86_64 | Isa::X86 => x86_spelling(mnemonic, operands),
+        _ => (mnemonic.to_string(), operands.to_string()),
+    };
+    let mnemonic = mnemonic.as_str();
+    let mut operands = operands;
     while let Some(start) = operands.find('<') {
         let end = operands[start..].find('>').map_or(operands.len(), |end| start + end + 1);
         operands.replace_range(start..end, "");
@@ -717,6 +722,117 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
         }
     }
     format!("{mnemonic} {}", list.join(", ")).replace(", 0]", "]")
+}
+
+/// The x86 spellings in which `llvm-objdump` and this decoder differ, as
+/// the one that `llvm-objdump` prints:
+///
+/// * a comment after `#`, as the address a `rip` operand names, or how a
+///   shuffle moves the lanes;
+/// * `movabs` for a `mov` of a 64-bit constant;
+/// * no `notrack` or `bnd` before a jump, and no operands after a string
+///   instruction with `rep`;
+/// * a segment it names that the instruction uses anyway, as `cs:` before
+///   a `nop` and `es:` before `[edi]`, and an index of `eiz`;
+/// * a shift or a rotate by 1 with no count;
+/// * `nop` for `xchg ax, ax`.
+fn x86_spelling(mnemonic: &str, operands: &str) -> (String, String) {
+    let operands = operands.split('#').next().unwrap_or_default();
+    let (mut mnemonic, mut operands) = match mnemonic.trim() {
+        "notrack" | "bnd" => {
+            let (name, rest) = operands.trim().split_once(' ').unwrap_or((operands.trim(), ""));
+            (name.to_string(), rest.to_string())
+        }
+        name => (name.to_string(), operands.to_string()),
+    };
+    if mnemonic == "movabs" {
+        mnemonic = "mov".to_string();
+    }
+    if matches!(mnemonic.as_str(), "rep" | "repe" | "repne") {
+        let name = operands.split_whitespace().next().unwrap_or_default();
+        return (format!("{mnemonic} {name}"), String::new());
+    }
+    for (from, to) in [("cs:", ""), ("es:", ""), ("ds:", ""), (" + eiz", ""), ("+eiz", "")] {
+        operands = operands.replace(from, to);
+    }
+    let list: Vec<String> = operands.split(',').map(|operand| operand.trim().to_string()).collect();
+    let shifts = ["shl", "shr", "sar", "sal", "rol", "ror", "rcl", "rcr"];
+    if shifts.contains(&mnemonic.as_str()) && list.len() == 2 && list[1] == "1" {
+        operands = list[0].clone();
+    }
+    if mnemonic == "xchg" && list == ["ax", "ax"] {
+        return ("nop".to_string(), String::new());
+    }
+    // `xchg` swaps its operands, so their order says nothing.
+    if mnemonic == "xchg" && list.len() == 2 {
+        let mut sorted = list.clone();
+        sorted.sort();
+        operands = sorted.join(", ");
+    }
+    // A constant of a byte or a halfword operation, which `llvm-objdump`
+    // prints signed where its encoding extends it from a byte.
+    let width = list.first().map_or(0, |first| {
+        if first.starts_with("byte ptr") || BYTE_REGISTERS.contains(&first.as_str()) {
+            8
+        } else if first.starts_with("word ptr") || WORD_REGISTERS.contains(&first.as_str()) {
+            16
+        } else {
+            0
+        }
+    });
+    if width > 0
+        && list.len() == 2
+        && let Some(value) =
+            number(&list[1]).filter(|value| (1 << (width - 1)..1 << width).contains(value))
+    {
+        operands = format!("{}, {}", list[0], value - (1 << width));
+    }
+    if mnemonic.starts_with('f') {
+        (mnemonic, operands) = x87_spelling(&mnemonic, &operands);
+    }
+    (mnemonic, operands.trim().to_string())
+}
+
+/// The 16-bit registers of x86.
+const WORD_REGISTERS: [&str; 16] = [
+    "ax", "cx", "dx", "bx", "sp", "bp", "si", "di", "r8w", "r9w", "r10w", "r11w", "r12w", "r13w",
+    "r14w", "r15w",
+];
+
+/// The 8-bit registers of x86.
+const BYTE_REGISTERS: [&str; 20] = [
+    "al", "cl", "dl", "bl", "ah", "ch", "dh", "bh", "spl", "bpl", "sil", "dil", "r8b", "r9b",
+    "r10b", "r11b", "r12b", "r13b", "r14b", "r15b",
+];
+
+/// An x87 instruction as `llvm-objdump` spells it: with no `st` operand
+/// that the instruction implies, and `st(1), st` where it names none.
+fn x87_spelling(mnemonic: &str, operands: &str) -> (String, String) {
+    let mnemonic = match mnemonic {
+        "fucomip" => "fucompi",
+        "fcomip" => "fcompi",
+        other => other,
+    };
+    let mut list: Vec<&str> =
+        operands.split(',').map(str::trim).filter(|operand| !operand.is_empty()).collect();
+    let compares = mnemonic.starts_with("fcom") || mnemonic.starts_with("fucom");
+    // `st` first, as in `fld st, qword ptr [eax]` and `fxch st, st(2)`.
+    if list.len() == 2 && list[0] == "st" && !compares {
+        list.remove(0);
+    }
+    // `st` last, as in `fst qword ptr [esp]` and `fstp st(1), st`.
+    let stores = mnemonic.starts_with("fst") || mnemonic.starts_with("fist");
+    if list.len() == 2 && list[1] == "st" && stores {
+        list.pop();
+    }
+    let operands = match (mnemonic, list.is_empty()) {
+        ("fxch", true) => "st(1)".to_string(),
+        (name, true) if name.ends_with('p') && name.len() > 3 && !name.starts_with("fcom") => {
+            "st(1), st".to_string()
+        }
+        _ => list.join(", "),
+    };
+    (mnemonic.to_string(), operands)
 }
 
 /// The operands of each instruction, against `llvm-objdump`.
