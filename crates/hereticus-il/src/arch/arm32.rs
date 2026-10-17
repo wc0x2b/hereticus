@@ -3328,7 +3328,8 @@ pub(crate) fn branch_target(inst: &Instruction, address: u64) -> Option<u64> {
 }
 
 /// Report whether a write of the program counter returns: it takes the PC
-/// from the stack, as `pop {..., pc}` does, or from the link register.
+/// from the stack, as `pop {..., pc}` does, or from the link register, as
+/// `mov pc, lr` and Go's `add pc, lr, 0` do.
 ///
 /// Any other write is a computed jump. `add pc, r3, r2` jumps through a
 /// table of cases, and the code after it is more of the same function.
@@ -3350,6 +3351,10 @@ pub fn returns(inst: &Instruction) -> bool {
         Opcode::LDM(..) => base_is_sp(&inst.operands[0]),
         Opcode::LDR => base_is_sp(&inst.operands[1]),
         Opcode::MOV => matches!(&inst.operands[1], Operand::Reg(reg) if is(reg, REG_LR)),
+        Opcode::ADD => {
+            matches!(&inst.operands[1], Operand::Reg(reg) if is(reg, REG_LR))
+                && matches!(inst.operands[2], Operand::Imm32(0) | Operand::Imm12(0))
+        }
         _ => false,
     }
 }
@@ -3634,6 +3639,18 @@ mod tests {
     #[test]
     fn mov_pc_lr_is_a_return() {
         assert_eq!(decode_one([0x0e, 0xf0, 0xa0, 0xe1]).kind, InsnKind::Return);
+    }
+
+    /// Go returns with `add pc, lr, 0`. Another sum written to the PC
+    /// jumps.
+    #[test]
+    fn add_pc_lr_0_is_a_return() {
+        assert_eq!(decode_one(0xe28e_f000_u32.to_le_bytes()).kind, InsnKind::Return);
+        assert_eq!(
+            decode_one(0xe28e_f004_u32.to_le_bytes()).kind,
+            InsnKind::Jump { target: None },
+            "add pc, lr, 4"
+        );
     }
 
     /// `add r1, pc, r1` reads the PC to form an address. It does not leave.
