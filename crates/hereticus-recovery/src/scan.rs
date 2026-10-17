@@ -174,7 +174,7 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
 
     let memory = Memory::new(&loaded);
     let linked = Linked {
-        exported: exported_functions(&file),
+        exported: exported_functions(&file, arch),
         pointers: relocated_pointers(&file, arch, &memory),
         slot_names: crate::dynamic::slot_names(&file),
     };
@@ -234,7 +234,10 @@ fn relocated_pointers(
 /// stripped library is known, start and end. Measured on the releases built
 /// for the tests, the scan alone missed the start of 843 of 27500 functions,
 /// such as zlib's `crc32` after `crc32_z`, which ends with a jump back.
-fn exported_functions(file: &object::File<'_>) -> Vec<core::ops::Range<u64>> {
+fn exported_functions(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<core::ops::Range<u64>> {
+    // Where every instruction is one byte or more, as on x86, a function
+    // can end at any byte, and bit 0 says nothing.
+    let mark = if arch.instruction_width() > 1 { 1 } else { 0 };
     file.dynamic_symbols()
         .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
         .filter(|symbol| symbol.section_index().is_some())
@@ -243,8 +246,8 @@ fn exported_functions(file: &object::File<'_>) -> Vec<core::ops::Range<u64>> {
             // bit 0 of its address. GCC can count that bit in the size of a
             // MIPS16e function too, as `XMLPrinter::Print` of tinyxml2 has
             // 265 bytes of 264.
-            let start = symbol.address() & !1;
-            start..(start + symbol.size()) & !1
+            let start = symbol.address() & !mark;
+            start..(start + symbol.size()) & !mark
         })
         .collect()
 }
