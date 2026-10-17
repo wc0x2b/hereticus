@@ -80,15 +80,6 @@ The A32 and T32 decoders read little endian only: BE8 keeps instructions
 little endian but data big endian, and BE32 swaps both. Add the byte
 order to the ARM architectures, and a fixture built with `-mbig-endian`.
 
-## Read the ARM hard-float ABI and NEON
-
-The fixtures use `-mfloat-abi=softfp`. Most ARMv7 Linux distributions use
-`hard`, which passes floats in VFP registers. `yaxpeax-arm` 0.4 reads no
-NEON. The tool reads NEON loads and stores itself, but NEON data
-processing stays opaque, named `(neon)`. Build a hard-float fixture, and
-decode the rest of NEON, with a newer `yaxpeax-arm` or a decoder of its
-own.
-
 ## Read MIPS64
 
 Cavium Octeon and some newer MIPS routers run MIPS64 (n64 or n32 ABI).
@@ -136,7 +127,7 @@ on their context to undo.
 Over the upgrades, 7565<!-- from truth_kernels: upgrades / pairs --> pairs of
 functions stay free on both sides, though they share a name and a source
 file: more than three times the wrong pairs. Of these,
-1209<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
+1208<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
 those sit out of place, where the context check undoes them rightly or a
 rival scores within 0.03;
 532<!-- from truth_kernels: upgrades / identical --> have the same

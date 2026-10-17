@@ -117,8 +117,9 @@ binary is linked at. A tool that loads the binary at another base must move
 each address by the difference.
 
 ## Limits
-* **Little-endian A32 (ARMv5TE and later), Thumb-2 (Cortex-M too) and
-  AArch64, and MIPS32 and MIPS16e in either byte order.** A library that
+* **Little-endian A32 (ARMv5TE and later, soft-float or hard-float, with
+  VFP and NEON), Thumb-2 (Cortex-M too) and AArch64, and MIPS32 and MIPS16e
+  in either byte order.** A library that
   mixes A32 and Thumb-2, or MIPS32 and MIPS16e, is read function by function
   where its symbols say which set each is in. Stripped or raw, it is read in
   one set, so its minority reads as nonsense.
@@ -128,9 +129,6 @@ each address by the difference.
   and iOS ship it, arm64 or arm64e, stripped or not, and a universal binary
   as its AArch64 slice. A kernelcache of iOS 15 and later is read kext by
   kext. The dyld shared cache and 32-bit Mach-O are not read.
-* **NEON data processing is not decoded.** NEON loads and stores are read.
-  The other NEON words stay opaque, named `(neon)`: decoding continues, and
-  an edit to one shows, but not what it changed.
 * **Unoptimized against optimized is out of scope.** At `-O2` the compiler
   changes the algorithm, which normalizing cannot bridge. Shipped firmware is
   built optimized.

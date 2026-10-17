@@ -998,15 +998,16 @@ mod tests {
     }
 
     #[test]
-    fn neon_data_processing_stays_opaque_but_is_code() {
-        let insn = decode_one(0xf260_0680u32.to_le_bytes());
+    fn undefined_neon_data_processing_stays_opaque_but_is_code() {
+        // `vadd.i32` of an odd `q` register.
+        let insn = decode_one(0xf260_1844u32.to_le_bytes());
         assert_eq!(
             (hereticus_il::arch::printed_name(&insn).as_str(), insn.kind),
             (NEON_TEXT, InsnKind::Unknown)
         );
         assert_eq!(
             hereticus_il::arch::printed_operands(&insn),
-            "0xf2600680",
+            "0xf2601844",
             "the word keeps an edit visible"
         );
         assert!(Arm32.is_unread_extension(&insn));
@@ -1306,8 +1307,8 @@ mod tests {
     /// aligned, which is the whole reason for the opaque kind.
     #[test]
     fn decoding_continues_past_unknown_bytes() {
-        // add, vdup.32 (NEON), bx lr
-        let code = [0x00, 0x00, 0x81, 0xe0, 0x90, 0x2b, 0xa0, 0xee, 0x1e, 0xff, 0x2f, 0xe1];
+        // add, an undefined NEON word, bx lr
+        let code = [0x00, 0x00, 0x81, 0xe0, 0x44, 0x18, 0x60, 0xf2, 0x1e, 0xff, 0x2f, 0xe1];
         let (insns, err) = decode_all(&Arm32, &code, 0x1000);
 
         assert_eq!(err, None, "unreadable bytes must not stop the decode");

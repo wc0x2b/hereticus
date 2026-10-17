@@ -5,6 +5,7 @@
 //! `hereticus-arch`.
 
 use crate as il;
+use crate::arch::neon::{Neon, NeonWord};
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder as _, Reader, U8Reader, U32le};
@@ -17,15 +18,12 @@ use yaxpeax_arm::armv7::{
 pub const INSN_WIDTH: usize = 4;
 
 /// The text of bytes the decoder cannot read.
-///
-/// `yaxpeax-arm` 0.4 has no NEON or SIMD support and answers "incomplete
-/// decoder" for those encodings. `clang` vectorizes automatically at `-O2`,
-/// so real code reaches this path.
 pub const UNKNOWN_TEXT: &str = "(unknown)";
 
-/// The text of a NEON data-processing instruction, which the decoder
-/// cannot read either. It stays opaque, as an unreadable word does, but the
-/// name says that it is code. See `Recovery::is_unread_extension` of `hereticus`.
+/// The text of a word in the NEON data-processing space that no
+/// instruction encodes. It stays opaque, as an unreadable word does, but the
+/// name says that it is likely code. See `Recovery::is_unread_extension` of
+/// `hereticus`.
 pub const NEON_TEXT: &str = "(neon)";
 
 /// Register number of the program counter.
@@ -68,7 +66,10 @@ pub enum Decoded {
     },
     /// A NEON load or store this module reads.
     NeonAccess(NeonShape),
-    /// NEON data processing, which nothing here reads.
+    /// NEON data processing, or a move between a core register and a NEON
+    /// register, that this module reads.
+    Neon(Neon),
+    /// NEON data processing that no instruction of ARMv7 encodes.
     NeonData,
 }
 
@@ -122,6 +123,7 @@ pub fn operation_name(decoded: Decoded) -> CompactString {
         Decoded::NeonAccess(NeonShape { transfer, structures, size }) => {
             format_compact!("neon-{transfer:?}{structures}.{}", 8u32 << size)
         }
+        Decoded::Neon(neon) => neon.name(),
         Decoded::NeonData => NEON_TEXT.into(),
     }
 }
@@ -1369,8 +1371,8 @@ pub(crate) fn test_of(inst: &Instruction, operands: &[Operand]) -> Option<il::Te
     Some(il::Test::Compare { comparison, width: WIDTH })
 }
 
-/// Read the words `yaxpeax` refuses that this crate knows: the hints, and
-/// the VFP loads and stores.
+/// Read the words `yaxpeax` refuses that this crate knows: the hints, the
+/// VFP loads and stores, and NEON.
 ///
 /// A VFP load reads a constant pool as `ldr` does, so a scan must see it to
 /// know the pool is data. Measured on tinyxml2 built by GCC for ARM,
@@ -1388,6 +1390,11 @@ pub fn decode_fallback(word: u32, encoding: Encoding) -> Option<(String, String,
             size: access.size as u8,
         };
         return Some((name, operands, Decoded::NeonAccess(shape)));
+    }
+    if let Some(neon) = NeonWord::of(word) {
+        let (name, operands) = neon.text();
+        let condition = CONDITIONS.get((word >> 28) as usize).copied().unwrap_or_default();
+        return Some((format!("{name}{condition}"), operands, Decoded::Neon(neon.neon())));
     }
 
     let condition = *CONDITIONS.get((word >> 28) as usize)?;
@@ -1472,8 +1479,63 @@ pub(crate) enum IntegerWord {
         rm: u32,
     },
     /// `ldrsb rt, [rn, imm]` and the other loads and stores of a halfword,
-    /// a signed byte or a pair.
-    Halfword { access: HalfwordAccess, rt: u32, rn: u32, offset: i64, index: Indexing },
+    /// a signed byte or a pair, with a constant offset or a register.
+    Halfword { access: HalfwordAccess, rt: u32, rn: u32, offset: Offset, index: Indexing },
+    /// `rev rd, rm` and kin, which reverse the bytes or the bits.
+    Reverse { kind: Reverse, rd: u32, rm: u32 },
+    /// `smmul rd, rn, rm` and kin: the top 32 bits of the product, which
+    /// `smmla` adds to `ra` and `smmls` subtracts from it.
+    TopMultiply { kind: TopMultiply, rounds: Rounds, rd: u32, ra: u32, rn: u32, rm: u32 },
+    /// `udf`, which no core defines, so that it traps.
+    Undefined { value: u32 },
+}
+
+/// What a load or store of an [`IntegerWord::Halfword`] adds to its base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Offset {
+    /// A constant.
+    Constant(i64),
+    /// A register, added or subtracted.
+    Register { rm: u32, sign: Sign },
+}
+
+/// Whether an offset in a register adds to the base or subtracts from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sign {
+    Add,
+    Subtract,
+}
+
+/// Which reverse an [`IntegerWord::Reverse`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reverse {
+    /// Reverses the four bytes: `rev`.
+    Bytes,
+    /// Reverses the bytes of each halfword: `rev16`.
+    Halfwords,
+    /// Reverses the low two bytes and extends the sign: `revsh`.
+    SignedHalfword,
+    /// Reverses the 32 bits: `rbit`.
+    Bits,
+}
+
+/// Which multiply an [`IntegerWord::TopMultiply`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TopMultiply {
+    /// `smmul`.
+    Multiply,
+    /// `smmla`.
+    MultiplyAdd,
+    /// `smmls`.
+    MultiplySubtract,
+}
+
+/// Whether a multiply of an [`IntegerWord::TopMultiply`] rounds its
+/// result, as the `r` of `smmulr` says, or truncates it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rounds {
+    Yes,
+    No,
 }
 
 /// Which extend an [`IntegerWord::Extend`] is.
@@ -1651,7 +1713,50 @@ impl IntegerWord {
                 rs: field(8, 4),
             });
         }
-        if field(25, 3) == 0 && field(22, 1) == 1 && field(7, 1) == 1 && field(4, 1) == 1 {
+        // cccc 0110 1x11 1111 Rd 1111 x011 Rm
+        if field(23, 5) == 0b01101
+            && field(20, 2) == 0b11
+            && field(16, 4) == 0b1111
+            && field(8, 4) == 0b1111
+            && field(4, 3) == 0b011
+        {
+            let kind = match (field(22, 1), field(7, 1)) {
+                (0, 0) => Reverse::Bytes,
+                (0, _) => Reverse::Halfwords,
+                (_, 0) => Reverse::Bits,
+                (_, _) => Reverse::SignedHalfword,
+            };
+            return Some(Self::Reverse { kind, rd, rm });
+        }
+        // cccc 0111 0101 Rd Ra Rm 00R1 Rn, or 11R1 for `smmls`.
+        if field(20, 8) == 0b0111_0101 && field(4, 1) == 1 {
+            let kind = match (field(6, 2), field(12, 4)) {
+                (0b00, 0b1111) => TopMultiply::Multiply,
+                (0b00, _) => TopMultiply::MultiplyAdd,
+                (0b11, _) => TopMultiply::MultiplySubtract,
+                _ => return None,
+            };
+            let rounds = if field(5, 1) == 1 { Rounds::Yes } else { Rounds::No };
+            return Some(Self::TopMultiply {
+                kind,
+                rounds,
+                rd: field(16, 4),
+                ra: field(12, 4),
+                rn: field(0, 4),
+                rm: field(8, 4),
+            });
+        }
+        // cccc 0111 1111 imm12 1111 imm4
+        if word & 0x0ff0_00f0 == 0x07f0_00f0 {
+            return Some(Self::Undefined { value: field(8, 12) << 4 | field(0, 4) });
+        }
+        // An offset in a register has bit 22 clear, and bits 11 to 8 zero.
+        let register_offset = field(22, 1) == 0 && field(8, 4) == 0;
+        if field(25, 3) == 0
+            && (field(22, 1) == 1 || register_offset)
+            && field(7, 1) == 1
+            && field(4, 1) == 1
+        {
             let access = match (field(20, 1), field(5, 2)) {
                 (1, 0b01) => HalfwordAccess::Ldrh,
                 (1, 0b10) => HalfwordAccess::Ldrsb,
@@ -1661,8 +1766,13 @@ impl IntegerWord {
                 (0, 0b11) => HalfwordAccess::Strd,
                 _ => return None,
             };
-            let magnitude = i64::from(field(8, 4) << 4 | field(0, 4));
-            let offset = if field(23, 1) == 1 { magnitude } else { -magnitude };
+            let adds = field(23, 1) == 1;
+            let offset = if register_offset {
+                Offset::Register { rm, sign: if adds { Sign::Add } else { Sign::Subtract } }
+            } else {
+                let magnitude = i64::from(field(8, 4) << 4 | field(0, 4));
+                Offset::Constant(if adds { magnitude } else { -magnitude })
+            };
             let index = match (field(24, 1), field(21, 1)) {
                 (1, 0) => Indexing::Offset,
                 (1, 1) => Indexing::PreIndex,
@@ -1692,6 +1802,18 @@ impl IntegerWord {
                 HalfwordMultiply::LongMultiplyAdd => Opcode::SMLAL_halfword(top_n, top_m),
             },
             Self::Halfword { access, .. } => access.opcode(),
+            Self::Reverse { kind, .. } => match kind {
+                Reverse::Bytes => Opcode::REV,
+                Reverse::Halfwords => Opcode::REV16,
+                Reverse::SignedHalfword => Opcode::REVSH,
+                Reverse::Bits => Opcode::RBIT,
+            },
+            Self::TopMultiply { kind, .. } => match kind {
+                TopMultiply::Multiply => Opcode::SMMUL,
+                TopMultiply::MultiplyAdd => Opcode::SMMLA,
+                TopMultiply::MultiplySubtract => Opcode::SMMLS,
+            },
+            Self::Undefined { .. } => Opcode::UDF,
         }
     }
 
@@ -1730,6 +1852,22 @@ impl IntegerWord {
                 }
             }
             Self::Halfword { access, .. } => access.name().into(),
+            Self::Reverse { kind, .. } => match kind {
+                Reverse::Bytes => "rev",
+                Reverse::Halfwords => "rev16",
+                Reverse::SignedHalfword => "revsh",
+                Reverse::Bits => "rbit",
+            }
+            .into(),
+            Self::TopMultiply { kind, rounds, .. } => {
+                let name = match kind {
+                    TopMultiply::Multiply => "smmul",
+                    TopMultiply::MultiplyAdd => "smmla",
+                    TopMultiply::MultiplySubtract => "smmls",
+                };
+                format!("{name}{}", if rounds == Rounds::Yes { "r" } else { "" })
+            }
+            Self::Undefined { .. } => "udf".into(),
         }
     }
 
@@ -1771,20 +1909,31 @@ impl IntegerWord {
                 } else {
                     String::new()
                 };
-                let amount = if offset < 0 {
-                    format!("-{:#x}", offset.unsigned_abs())
-                } else {
-                    format!("{offset:#x}")
+                let amount = match offset {
+                    Offset::Constant(offset) if offset < 0 => {
+                        format!("-{:#x}", offset.unsigned_abs())
+                    }
+                    Offset::Constant(offset) => format!("{offset:#x}"),
+                    Offset::Register { rm, sign: Sign::Add } => name(rm).into(),
+                    Offset::Register { rm, sign: Sign::Subtract } => format!("-{}", name(rm)),
                 };
                 let base = name(rn);
                 let address = match (index, offset) {
-                    (Indexing::Offset, 0) => format!("[{base}]"),
+                    (Indexing::Offset, Offset::Constant(0)) => format!("[{base}]"),
                     (Indexing::Offset, _) => format!("[{base}, {amount}]"),
                     (Indexing::PreIndex, _) => format!("[{base}, {amount}]!"),
                     (Indexing::PostIndex, _) => format!("[{base}], {amount}"),
                 };
                 format!("{}, {pair}{address}", name(rt))
             }
+            Self::Reverse { rd, rm, .. } => format!("{}, {}", name(rd), name(rm)),
+            Self::TopMultiply { kind: TopMultiply::Multiply, rd, rn, rm, .. } => {
+                format!("{}, {}, {}", name(rd), name(rn), name(rm))
+            }
+            Self::TopMultiply { rd, ra, rn, rm, .. } => {
+                format!("{}, {}, {}, {}", name(rd), name(rn), name(rm), name(ra))
+            }
+            Self::Undefined { value } => format!("{value:#x}"),
         }
     }
 
@@ -1833,14 +1982,30 @@ impl IntegerWord {
                 let pair = access.is_pair().then(|| name((rt + 1) & 15));
                 let base = name(rn);
                 let address = match (index, offset) {
-                    (Indexing::PostIndex, _) | (_, 0) => format_compact!("[{base}]"),
-                    (_, offset) if offset < 0 => {
+                    (Indexing::PostIndex, _) | (_, Offset::Constant(0)) => {
+                        format_compact!("[{base}]")
+                    }
+                    (_, Offset::Constant(offset)) if offset < 0 => {
                         format_compact!("[{base} - {:#x}]", offset.unsigned_abs())
                     }
-                    (_, offset) => format_compact!("[{base} + {offset:#x}]"),
+                    (_, Offset::Constant(offset)) => format_compact!("[{base} + {offset:#x}]"),
+                    (_, Offset::Register { rm, sign: Sign::Add }) => {
+                        format_compact!("[{base} + {}]", name(rm))
+                    }
+                    (_, Offset::Register { rm, sign: Sign::Subtract }) => {
+                        format_compact!("[{base} - {}]", name(rm))
+                    }
                 };
                 [Some(name(rt)), pair, Some(address)].into_iter().flatten().collect()
             }
+            Self::Reverse { rd, rm, .. } => [name(rd), name(rm)].into_iter().collect(),
+            Self::TopMultiply { kind: TopMultiply::Multiply, rd, rn, rm, .. } => {
+                [name(rd), name(rn), name(rm)].into_iter().collect()
+            }
+            Self::TopMultiply { rd, ra, rn, rm, .. } => {
+                [name(rd), name(rn), name(rm), name(ra)].into_iter().collect()
+            }
+            Self::Undefined { value } => [hex(value)].into_iter().collect(),
         }
     }
 
@@ -1848,12 +2013,16 @@ impl IntegerWord {
     fn write_back(self) -> Option<CompactString> {
         use compact_str::format_compact;
         match self {
-            Self::Halfword { index: Indexing::PostIndex, offset, .. } if offset < 0 => {
-                Some(format_compact!("-{:#x}", offset.unsigned_abs()))
-            }
-            Self::Halfword { index: Indexing::PostIndex, offset, .. } => {
-                Some(format_compact!("{offset:#x}"))
-            }
+            Self::Halfword { index: Indexing::PostIndex, offset, .. } => Some(match offset {
+                Offset::Constant(offset) if offset < 0 => {
+                    format_compact!("-{:#x}", offset.unsigned_abs())
+                }
+                Offset::Constant(offset) => format_compact!("{offset:#x}"),
+                Offset::Register { rm, sign: Sign::Add } => ARM_REGISTERS[rm as usize].into(),
+                Offset::Register { rm, sign: Sign::Subtract } => {
+                    format_compact!("-{}", ARM_REGISTERS[rm as usize])
+                }
+            }),
             _ => None,
         }
     }
@@ -1942,20 +2111,26 @@ impl IntegerWord {
                 let pair = access.is_pair();
                 let width = access.width();
                 let values: Vec<u32> = if pair { vec![rt, (rt + 1) & 15] } else { vec![rt] };
-                let at = match index {
-                    Indexing::PostIndex => 0,
-                    Indexing::Offset | Indexing::PreIndex => offset,
-                };
                 let update = match index {
                     Indexing::PostIndex => il::Update::After,
                     Indexing::Offset | Indexing::PreIndex => il::Update::None,
                 };
+                // A register offset reads as an index, whatever its sign, as
+                // `lift_named` gives it for the words `yaxpeax` reads.
+                let (at, by) = match (index, offset) {
+                    (Indexing::PostIndex, _) => (Some(0), None),
+                    (_, Offset::Constant(offset)) => (Some(offset), None),
+                    (_, Offset::Register { rm, .. }) => (None, Some((operand_general(rm), 0))),
+                };
                 let memory = il::Operand::Memory {
                     base: Some(operand_general(rn)),
-                    offset: Some(at),
-                    index: None,
+                    offset: at,
+                    index: by,
                     update,
                 };
+                if let Offset::Register { rm, .. } = offset {
+                    read(&mut lifted, rm);
+                }
                 lifted.op = if load { Op::Load } else { Op::Store };
                 lifted.operands =
                     values.iter().map(|&number| value(number)).chain([memory]).collect();
@@ -1968,6 +2143,31 @@ impl IntegerWord {
                 }
                 let kind = if load { il::AccessKind::Load } else { il::AccessKind::Store };
                 lifted.memory = Some(il::MemoryAccess { kind, width: Some(width) });
+            }
+            Self::Reverse { rd, rm, .. } => {
+                lifted.op = Op::Bits;
+                lifted.operands = [value(rd), value(rm)].into_iter().collect();
+                read(&mut lifted, rm);
+                write(&mut lifted, rd);
+            }
+            Self::TopMultiply { kind, rd, ra, rn, rm, .. } => {
+                let sources: &[u32] = match kind {
+                    TopMultiply::Multiply => {
+                        lifted.op = Op::Multiply;
+                        &[rn, rm]
+                    }
+                    TopMultiply::MultiplyAdd | TopMultiply::MultiplySubtract => {
+                        lifted.op = Op::MultiplyAdd;
+                        &[rn, rm, ra]
+                    }
+                };
+                lifted.operands = [rd].iter().chain(sources).map(|&number| value(number)).collect();
+                sources.iter().for_each(|&number| read(&mut lifted, number));
+                write(&mut lifted, rd);
+            }
+            Self::Undefined { value } => {
+                lifted.op = Op::System;
+                lifted.operands = [constant(value)].into_iter().collect();
             }
         }
         lifted
@@ -1985,8 +2185,10 @@ impl IntegerWord {
 /// In A32 it swaps `bb` and `tt` of the multiplies of halfwords, so that
 /// `smulbb` reads as `smultt`, and reads `smulwb` as `smlawb`.
 pub(crate) fn decoder_misreads(word: u32, encoding: Encoding) -> bool {
-    let vfp =
-        matches!(VfpWord::of(word), Some(VfpWord::Compute { .. } | VfpWord::MoveConstant { .. }));
+    let vfp = matches!(
+        VfpWord::of(word),
+        Some(VfpWord::Compute { .. } | VfpWord::MoveConstant { .. } | VfpWord::FixedConvert { .. })
+    );
     let multiply = encoding == Encoding::A32
         && matches!(IntegerWord::of(word), Some(IntegerWord::HalfwordMultiply { .. }));
     word >> 28 != 0b1111 && (vfp || multiply)
@@ -2044,6 +2246,9 @@ pub(crate) enum VfpWord {
     },
     /// `vmov.f32 s0, #1.0`: a constant of 8 bits, which a few floats fit.
     MoveConstant { dest: Vector, bits: u64 },
+    /// `vcvt.f64.s32 d0, d0, #10` and kin, between a float and a fixed
+    /// point value with `fraction_bits` bits of fraction, in one register.
+    FixedConvert { operation: VfpOperation, register: Vector, fraction_bits: u32 },
 }
 
 /// What a VFP data processing word computes.
@@ -2067,6 +2272,17 @@ pub enum VfpOperation {
     Vsub,
     /// `vdiv`: divides.
     Vdiv,
+    /// `vfma`: adds the product to the destination, with one rounding.
+    Vfma,
+    /// `vfms`: subtracts the product from the destination, with one
+    /// rounding.
+    Vfms,
+    /// `vfnma`: adds the product to the negated destination, and negates
+    /// the sum, with one rounding.
+    Vfnma,
+    /// `vfnms`: subtracts the destination from the product, with one
+    /// rounding.
+    Vfnms,
     /// `vmov`: copies a register.
     Vmov,
     /// `vabs`: takes the magnitude.
@@ -2111,6 +2327,10 @@ impl VfpOperation {
             Self::Vadd => "vadd",
             Self::Vsub => "vsub",
             Self::Vdiv => "vdiv",
+            Self::Vfma => "vfma",
+            Self::Vfms => "vfms",
+            Self::Vfnma => "vfnma",
+            Self::Vfnms => "vfnms",
             Self::Vmov => "vmov",
             Self::Vabs => "vabs",
             Self::Vneg => "vneg",
@@ -2125,9 +2345,19 @@ impl VfpOperation {
         matches!(self, Self::Vcmp | Self::Vcmpe)
     }
 
-    /// `vmla` and kin, which add to their destination.
+    /// `vmla`, `vfma` and kin, which add to their destination.
     fn adds_to_destination(self) -> bool {
-        matches!(self, Self::Vmla | Self::Vmls | Self::Vnmla | Self::Vnmls)
+        matches!(
+            self,
+            Self::Vmla
+                | Self::Vmls
+                | Self::Vnmla
+                | Self::Vnmls
+                | Self::Vfma
+                | Self::Vfms
+                | Self::Vfnma
+                | Self::Vfnms
+        )
     }
 
     /// What this computes. `vcvt` to an integer rounds toward zero, and
@@ -2139,7 +2369,14 @@ impl VfpOperation {
             Self::Vadd => Op::FloatAdd,
             Self::Vsub => Op::FloatSubtract,
             Self::Vmul | Self::Vnmul => Op::FloatMultiply,
-            Self::Vmla | Self::Vmls | Self::Vnmla | Self::Vnmls => Op::FloatMultiplyAdd,
+            Self::Vmla
+            | Self::Vmls
+            | Self::Vnmla
+            | Self::Vnmls
+            | Self::Vfma
+            | Self::Vfms
+            | Self::Vfnma
+            | Self::Vfnms => Op::FloatMultiplyAdd,
             Self::Vdiv => Op::FloatDivide,
             Self::Vneg | Self::Vabs => Op::FloatSign,
             Self::Vsqrt => Op::FloatSquareRoot,
@@ -2240,6 +2477,11 @@ impl VfpWord {
                 (0b011, 0) => float(VfpOperation::Vadd, both),
                 (0b011, _) => float(VfpOperation::Vsub, both),
                 (0b100, 0) => float(VfpOperation::Vdiv, both),
+                // VFPv4, as `-mfpu=neon-vfpv4` builds.
+                (0b101, 0) => float(VfpOperation::Vfnms, both),
+                (0b101, _) => float(VfpOperation::Vfnma, both),
+                (0b110, 0) => float(VfpOperation::Vfma, both),
+                (0b110, _) => float(VfpOperation::Vfms, both),
                 (0b111, 0) => {
                     let constant = field(16, 4) << 4 | field(0, 4);
                     Some(Self::MoveConstant {
@@ -2280,6 +2522,29 @@ impl VfpWord {
                     }
                     // To a 32-bit integer in an `s` register. A clear bit 7
                     // rounds as the status register says, which `vcvtr` names.
+                    // To or from fixed point: `op`, bit 18, says to, `U`,
+                    // bit 16, unsigned, and `sx`, bit 7, a 32-bit value.
+                    (opc2 @ (0b1010 | 0b1011 | 0b1110 | 0b1111), sx) => {
+                        let (to_fixed, unsigned) = (opc2 & 0b0100 != 0, opc2 & 1 == 1);
+                        let bits: u32 = if sx == 1 { 32 } else { 16 };
+                        let fraction_bits = bits.checked_sub(field(0, 4) << 1 | field(5, 1))?;
+                        let fixed = match (unsigned, sx) {
+                            (false, 0) => "s16",
+                            (false, _) => "s32",
+                            (true, 0) => "u16",
+                            (true, _) => "u32",
+                        };
+                        let float = if is_double { "f64" } else { "f32" };
+                        let (name, rounding) = match to_fixed {
+                            true => (fixed_name(fixed, float), Rounding::TowardZero),
+                            false => (fixed_name(float, fixed), Rounding::Exact),
+                        };
+                        Some(Self::FixedConvert {
+                            operation: convert(name, rounding),
+                            register: dest,
+                            fraction_bits,
+                        })
+                    }
                     (opc2 @ (0b1100 | 0b1101), toward_zero) => {
                         let name = match (opc2, toward_zero, is_double) {
                             (0b1101, 1, true) => "vcvt.s32.f64",
@@ -2337,6 +2602,7 @@ impl VfpWord {
                 operation: VfpOperation::Vmov,
                 size: if dest.double { "f64" } else { "f32" },
             },
+            Self::FixedConvert { operation, .. } => Vfp::Compute { operation, size: "" },
         }
     }
 
@@ -2398,6 +2664,10 @@ impl VfpWord {
                     if size.is_empty() { name.to_string() } else { format!("{name}.{size}") };
                 (name, operands.join(", "))
             }
+            Self::FixedConvert { operation, register, fraction_bits } => {
+                let register = register.text();
+                (operation.name().into(), format!("{register}, {register}, {fraction_bits:#x}"))
+            }
         }
     }
 
@@ -2454,6 +2724,12 @@ impl VfpWord {
                     names.push("0x0".into());
                 }
                 names
+            }
+            Self::FixedConvert { register, fraction_bits, .. } => {
+                let register = CompactString::from(register.text());
+                [register.clone(), register, format_compact!("{fraction_bits:#x}")]
+                    .into_iter()
+                    .collect()
             }
         }
     }
@@ -2545,6 +2821,12 @@ impl VfpWord {
                     lifted.reads.insert(il::Reg::Vector(dest.number as u8));
                 }
             }
+            Self::FixedConvert { operation, register, fraction_bits } => {
+                lifted.op = operation.op();
+                let register = il::Operand::Reg(vector(register.number));
+                let fraction = il::Operand::Const(fraction_bits.into());
+                lifted.operands = [register, register, fraction].into_iter().collect();
+            }
         }
         // A move or computation reads every operand but the first, and
         // writes the first: two for a move of a double to core registers.
@@ -2558,6 +2840,29 @@ impl VfpWord {
             }
         }
         lifted
+    }
+}
+
+/// The name of a VFP conversion between fixed point and a float, from
+/// `source` to `result`.
+fn fixed_name(result: &str, source: &str) -> &'static str {
+    match (result, source) {
+        ("f32", "s16") => "vcvt.f32.s16",
+        ("f32", "s32") => "vcvt.f32.s32",
+        ("f32", "u16") => "vcvt.f32.u16",
+        ("f32", "u32") => "vcvt.f32.u32",
+        ("f64", "s16") => "vcvt.f64.s16",
+        ("f64", "s32") => "vcvt.f64.s32",
+        ("f64", "u16") => "vcvt.f64.u16",
+        ("f64", "u32") => "vcvt.f64.u32",
+        ("s16", "f32") => "vcvt.s16.f32",
+        ("s32", "f32") => "vcvt.s32.f32",
+        ("u16", "f32") => "vcvt.u16.f32",
+        ("u32", "f32") => "vcvt.u32.f32",
+        ("s16", "f64") => "vcvt.s16.f64",
+        ("s32", "f64") => "vcvt.s32.f64",
+        ("u16", "f64") => "vcvt.u16.f64",
+        _ => "vcvt.u32.f64",
     }
 }
 
@@ -2596,7 +2901,7 @@ pub(crate) const ARM_REGISTERS: [&str; 16] = [
 pub(crate) const NEON_LOAD_STORE: u32 = 0xf4;
 
 /// The name for an A32 `word` the decoder cannot read: [`NEON_TEXT`]
-/// for NEON data processing, `1111 001U`, else [`UNKNOWN_TEXT`].
+/// in the NEON data processing space, `1111 001U`, else [`UNKNOWN_TEXT`].
 pub(crate) fn unread_text(word: u32) -> &'static str {
     if is_neon_data(word) { NEON_TEXT } else { UNKNOWN_TEXT }
 }
@@ -2646,9 +2951,8 @@ pub(crate) fn decode_neon_load_store(word: u32) -> Option<(String, String)> {
     ))
 }
 
-/// Lift an A32 `word` the decoder refuses but [`decode_fallback`] reads,
-/// where it moves data: the VFP and NEON loads and stores. A T32 caller
-/// gives the A32 form of its word.
+/// Lift an A32 `word` the decoder refuses but [`decode_fallback`] reads. A
+/// T32 caller gives the A32 form of its word.
 pub fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted> {
     let field = |shift: u32, width: u32| word >> shift & ((1 << width) - 1);
     // The hints, as `decode_fallback` reads them: they talk to the system
@@ -2675,6 +2979,13 @@ pub fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted> {
     {
         let mut lifted = vfp.lift();
         if word >> 28 != 0b1110 {
+            lifted.reads.insert(il::Reg::Flags);
+        }
+        return Some(lifted);
+    }
+    if let Some(neon) = NeonWord::of(word) {
+        let mut lifted = neon.lift();
+        if !matches!(word >> 28, 0b1110 | 0b1111) {
             lifted.reads.insert(il::Reg::Flags);
         }
         return Some(lifted);
@@ -2777,6 +3088,9 @@ pub(crate) fn fallback_names(word: u32, encoding: Encoding) -> Option<il::Names>
         && let Some(vfp) = VfpWord::of(word)
     {
         return Some(vfp.names());
+    }
+    if let Some(neon) = NeonWord::of(word) {
+        return Some(neon.names());
     }
     if word >> 24 == NEON_LOAD_STORE {
         let access = NeonAccess::of(word)?;
@@ -3440,13 +3754,26 @@ mod tests {
         assert_eq!(insn.kind, InsnKind::Normal);
     }
 
-    /// NEON is outside what `yaxpeax-arm` 0.4 decodes. `vdup.32 q8, r2` must
-    /// come back as opaque bytes, not as an error.
+    /// NEON is outside what `yaxpeax-arm` 0.4 decodes, and the fallback
+    /// reads it: `vdup.32 q8, r2`.
     #[test]
-    fn neon_decodes_as_unknown() {
+    fn neon_decodes_through_the_fallback() {
         let insn = decode_one([0x90, 0x2b, 0xa0, 0xee]);
+        assert_eq!(insn.kind, InsnKind::Normal);
+        assert_eq!(crate::arch::printed_name(&insn), "vdup.32");
+        let lifted = Arm32.lift(&insn).expect("a lifted vdup");
+        assert_eq!(lifted.op, il::Op::Vector);
+        assert_eq!(lifted.reads, [il::Reg::General(2)].into_iter().collect());
+    }
+
+    /// A NEON data processing word that no instruction encodes, as `vadd`
+    /// of an odd `q` register, comes back as opaque bytes, not as an error.
+    #[test]
+    fn undefined_neon_decodes_as_unknown() {
+        let insn = decode_one(0xf260_1844_u32.to_le_bytes());
         assert_eq!(insn.kind, InsnKind::Unknown);
         assert_eq!(insn.bytes_len, INSN_WIDTH);
+        assert_eq!(Arm32.operation_name(&insn), NEON_TEXT);
     }
 
     /// The name of the operation of the A32 `word`.
@@ -3563,6 +3890,64 @@ mod tests {
         assert_eq!(fallback_text(0xe1a0_0011).as_deref(), Some("mov r0, r1, lsl r0"));
         assert_eq!(fallback_text(0xe1e0_a31c).as_deref(), Some("mvn sl, ip, lsl r3"));
         assert_eq!(fallback_text(0xe1d2_20d0).as_deref(), Some("ldrsb r2, [r2]"));
+        assert_eq!(fallback_text(0xe181_60f4).as_deref(), Some("strd r6, r7, [r1, r4]"));
+        assert_eq!(fallback_text(0xe195_e0de).as_deref(), Some("ldrsb lr, [r5, lr]"));
+        assert_eq!(fallback_text(0xe122_00d3).as_deref(), Some("ldrd r0, r1, [r2, -r3]!"));
+        assert_eq!(fallback_text(0xe091_00f2).as_deref(), Some("ldrsh r0, [r1], r2"));
+        assert_eq!(fallback_text(0xe6bf_7f37).as_deref(), Some("rev r7, r7"));
+        assert_eq!(fallback_text(0xe6bf_0fb1).as_deref(), Some("rev16 r0, r1"));
+        assert_eq!(fallback_text(0xe6ff_0fb1).as_deref(), Some("revsh r0, r1"));
+        assert_eq!(fallback_text(0xe6ff_0f30).as_deref(), Some("rbit r0, r0"));
+        assert_eq!(fallback_text(0xe751_f110).as_deref(), Some("smmul r1, r0, r1"));
+        assert_eq!(fallback_text(0xe750_f231).as_deref(), Some("smmulr r0, r1, r2"));
+        assert_eq!(fallback_text(0xe750_3211).as_deref(), Some("smmla r0, r1, r2, r3"));
+        assert_eq!(fallback_text(0xe750_32d1).as_deref(), Some("smmls r0, r1, r2, r3"));
+        assert_eq!(fallback_text(0xe7f0_00f0).as_deref(), Some("udf 0x0"));
+        assert_eq!(fallback_text(0xe7f1_23f4).as_deref(), Some("udf 0x1234"));
+    }
+
+    /// An offset in a register reads it, as an index of the access.
+    #[test]
+    fn a_register_offset_is_an_index() {
+        let lifted = lift_fallback(0xe181_60f4, Encoding::A32).expect("strd r6, r7, [r1, r4]");
+        let general = il::Reg::General;
+        assert_eq!(lifted.op, il::Op::Store);
+        assert_eq!(
+            lifted.reads,
+            [general(1), general(4), general(6), general(7)].into_iter().collect()
+        );
+        let at = il::Operand::Memory {
+            base: Some(general(1)),
+            offset: None,
+            index: Some((general(4), 0)),
+            update: il::Update::None,
+        };
+        assert_eq!(lifted.operands.last(), Some(&at));
+        let names = fallback_names(0xe122_00d3, Encoding::A32).expect("ldrd r0, r1, [r2, -r3]!");
+        assert_eq!(names.last().map(CompactString::as_str), Some("[r2 - r3]"));
+        let post = fallback_write_back(0xe091_00f2, Encoding::A32);
+        assert_eq!(post.as_deref(), Some("r2"), "ldrsh r0, [r1], r2");
+    }
+
+    #[test]
+    fn the_reverses_and_top_multiplies_lift() {
+        let lift = |word| lift_fallback(word, Encoding::A32).expect("the word lifts");
+        let general = il::Reg::General;
+        let reverse = lift(0xe6bf_0fb1);
+        assert_eq!(reverse.op, il::Op::Bits, "rev16 r0, r1");
+        assert_eq!(reverse.writes, [general(0)].into_iter().collect());
+        assert_eq!(reverse.reads, [general(1)].into_iter().collect());
+        let multiply = lift(0xe751_f110);
+        assert_eq!(multiply.op, il::Op::Multiply, "smmul r1, r0, r1");
+        assert_eq!(multiply.reads, [general(0), general(1)].into_iter().collect());
+        let add = lift(0xe750_3211);
+        assert_eq!(add.op, il::Op::MultiplyAdd, "smmla r0, r1, r2, r3");
+        assert_eq!(add.reads, [general(1), general(2), general(3)].into_iter().collect());
+        assert_eq!(add.writes, [general(0)].into_iter().collect());
+        assert_eq!(fallback_names(0xe750_3211, Encoding::A32).map(|names| names.len()), Some(4));
+        let trap = lift(0xe7f0_00f0);
+        assert_eq!(trap.op, il::Op::System, "udf");
+        assert!(trap.writes.is_empty());
     }
 
     /// A wide T32 word is no A32 integer word, whatever its bits.
@@ -3692,6 +4077,16 @@ mod tests {
             (0xeef7_0a00, "vmov.f32 s1, #1.0"),
             (0xeeb8_0b00, "vmov.f64 d0, #-2.0"),
             (0xeef0_0b48, "vmov.f64 d16, d8"),
+            (0xeee1_0ba2, "vfma.f64 d16, d17, d18"),
+            (0xeea0_0ac1, "vfms.f32 s0, s1, s2"),
+            (0xee91_0b42, "vfnma.f64 d0, d1, d2"),
+            (0xeed2_1a22, "vfnms.f32 s3, s4, s5"),
+            (0xeefa_1bcb, "vcvt.f64.s32 d17, d17, 0xa"),
+            (0xeefa_1be5, "vcvt.f64.s32 d17, d17, 0x15"),
+            (0xeebb_0a66, "vcvt.f32.u16 s0, s0, 0x3"),
+            (0xeebe_1bc0, "vcvt.s32.f64 d1, d1, 0x20"),
+            (0xeebf_1a40, "vcvt.u16.f32 s2, s2, 0x10"),
+            (0xeeba_0b67, "vcvt.f64.s16 d0, d0, 0x1"),
         ];
         for (word, text) in cases {
             assert_eq!(fallback_text(word).as_deref(), Some(text), "{word:#010x}");
@@ -3762,5 +4157,28 @@ mod tests {
         assert_eq!(op(0xeebd_0be0), il::Op::FloatRoundTowardZero, "vcvt.s32.f64");
         assert_eq!(op(0xeef8_0bc0), il::Op::FloatConvert, "vcvt.f64.s32");
         assert_eq!(op(0xeef5_0b40), il::Op::Float, "vcmp.f64");
+        assert_eq!(op(0xeee1_0ba2), il::Op::FloatMultiplyAdd, "vfma.f64");
+        assert_eq!(op(0xeefa_1bcb), il::Op::FloatConvert, "vcvt.f64.s32 d17, d17, 0xa");
+        assert_eq!(op(0xeebe_1bc0), il::Op::FloatRoundTowardZero, "vcvt.s32.f64 d1, d1, 0x20");
+    }
+
+    /// A conversion to fixed point reads and writes its one register.
+    #[test]
+    fn a_fixed_point_conversion_lifts_its_fraction() {
+        let lifted = lift_fallback(0xeefa_1bcb, Encoding::A32).expect("vcvt.f64.s32 d17, d17, 0xa");
+        let register = il::Operand::Reg(il::Reg::Vector(17));
+        assert_eq!(lifted.operands.as_slice(), [register, register, il::Operand::Const(10)]);
+        assert_eq!(lifted.reads, [il::Reg::Vector(17)].into_iter().collect());
+        assert_eq!(lifted.writes, [il::Reg::Vector(17)].into_iter().collect());
+        assert_eq!(fallback_names(0xeefa_1bcb, Encoding::A32).map(|names| names.len()), Some(3));
+    }
+
+    /// `vfma` adds to its destination, as `vmla` does.
+    #[test]
+    fn a_fused_multiply_add_reads_its_destination() {
+        let lifted = lift_fallback(0xeee1_0ba2, Encoding::A32).expect("vfma.f64 d16, d17, d18");
+        let vector = il::Reg::Vector;
+        assert_eq!(lifted.reads, [vector(16), vector(17), vector(18)].into_iter().collect());
+        assert_eq!(lifted.writes, [vector(16)].into_iter().collect());
     }
 }

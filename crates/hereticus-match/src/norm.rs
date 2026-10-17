@@ -479,7 +479,7 @@ fn normalize_lifted(arch: &dyn Arch, insn: &Insn, lifted: Option<&Lifted>) -> No
     // [`named_by_op`] names what the lifter names; only the rest needs the
     // name of its opcode.
     let operation = match lifted {
-        Some(lifted) if lifted.op != il::Op::Other => {
+        Some(lifted) if !is_named_by_opcode(lifted.op) => {
             Operation::Lifted { op: lifted.op, width: None }
         }
         _ => Operation::Decoded(text_key(&arch.operation_name(insn))),
@@ -530,12 +530,19 @@ fn lifted_shapes(arch: &dyn Arch, operand: il::Operand) -> impl Iterator<Item = 
     core::iter::once(shape).chain(offset)
 }
 
+/// Whether an instruction that lifts to `op` is named by its opcode. The
+/// lifter names no operation for [`il::Op::Other`], and one for every
+/// vector instruction, so a NEON `vmax` and `vmin` would normalize alike.
+fn is_named_by_opcode(op: il::Op) -> bool {
+    matches!(op, il::Op::Other | il::Op::Vector)
+}
+
 /// `normalized`, named by the operation its lifted form computes, where the
 /// lifter names one. `add`, `adds` and `addu` then compare equal, and so do
 /// `ldr` and `lw` of one width.
 fn named_by_op(mut normalized: NormInsn, lifted: Option<&Lifted>) -> NormInsn {
     let Some(lifted) = lifted else { return normalized };
-    if lifted.op == il::Op::Other || normalized.flow == FlowShape::Opaque {
+    if is_named_by_opcode(lifted.op) || normalized.flow == FlowShape::Opaque {
         return normalized;
     }
     let width = lifted.memory.and_then(|access| access.width);
@@ -905,24 +912,33 @@ mod tests {
         assert!(constant_signature(&body(&[0xe350_0000, 0xe280_0001, 0xe12f_ff1e])).is_empty());
     }
 
+    /// `vadd.i32` of an odd `q` register, which no instruction encodes.
+    const UNDEFINED_NEON: u32 = 0xf260_1844;
+
     #[test]
     fn opaque_bytes_stay_opaque() {
-        assert_eq!(body(&[0xf260_0680])[0].flow, FlowShape::Opaque);
+        assert_eq!(body(&[UNDEFINED_NEON])[0].flow, FlowShape::Opaque);
     }
 
     /// Two unreadable instructions must stay apart when their bytes differ.
-    ///
-    /// The compiler turns `vmax.s32` into `vmin.s32` when a comparison flips.
-    /// Both are NEON, which the decoder cannot read. If they normalized alike
-    /// the change would be reported as no change at all.
+    /// If they normalized alike the change would be reported as no change
+    /// at all.
     #[test]
     fn different_opaque_words_do_not_normalize_alike() {
-        assert_ne!(word(0xf260_0680), word(0xf220_0680), "an edit there must stay visible");
+        assert_ne!(word(UNDEFINED_NEON), word(0xf260_1846), "an edit there must stay visible");
     }
 
     #[test]
     fn matching_opaque_words_normalize_alike() {
-        assert_eq!(word(0xf260_0680), word(0xf260_0680));
+        assert_eq!(word(UNDEFINED_NEON), word(UNDEFINED_NEON));
+    }
+
+    /// The compiler turns `vmax.s32` into `vmin.s32` when a comparison
+    /// flips.
+    #[test]
+    fn neon_operations_normalize_apart() {
+        assert_ne!(word(0xf260_0644), word(0xf260_0654), "vmax.s32 and vmin.s32");
+        assert_eq!(word(0xf260_0644), word(0xf260_0644));
     }
 
     #[test]

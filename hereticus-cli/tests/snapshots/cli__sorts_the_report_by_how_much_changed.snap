@@ -1,6 +1,5 @@
 ---
 source: hereticus-cli/tests/cli.rs
-assertion_line: 141
 info:
   program: hereticus
   args:
@@ -16,7 +15,7 @@ exit_code: 0
 ╭────────────────────────┬────────────────┬───────┬───────┬─────────┬─────────────────╮
 │ FUNCTION               │ CHANGE         │ SCORE │ +/-/~ │ TOUCHED │ MATCHED BY      │
 ├────────────────────────┼────────────────┼───────┼───────┼─────────┼─────────────────┤
-│ array_max -> array_min │ changed unread │  0.84 │ 0/0/3 │ -       │ similar         │
+│ array_max -> array_min │ changed        │  0.84 │ 0/0/3 │ -       │ similar         │
 │ add                    │ same           │  1.00 │ -     │ -       │ identical bytes │
 │ sum_to                 │ same           │  1.00 │ -     │ -       │ identical bytes │
 │ switch_dense           │ same           │  1.00 │ -     │ -       │ identical bytes │
