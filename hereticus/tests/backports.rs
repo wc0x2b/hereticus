@@ -180,7 +180,7 @@ fn parse_raw(build: Build, variant: &str) -> Binary {
         .min()
         .expect("a library loads something");
     let isa = match build.arch {
-        "arm" | "armv5" | "armv6" => Isa::Arm32,
+        "arm" | "armv5" | "armv6" | "armhf" => Isa::Arm32,
         "thumb" | "cortex-m0" | "cortex-m3" => Isa::Thumb2,
         "aarch64" => Isa::Aarch64,
         "mips" => Isa::Mips32Be,
@@ -311,7 +311,7 @@ fn build(project: Project, arch: &'static str, level: &'static str) -> Build {
 #[rstest]
 fn with_symbols_the_fix_is_named_exactly(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "armv5", "armv6", "thumb", "mixed", "aarch64", "mips", "mipsel")]
+    #[values("arm", "armv5", "armv6", "armhf", "thumb", "mixed", "aarch64", "mips", "mipsel")]
     arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
@@ -355,7 +355,8 @@ fn check_with_symbols(build: Build) {
 #[rstest]
 fn stripped_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "armv5", "armv6", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel")]
+    arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     check_stripped(build(project, arch, level));
@@ -425,7 +426,8 @@ fn sstripped_the_fix_is_covered_and_nothing_else(
 #[rstest]
 fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "armv5", "armv6", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel")]
+    arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     check_raw(build(project, arch, level));
@@ -527,11 +529,13 @@ fn a_mixed_library_reads_each_function_in_its_own_set(
 #[rstest]
 fn a_build_compared_with_itself_reports_nothing(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2, Project::Smallvec)] project: Project,
-    #[values("arm", "armv5", "armv6", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel")]
+    arch: &'static str,
     #[values("before", "after")] variant: &str,
 ) {
-    // The Rust harness is built for ARMv7 and later, not ARMv5TE or ARMv6.
-    if project == Project::Smallvec && matches!(arch, "armv5" | "armv6") {
+    // The Rust harness is built for soft-float ARMv7 and later, not
+    // ARMv5TE, ARMv6 or the hard-float ABI.
+    if project == Project::Smallvec && matches!(arch, "armv5" | "armv6" | "armhf") {
         return;
     }
     let build = build(project, arch, "O2");

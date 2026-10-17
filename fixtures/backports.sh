@@ -26,6 +26,9 @@ thumb_flags=(-march=armv7-a -mthumb -mfloat-abi=softfp -mfpu=neon)
 # VFP, as Kirkwood, and ARMv6 has VFP but no `movw`, as older Broadcom.
 armv5_flags=(-march=armv5te -marm -mfloat-abi=soft)
 armv6_flags=(-march=armv6 -marm -mfloat-abi=softfp -mfpu=vfp)
+# The hard-float ABI, which passes floats in VFP registers, with NEON and
+# VFPv4, as OpenWrt builds for the Cortex-A7 of ipq40xx.
+armhf_flags=(-march=armv7-a -marm -mfloat-abi=hard -mfpu=neon-vfpv4)
 # MIPS16e, the compact set much MIPS user space is built in.
 mips16_flags=(-mips16)
 common_flags=(-fPIC -fno-stack-protector -w)
@@ -35,7 +38,7 @@ common_flags=(-fPIC -fno-stack-protector -w)
 # them. `mips16` is built by GCC alone: clang's MIPS16 back end is not
 # complete. BACKPORTS_TARGETS, a list of these names, builds only those.
 all_targets=(arm:arm-linux-gnueabi thumb:arm-linux-gnueabi mixed:arm-linux-gnueabi
-    armv5:arm-linux-gnueabi armv6:arm-linux-gnueabi
+    armv5:arm-linux-gnueabi armv6:arm-linux-gnueabi armhf:arm-linux-gnueabihf
     aarch64:aarch64-linux-gnu mips:mips-linux-gnu mipsel:mipsel-linux-gnu
     mips16:mipsel-linux-gnu)
 targets=()
@@ -111,6 +114,7 @@ build() {
         [ "$arch" = thumb ] && flags+=("${thumb_flags[@]}")
         [ "$arch" = armv5 ] && flags+=("${armv5_flags[@]}")
         [ "$arch" = armv6 ] && flags+=("${armv6_flags[@]}")
+        [ "$arch" = armhf ] && flags+=("${armhf_flags[@]}")
         [ "$arch" = mips16 ] && flags+=("${mips16_flags[@]}")
         local clang_levels=("${levels[@]}")
         [ "$arch" = mips16 ] && clang_levels=()
@@ -297,7 +301,7 @@ out="$here/build/versions"
 current=()
 for target in "${targets[@]}"; do
     case "${target%%:*}" in
-        mixed | armv5 | armv6 | mips16) ;;
+        mixed | armv5 | armv6 | armhf | mips16) ;;
         *) current+=("$target") ;;
     esac
 done
