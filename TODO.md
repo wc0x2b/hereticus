@@ -134,8 +134,8 @@ the symbols and the source files in the DWARF of their builds, so a
 renamed function, a twin and two static functions of one name each count
 apart, and code that the debug file does not describe is left out. Over
 the kernels, 0.95%<!-- from truth_kernels: all / wrong% --> of the pairs are
-wrong, and at most 1.15%<!-- from truth_kernels: all / at most --> where the
-518<!-- from truth_kernels: all / unproven --> pairs only the source file calls
+wrong, and at most 1.16%<!-- from truth_kernels: all / at most --> where the
+519<!-- from truth_kernels: all / unproven --> pairs only the source file calls
 renamed are wrong too. Across a kernel upgrade it is
 1.4%<!-- from truth_kernels: 22.03.5/23.05.5 / wrong% --> to
 2.5%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% -->.
@@ -151,10 +151,10 @@ cannot judge. The pairs by callers and by references are wrong
 11%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
-Over the upgrades, 7559<!-- from truth_kernels: upgrades / pairs --> pairs of
+Over the upgrades, 7552<!-- from truth_kernels: upgrades / pairs --> pairs of
 functions stay free on both sides, though they share a name and a source
 file: more than three times the wrong pairs. Of these,
-1208<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
+1209<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
 those sit out of place, where the context check undoes them rightly or a
 rival scores within 0.03;
 532<!-- from truth_kernels: upgrades / identical --> have the same

@@ -68,9 +68,11 @@ impl Recovery for Aarch64 {
         ))
     }
 
+    /// A zero word decodes as `udf #0`, which no compiler emits as work: Go
+    /// pads between its functions with it.
     fn is_padding(&self, insn: &Insn) -> bool {
         decoded(insn).is_some_and(|decoded| decoded.alias == Alias::Nop)
-            || (insn.kind == InsnKind::Unknown && insn.bytes() == [0; INSN_WIDTH])
+            || insn.bytes() == ZERO_BYTES
     }
 
     /// Only whole words at the end are removed, and only the two encodings a
