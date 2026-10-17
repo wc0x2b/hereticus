@@ -81,6 +81,13 @@ fn canonical_mnemonic(mnemonic: &str) -> String {
 ///
 /// Every entry here hides a real difference, so each is confirmed against the
 /// encoding rather than added to make the test pass.
+/// The x86 mnemonic, as `llvm-objdump` prints it in Intel syntax. Both
+/// tools print a prefix as a word of its own, so the first word is
+/// compared.
+fn canonical_x86_mnemonic(mnemonic: &str) -> String {
+    mnemonic.to_ascii_lowercase()
+}
+
 fn canonical_mips_mnemonic(mnemonic: &str) -> String {
     match mnemonic {
         "b" | "beqz" => "beq",
@@ -178,6 +185,7 @@ fn objdump_function(object: &Path, triple: &str, symbol: &str) -> Option<Vec<Obj
         .env_remove("DEBUGINFOD_URLS")
         .arg("-d")
         .arg(format!("--triple={triple}"))
+        .args(syntax_of(triple))
         .arg(format!("--disassemble-symbols={symbol}"))
         .arg(object)
         .output()
@@ -187,6 +195,15 @@ fn objdump_function(object: &Path, triple: &str, symbol: &str) -> Option<Vec<Obj
         return None;
     }
     Some(parse_objdump(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// The arguments that make `llvm-objdump` print x86 in Intel syntax, as
+/// this decoder does, and none for another architecture.
+fn syntax_of(triple: &str) -> &'static [&'static str] {
+    match triple.starts_with("x86_64") || triple.starts_with("i386") {
+        true => &["--x86-asm-syntax=intel"],
+        false => &[],
+    }
 }
 
 /// Pull address and mnemonic out of `llvm-objdump` text.
@@ -279,6 +296,7 @@ fn decoder_agrees_with_objdump() {
                 Isa::Mips32 | Isa::Mips32Be | Isa::Mips16 | Isa::Mips16Be => {
                     canonical_mips_mnemonic
                 }
+                Isa::X86_64 | Isa::X86 => canonical_x86_mnemonic,
             };
 
             for (ours, theirs) in decoded.iter().zip(&expected).take(shared) {
@@ -421,6 +439,7 @@ fn objdump_file(
 ) -> Option<std::collections::HashMap<u64, (String, String)>> {
     let output = Command::new("llvm-objdump")
         .args(["-d", "--no-show-raw-insn", &format!("--triple={triple}")])
+        .args(syntax_of(triple))
         .arg(object)
         .output()
         .ok()?;

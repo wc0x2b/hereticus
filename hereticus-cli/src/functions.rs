@@ -133,6 +133,8 @@ fn name_of_isa(isa: Isa) -> &'static str {
         Isa::Mips32Be => "mips32-be",
         Isa::Mips16 => "mips16",
         Isa::Mips16Be => "mips16-be",
+        Isa::X86_64 => "x86-64",
+        Isa::X86 => "x86",
     }
 }
 
