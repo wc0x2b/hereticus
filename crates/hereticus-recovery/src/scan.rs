@@ -753,7 +753,9 @@ fn taken_addresses(
     };
     formed
         .into_iter()
-        .chain(pointers.iter().copied())
+        // A relocated pointer to a T32 function has bit 0 set, as a word of
+        // a table of callbacks does.
+        .chain(pointers.iter().map(|&pointer| arch.function_address(pointer)))
         .chain(tagged)
         .filter(|address| (base..end).contains(address))
         .filter(|address| address % width == 0 && ends_before(*address))
@@ -1384,9 +1386,11 @@ fn starts_after_returns_in(
         // jump, before more of the body. Clang for ARM puts `codebinexpval`
         // of Lua after the pool of `luaK_posfix`, which reaches it by a tail
         // call.
-        if start == index && index > 0 && !is_code(&&insns[index - 1]) {
-            return false;
-        }
+        // A conditional branch still never comes from another function: GCC
+        // for Thumb-2 puts a pool after a call to `__assert_fail` in the
+        // middle of libtiff's `TIFFWriteDirectorySec`, and a `bne.w` from
+        // far before reaches the code after it.
+        let after_pool = start == index && index > 0 && !is_code(&&insns[index - 1]);
         // A conditional branch never comes from another function, and nor
         // does any branch from after the last sure start: a tail call comes
         // from the function before. Clang on MIPS jumps with `b` to the late
@@ -1396,7 +1400,8 @@ fn starts_after_returns_in(
         sources_of.get(&block).is_some_and(|sources| {
             sources.iter().any(|&(from, transfer)| {
                 transfer == Transfer::Conditional
-                    || last_sure_start.is_some_and(|start| from >= start && from < block)
+                    || !after_pool
+                        && last_sure_start.is_some_and(|start| from >= start && from < block)
             })
         })
     };
@@ -1480,8 +1485,25 @@ fn starts_after_returns_in(
             // A callee the linker names as one that never returns, as
             // `__assert_fail`, ends its caller even where a leaf with no
             // frame comes next, as `errorProcessor` of expat for MIPS does.
+            // So does a jump from another function, past the data: GCC for
+            // Thumb-2 tail calls libpng's `png_write_IEND` from far before,
+            // after `png_error` and the pool that end `png_write_PLTE`, and
+            // `png_write_IEND` loads from its pool before its frame.
+            let tail_called = |following: &Insn| {
+                let start = anchors.range(..=insn.address).next_back().copied().unwrap_or(base);
+                let next_start =
+                    anchors.range(following.address + 1..).next().copied().unwrap_or(u64::MAX);
+                past_pool
+                    && sources_of.get(&following.address).is_some_and(|sources| {
+                        sources.iter().any(|&(from, transfer)| {
+                            transfer == Transfer::Always && (from < start || from >= next_start)
+                        })
+                    })
+            };
             let opens = |following: &Insn| {
-                arch.is_prologue(following) || never_returns.contains(&insn.address)
+                arch.is_prologue(following)
+                    || never_returns.contains(&insn.address)
+                    || tail_called(following)
             };
             if let Some(following) = insns.get(next)
                 && opens(following)
@@ -2549,6 +2571,40 @@ mod tests {
         assert!(starts_after_returns(&Arm32, &code, 0).contains(&0x10));
     }
 
+    /// A leaf with no frame past the pool after such a call starts a
+    /// function too, where a jump from another function reaches it.
+    #[test]
+    fn a_leaf_past_the_pool_that_a_tail_call_reaches_starts_a_function() {
+        let code = arm_code(&[
+            0xe92d_4010, // 0x00 push {r4, lr}
+            0xe59f_0000, // 0x04 ldr r0, [pc]: the word at 0x0c
+            0xeb00_003c, // 0x08 bl 0x100, which does not return
+            0xfe8a_5c6a, // 0x0c pool word, `cdp2`
+            0xe590_0000, // 0x10 ldr r0, [r0]
+            0xe12f_ff1e, // 0x14 bx lr
+            0xe92d_4010, // 0x18 push {r4, lr}
+            0xeaff_fffb, // 0x1c b 0x10, a tail call
+        ]);
+        assert!(starts_after_returns(&Arm32, &code, 0).contains(&0x10));
+    }
+
+    /// What a conditional branch of the function reaches past the pool is
+    /// more of the function, even where it makes a frame.
+    #[test]
+    fn a_frame_past_the_pool_that_a_conditional_branch_reaches_stays_inside() {
+        let code = arm_code(&[
+            0xe92d_4010, // 0x00 push {r4, lr}
+            0xe350_0000, // 0x04 cmp r0, 0
+            0x1a00_0002, // 0x08 bne 0x18
+            0xe59f_0000, // 0x0c ldr r0, [pc]: the word at 0x14
+            0xeb00_003a, // 0x10 bl 0x100, which does not return
+            0xfe8a_5c6a, // 0x14 pool word, `cdp2`
+            0xe92d_4010, // 0x18 push {r4, lr}
+            0xe8bd_8010, // 0x1c pop {r4, pc}
+        ]);
+        assert!(!starts_after_returns(&Arm32, &code, 0).contains(&0x18));
+    }
+
     /// Padding between functions must not be mistaken for their start.
     #[test]
     fn padding_after_a_return_is_stepped_over() {
@@ -2585,6 +2641,48 @@ mod tests {
         };
         assert_eq!(starts(Regions::CodeOnly), [0x0, 0x10]);
         assert_eq!(starts(Regions::CodeAndData), [0x0], "an address in a raw image can be data");
+    }
+
+    /// A relocated pointer to a T32 function has bit 0 set, and still
+    /// names where the function starts.
+    #[test]
+    fn a_relocated_pointer_to_a_t32_function_starts_it() {
+        use hereticus_il::arch::thumb::Thumb2;
+
+        let code: Vec<u8> = [
+            0xb510_u16, // 0x00 push {r4, lr}
+            0x4801,     // 0x02 ldr r0, [pc, 4]: the word at 0x08
+            0xbd10,     // 0x04 pop {r4, pc}
+            0xbf00,     // 0x06 nop
+            0x0000,     // 0x08 the pool word
+            0x0000, 0x6800, // 0x0c ldr r0, [r0]
+            0x4770, // 0x0e bx lr
+        ]
+        .iter()
+        .flat_map(|halfword| halfword.to_le_bytes())
+        .collect();
+        let regions = [(0x1000, code.as_slice())];
+        // The code after the return starts a function anyway, but only as a
+        // guess: the pointer makes it a fact.
+        let starts = |pointers: Vec<u64>| -> Vec<(u64, Source)> {
+            let linked = Linked { pointers, ..Linked::default() };
+            recover_in_memory(
+                &regions,
+                &[],
+                &linked,
+                Regions::CodeOnly,
+                &Thumb2,
+                &Memory::new(&regions),
+            )
+            .iter()
+            .map(|found| (found.address, found.source))
+            .collect()
+        };
+        assert_eq!(
+            starts(vec![0x100d]),
+            [(0x1000, Source::AfterReturn), (0x100c, Source::CallTarget)]
+        );
+        assert_eq!(starts(vec![]), [(0x1000, Source::AfterReturn), (0x100c, Source::AfterReturn)]);
     }
 
     /// MIPS PIC calls a function of its own through a slot of the global

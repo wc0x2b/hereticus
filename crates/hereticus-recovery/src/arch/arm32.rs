@@ -619,7 +619,35 @@ pub(super) fn pool_words_loaded(insns: &[Insn], pc: PcModel) -> Vec<u64> {
 /// address and the address of a word it loads.
 pub fn pool_loads(insns: &[Insn], pc: PcModel) -> Vec<(u64, u64)> {
     let mut loads = Vec::new();
+    // The registers an `adr` set to an address in the pool. GCC for Thumb-2
+    // loads a double with `adr r3, pool` then `ldrd r2, r3, [r3]`, as
+    // SQLite's `fts3auxBestIndexMethod` does.
+    let mut held: Vec<(il::Reg, u64)> = Vec::new();
     for insn in insns {
+        let operands = lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
+        let adr = match (core_opcode(insn), operands.as_slice()) {
+            (Some(Opcode::ADR), [il::Operand::Reg(register), .., il::Operand::Const(distance)]) => {
+                Some((*register, pc.of_literal_load(insn.address).wrapping_add(*distance)))
+            }
+            _ => None,
+        };
+        let from_held = operands.iter().rev().find_map(|operand| match operand {
+            il::Operand::Memory { base: Some(base), offset, index: None, .. } => held
+                .iter()
+                .find(|(register, _)| register == base)
+                .map(|&(_, address)| address.wrapping_add(offset.unwrap_or(0) as u64)),
+            _ => None,
+        });
+        // Whatever an instruction writes no longer holds the address, and
+        // past a branch the path that set it may not be the one taken.
+        match operands.first() {
+            _ if insn.kind != InsnKind::Normal => held.clear(),
+            Some(il::Operand::Reg(written)) => held.retain(|(register, _)| register != written),
+            _ => {}
+        }
+        if let Some(adr) = adr {
+            held.push(adr);
+        }
         let is_load = matches!(
             decoded(insn),
             Some(
@@ -638,18 +666,16 @@ pub fn pool_loads(insns: &[Insn], pc: PcModel) -> Vec<(u64, u64)> {
             }
             _ => 1,
         };
-        let Some(offset) = lifted.operands.iter().rev().find_map(|operand| match operand {
+        let from_pc = lifted.operands.iter().rev().find_map(|operand| match operand {
             il::Operand::Memory {
                 base: Some(il::Reg::ProgramCounter),
                 offset: Some(offset),
                 index: None,
                 ..
-            } => Some(*offset),
+            } => Some(pc.of_literal_load(insn.address).wrapping_add(*offset as u64)),
             _ => None,
-        }) else {
-            continue;
-        };
-        let pool = pc.of_literal_load(insn.address).wrapping_add(offset as u64);
+        });
+        let Some(pool) = from_pc.or(from_held) else { continue };
         loads.extend(
             (0..count).map(|word| (insn.address, pool.wrapping_add(word * WORD_WIDTH as u64))),
         );

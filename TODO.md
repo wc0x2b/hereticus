@@ -151,7 +151,7 @@ cannot judge. The pairs by callers and by references are wrong
 11%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
-Over the upgrades, 7565<!-- from truth_kernels: upgrades / pairs --> pairs of
+Over the upgrades, 7560<!-- from truth_kernels: upgrades / pairs --> pairs of
 functions stay free on both sides, though they share a name and a source
 file: more than three times the wrong pairs. Of these,
 1208<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
