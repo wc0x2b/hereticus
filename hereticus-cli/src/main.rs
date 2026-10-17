@@ -424,6 +424,7 @@ impl Progress for Bar {
 }
 
 fn main() -> ExitCode {
+    end_quietly_on_a_closed_pipe();
     let args = Args::parse();
 
     match run(&args) {
@@ -435,6 +436,20 @@ fn main() -> ExitCode {
             eprintln!("hereticus: {error}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Let a closed pipe end the tool, as it ends other Unix tools.
+///
+/// Rust ignores `SIGPIPE`, so each write to a pipe that the reader closed
+/// fails, and `println!` panics: `hereticus --functions lib.so | head`
+/// printed a panic after the first lines.
+fn end_quietly_on_a_closed_pipe() {
+    #[cfg(unix)]
+    // SAFETY: no other thread runs yet, and the default action for
+    // `SIGPIPE` needs no handler.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 }
 
