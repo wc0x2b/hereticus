@@ -1,6 +1,5 @@
 ---
 source: hereticus-cli/tests/cli.rs
-assertion_line: 74
 info:
   program: hereticus
   args:
@@ -11,14 +10,14 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-╭─────────────────┬────────────────┬───────┬─────────┬────────────────────────────────────────────────────┬─────────────────╮
-│ FUNCTION        │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                            │ MATCHED BY      │
-├─────────────────┼────────────────┼───────┼─────────┼────────────────────────────────────────────────────┼─────────────────┤
-│ dispatch        │ changed        │  0.62 │ 21/11/5 │ 4 branch, 1 call, 6 jump, 6 mem, 1 const           │ same name       │
-│ check_header    │ changed        │  0.31 │ 8/1/0   │ 1 branch, 1 call, 1 mem                            │ same name       │
-│ handle          │ changed        │  0.76 │ 8/4/4   │ 1 branch, 1 call, 1 jump, 1 mem, 1 const, 2 unread │ same name       │
-│ validate_length │ changed values │  1.00 │ -       │ -                                                  │ identical shape │
-╰─────────────────┴────────────────┴───────┴─────────┴────────────────────────────────────────────────────┴─────────────────╯
+╭─────────────────┬────────────────┬───────┬─────────┬──────────────────────────────────────────┬─────────────────╮
+│ FUNCTION        │ CHANGE         │ SCORE │ +/-/~   │ TOUCHED                                  │ MATCHED BY      │
+├─────────────────┼────────────────┼───────┼─────────┼──────────────────────────────────────────┼─────────────────┤
+│ dispatch        │ changed        │  0.62 │ 21/11/5 │ 4 branch, 1 call, 6 jump, 6 mem, 1 const │ same name       │
+│ check_header    │ changed        │  0.31 │ 8/1/0   │ 1 branch, 1 call, 1 mem                  │ same name       │
+│ handle          │ changed        │  0.82 │ 8/4/2   │ 1 branch, 1 call, 1 jump, 1 mem, 1 const │ same name       │
+│ validate_length │ changed values │  1.00 │ -       │ -                                        │ identical shape │
+╰─────────────────┴────────────────┴───────┴─────────┴──────────────────────────────────────────┴─────────────────╯
 
 5 matched (1 unchanged, 4 changed), 0 gone, 0 new
 

@@ -78,7 +78,7 @@ CVE-2026-30873 jsonfilter A32        changed sub_12580 sub_12580 0.89 5 0 1
 CVE-2026-30873 jsonfilter MIPS16e BE changed sub_401c2c sub_401c2c 0.92 5 0 0
 CVE-2026-30873 jsonfilter MIPS16e LE changed sub_401c2c sub_401c2c 0.92 5 0 0
 CVE-2020-7248 libubox A64            changed sub_1184 sub_1188 0.95 10 5 3
-CVE-2020-7248 libubox A32            changed sub_e80 sub_e88 0.92 16 8 3
+CVE-2020-7248 libubox A32            changed sub_e80 sub_e88 0.93 16 8 2
 CVE-2019-19945 uhttpd A64            changed sub_404288 sub_404290 0.99 3 1 0
 CVE-2019-19945 uhttpd A32            changed sub_134d8 sub_134dc 0.99 2 0 0
 CVE-2020-7248 libubox MIPS16e BE     changed sub_e50 sub_e54 0.94 9 4 5

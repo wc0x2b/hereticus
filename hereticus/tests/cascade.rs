@@ -130,16 +130,10 @@ fn an_edit_is_reported_wherever_it_was_inlined() {
 /// A rewritten function must be reported as changed, not as untouched.
 ///
 /// `array_max` became `array_min`, which the compiler vectorizes. The change
-/// sits inside NEON instructions the decoder cannot read, so it is only
-/// visible if unreadable bytes are compared by content.
-///
-/// It lands in [`Changed::Unreadable`] rather than [`Changed::Yes`] because
-/// that is all the tool can prove: the three differing words are opaque, and
-/// a changed NEON instruction is indistinguishable from a changed word of
-/// data stored among the code. Both readings are reported; neither is
-/// claimed.
+/// sits inside NEON instructions: `vmax.s32` became `vmin.s32`. The decoder
+/// reads both, so the change is one of operation.
 #[test]
-fn detects_a_change_inside_unreadable_instructions() {
+fn detects_a_change_inside_neon_instructions() {
     assert!(fixtures_present(), "run `just fixtures` first");
     let (Some(before), Some(after)) = (read("O2", "basic"), read("O2", "basic_v2")) else {
         panic!("fixtures are missing");
@@ -151,12 +145,7 @@ fn detects_a_change_inside_unreadable_instructions() {
         .expect("array_max must be matched");
 
     assert_eq!(found.1, "array_min");
-    assert_eq!(
-        found.3,
-        Changed::Unreadable,
-        "a rewritten comparison is a change, in bytes the decoder cannot read"
-    );
-    assert_ne!(found.3, Changed::No, "it must never be called unchanged");
+    assert_eq!(found.3, Changed::Yes, "a rewritten comparison is a change");
 }
 
 /// An edited constant must be reported as a change in detail.

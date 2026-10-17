@@ -1,6 +1,5 @@
 ---
 source: hereticus-cli/tests/cli.rs
-assertion_line: 56
 info:
   program: hereticus
   args:
@@ -10,12 +9,12 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-╭──────────────┬───────────┬───────┬────────┬─────────────────────────────────────────────┬────────────╮
-│ FUNCTION     │ CHANGE    │ SCORE │ +/-/~  │ TOUCHED                                     │ MATCHED BY │
-├──────────────┼───────────┼───────┼────────┼─────────────────────────────────────────────┼────────────┤
-│ factorial    │ changed   │  0.12 │ 35/2/2 │ 1 branch, 4 jump, 2 mem, 1 const, 15 unread │ same name  │
-│ switch_dense │ reordered │  1.00 │ 1/1/0  │ -                                           │ same name  │
-╰──────────────┴───────────┴───────┴────────┴─────────────────────────────────────────────┴────────────╯
+╭──────────────┬───────────┬───────┬────────┬──────────────────────────────────┬────────────╮
+│ FUNCTION     │ CHANGE    │ SCORE │ +/-/~  │ TOUCHED                          │ MATCHED BY │
+├──────────────┼───────────┼───────┼────────┼──────────────────────────────────┼────────────┤
+│ factorial    │ changed   │  0.12 │ 35/2/2 │ 1 branch, 4 jump, 2 mem, 1 const │ same name  │
+│ switch_dense │ reordered │  1.00 │ 1/1/0  │ -                                │ same name  │
+╰──────────────┴───────────┴───────┴────────┴──────────────────────────────────┴────────────╯
 
 8 matched (6 unchanged, 2 changed), 0 gone, 0 new
 

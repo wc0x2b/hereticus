@@ -386,8 +386,18 @@ Disassembly of section .text:
 fn backport_libraries() -> Vec<PathBuf> {
     let root = fixtures_dir().join("backports");
     let mut libraries = Vec::new();
-    const ARCHES: [&str; 9] =
-        ["arm", "armv5", "armv6", "thumb", "cortex-m0", "cortex-m3", "aarch64", "mips", "mipsel"];
+    const ARCHES: [&str; 10] = [
+        "arm",
+        "armv5",
+        "armv6",
+        "armhf",
+        "thumb",
+        "cortex-m0",
+        "cortex-m3",
+        "aarch64",
+        "mips",
+        "mipsel",
+    ];
     for project in ["zlib", "lua", "tinyxml2", "smallvec"] {
         for arch in ARCHES {
             for level in ["O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os"] {
@@ -637,7 +647,10 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
             let (sizes, condition) = sizes.split_at(sizes.len() - 2);
             mnemonic = format!("{stem}{condition}.{sizes}");
         }
-        if mnemonic == "udf" && list == ["254"] {
+        // `udf 254` of T32 and `udf 65006` of A32 are the trap of LLVM.
+        if mnemonic == "udf"
+            && matches!(list.as_slice(), [value] if value == "254" || value == "65006")
+        {
             mnemonic = "trap".to_string();
             list.clear();
         }

@@ -467,8 +467,16 @@ mod tests {
     }
 
     #[test]
-    fn t32_neon_data_processing_is_unread_code() {
+    fn t32_neon_data_processing_reads_as_its_a32_twin() {
         let insn = decode_one(&[0xefc0, 0x0050]);
+        assert_eq!(insn.to_string(), "vmov.i32 q8, 0x0");
+        assert_eq!(insn.kind, InsnKind::Normal);
+    }
+
+    /// `vadd.i32` of an odd `q` register is no instruction, but it is NEON.
+    #[test]
+    fn undefined_t32_neon_data_processing_is_unread_code() {
+        let insn = decode_one(&[0xef60, 0x1844]);
         assert_eq!(
             (hereticus_il::arch::printed_name(&insn).as_str(), insn.kind),
             (NEON_TEXT, InsnKind::Unknown)

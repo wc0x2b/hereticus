@@ -198,7 +198,11 @@ impl Thumb2 {
                 }
                 _ => None,
             };
-            let fallback = word.and_then(|word| decode_fallback(as_a32(word), Encoding::T32));
+            // A T32 word whose top byte is that of A32 NEON data processing
+            // is no NEON: T32 puts NEON at `111U 1111`.
+            let fallback = word
+                .filter(|word| !matches!(word >> 24, 0xf2 | 0xf3))
+                .and_then(|word| decode_fallback(as_a32(word), Encoding::T32));
             if let Some((name, operands, decoded)) = fallback {
                 let opcode = crate::arch::Opcode::Thumb(decoded);
                 let insn = Insn::new(insn_address, bytes, InsnKind::Normal, opcode);

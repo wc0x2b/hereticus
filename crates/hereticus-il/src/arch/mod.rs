@@ -8,6 +8,7 @@ pub mod arm32;
 pub mod mips;
 pub mod mips16;
 pub mod mips32;
+pub mod neon;
 pub mod thumb;
 
 use core::fmt;

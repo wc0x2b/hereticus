@@ -1,6 +1,5 @@
 ---
 source: hereticus-cli/tests/cli.rs
-assertion_line: 329
 info:
   program: hereticus
   args:
@@ -56,7 +55,7 @@ dispatch
   cmp lr, 0x4
   blo $+0x50
   bic ip, lr, 0x3
-  (neon) 0xf2c00050
+  vmov.i32 q8, 0x0
   add r2, r0, 0x4
 - mov r3, sp
 + add r3, sp, 0x4
@@ -66,14 +65,14 @@ dispatch
 - str r4, [sp]
 + str r4, [sp, 0x4]
   vld1.32 {d18[0]}, [r3:32]
-  (neon) 0xf3c82a32
-  (neon) 0xf3d02a32
-  (neon) 0xf26008e2
+  vmovl.u8 q9, d18
+  vmovl.u16 q9, d18
+  vadd.i32 q8, q8, q9
   bne $-0x1c
-  (neon) 0xf26008a1
+  vadd.i32 d16, d16, d17
   cmp ip, lr
-  (unknown) 0xee301b90
-  (unknown) 0xee102b90
+  vmov.32 r1, d16[1]
+  vmov.32 r2, d16[0]
   add r2, r2, r1
   beq $+0x68
   add r0, ip, r0
@@ -176,7 +175,7 @@ handle
 - mov r2, 0x7fc
 - and ip, lr, r2
 + and r2, r1, 0x3fc
-  (neon) 0xf2c00050
+  vmov.i32 q8, 0x0
 - add r1, r0, 0x4
 - add r3, sp, 0x4
 - mov r2, ip
@@ -190,18 +189,18 @@ handle
 + subs r3, r3, 0x4
 + str r6, [sp, 0x4]
 + vld1.32 {d18[0]}, [r0:32]
-  (neon) 0xf3c82a32
-  (neon) 0xf3d02a32
-  (neon) 0xf26008e2
+  vmovl.u8 q9, d18
+  vmovl.u16 q9, d18
+  vadd.i32 q8, q8, q9
   bne $-0x1c
-  (neon) 0xf26008a1
+  vadd.i32 d16, d16, d17
 - cmp ip, lr
-- (unknown) 0xee301b90
-- (unknown) 0xee102b90
+- vmov.32 r1, d16[1]
+- vmov.32 r2, d16[0]
 - add r1, r2, r1
 + cmp r2, r1
-+ (unknown) 0xee300b90
-+ (unknown) 0xee103b90
++ vmov.32 r0, d16[1]
++ vmov.32 r3, d16[0]
 + add r0, r3, r0
   beq $-0x64
 - add r0, ip, r0
