@@ -17,21 +17,27 @@ RUN apt-get update \
         clang-22 \
         lld-22 \
         llvm-22 \
+        libc6-dev \
         libc6-dev-arm64-cross \
         libc6-dev-armel-cross \
         libc6-dev-armhf-cross \
         libc6-dev-mipsel-cross \
         libc6-dev-mips-cross \
+        libc6-dev-i386-cross \
+        libgcc-14-dev \
         libgcc-14-dev-arm64-cross \
         libgcc-14-dev-armel-cross \
         libgcc-14-dev-armhf-cross \
         libgcc-14-dev-mipsel-cross \
         libgcc-14-dev-mips-cross \
+        libgcc-14-dev-i386-cross \
+        libstdc++-14-dev \
         libstdc++-14-dev-arm64-cross \
         libstdc++-14-dev-armel-cross \
         libstdc++-14-dev-armhf-cross \
         libstdc++-14-dev-mipsel-cross \
         libstdc++-14-dev-mips-cross \
+        libstdc++-14-dev-i386-cross \
         patch \
         gcc-14-aarch64-linux-gnu \
         g++-14-aarch64-linux-gnu \
@@ -43,6 +49,10 @@ RUN apt-get update \
         g++-14-mips-linux-gnu \
         gcc-14-mipsel-linux-gnu \
         g++-14-mipsel-linux-gnu \
+        gcc-14 \
+        g++-14 \
+        gcc-14-i686-linux-gnu \
+        g++-14-i686-linux-gnu \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/lib/llvm-22/bin:${PATH}"

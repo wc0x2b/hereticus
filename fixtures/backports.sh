@@ -31,6 +31,10 @@ armv6_flags=(-march=armv6 -marm -mfloat-abi=softfp -mfpu=vfp)
 armhf_flags=(-march=armv7-a -marm -mfloat-abi=hard -mfpu=neon-vfpv4)
 # MIPS16e, the compact set much MIPS user space is built in.
 mips16_flags=(-mips16)
+# x86-64 with the branch target marks that Ubuntu and Fedora build with,
+# and 32-bit x86 without them, as older distributions shipped it.
+x86_64_flags=(-fcf-protection=full)
+i686_flags=(-fcf-protection=none)
 common_flags=(-fPIC -fno-stack-protector -w)
 
 # name:triple, one per architecture the tool reads. `mixed` builds every
@@ -40,7 +44,7 @@ common_flags=(-fPIC -fno-stack-protector -w)
 all_targets=(arm:arm-linux-gnueabi thumb:arm-linux-gnueabi mixed:arm-linux-gnueabi
     armv5:arm-linux-gnueabi armv6:arm-linux-gnueabi armhf:arm-linux-gnueabihf
     aarch64:aarch64-linux-gnu mips:mips-linux-gnu mipsel:mipsel-linux-gnu
-    mips16:mipsel-linux-gnu)
+    mips16:mipsel-linux-gnu x86_64:x86_64-linux-gnu i686:i686-linux-gnu)
 targets=()
 for target in "${all_targets[@]}"; do
     if [ -z "${BACKPORTS_TARGETS:-}" ] || [[ " $BACKPORTS_TARGETS " == *" ${target%%:*} "* ]]; then
@@ -116,6 +120,8 @@ build() {
         [ "$arch" = armv6 ] && flags+=("${armv6_flags[@]}")
         [ "$arch" = armhf ] && flags+=("${armhf_flags[@]}")
         [ "$arch" = mips16 ] && flags+=("${mips16_flags[@]}")
+        [ "$arch" = x86_64 ] && flags+=("${x86_64_flags[@]}")
+        [ "$arch" = i686 ] && flags+=("${i686_flags[@]}")
         local clang_levels=("${levels[@]}")
         [ "$arch" = mips16 ] && clang_levels=()
 
@@ -224,7 +230,9 @@ build_rust() {
         thumb:thumbv7neon-unknown-linux-gnueabihf:arm-linux-gnueabihf
         aarch64:aarch64-unknown-linux-gnu:aarch64-linux-gnu
         mips:mips-unknown-linux-gnu:mips-linux-gnu
-        mipsel:mipsel-unknown-linux-gnu:mipsel-linux-gnu)
+        mipsel:mipsel-unknown-linux-gnu:mipsel-linux-gnu
+        x86_64:x86_64-unknown-linux-gnu:x86_64-linux-gnu
+        i686:i686-unknown-linux-gnu:i686-linux-gnu)
 
     # Only the toolchain is in the image; the crates the standard library
     # needs are downloaded once, into the build directory.

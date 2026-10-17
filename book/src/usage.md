@@ -26,7 +26,7 @@ Options:
       --raw                    Read the inputs as raw code with no container format
       --base <BASE>            Address a raw image loads at, for example `0x08000000`
       --unpack <UNPACK>        Take one part out of each firmware image before reading it raw [possible values: stub, kernel]
-      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, aarch64, mips32, mips32-be, mips16, mips16-be]
+      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, aarch64, mips32, mips32-be, mips16, mips16-be, x86-64, x86]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact, markdown, json]
       --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified, rare]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]
@@ -118,8 +118,8 @@ each address by the difference.
 
 ## Limits
 * **Little-endian A32 (ARMv5TE and later, soft-float or hard-float, with
-  VFP and NEON), Thumb-2 (Cortex-M too) and AArch64, and MIPS32 and MIPS16e
-  in either byte order.** A library that
+  VFP and NEON), Thumb-2 (Cortex-M too) and AArch64, MIPS32 and MIPS16e
+  in either byte order, and x86-64 and 32-bit x86.** A library that
   mixes A32 and Thumb-2, or MIPS32 and MIPS16e, is read function by function
   where its symbols say which set each is in. Stripped or raw, it is read in
   one set, so its minority reads as nonsense.
