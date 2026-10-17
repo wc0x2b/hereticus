@@ -50,6 +50,17 @@ rivals-ghidra: backports
         --workdir /work \
         {{rivals_image}}-ghidra ./fixtures/rivals.sh ghidra
 
+# Let Ghidra find the functions of one raw kernel, with its default and its
+# aggressive analysis, so a test can count how many it finds.
+rivals-kernel: firmware
+    docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --env HOME=/tmp \
+        --volume "{{justfile_directory()}}:/work" \
+        --workdir /work \
+        {{rivals_image}}-ghidra ./fixtures/rivals_kernel.sh
+
 # Show how long hereticus, radiff2 and Ghidra take on each backport pair.
 rival-times: build rivals rivals-ghidra
     cargo nextest run --release --no-capture -E 'test(/times/)'
@@ -73,7 +84,7 @@ truth_tests := "binary(/^truth_/)"
 
 # Fetch and pin what the `truth_*` tests read. The Apple binaries need the
 # `ipsw` tool; `fixtures/cve_binaries.py` names the commands.
-truth: firmware rivals-ghidra
+truth: firmware rivals-ghidra rivals-kernel
     python3 fixtures/openwrt_debug.py
     python3 fixtures/cve_binaries.py
     python3 fixtures/ubuntu_cves.py

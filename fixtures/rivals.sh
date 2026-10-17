@@ -31,11 +31,12 @@ case "$tool" in
 esac
 
 # What decides the output: this script and what it reads, the tool, and the
-# binaries. Ghidra takes half an hour over every build, so a second run with
+# binaries. Ghidra takes about ten minutes over every build, so a second run with
 # the same inputs keeps what the first wrote.
 inputs_hash="$(
     {
-        cat "$here/rivals.sh" "$builds" "$here/rivals/Dockerfile" "$here/rivals"/*.java "$here/rivals"/*.py
+        cat "$here/rivals.sh" "$builds" "$here/rivals/Dockerfile" \
+            "$here/rivals/HereticusVersionTracking.java" "$here/rivals/rows.py"
         echo "$version"
         grep -v '^#' "$builds" | while read -r project arch level; do
             for variant in before after; do
