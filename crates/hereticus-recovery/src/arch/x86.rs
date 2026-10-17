@@ -14,14 +14,15 @@
 //! PIC names the address whole, as an immediate or an absolute operand. The
 //! unwind tables are `.eh_frame`, which the scan reads for any architecture.
 
-use super::{CallTarget, Insn, InsnKind, Memory, Recovery, leaves};
+use super::{CallTarget, Insn, InsnKind, JumpTable, Memory, Recovery, leaves};
+use core::ops::Range;
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::x86::{
     MOST_BYTES, Mode, X86, il_register, instruction, lift as x86_lift, mode_of,
 };
 use hereticus_il::{Reg, RegSet};
 use hereticus_memory::AddressSpace;
-use iced_x86::{Mnemonic, OpKind, Register};
+use iced_x86::{ConditionCode, Mnemonic, OpKind, Register};
 
 /// `endbr64`, which marks where an indirect branch may land.
 const ENDBR64: [u8; 4] = [0xf3, 0x0f, 0x1e, 0xfa];
@@ -31,6 +32,15 @@ const ENDBR32: [u8; 4] = [0xf3, 0x0f, 0x1e, 0xfb];
 
 /// `int3`, which clang and MSVC pad between functions with.
 const INT3: u8 = 0xcc;
+
+/// How far back the parts of a table jump may lie.
+const TABLE_LOOK_BACK: usize = 16;
+
+/// More cases than any `switch` a compiler turns into one table.
+const MOST_CASES: u64 = 4096;
+
+/// The width of an entry of a table of distances.
+const ENTRY_WIDTH: u64 = 4;
 
 impl Recovery for X86 {
     /// Code built with `-fcf-protection`, the default of most Linux
@@ -92,7 +102,8 @@ impl Recovery for X86 {
 
     /// The addresses each instruction forms, and the pointers it loads from
     /// a slot where they point into the image: a text that only a table of
-    /// pointers reaches is a text of the function too.
+    /// pointers reaches is a text of the function too. A table of cases is
+    /// no text: its distances move whenever the code does.
     fn data_addresses(
         &self,
         _code: &[u8],
@@ -101,9 +112,17 @@ impl Recovery for X86 {
         memory: &Memory<'_>,
     ) -> Vec<u64> {
         let width = self.pointer_width();
+        let tables: Vec<u64> = match (body.first(), body.last()) {
+            (Some(first), Some(last)) => {
+                let code = first.address..last.address + last.bytes_len as u64;
+                self.jump_tables(memory, code, body).iter().map(|table| table.words.start).collect()
+            }
+            _ => Vec::new(),
+        };
         body.iter()
             .filter(|insn| !matches!(insn.kind, InsnKind::Call { .. } | InsnKind::Jump { .. }))
             .filter_map(|insn| formed_address(insn, space))
+            .filter(|address| !tables.contains(address))
             .flat_map(|address| {
                 let loaded = memory
                     .bytes(address, width)
@@ -165,11 +184,138 @@ impl Recovery for X86 {
         slot_of(&insn)
     }
 
+    /// Clang and GCC jump through a table of distances from the table
+    /// itself, in `.rodata`, where they build for PIC:
+    ///
+    /// ```text
+    /// cmp    edi, 5                     ; the last case
+    /// ja     default
+    /// lea    rcx, [rip + table]
+    /// movsxd rax, dword ptr [rcx + 4*rax]
+    /// add    rax, rcx
+    /// jmp    rax
+    /// ```
+    fn jump_tables(&self, memory: &Memory<'_>, code: Range<u64>, insns: &[Insn]) -> Vec<JumpTable> {
+        (0..insns.len()).filter_map(|index| read_jump_table(memory, &code, insns, index)).collect()
+    }
+
     /// A jump through a slot of the global offset table leaves the
     /// function. A `switch` jumps through a register or a table with an
     /// index, and stays.
     fn is_tail_call(&self, insn: &Insn) -> bool {
         slot_of(insn).is_some()
+    }
+}
+
+/// The table that the jump at `index` of `insns` goes through, where it is
+/// one: see [`Recovery::jump_tables`].
+fn read_jump_table(
+    memory: &Memory<'_>,
+    code: &Range<u64>,
+    insns: &[Insn],
+    index: usize,
+) -> Option<JumpTable> {
+    let jump = &insns[index];
+    if jump.kind != (InsnKind::Jump { target: None }) {
+        return None;
+    }
+    let jump_inst = instruction(jump)?;
+    if jump_inst.op0_kind() != OpKind::Register {
+        return None;
+    }
+    let earlier = &insns[index.saturating_sub(TABLE_LOOK_BACK)..index];
+    let decoded: Vec<iced_x86::Instruction> = earlier.iter().filter_map(instruction).collect();
+    if decoded.len() != earlier.len() {
+        return None;
+    }
+    let target = jump_inst.op0_register().full_register();
+    let writes = |inst: &iced_x86::Instruction, register: Register| {
+        inst.op_count() >= 1
+            && inst.op0_kind() == OpKind::Register
+            && inst.op0_register().full_register() == register
+    };
+    // The last write of each register before `before`, by position.
+    let last_write = |register: Register, before: usize| {
+        (0..before).rev().find(|&at| writes(&decoded[at], register))
+    };
+    // `add rax, rcx`: the entry and the table.
+    let add_at = last_write(target, decoded.len())?;
+    let add = &decoded[add_at];
+    if add.mnemonic() != Mnemonic::Add || add.op1_kind() != OpKind::Register {
+        return None;
+    }
+    let table_register = add.op1_register().full_register();
+    // `movsxd rax, dword ptr [rcx + 4*rax]`: one entry.
+    let load_at = last_write(target, add_at)?;
+    let load = &decoded[load_at];
+    let loads_an_entry = load.mnemonic() == Mnemonic::Movsxd
+        && load.op1_kind() == OpKind::Memory
+        && load.memory_base().full_register() == table_register
+        && load.memory_index_scale() == ENTRY_WIDTH as u32
+        && load.memory_displacement64() == 0;
+    if !loads_an_entry {
+        return None;
+    }
+    // `lea rcx, [rip + table]`.
+    let lea = &decoded[last_write(table_register, load_at)?];
+    if lea.mnemonic() != Mnemonic::Lea || !lea.is_ip_rel_memory_operand() {
+        return None;
+    }
+    let table = lea.ip_rel_memory_address();
+    let index_register = load.memory_index().full_register();
+    let masked = last_write(index_register, load_at)
+        .map(|at| &decoded[at])
+        .filter(|inst| inst.mnemonic() == Mnemonic::And)
+        .and_then(constant_operand)
+        .filter(|mask| (mask + 1).is_power_of_two());
+    let cases = match masked {
+        // `and eax, 3`: the cases run from 0 to the mask.
+        Some(mask) => mask + 1,
+        None => cases_before(&earlier[..load_at], &decoded[..load_at])?,
+    };
+    if !(1..=MOST_CASES).contains(&cases) {
+        return None;
+    }
+
+    let mut targets = Vec::new();
+    for case in 0..cases {
+        let bytes = memory.bytes(table + case * ENTRY_WIDTH, ENTRY_WIDTH as usize)?;
+        let distance = i32::from_le_bytes(bytes.try_into().ok()?);
+        let target = table.checked_add_signed(i64::from(distance))?;
+        if !code.contains(&target) {
+            return None;
+        }
+        targets.push(target);
+    }
+    Some(JumpTable { jump: jump.address, words: table..table + cases * ENTRY_WIDTH, targets })
+}
+
+/// How many cases the last bound before a table jump admits: a `cmp` of a
+/// constant, and an unsigned branch on it.
+fn cases_before(earlier: &[Insn], decoded: &[iced_x86::Instruction]) -> Option<u64> {
+    let branch_at =
+        earlier.iter().rposition(|insn| matches!(insn.kind, InsnKind::Branch { .. }))?;
+    let compare =
+        decoded[..branch_at].iter().rev().find(|inst| inst.mnemonic() == Mnemonic::Cmp)?;
+    let bound = constant_operand(compare)?;
+    // The jump over the table, or to it.
+    let cases = match decoded[branch_at].condition_code() {
+        ConditionCode::a | ConditionCode::be => bound.checked_add(1)?,
+        ConditionCode::ae | ConditionCode::b => bound,
+        _ => return None,
+    };
+    Some(cases)
+}
+
+/// The constant that the second operand of `inst` is, where it is one.
+fn constant_operand(inst: &iced_x86::Instruction) -> Option<u64> {
+    match inst.op1_kind() {
+        OpKind::Immediate8
+        | OpKind::Immediate8to32
+        | OpKind::Immediate8to64
+        | OpKind::Immediate32
+        | OpKind::Immediate32to64 => Some(inst.immediate(1) & 0xffff_ffff),
+        _ => None,
     }
 }
 
@@ -765,6 +911,46 @@ mod tests {
         // 64-bit code reaches its data from `rip`, and adds no such distance.
         let insns = decode_all(&X86::BITS64, &code[..11], 0x1000).0;
         assert_eq!(global_offset_table_uses(&insns), [false, false]);
+    }
+
+    #[test]
+    fn a_jump_through_a_table_of_distances_names_its_cases() {
+        let code = [
+            0x83, 0xff, 0x02, //                         0x1000 cmp edi, 2
+            0x77, 0x13, //                               0x1003 ja 0x1018
+            0x89, 0xf8, //                               0x1005 mov eax, edi
+            0x48, 0x8d, 0x0d, 0xf2, 0x0f, 0x00, 0x00, // 0x1007 lea rcx, [rip + 0xff2]: 0x2000
+            0x48, 0x63, 0x04,
+            0x81, //                   0x100e movsxd rax, dword ptr [rcx + 4*rax]
+            0x48, 0x01, 0xc8, //                         0x1012 add rax, rcx
+            0xff, 0xe0, //                               0x1015 jmp rax
+            0xc3, //                                     0x1017 ret
+            0xc3, //                                     0x1018 ret
+        ];
+        let insns = decode(&code, 0x1000);
+        let table: Vec<u8> =
+            [-0x0fe9_i32, -0x0fe8, -0x0fe9].iter().flat_map(|entry| entry.to_le_bytes()).collect();
+        let regions = [(0x2000, &table[..])];
+        let tables = X86::BITS64.jump_tables(&Memory::new(&regions), 0x1000..0x1019, &insns);
+        assert_eq!(
+            tables,
+            [JumpTable {
+                jump: 0x1015,
+                words: 0x2000..0x200c,
+                targets: vec![0x1017, 0x1018, 0x1017]
+            }]
+        );
+        let space = AddressSpace::from_ranges(core::iter::once(0x1000..0x3000));
+        let read = X86::BITS64.data_addresses(&code, &insns, &space, &Memory::new(&regions));
+        assert!(read.is_empty(), "a table is no text: {read:x?}");
+        // `and eax, 1` bounds the cases as a compare does.
+        let masked = [&[0x83, 0xe0, 0x01, 0x90, 0x90][..], &code[7..]].concat();
+        let insns = decode(&masked, 0x1002);
+        let tables = X86::BITS64.jump_tables(&Memory::new(&regions), 0x1000..0x1019, &insns);
+        assert_eq!(tables.first().map(|table| table.targets.len()), Some(2));
+        // A case outside the code is no table.
+        let tables = X86::BITS64.jump_tables(&Memory::new(&regions), 0x1000..0x1018, &insns);
+        assert!(tables.is_empty());
     }
 
     #[test]
