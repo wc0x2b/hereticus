@@ -929,6 +929,7 @@ version = "0.1.0"
 dependencies = [
  "bolero",
  "compact_str",
+ "iced-x86",
  "rabbitizer",
  "rstest",
  "smallvec",
@@ -1019,6 +1020,15 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "iced-x86"
+version = "1.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c447cff8c7f384a7d4f741cfcff32f75f3ad02b406432e8d6c878d56b1edf6b"
+dependencies = [
+ "lazy_static",
+]
 
 [[package]]
 name = "ident_case"

@@ -1,5 +1,5 @@
 //! What one instruction is, and the decoders that read it: A64, A32,
-//! T32, MIPS32 and MIPS16e. A decoder reads one instruction at a time,
+//! T32, MIPS32, MIPS16e and x86. A decoder reads one instruction at a time,
 //! prints it on demand, and lifts it to the IL of this crate. It knows
 //! nothing of the binary around the instruction.
 
@@ -10,6 +10,7 @@ pub mod mips16;
 pub mod mips32;
 pub mod neon;
 pub mod thumb;
+pub mod x86;
 
 use core::fmt;
 
@@ -118,9 +119,9 @@ pub struct Insn {
     pub bytes_len: usize,
     /// The bytes, in the order memory holds them, from the first:
     /// [`Insn::bytes`] gives the [`Insn::bytes_len`] of them. An
-    /// instruction is four bytes at most, and a word of data among code
-    /// eight.
-    bytes: [u8; 8],
+    /// instruction is 15 bytes at most, as x86 allows, and a word of data
+    /// among code eight.
+    bytes: [u8; 16],
     /// How this instruction moves control, which the CFG builder needs.
     pub kind: InsnKind,
     /// The operation the decoder read.
@@ -128,11 +129,11 @@ pub struct Insn {
 }
 
 impl Insn {
-    /// An instruction of `bytes`. Past eight bytes, only the first eight
-    /// are kept.
+    /// An instruction of `bytes`. Past 16 bytes, only the first 16 are
+    /// kept.
     pub fn new(address: u64, bytes: &[u8], kind: InsnKind, opcode: Opcode) -> Self {
         let bytes_len = bytes.len();
-        let mut kept = [0; 8];
+        let mut kept = [0; 16];
         let held = bytes_len.min(kept.len());
         kept[..held].copy_from_slice(&bytes[..held]);
         Self { address, bytes_len, bytes: kept, kind, opcode }
@@ -167,6 +168,8 @@ pub enum Opcode {
     /// none, in the byte order its halfwords were read in: see
     /// [`mips::Decoded`].
     Mips16(mips::Decoded, mips::ByteOrder),
+    /// x86, in the mode it was read in.
+    X86(x86::Decoded, x86::Mode),
 }
 
 /// The decoder that read `insn`, by its opcode, where one did.
@@ -194,6 +197,10 @@ pub fn reader_of(insn: &Insn) -> Option<&'static dyn Decoder> {
         Opcode::Mips16(_, ByteOrder::Little) | Opcode::Unread(Set::Mips16(ByteOrder::Little)) => {
             &mips16::Mips16::LITTLE
         }
+        Opcode::X86(_, mode) | Opcode::Unread(Set::X86(mode)) => match mode {
+            x86::Mode::Bits32 => &x86::X86::BITS32,
+            x86::Mode::Bits64 => &x86::X86::BITS64,
+        },
     })
 }
 
@@ -237,6 +244,8 @@ pub enum InstructionSet {
     Mips(mips::ByteOrder),
     /// MIPS16e, in the byte order its halfwords are read in.
     Mips16(mips::ByteOrder),
+    /// x86, in the mode it is read in.
+    X86(x86::Mode),
 }
 
 impl Insn {
@@ -266,6 +275,10 @@ impl Insn {
                     .ok()
                     .map(|read| read.1)
             }
+            Opcode::X86(_, mode) | Opcode::Unread(Set::X86(mode)) => x86::X86::of(mode)
+                .read(self.bytes(), 0, self.address, Printing::Text)
+                .ok()
+                .map(|read| read.1),
         };
         // An instruction made by hand has no decoder to print it.
         let printed =
@@ -278,7 +291,7 @@ impl Insn {
 const UNKNOWN_TEXT: &str = "(unknown)";
 
 /// `text` with no space around it, and one space before the operands.
-fn one_space(text: &str) -> String {
+pub(crate) fn one_space(text: &str) -> String {
     let text = text.trim();
     match text.split_once(char::is_whitespace) {
         Some((head, tail)) if !tail.trim().is_empty() => format!("{head} {}", tail.trim()),
@@ -521,7 +534,7 @@ mod tests {
     type Read = fn(&[u8], Printing) -> Option<(Insn, String)>;
 
     /// Every decoder, by the instruction set it reads.
-    const DECODERS: [(&str, Read); 7] = [
+    const DECODERS: [(&str, Read); 9] = [
         ("A64", |code, printing| aarch64::Aarch64.read(code, 0, 0x1000, printing).ok()),
         ("A32", |code, printing| arm32::Arm32.read(code, 0, 0x1000, printing).ok()),
         ("T32", |code, printing| thumb::Thumb2.read(code, 0, 0x1000, printing).ok()),
@@ -529,6 +542,8 @@ mod tests {
         ("MIPSel", |code, printing| mips::Mips32::LITTLE.read(code, 0, 0x1000, printing).ok()),
         ("MIPS16e", |code, printing| mips16::Mips16::BIG.read(code, 0, 0x1000, printing).ok()),
         ("MIPS16el", |code, printing| mips16::Mips16::LITTLE.read(code, 0, 0x1000, printing).ok()),
+        ("x86-64", |code, printing| x86::X86::BITS64.read(code, 0, 0x1000, printing).ok()),
+        ("x86", |code, printing| x86::X86::BITS32.read(code, 0, 0x1000, printing).ok()),
     ];
 
     /// Printing changes nothing a decoder reads, and `Display` prints from
