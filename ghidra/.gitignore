@@ -1,0 +1,5 @@
+# What `gradle` writes.
+/.gradle
+/build
+/dist
+/lib

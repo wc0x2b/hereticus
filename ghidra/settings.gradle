@@ -1,0 +1,2 @@
+// The name of the project is the name of the extension in Ghidra.
+rootProject.name = 'Hereticus'

@@ -43,3 +43,19 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/ghidra.zip \
     && rm /tmp/ghidra.zip \
     && chmod -R a+rX /opt/ghidra
 ENV GHIDRA_HOME=/opt/ghidra
+
+# Builds the Ghidra extension of ghidra/ for `just ghidra-extension`. Ghidra
+# ships a Gradle wrapper, but the wrapper fetches Gradle at each new home, so
+# this stage holds one release, pinned as the others are.
+FROM ghidra AS ghidra-extension
+
+ARG GRADLE_VERSION=9.7.1
+ARG GRADLE_SHA256=acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a
+RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/gradle.zip \
+        "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+    && echo "${GRADLE_SHA256}  /tmp/gradle.zip" | sha256sum --check --quiet \
+    && unzip -q /tmp/gradle.zip -d /opt \
+    && mv "/opt/gradle-${GRADLE_VERSION}" /opt/gradle \
+    && rm /tmp/gradle.zip
+ENV PATH=/opt/gradle/bin:$PATH
+ENV GHIDRA_INSTALL_DIR=/opt/ghidra
