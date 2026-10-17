@@ -451,7 +451,24 @@ pub fn global_offset_table_uses(body: &[Insn]) -> Vec<bool> {
     if !steps.iter().any(|step| step.setup.is_some()) {
         return vec![false; body.len()];
     }
-    let held = hereticus_il::flow::held_on_every_path_of(&nearest_cases(body), |index, held| {
+    // Code that nothing reaches opens a path of its own where it is a
+    // function that a scan with no unwind table merged into the one before.
+    let next = nearest_cases(body);
+    let mut reached = vec![false; body.len()];
+    next.iter().flatten().for_each(|&successor| reached[successor] = true);
+    // Only code that makes the table in its first block is a function: a
+    // case laid out before the jump that dispatches it is reached too, by a
+    // path this walk cannot see.
+    let sets_up_first = |index: usize| {
+        let block_end = (index..body.len())
+            .find(|&at| !matches!(body[at].kind, InsnKind::Normal | InsnKind::Call { .. }))
+            .unwrap_or(body.len());
+        steps[index..block_end].iter().any(|step| step.setup.is_some())
+    };
+    let entries: Vec<usize> = (0..body.len())
+        .filter(|&index| index == 0 || (!reached[index] && sets_up_first(index)))
+        .collect();
+    let held = hereticus_il::flow::held_on_every_path_from(&next, &entries, |index, held| {
         step_holders(&steps[index], held);
     });
     steps
@@ -1184,6 +1201,20 @@ mod tests {
         ];
         let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
         assert!(nearest_cases(&insns)[0].is_empty());
+    }
+
+    #[test]
+    fn a_function_merged_after_another_makes_its_own_table() {
+        let code = [
+            0xc3, //                               ret, the end of a function
+            0xe8, 0x00, 0x00, 0x00, 0x00, //       call $+5, which nothing reaches
+            0x5b, //                               pop ebx
+            0x81, 0xc3, 0xac, 0x06, 0x01, 0x00, // add ebx, 0x106ac
+            0x8b, 0x43, 0x10, //                   mov eax, [ebx + 0x10]
+            0xc3, //                               ret
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(global_offset_table_uses(&insns), [false, false, false, true, true, false]);
     }
 
     #[test]

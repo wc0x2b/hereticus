@@ -97,11 +97,30 @@ where
     K: Clone + Eq + Hash,
     V: Clone + Eq,
 {
+    held_on_every_path_from(next, &[0], transfer)
+}
+
+/// [`held_on_every_path_of`], with a path from each of `entries`, where
+/// nothing is known, as from the first instruction.
+pub fn held_on_every_path_from<K, V>(
+    next: &[Vec<usize>],
+    entries: &[usize],
+    transfer: impl Fn(usize, &mut HashMap<K, V>),
+) -> Vec<HashMap<K, V>>
+where
+    K: Clone + Eq + Hash,
+    V: Clone + Eq,
+{
     // `None` until a path reaches the instruction.
     let mut held: Vec<Option<HashMap<K, V>>> = vec![None; next.len()];
-    let Some(entry) = held.first_mut() else { return Vec::new() };
-    *entry = Some(HashMap::new());
-    let mut work = vec![0];
+    let entries: Vec<usize> = entries.iter().copied().filter(|&entry| entry < next.len()).collect();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    for &entry in &entries {
+        held[entry] = Some(HashMap::new());
+    }
+    let mut work = entries;
     while let Some(index) = work.pop() {
         let mut out = held[index].clone().unwrap_or_default();
         transfer(index, &mut out);
