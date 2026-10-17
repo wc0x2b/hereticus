@@ -10,7 +10,8 @@ Ghidra:
 
 To build and install it, see the
 [Ghidra Extension](https://wc0x2b.github.io/hereticus/ghidra.html)
-page of the book. In short:
+page of the book. Each GitHub release has a zip for one Ghidra release. To
+build a zip for your Ghidra:
 
 ```console
 $ <GhidraInstallDir>/support/gradle/gradlew -PGHIDRA_INSTALL_DIR=<GhidraInstallDir> -p .

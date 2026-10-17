@@ -99,6 +99,42 @@ publish *args:
 build:
     cargo build --release
 
+# Build the static binary that a release attaches, in
+# target/x86_64-unknown-linux-musl/dist/.
+dist:
+    cargo build --locked --profile dist --bin hereticus
+
+# Build the Ghidra extension zip that a release attaches, in ghidra/dist/. The
+# zip installs only in the Ghidra release that fixtures/rivals/Dockerfile pins.
+ghidra-dist:
+    docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
+    docker build --quiet --tag {{rivals_image}}-ghidra-extension fixtures/ghidra-extension
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --env HOME=/tmp \
+        --env GRADLE_USER_HOME=/work/fixtures/build/gradle \
+        --volume "{{justfile_directory()}}:/work" \
+        --workdir /work/ghidra \
+        {{rivals_image}}-ghidra-extension gradle --quiet --no-daemon clean buildExtension
+
+# Put the assets of a release in target/release-assets/: the binary with the
+# README and licenses, and the Ghidra extension, named for the Ghidra release
+# it installs in. Give the tag of the release, as `v0.1.0`.
+release-assets tag: dist ghidra-dist
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target=x86_64-unknown-linux-musl
+    out=target/release-assets
+    rm -rf "$out"
+    mkdir -p "$out"
+    tar -czf "$out/hereticus-{{tag}}-$target.tar.gz" \
+        -C "target/$target/dist" hereticus \
+        -C "{{justfile_directory()}}" README.md LICENSE-APACHE LICENSE-MIT
+    zip="$(echo ghidra/dist/ghidra_*_Hereticus.zip)"
+    ghidra="$(basename "$zip" | sed -E 's/^(ghidra_[^_]+)_.*/\1/')"
+    cp "$zip" "$out/hereticus-{{tag}}-$ghidra.zip"
+    ls "$out"
+
 # The tests in `truth_*` files check the results against the truth: the pairs
 # of the OpenWrt kernels and of 218 Ubuntu security updates against the symbols
 # of their builds, and the rank of each published fix of `real-life-reports/`
