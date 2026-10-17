@@ -171,8 +171,10 @@ run level="O2" *args: fixtures
         fixtures/build/{{level}}/firmware.o \
         fixtures/build/{{level}}/firmware_v2.o {{args}}
 
-bench:
-    cargo bench
+# Time the read and the comparison of the backports. The gungraun bench needs
+# `gungraun-runner` of the same version as `gungraun` in Cargo.lock.
+bench *args: backports
+    cargo bench -p hereticus {{args}}
 
 lint:
     cargo fmt

@@ -9,7 +9,23 @@ just fixtures     # rebuild the ARM32, MIPS, Mach-O and garbled Go corpus
 just rivals       # run radiff2 on the backports, which `quick-test` compares with
 just rivals-ghidra  # run Ghidra Version Tracking on them, which `test` compares with
 just ghidra-extension  # build the Ghidra extension and run it in Ghidra, which `test` checks
+just bench        # time the read and the comparison of the backports
 ```
+
+## Benchmarks
+
+`hereticus/benches/` reads and compares backports of zlib for x86-64 and of
+Lua for ARM32, with symbols, stripped and as raw images. Each bench has two
+forms:
+
+- `criterion_benchmark` measures the wall time.
+- `gungraun_benchmark` counts the instructions under Valgrind, and needs
+  `gungraun-runner` of the same version as `gungraun` in `Cargo.lock`.
+
+On each pull request, `.github/workflows/benchmark.yml` runs both on the base
+branch and on the pull request, and writes the change as a comment. Use the
+counts of gungraun to make a decision, because the wall time of a CI runner
+changes with its load.
 
 ## Crates
 
@@ -28,18 +44,6 @@ row.
 | `hereticus-callees`  | Find the callee of each call              | arch, il, image, memory, recovery                |
 | `hereticus-view`     | Show code as instructions or as IL        | arch, callees, il, image, memory, recovery       |
 | `hereticus-match`    | Compare the functions of two binaries     | arch, callees, il, image, memory, recovery, view |
-
-## Development
-All patches/merge requests are welcome!
-
-```
-just quick-test   # about a minute
-just test         # the same, plus the slow and the `truth_*` tests
-just fixtures     # rebuild the ARM32, MIPS, Mach-O and garbled Go corpus
-just rivals       # run radiff2 on the backports, which `quick-test` compares with
-just rivals-ghidra  # run Ghidra Version Tracking on them, which `test` compares with
-just ghidra-extension  # build the Ghidra extension and run it in Ghidra, which `test` checks
-```
 
 ## Numbers in the Docs
 
