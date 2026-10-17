@@ -26,3 +26,7 @@ yaxpeax-arm = "0.4"
 # coverage-guided fuzzer when one is available.
 bolero = { version = "0.13", features = ["arbitrary"] }
 rstest = "0.27"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Maps memory at a fixed address, to put code across a 4 GiB boundary.
+libc = "0.2"

@@ -932,6 +932,7 @@ dependencies = [
  "bolero",
  "compact_str",
  "iced-x86",
+ "libc",
  "rabbitizer",
  "rstest",
  "smallvec",

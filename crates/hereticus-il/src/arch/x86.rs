@@ -741,6 +741,43 @@ mod tests {
         X86::BITS64.read(bytes, 0, 0x1000, Printing::Text).expect("the bytes must decode")
     }
 
+    /// An instruction whose bytes lie across a 4 GiB boundary of memory
+    /// decodes. iced-x86 takes the length of an instruction from the low 32
+    /// bits of two pointers, which wrap there: with overflow checks on, as
+    /// the release profile has them, that panicked, wherever the allocator
+    /// put a file.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_instruction_across_a_4_gib_boundary_decodes() {
+        const PAGE: usize = 0x1000;
+        /// A 4 GiB boundary, far from what the allocator hands out.
+        const BOUNDARY: usize = 0x7f00_0000_0000;
+        // SAFETY: a fresh mapping at an address no one holds, which
+        // `MAP_FIXED_NOREPLACE` leaves alone if it is taken.
+        let mapped = unsafe {
+            libc::mmap(
+                (BOUNDARY - PAGE) as *mut libc::c_void,
+                2 * PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
+                -1,
+                0,
+            )
+        };
+        if mapped as usize != BOUNDARY - PAGE {
+            eprintln!("skipped: the address is taken");
+            return;
+        }
+        // SAFETY: the mapping is two pages long, and nothing else holds it.
+        let memory = unsafe { core::slice::from_raw_parts_mut(mapped.cast::<u8>(), 2 * PAGE) };
+        // `call $+5`, two bytes before the boundary and three after.
+        memory[PAGE - 2..PAGE + 3].copy_from_slice(&[0xe8, 0x00, 0x00, 0x00, 0x00]);
+        let decoded = X86::BITS64.decode(memory, PAGE - 2, 0x1000).map(|insn| insn.bytes_len);
+        // SAFETY: the slice is not used past here.
+        unsafe { libc::munmap(mapped, 2 * PAGE) };
+        assert_eq!(decoded, Ok(5));
+    }
+
     fn lift_one(bytes: &[u8]) -> Lifted {
         X86::BITS64.lift(&read(bytes).0).expect("the bytes must lift")
     }
