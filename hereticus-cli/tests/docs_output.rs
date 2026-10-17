@@ -209,10 +209,9 @@ fn the_stub_example_counts_the_bytes_that_changed() {
     assert_eq!(before.len(), after.len(), "the two stubs have one size");
     let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
     let claim = format!("{changed} of its {} bytes changed", with_commas(before.len()));
-    for doc in [root().join("book/src/examples.md")] {
-        let text = std::fs::read_to_string(&doc).expect("a doc").replace('\n', " ");
-        assert!(text.contains(&claim), "{} does not say `{claim}`", doc.display());
-    }
+    let doc = root().join("book/src/examples.md");
+    let text = std::fs::read_to_string(&doc).expect("a doc").replace('\n', " ");
+    assert!(text.contains(&claim), "{} does not say `{claim}`", doc.display());
 }
 
 /// `15351` as `15,351`.
