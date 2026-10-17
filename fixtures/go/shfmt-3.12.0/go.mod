@@ -1,5 +1,6 @@
 // The Go fixture: shfmt, which `fixtures/go.sh` builds with garble, as Go
-// malware is obfuscated. A module of its own pins every dependency.
+// malware is obfuscated. A module of its own pins every dependency, and
+// `fixtures/go/shfmt-3.11.0` holds the release before it.
 module example.com/shfmt
 
 go 1.27

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Build the Go fixture, shfmt, with garble for each architecture, as Go
-# malware is obfuscated, and write the function table of each build beside
-# it. Run by `fixtures/build.sh`.
+# Build the Go fixture, two releases of shfmt, with garble for each
+# architecture, as Go malware is obfuscated, and write the function table
+# of each build beside it. Run by `fixtures/build.sh`.
 #
 # garble scrambles the names and hides the function table from Ghidra and
 # the like, so the scan reads the code alone. Each build writes
-# build/go/shfmt-<arch>.bin and build/go/shfmt-<arch>.truth, one
-# "entry end name" a line, which hereticus/tests/go_garbled.rs reads.
+# build/go/shfmt-<version>-<arch>.bin and .truth, one "entry end name" a
+# line, with the names that `garble reverse` gives back, so a test can tell
+# which functions of two releases are the same. hereticus/tests/go_garbled.rs
+# reads them.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,18 +31,24 @@ export GOTOOLCHAIN=local
 # Each architecture as `GOARCH[:variant]`. MIPS soft float, as routers run.
 targets=(amd64 386 arm64 arm:7 arm:5 mips:softfloat mipsle:softfloat)
 
-cd "$here/go/shfmt"
+for version in 3.11.0 3.12.0; do
+cd "$here/go/shfmt-$version"
 for target in "${targets[@]}"; do
     goarch="${target%%:*}"
     variant="${target#*:}"
     [ "$variant" = "$target" ] && variant=""
-    name="shfmt-$goarch${variant:+-$variant}"
+    name="shfmt-$version-$goarch${variant:+-$variant}"
     env=(GOOS=linux "GOARCH=$goarch")
     case "$goarch" in
         arm) env+=("GOARM=$variant") ;;
         mips | mipsle) env+=("GOMIPS=$variant") ;;
     esac
     env "${env[@]}" garble build -o "$out/$name.bin" mvdan.cc/sh/v3/cmd/shfmt
-    pcln "$out/$name.bin" >"$out/$name.truth"
+    # `garble reverse` maps the names back for the same package and the
+    # same target only.
+    pcln "$out/$name.bin" >"$out/$name.names"
+    env "${env[@]}" garble reverse mvdan.cc/sh/v3/cmd/shfmt "$out/$name.names" >"$out/$name.truth"
+    rm "$out/$name.names"
+done
 done
 echo "fixtures: garbled Go built in $out"

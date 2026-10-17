@@ -115,6 +115,12 @@ the answer.
 | MIPS32 big-endian | 3491<!-- from go_garbled: mips-softfloat hereticus / real --> | 88<!-- from go_garbled: mips-softfloat hereticus / missed --> | 2379<!-- from go_garbled: mips-softfloat ghidra / real --> | 1200<!-- from go_garbled: mips-softfloat ghidra / missed --> |
 | MIPS32 little-endian | 3491<!-- from go_garbled: mipsle-softfloat hereticus / real --> | 88<!-- from go_garbled: mipsle-softfloat hereticus / missed --> | 1517<!-- from go_garbled: mipsle-softfloat ghidra / real --> | 2062<!-- from go_garbled: mipsle-softfloat ghidra / missed --> |
 
+The same test compares shfmt 3.11.0 with 3.12.0, both garbled, as two
+releases of one piece of malware. `garble` names each function anew in
+each release, so the pairs come from the code alone, and `garble reverse`
+gives back the names that judge them. The few wrong pairs join twins with
+the same code, as `unix.mmap` and `unix.mremap`.
+
 Ghidra loads the little-endian MIPS build as 64-bit MIPS32r6, which the ELF
 header does not say, and so finds the fewest there. On a build that
 `garble` did not touch, Ghidra 12 reads the function table of Go for x86-64
