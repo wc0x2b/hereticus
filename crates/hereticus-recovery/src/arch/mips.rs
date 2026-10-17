@@ -139,7 +139,7 @@ impl Recovery for Mips32 {
     /// function whether or not the function has a frame, and wherever the
     /// code before it ends.
     fn is_function_entry(&self, body: &[Insn]) -> bool {
-        is_gp_disp_preamble(body)
+        is_gp_disp_preamble(body) || is_go_stack_check(body)
     }
 
     /// Under PIC the `_gp_disp` pair sits before the frame allocation, so the
@@ -402,6 +402,45 @@ fn constant_pair_register(high: &Insn, low: &Insn) -> Option<il::Reg> {
 /// and `t9` follows it. The two need not be adjacent: a compiler puts the frame
 /// prologue between them, which is why a window is searched rather than the
 /// next word alone.
+/// Whether `body` opens with the check of its stack that Go puts first in
+/// each function that makes a frame:
+///
+/// ```text
+/// lw   $1, 8($30)     ; the stack bound of the goroutine, which $30 holds
+/// sltu $1, $1, $sp
+/// ```
+///
+/// Go makes the frame after the check, so no prologue opens such a
+/// function, and a call that never returns, as to `runtime.gopanic`, can
+/// end the one before it.
+pub fn is_go_stack_check(body: &[Insn]) -> bool {
+    /// Go keeps the current goroutine in $30.
+    const GOROUTINE: il::Reg = il::Reg::General(30);
+    /// The lift names `$sp` by its number.
+    const STACK: il::Reg = il::Reg::General(29);
+    /// The offset of the stack bound in a goroutine.
+    const STACK_GUARD: i64 = 8;
+    let [load, compare, ..] = body else { return false };
+    let bound = match operands_of(load).as_slice() {
+        [
+            il::Operand::Reg(bound),
+            il::Operand::Memory {
+                base: Some(GOROUTINE),
+                offset: Some(STACK_GUARD),
+                index: None,
+                update: il::Update::None,
+            },
+        ] => *bound,
+        _ => return false,
+    };
+    is(load, Opcode::core_lw)
+        && is(compare, Opcode::core_sltu)
+        && matches!(
+            operands_of(compare).as_slice(),
+            [_, il::Operand::Reg(left), il::Operand::Reg(STACK)] if *left == bound
+        )
+}
+
 pub fn is_gp_disp_preamble(body: &[Insn]) -> bool {
     gp_disp_consumer(body).is_some()
 }
@@ -756,6 +795,21 @@ mod tests {
 
     /// Encodings from `llvm-mc --triple=mips --show-encoding`, as words.
     mod words {}
+
+    /// Go checks its stack first: `lw $1, 8($30)` and `sltu $1, $1, $sp`.
+    #[rstest::rstest]
+    #[case::go(0x8fc1_0008, 0x003d_082b, true)]
+    #[case::another_base(0x8fa1_0008, 0x003d_082b, false)] // lw $1, 8($sp)
+    #[case::another_offset(0x8fc1_000c, 0x003d_082b, false)] // lw $1, 12($30)
+    #[case::another_compare(0x8fc1_0008, 0x0022_082b, false)] // sltu $1, $1, $2
+    fn the_go_stack_check_opens_a_function(
+        #[case] load: u32,
+        #[case] compare: u32,
+        #[case] opens: bool,
+    ) {
+        let body = [decode_one(load), decode_one(compare)];
+        assert_eq!(Mips32::LITTLE.is_function_entry(&body), opens);
+    }
 
     /// `jr` through any other register is a tail call or a switch, which
     /// leaves the block but does not end the function the way a return does.

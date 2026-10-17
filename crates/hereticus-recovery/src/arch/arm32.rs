@@ -148,9 +148,9 @@ impl Recovery for Arm32 {
         decoded(insn) == Some(Decoded::NeonData)
     }
 
-    /// See `is_long_thunk`.
+    /// See `is_long_thunk` and `is_go_stack_check`.
     fn is_function_entry(&self, body: &[Insn]) -> bool {
-        is_long_thunk(body)
+        is_long_thunk(body) || is_go_stack_check(body)
     }
 
     fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<super::CallTarget>)> {
@@ -541,6 +541,42 @@ impl PcModel {
             Alignment::ToWord => self.of(address) & !3,
         }
     }
+}
+
+/// Whether `body` opens with the check of its stack that Go puts first in
+/// each function that makes a frame:
+///
+/// ```text
+/// ldr rX, [r10, 8]   ; the stack bound of the goroutine, which r10 holds
+/// cmp sp, rX
+/// ```
+///
+/// Go makes the frame after the check, and pads between its functions with
+/// zero words, which a pool can hold too: so without it, a function after
+/// a return and its padding read as more of the one before.
+pub fn is_go_stack_check(body: &[Insn]) -> bool {
+    /// Go keeps the current goroutine in r10.
+    const GOROUTINE: il::Reg = il::Reg::General(10);
+    /// The offset of the stack bound in a goroutine.
+    const STACK_GUARD: i64 = 8;
+    let [load, compare, ..] = body else { return false };
+    let operands = |insn: &Insn| lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
+    let bound = match operands(load).as_slice() {
+        [
+            il::Operand::Reg(bound),
+            il::Operand::Memory {
+                base: Some(GOROUTINE),
+                offset: Some(STACK_GUARD),
+                index: None,
+                update: il::Update::None,
+            },
+        ] => *bound,
+        _ => return false,
+    };
+    is_plain(load, Opcode::LDR)
+        && core_opcode(compare) == Some(Opcode::CMP)
+        && operands(compare).as_slice()
+            == [il::Operand::Reg(il::Reg::Stack), il::Operand::Reg(bound)]
 }
 
 /// Whether `body` opens with LLD's range extension thunk, a function by
@@ -968,6 +1004,28 @@ fn writes_first_operand(insn: &Insn) -> bool {
                 | Opcode::BLX
         )
     )
+}
+
+#[cfg(test)]
+mod go_tests {
+    use super::*;
+    use crate::arch::decode_all;
+
+    /// Go checks its stack first: `ldr r1, [r10, 8]` and `cmp sp, r1`.
+    #[rstest::rstest]
+    #[case::go(0xe59a_1008, 0xe15d_0001, true)]
+    #[case::another_base(0xe59b_1008, 0xe15d_0001, false)] // ldr r1, [r11, 8]
+    #[case::another_offset(0xe59a_100c, 0xe15d_0001, false)] // ldr r1, [r10, 12]
+    #[case::another_compare(0xe59a_1008, 0xe150_0001, false)] // cmp r0, r1
+    fn the_go_stack_check_opens_a_function(
+        #[case] load: u32,
+        #[case] compare: u32,
+        #[case] opens: bool,
+    ) {
+        let code: Vec<u8> = [load, compare].iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        assert_eq!(Arm32.is_function_entry(&insns), opens);
+    }
 }
 
 #[cfg(test)]
