@@ -164,6 +164,23 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
         index = index_from_ranges(&ranges, arch);
     }
 
+    // Call frame information can list a whole PLT as one function, as it
+    // does for i386, where each entry is a stub of its own.
+    if let Some(size) = arch.plt_entry_size() {
+        for section in file.sections() {
+            let is_plt = section.name().is_ok_and(|name| name.starts_with(".plt"));
+            if is_plt && section.kind() == SectionKind::Text {
+                let range = section.address()..section.address() + section.size();
+                index.extend(
+                    range
+                        .step_by(size as usize)
+                        .map(|address| IndexEntry { address, unwinding: Unwinding::Listed }),
+                );
+            }
+        }
+        index.sort_by_key(|entry| entry.address);
+    }
+
     // Tables that code reads, such as those a `switch` jumps through, can
     // lie in any section the binary loads.
     let loaded: Vec<(u64, &[u8])> = file

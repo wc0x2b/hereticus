@@ -566,3 +566,24 @@ fn a_build_compared_with_itself_reports_nothing(
         assert!(diff.removed.is_empty() && diff.added.is_empty());
     }
 }
+
+/// A raw image of a whole library holds its dynamic segment, so each PLT
+/// stub keeps the name of its import, as it does in the stripped library.
+#[rstest]
+fn a_raw_image_names_the_stubs_of_its_plt(
+    #[values("x86_64", "i686", "aarch64")] arch: &'static str,
+) {
+    let build = build(Project::Tinyxml2, arch, "O2");
+    let stubs = |binary: &Binary| -> BTreeSet<(u64, String)> {
+        binary
+            .functions
+            .iter()
+            .filter(|function| function.name.ends_with("@plt"))
+            .map(|function| (function.address, function.name.clone()))
+            .collect()
+    };
+    let raw = stubs(&parse_raw(build, "before"));
+    let stripped = stubs(&parse(build, "before", "lib-stripped.so"));
+    assert!(!raw.is_empty(), "{build:?}: no stub is named");
+    assert_eq!(raw, stripped, "{build:?}");
+}

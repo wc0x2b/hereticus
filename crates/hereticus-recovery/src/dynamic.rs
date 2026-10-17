@@ -76,6 +76,56 @@ impl<'data> Dynamic<'data> {
         Some(Self { entries, loaded, order, width })
     }
 
+    /// The dynamic segment that a raw image of a whole ELF file holds, as
+    /// `objcopy -O binary` writes one, or `None` where none is found.
+    ///
+    /// A raw image has no program header to point at it, but the segment is
+    /// loaded, so it is among the bytes: a run of entries that ends with
+    /// `DT_NULL` and names a symbol table and its strings inside the image.
+    /// `pointer_width` is 4 or 8, and `order` the byte order of the image.
+    pub fn find_in_raw(
+        base: u64,
+        image: &'data [u8],
+        pointer_width: usize,
+        order: Endianness,
+    ) -> Option<Self> {
+        /// More entries than any dynamic segment holds.
+        const MOST_ENTRIES: usize = 128;
+        let width = match pointer_width {
+            4 => Width::Bits32,
+            8 => Width::Bits64,
+            _ => return None,
+        };
+        let loaded = vec![(base, image)];
+        let inside = |address: u64| (base..base + image.len() as u64).contains(&address);
+        let probe = Self { entries: Vec::new(), loaded: loaded.clone(), order, width };
+        (0..image.len()).step_by(pointer_width).find_map(|start| {
+            let mut entries = Vec::new();
+            for index in 0..MOST_ENTRIES {
+                let at = base + (start + 2 * index * pointer_width) as u64;
+                let tag = probe.word(at, pointer_width as u64)?;
+                let value = probe.word(at + pointer_width as u64, pointer_width as u64)?;
+                if tag == DT_NULL {
+                    break;
+                }
+                if !is_known_tag(tag) {
+                    return None;
+                }
+                entries.push((tag, value));
+            }
+            let names_tables = [DT_STRTAB, DT_SYMTAB]
+                .iter()
+                .all(|&tag| entries.iter().any(|&(held, value)| held == tag && inside(value)))
+                && entries.iter().any(|&(tag, _)| tag == DT_STRSZ);
+            names_tables.then(|| Self { entries, loaded: loaded.clone(), order, width })
+        })
+    }
+
+    /// The address of the global offset table, as `DT_PLTGOT` gives it.
+    pub fn global_offset_table(&self) -> Option<u64> {
+        self.value(DT_PLTGOT)
+    }
+
     /// The value of the first entry with `tag`.
     pub fn value(&self, tag: u64) -> Option<u64> {
         self.entries.iter().find_map(|&(entry_tag, value)| (entry_tag == tag).then_some(value))
@@ -297,6 +347,16 @@ impl<'data> Dynamic<'data> {
             data.get(offset..)
         })
     }
+}
+
+/// Whether `tag` is one the ELF standard or a common extension defines, so
+/// that a run of words holding it can be a dynamic segment.
+fn is_known_tag(tag: u64) -> bool {
+    /// The tags of the generic ABI, up to `DT_SYMTAB_SHNDX`.
+    const LAST_GENERIC: u64 = 34;
+    /// The tags of GNU and of the processor supplements.
+    const EXTENSIONS: core::ops::RangeInclusive<u64> = 0x6000_0000..=0x7fff_ffff;
+    tag <= LAST_GENERIC || EXTENSIONS.contains(&tag)
 }
 
 /// The fields of a symbol that are read here.

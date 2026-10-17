@@ -703,9 +703,11 @@ impl Binary {
             let ranges = unwind::find_function_ranges(data, base, order);
             index = scan::index_from_ranges(&ranges, isa.arch());
         }
+        let links = Links::of_raw_image(base, data, isa.arch().pointer_width(), isa.byte_order());
         let functions: Vec<Function> = scan::recover_from_regions(&regions, &index, isa.arch())
             .into_iter()
             .map(unnamed)
+            .map(|function| name_stub(function, isa.arch(), &links))
             .collect();
 
         if functions.is_empty() {
@@ -713,7 +715,6 @@ impl Binary {
         }
 
         let addresses = AddressSpace::of_raw_image(base, data.len() as u64);
-        let links = Links::of_raw_image(base, data);
         Ok(Self {
             isa,
             functions,

@@ -21,6 +21,9 @@ pub struct Links {
     slots: BTreeMap<u64, String>,
     /// The symbol each Mach-O stub stands for, by the address of the stub.
     stubs: BTreeMap<u64, String>,
+    /// The address of the global offset table, from which a stub of 32-bit
+    /// x86 PIC finds its slot.
+    table: Option<u64>,
     /// The symbol a relocation at a call names, by the address of the call.
     sites: BTreeMap<u64, String>,
     /// Where each section of read-only data starts, whose first string
@@ -33,9 +36,20 @@ pub struct Links {
 }
 
 impl Links {
-    /// Links for a raw image: its bytes, and no names.
-    pub fn of_raw_image(base: u64, data: &[u8]) -> Self {
-        Self { memory: vec![(base, data.to_vec())], ..Self::default() }
+    /// Links for a raw image: its bytes, and the names of the slots the
+    /// relocations of its dynamic segment write, where the image holds one,
+    /// as an image of a whole shared library does. `pointer_width` and
+    /// `order` are those of its words.
+    pub fn of_raw_image(base: u64, data: &[u8], pointer_width: usize, order: ByteOrder) -> Self {
+        let order = match order {
+            ByteOrder::Little => object::Endianness::Little,
+            ByteOrder::Big => object::Endianness::Big,
+        };
+        let dynamic =
+            hereticus_recovery::dynamic::Dynamic::find_in_raw(base, data, pointer_width, order);
+        let slots = dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default();
+        let table = dynamic.and_then(|dynamic| dynamic.global_offset_table());
+        Self { memory: vec![(base, data.to_vec())], slots, table, ..Self::default() }
     }
 
     /// Read what an object file says about its calls.
@@ -77,7 +91,9 @@ impl Links {
             .filter(|&address| address != 0)
             .collect();
         let relocated = relocated_addresses(file, &memory);
-        Self { memory, slots, stubs, sites: BTreeMap::new(), read_only_starts, relocated }
+        let table = hereticus_recovery::dynamic::Dynamic::of(file)
+            .and_then(|dynamic| dynamic.global_offset_table());
+        Self { memory, slots, stubs, table, sites: BTreeMap::new(), read_only_starts, relocated }
     }
 
     /// Links for a kernel module, or another unlinked object, whose code
@@ -98,7 +114,7 @@ impl Links {
         if let Some(name) = self.stubs.get(&address) {
             return Some(name);
         }
-        let slot = arch.stub_slot(self.bytes_at(address)?, address)?;
+        let slot = self.stub_slot(arch, self.bytes_at(address)?, address)?;
         self.slot_name(slot)
     }
 
@@ -119,8 +135,15 @@ impl Links {
         arch: &dyn Arch,
         function: &hereticus_memory::Function,
     ) -> Option<String> {
-        let slot = arch.stub_slot(&function.code, function.address)?;
+        let slot = self.stub_slot(arch, &function.code, function.address)?;
         self.slots.get(&slot).map(|name| format!("{name}@plt"))
+    }
+
+    /// The slot the PLT stub `code` at `address` jumps through: the one it
+    /// names, or the one at its distance from the global offset table.
+    fn stub_slot(&self, arch: &dyn Arch, code: &[u8], address: u64) -> Option<u64> {
+        arch.stub_slot(code, address)
+            .or_else(|| Some(self.table?.wrapping_add(arch.stub_table_offset(code)?)))
     }
 
     /// These links, with `sites` as the symbol each relocation at a call or
@@ -135,6 +158,7 @@ impl Links {
             memory,
             slots,
             stubs: BTreeMap::new(),
+            table: None,
             sites: BTreeMap::new(),
             read_only_starts: BTreeSet::new(),
             relocated: BTreeMap::new(),
