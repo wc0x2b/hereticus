@@ -202,7 +202,7 @@ fn mips16_pairs_across_builds_are_locked() {
 
 /// The hints of a place over every comparison.
 ///
-/// `README.md` and the book quote the share of right hints.
+/// The book quotes the share of right hints.
 #[test]
 fn the_place_hints_are_locked() {
     use std::fmt::Write as _;

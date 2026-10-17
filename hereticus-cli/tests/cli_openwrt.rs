@@ -1,7 +1,7 @@
 //! Lock what the command line tool prints for real OpenWrt firmware.
 //!
 //! Each test compares the kernel decompressor stub of 22.03.2 with that of
-//! 22.03.5 for one board, as the README example does. `just firmware` fetches
+//! 22.03.5 for one board, as the example in the book does. `just firmware` fetches
 //! and pins the files. Run `cargo insta review` to accept a change on purpose.
 
 use std::path::Path;
@@ -33,9 +33,9 @@ fn compare_stubs(board: &str, arch: &str, base: &str) -> Command {
     command
 }
 
-/// The README example: the ARM zImage stub of the Netgear EX6100v2.
+/// The example in the book: the ARM zImage stub of the Netgear EX6100v2.
 ///
-/// `README.md` shows this output, and `tests/docs_output.rs` checks that it
+/// `book/src/examples.md` shows this output, and `tests/docs_output.rs` checks that it
 /// agrees.
 #[test]
 fn compares_the_arm_stubs_of_two_openwrt_releases() {

@@ -197,7 +197,7 @@ fn check(docs: &[PathBuf]) {
     assert!(checked > 0, "no doc shows an output with an `{OUTPUT_START}` marker");
 }
 
-/// The bytes of the two stubs that differ, as the README example says.
+/// The bytes of the two stubs that differ, as the example in the book says.
 #[test]
 fn the_stub_example_counts_the_bytes_that_changed() {
     let read = |release: &str| {
@@ -209,7 +209,7 @@ fn the_stub_example_counts_the_bytes_that_changed() {
     assert_eq!(before.len(), after.len(), "the two stubs have one size");
     let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
     let claim = format!("{changed} of its {} bytes changed", with_commas(before.len()));
-    for doc in [root().join("README.md"), root().join("book/src/examples.md")] {
+    for doc in [root().join("book/src/examples.md")] {
         let text = std::fs::read_to_string(&doc).expect("a doc").replace('\n', " ");
         assert!(text.contains(&claim), "{} does not say `{claim}`", doc.display());
     }
