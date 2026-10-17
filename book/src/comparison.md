@@ -71,14 +71,14 @@ sections. The symbols of its build say where each of its
 
 | Tool | Starts found | Real | Not real |
 |------|--------------|------|----------|
-| hereticus | 19722<!-- from truth_function_starts: hereticus / found --> | 19258<!-- from truth_function_starts: hereticus / real --> | 464<!-- from truth_function_starts: hereticus / not real --> |
+| hereticus | 19741<!-- from truth_function_starts: hereticus / found --> | 19277<!-- from truth_function_starts: hereticus / real --> | 464<!-- from truth_function_starts: hereticus / not real --> |
 | Ghidra, default | 13801<!-- from truth_function_starts: ghidra default / found --> | 13210<!-- from truth_function_starts: ghidra default / real --> | 591<!-- from truth_function_starts: ghidra default / not real --> |
 | Ghidra, Aggressive Instruction Finder | 14144<!-- from truth_function_starts: ghidra aggressive / found --> | 13545<!-- from truth_function_starts: ghidra aggressive / real --> | 599<!-- from truth_function_starts: ghidra aggressive / not real --> |
 
 Ghidra finds a function when code calls it, or when its first bytes look
 like the start of a function. Of the real functions that Ghidra finds,
 77%<!-- from truth_function_starts: ghidra default finds / jal% --> have a direct call. Of the
-6097<!-- from truth_function_starts: only hereticus finds / count --> real functions that only `hereticus`
+6103<!-- from truth_function_starts: only hereticus finds / count --> real functions that only `hereticus`
 finds, 5%<!-- from truth_function_starts: only hereticus finds / jal% --> have a direct call, and the
 address of 76%<!-- from truth_function_starts: only hereticus finds / word% --> is in a data word. These
 functions are callbacks: system calls, `file_operations`, `net_device_ops`,
