@@ -294,7 +294,9 @@ impl Binary {
         for (address, value) in self.links.words(self.isa.address_width(), self.isa.byte_order()) {
             // A zero word is a null pointer, even where a function starts
             // at zero.
-            let function = (value != 0).then(|| starts.get(&(value & !1)).copied()).flatten();
+            let function = (value != 0)
+                .then(|| starts.get(&scan::symbol_address(self.isa.arch(), value)).copied())
+                .flatten();
             if next != Some(address) || function.is_none() {
                 tables.extend(run.end());
             }
@@ -397,7 +399,7 @@ impl Binary {
                 && let Ok(name) = symbol.name()
             {
                 // ARM marks a Thumb function by setting bit 0 of its address.
-                let address = symbol.address() & !1;
+                let address = scan::symbol_address(isa.arch(), symbol.address());
                 if set_of_symbol(isa, encoding_of(&symbol)) != isa {
                     other_set.insert(address);
                 }
@@ -584,10 +586,7 @@ impl Binary {
         let linked = scan::Linked {
             exported: exports
                 .iter()
-                .map(|export| {
-                    let start = export.address & !1;
-                    start..(start + export.size) & !1
-                })
+                .map(|export| scan::symbol_range(isa.arch(), export.address, export.size))
                 .collect(),
             pointers: Vec::new(),
             slot_names: dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default(),
@@ -617,7 +616,7 @@ impl Binary {
                 true => Encoding::Compact,
                 false => Encoding::Full,
             };
-            let address = export.address & !1;
+            let address = scan::symbol_address(isa.arch(), export.address);
             if set_of_symbol(isa, encoding) != isa {
                 other_set.insert(address);
             }

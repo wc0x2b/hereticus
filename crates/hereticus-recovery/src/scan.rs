@@ -235,21 +235,32 @@ fn relocated_pointers(
 /// for the tests, the scan alone missed the start of 843 of 27500 functions,
 /// such as zlib's `crc32` after `crc32_z`, which ends with a jump back.
 fn exported_functions(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<core::ops::Range<u64>> {
-    // Where every instruction is one byte or more, as on x86, a function
-    // can end at any byte, and bit 0 says nothing.
-    let mark = if arch.instruction_width() > 1 { 1 } else { 0 };
     file.dynamic_symbols()
         .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
         .filter(|symbol| symbol.section_index().is_some())
-        .map(|symbol| {
-            // ARM marks a Thumb function, and MIPS a MIPS16e one, by setting
-            // bit 0 of its address. GCC can count that bit in the size of a
-            // MIPS16e function too, as `XMLPrinter::Print` of tinyxml2 has
-            // 265 bytes of 264.
-            let start = symbol.address() & !mark;
-            start..(start + symbol.size()) & !mark
-        })
+        .map(|symbol| symbol_range(arch, symbol.address(), symbol.size()))
         .collect()
+}
+
+/// The code a symbol of `size` bytes at `address` names.
+///
+/// ARM marks a Thumb function, and MIPS a MIPS16e one, by setting bit 0 of
+/// its address. GCC can count that bit in the size of a MIPS16e function
+/// too, as `XMLPrinter::Print` of tinyxml2 has 265 bytes of 264. Where an
+/// instruction can be one byte, as on x86, a function can start and end at
+/// any byte, and bit 0 marks nothing.
+pub fn symbol_range(arch: &dyn Recovery, address: u64, size: u64) -> core::ops::Range<u64> {
+    let start = symbol_address(arch, address);
+    start..symbol_address(arch, start + size)
+}
+
+/// The address of the code a symbol at `address` names: see
+/// [`symbol_range`].
+pub fn symbol_address(arch: &dyn Recovery, address: u64) -> u64 {
+    match arch.instruction_width() {
+        1 => address,
+        _ => address & !1,
+    }
 }
 
 /// Turn the function ranges of call frame information into index entries.
