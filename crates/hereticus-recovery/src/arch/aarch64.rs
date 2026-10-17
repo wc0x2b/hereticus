@@ -41,6 +41,50 @@ const TABLE_LOOK_BACK: usize = 32;
 /// More cases than any `switch` a compiler turns into one table.
 const MOST_CASES: usize = 4096;
 
+/// Whether `body` opens with the check of its stack that Go puts first in
+/// each function that makes a frame:
+///
+/// ```text
+/// ldr x16, [x28, #0x10]   ; the stack bound of the goroutine, which x28 holds
+/// cmp sp, x16
+/// ```
+///
+/// Go makes the frame after the check, and ends each function with `b` back
+/// to its start, after it grows the stack, so without the check one
+/// function ran on into the next.
+pub fn is_go_stack_check(body: &[Insn]) -> bool {
+    /// Go keeps the current goroutine in x28.
+    const GOROUTINE: u16 = 28;
+    /// The offset of the stack bound in a goroutine.
+    const STACK_GUARD: i32 = 0x10;
+    let [load, compare, ..] = body else { return false };
+    let bound = match (opcode_of(load), operands_of(load).as_slice()) {
+        (
+            Some(Opcode::LDR),
+            [
+                Operand::Register(SizeCode::X, bound),
+                Operand::RegPreIndex(GOROUTINE, STACK_GUARD, false),
+                ..,
+            ],
+        ) => *bound,
+        _ => return false,
+    };
+    // `cmp sp, x16` takes the extended register form, as `sp` needs.
+    matches!(
+        (opcode_of(compare), operands_of(compare).as_slice()),
+        (
+            Some(Opcode::SUBS),
+            [
+                _,
+                Operand::RegisterOrSP(SizeCode::X, SP),
+                Operand::Register(SizeCode::X, register)
+                | Operand::RegShift(ShiftStyle::LSL | ShiftStyle::UXTX, 0, SizeCode::X, register),
+                ..
+            ],
+        ) if *register == bound
+    )
+}
+
 impl Recovery for Aarch64 {
     /// Almost every function that calls another saves the frame pointer and
     /// the link register first, as `stp x29, x30, [sp, #-N]!`. A leaf that
@@ -58,6 +102,11 @@ impl Recovery for Aarch64 {
         }
     }
 
+    /// See [`is_go_stack_check`].
+    fn is_function_entry(&self, body: &[Insn]) -> bool {
+        is_go_stack_check(body)
+    }
+
     /// A signed return address, or a branch target mark, can come before
     /// the frame is made.
     fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
@@ -73,6 +122,10 @@ impl Recovery for Aarch64 {
     fn is_padding(&self, insn: &Insn) -> bool {
         decoded(insn).is_some_and(|decoded| decoded.alias == Alias::Nop)
             || insn.bytes() == ZERO_BYTES
+    }
+
+    fn is_trap_fill(&self, insn: &Insn) -> bool {
+        insn.bytes() == ZERO_BYTES
     }
 
     /// Only whole words at the end are removed, and only the two encodings a
@@ -770,6 +823,19 @@ mod tests {
         // starts its page: `ldr x17, [x16]`.
         let at_page = code(&[0xd000_0110, 0xf940_0211, 0x9100_0210, 0xd61f_0220]);
         assert_eq!(Aarch64.stub_slot(&at_page, 0x36710), Some(0x58000));
+    }
+
+    #[test]
+    fn the_go_stack_check_opens_a_function() {
+        let words =
+            |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_le_bytes()).collect() };
+        let insns = |code: &[u8]| crate::arch::decode_all(&Aarch64, code, 0x1000).0;
+        // ldr x16, [x28, #0x10]; cmp sp, x16
+        assert!(Aarch64.is_function_entry(&insns(&words(&[0xf940_0b90, 0xeb30_63ff]))));
+        // ldr x16, [x27, #0x10]; cmp sp, x16
+        assert!(!Aarch64.is_function_entry(&insns(&words(&[0xf940_0b70, 0xeb30_63ff]))));
+        // ldr x16, [x28, #0x10]; cmp x0, x16
+        assert!(!Aarch64.is_function_entry(&insns(&words(&[0xf940_0b90, 0xeb10_001f]))));
     }
 
     #[test]

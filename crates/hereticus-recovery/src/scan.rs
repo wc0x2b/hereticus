@@ -509,13 +509,28 @@ fn past_padding(regions: &[(u64, &[u8])], address: u64, arch: &dyn Recovery) -> 
         .iter()
         .find(|&&(base, code)| (base..base + code.len() as u64).contains(&address))?;
     let mut offset = usize::try_from(address - base).ok()?;
+    let mut previous: Option<Insn> = None;
     while offset < code.len() {
         match arch.decode(code, offset, base + offset as u64) {
-            Ok(insn) if arch.is_padding(&insn) => offset += insn.bytes().len(),
+            Ok(insn) if pads_after(arch, previous.as_ref(), &insn) => {
+                offset += insn.bytes().len();
+                previous = Some(insn);
+            }
             _ => return Some(base + offset as u64),
         }
     }
     None
+}
+
+/// Whether `insn`, right after `previous`, is padding.
+///
+/// Go pads with fill that traps and opens some functions with `nop`, as
+/// `internal/abi.(*Type).Len` for x86-64 and AArch64: so a `nop` after
+/// such fill is the first work of a function.
+fn pads_after(arch: &dyn Recovery, previous: Option<&Insn>, insn: &Insn) -> bool {
+    let opens_after_fill =
+        previous.is_some_and(|previous| arch.is_trap_fill(previous)) && !arch.is_trap_fill(insn);
+    arch.is_padding(insn) && !opens_after_fill
 }
 
 /// The width of a word of a literal pool or of a jump table, the widest
@@ -1612,6 +1627,10 @@ fn starts_after_returns_in(
     // jumps reach `address`, the code right after `end`. A tail call comes
     // from another function, but a cold part of the function can jump back
     // into it too, so only two of them prove a start.
+    //
+    // Counting only the functions that something calls kept the Thumb-2
+    // half of the `mixed` releases, read as A32, from 3 wrong starts, but
+    // cost the OpenWrt kernels 25 right pairs.
     let tail_callers = |end: u64, address: u64| {
         let start = anchors.range(..=end).next_back().copied().unwrap_or(base);
         let next_start = anchors.range(address + 1..).next().copied().unwrap_or(u64::MAX);
@@ -1641,8 +1660,16 @@ fn starts_after_returns_in(
             let after_call = index + 1 + arch.delay_slots(insn);
             let mut next = after_call;
             let mut past_pool = false;
-            while insns.get(next).is_some_and(|insn| arch.is_padding(insn) || !is_code(&insn)) {
+            // No code runs into fill that traps, so a call before it does
+            // not return either: Go ends `internal/abi.(*Kind).String` for
+            // x86-64 with a call to `runtime.panicwrap`, `nop` and `int3`.
+            let mut past_fill = false;
+            while insns
+                .get(next)
+                .is_some_and(|insn| pads_after(arch, insns.get(next - 1), insn) || !is_code(&insn))
+            {
                 past_pool |= !is_code(&&insns[next]);
+                past_fill |= arch.is_trap_fill(&insns[next]);
                 next += 1;
             }
             // A branch can reach it only where the call is followed by data,
@@ -1669,11 +1696,13 @@ fn starts_after_returns_in(
             let opens = |following: &Insn| {
                 arch.is_prologue(following)
                     || never_returns.contains(&insn.address)
+                    || past_fill
                     || tail_called(following)
             };
             if let Some(following) = insns.get(next)
                 && opens(following)
                 && (past_pool
+                    || past_fill
                     || tail_called(following)
                     || !sources_of.contains_key(&following.address))
                 && !is_inside_a_function(next)
@@ -1737,7 +1766,22 @@ fn starts_after_returns_in(
                 let tail_called = insns
                     .get(index + 1 + arch.delay_slots(insn))
                     .is_some_and(|next| tail_callers(insn.address, next.address) >= 2);
+                // No code runs into fill that traps, as Go's `int3` after
+                // `jmp cmpbody` that ends `runtime.cmpstring`.
+                let trap_filled = insns
+                    .get(index + 1 + arch.delay_slots(insn))
+                    .is_some_and(|next| arch.is_trap_fill(next));
+                // Nothing falls through a jump to itself, as the `b .` that
+                // ends each function of Go for A32. A vector table holds a
+                // run of jumps, `b .` among them, as the decompressor of the
+                // OpenWrt ARM kernels does, and stays one block.
+                let hangs = target == insn.address
+                    && !insns
+                        .get(index + 1 + arch.delay_slots(insn))
+                        .is_some_and(|next| matches!(next.kind, InsnKind::Jump { .. }));
                 (anchors.contains(&target) && Some(target) != function_start)
+                    || trap_filled
+                    || hangs
                     || (closes_a_loop
                         && (padded || tail_called || all_jumps_read(function_start, insn.address)))
             }
@@ -1777,7 +1821,10 @@ fn starts_after_returns_in(
         // than to what follows, and then over any padding the linker put
         // between functions and the pool the function ends with.
         let mut next = index + 1 + arch.delay_slots(insn);
-        while insns.get(next).is_some_and(|insn| arch.is_padding(insn) || !is_code(&insn)) {
+        while insns
+            .get(next)
+            .is_some_and(|insn| pads_after(arch, insns.get(next - 1), insn) || !is_code(&insn))
+        {
             next += 1;
         }
         // A linker fills the gap before an aligned section with zeros, which
@@ -1816,6 +1863,16 @@ fn starts_after_returns_in(
             })
         });
         if reached_from_later {
+            continue;
+        }
+
+        // Go for A32 ends a function with `b .`, a jump to itself that
+        // guards against running on, and then its pool. A pool is never
+        // the first thing of a function, so the guard belongs to the
+        // function before.
+        let guards_a_pool = following.kind == (InsnKind::Jump { target: Some(following.address) })
+            && insns.get(next + 1).is_some_and(|after| !is_code(&after));
+        if guards_a_pool {
             continue;
         }
 
@@ -2810,6 +2867,43 @@ mod tests {
         assert_eq!(starts_after_returns(&Arm32, &code, 0).contains(&0x10), starts);
     }
 
+    /// `b .` before the pool of the function is its guard, but without a
+    /// pool after it, as a handler of firmware that only hangs, it is a
+    /// function of its own.
+    #[rstest::rstest]
+    #[case::guard(0xe59f_0004, 0x1234_5678, false)] // ldr r0, [pc, 4]: the word at 0x0c
+    #[case::handler(0xe3a0_0000, 0xe3a0_0001, true)] // mov r0, 0; mov r0, 1
+    fn a_jump_to_itself_before_a_pool_is_a_guard(
+        #[case] first: u32,
+        #[case] after: u32,
+        #[case] starts: bool,
+    ) {
+        let code = arm_code(&[
+            first,       // 0x00
+            0xe12f_ff1e, // 0x04 bx lr
+            0xeaff_fffe, // 0x08 b .
+            after,       // 0x0c
+            0xe12f_ff1e, // 0x10 bx lr
+        ]);
+        assert_eq!(starts_after_returns(&Arm32, &code, 0).contains(&0x08), starts);
+    }
+
+    /// Nothing falls through a jump to itself, so after it and the pool,
+    /// a function starts.
+    #[test]
+    fn a_jump_to_itself_ends_a_function() {
+        let code = arm_code(&[
+            0xe59f_0008, // 0x00 ldr r0, [pc, 8]: the word at 0x10
+            0xe350_0000, // 0x04 cmp r0, 0
+            0xeaff_fffc, // 0x08 b 0x00
+            0xeaff_fffe, // 0x0c b .
+            0x1234_5678, // 0x10 the pool word
+            0xe3a0_0001, // 0x14 mov r0, 1
+            0xe12f_ff1e, // 0x18 bx lr
+        ]);
+        assert!(starts_after_returns(&Arm32, &code, 0).contains(&0x14));
+    }
+
     /// Padding between functions must not be mistaken for their start.
     #[test]
     fn padding_after_a_return_is_stepped_over() {
@@ -2926,6 +3020,56 @@ mod tests {
         ]);
         let found = recover_from_regions(&[(0, code.as_slice())], &[], &Arm32);
         assert_eq!(found.iter().map(|found| found.code.len()).collect::<Vec<_>>(), [length]);
+    }
+
+    /// No code runs into `int3` fill, so the code after it starts a
+    /// function, whatever ends the code before it, and a `nop` after the
+    /// fill is its first work.
+    #[rstest::rstest]
+    #[case::nop_after_fill(
+        &[
+            0xc3, //             0x1000 ret
+            0xcc, 0xcc, 0xcc, // 0x1001 int3
+            0x90, //             0x1004 nop
+            0x31, 0xc0, //       0x1005 xor eax, eax
+            0xc3, //             0x1007 ret
+        ],
+        0x1004
+    )]
+    #[case::jump_before_fill(
+        &[
+            0x31, 0xc0, //       0x1000 xor eax, eax
+            0xeb, 0x10, //       0x1002 jmp 0x1014
+            0xcc, 0xcc, //       0x1004 int3
+            0x31, 0xc9, //       0x1006 xor ecx, ecx
+            0xc3, //             0x1008 ret
+            0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, // 0x1009 int3
+            0xc3, //             0x1010 ret, a function another calls
+            0xcc, 0xcc, 0xcc, // 0x1011 int3
+            0xc3, //             0x1014 ret, where the jump goes
+            0xe8, 0xf6, 0xff, 0xff, 0xff, // 0x1015 call 0x1010
+        ],
+        0x1006
+    )]
+    #[case::call_before_fill(
+        &[
+            0xe8, 0x0b, 0x00, 0x00, 0x00, // 0x1000 call 0x1010
+            0xcc, 0xcc, 0xcc, //             0x1005 int3
+            0x31, 0xc0, //                   0x1008 xor eax, eax
+            0xc3, //                         0x100a ret
+            0xcc, 0xcc, 0xcc, 0xcc, 0xcc, // 0x100b int3
+            0xc3, //                         0x1010 ret
+        ],
+        0x1008
+    )]
+    fn code_after_int3_fill_starts_a_function(#[case] code: &[u8], #[case] start: u64) {
+        use hereticus_il::arch::x86::X86;
+
+        let found: Vec<u64> = recover_from_regions(&[(0x1000, code)], &[], &X86::BITS64)
+            .iter()
+            .map(|found| found.address)
+            .collect();
+        assert!(found.contains(&start), "{found:x?}");
     }
 
     /// A thunk inside a function, which a short call reaches and the jump

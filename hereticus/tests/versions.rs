@@ -199,7 +199,7 @@ fn tally_all(project: &str, versions: [&str; 2], reading: Reading) -> Tally {
 #[case::zlib_1_2_13("zlib", ["1.2.13", "1.3"], Tally { right: 1268, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 1250, wrong: 0, gone: 3, new: 6, missed: 0 })]
 #[case::lua_5_1("lua", ["5.1.4", "5.1.5"], Tally { right: 4927, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 4916, wrong: 0, gone: 3, new: 2, missed: 0 })]
 #[case::lua_5_3("lua", ["5.3.5", "5.3.6"], Tally { right: 5723, wrong: 0, gone: 1, new: 1, missed: 0 },
-        Tally { right: 5711, wrong: 0, gone: 74, new: 95, missed: 0 })]
+        Tally { right: 5711, wrong: 0, gone: 74, new: 96, missed: 0 })]
 #[case::tinyxml2_8("tinyxml2", ["8.0.0", "9.0.0"], Tally { right: 2482, wrong: 0, gone: 129, new: 167, missed: 0 },
         Tally { right: 2409, wrong: 0, gone: 229, new: 286, missed: 0 })]
 #[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 2, new: 27, missed: 0 }, Tally { right: 2550, wrong: 23, gone: 74, new: 96, missed: 0 })]
