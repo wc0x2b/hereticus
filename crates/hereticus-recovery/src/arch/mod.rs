@@ -285,6 +285,14 @@ pub trait Recovery: Decoder {
     /// Report whether an instruction is alignment padding rather than work.
     fn is_padding(&self, insn: &Insn) -> bool;
 
+    /// Report whether padding traps where it runs, as x86 `int3` and an
+    /// AArch64 zero word do. Go pads with such fill and can open a
+    /// function with `nop`, so a `nop` after it is work. Defaults to
+    /// `false`.
+    fn is_trap_fill(&self, _insn: &Insn) -> bool {
+        false
+    }
+
     /// Remove the alignment padding a linker put after a function.
     ///
     /// Only trailing padding is removed. Padding inside a function is not

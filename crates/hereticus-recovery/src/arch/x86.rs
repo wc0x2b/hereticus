@@ -61,6 +61,15 @@ impl Recovery for X86 {
         word.starts_with(&ENDBR64) || word.starts_with(&ENDBR32)
     }
 
+    fn is_trap_fill(&self, insn: &Insn) -> bool {
+        instruction(insn).is_some_and(|inst| inst.mnemonic() == Mnemonic::Int3)
+    }
+
+    /// See [`is_go_stack_check`].
+    fn is_function_entry(&self, body: &[Insn]) -> bool {
+        is_go_stack_check(body)
+    }
+
     /// `nop` in each of its lengths, `int3`, and the forms that only move a
     /// register to itself, which old GNU `as` pads 32-bit code with.
     fn is_padding(&self, insn: &Insn) -> bool {
@@ -375,6 +384,56 @@ fn constant_operand(inst: &iced_x86::Instruction) -> Option<u64> {
         | OpKind::Immediate32
         | OpKind::Immediate32to64 => Some(inst.immediate(1) & 0xffff_ffff),
         _ => None,
+    }
+}
+
+/// Whether `body` opens with the check of its stack that Go for i386 puts
+/// first in each function that makes a frame:
+///
+/// ```text
+/// mov ecx, gs:[0]             ; the goroutine is a thread local
+/// mov ecx, [ecx - 4]
+/// cmp esp, [ecx + 8]
+/// ```
+///
+/// Go makes the frame after the check, so no prologue opens such a
+/// function, and Go puts no padding before many of them. The check of
+/// x86-64, `cmp rsp, [r14 + 0x10]`, comes after other work in the
+/// assembly of `runtime.call16` and the like, and the fill of `int3`
+/// before each function finds them anyway.
+pub fn is_go_stack_check(body: &[Insn]) -> bool {
+    /// The offset of the stack bound in a goroutine.
+    const STACK_GUARD_32: u32 = 8;
+    /// Where i386 keeps the goroutine, below the thread pointer.
+    const GOROUTINE_SLOT_32: u32 = (-4_i32) as u32;
+    let insts: Vec<iced_x86::Instruction> = body.iter().take(3).map_while(instruction).collect();
+    let compares_stack_with = |inst: &iced_x86::Instruction, base: Register, guard: u32| {
+        inst.mnemonic() == Mnemonic::Cmp
+            && inst.op0_kind() == OpKind::Register
+            && matches!(inst.op0_register(), Register::RSP | Register::ESP)
+            && inst.op1_kind() == OpKind::Memory
+            && inst.memory_base() == base
+            && inst.memory_index() == Register::None
+            && inst.memory_displacement32() == guard
+    };
+    let loads = |inst: &iced_x86::Instruction, base: Register, displacement: u32| {
+        inst.mnemonic() == Mnemonic::Mov
+            && inst.op0_kind() == OpKind::Register
+            && inst.op1_kind() == OpKind::Memory
+            && inst.memory_base() == base
+            && inst.memory_index() == Register::None
+            && inst.memory_displacement32() == displacement
+    };
+    match insts.as_slice() {
+        [thread, goroutine, compare] => {
+            let register = thread.op0_register();
+            thread.segment_prefix() == Register::GS
+                && loads(thread, Register::None, 0)
+                && loads(goroutine, register, GOROUTINE_SLOT_32)
+                && goroutine.op0_register() == register
+                && compares_stack_with(compare, register, STACK_GUARD_32)
+        }
+        _ => false,
     }
 }
 
@@ -909,6 +968,36 @@ mod tests {
 
     fn decode(bytes: &[u8], address: u64) -> Vec<Insn> {
         decode_all(&X86::BITS64, bytes, address).0
+    }
+
+    /// Go for i386 checks its stack first, through the thread pointer. C
+    /// reads a thread local through `gs:0` too.
+    #[rstest]
+    #[case::go_32(
+        &X86::BITS32,
+        &[
+            0x65, 0x8b, 0x0d, 0x00, 0x00, 0x00, 0x00, // mov ecx, gs:[0]
+            0x8b, 0x89, 0xfc, 0xff, 0xff, 0xff, //       mov ecx, [ecx - 4]
+            0x3b, 0x61, 0x08, //                         cmp esp, [ecx + 8]
+        ],
+        true
+    )]
+    #[case::thread_local_32(
+        &X86::BITS32,
+        &[
+            0x65, 0xa1, 0x00, 0x00, 0x00, 0x00, // mov eax, gs:[0]
+            0x8b, 0x04, 0x08, //                   mov eax, [eax + ecx]
+            0xc3, //                               ret
+        ],
+        false
+    )]
+    fn the_go_stack_check_opens_a_function(
+        #[case] arch: &X86,
+        #[case] bytes: &[u8],
+        #[case] opens: bool,
+    ) {
+        let insns = decode_all(arch, bytes, 0x1000).0;
+        assert_eq!(arch.is_function_entry(&insns), opens);
     }
 
     fn one(bytes: &[u8]) -> Insn {
