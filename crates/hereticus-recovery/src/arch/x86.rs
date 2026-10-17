@@ -122,7 +122,12 @@ impl Recovery for X86 {
             }
             _ => Vec::new(),
         };
+        // A distance from the global offset table is no address alone.
+        let from_table = global_offset_table_uses(body);
         body.iter()
+            .zip(from_table)
+            .filter(|&(_, from_table)| !from_table)
+            .map(|(insn, _)| insn)
             .filter(|insn| !matches!(insn.kind, InsnKind::Call { .. } | InsnKind::Jump { .. }))
             .filter_map(|insn| formed_address(insn, space))
             .filter(|address| !tables.contains(address))
@@ -616,34 +621,32 @@ fn frame_slot(inst: &iced_x86::Instruction, moved: Option<i64>) -> Option<(Reg, 
 }
 
 /// How far the stack pointer has moved from the entry before each
-/// instruction of `body`, where pushes, pops and constant adds say.
-///
-/// After a jump or a return, the code goes on at the offset the branches to
-/// it had, or the offset of the last branch: the code after an epilogue
-/// runs with the frame still made.
+/// instruction of `body`, where pushes, pops and constant adds say, and
+/// every path to the instruction agrees.
 fn stack_offsets(body: &[Insn]) -> Vec<Option<i64>> {
-    let mut at_targets: std::collections::HashMap<u64, Option<i64>> = Default::default();
-    let mut moved = Some(0);
-    let mut at_last_branch = Some(0);
-    let mut ended = false;
-    body.iter()
-        .map(|insn| {
-            if ended {
-                moved = at_targets.get(&insn.address).copied().unwrap_or(at_last_branch);
-            }
-            let before = moved;
-            match insn.kind {
-                InsnKind::Branch { target } | InsnKind::Jump { target } => {
-                    at_last_branch = before;
-                    if let Some(target) = target {
-                        at_targets.entry(target).or_insert(before);
-                    }
-                }
-                _ => {}
-            }
-            ended = matches!(insn.kind, InsnKind::Return | InsnKind::Jump { .. });
-            moved = moved.and_then(|moved| Some(moved + stack_change(insn)?));
-            before
+    /// The one value the walk follows.
+    #[derive(Clone, PartialEq, Eq, Hash)]
+    struct StackPointer;
+    let held = hereticus_il::flow::held_on_every_path(
+        body,
+        |_| 0,
+        |index, held| {
+            // Nothing has moved it at the entry.
+            let moved = match index {
+                0 => Some(0),
+                _ => held.get(&StackPointer).copied(),
+            };
+            match moved.zip(stack_change(&body[index])) {
+                Some((moved, change)) => held.insert(StackPointer, moved + change),
+                None => held.remove(&StackPointer),
+            };
+        },
+    );
+    held.iter()
+        .enumerate()
+        .map(|(index, held)| match index {
+            0 => Some(0),
+            _ => held.get(&StackPointer).copied(),
         })
         .collect()
 }

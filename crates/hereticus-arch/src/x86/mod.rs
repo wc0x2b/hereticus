@@ -70,7 +70,11 @@ impl Arch for X86 {
         space: &AddressSpace,
         _memory: &Memory<'_>,
     ) -> Vec<Option<u64>> {
-        body.iter().map(|insn| formed_address(insn, space)).collect()
+        let from_table = global_offset_table_uses(body);
+        body.iter()
+            .zip(from_table)
+            .map(|(insn, from_table)| (!from_table).then(|| formed_address(insn, space)).flatten())
+            .collect()
     }
 }
 
