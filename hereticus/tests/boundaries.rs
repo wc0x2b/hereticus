@@ -97,7 +97,7 @@ fn stripped_functions_are_recovered() {
         });
     assert_eq!(
         total,
-        Recovery { functions: 46006, exact: 45937, invented: 3, missed: 9 },
+        Recovery { functions: 64551, exact: 64482, invented: 3, missed: 9 },
         "over {} builds",
         builds.len()
     );
@@ -149,4 +149,31 @@ fn a_function_only_a_table_points_at_is_found() {
         .find(|function| function.address == str_find.address)
         .expect("str_find is found");
     assert_eq!(found.code.len(), str_find.code.len());
+}
+
+/// GCC links the thunks of 32-bit PIC with no size, and each is still a
+/// function of its own, with symbols as without.
+#[test]
+fn an_x86_thunk_with_no_size_is_a_function() {
+    let build = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/build/versions/zlib-1.2.13/i686-gcc-O2");
+    let read = |file: &str| {
+        let data = std::fs::read(build.join(file)).expect("run `just backports` first");
+        Binary::parse(&data).expect("the build parses")
+    };
+    let (symbols, stripped) = (read("lib.so"), read("lib-stripped.so"));
+    let thunk = symbols
+        .functions
+        .iter()
+        .find(|function| function.name == "__x86.get_pc_thunk.bx")
+        .expect("the thunk is a function");
+    // mov ebx, [esp]; ret
+    assert_eq!(thunk.code, [0x8b, 0x1c, 0x24, 0xc3]);
+    assert!(
+        stripped
+            .functions
+            .iter()
+            .any(|function| function.address == thunk.address && function.code == thunk.code),
+        "the scan finds the same thunk"
+    );
 }

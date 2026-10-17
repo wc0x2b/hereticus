@@ -48,7 +48,7 @@ comment right after it, and `tests/docs.rs` checks that the two agree:
 
 ```markdown
 0.95%<!-- from truth_kernels: all / wrong% --> of the pairs are wrong
-45937<!-- from boundaries.rs: exact --> exact
+64482<!-- from boundaries.rs: exact --> exact
 ```
 
 A source without `.rs` is a snapshot of `hereticus/tests/snapshots` or of

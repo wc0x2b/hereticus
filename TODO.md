@@ -37,10 +37,10 @@ through stubs that the cache builder has bound or removed.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 45937<!-- from boundaries.rs: exact --> of
-46006<!-- from boundaries.rs: functions --> exact, 9<!-- from boundaries.rs: missed -->
+stripped releases: 64482<!-- from boundaries.rs: exact --> of
+64551<!-- from boundaries.rs: functions --> exact, 9<!-- from boundaries.rs: missed -->
 starts missed and 3<!-- from boundaries.rs: invented --> invented,
-over ARM, Thumb-2, AArch64 and MIPS, with the PLT and the lazy binding
+over ARM, Thumb-2, AArch64, MIPS and x86, with the PLT and the lazy binding
 stubs of MIPS left out (`RESEARCH.md`, "Function recovery, again"). 8 of
 the 9 missed follow a call that never returns, to a function of the
 library, and open with no frame: `auxsetnode` of Lua 5.3 by clang for
