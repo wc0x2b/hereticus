@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Ghidra extension of ghidra/, install it in headless Ghidra, and
 # write what it does. Run by `just ghidra-extension`, in the
-# `ghidra-extension` stage of fixtures/rivals/Dockerfile.
+# image of fixtures/ghidra-extension/Dockerfile.
 #
 # The Gradle build runs the unit tests of the extension first. Then, in
 # build/ghidra-extension/:
@@ -42,7 +42,8 @@ pairs=(
 # Ghidra, hereticus, and the binaries.
 inputs_hash="$(
     {
-        cat "$here/ghidra_extension.sh" "$here/rivals/Dockerfile" "$hereticus" "$stub"
+        cat "$here/ghidra_extension.sh" "$here/rivals/Dockerfile" \
+            "$here/ghidra-extension/Dockerfile" "$hereticus" "$stub"
         find "$root/ghidra" -path "$root/ghidra/build" -prune -o -path "$root/ghidra/dist" -prune \
             -o -path "$root/ghidra/.gradle" -prune -o -type f -print | sort | xargs cat
         cat "$here"/ghidra-extension/*.java
