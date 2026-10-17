@@ -9,6 +9,7 @@
 Compare two versions of a binary or firmware and find the functions that changed.
 
 * **No IDA or Ghidra**: It needs no framework and no GUI. Programmers and agents can use it from a shell.
+* **Or inside Ghidra**: An extension finds the functions that Ghidra misses, and pairs functions for Version Tracking. See [Ghidra Extension](https://wc0x2b.github.io/hereticus/ghidra.html).
 * See the [book](https://wc0x2b.github.io/hereticus/) for usage, examples, and real-life examples.
 
 ## Installation
