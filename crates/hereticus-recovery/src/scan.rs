@@ -1208,6 +1208,16 @@ fn call_targets(arch: &dyn Recovery, region: &Region<'_>) -> Vec<u64> {
                 None
             }
             InsnKind::Call { target } => target.map(|target| (insn.address, target)),
+            // An x86 compiler drops a jump to the next instruction, so only
+            // the linker leaves one: a tail call to the function it put
+            // next. Measured on a static musl build, `recv` ends with
+            // `jmp recvfrom` and `recvfrom` follows it.
+            InsnKind::Jump { target: Some(target) }
+                if arch.instruction_width() == 1
+                    && target == insn.address + insn.bytes_len as u64 =>
+            {
+                Some((insn.address, target))
+            }
             InsnKind::Jump { target: Some(target) } if is_stub(target) => {
                 Some((insn.address, target))
             }
@@ -2683,6 +2693,25 @@ mod tests {
             [(0x1000, Source::AfterReturn), (0x100c, Source::CallTarget)]
         );
         assert_eq!(starts(vec![]), [(0x1000, Source::AfterReturn), (0x100c, Source::AfterReturn)]);
+    }
+
+    /// An x86 jump to the next instruction is a tail call the linker
+    /// resolved to the function it put next, in its long and short forms.
+    #[rstest::rstest]
+    #[case::long(&[0xe9, 0x00, 0x00, 0x00, 0x00])]
+    #[case::short(&[0xeb, 0x00])]
+    fn an_x86_jump_to_the_next_instruction_starts_a_function(#[case] jump: &[u8]) {
+        use hereticus_il::arch::x86::X86;
+
+        let mut code = vec![0x45, 0x31, 0xc9]; // xor r9d, r9d
+        code.extend(jump);
+        let next = 0x1000 + code.len() as u64;
+        code.extend([0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3]); // mov eax, 1; ret
+        let found: Vec<u64> = recover_from_regions(&[(0x1000, code.as_slice())], &[], &X86::BITS64)
+            .iter()
+            .map(|found| found.address)
+            .collect();
+        assert_eq!(found, [0x1000, next]);
     }
 
     /// MIPS PIC calls a function of its own through a slot of the global
