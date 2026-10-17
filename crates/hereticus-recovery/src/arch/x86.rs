@@ -39,6 +39,9 @@ const TABLE_LOOK_BACK: usize = 16;
 /// More cases than any `switch` a compiler turns into one table.
 const MOST_CASES: u64 = 4096;
 
+/// How far back the parts of the setup of the global offset table may lie.
+const SETUP_LOOK_BACK: usize = 8;
+
 /// The bytes of an entry of the PLT.
 const PLT_ENTRY: u64 = 16;
 
@@ -522,8 +525,11 @@ fn steps_of(body: &[Insn]) -> Vec<Step> {
                     .filter(|&reg| !is_preserved_by_a_call(reg))
                     .for_each(|reg| writes.insert(reg));
             }
+            // `pop` after `call $+5`, the first half of clang's setup.
             let opens_setup = inst.mnemonic() == Mnemonic::Pop
-                && body.get(..index + 2).and_then(table_setup) == il_register(inst.op0_register());
+                && index.checked_sub(1).is_some_and(|before| {
+                    body[before].kind == (InsnKind::Call { target: Some(insn.address) })
+                });
             let writes_count = match is_epilogue(&body[index..]) || opens_setup {
                 true => WritesCount::No,
                 false => WritesCount::Yes,
@@ -622,33 +628,94 @@ fn frame_slot(inst: &iced_x86::Instruction, moved: Option<i64>) -> Option<(Reg, 
 
 /// How far the stack pointer has moved from the entry before each
 /// instruction of `body`, where pushes, pops and constant adds say, and
-/// every path to the instruction agrees.
-fn stack_offsets(body: &[Insn]) -> Vec<Option<i64>> {
-    /// The one value the walk follows.
-    #[derive(Clone, PartialEq, Eq, Hash)]
-    struct StackPointer;
-    let held = hereticus_il::flow::held_on_every_path(
-        body,
-        |_| 0,
-        |index, held| {
-            // Nothing has moved it at the entry.
-            let moved = match index {
-                0 => Some(0),
-                _ => held.get(&StackPointer).copied(),
+/// the paths to the instruction agree.
+///
+/// A call to a function that never returns, as a panic of Rust, leaves its
+/// arguments on the stack, and the code after it is another block that a
+/// branch reaches. So where the way on from a call disagrees with a branch,
+/// the branch is right.
+pub fn stack_offsets(body: &[Insn]) -> Vec<Option<i64>> {
+    let next = hereticus_il::flow::successors(body, |_| 0);
+    let mut height = vec![Height::Unreached; body.len()];
+    let Some(entry) = height.first_mut() else { return Vec::new() };
+    *entry = Height::Known(0, Edge::Branch);
+    let mut work = vec![0];
+    while let Some(index) = work.pop() {
+        let out = match height[index] {
+            Height::Known(moved, edge) => match stack_change(&body[index]) {
+                Some(change) => Height::Known(moved + change, edge),
+                None => Height::Unknown,
+            },
+            other => other,
+        };
+        // `call $+5` reads its own address, and always goes on.
+        let insn = &body[index];
+        let after_call = match insn.kind {
+            InsnKind::Call { target } => target != Some(insn.address + insn.bytes_len as u64),
+            _ => false,
+        };
+        for &successor in &next[index] {
+            // What a path after a call reaches stays as weak as the call.
+            let arrives = match out {
+                Height::Known(moved, _) if after_call && successor == index + 1 => {
+                    Height::Known(moved, Edge::AfterCall)
+                }
+                other => other,
             };
-            match moved.zip(stack_change(&body[index])) {
-                Some((moved, change)) => held.insert(StackPointer, moved + change),
-                None => held.remove(&StackPointer),
-            };
-        },
-    );
-    held.iter()
-        .enumerate()
-        .map(|(index, held)| match index {
-            0 => Some(0),
-            _ => held.get(&StackPointer).copied(),
+            let joined = height[successor].join(arrives);
+            if joined != height[successor] {
+                height[successor] = joined;
+                work.push(successor);
+            }
+        }
+    }
+    height
+        .into_iter()
+        .map(|height| match height {
+            Height::Known(moved, _) => Some(moved),
+            Height::Unreached | Height::Unknown => None,
         })
         .collect()
+}
+
+/// How an edge reaches an instruction, for [`stack_offsets`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Edge {
+    /// The way on after a call, which may never return.
+    AfterCall,
+    /// A branch, a jump or the way on after another instruction.
+    Branch,
+}
+
+/// What [`stack_offsets`] knows of the stack pointer before one
+/// instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Height {
+    /// No path reaches the instruction yet.
+    Unreached,
+    /// It has moved this far, as the strongest edge that reaches says.
+    Known(i64, Edge),
+    /// Edges of the same strength disagree, or an instruction moved it by
+    /// an amount the code does not show.
+    Unknown,
+}
+
+impl Height {
+    /// What is known where `self` and `other` meet.
+    fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unreached, other) | (other, Self::Unreached) => other,
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (Self::Known(left, left_edge), Self::Known(right, right_edge)) => {
+                match (left == right, left_edge.cmp(&right_edge)) {
+                    (true, _) => Self::Known(left, left_edge.max(right_edge)),
+                    (false, core::cmp::Ordering::Less) => Self::Known(right, right_edge),
+                    (false, core::cmp::Ordering::Greater) => Self::Known(left, left_edge),
+                    (false, core::cmp::Ordering::Equal) => Self::Unknown,
+                }
+            }
+        }
+    }
 }
 
 /// How far `insn` moves the stack pointer, where it says.
@@ -669,7 +736,9 @@ fn stack_change(insn: &Insn) -> Option<i64> {
     match (inst.mnemonic(), constant) {
         (Mnemonic::Sub, Some(amount)) => Some(-amount),
         (Mnemonic::Add, Some(amount)) => Some(amount),
-        // `call` pushes the return address, and the callee pops it.
+        // `call` pushes the return address, and the callee pops it, but
+        // `call $+5` only pushes its own address, for a `pop` to read.
+        (Mnemonic::Call, _) if inst.near_branch_target() == inst.next_ip() => Some(-4),
         (Mnemonic::Call, _) => Some(0),
         _ if moves_stack => None,
         _ => Some(i64::from(inst.stack_pointer_increment())),
@@ -702,20 +771,24 @@ fn table_setup(body: &[Insn]) -> Option<Reg> {
         return None;
     }
     let register = il_register(inst.op0_register())?;
-    let follows_a_call = |insn: &Insn| matches!(insn.kind, InsnKind::Call { target: Some(_) });
-    let set_up = match before {
-        [.., call, pop] => {
-            follows_a_call(pop)
-                || (call.kind == InsnKind::Call { target: Some(pop.address) }
-                    && instruction(pop).is_some_and(|pop| {
-                        pop.mnemonic() == Mnemonic::Pop
-                            && il_register(pop.op0_register()) == Some(register)
-                    }))
+    // Code that writes something else can lie between the parts, as Rust
+    // schedules it.
+    for (at, insn) in before.iter().enumerate().rev().take(SETUP_LOOK_BACK) {
+        if let InsnKind::Call { target: Some(target) } = insn.kind {
+            // A call to the next instruction pops its address into a
+            // register other than this one; any other call is to a thunk.
+            let to_the_next = target == insn.address + insn.bytes_len as u64;
+            return (!to_the_next).then_some(register);
         }
-        [call] => follows_a_call(call),
-        [] => false,
-    };
-    set_up.then_some(register)
+        if x86_lift(&instruction(insn)?).writes.contains(register) {
+            let popped =
+                before.get(..at).and_then(<[Insn]>::last).is_some_and(|call| {
+                    call.kind == (InsnKind::Call { target: Some(insn.address) })
+                }) && instruction(insn).is_some_and(|pop| pop.mnemonic() == Mnemonic::Pop);
+            return popped.then_some(register);
+        }
+    }
+    None
 }
 
 /// Whether a callee keeps `reg` as it found it, by the System V ABI for
@@ -963,6 +1036,42 @@ mod tests {
         ];
         let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
         assert_eq!(global_offset_table_uses(&insns), [false, false, true, true, true, true, false]);
+    }
+
+    #[test]
+    fn other_code_can_lie_between_the_parts_of_the_setup() {
+        let code = [
+            0xe8, 0x00, 0x00, 0x00, 0x00, //       call $+5
+            0x5b, //                               pop ebx
+            0x8b, 0x74, 0x24, 0x38, //             mov esi, [esp + 0x38]
+            0x81, 0xc3, 0xa8, 0x2c, 0x00, 0x00, // add ebx, 0x2ca8
+            0xe8, 0x00, 0x00, 0x00, 0x00, //       call $+5
+            0x5b, //                               pop ebx
+            0x31, 0xdb, //                         xor ebx, ebx
+            0x81, 0xc3, 0xa8, 0x2c, 0x00, 0x00, // add ebx, 0x2ca8
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(
+            global_offset_table_uses(&insns),
+            [false, false, false, true, false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn a_call_that_never_returns_leaves_no_stack_offset() {
+        let code = [
+            0x83, 0xec, 0x10, //       0x1000 sub esp, 0x10
+            0x74, 0x06, //             0x1003 je 0x100b
+            0x50, //                   0x1005 push eax
+            0xe8, 0x00, 0x10, 0x00, 0x00, // 0x1006 call a panic
+            0x8b, 0x1c, 0x24, //       0x100b mov ebx, [esp]
+            0xc3, //                   0x100e ret
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(
+            stack_offsets(&insns),
+            [Some(0), Some(-0x10), Some(-0x10), Some(-0x14), Some(-0x10), Some(-0x10)]
+        );
     }
 
     #[test]
