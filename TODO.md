@@ -95,6 +95,33 @@ likely forms, and adds compact branches with no delay slot. The decoder
 assumes release 2. Few shipped parts use r6, so first confirm a target
 worth reading.
 
+## Read x86-64 and x86
+
+Most patch diffing is of desktop and server binaries, and most published
+fixes ship for x86-64. The decoders read ARM and MIPS only. Add x86-64
+first, then 32-bit x86, with fixtures built by GCC and clang. The
+instructions have variable length, so a raw scan cannot step a fixed
+width.
+
+## Read RISC-V
+
+New embedded parts (ESP32-C3, many SoCs) and Linux distributions run
+RISC-V. Add RV32 and RV64 with the compressed (C) extension, which mixes
+2-byte and 4-byte instructions. Addresses are built with `auipc` and
+`addi` pairs.
+
+## Read PowerPC
+
+Older routers, automotive controllers and avionics firmware run 32-bit
+PowerPC, big endian. Addresses are built with `lis` and `addi` pairs, and
+calls return through the link register as on ARM.
+
+## Read Xtensa
+
+The ESP32 and ESP8266 run Xtensa, with 2-byte and 3-byte instructions and
+the windowed register ABI. Few decoders exist, so the decoder is the
+larger part of the work.
+
 ## Show the last instructions as IL
 
 `--view il` still shows NEON work as the code prints it: the lift names
