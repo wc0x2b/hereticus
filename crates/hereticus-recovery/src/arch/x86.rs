@@ -254,7 +254,14 @@ pub fn global_offset_table_uses(body: &[Insn]) -> Vec<bool> {
     // write fills with anything else, until none changes.
     let mut holders = Holders {
         registers: (0..8).map(Reg::General).filter(|&reg| reg != Reg::General(4)).collect(),
-        slots: steps.iter().filter_map(|step| step.slot).collect(),
+        // A slot no code stores to holds what the caller put there.
+        slots: steps
+            .iter()
+            .filter_map(|step| match step.to {
+                Holder::Slot(slot) => Some(slot),
+                _ => None,
+            })
+            .collect(),
     };
     loop {
         let (uses, refuted) = walk(&steps, &holders);
@@ -277,8 +284,6 @@ struct Step {
     /// Where it moves a value to, and from where.
     to: Holder,
     from: Holder,
-    /// The slot of the frame it names, where it names one.
-    slot: Option<(Reg, i64)>,
     /// The registers it writes, with those a call may change.
     writes: RegSet,
     /// Whether what it writes counts against a holder of the table.
@@ -317,7 +322,6 @@ fn steps_of(body: &[Insn]) -> Vec<Step> {
                     base: None,
                     to: Holder::None,
                     from: Holder::None,
-                    slot: None,
                     writes: RegSet::EMPTY,
                     writes_count: WritesCount::Yes,
                 };
@@ -355,15 +359,7 @@ fn steps_of(body: &[Insn]) -> Vec<Step> {
                 true => WritesCount::No,
                 false => WritesCount::Yes,
             };
-            Step {
-                setup,
-                base: il_register(inst.memory_base()),
-                to,
-                from,
-                slot,
-                writes,
-                writes_count,
-            }
+            Step { setup, base: il_register(inst.memory_base()), to, from, writes, writes_count }
         })
         .collect()
 }
