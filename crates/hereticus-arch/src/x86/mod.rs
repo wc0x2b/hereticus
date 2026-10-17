@@ -6,7 +6,9 @@ use super::{Arch, Insn, Memory};
 use hereticus_il::Reg;
 use hereticus_il::arch::x86::{X86, il_register, instruction};
 use hereticus_memory::{AddressSpace, ConstantKind};
-use hereticus_recovery::arch::x86::{formed_address, is_branch_target_mark};
+use hereticus_recovery::arch::x86::{
+    formed_address, global_offset_table_uses, is_branch_target_mark,
+};
 use iced_x86::{Mnemonic, OpKind};
 
 /// The frame pointer, `rbp` or `ebp`, by its encoding number.
@@ -42,33 +44,23 @@ impl Arch for X86 {
     }
 
     /// A distance from `rip` is part of an address, and so is a constant
-    /// inside the image, as code that is not PIC holds. So is the distance
-    /// to the global offset table that 32-bit PIC adds right after the call
-    /// that reads its own address:
-    ///
-    /// ```text
-    /// call __x86.get_pc_thunk.bx
-    /// add  ebx, 0x2e5b          ; _GLOBAL_OFFSET_TABLE_
-    /// ```
+    /// inside the image, as code that is not PIC holds, and a distance from
+    /// the global offset table, as 32-bit PIC holds: see
+    /// [`global_offset_table_uses`].
     fn constant_kinds(
         &self,
         _code: &[u8],
         body: &[Insn],
         space: &AddressSpace,
     ) -> Vec<ConstantKind> {
-        let mut kinds: Vec<ConstantKind> = body
-            .iter()
-            .map(|insn| match formed_address(insn, space) {
-                Some(_) => ConstantKind::Address,
-                None => ConstantKind::Value,
+        let from_table = global_offset_table_uses(body);
+        body.iter()
+            .zip(from_table)
+            .map(|(insn, from_table)| match from_table || formed_address(insn, space).is_some() {
+                true => ConstantKind::Address,
+                false => ConstantKind::Value,
             })
-            .collect();
-        for (index, pair) in body.windows(2).enumerate() {
-            if is_global_offset_table_add(pair) {
-                kinds[index + 1] = ConstantKind::Address;
-            }
-        }
-        kinds
+            .collect()
     }
 
     fn formed_addresses(
@@ -80,18 +72,6 @@ impl Arch for X86 {
     ) -> Vec<Option<u64>> {
         body.iter().map(|insn| formed_address(insn, space)).collect()
     }
-}
-
-/// Whether `pair` is a call that names its target, and an add of a
-/// constant to a register right after it, as 32-bit PIC finds its global
-/// offset table.
-fn is_global_offset_table_add(pair: &[Insn]) -> bool {
-    let [call, add] = pair else { return false };
-    let Some(inst) = instruction(add) else { return false };
-    matches!(call.kind, hereticus_il::arch::InsnKind::Call { target: Some(_) })
-        && inst.mnemonic() == Mnemonic::Add
-        && inst.op0_kind() == OpKind::Register
-        && matches!(inst.op1_kind(), OpKind::Immediate32 | OpKind::Immediate32to64)
 }
 
 #[cfg(test)]
