@@ -34,8 +34,11 @@ use hereticus::recovery::arch::decode_all;
 
 #[path = "common/dwarf.rs"]
 mod dwarf;
+#[path = "common/symbols.rs"]
+mod symbols;
 use dwarf::{FileMoves, source_files};
 use rayon::prelude::*;
+use symbols::{Symbol, debug_symbols};
 
 /// A board of `tests/openwrt.rs`: the name its files carry, the target whose
 /// kernel it runs, how its code reads, and where its kernel is linked.
@@ -89,9 +92,6 @@ const BOARDS: &[Board] = &[
 /// the point release on all, the two kernel upgrades on the first three.
 const RELEASES: &[(&str, &str, usize)] =
     &[("22.03.2", "22.03.5", 6), ("21.02.7", "22.03.2", 3), ("22.03.5", "23.05.5", 3)];
-
-/// A function symbol of a debug file: start, end and name.
-type Symbol = (u64, u64, String);
 
 /// What the symbols say of one pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -182,35 +182,6 @@ fn firmware() -> PathBuf {
 
 fn debug_cache() -> PathBuf {
     Path::new(&std::env::var("HOME").expect("HOME is set")).join(".cache/hereticus-openwrt-debug")
-}
-
-/// The name of a function without the suffix of a GCC clone.
-fn function_name(symbol: &str) -> &str {
-    [".isra.", ".constprop.", ".part.", ".cold"]
-        .iter()
-        .filter_map(|suffix| symbol.find(suffix))
-        .min()
-        .map_or(symbol, |end| &symbol[..end])
-}
-
-/// The function symbols of a debug file, sorted by their start.
-fn debug_symbols(path: &Path) -> Vec<Symbol> {
-    use object::{Object, ObjectSymbol, SymbolKind};
-    let data = std::fs::read(path)
-        .unwrap_or_else(|err| panic!("{}: {err}; run `just test`", path.display()));
-    let file = object::File::parse(&*data).expect("the debug file parses");
-    let mut symbols: Vec<Symbol> = file
-        .symbols()
-        .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
-        .filter_map(|symbol| {
-            let name = function_name(symbol.name().ok()?).to_owned();
-            // A Thumb symbol has its low bit set.
-            let start = symbol.address() & !1;
-            Some((start, start + symbol.size(), name))
-        })
-        .collect();
-    symbols.sort();
-    symbols
 }
 
 /// The names of the symbols that overlap `range`.

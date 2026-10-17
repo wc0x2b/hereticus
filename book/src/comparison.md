@@ -61,6 +61,40 @@ Ghidra takes much longer, as it analyses each program and then tracks the
 versions. The test checks only that `hereticus` takes less time than
 Ghidra in all. A time depends on the machine, so this page quotes none.
 
+## Functions in a Raw Kernel
+
+Before a tool can compare functions, it must find them. A test counts the
+functions that `hereticus` and Ghidra find in one raw OpenWrt kernel: 22.03.2
+for the GL.iNet GL-MT300N v2, MIPS32 little-endian, with no symbols and no
+sections. The symbols of its build say where each of its
+20988<!-- from truth_function_starts: hereticus / symbols --> functions really starts.
+
+| Tool | Starts found | Real | Not real |
+|------|--------------|------|----------|
+| hereticus | 19722<!-- from truth_function_starts: hereticus / found --> | 19258<!-- from truth_function_starts: hereticus / real --> | 464<!-- from truth_function_starts: hereticus / not real --> |
+| Ghidra, default | 13801<!-- from truth_function_starts: ghidra default / found --> | 13210<!-- from truth_function_starts: ghidra default / real --> | 591<!-- from truth_function_starts: ghidra default / not real --> |
+| Ghidra, Aggressive Instruction Finder | 14144<!-- from truth_function_starts: ghidra aggressive / found --> | 13545<!-- from truth_function_starts: ghidra aggressive / real --> | 599<!-- from truth_function_starts: ghidra aggressive / not real --> |
+
+Ghidra finds a function when code calls it, or when its first bytes look
+like the start of a function. Of the real functions that Ghidra finds,
+77%<!-- from truth_function_starts: ghidra default finds / jal% --> have a direct call. Of the
+6097<!-- from truth_function_starts: only hereticus finds / count --> real functions that only `hereticus`
+finds, 5%<!-- from truth_function_starts: only hereticus finds / jal% --> have a direct call, and the
+address of 76%<!-- from truth_function_starts: only hereticus finds / word% --> is in a data word. These
+functions are callbacks: system calls, `file_operations`, `net_device_ops`,
+sysfs handlers. The kernel calls them through tables of pointers. A raw
+image does not show where those tables are, and Ghidra does not read data
+words as pointers unless it is told to. The Aggressive Instruction Finder
+does not follow them either.
+
+This is not a fault in Ghidra. Ghidra is made for a person who reads the
+result, and code that it reads from data by mistake is hard to remove. So it
+adds only the functions it is sure of, and a person adds the rest. A script
+that reads the data words as pointers can close much of the gap. With an
+ELF file and its symbols, Ghidra finds every function. This test reads one
+kernel for one architecture, and it counts only where functions start, not
+how well each tool pairs them.
+
 ## How Accurate These Numbers Are
 
 The numbers are correct for these pairs and these settings. They do not
@@ -69,9 +103,11 @@ show that one tool is better than another in general. Know these limits:
 - **The pairs are small and few.** Each pair is a small library with one
   small fix. A large binary, or a release with many changes, can give a
   different result.
-- **No kernel is compared.** A raw kernel of a few megabytes takes radiff2
-  and Ghidra many minutes for each pair, so the tests do not compare the
-  OpenWrt kernels. `tests/truth_kernels.rs` checks only `hereticus` on them.
+- **No kernel pair is compared.** A raw kernel of a few megabytes takes
+  radiff2 and Ghidra many minutes for each pair, so the tests do not
+  compare the reports on the OpenWrt kernels. `tests/truth_kernels.rs`
+  checks only `hereticus` on them. The section above compares only where
+  the functions of one kernel start.
 - **The other tools run with their default settings.** Other options, or
   a person who reads the results, can make radiff2 or Ghidra do better.
   For example, Ghidra can run more correlators, and radiff2 can analyse
@@ -99,6 +135,7 @@ just rivals         # run radiff2 on the pairs
 just quick-test     # compare with radiff2, in rivals_radare2.rs
 just rivals-ghidra  # run Ghidra on the pairs
 just test           # compare with Ghidra too, in truth_ghidra.rs
+just rivals-kernel  # let Ghidra find the functions of one raw kernel
 just rival-times    # show how long each tool takes
 ```
 

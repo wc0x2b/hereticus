@@ -1,0 +1,12 @@
+---
+source: hereticus/tests/truth_function_starts.rs
+expression: table
+---
+tool               symbols  found   real not real
+hereticus            20988  19722  19258      464
+ghidra default       20988  13801  13210      591
+ghidra aggressive    20988  14144  13545      599
+
+functions                 count  jal%  word%
+only hereticus finds       6097     5     76
+ghidra default finds      13210    77     44
