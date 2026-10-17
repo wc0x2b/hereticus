@@ -241,6 +241,11 @@ enum ArchName {
     Mips16,
     /// MIPS16e, big endian.
     Mips16Be,
+    /// x86-64.
+    #[value(name = "x86-64")]
+    X86_64,
+    /// 32-bit x86.
+    X86,
 }
 
 impl From<ArchName> for Isa {
@@ -253,6 +258,8 @@ impl From<ArchName> for Isa {
             ArchName::Mips32Be => Self::Mips32Be,
             ArchName::Mips16 => Self::Mips16,
             ArchName::Mips16Be => Self::Mips16Be,
+            ArchName::X86_64 => Self::X86_64,
+            ArchName::X86 => Self::X86,
         }
     }
 }

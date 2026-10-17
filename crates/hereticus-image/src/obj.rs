@@ -14,6 +14,7 @@ use hereticus_il::arch::aarch64::Aarch64;
 use hereticus_il::arch::arm32::Arm32;
 use hereticus_il::arch::mips::Mips32;
 use hereticus_il::arch::thumb::Thumb2;
+use hereticus_il::arch::x86::X86;
 use hereticus_memory::AddressSpace;
 pub use hereticus_memory::Function;
 use hereticus_recovery::dynamic::Dynamic;
@@ -79,6 +80,10 @@ pub enum Isa {
     Mips16,
     /// MIPS16e, big endian.
     Mips16Be,
+    /// x86-64, as desktop and server code is built.
+    X86_64,
+    /// 32-bit x86.
+    X86,
 }
 
 impl Isa {
@@ -96,6 +101,8 @@ impl Isa {
             Self::Mips32Be => &Mips32::BIG,
             Self::Mips16 => &hereticus_il::arch::mips16::Mips16::LITTLE,
             Self::Mips16Be => &hereticus_il::arch::mips16::Mips16::BIG,
+            Self::X86_64 => &X86::BITS64,
+            Self::X86 => &X86::BITS32,
         }
     }
 
@@ -109,14 +116,14 @@ impl Isa {
             Self::Mips16 => Some(Self::Mips32),
             Self::Mips32Be => Some(Self::Mips16Be),
             Self::Mips16Be => Some(Self::Mips32Be),
-            Self::Aarch64 => None,
+            Self::Aarch64 | Self::X86_64 | Self::X86 => None,
         }
     }
 
     /// The width of an address.
     pub fn address_width(self) -> Width {
         match self {
-            Self::Aarch64 => Width::Bits64,
+            Self::Aarch64 | Self::X86_64 => Width::Bits64,
             _ => Width::Bits32,
         }
     }
@@ -139,6 +146,8 @@ impl Isa {
             object::Architecture::Aarch64 => Ok(Self::Aarch64),
             object::Architecture::Mips if little_endian => Ok(Self::Mips32),
             object::Architecture::Mips => Ok(Self::Mips32Be),
+            object::Architecture::X86_64 => Ok(Self::X86_64),
+            object::Architecture::I386 => Ok(Self::X86),
             _ => Err(ObjError::UnsupportedArch(arch)),
         }
     }
@@ -679,9 +688,13 @@ impl Binary {
         if index.is_empty() {
             let order = match isa {
                 Isa::Mips32Be | Isa::Mips16Be => unwind::ByteOrder::Big,
-                Isa::Arm32 | Isa::Thumb2 | Isa::Aarch64 | Isa::Mips32 | Isa::Mips16 => {
-                    unwind::ByteOrder::Little
-                }
+                Isa::Arm32
+                | Isa::Thumb2
+                | Isa::Aarch64
+                | Isa::Mips32
+                | Isa::Mips16
+                | Isa::X86_64
+                | Isa::X86 => unwind::ByteOrder::Little,
             };
             let ranges = unwind::find_function_ranges(data, base, order);
             index = scan::index_from_ranges(&ranges, isa.arch());
@@ -781,7 +794,7 @@ fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
         (Isa::Mips32 | Isa::Mips16, Encoding::Full) => Isa::Mips32,
         (Isa::Mips32Be | Isa::Mips16Be, Encoding::Compact) => Isa::Mips16Be,
         (Isa::Mips32Be | Isa::Mips16Be, Encoding::Full) => Isa::Mips32Be,
-        (Isa::Aarch64, _) => isa,
+        (Isa::Aarch64 | Isa::X86_64 | Isa::X86, _) => isa,
     }
 }
 
@@ -901,7 +914,7 @@ fn lazy_stubs(isa: Isa, code: &[(u64, &[u8])]) -> Vec<mips_stubs::LazyStub> {
     let order = match isa {
         Isa::Mips32 | Isa::Mips16 => mips_stubs::ByteOrder::Little,
         Isa::Mips32Be | Isa::Mips16Be => mips_stubs::ByteOrder::Big,
-        Isa::Arm32 | Isa::Thumb2 | Isa::Aarch64 => return Vec::new(),
+        Isa::Arm32 | Isa::Thumb2 | Isa::Aarch64 | Isa::X86_64 | Isa::X86 => return Vec::new(),
     };
     code.iter().flat_map(|&(base, data)| mips_stubs::lazy_stubs(base, data, order)).collect()
 }

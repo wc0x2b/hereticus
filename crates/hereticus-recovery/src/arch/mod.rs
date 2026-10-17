@@ -10,6 +10,7 @@ pub mod arm32;
 pub mod mips;
 pub mod mips16;
 pub mod thumb;
+pub mod x86;
 
 use hereticus_il::arch::*;
 use hereticus_memory::AddressSpace;
