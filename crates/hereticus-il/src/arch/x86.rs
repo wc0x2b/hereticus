@@ -237,8 +237,9 @@ fn classify(inst: &iced_x86::Instruction) -> InsnKind {
     }
 }
 
-/// The formatter every text is printed with: lower case, `0x` numbers, and
-/// a `rip` operand as its distance, as `llvm-objdump` prints them.
+/// The formatter every text is printed with: lower case, `0x` numbers, the
+/// size of each memory operand, and a `rip` operand as its distance, as
+/// `llvm-objdump` prints them in Intel syntax.
 fn formatter() -> IntelFormatter {
     let mut formatter = IntelFormatter::new();
     let options = formatter.options_mut();
@@ -249,6 +250,9 @@ fn formatter() -> IntelFormatter {
     options.set_rip_relative_addresses(true);
     options.set_show_branch_size(false);
     options.set_branch_leading_zeros(false);
+    options.set_space_between_memory_add_operators(true);
+    options.set_scale_before_index(true);
+    options.set_memory_size_options(iced_x86::MemorySizeOptions::Always);
     formatter
 }
 
@@ -689,7 +693,7 @@ fn operand_name(inst: &iced_x86::Instruction, index: u32) -> CompactString {
                 let reg = register_name(inst.memory_index());
                 match inst.memory_index_scale() {
                     1 => reg,
-                    scale => format_compact!("{reg}*{scale}"),
+                    scale => format_compact!("{scale}*{reg}"),
                 }
             });
             if inst.is_ip_rel_memory_operand() {
@@ -755,7 +759,7 @@ mod tests {
     #[case::call_register(&[0xff, 0xd0], "call rax", InsnKind::Call { target: None })]
     #[case::syscall(&[0x0f, 0x05], "syscall", InsnKind::Normal)]
     #[case::ud2(&[0x0f, 0x0b], "ud2", InsnKind::Return)]
-    #[case::rip_load(&[0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00], "mov rax, [rip+0x10]", InsnKind::Normal)]
+    #[case::rip_load(&[0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00], "mov rax, qword ptr [rip + 0x10]", InsnKind::Normal)]
     fn an_instruction_reads_its_length_kind_and_text(
         #[case] bytes: &[u8],
         #[case] text: &str,
@@ -853,7 +857,7 @@ mod tests {
             }
         );
         let names = names(&instruction(&read(&[0x8b, 0x44, 0x8b, 0x10]).0).expect("decoded"));
-        assert_eq!(names.as_slice(), ["eax", "[rbx + rcx*4 + 0x10]"]);
+        assert_eq!(names.as_slice(), ["eax", "[rbx + 4*rcx + 0x10]"]);
     }
 
     #[test]
