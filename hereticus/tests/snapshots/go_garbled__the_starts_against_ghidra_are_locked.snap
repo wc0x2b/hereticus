@@ -1,0 +1,19 @@
+---
+source: hereticus/tests/go_garbled.rs
+expression: out
+---
+build and tool              found   real not real missed
+amd64 hereticus              3675   3624       51     11
+amd64 ghidra                 2430   2429        1   1206
+386 hereticus                3723   3674       49      5
+386 ghidra                   2589   2542       47   1137
+arm64 hereticus              3575   3554       21     40
+arm64 ghidra                 2381   2373        8   1221
+arm-7 hereticus              3648   3597       51     75
+arm-7 ghidra                 2557   2509       48   1163
+arm-5 hereticus              3686   3632       54     71
+arm-5 ghidra                 2570   2523       47   1180
+mips-softfloat hereticus     3548   3491       57     88
+mips-softfloat ghidra        2379   2379        0   1200
+mipsle-softfloat hereticus   3549   3491       58     88
+mipsle-softfloat ghidra      1517   1517        0   2062
