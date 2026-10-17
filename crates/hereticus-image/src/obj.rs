@@ -488,8 +488,11 @@ impl Binary {
                 named.insert(start, name);
             }
         }
-        let linked =
-            scan::Linked { exported, pointers: code_pointers(file, &bases), ..Default::default() };
+        // `code_pointers` drops the tables of a `switch` itself, so each
+        // pointer is a run of its own.
+        let pointers =
+            code_pointers(file, &bases).into_iter().map(|pointer| vec![pointer]).collect();
+        let linked = scan::Linked { exported, pointers, ..Default::default() };
         let memory = hereticus_recovery::arch::Memory::new(&code);
         let functions: Vec<Function> =
             scan::recover_in_memory(&code, &[], &linked, scan::Regions::CodeOnly, arch, &memory)

@@ -212,8 +212,9 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
 pub struct Linked {
     /// Where each function the dynamic symbol table exports lies.
     pub exported: Vec<core::ops::Range<u64>>,
-    /// The addresses the data holds, which the loader moves with the code.
-    pub pointers: Vec<u64>,
+    /// The addresses the data holds, which the loader moves with the code,
+    /// in runs of words that lie next to each other.
+    pub pointers: Vec<Vec<u64>>,
     /// The symbol each slot of the global offset table holds, by the
     /// address of the slot.
     pub slot_names: BTreeMap<u64, String>,
@@ -225,22 +226,35 @@ pub struct Linked {
 /// to each word of data that holds an address: a relocation with no symbol.
 /// Where such a word holds an address in the code, it points at a function,
 /// as a table of callbacks does: Lua keeps `str_find` in one.
+///
+/// The words come in runs of neighbours, as a table holds them, because a
+/// table of labels inside one function looks like a table of callbacks
+/// word by word: see [`taken_addresses`].
 fn relocated_pointers(
     file: &object::File<'_>,
     arch: &dyn Recovery,
     memory: &Memory<'_>,
-) -> Vec<u64> {
+) -> Vec<Vec<u64>> {
     let Some(relocations) = file.dynamic_relocations() else { return Vec::new() };
+    let width = arch.pointer_width() as u64;
     // A REL relocation keeps the address in the word, as ARM and MIPS do,
     // and a RELA one in the relocation, as AArch64 does.
-    relocations
+    let mut words: Vec<(u64, u64)> = relocations
         .filter(|(_, relocation)| relocation.target() == RelocationTarget::Absolute)
-        .filter_map(|(offset, relocation)| match relocation.has_implicit_addend() {
-            true => {
-                memory.bytes(offset, arch.pointer_width()).map(|bytes| arch.read_pointer(bytes))
-            }
-            false => u64::try_from(relocation.addend()).ok(),
+        .filter_map(|(offset, relocation)| {
+            let pointer = match relocation.has_implicit_addend() {
+                true => memory
+                    .bytes(offset, arch.pointer_width())
+                    .map(|bytes| arch.read_pointer(bytes))?,
+                false => u64::try_from(relocation.addend()).ok()?,
+            };
+            Some((offset, pointer))
         })
+        .collect();
+    words.sort_unstable();
+    words
+        .chunk_by(|before, after| after.0 == before.0 + width)
+        .map(|run| run.iter().map(|&(_, pointer)| pointer).collect())
         .collect()
 }
 
@@ -686,11 +700,15 @@ fn slot_call_targets(arch: &dyn Recovery, region: &Region<'_>, memory: &Memory<'
 /// Only where the regions hold nothing but code: in a raw image, the address
 /// of a variable lands in the regions too. Measured on the OpenWrt MIPS
 /// kernels, it cut hundreds of pieces out of their data.
+/// A table this long, of words in a row, may hold the labels of one
+/// function rather than functions.
+const LEAST_LABELS: usize = 4;
+
 fn taken_addresses(
     arch: &dyn Recovery,
     regions: &[(u64, &[u8])],
     contents: Regions,
-    pointers: &[u64],
+    pointers: &[Vec<u64>],
     region: &Region<'_>,
     memory: &Memory<'_>,
 ) -> Vec<u64> {
@@ -719,6 +737,25 @@ fn taken_addresses(
                 && at + 1 + arch.delay_slots(&insns[at]) == before
         };
         before == 0 || before < index || ends_at(before - 1) || (before >= 2 && ends_at(before - 2))
+    };
+    // Whether a jump through a register, not a return, ends the code right
+    // before `address`, past padding and a pool.
+    let follows_a_dispatch = |address: u64| {
+        let Ok(index) = insns.binary_search_by_key(&address, |insn| insn.address) else {
+            return false;
+        };
+        let mut before = index;
+        while before > 0
+            && (arch.is_padding(&insns[before - 1]) || pool.contains(&insns[before - 1].address))
+        {
+            before -= 1;
+        }
+        (1..=2).any(|back| {
+            before.checked_sub(back).is_some_and(|at| {
+                insns[at].kind == (InsnKind::Jump { target: None })
+                    && at + 1 + arch.delay_slots(&insns[at]) == before
+            })
+        })
     };
     let end = base + code.len() as u64;
     let formed = match contents {
@@ -751,11 +788,38 @@ fn taken_addresses(
             })
             .collect(),
     };
+    // A relocated pointer to a T32 function has bit 0 set, as a word of a
+    // table of callbacks does, and one without it is a label. GCC keeps the
+    // labels of a computed `goto` so, and sets bit 0 before it jumps: the
+    // `disptab` of Lua 5.4's `luaV_execute`.
+    //
+    // Where a pointer does not say, the table does. A function follows a
+    // return or a tail call, but a label mostly follows the jump through a
+    // register that ends the case before: in A32, each case of
+    // `luaV_execute` ends with `mov pc, r3` to the next.
+    // Measured on Lua 5.4 of Debian 13 for armel, the labels otherwise cut
+    // `luaV_execute` in 90 pieces.
+    let pointed = pointers
+        .iter()
+        .map(|run| -> Vec<u64> {
+            match arch.tagged_function(1) {
+                Some(_) => {
+                    run.iter().filter_map(|&pointer| arch.tagged_function(pointer)).collect()
+                }
+                None => run.clone(),
+            }
+        })
+        .filter(|run| {
+            let here: Vec<u64> =
+                run.iter().copied().filter(|address| (base..end).contains(address)).collect();
+            let after_dispatch =
+                here.iter().filter(|&&address| follows_a_dispatch(address)).count();
+            here.len() < LEAST_LABELS || after_dispatch * 2 <= here.len()
+        })
+        .flatten();
     formed
         .into_iter()
-        // A relocated pointer to a T32 function has bit 0 set, as a word of
-        // a table of callbacks does.
-        .chain(pointers.iter().map(|&pointer| arch.function_address(pointer)))
+        .chain(pointed)
         .chain(tagged)
         .filter(|address| (base..end).contains(address))
         .filter(|address| address % width == 0 && ends_before(*address))
@@ -881,7 +945,7 @@ fn build_functions(
         // A function runs to the next one, but the linker aligns functions,
         // so the gap between them holds padding. Keeping it would make a
         // function look changed when only its neighbour moved.
-        let bytes = arch.trim_padding(bytes);
+        let bytes = keep_loaded_words(arch, *address, bytes, arch.trim_padding(bytes).len());
         if bytes.is_empty() {
             continue;
         }
@@ -896,6 +960,34 @@ fn build_functions(
     }
 
     out
+}
+
+/// The bytes of the function at `address`, cut at `trimmed` but for the
+/// pool words its code loads.
+///
+/// A pool word can hold zero, as the offset of a thread local variable
+/// does, and zero is also what a linker pads with. Measured on libjpeg-turbo
+/// of Debian 13 for armel, each `jsimd_can_*` function lost its last pool
+/// word so.
+fn keep_loaded_words<'a>(
+    arch: &dyn Recovery,
+    address: u64,
+    bytes: &'a [u8],
+    trimmed: usize,
+) -> &'a [u8] {
+    if trimmed == bytes.len() {
+        return bytes;
+    }
+    let (insns, _) = decode_all(arch, &bytes[..trimmed], address);
+    let loaded_end = arch
+        .literal_pool_words(&insns)
+        .into_iter()
+        .filter_map(|word| usize::try_from(word.checked_sub(address)?).ok())
+        .map(|offset| offset + WORD_WIDTH as usize)
+        .filter(|&end| end <= bytes.len())
+        .max()
+        .unwrap_or(0);
+    &bytes[..trimmed.max(loaded_end)]
 }
 
 /// Find the unwind index in a raw image, which a flash dump copies along
@@ -2675,7 +2767,7 @@ mod tests {
         // The code after the return starts a function anyway, but only as a
         // guess: the pointer makes it a fact.
         let starts = |pointers: Vec<u64>| -> Vec<(u64, Source)> {
-            let linked = Linked { pointers, ..Linked::default() };
+            let linked = Linked { pointers: vec![pointers], ..Linked::default() };
             recover_in_memory(
                 &regions,
                 &[],
@@ -2712,6 +2804,58 @@ mod tests {
             .map(|found| found.address)
             .collect();
         assert_eq!(found, [0x1000, next]);
+    }
+
+    /// A zero word at the end of a function is padding, but for a pool word
+    /// that its code loads.
+    #[rstest::rstest]
+    #[case::loaded(0xe59f_0000, 12)] // ldr r0, [pc]: the word at 0x08
+    #[case::padding(0xe3a0_0000, 8)] // mov r0, 0
+    fn a_zero_word_the_code_loads_stays(#[case] first: u32, #[case] length: usize) {
+        let code = arm_code(&[
+            first,       // 0x00
+            0xe12f_ff1e, // 0x04 bx lr
+            0x0000_0000, // 0x08
+        ]);
+        let found = recover_from_regions(&[(0, code.as_slice())], &[], &Arm32);
+        assert_eq!(found.iter().map(|found| found.code.len()).collect::<Vec<_>>(), [length]);
+    }
+
+    /// A table of A32 labels, each after the jump that ends the case
+    /// before, names no function. A table of functions, each after a
+    /// return, names each.
+    #[rstest::rstest]
+    #[case::labels(0xe1a0_f003, &[])] // mov pc, r3
+    #[case::functions(0xe12f_ff1e, &[0x0c, 0x14, 0x1c, 0x24])] // bx lr
+    fn a_table_of_labels_names_no_function(#[case] end: u32, #[case] named: &[u64]) {
+        let code = arm_code(&[
+            0xe92d_4010, // 0x00 push {r4, lr}
+            0xe792_3103, // 0x04 ldr r3, [r2, r3, lsl 2]
+            end,         // 0x08
+            0xe280_0001, // 0x0c add r0, r0, 1
+            end,         // 0x10
+            0xe280_0002, // 0x14 add r0, r0, 2
+            end,         // 0x18
+            0xe280_0003, // 0x1c add r0, r0, 3
+            end,         // 0x20
+            0xe280_0004, // 0x24 add r0, r0, 4
+            0xe8bd_8010, // 0x28 pop {r4, pc}
+        ]);
+        let regions = [(0, code.as_slice())];
+        let linked = Linked { pointers: vec![vec![0x0c, 0x14, 0x1c, 0x24]], ..Linked::default() };
+        let found: Vec<u64> = recover_in_memory(
+            &regions,
+            &[],
+            &linked,
+            Regions::CodeOnly,
+            &Arm32,
+            &Memory::new(&regions),
+        )
+        .iter()
+        .filter(|found| found.source == Source::CallTarget)
+        .map(|found| found.address)
+        .collect();
+        assert_eq!(found, named);
     }
 
     /// MIPS PIC calls a function of its own through a slot of the global
