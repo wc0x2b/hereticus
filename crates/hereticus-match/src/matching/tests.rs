@@ -2227,6 +2227,17 @@ fn a_table_that_goes_or_comes_is_data() {
     assert_eq!(code_gone.removed_with_contents().collect::<Vec<_>>(), [(1, Contents::Code)]);
 }
 
+/// One binary read alone tells its table from its code, as a comparison does.
+#[test]
+fn contents_of_tells_a_table_from_code() {
+    let mut binary = raw_mips(&pointer_table(0x8000_1000));
+    binary.functions.push(returns_one());
+
+    let found: Vec<Contents> =
+        binary.functions.iter().map(|function| contents_of(&binary, function)).collect();
+    assert_eq!(found, [Contents::Data, Contents::Code]);
+}
+
 /// A table whose pointers moved is reported as changed data, not as a
 /// rewritten function.
 #[test]

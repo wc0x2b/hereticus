@@ -890,6 +890,17 @@ impl Progress for NoProgress {
     fn finish(&self) {}
 }
 
+/// Say whether `function`, one of `binary`'s, holds code or data.
+///
+/// A comparison tells the two apart as it reads each function. This is the
+/// same test for a caller that reads one binary and compares nothing, as a
+/// list of the functions a scan found.
+pub fn contents_of(binary: &Binary, function: &Function) -> Contents {
+    let arch = binary.isa_of(function).arch();
+    let (insns, _) = decode_all(arch, &function.code, function.address);
+    arch.contents(&function.code, &insns, &binary.addresses)
+}
+
 /// Compare two binaries with the default settings.
 pub fn diff(before: &Binary, after: &Binary) -> Diff {
     diff_with(before, after, Options::default())

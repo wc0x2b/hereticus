@@ -1,0 +1,17 @@
+---
+source: hereticus-cli/tests/cli.rs
+assertion_line: 639
+info:
+  program: hereticus
+  args:
+    - "--functions"
+    - "--format"
+    - json
+    - fixtures/build/O2/basic.o
+---
+success: true
+exit_code: 0
+----- stdout -----
+{"isa":"arm32","found_by":"symbols","functions":[{"name":"add","address":0,"size":8,"isa":"arm32","holds":"code"},{"name":"mul_by_constant","address":8,"size":12,"isa":"arm32","holds":"code"},{"name":"sum_to","address":20,"size":40,"isa":"arm32","holds":"code"},{"name":"classify","address":60,"size":40,"isa":"arm32","holds":"code"},{"name":"switch_dense","address":100,"size":28,"isa":"arm32","holds":"code"},{"name":"call_chain","address":128,"size":16,"isa":"arm32","holds":"code"},{"name":"array_max","address":144,"size":144,"isa":"arm32","holds":"code"},{"name":"factorial","address":288,"size":144,"isa":"arm32","holds":"code"}]}
+
+----- stderr -----

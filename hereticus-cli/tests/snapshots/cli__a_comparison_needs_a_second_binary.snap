@@ -1,0 +1,19 @@
+---
+source: hereticus-cli/tests/cli.rs
+assertion_line: 690
+info:
+  program: hereticus
+  args:
+    - a.o
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+error: the following required arguments were not provided:
+  <AFTER>
+
+Usage: hereticus <BEFORE> <AFTER>
+
+For more information, try '--help'.

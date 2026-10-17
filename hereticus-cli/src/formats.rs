@@ -123,7 +123,7 @@ pub(crate) fn print_markdown(
 }
 
 /// Text as a JSON string, quoted, with what JSON needs escaped.
-fn json_string(text: &str) -> String {
+pub(crate) fn json_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for character in text.chars() {

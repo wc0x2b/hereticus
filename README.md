@@ -189,17 +189,18 @@ and 2 when the input could not be read.
 ```console
 Command line tool to compare functions between two binaries
 
-Usage: hereticus [OPTIONS] <BEFORE> <AFTER>
+Usage: hereticus [OPTIONS] <BEFORE> [AFTER]
 
 Arguments:
-  <BEFORE>  The earlier binary
-  <AFTER>   The later binary
+  <BEFORE>  The earlier binary, or with `--functions` the one binary to list
+  [AFTER]   The later binary
 
 Options:
   -a, --all                    Report every function, not only the ones that changed
       --diff <FUNCTION>        Show the instruction-level diff of one function, then stop
       --diff-all               Show the instruction-level diff of every changed function, then stop
       --tui                    Browse the report in the terminal, and change its order, its filters and the diff it shows without a second run
+      --functions              List the functions of one binary, then stop
       --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il]
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
