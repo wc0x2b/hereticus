@@ -84,9 +84,21 @@ where
     K: Clone + Eq + Hash,
     V: Clone + Eq,
 {
-    let next = successors(insns, delay_slots);
+    held_on_every_path_of(&successors(insns, delay_slots), transfer)
+}
+
+/// [`held_on_every_path`], over the instructions whose successors `next`
+/// gives, as [`successors`] makes them, for a caller that knows more edges.
+pub fn held_on_every_path_of<K, V>(
+    next: &[Vec<usize>],
+    transfer: impl Fn(usize, &mut HashMap<K, V>),
+) -> Vec<HashMap<K, V>>
+where
+    K: Clone + Eq + Hash,
+    V: Clone + Eq,
+{
     // `None` until a path reaches the instruction.
-    let mut held: Vec<Option<HashMap<K, V>>> = vec![None; insns.len()];
+    let mut held: Vec<Option<HashMap<K, V>>> = vec![None; next.len()];
     let Some(entry) = held.first_mut() else { return Vec::new() };
     *entry = Some(HashMap::new());
     let mut work = vec![0];

@@ -430,13 +430,9 @@ pub fn global_offset_table_uses(body: &[Insn]) -> Vec<bool> {
     if !steps.iter().any(|step| step.setup.is_some()) {
         return vec![false; body.len()];
     }
-    let held = hereticus_il::flow::held_on_every_path(
-        body,
-        |_| 0,
-        |index, held| {
-            step_holders(&steps[index], held);
-        },
-    );
+    let held = hereticus_il::flow::held_on_every_path_of(&nearest_cases(body), |index, held| {
+        step_holders(&steps[index], held);
+    });
     steps
         .iter()
         .zip(&held)
@@ -544,6 +540,32 @@ fn steps_of(body: &[Insn]) -> Vec<Step> {
             Step { setup, base: address_base(&inst), to, from, writes, writes_count, indexed }
         })
         .collect()
+}
+
+/// The successors of each instruction of `body`, as
+/// [`hereticus_il::flow::successors`] gives them, with each instruction
+/// that only a jump through a table reaches taken as a case of the nearest
+/// such jump before it, as a compiler lays out a `switch`.
+///
+/// Taken as a case of every such jump, a case after the second `switch` of
+/// `newkey` in Lua reads as reached before the code that spills the table,
+/// and every use of the spill is lost.
+fn nearest_cases(body: &[Insn]) -> Vec<Vec<usize>> {
+    let mut next = hereticus_il::flow::successors(body, |_| 0);
+    let mut nearest = None;
+    let mut dispatch: Vec<Option<usize>> = Vec::with_capacity(body.len());
+    for (index, insn) in body.iter().enumerate() {
+        dispatch.push(nearest);
+        if insn.kind == (InsnKind::Jump { target: None }) {
+            nearest = Some(index);
+        }
+    }
+    for (index, insn) in body.iter().enumerate() {
+        if insn.kind == (InsnKind::Jump { target: None }) {
+            next[index].retain(|&case| dispatch[case] == Some(index));
+        }
+    }
+    next
 }
 
 /// What holds the table after `step`, from what `held` held before it.
