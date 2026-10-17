@@ -1,0 +1,51 @@
+// Builds the Hereticus extension for one Ghidra installation.
+//
+// Give the installation in GHIDRA_INSTALL_DIR or as -PGHIDRA_INSTALL_DIR, then
+// run `gradle` in this directory. The extension zip goes to dist/.
+//
+// The section between the two markers is the one the Skeleton extension of
+// Ghidra gives every extension.
+
+//----------------------START "DO NOT MODIFY" SECTION------------------------------
+def ghidraInstallDir
+
+if (System.env.GHIDRA_INSTALL_DIR) {
+	ghidraInstallDir = System.env.GHIDRA_INSTALL_DIR
+}
+else if (project.hasProperty("GHIDRA_INSTALL_DIR")) {
+	ghidraInstallDir = project.getProperty("GHIDRA_INSTALL_DIR")
+}
+else {
+	ghidraInstallDir = "<REPLACE>"
+}
+
+task distributeExtension {
+	group = "Ghidra"
+
+	apply from: new File(ghidraInstallDir).getCanonicalPath() + "/support/buildExtension.gradle"
+	dependsOn ':buildExtension'
+}
+//----------------------END "DO NOT MODIFY" SECTION-------------------------------
+
+repositories {
+	mavenCentral()
+}
+
+// The unit tests need no running Ghidra, only its classes, which
+// buildExtension.gradle puts on the class path.
+dependencies {
+	testImplementation platform('org.junit:junit-bom:6.1.3')
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+	useJUnitPlatform()
+	testLogging {
+		events 'failed'
+		exceptionFormat 'full'
+	}
+}
+
+// A built extension holds the tested code, so a test failure stops the build.
+buildExtension.dependsOn test
