@@ -634,7 +634,7 @@ fn frame_slot(inst: &iced_x86::Instruction, moved: Option<i64>) -> Option<(Reg, 
 /// arguments on the stack, and the code after it is another block that a
 /// branch reaches. So where the way on from a call disagrees with a branch,
 /// the branch is right.
-pub fn stack_offsets(body: &[Insn]) -> Vec<Option<i64>> {
+fn stack_offsets(body: &[Insn]) -> Vec<Option<i64>> {
     let next = hereticus_il::flow::successors(body, |_| 0);
     let mut height = vec![Height::Unreached; body.len()];
     let Some(entry) = height.first_mut() else { return Vec::new() };
@@ -695,8 +695,8 @@ enum Height {
     Unreached,
     /// It has moved this far, as the strongest edge that reaches says.
     Known(i64, Edge),
-    /// Edges of the same strength disagree, or an instruction moved it by
-    /// an amount the code does not show.
+    /// Branches disagree, or an instruction moved it by an amount the code
+    /// does not show.
     Unknown,
 }
 
@@ -707,11 +707,14 @@ impl Height {
             (Self::Unreached, other) | (other, Self::Unreached) => other,
             (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
             (Self::Known(left, left_edge), Self::Known(right, right_edge)) => {
-                match (left == right, left_edge.cmp(&right_edge)) {
-                    (true, _) => Self::Known(left, left_edge.max(right_edge)),
-                    (false, core::cmp::Ordering::Less) => Self::Known(right, right_edge),
-                    (false, core::cmp::Ordering::Greater) => Self::Known(left, left_edge),
-                    (false, core::cmp::Ordering::Equal) => Self::Unknown,
+                match (left == right, left_edge.cmp(&right_edge), left_edge) {
+                    (true, ..) => Self::Known(left, left_edge.max(right_edge)),
+                    (false, core::cmp::Ordering::Less, _) => Self::Known(right, right_edge),
+                    (false, core::cmp::Ordering::Greater, _) => Self::Known(left, left_edge),
+                    // Two ways on after calls disagree: a branch, which can
+                    // still come, settles which is right.
+                    (false, core::cmp::Ordering::Equal, Edge::AfterCall) => self,
+                    (false, core::cmp::Ordering::Equal, Edge::Branch) => Self::Unknown,
                 }
             }
         }
