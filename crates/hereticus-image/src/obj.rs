@@ -338,8 +338,13 @@ impl Binary {
 
         let mut functions = Vec::new();
         let mut other_set = BTreeSet::new();
+        let unsized_ends = unsized_function_ends(&file, isa);
         for symbol in file.symbols() {
-            if symbol.kind() != SymbolKind::Text || symbol.size() == 0 {
+            let size = match symbol.size() {
+                0 => unsized_ends.get(&symbol.address()).map_or(0, |end| end - symbol.address()),
+                size => size,
+            };
+            if symbol.kind() != SymbolKind::Text || size == 0 {
                 continue;
             }
 
@@ -348,7 +353,7 @@ impl Binary {
             if own != isa {
                 other_set.insert(address);
             }
-            let Some(code) = symbol_code(&file, &symbol, address) else { continue };
+            let Some(code) = symbol_code(&file, &symbol, address, size) else { continue };
             functions.push(Function {
                 name: stable_name(symbol.name().unwrap_or_default()).to_string(),
                 address,
@@ -745,6 +750,7 @@ fn symbol_code(
     file: &object::File<'_>,
     symbol: &object::Symbol<'_, '_>,
     address: u64,
+    size: u64,
 ) -> Option<Vec<u8>> {
     let section = file.section_by_index(symbol.section_index()?).ok()?;
     let data = section.data().ok()?;
@@ -752,8 +758,41 @@ fn symbol_code(
     // Symbol addresses are absolute; section data starts at the section
     // address, so rebase before slicing.
     let start = address.checked_sub(section.address())? as usize;
-    let end = start.checked_add(symbol.size() as usize)?;
+    let end = start.checked_add(usize::try_from(size).ok()?)?;
     data.get(start..end).map(<[u8]>::to_vec)
+}
+
+/// The end of each x86 function whose symbol gives no size, by its start:
+/// the next symbol of code in its section, or the end of the section, with
+/// the padding before it left out.
+///
+/// GCC writes `__x86.get_pc_thunk.bx` and the other thunks of 32-bit PIC
+/// with no size once they are linked, and they are functions all the same:
+/// left out, each thunk read as code of the function before it. On another
+/// architecture a symbol of code with no size marks no function.
+fn unsized_function_ends(file: &object::File<'_>, isa: Isa) -> BTreeMap<u64, u64> {
+    if !matches!(isa, Isa::X86 | Isa::X86_64) || file.kind() == ObjectKind::Relocatable {
+        return BTreeMap::new();
+    }
+    let starts: BTreeSet<u64> = file
+        .symbols()
+        .filter(|symbol| symbol.kind() == SymbolKind::Text)
+        .map(|symbol| symbol.address())
+        .collect();
+    file.symbols()
+        .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() == 0)
+        .filter_map(|symbol| {
+            let section = file.section_by_index(symbol.section_index()?).ok()?;
+            let section_end = section.address() + section.size();
+            let start = symbol.address();
+            let next = starts.range(start + 1..).next().copied().unwrap_or(section_end);
+            let data = section.data().ok()?;
+            let from = usize::try_from(start.checked_sub(section.address())?).ok()?;
+            let to = usize::try_from(next.min(section_end) - section.address()).ok()?;
+            let code = isa.arch().trim_padding(data.get(from..to)?);
+            (!code.is_empty()).then(|| (start, start + code.len() as u64))
+        })
+        .collect()
 }
 
 /// How a function's instructions are encoded, where an architecture has a
