@@ -1301,11 +1301,14 @@ fn call_targets(arch: &dyn Recovery, region: &Region<'_>) -> Vec<u64> {
             }
             InsnKind::Call { target } => target.map(|target| (insn.address, target)),
             // An x86 compiler drops a jump to the next instruction, so only
-            // the linker leaves one: a tail call to the function it put
-            // next. Measured on a static musl build, `recv` ends with
-            // `jmp recvfrom` and `recvfrom` follows it.
+            // the linker leaves one, in its long form: a tail call to the
+            // function it put next. Measured on a static musl build, `recv`
+            // ends with `jmp recvfrom` and `recvfrom` follows it. The short
+            // form is written by hand, as NASM code of libjpeg-turbo does
+            // to a label of its own.
             InsnKind::Jump { target: Some(target) }
                 if arch.instruction_width() == 1
+                    && insn.bytes_len == X86_LONG_JUMP_LEN
                     && target == insn.address + insn.bytes_len as u64 =>
             {
                 Some((insn.address, target))
@@ -1316,11 +1319,56 @@ fn call_targets(arch: &dyn Recovery, region: &Region<'_>) -> Vec<u64> {
             _ => None,
         })
         .filter(|(address, target)| target != address)
+        .filter(|&(address, target)| !is_inline_thunk(insns, address, target))
         .map(|(_, target)| target)
         // A call out of this section goes somewhere this pass cannot see.
         .filter(|target| *target >= base && *target < end)
         .filter(|&target| !pops_a_frame_it_did_not_make(arch, insns, target))
         .collect()
+}
+
+/// The length of an x86 `jmp rel32`.
+const X86_LONG_JUMP_LEN: usize = 5;
+
+/// Whether the call at `call` reaches a thunk inside its own function: a
+/// short call forward, to code that the jump right before it skips.
+///
+/// NASM's `get_GOT` macro of libjpeg-turbo for i386 reads its own address
+/// so:
+///
+/// ```text
+/// call geteip
+/// add  ebx, GOT - $
+/// jmp  done
+/// geteip:
+/// mov  ebx, [esp]
+/// ret
+/// done:
+/// ```
+///
+/// As a function, the thunk cut each SIMD function of libjpeg-turbo in
+/// two: the code after it read as a function of its own.
+fn is_inline_thunk(insns: &[Insn], call: u64, target: u64) -> bool {
+    /// Farther than this, a call reaches past the setup of its address.
+    const NEAR: u64 = 32;
+    if target <= call || target - call > NEAR {
+        return false;
+    }
+    let Ok(index) = insns.binary_search_by_key(&target, |insn| insn.address) else {
+        return false;
+    };
+    let Some(InsnKind::Jump { target: Some(done) }) =
+        index.checked_sub(1).map(|before| insns[before].kind)
+    else {
+        return false;
+    };
+    // The thunk ends with a return right before where the jump lands.
+    done > target
+        && insns[index..]
+            .iter()
+            .take_while(|insn| insn.address < done)
+            .last()
+            .is_some_and(|last| last.kind == InsnKind::Return)
 }
 
 /// Whether the code at `target` reaches a return that pops `pc` before it
@@ -2787,12 +2835,16 @@ mod tests {
         assert_eq!(starts(vec![]), [(0x1000, Source::AfterReturn), (0x100c, Source::AfterReturn)]);
     }
 
-    /// An x86 jump to the next instruction is a tail call the linker
-    /// resolved to the function it put next, in its long and short forms.
+    /// An x86 jump to the next instruction in its long form is a tail call
+    /// the linker resolved to the function it put next. The short form is
+    /// written by hand, to a label of the same function.
     #[rstest::rstest]
-    #[case::long(&[0xe9, 0x00, 0x00, 0x00, 0x00])]
-    #[case::short(&[0xeb, 0x00])]
-    fn an_x86_jump_to_the_next_instruction_starts_a_function(#[case] jump: &[u8]) {
+    #[case::long(&[0xe9, 0x00, 0x00, 0x00, 0x00], true)]
+    #[case::short(&[0xeb, 0x00], false)]
+    fn an_x86_long_jump_to_the_next_instruction_starts_a_function(
+        #[case] jump: &[u8],
+        #[case] starts: bool,
+    ) {
         use hereticus_il::arch::x86::X86;
 
         let mut code = vec![0x45, 0x31, 0xc9]; // xor r9d, r9d
@@ -2803,7 +2855,7 @@ mod tests {
             .iter()
             .map(|found| found.address)
             .collect();
-        assert_eq!(found, [0x1000, next]);
+        assert_eq!(found.contains(&next), starts, "{found:x?}");
     }
 
     /// A zero word at the end of a function is padding, but for a pool word
@@ -2819,6 +2871,29 @@ mod tests {
         ]);
         let found = recover_from_regions(&[(0, code.as_slice())], &[], &Arm32);
         assert_eq!(found.iter().map(|found| found.code.len()).collect::<Vec<_>>(), [length]);
+    }
+
+    /// A thunk inside a function, which a short call reaches and the jump
+    /// before it skips, starts no function, and nor does the code after it.
+    #[test]
+    fn an_inline_thunk_starts_no_function() {
+        use hereticus_il::arch::x86::X86;
+
+        let code = [
+            0x53, //                               0x1000 push ebx
+            0xe8, 0x08, 0x00, 0x00, 0x00, //       0x1001 call 0x100e
+            0x81, 0xc3, 0x62, 0x67, 0x03, 0x00, // 0x1006 add ebx, 0x36762
+            0xeb, 0x04, //                         0x100c jmp 0x1012
+            0x8b, 0x1c, 0x24, //                   0x100e mov ebx, [esp]
+            0xc3, //                               0x1011 ret
+            0x5b, //                               0x1012 pop ebx
+            0xc3, //                               0x1013 ret
+        ];
+        let found: Vec<u64> = recover_from_regions(&[(0x1000, code.as_slice())], &[], &X86::BITS32)
+            .iter()
+            .map(|found| found.address)
+            .collect();
+        assert_eq!(found, [0x1000]);
     }
 
     /// A table of A32 labels, each after the jump that ends the case
