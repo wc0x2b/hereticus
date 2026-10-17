@@ -413,39 +413,30 @@ pub fn formed_address(insn: &Insn, space: &AddressSpace) -> Option<u64> {
 /// The add is part of the address, and so is each offset from a register
 /// that holds the table, as `lea eax, [ebx - 0x18768]`.
 ///
-/// A register or a slot of the frame holds the table everywhere when each
-/// write to it puts the table there, as GCC keeps it in `ebx` for the whole
-/// function. That needs no order of the code, which a compiler lays out
-/// freely. Each other register holds it from a write of the table to the
-/// next write of something else, as clang loads it from a slot just before
-/// it uses it.
+/// A register or a slot of the frame holds the table before an instruction
+/// where every path to it put the table there: GCC keeps it in `ebx` for the
+/// whole function, and clang spills it to a slot that later holds other
+/// values, and loads it back just before it uses it.
 pub fn global_offset_table_uses(body: &[Insn]) -> Vec<bool> {
     let steps: Vec<Step> = steps_of(body);
     if !steps.iter().any(|step| step.setup.is_some()) {
         return vec![false; body.len()];
     }
-    // Start from every register and slot, and take away each that some
-    // write fills with anything else, until none changes.
-    let mut holders = Holders {
-        registers: (0..8).map(Reg::General).filter(|&reg| reg != Reg::General(4)).collect(),
-        // A slot no code stores to holds what the caller put there.
-        slots: steps
-            .iter()
-            .filter_map(|step| match step.to {
-                Holder::Slot(slot) => Some(slot),
-                _ => None,
-            })
-            .collect(),
-    };
-    loop {
-        let (uses, refuted) = walk(&steps, &holders);
-        if refuted.registers.is_empty() && refuted.slots.is_empty() {
-            return uses;
-        }
-        holders.registers =
-            holders.registers.iter().filter(|&reg| !refuted.registers.contains(reg)).collect();
-        holders.slots.retain(|slot| !refuted.slots.contains(slot));
-    }
+    let held = hereticus_il::flow::held_on_every_path(
+        body,
+        |_| 0,
+        |index, held| {
+            step_holders(&steps[index], held);
+        },
+    );
+    steps
+        .iter()
+        .zip(&held)
+        .map(|(step, held)| {
+            step.setup.is_some()
+                || step.base.is_some_and(|base| held.contains_key(&Holder::Register(base)))
+        })
+        .collect()
 }
 
 /// What [`global_offset_table_uses`] reads of one instruction.
@@ -453,7 +444,9 @@ struct Step {
     /// The register the instruction leaves the table in, where it ends the
     /// setup.
     setup: Option<Reg>,
-    /// The register its memory operand starts from.
+    /// The register it forms an address from: the base of its memory
+    /// operand, or the register it adds a constant to, as
+    /// `add edi, 0xfffe9dde` does to a copy of the table.
     base: Option<Reg>,
     /// Where it moves a value to, and from where.
     to: Holder,
@@ -462,6 +455,10 @@ struct Step {
     writes: RegSet,
     /// Whether what it writes counts against a holder of the table.
     writes_count: WritesCount,
+    /// The register it writes and the one it reads, where it adds a scaled
+    /// index to a register and nothing else, as `lea edi, [edx + 2*ecx]`
+    /// does. From the table, that leaves the distance still to add.
+    indexed: Option<(Reg, Reg)>,
 }
 
 /// Whether what an instruction writes counts against a holder of the table.
@@ -473,14 +470,6 @@ enum WritesCount {
     /// value, which no code of the function reads after it, and the `pop`
     /// of clang's setup is the first half of the table.
     No,
-}
-
-/// The registers and the slots that hold the table everywhere they are
-/// read.
-#[derive(Clone, Debug, Default)]
-struct Holders {
-    registers: RegSet,
-    slots: Vec<(Reg, i64)>,
 }
 
 /// Read each instruction of `body` once.
@@ -498,6 +487,7 @@ fn steps_of(body: &[Insn]) -> Vec<Step> {
                     from: Holder::None,
                     writes: RegSet::EMPTY,
                     writes_count: WritesCount::Yes,
+                    indexed: None,
                 };
             };
             let slot = frame_slot(&inst, moved[index]);
@@ -533,52 +523,56 @@ fn steps_of(body: &[Insn]) -> Vec<Step> {
                 true => WritesCount::No,
                 false => WritesCount::Yes,
             };
-            Step { setup, base: il_register(inst.memory_base()), to, from, writes, writes_count }
+            let indexed = (inst.mnemonic() == Mnemonic::Lea
+                && inst.memory_index() != Register::None
+                && inst.memory_displacement64() == 0)
+                .then(|| {
+                    Some((il_register(inst.op0_register())?, il_register(inst.memory_base())?))
+                })
+                .flatten();
+            Step { setup, base: address_base(&inst), to, from, writes, writes_count, indexed }
         })
         .collect()
 }
 
-/// Walk `steps` with `holders` taken to hold the table, and give whether
-/// each step reaches memory from it, and the holders some write refutes.
-fn walk(steps: &[Step], holders: &Holders) -> (Vec<bool>, Holders) {
-    let mut uses = vec![false; steps.len()];
-    let mut refuted = Holders::default();
-    let mut local = RegSet::EMPTY;
-    for (index, step) in steps.iter().enumerate() {
-        if let Some(register) = step.setup {
-            uses[index] = true;
-            local.insert(register);
-            continue;
-        }
-        let holds = |reg: Reg| local.contains(reg) || holders.registers.contains(reg);
-        uses[index] = step.base.is_some_and(holds);
-        let moves_the_table = match step.from {
-            Holder::Register(reg) => holds(reg),
-            Holder::Slot(slot) => holders.slots.contains(&slot),
-            Holder::None => false,
-        };
-        // The code after a return runs as the code before the epilogue left
-        // it, so an epilogue changes nothing the walk knows.
-        if step.writes_count == WritesCount::No {
-            continue;
-        }
-        for written in step.writes.iter() {
-            if !(moves_the_table && step.to == Holder::Register(written)) {
-                if holders.registers.contains(written) {
-                    refuted.registers.insert(written);
-                }
-                local = local.iter().filter(|&reg| reg != written).collect();
-            }
-        }
-        match step.to {
-            Holder::Register(reg) if moves_the_table => local.insert(reg),
-            Holder::Slot(slot) if !moves_the_table && holders.slots.contains(&slot) => {
-                refuted.slots.push(slot);
-            }
-            _ => {}
-        }
+/// What holds the table after `step`, from what `held` held before it.
+fn step_holders(step: &Step, held: &mut std::collections::HashMap<Holder, ()>) {
+    if let Some(register) = step.setup {
+        held.insert(Holder::Register(register), ());
+        return;
     }
-    (uses, refuted)
+    // The code after a return runs as the code before the epilogue left it,
+    // so an epilogue changes nothing.
+    if step.writes_count == WritesCount::No {
+        return;
+    }
+    let holds = |holder: Holder| held.contains_key(&holder);
+    let moves_the_table = step.from != Holder::None && holds(step.from);
+    let indexed_from_table =
+        step.indexed.filter(|&(_, read)| holds(Holder::Register(read))).map(|(written, _)| written);
+    for written in step.writes.iter() {
+        held.remove(&Holder::Register(written));
+    }
+    if step.to != Holder::None {
+        match moves_the_table {
+            true => held.insert(step.to, ()),
+            false => held.remove(&step.to),
+        };
+    }
+    if let Some(written) = indexed_from_table {
+        held.insert(Holder::Register(written), ());
+    }
+}
+
+/// The register `inst` forms an address from: see [`Step::base`].
+fn address_base(inst: &iced_x86::Instruction) -> Option<Reg> {
+    let adds_a_constant = matches!(inst.mnemonic(), Mnemonic::Add | Mnemonic::Sub)
+        && inst.op0_kind() == OpKind::Register
+        && matches!(inst.op1_kind(), OpKind::Immediate32 | OpKind::Immediate8to32);
+    match adds_a_constant {
+        true => il_register(inst.op0_register()),
+        false => il_register(inst.memory_base()),
+    }
 }
 
 /// Whether `rest` opens with a `pop` or a `leave` that only more of them,
@@ -680,7 +674,7 @@ fn stack_change(insn: &Insn) -> Option<i64> {
 }
 
 /// What an instruction moves the table from or to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Holder {
     /// A register.
     Register(Reg),
@@ -901,6 +895,7 @@ mod tests {
             0xe8, 0x00, 0x00, 0x00, 0x00, //       call $+5
             0x5b, //                               pop ebx
             0x81, 0xc3, 0xac, 0x06, 0x01, 0x00, // add ebx, 0x106ac
+            0x75, 0x02, //                         jne past the return
             0x5b, //                               pop ebx
             0xc3, //                               ret
             0x8b, 0x43, 0x10, //                   mov eax, [ebx + 0x10]
@@ -908,12 +903,12 @@ mod tests {
         let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
         assert_eq!(
             global_offset_table_uses(&insns),
-            [false, false, false, true, false, false, true]
+            [false, false, false, true, false, false, false, true]
         );
         // A `pop` with no return after it writes something else.
         let code = [&code[..], &[0x5b, 0x8b, 0x43, 0x10]].concat();
         let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
-        assert_eq!(global_offset_table_uses(&insns)[7..], [false, false]);
+        assert_eq!(global_offset_table_uses(&insns)[8..], [false, false]);
     }
 
     #[test]
@@ -936,6 +931,35 @@ mod tests {
             global_offset_table_uses(&insns),
             [false, false, false, true, false, false, false, true, false, false, false]
         );
+    }
+
+    #[test]
+    fn a_constant_added_to_the_table_is_a_distance() {
+        let code = [
+            0xe8, 0x00, 0x00, 0x00, 0x00, //       call $+5
+            0x5b, //                               pop ebx
+            0x81, 0xc3, 0xac, 0x06, 0x01, 0x00, // add ebx, 0x106ac
+            0x89, 0xdf, //                         mov edi, ebx
+            0x81, 0xc7, 0xde, 0x9d, 0xfe, 0xff, // add edi, 0xfffe9dde
+            0x83, 0xc0, 0x04, //                   add eax, 4
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(global_offset_table_uses(&insns), [false, false, true, false, true, false]);
+    }
+
+    #[test]
+    fn an_index_added_to_the_table_leaves_the_distance_to_add() {
+        let code = [
+            0xe8, 0x00, 0x00, 0x00, 0x00, //       call $+5
+            0x5b, //                               pop ebx
+            0x81, 0xc3, 0xac, 0x06, 0x01, 0x00, // add ebx, 0x106ac
+            0x8d, 0x3c, 0x4b, //                   lea edi, [ebx + 2*ecx]
+            0x81, 0xc7, 0xde, 0x9d, 0xfe, 0xff, // add edi, 0xfffe9dde
+            0x8d, 0x43, 0x10, //                   lea eax, [ebx + 0x10]
+            0x8b, 0x48, 0x04, //                   mov ecx, [eax + 4]
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        assert_eq!(global_offset_table_uses(&insns), [false, false, true, true, true, true, false]);
     }
 
     #[test]
