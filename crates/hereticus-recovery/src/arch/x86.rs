@@ -39,6 +39,9 @@ const TABLE_LOOK_BACK: usize = 16;
 /// More cases than any `switch` a compiler turns into one table.
 const MOST_CASES: u64 = 4096;
 
+/// The bytes of an entry of the PLT.
+const PLT_ENTRY: u64 = 16;
+
 /// The width of an entry of a table of distances.
 const ENTRY_WIDTH: u64 = 4;
 
@@ -197,6 +200,31 @@ impl Recovery for X86 {
     /// ```
     fn jump_tables(&self, memory: &Memory<'_>, code: Range<u64>, insns: &[Insn]) -> Vec<JumpTable> {
         (0..insns.len()).filter_map(|index| read_jump_table(memory, &code, insns, index)).collect()
+    }
+
+    /// GNU `ld` and LLD write each entry of `.plt`, `.plt.sec` and
+    /// `.plt.got` in 16 bytes, the first of `.plt` too.
+    fn plt_entry_size(&self) -> Option<u64> {
+        Some(PLT_ENTRY)
+    }
+
+    /// 32-bit PIC finds the table in `ebx`, which the caller set:
+    ///
+    /// ```text
+    /// endbr32                  ; with -fcf-protection
+    /// jmp  [ebx + 0xc]
+    /// ```
+    fn stub_table_offset(&self, code: &[u8]) -> Option<u64> {
+        let (insns, _) = super::decode_all(self, &code[..code.len().min(2 * MOST_BYTES)], 0);
+        let jump_at = usize::from(insns.first().is_some_and(is_branch_target_mark));
+        let jump = insns.get(jump_at)?;
+        let inst = instruction(jump)?;
+        let through_the_table = mode_of(jump) == Some(Mode::Bits32)
+            && jump.kind == (InsnKind::Jump { target: None })
+            && inst.op0_kind() == OpKind::Memory
+            && inst.memory_base() == Register::EBX
+            && inst.memory_index() == Register::None;
+        through_the_table.then(|| inst.memory_displacement64() & 0xffff_ffff)
     }
 
     /// A jump through a slot of the global offset table leaves the
@@ -761,6 +789,19 @@ mod tests {
         let absolute = [0xff, 0x25, 0x0c, 0xa0, 0x04, 0x08];
         assert_eq!(X86::BITS32.stub_slot(&absolute, 0x8049000), Some(0x804_a00c));
         assert_eq!(X86::BITS64.stub_slot(&[0x55, 0xc3], 0x1000), None);
+    }
+
+    #[test]
+    fn a_32_bit_pic_stub_names_its_distance_from_the_table() {
+        // jmp [ebx + 0xc]; push 0; jmp .plt
+        let stub = [0xff, 0xa3, 0x0c, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(X86::BITS32.stub_table_offset(&stub), Some(0xc));
+        // endbr32; jmp [ebx + 0x10]
+        let marked = [0xf3, 0x0f, 0x1e, 0xfb, 0xff, 0xa3, 0x10, 0x00, 0x00, 0x00];
+        assert_eq!(X86::BITS32.stub_table_offset(&marked), Some(0x10));
+        // jmp [eax + 0xc] reads no table, and 64-bit code names its slot.
+        assert_eq!(X86::BITS32.stub_table_offset(&[0xff, 0xa0, 0x0c, 0, 0, 0]), None);
+        assert_eq!(X86::BITS64.stub_table_offset(&stub), None);
     }
 
     #[test]

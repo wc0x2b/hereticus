@@ -173,6 +173,20 @@ pub trait Recovery: Decoder {
         None
     }
 
+    /// The size of each entry of the PLT, where every entry has one, or
+    /// `None`. Defaults to `None`.
+    fn plt_entry_size(&self) -> Option<u64> {
+        None
+    }
+
+    /// The distance from the global offset table of the slot that the PLT
+    /// stub `code` jumps through, where the stub finds the table in a
+    /// register and so names no slot of its own, as 32-bit x86 PIC does.
+    /// Defaults to `None`.
+    fn stub_table_offset(&self, _code: &[u8]) -> Option<u64> {
+        None
+    }
+
     /// Report whether an instruction opens a function.
     ///
     /// Used to recover function starts from stripped code, so a false positive
