@@ -30,6 +30,17 @@ strip = false
 [profile.release]
 overflow-checks = true
 
+# iced-x86 takes the length of an instruction from the low 32 bits of two
+# pointers, which wrap where the bytes lie across a 4 GiB boundary of
+# memory. The wrapped length is right, but an overflow check panics, so
+# iced-x86 is built without one. See
+# `an_instruction_across_a_4_gib_boundary_decodes` of `hereticus-il`.
+[profile.release.package.iced-x86]
+overflow-checks = false
+
+[profile.dev.package.iced-x86]
+overflow-checks = false
+
 # Release(dist) binaries are setup for maximum runtime speed, at the cost of CI time
 [profile.dist]
 inherits = "release"
@@ -37,3 +48,6 @@ codegen-units = 1
 lto = true
 strip = true
 overflow-checks = true
+
+[profile.dist.package.iced-x86]
+overflow-checks = false
