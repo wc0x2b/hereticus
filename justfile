@@ -65,7 +65,8 @@ rivals-kernel: firmware
 # headless Ghidra on stripped backports, a raw stub and two backport pairs, so
 # a test can check what it finds and pairs.
 ghidra-extension: build backports firmware
-    docker build --quiet --target ghidra-extension --tag {{rivals_image}}-ghidra-extension fixtures/rivals
+    docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
+    docker build --quiet --tag {{rivals_image}}-ghidra-extension fixtures/ghidra-extension
     docker run --rm \
         --user "$(id -u):$(id -g)" \
         --env HOME=/tmp \
