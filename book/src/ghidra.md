@@ -16,8 +16,11 @@ the command line does.
 ## Installation
 
 1. Install `hereticus` on the `PATH`. See [Installation](./installation.md).
-2. Build the extension for your Ghidra. Ghidra ships the Gradle that the
-   build needs:
+2. Get the extension zip for your Ghidra. Ghidra installs only a zip built
+   for its exact release. If a
+   [GitHub release](https://github.com/wc0x2b/hereticus/releases)
+   has `hereticus-<tag>-ghidra_<version>.zip` for your Ghidra, download it.
+   If not, build the zip. Ghidra ships the Gradle that the build needs:
 
    ```console
    $ cd ghidra

@@ -1,0 +1,37 @@
+name: binaries
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Check that the release assets build. The release-plz workflow attaches
+  # them to the GitHub release.
+  release-assets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The C part of mimalloc builds for the musl target that
+      # `.cargo/config.toml` picks.
+      - name: Install musl
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup show
+
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: just
+
+      - name: Build the assets
+        run: just release-assets ci
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: target/release-assets/

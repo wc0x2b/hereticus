@@ -1,0 +1,109 @@
+name: release-plz
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  # Publish the crates, create the tag, and create the GitHub release.
+  release-plz-release:
+    name: release-plz release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      # Necessary for crates.io trusted publishing.
+      id-token: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    # Cargo verifies each crate before it publishes it. The host target needs
+    # no musl tools.
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup show
+      - name: Run release-plz
+        id: release-plz
+        uses: release-plz/action@aec534bbd8631793b9b3b8f1ee6cd886c322e17f # v0.5.133
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only `hereticus-cli` makes a tag, see release-plz.toml. The tag is
+      # empty when no release was made.
+      - name: Find the tag
+        id: tag
+        env:
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          tag="$(jq -r '.[] | select(.package_name == "hereticus-cli") | .tag' <<<"${RELEASES:-[]}")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # Open or update the release pull request with the version and changelog changes.
+  release-plz-pr:
+    name: release-plz pr
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup show
+      - name: Run release-plz
+        uses: release-plz/action@aec534bbd8631793b9b3b8f1ee6cd886c322e17f # v0.5.133
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Attach the static binary and the Ghidra extension to the release that
+  # release-plz created.
+  release-assets:
+    name: attach assets
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.release-plz-release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Build the released commit, not the most recent commit on master.
+          ref: ${{ env.TAG }}
+
+      - name: Install musl
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup show
+
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: just
+
+      - name: Build the assets
+        run: just release-assets "$TAG"
+
+      - name: Attach the assets to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG" target/release-assets/* --clobber

@@ -1,0 +1,29 @@
+# Every crate shares the version of the workspace, so one tag, one GitHub
+# release and one changelog, those of `hereticus-cli`, cover them all.
+[workspace]
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+semver_check = true
+pr_labels = ["release"]
+
+[[package]]
+name = "hereticus-cli"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+git_release_draft = false
+changelog_update = true
+changelog_path = "./CHANGELOG.md"
+changelog_include = [
+    "hereticus",
+    "hereticus-arch",
+    "hereticus-callees",
+    "hereticus-il",
+    "hereticus-image",
+    "hereticus-match",
+    "hereticus-memory",
+    "hereticus-recovery",
+    "hereticus-unpack",
+    "hereticus-view",
+]
