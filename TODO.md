@@ -37,7 +37,7 @@ through stubs that the cache builder has bound or removed.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 64482<!-- from boundaries.rs: exact --> of
+stripped releases: 64488<!-- from boundaries.rs: exact --> of
 64551<!-- from boundaries.rs: functions --> exact, 9<!-- from boundaries.rs: missed -->
 starts missed and 3<!-- from boundaries.rs: invented --> invented,
 over ARM, Thumb-2, AArch64, MIPS and x86, with the PLT and the lazy binding
@@ -151,7 +151,7 @@ cannot judge. The pairs by callers and by references are wrong
 11%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
-Over the upgrades, 7560<!-- from truth_kernels: upgrades / pairs --> pairs of
+Over the upgrades, 7559<!-- from truth_kernels: upgrades / pairs --> pairs of
 functions stay free on both sides, though they share a name and a source
 file: more than three times the wrong pairs. Of these,
 1208<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
