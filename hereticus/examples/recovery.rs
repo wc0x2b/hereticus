@@ -10,7 +10,7 @@
 //! the functions found exactly, the starts missed and invented, and the
 //! functions that start right but end wrong, and lists up to `shown` of
 //! each kind (30 if not given) with what told the scan of each invented
-//! start.
+//! start. The padding at the end of a function counts on neither side.
 
 use std::collections::BTreeMap;
 
@@ -45,23 +45,26 @@ fn main() -> Result<(), String> {
         })
         .map(|section| section.address()..section.address() + section.size())
         .collect();
+    let Some(middle) = found.functions.get(found.functions.len() / 2) else {
+        return Err("the stripped binary holds no function".to_string());
+    };
+    let arch = found.isa_of(middle).arch();
+    // Go counts the padding after a function in the size of its symbol, and
+    // the scan leaves padding out, so both ends are read without it.
     let spans = |binary: &Binary| -> Spans {
         binary
             .functions
             .iter()
             .filter(|function| !stubs.iter().any(|range| range.contains(&function.address)))
             .map(|function| {
-                let end = function.address + function.code.len() as u64;
+                let end = function.address + arch.trim_padding(&function.code).len() as u64;
                 (function.address, (end, function.name.clone()))
             })
             .collect()
     };
     let (truth_spans, found_spans) = (spans(&truth), spans(&found));
 
-    let Some(middle) = found.functions.get(found.functions.len() / 2) else {
-        return Err("the stripped binary holds no function".to_string());
-    };
-    let sources: BTreeMap<u64, Source> = recover_functions(&stripped, found.isa_of(middle).arch())
+    let sources: BTreeMap<u64, Source> = recover_functions(&stripped, arch)
         .into_iter()
         .map(|recovered| (recovered.address, recovered.source))
         .collect();
