@@ -67,6 +67,14 @@ impl Recovery for X86 {
         let Some(inst) = instruction(insn) else { return false };
         match inst.mnemonic() {
             Mnemonic::Nop | Mnemonic::Int3 => true,
+            // `66 90`, the two-byte `nop`, reads as `xchg ax, ax`.
+            Mnemonic::Xchg => {
+                inst.op_count() == 2
+                    && inst.op0_kind() == OpKind::Register
+                    && inst.op1_kind() == OpKind::Register
+                    && inst.op0_register() == Register::AX
+                    && inst.op1_register() == Register::AX
+            }
             // `lea esi, [esi + 0]`, with or without a zero index.
             Mnemonic::Lea => {
                 inst.op0_register() == inst.memory_base()
@@ -619,9 +627,9 @@ fn nearest_cases(body: &[Insn]) -> Vec<Vec<usize>> {
     next
 }
 
-/// Whether `insn` is `nop` or `int3`, which pad code.
+/// Whether `insn` pads code: see [`Recovery::is_padding`].
 fn is_nop(insn: &Insn) -> bool {
-    instruction(insn).is_some_and(|inst| matches!(inst.mnemonic(), Mnemonic::Nop | Mnemonic::Int3))
+    mode_of(insn).is_some_and(|mode| X86::of(mode).is_padding(insn))
 }
 
 /// What holds the table after `step`, from what `held` held before it.
@@ -921,6 +929,8 @@ mod tests {
     #[case::long_nop(&[0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00], true)]
     #[case::int3(&[0xcc], true)]
     #[case::lea_to_itself(&[0x48, 0x8d, 0x76, 0x00], true)]
+    #[case::two_byte_nop(&[0x66, 0x90], true)]
+    #[case::xchg_eax_eax(&[0x87, 0xc0], false)]
     #[case::mov_to_itself_in_64_bit_mode(&[0x89, 0xf6], false)]
     #[case::push(&[0x55], false)]
     fn padding_is_work_that_changes_nothing(#[case] bytes: &[u8], #[case] padding: bool) {
