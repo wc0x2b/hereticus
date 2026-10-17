@@ -95,6 +95,31 @@ ELF file and its symbols, Ghidra finds every function. This test reads one
 kernel for one architecture, and it counts only where functions start, not
 how well each tool pairs them.
 
+## Functions in Garbled Go
+
+Go malware is obfuscated, mostly with `garble`, so every Go fixture is
+built so too: `shfmt` for seven architectures. `garble` strips the
+symbols, scrambles the names, and hides the function table of Go behind a
+magic number of its own, so Ghidra's Go analyzer reads nothing and both
+tools read the code alone. A test counts the real function starts that each
+tool finds, with the hidden table, read with the usual magic put back, as
+the answer.
+
+| Build | hereticus finds | hereticus misses | Ghidra finds | Ghidra misses |
+|---|---|---|---|---|
+| x86-64 | 3624<!-- from go_garbled: amd64 hereticus / real --> | 11<!-- from go_garbled: amd64 hereticus / missed --> | 2429<!-- from go_garbled: amd64 ghidra / real --> | 1206<!-- from go_garbled: amd64 ghidra / missed --> |
+| i386 | 3674<!-- from go_garbled: 386 hereticus / real --> | 5<!-- from go_garbled: 386 hereticus / missed --> | 2542<!-- from go_garbled: 386 ghidra / real --> | 1137<!-- from go_garbled: 386 ghidra / missed --> |
+| AArch64 | 3554<!-- from go_garbled: arm64 hereticus / real --> | 40<!-- from go_garbled: arm64 hereticus / missed --> | 2373<!-- from go_garbled: arm64 ghidra / real --> | 1221<!-- from go_garbled: arm64 ghidra / missed --> |
+| ARMv7 | 3597<!-- from go_garbled: arm-7 hereticus / real --> | 75<!-- from go_garbled: arm-7 hereticus / missed --> | 2509<!-- from go_garbled: arm-7 ghidra / real --> | 1163<!-- from go_garbled: arm-7 ghidra / missed --> |
+| ARMv5 | 3632<!-- from go_garbled: arm-5 hereticus / real --> | 71<!-- from go_garbled: arm-5 hereticus / missed --> | 2523<!-- from go_garbled: arm-5 ghidra / real --> | 1180<!-- from go_garbled: arm-5 ghidra / missed --> |
+| MIPS32 big-endian | 3491<!-- from go_garbled: mips-softfloat hereticus / real --> | 88<!-- from go_garbled: mips-softfloat hereticus / missed --> | 2379<!-- from go_garbled: mips-softfloat ghidra / real --> | 1200<!-- from go_garbled: mips-softfloat ghidra / missed --> |
+| MIPS32 little-endian | 3491<!-- from go_garbled: mipsle-softfloat hereticus / real --> | 88<!-- from go_garbled: mipsle-softfloat hereticus / missed --> | 1517<!-- from go_garbled: mipsle-softfloat ghidra / real --> | 2062<!-- from go_garbled: mipsle-softfloat ghidra / missed --> |
+
+Ghidra loads the little-endian MIPS build as 64-bit MIPS32r6, which the ELF
+header does not say, and so finds the fewest there. On a build that
+`garble` did not touch, Ghidra 12 reads the function table of Go for x86-64
+and AArch64, and finds almost every function there.
+
 ## How Accurate These Numbers Are
 
 The numbers are correct for these pairs and these settings. They do not
@@ -136,6 +161,7 @@ just quick-test     # compare with radiff2, in rivals_radare2.rs
 just rivals-ghidra  # run Ghidra on the pairs
 just test           # compare with Ghidra too, in truth_ghidra.rs
 just rivals-kernel  # let Ghidra find the functions of one raw kernel
+just rivals-go      # let Ghidra find the functions of the garbled Go builds
 just rival-times    # show how long each tool takes
 ```
 

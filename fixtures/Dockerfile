@@ -70,3 +70,21 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             --default-toolchain nightly-2026-09-20 --component rust-src \
     && chmod -R a+rX /opt/rustup /opt/cargo
 ENV PATH="/opt/cargo/bin:${PATH}"
+
+# Go, for the Go fixture, built with garble as Go malware is. The pinned
+# release and its checksum keep the machine code the same on every machine.
+ARG GO_VERSION=1.27.1
+ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+# garble patches the linker of Go with `git apply`.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSfL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz \
+    && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
+    && tar -C /opt -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+ENV PATH="/opt/go/bin:/opt/go-tools:${PATH}"
+COPY go/pcln /opt/go-src/pcln
+RUN GOBIN=/opt/go-tools GOTOOLCHAIN=local go install mvdan.cc/garble@v0.18.0 \
+    && cd /opt/go-src/pcln && GOBIN=/opt/go-tools GOTOOLCHAIN=local go install . \
+    && rm -rf /root/go /root/.cache

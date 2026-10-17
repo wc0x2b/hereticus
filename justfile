@@ -1,7 +1,7 @@
 fixtures_image := "hereticus-fixtures"
 
-# Compile the ARM32 and MIPS test fixtures. Tests that read them depend on this
-# recipe. The build runs in a container, because the tests compare exact
+# Compile the ARM32 and MIPS test fixtures, and build the Go fixture with
+# garble. Tests that read them depend on this recipe. The build runs in a container, because the tests compare exact
 # machine code and thus need the same compiler on every machine.
 fixtures:
     docker build --quiet --tag {{fixtures_image}} fixtures
@@ -61,6 +61,17 @@ rivals-kernel: firmware
         --workdir /work \
         {{rivals_image}}-ghidra ./fixtures/rivals_kernel.sh
 
+# Let Ghidra find the functions of each garbled Go fixture, so a test can
+# count how many it finds.
+rivals-go: fixtures
+    docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --env HOME=/tmp \
+        --volume "{{justfile_directory()}}:/work" \
+        --workdir /work \
+        {{rivals_image}}-ghidra ./fixtures/rivals_go.sh
+
 # Build the Ghidra extension of ghidra/ with its unit tests, and run it in
 # headless Ghidra on stripped backports, a raw stub and two backport pairs, so
 # a test can check what it finds and pairs.
@@ -97,7 +108,7 @@ truth_tests := "binary(/^truth_/)"
 
 # Fetch and pin what the `truth_*` tests read. The Apple binaries need the
 # `ipsw` tool; `fixtures/cve_binaries.py` names the commands.
-truth: firmware rivals-ghidra rivals-kernel
+truth: firmware rivals-ghidra rivals-kernel rivals-go
     python3 fixtures/openwrt_debug.py
     python3 fixtures/cve_binaries.py
     python3 fixtures/ubuntu_cves.py
