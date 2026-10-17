@@ -127,6 +127,7 @@ mod tests {
         ];
         let (insns, _) = decode_all(&X86::BITS32, &code, 0x1000);
         let kinds = X86::BITS32.constant_kinds(&code, &insns, &AddressSpace::none());
-        assert_eq!(kinds, [ConstantKind::Value, ConstantKind::Address, ConstantKind::Value]);
+        // A constant added to the table after it is a distance from it too.
+        assert_eq!(kinds, [ConstantKind::Value, ConstantKind::Address, ConstantKind::Address]);
     }
 }
