@@ -183,6 +183,8 @@ fn parse_raw(build: Build, variant: &str) -> Binary {
         "arm" | "armv5" | "armv6" | "armhf" => Isa::Arm32,
         "thumb" | "cortex-m0" | "cortex-m3" => Isa::Thumb2,
         "aarch64" => Isa::Aarch64,
+        "x86_64" => Isa::X86_64,
+        "i686" => Isa::X86,
         "mips" => Isa::Mips32Be,
         "mips16" => Isa::Mips16,
         _ => Isa::Mips32,
@@ -311,7 +313,10 @@ fn build(project: Project, arch: &'static str, level: &'static str) -> Build {
 #[rstest]
 fn with_symbols_the_fix_is_named_exactly(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "armv5", "armv6", "armhf", "thumb", "mixed", "aarch64", "mips", "mipsel")]
+    #[values(
+        "arm", "armv5", "armv6", "armhf", "thumb", "mixed", "aarch64", "mips", "mipsel", "x86_64",
+        "i686"
+    )]
     arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
@@ -321,7 +326,7 @@ fn with_symbols_the_fix_is_named_exactly(
 /// The same for the Rust project, which has no GCC levels.
 #[rstest]
 fn with_symbols_the_rust_fix_is_named_exactly(
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os")] level: &'static str,
 ) {
     check_with_symbols(build(Project::Smallvec, arch, level));
@@ -355,7 +360,9 @@ fn check_with_symbols(build: Build) {
 #[rstest]
 fn stripped_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel")]
+    #[values(
+        "arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686"
+    )]
     arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
@@ -365,7 +372,7 @@ fn stripped_the_fix_is_covered_and_nothing_else(
 /// The same for the Rust project.
 #[rstest]
 fn stripped_the_rust_fix_is_covered_and_nothing_else(
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os")] level: &'static str,
 ) {
     check_stripped(build(Project::Smallvec, arch, level));
@@ -406,7 +413,8 @@ fn sstrip(mut elf: Vec<u8>) -> Vec<u8> {
 #[rstest]
 fn sstripped_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686", "mips16")]
+    arch: &'static str,
     #[values("O2", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
     // GCC alone builds MIPS16e.
@@ -426,7 +434,9 @@ fn sstripped_the_fix_is_covered_and_nothing_else(
 #[rstest]
 fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel")]
+    #[values(
+        "arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686"
+    )]
     arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
@@ -436,7 +446,7 @@ fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
 /// The same for the Rust project.
 #[rstest]
 fn as_a_raw_image_the_rust_fix_is_covered_and_nothing_else(
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &'static str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686")] arch: &'static str,
     #[values("O1", "O2", "O3", "Os")] level: &'static str,
 ) {
     check_raw(build(Project::Smallvec, arch, level));
@@ -529,7 +539,9 @@ fn a_mixed_library_reads_each_function_in_its_own_set(
 #[rstest]
 fn a_build_compared_with_itself_reports_nothing(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2, Project::Smallvec)] project: Project,
-    #[values("arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel")]
+    #[values(
+        "arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686"
+    )]
     arch: &'static str,
     #[values("before", "after")] variant: &str,
 ) {
