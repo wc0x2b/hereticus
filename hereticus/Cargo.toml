@@ -29,9 +29,13 @@ hereticus-view = { path = "../crates/hereticus-view", version = "0.1.0" }
 # One test body runs as a plain property test on stable, and under a
 # coverage-guided fuzzer when one is available.
 bolero = { version = "0.13", features = ["arbitrary"] }
+criterion = "0.8.2"
 gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
+# Counts the instructions of a bench under Valgrind, so a CI runner can
+# compare two branches with almost no noise.
+gungraun = "0.20.0"
 insta = "1.48"
-# The tests and the bench that read whole kernels run threads that the
+# The tests that read whole kernels and the benches run threads that the
 # allocator of musl, the default target, serves one at a time.
 mimalloc = { version = "0.1.52", default-features = false }
 # Writes the small ELF objects the unit tests read.
@@ -40,3 +44,11 @@ rayon = "1.12.0"
 rstest = "0.27"
 # Reads the pinned Ubuntu cases of `fixtures/ubuntu_cases.json`.
 serde_json = "1"
+
+[[bench]]
+name = "criterion_benchmark"
+harness = false
+
+[[bench]]
+name = "gungraun_benchmark"
+harness = false

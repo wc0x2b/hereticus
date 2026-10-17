@@ -1,0 +1,98 @@
+name: Benchmark
+
+on: [pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+# The compare action writes its results as a comment on the pull request.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # Each job benchmarks the base branch and the pull request on the same
+  # runner. The benches read the libraries of `just backports`, which are not
+  # in git and thus stay the same when the action changes branches.
+  benchmark-criterion:
+    name: Benchmark (criterion)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The C part of mimalloc builds for the musl target that
+      # `.cargo/config.toml` picks.
+      - name: Install musl
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup show
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The same cache as the test job of `main.yml`.
+      - name: Cache the fixtures
+        uses: actions/cache@v4
+        with:
+          path: fixtures/build
+          key: fixtures-${{ hashFiles('justfile', 'fixtures/**', '!fixtures/build/**', '!fixtures/**/__pycache__/**') }}
+          restore-keys: fixtures-
+
+      - name: Build the fixtures
+        run: just backports
+
+      - uses: wcampbell0x2a/rust-bench-compare-action@0af46d10fda7311cff51d53b0a049d248b4dd0eb # v1.1.0
+        with:
+          harness: criterion
+          package: hereticus
+          benchName: criterion_benchmark
+          branchName: ${{ github.base_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  benchmark-gungraun:
+    name: Benchmark (gungraun)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install musl
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Install the toolchain of rust-toolchain.toml
+        run: rustup show
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache the fixtures
+        uses: actions/cache@v4
+        with:
+          path: fixtures/build
+          key: fixtures-${{ hashFiles('justfile', 'fixtures/**', '!fixtures/build/**', '!fixtures/**/__pycache__/**') }}
+          restore-keys: fixtures-
+
+      - name: Build the fixtures
+        run: just backports
+
+      # Installs Valgrind and the `gungraun-runner` of the `gungraun` version
+      # in Cargo.lock.
+      - uses: gungraun/setup-gungraun@v1
+
+      - uses: wcampbell0x2a/rust-bench-compare-action@0af46d10fda7311cff51d53b0a049d248b4dd0eb # v1.1.0
+        with:
+          harness: gungraun
+          package: hereticus
+          benchName: gungraun_benchmark
+          branchName: ${{ github.base_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
