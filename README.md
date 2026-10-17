@@ -248,4 +248,5 @@ just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
 
 ## License
 MIT or Apache-2.0, at your option.
-</content>
+
+> "Innocence proves nothing" - Maxim of the Inquisition, Warhammer 40,000
