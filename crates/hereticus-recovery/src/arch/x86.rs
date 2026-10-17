@@ -147,11 +147,13 @@ impl Recovery for X86 {
 
     /// A call or a jump that names its target gives it. Code built with
     /// `-fno-plt` calls an import through its slot of the global offset
-    /// table, as `call [rip + slot]`.
+    /// table, as `call [rip + slot]`. `call $+5` of 32-bit PIC only reads
+    /// its own address, and calls no function.
     fn call_targets(&self, insns: &[Insn]) -> Vec<(usize, Option<CallTarget>)> {
         insns
             .iter()
             .enumerate()
+            .filter(|(_, insn)| !reads_its_address(insn))
             .filter_map(|(index, insn)| match insn.kind {
                 InsnKind::Call { target: Some(target) } => {
                     Some((index, Some(CallTarget::Address(target))))
@@ -281,23 +283,36 @@ fn read_jump_table(
         return None;
     }
     let table_register = add.op1_register().full_register();
-    // `movsxd rax, dword ptr [rcx + 4*rax]`: one entry.
+    // `movsxd rax, dword ptr [rcx + 4*rax]`, or in 32-bit PIC
+    // `mov eax, dword ptr [ebx + 4*eax - 0x31e88]`: one entry.
     let load_at = last_write(target, add_at)?;
     let load = &decoded[load_at];
-    let loads_an_entry = load.mnemonic() == Mnemonic::Movsxd
+    let loads_an_entry = matches!(load.mnemonic(), Mnemonic::Movsxd | Mnemonic::Mov)
         && load.op1_kind() == OpKind::Memory
         && load.memory_base().full_register() == table_register
-        && load.memory_index_scale() == ENTRY_WIDTH as u32
-        && load.memory_displacement64() == 0;
+        && load.memory_index_scale() == ENTRY_WIDTH as u32;
     if !loads_an_entry {
         return None;
     }
-    // `lea rcx, [rip + table]`.
-    let lea = &decoded[last_write(table_register, load_at)?];
-    if lea.mnemonic() != Mnemonic::Lea || !lea.is_ip_rel_memory_operand() {
-        return None;
-    }
-    let table = lea.ip_rel_memory_address();
+    // Where the table lies, and what each distance in it is from.
+    let (table, from) = match load.mnemonic() {
+        // `lea rcx, [rip + table]`, and distances from the table.
+        Mnemonic::Movsxd if load.memory_displacement64() == 0 => {
+            let lea = &decoded[last_write(table_register, load_at)?];
+            if lea.mnemonic() != Mnemonic::Lea || !lea.is_ip_rel_memory_operand() {
+                return None;
+            }
+            let table = lea.ip_rel_memory_address();
+            (table, table)
+        }
+        // The register holds the global offset table, and the distances
+        // are from it.
+        Mnemonic::Mov if mode_of(jump) == Some(Mode::Bits32) => {
+            let global = table_before(insns, index)?;
+            (global.wrapping_add(load.memory_displacement64()) & 0xffff_ffff, global)
+        }
+        _ => return None,
+    };
     let index_register = load.memory_index().full_register();
     let masked = last_write(index_register, load_at)
         .map(|at| &decoded[at])
@@ -317,7 +332,7 @@ fn read_jump_table(
     for case in 0..cases {
         let bytes = memory.bytes(table + case * ENTRY_WIDTH, ENTRY_WIDTH as usize)?;
         let distance = i32::from_le_bytes(bytes.try_into().ok()?);
-        let target = table.checked_add_signed(i64::from(distance))?;
+        let target = from.checked_add_signed(i64::from(distance))?;
         if !code.contains(&target) {
             return None;
         }
@@ -353,6 +368,12 @@ fn constant_operand(inst: &iced_x86::Instruction) -> Option<u64> {
         | OpKind::Immediate32to64 => Some(inst.immediate(1) & 0xffff_ffff),
         _ => None,
     }
+}
+
+/// Whether `insn` is `call $+5`, which pushes the address after it for a
+/// `pop` to read.
+fn reads_its_address(insn: &Insn) -> bool {
+    insn.kind == (InsnKind::Call { target: Some(insn.address + insn.bytes_len as u64) })
 }
 
 /// Whether `insn` is `endbr64` or `endbr32`.
@@ -482,7 +503,7 @@ fn steps_of(body: &[Insn]) -> Vec<Step> {
     body.iter()
         .enumerate()
         .map(|(index, insn)| {
-            let setup = table_setup(&body[..=index]);
+            let setup = table_setup(&body[..=index]).map(|(register, _)| register);
             let Some(inst) = instruction(insn) else {
                 return Step {
                     setup,
@@ -801,7 +822,7 @@ enum Holder {
 
 /// The register the last instruction of `body` leaves the global offset
 /// table in, where it is the add that ends the setup.
-fn table_setup(body: &[Insn]) -> Option<Reg> {
+fn table_setup(body: &[Insn]) -> Option<(Reg, u64)> {
     let (add, before) = body.split_last()?;
     if mode_of(add) != Some(Mode::Bits32) {
         return None;
@@ -814,24 +835,39 @@ fn table_setup(body: &[Insn]) -> Option<Reg> {
         return None;
     }
     let register = il_register(inst.op0_register())?;
+    // Both forms leave the address after the call in the register, and the
+    // add makes the table of it.
+    let table = |call: &Insn| {
+        (call.address + call.bytes_len as u64).wrapping_add(inst.immediate(1)) & 0xffff_ffff
+    };
     // Code that writes something else can lie between the parts, as Rust
     // schedules it.
     for (at, insn) in before.iter().enumerate().rev().take(SETUP_LOOK_BACK) {
-        if let InsnKind::Call { target: Some(target) } = insn.kind {
+        if let InsnKind::Call { target: Some(_) } = insn.kind {
             // A call to the next instruction pops its address into a
             // register other than this one; any other call is to a thunk.
-            let to_the_next = target == insn.address + insn.bytes_len as u64;
-            return (!to_the_next).then_some(register);
+            return (!reads_its_address(insn)).then(|| (register, table(insn)));
         }
         if x86_lift(&instruction(insn)?).writes.contains(register) {
-            let popped =
-                before.get(..at).and_then(<[Insn]>::last).is_some_and(|call| {
-                    call.kind == (InsnKind::Call { target: Some(insn.address) })
-                }) && instruction(insn).is_some_and(|pop| pop.mnemonic() == Mnemonic::Pop);
-            return popped.then_some(register);
+            let call = before.get(..at).and_then(<[Insn]>::last)?;
+            let popped = call.kind == (InsnKind::Call { target: Some(insn.address) })
+                && instruction(insn).is_some_and(|pop| pop.mnemonic() == Mnemonic::Pop);
+            return popped.then(|| (register, table(call)));
         }
     }
     None
+}
+
+/// The address of the global offset table, as the last setup of it in
+/// `body` before `before` makes it, where one does.
+fn table_before(body: &[Insn], before: usize) -> Option<u64> {
+    /// Farther back than the setup of any function lies from its switch.
+    const LOOK_BACK: usize = 4096;
+    let end = before.min(body.len());
+    (end.saturating_sub(LOOK_BACK) + 1..=end)
+        .rev()
+        .find_map(|end| table_setup(&body[..end]))
+        .map(|(_, table)| table)
 }
 
 /// Whether a callee keeps `reg` as it found it, by the System V ABI for
@@ -918,11 +954,18 @@ mod tests {
     }
 
     #[test]
+    fn a_call_that_reads_its_own_address_calls_nothing() {
+        // call $+5; pop ebx
+        let insns = decode_all(&X86::BITS32, &[0xe8, 0x00, 0x00, 0x00, 0x00, 0x5b], 0x1000).0;
+        assert!(X86::BITS32.call_targets(&insns).is_empty());
+    }
+
+    #[test]
     fn a_call_through_a_slot_names_the_slot() {
         let insns = decode(
             &[
                 0xff, 0x15, 0x10, 0x00, 0x00, 0x00, // 0x1000 call [rip + 0x10]
-                0xe8, 0x00, 0x00, 0x00, 0x00, //       0x1006 call 0x100b
+                0xe8, 0x10, 0x00, 0x00, 0x00, //       0x1006 call 0x101b
                 0xff, 0xd0, //                         0x100b call rax
                 0xff, 0x25, 0x10, 0x00, 0x00, 0x00, // 0x100d jmp [rip + 0x10]
             ],
@@ -932,7 +975,7 @@ mod tests {
             X86::BITS64.call_targets(&insns),
             [
                 (0, Some(CallTarget::Slot(0x1016))),
-                (1, Some(CallTarget::Address(0x100b))),
+                (1, Some(CallTarget::Address(0x101b))),
                 (2, None),
                 (3, Some(CallTarget::Slot(0x1023))),
             ]
@@ -1197,6 +1240,30 @@ mod tests {
         // A case outside the code is no table.
         let tables = X86::BITS64.jump_tables(&Memory::new(&regions), 0x1000..0x1018, &insns);
         assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn a_32_bit_pic_switch_names_its_cases_from_the_table() {
+        let code = [
+            0xe8, 0x00, 0x00, 0x00, 0x00, //             0x1000 call $+5
+            0x5b, //                                     0x1005 pop ebx
+            0x81, 0xc3, 0xfb, 0x0f, 0x00, 0x00, //       0x1006 add ebx, 0xffb: 0x2000
+            0x83, 0xf8, 0x01, //                         0x100c cmp eax, 1
+            0x77, 0x0a, //                               0x100f ja 0x101b
+            0x8b, 0x84, 0x83, 0x00, 0x01, 0x00, 0x00, // 0x1011 mov eax, [ebx + 4*eax + 0x100]
+            0x01, 0xd8, //                               0x1018 add eax, ebx
+            0xff, 0xe0, //                               0x101a jmp eax
+            0xc3, //                                     0x101c ret
+        ];
+        let insns = decode_all(&X86::BITS32, &code, 0x1000).0;
+        let table: Vec<u8> =
+            [-0x0fe4_i32, -0x0fe4].iter().flat_map(|entry| entry.to_le_bytes()).collect();
+        let regions = [(0x2100, &table[..])];
+        let tables = X86::BITS32.jump_tables(&Memory::new(&regions), 0x1000..0x101d, &insns);
+        assert_eq!(
+            tables,
+            [JumpTable { jump: 0x101a, words: 0x2100..0x2108, targets: vec![0x101c, 0x101c] }]
+        );
     }
 
     #[test]
