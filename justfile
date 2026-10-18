@@ -176,6 +176,10 @@ run level="O2" *args: fixtures
 bench *args: backports
     cargo bench -p hereticus {{args}}
 
+# Make the screenshots of the TUI page of the book. Needs `vhs`.
+tui-screenshots: build
+    vhs book/tapes/tui.tape
+
 lint:
     cargo fmt
     cargo clippy

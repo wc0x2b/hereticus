@@ -6,6 +6,7 @@
 
 - [Installation](./installation.md)
 - [Usage](./usage.md)
+- [Terminal Interface](./tui.md)
 - [Examples](./examples.md)
 - [Troubleshooting](./troubleshooting.md)
 - [Ghidra Extension](./ghidra.md)
