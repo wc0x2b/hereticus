@@ -2,9 +2,16 @@
 
 [Introduction](./introduction.md)
 
+# User Guide
+
 - [Installation](./installation.md)
 - [Usage](./usage.md)
 - [Examples](./examples.md)
+- [Troubleshooting](./troubleshooting.md)
+- [Ghidra Extension](./ghidra.md)
+
+# Case Studies
+
 - [Real-Life Examples](./real-life-examples.md)
   - [CVE-2019-19945: uhttpd](./real-life-examples/cve-2019-19945.md)
   - [CVE-2020-7248: libubox](./real-life-examples/cve-2020-7248.md)
@@ -22,7 +29,12 @@
   - [CVE-2026-55614: uhttpd](./real-life-examples/cve-2026-55614.md)
 - [Malware](./malware.md)
   - [Mirai, two builds for ARM](./malware/mirai-arm.md)
-- [Ghidra Extension](./ghidra.md)
+
+# How It Works
+
 - [Methods](./methods.md)
 - [Comparison With Other Tools](./comparison.md)
+
+# Contributing
+
 - [Development](./development.md)
