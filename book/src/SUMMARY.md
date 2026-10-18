@@ -23,5 +23,6 @@
 - [Malware](./malware.md)
   - [Mirai, two builds for ARM](./malware/mirai-arm.md)
 - [Ghidra Extension](./ghidra.md)
+- [Methods](./methods.md)
 - [Comparison With Other Tools](./comparison.md)
 - [Development](./development.md)
