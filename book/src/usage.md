@@ -96,15 +96,8 @@ function has the name that the report gives it, as `sub_7630`. See
 
 ## Terminal Interface
 
-`--tui` compares the two binaries once, then shows the report as a table to
-browse, with the functions gone and new after the pairs. `s` changes the
-order and `S` reverses it, `t` lists only the pairs that touched one kind of
-code, `a`, `r` and `d` show every function, the retouched pairs and the data
-regions, and `/` filters on the names, with the letters in order. `Enter`, or
-a second click, opens the diff side by side, with the address of each
-instruction: `]` and `[` go to the next and the previous change, `v` changes
-between assembly and IL, `l` changes to one column, and `n` and `p` go to the
-next and the previous function. `?` shows every key.
+`--tui` lets you browse the report, and open the diff of each function,
+in the terminal. See [Terminal Interface](./tui.md).
 
 ## Stripped Binaries
 
