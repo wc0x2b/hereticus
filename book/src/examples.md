@@ -1,5 +1,7 @@
 # Examples
 
+The commands you use most:
+
 ```console
 $ hereticus before.elf after.elf                    # what changed
 $ hereticus --all before.elf after.elf              # every function
@@ -13,6 +15,10 @@ $ hereticus --format json before.elf after.elf      # for another tool to read
 $ hereticus --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF header
 $ hereticus --raw --arch mips32 --unpack stub a.bin b.bin  # the decompressor in two firmware images
 ```
+
+The sections below run some of them on the test fixtures, and show the
+output. For published security fixes, see
+[Real-Life Examples](./real-life-examples.md).
 
 ## A Decompressor Stub
 
