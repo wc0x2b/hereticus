@@ -15,3 +15,5 @@ functions that changed.
 
 For real fixes that `hereticus` found, see
 [Real-Life Examples](./real-life-examples.md).
+
+For how it finds them, see [Methods](./methods.md).
