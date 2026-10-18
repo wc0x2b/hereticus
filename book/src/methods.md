@@ -76,8 +76,10 @@ still lands in the image. Thus `hereticus` checks the base on words that
 hold absolute addresses, as a vector table or a table of pointers does.
 Such words fall in the image only at the right base. On MIPS, a `jal`
 holds its target, so at the right base most targets land on a prologue.
-With no `--base`, the same count finds the base. rbasefind and basefind
-use the same idea.
+`hereticus` warns when the base looks wrong. With no `--base`, it stops,
+and the error gives the base that the calls show, where they show one.
+It does not use that base by itself, because a wrong base gives a wrong
+report with no other sign. rbasefind and basefind use the same idea.
 
 Limits: small position-independent code holds no absolute addresses, so
 nothing shows whether its base is right. A base that is wrong by megabytes
