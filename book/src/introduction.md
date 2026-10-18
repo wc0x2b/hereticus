@@ -68,14 +68,28 @@ starts, and Ghidra finds
 13210<!-- from truth_function_starts: ghidra default / real -->. The
 [Ghidra extension](./ghidra.md) adds the functions that Ghidra misses.
 
-### It fits in a shell, a script or an agent
+### It is made for coding agents too
 
-- One static binary for Linux, with no IDA, Ghidra, Python or GUI.
-- `--format json` for another tool, `--format markdown` for a document,
-  and `--exit-code` for CI.
-- `--diff` shows what changed in one function, as assembly or as an IL
-  that reads the same on each architecture.
-- `--tui` to browse the report in the terminal.
+Ghidra, IDA and BinDiff are made for a person at a GUI. An agent can use
+them only through a server or a plugin. `hereticus` is one command that
+gives one answer, so an agent runs it as it runs `grep`:
+
+- **The answer comes first.** The most likely fix is on the first rows,
+  so `| head` is enough, and the agent reads a few rows, not a project.
+- **The output is short.** `--format compact` gives one line for each
+  pair, and `--format json` gives one object for each pair.
+- **Each name works as input.** The report names a stripped function
+  `sub_7630`, and `--diff sub_7630` shows its diff.
+- **The diff reads alike on each architecture.** `--view il` shows a
+  compare, a call or a text in one form, as `if (w0 == 0) goto ...` and
+  `call strncmp`, so the agent does not need to know each instruction set.
+- **An error tells what to do next.** With no `--base`, the error gives
+  the base that the calls of the image show, where they show one. A
+  failure exits with 2.
+- **No setup.** One static binary, with no IDA, Ghidra, Python, server or
+  project. `--exit-code` lets a CI job or a script stop on a change.
+
+See [Use With a Coding Agent](./usage.md#use-with-a-coding-agent).
 
 ### It reads what firmware ships
 

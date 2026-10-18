@@ -187,6 +187,43 @@ $ hereticus --format json basic-v1.elf basic-v2.elf
 ```
 <!-- end output -->
 
+## Use With a Coding Agent
+
+A coding agent can find a fix with four commands. Each one prints little,
+and gives the name that the next one takes:
+
+```console
+$ hereticus --format markdown before.bin after.bin | head -20       # the most likely fixes
+$ hereticus --view il --diff sub_7630 before.bin after.bin          # what one function changed
+$ hereticus --view il --diff-all before.bin after.bin | grep -E '^(sub_|[-+].*PATH)'  # find a text
+$ hereticus --functions --format json before.bin                     # each function, for a script
+```
+
+Use `--format markdown` where the agent needs the `TOUCHED` and
+`MATCHED BY` columns, and `--format compact` where it needs only the
+names, the scores and the counts. `compact` is the shortest. The text
+table is the longest, because it draws a box around each cell.
+
+To teach an agent the tool, put this in its instructions file, as
+`AGENTS.md` or `CLAUDE.md`:
+
+```markdown
+## Binary diffing with hereticus
+
+To find what changed between two builds of a binary, use `hereticus`:
+
+- `hereticus --format markdown OLD NEW | head -20` lists the changed
+  functions, the most likely fix first.
+- `hereticus --view il --diff NAME OLD NEW` shows the diff of one function.
+  Use the name the report gives, as `sub_7630`.
+- `hereticus --view il --diff-all OLD NEW | grep TEXT` finds the function
+  that uses a text an advisory names.
+- For a raw image, add `--raw --arch ARCH --base ADDRESS`. Without
+  `--base`, the error gives the base the code shows; check it before you
+  use it.
+- Exit status 2 means an input could not be read.
+```
+
 ## Exit Status
 
 | Status | When |
