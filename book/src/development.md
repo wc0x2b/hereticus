@@ -12,6 +12,45 @@ just ghidra-extension  # build the Ghidra extension and run it in Ghidra, which 
 just bench        # time the read and the comparison of the backports
 ```
 
+## Tests
+
+| Tests | Where | What they check |
+|-------|-------|-----------------|
+| Unit and property tests | each crate, beside the code | one function, on regular and on random inputs |
+| Fixtures | `hereticus/tests/` | small programs of `fixtures/src/`, built at each level for each architecture |
+| Backports | `cross_build.rs`, `backports.rs` | real libraries built before and after one upstream fix, against their symbols |
+| Rivals | `hereticus-cli/tests/rivals_radare2.rs`, `truth_ghidra.rs` | that `hereticus` does no worse than radiff2 and Ghidra |
+| Truth | `truth_*.rs` | published fixes, OpenWrt kernels and Ubuntu updates, against their symbols |
+| Docs | `tests/docs.rs`, `docs_output.rs` | each number and output that the docs show |
+
+A snapshot of `insta` locks each count. When a change moves a count, the
+test fails and shows the new count. Accept it with `cargo insta review`
+where the change is better, and update the docs that quote it.
+
+## Add a Published Fix
+
+1. Add the URLs and the SHA-256 of the two binaries to
+   `fixtures/cve_binaries.py`, and run `just truth`.
+2. Add a `Fix` to `hereticus-cli/tests/truth_cves.rs`, with the function of
+   the first binary that the fix edits, as the report names it.
+3. Write the report in `real-life-reports/`, and a page in
+   `book/src/real-life-examples/` that includes it. Tag each number and
+   each output, as [Numbers in the Docs](#numbers-in-the-docs) says.
+4. Add the page to `book/src/SUMMARY.md`, and a row to the table of
+   [Real-Life Examples](./real-life-examples.md).
+
+## Add an Architecture
+
+An architecture needs three parts:
+
+1. A decoder and a lifter in `hereticus-il`.
+2. A file of rules in `hereticus-recovery`: which instruction opens a
+   function, which word is padding, and where the unwind index is.
+3. One file in `hereticus-arch`: which register holds the frame, which
+   instruction only keeps it, and which constant is an address.
+
+Then add fixtures for it to `fixtures/build.sh`, and run the tests.
+
 ## Benchmarks
 
 `hereticus/benches/` reads and compares backports of zlib for x86-64 and of
