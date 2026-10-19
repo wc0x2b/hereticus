@@ -22,7 +22,7 @@ edition = "2024"
 repository = "https://github.com/wc0x2b/hereticus"
 homepage = "https://wc0x2b.github.io/hereticus/"
 rust-version = "1.90"
-keywords = ["binary", "diff", "reverse-engineering", "arm", "elf"]
+keywords = ["reverse-engineering", "binary-analysis", "bindiff", "firmware", "elf"]
 categories = ["development-tools", "parsing"]
 
 [profile.bench]
