@@ -10,6 +10,7 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version = "1.90"
+include = ["src/**"]
 
 [lib]
 bench = false
