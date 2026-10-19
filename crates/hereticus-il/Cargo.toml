@@ -1,14 +1,16 @@
 [package]
 name = "hereticus-il"
 description = "Decode and lift ARM, Thumb-2, AArch64 and MIPS instructions to a small IL"
+readme = "../../README.md"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 repository.workspace = true
+homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-rust-version = "1.90"
+rust-version.workspace = true
 
 [lib]
 bench = false
