@@ -161,6 +161,29 @@ rival scores within 0.03;
 instructions, mostly small twins that no caller tells apart. See `RESEARCH.md`,
 "The kernel upgrades, checked again".
 
+## Learn from the versions of Assemblage-DeepHistory
+
+`just test-research assemblage` pairs 8,872 releases of x86-64 files that
+GCC built (see `RESEARCH.md`, "Assemblage-DeepHistory and entry 19"). It
+found more to do, most valuable first:
+
+- **The wrong pairs a report shows.** Of the wrong pairs of the first
+  2,811 releases, about 4,400 score below 1 and so read as changed: about
+  2,000 by place, 1,100 by similar code, 700 by callers and 600 by
+  references. Find why each kind pairs wrong.
+- **Pairs across compilers.** The dataset builds each release with GCC
+  and with clang. Those pairs make a set across builds, like the
+  backports, but far larger.
+- **The rank of a fix.** Only 3 pairs at GCC `-O2` hold a fix that the CVE
+  labels name. The other builds may hold more, to rank the fixes too.
+- **C++ twins.** About 12,000 wrong pairs are template copies and
+  destructors with the same instructions. They read as unchanged however
+  they pair, but the name of each class in its type information could tell
+  apart its virtual functions, as entry 19 does for a C table.
+- **Code that one package links into many files.** nng links its library
+  into about 100 tests, so one package weighs too much in the totals.
+  Count each copy of the code once.
+
 ## Rank a small fix that swaps no call
 
 A call swapped for its bounded form now goes first, and a check before
