@@ -16,13 +16,13 @@ rust-version.workspace = true
 bench = false
 
 [dependencies]
-hereticus-arch = { path = "../hereticus-arch", version = "0.1.2" }
-hereticus-recovery = { path = "../hereticus-recovery", version = "0.1.2" }
-hereticus-callees = { path = "../hereticus-callees", version = "0.1.2" }
-hereticus-image = { path = "../hereticus-image", version = "0.1.2" }
-hereticus-il = { path = "../hereticus-il", version = "0.1.2" }
-hereticus-memory = { path = "../hereticus-memory", version = "0.1.2" }
-hereticus-view = { path = "../hereticus-view", version = "0.1.2" }
+hereticus-arch = { path = "../hereticus-arch", version = "0.2.0" }
+hereticus-recovery = { path = "../hereticus-recovery", version = "0.2.0" }
+hereticus-callees = { path = "../hereticus-callees", version = "0.2.0" }
+hereticus-image = { path = "../hereticus-image", version = "0.2.0" }
+hereticus-il = { path = "../hereticus-il", version = "0.2.0" }
+hereticus-memory = { path = "../hereticus-memory", version = "0.2.0" }
+hereticus-view = { path = "../hereticus-view", version = "0.2.0" }
 smallvec = "1"
 rayon = "1.12.0"
 
