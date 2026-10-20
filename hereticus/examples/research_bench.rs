@@ -959,12 +959,24 @@ fn debug_symbols(path: &str) -> Vec<(u64, u64, String)> {
     symbols
 }
 
+/// Which pairs of two differing names [`measure_ubuntu`] counts as wrong.
+#[derive(Clone, Copy)]
+enum Judge {
+    /// Every pair. A C library keeps the names of its functions.
+    EveryPair,
+    /// A pair where one of its names is in both files. A C++ name holds
+    /// its namespace, and a library as fmt (`fmt::v9` to `fmt::v10`) or
+    /// Abseil puts its version in that namespace, so a function and its
+    /// next release have no name in common.
+    NameInBoth,
+}
+
 /// Measure each pair of `cases.json` in `cache`, which `script` writes:
 /// the pairs of the libraries, checked against the debug symbols, and the
 /// rank of the first function of the fix. `fixtures/ubuntu_cves.py` writes
 /// the Ubuntu security updates, and `fixtures/assemblage.py` the versions
 /// of Assemblage-DeepHistory.
-fn measure_ubuntu(cache: &str, script: &str) {
+fn measure_ubuntu(cache: &str, script: &str, judge: Judge) {
     let cache = Path::new(&std::env::var("HOME").expect("a home")).join(cache);
     let text = std::fs::read_to_string(cache.join("cases.json"))
         .unwrap_or_else(|err| panic!("run {script}: {err}"));
@@ -977,7 +989,7 @@ fn measure_ubuntu(cache: &str, script: &str) {
     let mut all = Totals::default();
     let mut libraries: std::collections::BTreeMap<String, Totals> = Default::default();
     let results: Vec<(String, Totals, String)> =
-        cases.par_iter().map(|case| measure_ubuntu_case(case, use_names)).collect();
+        cases.par_iter().map(|case| measure_ubuntu_case(case, use_names, judge)).collect();
     for (key, one, line) in results {
         if std::env::var_os("BENCH_VERBOSE").is_some() {
             println!("{line}");
@@ -1016,12 +1028,16 @@ fn measure_ubuntu(cache: &str, script: &str) {
 }
 
 /// One case of [`measure_ubuntu`]: its library, its counts and its line.
-fn measure_ubuntu_case(case: &Case, use_names: UseNames) -> (String, Totals, String) {
+fn measure_ubuntu_case(case: &Case, use_names: UseNames, judge: Judge) -> (String, Totals, String) {
     let binaries = [0, 1].map(|side| {
         let data = std::fs::read(&case.files[side].0).expect("cached");
         Binary::parse(&data).expect("the library parses")
     });
     let symbols = [0, 1].map(|side| debug_symbols(&case.files[side].1));
+    let all_names = [0, 1].map(|side| -> BTreeSet<&str> {
+        symbols[side].iter().map(|(_, _, name)| name.as_str()).collect()
+    });
+    let in_both = |name: &String| all_names.iter().all(|names| names.contains(name.as_str()));
     let diff = diff_with(&binaries[0], &binaries[1], Options { use_names, ..Default::default() });
     let names = |side: usize, index: usize| -> BTreeSet<String> {
         let function = &binaries[side].functions[index];
@@ -1039,7 +1055,11 @@ fn measure_ubuntu_case(case: &Case, use_names: UseNames) -> (String, Totals, Str
     totals.new += diff.added.len();
     for pair in &diff.matched {
         let (left, right) = (names(0, pair.before), names(1, pair.after));
-        if left.is_empty() || right.is_empty() {
+        let judged = match judge {
+            Judge::EveryPair => true,
+            Judge::NameInBoth => left.iter().chain(&right).any(in_both),
+        };
+        if left.is_empty() || right.is_empty() || !judged {
             continue;
         }
         if left.is_disjoint(&right) {
@@ -1223,11 +1243,11 @@ fn parse_cases(text: &str) -> Vec<Case> {
 
 fn main() {
     if std::env::args().any(|arg| arg == "--ubuntu") {
-        measure_ubuntu(".cache/hereticus-ubuntu-cve", "fixtures/ubuntu_cves.py");
+        measure_ubuntu(".cache/hereticus-ubuntu-cve", "fixtures/ubuntu_cves.py", Judge::EveryPair);
         return;
     }
     if std::env::args().any(|arg| arg == "--assemblage") {
-        measure_ubuntu(".cache/hereticus-assemblage", "fixtures/assemblage.py");
+        measure_ubuntu(".cache/hereticus-assemblage", "fixtures/assemblage.py", Judge::NameInBoth);
         return;
     }
     if std::env::args().any(|arg| arg == "--kernels") {

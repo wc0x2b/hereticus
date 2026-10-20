@@ -44,6 +44,8 @@ with l as (
     select *, {BASE_NAME} as base from binaries
     where platform = 'linux' and binary_format = 'ELF'
       and optimization = '-O2' and toolset_version = 'gcc-13.3.0'
+      -- A file with no version has no place in the order of releases.
+      and version is not null
 ),
 g as (select package_name, base from l group by all having count(distinct version) >= 2)
 select l.id, l.package_name, l.base, l.version, l.repo_last_update, l.hash, l.path
