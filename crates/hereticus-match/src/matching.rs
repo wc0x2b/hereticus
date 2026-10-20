@@ -65,6 +65,10 @@ pub enum Confidence {
     /// The names agree, and no stronger reason applied.
     SameName,
     /// One of a group of functions with the same normalized instructions,
+    /// paired with its counterpart by the texts beside it in a record of
+    /// the data, as the name of an option. See `Cascade::twins_by_rows`.
+    SameRowText,
+    /// One of a group of functions with the same normalized instructions,
     /// paired with its counterpart by position. See
     /// `Cascade::match_twins_in_order`.
     TwinInOrder,
@@ -942,6 +946,8 @@ pub fn diff_reporting(
         options,
         left_tables: before.function_tables(),
         right_tables: after.function_tables(),
+        left_rows: before.row_texts(),
+        right_rows: after.row_texts(),
     };
 
     cascade.pair_stubs_by_import();

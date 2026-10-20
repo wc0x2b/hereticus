@@ -164,6 +164,37 @@ test *args: build fixtures firmware backports truth ghidra-extension
 quick-test *args: build fixtures firmware backports rivals
     cargo nextest run --release -E 'not test(/slow/) and not {{truth_tests}} and not {{ghidra_tests}}' {{args}}
 
+# Measure the research sets of RESEARCH.md, which no test runs: the pairs and
+# the ranks of `examples/research_bench.rs` and the Patch2Vuln updates. Give
+# the sets to run, as `just test-research ubuntu kernels`. `assemblage` needs
+# the data that `fixtures/assemblage.py` tells how to get, about 680 GB, and
+# is skipped without it.
+test-research *sets="backports ubuntu cves kernels patch2vuln assemblage": build backports
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bench="cargo run --release --quiet --example research_bench -p hereticus --"
+    assemblage="$HOME/.cache/hereticus-assemblage"
+    for set in {{sets}}; do
+        echo "== $set"
+        case "$set" in
+            backports) $bench ;;
+            ubuntu) python3 fixtures/ubuntu_cves.py && $bench --ubuntu ;;
+            cves) python3 fixtures/cve_binaries.py && $bench --cves ;;
+            kernels) just firmware && python3 fixtures/openwrt_debug.py && $bench --kernels ;;
+            patch2vuln) (cd fixtures && python3 patch2vuln.py) ;;
+            assemblage)
+                if [ ! -f "$assemblage/deephistory.duckdb" ]; then
+                    echo "skipped: see fixtures/assemblage.py for the data"
+                    continue
+                fi
+                if [ ! -f "$assemblage/cases.json" ]; then
+                    "$assemblage/.venv/bin/python" fixtures/assemblage.py
+                fi
+                $bench --assemblage ;;
+            *) echo "unknown set: $set" >&2; exit 1 ;;
+        esac
+    done
+
 # Compare the two firmware fixtures, as a reader would compare two releases.
 #
 # Both sides build at the same optimization level, which is what a real pair of

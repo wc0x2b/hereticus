@@ -4,9 +4,9 @@ expression: out
 ---
 places            right  wrong  right%
 O1/O2                27     11   71.1%
-O2/O3                24      0  100.0%
-O2/Os               172    102   62.8%
-O3/Os               203    122   62.5%
-gcc-O2/gcc-Os        95     58   62.1%
-O2/gcc-O2           201    150   57.3%
-all                 722    443   62.0%
+O2/O3                19      0  100.0%
+O2/Os               160     90   64.0%
+O3/Os               192    108   64.0%
+gcc-O2/gcc-Os        95     53   64.2%
+O2/gcc-O2           198    133   59.8%
+all                 691    395   63.6%

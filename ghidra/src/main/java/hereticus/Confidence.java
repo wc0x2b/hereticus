@@ -15,17 +15,18 @@ final class Confidence {
 	/** The confidence of a stage this extension does not know, as a newer hereticus adds. */
 	static final double UNKNOWN = 1.0;
 
-	private static final Map<String, Double> BY_STAGE = Map.of(
-		"identical bytes", 10.0,
-		"identical shape", 9.0,
-		"same name", 8.0,
-		"twin, in order", 7.0,
-		"same slot of a table", 6.0,
-		"same import", 6.0,
-		"same references", 5.0,
-		"same callers", 4.0,
-		"same place", 3.0,
-		"similar", 2.0);
+	private static final Map<String, Double> BY_STAGE = Map.ofEntries(
+		Map.entry("identical bytes", 10.0),
+		Map.entry("identical shape", 9.0),
+		Map.entry("same name", 8.0),
+		Map.entry("twin, by the text in its row", 7.5),
+		Map.entry("twin, in order", 7.0),
+		Map.entry("same slot of a table", 6.0),
+		Map.entry("same import", 6.0),
+		Map.entry("same references", 5.0),
+		Map.entry("same callers", 4.0),
+		Map.entry("same place", 3.0),
+		Map.entry("similar", 2.0));
 
 	private Confidence() {
 	}

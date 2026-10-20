@@ -44,6 +44,7 @@ All patches/merge requests are welcome!
 ```
 just quick-test   # about a minute
 just test         # the same, plus the slow and the `truth_*` tests
+just test-research  # the measurements of RESEARCH.md, which no test runs
 just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
 ```
 

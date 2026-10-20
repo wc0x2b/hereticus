@@ -6,7 +6,8 @@ applies in `hereticus`. When code applies an idea, the doc comment of that
 function names the source from this file.
 
 Survey date: 2026-10-04, with entry 13 and more sources added on
-2026-10-07, and entries 16 to 18 on 2026-10-19. The entries are in order of value for the effort.
+2026-10-07, entries 16 to 18 on 2026-10-19, with more sources added
+on 2026-10-19, and entry 19 on 2026-10-20. The entries are in order of value for the effort.
 The results of each entry, as applied and measured, are in
 [Results](#results).
 
@@ -271,7 +272,12 @@ Code: `align`, `align_within`, `chain_of_unique_items`,
 
 Source: Dong et al., *Fine-Grained 1-Day Vulnerability Detection in Binaries
 via Patch Code Localization*, 2025 (PLocator).
-<https://arxiv.org/abs/2501.17413>
+<https://arxiv.org/abs/2501.17413>. Published in TOSEM, 2026, as
+*PLocator: Fine-Grained Patch Presence Test in Binaries via Patch Code
+Localization*, <https://dl.acm.org/doi/10.1145/3770079>. Of 73 CVEs,
+17.7% hold *patch-similar code* in the function of the fix: code that
+looks like the patch and is not. PLocator checks the control logic
+between the patch and its context to tell the two apart.
 
 Idea: scalar constants stay stable across compilers and optimization levels.
 Use them as anchors in the control-flow graph to find the code of the patch.
@@ -322,6 +328,14 @@ genomes (synteny) tell orthologs from paralogs that sequence similarity
 alone confuses; see OrthoRefine, which looks for orthologs in a window of
 neighbors, and the survey of synteny tools in
 <https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-024-05786-7>.
+
+BScout (*Recall-Oriented Precise Binary-to-Source Function Matching*,
+2026, <https://arxiv.org/abs/2610.23546>) does the same for binary to
+source. A run of functions between two anchors of one source file is an
+*interval*; it scores the source functions near the anchors as
+candidates for each unmatched function in it, by name, callees,
+signature, length and position. That step alone adds 5.41 points of
+recall on stripped binaries.
 
 Prior art in binary diffing: BinDiff's *address sequence* pairs
 functions in the order of their addresses, its *propagation (size==1)*
@@ -479,7 +493,9 @@ Using Graph-Based Clustering*, AsiaCCS 2018.
 <https://personal.utdallas.edu/~hamlen/karande18asiaccs.pdf> BCD joins
 the functions of a binary by three edges: they sit near each other, they
 point at the same data, and one calls the other. Community detection on
-that graph then splits the binary into its source files.
+that graph then splits the binary into its source files. BScout
+(entry 7) undoes a match the same way: an anchor inside an interval of
+anchors from another file loses its match.
 
 Idea: a compiler emits the functions of one source file together, so a
 run of functions in address order that calls and rare texts hold together
@@ -538,6 +554,32 @@ expected to score as high by chance is above a cut-off.
 
 Code: none; measured and not kept.
 
+## 19. Texts in the record of a function
+
+Source: entry 13 reads the texts that the code of a function reaches.
+Ghidra's *Data Reference Match* correlator ([Ghidra Version Tracking
+correlators](https://ghidradocs.com/11.1_PUBLIC/help/VersionTracking/help/topics/VersionTrackingPlugin/VT_Correlators.html))
+pairs functions by the data their code reads. This survey found no tool
+that reads it the other way: the record of the data that holds the
+address of a function, and the text beside it. Found on the versions of
+Assemblage-DeepHistory (see [Other sources](#other-sources)), where nng's
+option getters were the most common wrong pair.
+
+Idea: a C table of options, commands or methods holds a record for each,
+as `{"recv-size-max", get, set}` in nng or `{"sin", math_sin}` in Lua's
+`luaL_Reg`. The text names the function where its code cannot: two
+getters of nng are the same instructions, and nng 1.5 placed them in
+another order, so A4 paired them the wrong way round. A text a few words
+from the address of a function, in one record with no gap, labels it,
+together with how many words away it sits.
+
+Applies to: twins, before A4 pairs them in order, and every function as
+one more unique reference of entry 13.
+
+Code: `Binary::row_texts`, `RowText` and `ROW_REACH` in
+`crates/hereticus-image`; `Cascade::twins_by_rows` and `row_holders` in
+`matching/cascade.rs`; `Confidence::SameRowText` in `matching.rs`.
+
 ## Lower fit
 
 - Ye, Zhou and Zhang, *Enhancing Semantic-Aware Binary Diffing with
@@ -568,6 +610,24 @@ Code: none; measured and not kept.
 - fnprint, <https://docs.rs/fnprint-core>: Rust, MIT. It runs each
   x86-64 function in a small emulator on random inputs and hashes what
   it does. Like BARRACUDA, it needs an emulator for each architecture.
+- Benkraouda, Diwan and Wang, *You Can't Judge a Binary by Its Header:
+  Data-Code Separation for Non-Standard ARM Binaries Using Pseudo
+  Labels* (Loadstar).
+  <https://par.nsf.gov/biblio/10594582-you-cant-judge-binary-its-header-data-code-separation-non-standard-arm-binaries-using-pseudo-labels>
+  It tells code from data in PLC firmware with no standard header, which
+  is the problem of A16 on a raw image. It is a classifier trained on
+  standard binaries; only its rules that correct the pseudo-labels could
+  apply here.
+- LLM features: *Beyond Embeddings: Interpretable Feature Extraction for
+  Binary Code Similarity*, <https://arxiv.org/abs/2509.23449>. An LLM
+  writes a JSON record of each function (signature, constants, side
+  effects, purpose), compared by Jaccard similarity. 56.8% recall@1
+  across levels, with no training, but a model call for each function.
+- *What Do They Fix? LLM-Aided Categorization of Security Patches*,
+  NDSS 2026.
+  <https://www.ndss-symposium.org/wp-content/uploads/2026-s328-paper.pdf>
+  Like the LLM ranking above, this fits a tool that reads
+  `--format json`.
 - MinHash and LSH for a fast search of similar functions:
   <https://arxiv.org/abs/2112.05492>. Use it only if the scoring of all pairs
   becomes too slow.
@@ -588,12 +648,26 @@ Code: none; measured and not kept.
   topological order and the degrees of each edge's ends (the formula is
   in [QBinDiff](https://diffing.quarkslab.com/_modules/qbindiff/features/graph.html)).
   `hereticus` builds no control-flow graph yet, so it cannot use it.
+- Patch2Vuln, <https://arxiv.org/abs/2605.06601>: an agent reads the
+  ghidriff diff of 20 Ubuntu security updates and finds the function of
+  the fix in 10. In 6 of the others the diff or its ranking lost the
+  function before the agent saw it. See
+  [Patch2Vuln's pairs](#patch2vulns-pairs) in the results.
+- Assemblage-DeepHistory, <https://arxiv.org/abs/2605.21615>, data at
+  <https://huggingface.co/datasets/changliu8541/assemblage-deephistory>:
+  73,610 x86 and x64 binaries of 248 projects, many versions of each,
+  with debug information and the vulnerable functions marked. A larger
+  set of versions than the backports, but x86 only.
+- fission-diff, <https://github.com/fission-systems/Fission/issues/260>:
+  a planned Rust crate with the passes of BinDiff and BSim. Not
+  released.
 - Diaphora MCP server and ghidriff, both updated in 2026, wrap the
   existing heuristics of Diaphora and of Ghidra Version Tracking.
 
 ## Results
 
-Measured with `cargo run --release --example research_bench -p hereticus`.
+Measured with `cargo run --release --example research_bench -p hereticus`;
+`just test-research` runs these and the other sets of this file.
 It reads three sets:
 
 - **Backports**: zlib, Lua, tinyxml2 and smallvec, each built two ways
@@ -2054,3 +2128,102 @@ right paired. A margin of 0.2 paired 62 more right and 61 fewer wrong.
 The procd fix of CVE-2026-30874 kept row 1 and its report fell from 28
 rows to 25.
 
+
+### Patch2Vuln's pairs
+
+Patch2Vuln (see [Other sources](#other-sources)) runs ghidriff on 20
+Ubuntu security updates for amd64, and its agent finds the function of
+the fix in 10 of them. `fixtures/patch2vuln.py` fetches the same
+packages, runs `hereticus --format json` on the stripped files as Ubuntu
+ships them, and prints the row where the fix sits. The `-dbgsym` package
+names each address. For zlib, libjpeg-turbo and the older libxml2 the
+archive no longer holds it, so only the exported functions have names.
+
+Each pair spans many updates. *Any CVE fix* is the first row that holds a
+function that any CVE patch the later release added touches, as
+Patch2Vuln counts a hit. *The paper's CVEs* counts only the CVEs the
+paper names for the case. *Not in the file* means no function of those
+patches is in the symbols of the file: the fix is in another file, as
+tiffcrop, or the compiler inlined it.
+
+| Update | Symbols | Rows | Any CVE fix | The paper's CVEs | Patch2Vuln |
+|---|---|---|---|---|---|
+| tcpdump 4.9.2-3 → 4.9.3-0ubuntu0.18.04.2 | debug | 79 | not in the file | not in the file | found |
+| tcpdump 4.7.4-1ubuntu1 → 4.9.3-0ubuntu0.16.04.1 | debug | 457 | 38 | 38 | missed |
+| expat 2.2.5-3 → 2.2.5-3ubuntu0.9 | debug | 23 | 2 | 11 | found |
+| libarchive 3.2.2-3.1 → 3.2.2-3.1ubuntu0.7 | debug | 83 | 5 | not in the file | found |
+| libxml2 2.9.4+dfsg1-6.1ubuntu1 → 2.9.4+dfsg1-6.1ubuntu1.9 | dynamic | 106 | 1 | not in the file | found |
+| libxml2 2.9.10+dfsg-5 → 2.9.10+dfsg-5ubuntu0.20.04.10 | debug | 70 | 1 | not in the file | found |
+| tiff 4.0.9-5 → 4.0.9-5ubuntu0.10 | debug | 36 | 1 | not in the file | found |
+| tiff 4.1.0+git191117-2build1 → 4.1.0+git191117-2ubuntu0.20.04.14 | debug | 38 | 1 | 2 | found |
+| openssl 1.1.1f-1ubuntu2 → 1.1.1f-1ubuntu2.24 | debug | 80 | 1 | 17 | missed |
+| file 1:5.32-2 → 1:5.32-2ubuntu0.4 | debug | 12 | 2 | 2 | missed |
+| curl 7.58.0-2ubuntu3 → 7.58.0-2ubuntu3.24 | debug | 89 | 1 | 8 | missed |
+| zlib 1:1.2.11.dfsg-0ubuntu2 → 1:1.2.11.dfsg-0ubuntu2.2 | dynamic | 13 | 8 | 9 | missed |
+| freetype 2.8.1-2ubuntu2 → 2.8.1-2ubuntu2.2 | debug | 42 | 18 | 18 | missed |
+| libsndfile 1.0.28-4 → 1.0.28-4ubuntu0.18.04.2 | debug | 60 | 3 | 3 | found |
+| libjpeg-turbo 1.5.2-0ubuntu5 → 1.5.2-0ubuntu5.18.04.6 | dynamic | 9 | 1 | not in the file | found |
+| libwebp 0.6.1-2 → 0.6.1-2ubuntu0.18.04.2 | debug | 16 | 1 | 6 | missed |
+| sqlite3 3.22.0-1 → 3.22.0-1ubuntu0.7 | debug | 73 | 1 | 16 | found |
+| openjpeg2 2.3.1-1ubuntu4 → 2.3.1-1ubuntu4.20.04.4 | debug | 18 | 3 | 6 | missed |
+| poppler 0.62.0-2ubuntu2 → 0.62.0-2ubuntu2.14 | debug | 165 | 3 | 8 | missed |
+| gnutls28 3.5.18-1ubuntu1 → 3.5.18-1ubuntu1.6 | debug | 126 | 2 | 64 | missed |
+
+The function of the fix is in the report in every case where it is in
+the file. None is unmatched or reported as unchanged. Of the 10 updates
+that Patch2Vuln missed, the fix of the paper's CVEs is in row 2 to 18
+in 8, and in row 38 and row 64 in the two largest reports, of tcpdump and
+gnutls. The paper does not say which of its 10 misses the diff caused
+and which the agent caused, other than tcpdump on xenial. Thus this shows
+that the hereticus report covers the fixes, not that ghidriff lost them.
+For openssl, the paper diffs `libssl`, but the fixes of its CVEs
+(`OBJ_obj2txt` and the policy tree) are in `libcrypto`, which is the file
+measured here.
+
+### Assemblage-DeepHistory and entry 19
+
+`fixtures/assemblage.py` pairs each file that GCC 13.3 built at `-O2`
+for x86-64 with its next release: 8,872 pairs of 2,440 files from 168
+packages, most of them C++. `research_bench --assemblage` checks the
+pairs against the symbols each file keeps. A C++ name holds its
+namespace, and fmt and Abseil put their version in it (`fmt::v9`,
+`absl::lts_20230802`), so a pair counts only where one of its names is
+in both files. Before that rule, 3.2% of the pairs of the first 2,811
+read as wrong; after it, 1.8%. Only 3 pairs hold a fix that the CVE
+labels of the dataset name, so the set measures pairs, not ranks.
+
+Of the wrong pairs, most are twins with the same instructions (A4 and
+A2), such as C++ destructors and template copies, which read as
+unchanged however they pair. The wrong pairs a report shows, with a
+score below 1, came mostly from place (entry 7), similarity, callers and
+references.
+
+Entry 19, the texts in the record of a function:
+
+| Set | Right | Wrong |
+|---|---|---|
+| Assemblage, before | 5169197 | 72837 |
+| Assemblage, entry 19 | 5175936 (+6739) | 68863 (−3974) |
+| Backports, before | 29815 | 362 |
+| Backports, entry 19 | 29960 (+145) | 357 (−5) |
+| Ubuntu | no change | no change |
+| OpenWrt kernels, before | 243383 | 1795 |
+| OpenWrt kernels, entry 19 | 245510 (+2127) | 1658 (−137) |
+
+nng alone paired 1,733 more right and 1,311 fewer wrong. Over the
+kernels, the wrong pairs fell from 0.75% to 0.69%, and the wrong twins
+from 697 to 245; on mt7628, 53 fewer pairs read as changed in detail. Over the
+backports, 64% of the place hints are right, where 62% were. The rank sum
+of the fixes over the backports went from 3109 to 3124; the top 1 and
+top 5 counts stayed the same.
+
+The reach, the most words between the text and the function: 1 paired
+fewer right over the backports and Assemblage, and the same on Ubuntu. 2 paired 3,334 fewer right and 1,480 more wrong on
+the first 2,811 pairs than 3, but 7 fewer wrong over the backports.
+4 paired 43 fewer right and 7 more wrong over the backports than 3. Two
+guards matter: a word that holds the address of a function is no text,
+and the text must be one `Links::is_sure_text` accepts. Without them, the
+addresses in a vtable of tinyxml2 for Thumb read as texts, and 31 right
+pairs were lost between clang and GCC. Nor do the texts pair the rest of
+a group in order where the two sides had different counts before the
+texts paired some of it.

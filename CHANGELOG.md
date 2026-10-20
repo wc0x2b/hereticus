@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pair a function by the text beside it in a table of the data, as the
+  name of an option in `{"recv-size-max", get, set}`. Twins with the same
+  instructions that a release reordered now pair right, and the JSON and
+  the Ghidra extension name the new stage `twin, by the text in its row`
+  (`RESEARCH.md`, entry 19). Over 8,872 release pairs of
+  Assemblage-DeepHistory, the wrong pairs fell by 5.5%.
+
+### Changed
+
+- Fewer wrong pairs across a kernel upgrade: over the OpenWrt kernels, the
+  wrong pairs fell from 0.75% to 0.69%.
+
 ## [0.1.2](https://github.com/wc0x2b/hereticus/compare/v0.1.1...v0.1.2) - 2026-10-20
 
 ### Other
