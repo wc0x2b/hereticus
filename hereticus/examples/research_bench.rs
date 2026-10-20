@@ -7,8 +7,9 @@
 //!
 //! Run with `cargo run --release --example research_bench -p hereticus`.
 //! `--cves` ranks published fixes, `--ubuntu` measures Ubuntu security
-//! updates, and `--kernels` checks the pairs of the OpenWrt kernels against
-//! their symbols.
+//! updates, `--assemblage` measures the versions of Assemblage-DeepHistory,
+//! and `--kernels` checks the pairs of the OpenWrt kernels against their
+//! symbols.
 
 /// See `ALLOCATOR` in `hereticus-cli/src/main.rs`.
 #[global_allocator]
@@ -958,14 +959,15 @@ fn debug_symbols(path: &str) -> Vec<(u64, u64, String)> {
     symbols
 }
 
-/// Measure each Ubuntu security update that `fixtures/ubuntu_cves.py`
-/// fetched: the pairs of the stripped libraries, checked against the debug
-/// symbols, and the rank of the first function the update's patches touch.
-fn measure_ubuntu() {
-    let cache =
-        Path::new(&std::env::var("HOME").expect("a home")).join(".cache/hereticus-ubuntu-cve");
-    let text =
-        std::fs::read_to_string(cache.join("cases.json")).expect("run fixtures/ubuntu_cves.py");
+/// Measure each pair of `cases.json` in `cache`, which `script` writes:
+/// the pairs of the libraries, checked against the debug symbols, and the
+/// rank of the first function of the fix. `fixtures/ubuntu_cves.py` writes
+/// the Ubuntu security updates, and `fixtures/assemblage.py` the versions
+/// of Assemblage-DeepHistory.
+fn measure_ubuntu(cache: &str, script: &str) {
+    let cache = Path::new(&std::env::var("HOME").expect("a home")).join(cache);
+    let text = std::fs::read_to_string(cache.join("cases.json"))
+        .unwrap_or_else(|err| panic!("run {script}: {err}"));
     let cases = parse_cases(&text);
     let use_names = match std::env::var("NAMES").as_deref() {
         Ok("yes") => UseNames::Yes,
@@ -1221,7 +1223,11 @@ fn parse_cases(text: &str) -> Vec<Case> {
 
 fn main() {
     if std::env::args().any(|arg| arg == "--ubuntu") {
-        measure_ubuntu();
+        measure_ubuntu(".cache/hereticus-ubuntu-cve", "fixtures/ubuntu_cves.py");
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--assemblage") {
+        measure_ubuntu(".cache/hereticus-assemblage", "fixtures/assemblage.py");
         return;
     }
     if std::env::args().any(|arg| arg == "--kernels") {
