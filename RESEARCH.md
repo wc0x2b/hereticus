@@ -666,7 +666,8 @@ Code: `Binary::row_texts`, `RowText` and `ROW_REACH` in
 
 ## Results
 
-Measured with `cargo run --release --example research_bench -p hereticus`.
+Measured with `cargo run --release --example research_bench -p hereticus`;
+`just test-research` runs these and the other sets of this file.
 It reads three sets:
 
 - **Backports**: zlib, Lua, tinyxml2 and smallvec, each built two ways
