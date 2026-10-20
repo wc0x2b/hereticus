@@ -6,7 +6,7 @@ applies in `hereticus`. When code applies an idea, the doc comment of that
 function names the source from this file.
 
 Survey date: 2026-10-04, with entry 13 and more sources added on
-2026-10-07. The entries are in order of value for the effort.
+2026-10-07, and entries 16 to 18 on 2026-10-19. The entries are in order of value for the effort.
 The results of each entry, as applied and measured, are in
 [Results](#results).
 
@@ -472,6 +472,72 @@ Code: `Binary::function_tables` in `crates/hereticus-image`;
 `Links::words` in `crates/hereticus-image`; `Cascade::pair_by_tables`
 in `matching/tables.rs`.
 
+## 16. Source files, guessed
+
+Source: Karande et al., *BCD: Decomposing Binary Code Into Components
+Using Graph-Based Clustering*, AsiaCCS 2018.
+<https://personal.utdallas.edu/~hamlen/karande18asiaccs.pdf> BCD joins
+the functions of a binary by three edges: they sit near each other, they
+point at the same data, and one calls the other. Community detection on
+that graph then splits the binary into its source files.
+
+Idea: a compiler emits the functions of one source file together, so a
+run of functions in address order that calls and rare texts hold together
+is one guessed file. The pairs join the files of one binary to those of
+the other. A weak pair whose two files the other pairs join elsewhere is
+wrong. This needs no community detection: a file ends where no edge of at
+most `MOST_FILE_SPAN` places spans the gap.
+
+Applies to: a function deleted in an upgrade that pairs with one of
+similar code from another file, with no paired caller or callee to judge
+it (entry 1). Entry 7 judges such a pair by the order of the pairs around
+it; this entry judges it by the whole file.
+
+Code: `Cascade::unpair_across_files` in `matching/cascade.rs`;
+`source_files`, `file_edges`, `FileVotes`, `MOST_FILE_SPAN` and
+`FEWEST_FILE_VOTES` in `matching/files.rs`.
+
+## 17. Code moved into a callee, or inlined
+
+Sources: Jia et al., *1-to-1 or 1-to-n? Investigating the effect of
+function inlining on binary similarity analysis*, TOSEM 2023
+<https://arxiv.org/abs/2112.12928>, and its O2NMatcher, *Comparing One
+with Many: Solving Binary2source Function Matching Under Function
+Inlining* <https://arxiv.org/abs/2210.15159>; N2NMatcher,
+<https://arxiv.org/abs/2608.10043>. They match one binary function with a
+source function and the functions inlined into it, not one with one.
+
+Idea: a release moves the body of a function into a new callee and leaves
+a wrapper with the old name, or it inlines a callee into its caller. The
+old code then matches the moved code, and a stage pairs the two. Read the
+wrapper and its new callee as one function, or the inlining caller and
+its old callee; where that matches the other side clearly better than the
+pair alone, and the free function shares a paired caller with the other
+side, pair it in place of the moved code.
+
+Applies to: the wrong pairs by similarity, callers and references that
+`TODO.md` named, which follow code into a new function and leave the old
+name on a wrapper.
+
+Code: `Cascade::pair_moved_code`, `joined` and `MOVED_CODE_MARGIN` in
+`matching/moved.rs`; `Confidence::is_weak` in `matching.rs`.
+
+## 18. Scores against chance (E-values)
+
+Source: Karlin and Altschul, *Methods for assessing the statistical
+significance of molecular sequence features by using general scoring
+schemes*, PNAS 87(6), 1990.
+<https://www.pnas.org/doi/10.1073/pnas.87.6.2264> BLAST reports the
+number of hits of a score that chance gives in a database of a given
+size, not the score alone.
+
+Idea: two unrelated small functions often score 0.8, and two large ones
+almost never do. Sample the scores of random pairs of the same size on
+the two sides, and undo a weak pair where the number of functions
+expected to score as high by chance is above a cut-off.
+
+Code: none; measured and not kept.
+
 ## Lower fit
 
 - Ye, Zhou and Zhang, *Enhancing Semantic-Aware Binary Diffing with
@@ -510,7 +576,6 @@ in `matching/tables.rs`.
 
 - VERIBIN, NDSS 2025:
   <https://www.ndss-symposium.org/wp-content/uploads/2025-359-paper.pdf>
-- N2NMatcher: <https://arxiv.org/abs/2608.10043>
 - Cross-Inlining Binary Function Similarity Detection:
   <https://arxiv.org/abs/2401.05739>
 - BinEGA, SANER 2025:
@@ -1941,3 +2006,51 @@ pair by similarity out of place where its one paired neighbour each side
 disagrees, at any score. Keeping such pairs at 0.9 or more paired 18
 more right and 20 more wrong over the kernels, and at 0.7 or more, 55
 more right and 164 more wrong. The check stays as it is.
+
+### 16 to 18: source files, moved code and chance
+
+Measured on 2026-10-19 against the locked tests: the OpenWrt kernels
+(`tests/truth_kernels.rs`), the Ubuntu updates (`tests/truth_ubuntu.rs`),
+the backports built two ways (`tests/cross_build.rs`), and the ranks of
+the published fixes (`tests/truth_cves.rs`). Before: 243283 right and
+2281 wrong kernel pairs, 0.95%.
+
+Entry 18 undoes far more right pairs than wrong. A kernel holds many
+functions alike in shape, so a right pair seldom scores above what
+chance gives in its size:
+
+| Expected by chance | Kernels, right | Kernels, wrong | Ubuntu, right |
+|---|---|---|---|
+| over 1 | −4066 | −283 | −875 |
+| over 30 | −1875 | −78 | −51 |
+| over 300 | −81 | −38 | −7 |
+
+At 1 the backports also lost the fix as a raw image.
+
+Entry 16, by the span an edge may cross, with the pairs by similarity
+and by place judged:
+
+| Span | Kernels, right | Kernels, wrong |
+|---|---|---|
+| 8 | −307 | −106 |
+| 32 | −31 | −267 |
+| 64 | −24 | −303 |
+| 128 | −12 | −288 |
+
+At 128, judging the pairs by callers and by references too undid 374
+wrong and 14 right, to 0.79%; at 256 only 174 wrong, as the files run
+together. Calls alone, without the texts, undid 16 more wrong kernel
+pairs but left 3 more Ubuntu functions free. The gain is small, and the
+texts are the data edges of BCD, so they stay. The Ubuntu updates lost no right pair, and the cross
+builds and the fix ranks stayed the same.
+
+Entry 17, once entry 16 runs, with a margin of 0.1: 114 more right and
+112 fewer wrong kernel pairs, to 0.75%; 2 more right and 2 fewer wrong
+Ubuntu pairs; and over the backports built two ways, 42 more right and 44
+fewer wrong (O2 against Os 17 more right and 18 fewer wrong; clang
+against GCC 10 more right and 8 fewer wrong). The shared paired caller
+matters: without it, 21 more wrong kernel pairs were undone but 68 fewer
+right paired. A margin of 0.2 paired 62 more right and 61 fewer wrong.
+The procd fix of CVE-2026-30874 kept row 1 and its report fell from 28
+rows to 25.
+

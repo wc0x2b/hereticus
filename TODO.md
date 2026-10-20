@@ -133,31 +133,31 @@ it `Vector` only.
 the symbols and the source files in the DWARF of their builds, so a
 renamed function, a twin and two static functions of one name each count
 apart, and code that the debug file does not describe is left out. Over
-the kernels, 0.95%<!-- from truth_kernels: all / wrong% --> of the pairs are
-wrong, and at most 1.16%<!-- from truth_kernels: all / at most --> where the
-519<!-- from truth_kernels: all / unproven --> pairs only the source file calls
+the kernels, 0.75%<!-- from truth_kernels: all / wrong% --> of the pairs are
+wrong, and at most 0.96%<!-- from truth_kernels: all / at most --> where the
+516<!-- from truth_kernels: all / unproven --> pairs only the source file calls
 renamed are wrong too. Across a kernel upgrade it is
-1.4%<!-- from truth_kernels: 22.03.5/23.05.5 / wrong% --> to
-2.5%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% -->.
+1.11%<!-- from truth_kernels: 22.03.5/23.05.5 / wrong% --> to
+1.94%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% -->.
 
-Most wrong pairs join a function the upgrade deleted to one of similar
-code from another source file, with no paired caller or callee to say
-otherwise; a score floor, a floor on the ratio of the sizes, or a move
-to a closer free function costs more right pairs than it saves. Many
-wrong pairs by similarity, callers and references follow code that moved
-into a new function and left the old name on a wrapper, which the names
-cannot judge. The pairs by callers and by references are wrong
-7%<!-- from truth_kernels: SameCallers / wrong% --> and
-11%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
+Most wrong pairs still join a function the upgrade deleted to one of
+similar code. The guessed source files (`RESEARCH.md`, entry 16) undo
+such a pair where the other pairs join its two files elsewhere, but not
+where both sides sit in one file, or in a file with few other pairs. A
+score floor, a floor on the ratio of the sizes, a move to a closer free
+function, or a cut-off on the score that chance gives (entry 18) costs
+more right pairs than it saves. The pairs by callers and by references
+are wrong 6.07%<!-- from truth_kernels: SameCallers / wrong% --> and
+8.23%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
-Over the upgrades, 7552<!-- from truth_kernels: upgrades / pairs --> pairs of
+Over the upgrades, 7908<!-- from truth_kernels: upgrades / pairs --> pairs of
 functions stay free on both sides, though they share a name and a source
-file: more than three times the wrong pairs. Of these,
-1209<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
+file: more than four times the wrong pairs. Of these,
+1248<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
 those sit out of place, where the context check undoes them rightly or a
 rival scores within 0.03;
-532<!-- from truth_kernels: upgrades / identical --> have the same
+533<!-- from truth_kernels: upgrades / identical --> have the same
 instructions, mostly small twins that no caller tells apart. See `RESEARCH.md`,
 "The kernel upgrades, checked again".
 
@@ -194,7 +194,7 @@ OpenWrt 24.10.3 and 24.10.4 for ARMv7 read as unchanged but for
 constants, which checks the reading but ranks no fix.
 
 `tests/truth_ubuntu.rs` locks 218<!-- from truth_ubuntu: all / cases --> Ubuntu
-security updates. Of the 129<!-- from truth_ubuntu: all / wrong --> wrong pairs
+security updates. Of the 127<!-- from truth_ubuntu: all / wrong --> wrong pairs
 left, many are byte-identical twins (see "Tell twins apart
 that no instruction separates"). Every fix that changed the code shows
 on a changed row.
