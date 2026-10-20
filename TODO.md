@@ -134,11 +134,11 @@ the symbols and the source files in the DWARF of their builds, so a
 renamed function, a twin and two static functions of one name each count
 apart, and code that the debug file does not describe is left out. Over
 the kernels, 0.69%<!-- from truth_kernels: all / wrong% --> of the pairs are
-wrong, and at most 0.91%<!-- from truth_kernels: all / at most --> where the
-546<!-- from truth_kernels: all / unproven --> pairs only the source file calls
+wrong, and at most 0.90%<!-- from truth_kernels: all / at most --> where the
+543<!-- from truth_kernels: all / unproven --> pairs only the source file calls
 renamed are wrong too. Across a kernel upgrade it is
-1.03%<!-- from truth_kernels: 22.03.5/23.05.5 / wrong% --> to
-1.76%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% -->.
+1.01%<!-- from truth_kernels: 22.03.5/23.05.5 / wrong% --> to
+1.77%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% -->.
 
 Most wrong pairs still join a function the upgrade deleted to one of
 similar code. The guessed source files (`RESEARCH.md`, entry 16) undo
@@ -147,14 +147,14 @@ where both sides sit in one file, or in a file with few other pairs. A
 score floor, a floor on the ratio of the sizes, a move to a closer free
 function, or a cut-off on the score that chance gives (entry 18) costs
 more right pairs than it saves. The pairs by callers and by references
-are wrong 8.53%<!-- from truth_kernels: SameCallers / wrong% --> and
-3.86%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
+are wrong 8.46%<!-- from truth_kernels: SameCallers / wrong% --> and
+3.83%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
-Over the upgrades, 6132<!-- from truth_kernels: upgrades / pairs --> pairs of
+Over the upgrades, 6167<!-- from truth_kernels: upgrades / pairs --> pairs of
 functions stay free on both sides, though they share a name and a source
 file: about four times the wrong pairs. Of these,
-866<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
+873<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
 those sit out of place, where the context check undoes them rightly or a
 rival scores within 0.03;
 403<!-- from truth_kernels: upgrades / identical --> have the same
@@ -167,10 +167,11 @@ instructions, mostly small twins that no caller tells apart. See `RESEARCH.md`,
 GCC built (see `RESEARCH.md`, "Assemblage-DeepHistory and entry 19"). It
 found more to do, most valuable first:
 
-- **The wrong pairs a report shows.** Of the wrong pairs of the first
-  2,811 releases, about 4,400 score below 1 and so read as changed: about
-  2,000 by place, 1,100 by similar code, 700 by callers and 600 by
-  references. Find why each kind pairs wrong.
+- **The wrong pairs a report shows.** A thin wrapper left in the place of
+  a moved body now pairs (`RESEARCH.md`, "Assemblage-DeepHistory: the
+  wrong pairs a report shows"). Most of the rest are near twins that pair
+  one slot off by place, and a deleted function paired with a new one
+  while the true partner of one side stays free.
 - **Pairs across compilers.** The dataset builds each release with GCC
   and with clang. Those pairs make a set across builds, like the
   backports, but far larger.
@@ -179,10 +180,8 @@ found more to do, most valuable first:
 - **C++ twins.** About 12,000 wrong pairs are template copies and
   destructors with the same instructions. They read as unchanged however
   they pair, but the name of each class in its type information could tell
-  apart its virtual functions, as entry 19 does for a C table.
-- **Code that one package links into many files.** nng links its library
-  into about 100 tests, so one package weighs too much in the totals.
-  Count each copy of the code once.
+  apart its virtual functions, as entry 19 does for a C table. The near
+  twins that pair one slot off by place are the same problem.
 
 ## Rank a small fix that swaps no call
 
@@ -217,7 +216,7 @@ OpenWrt 24.10.3 and 24.10.4 for ARMv7 read as unchanged but for
 constants, which checks the reading but ranks no fix.
 
 `tests/truth_ubuntu.rs` locks 218<!-- from truth_ubuntu: all / cases --> Ubuntu
-security updates. Of the 127<!-- from truth_ubuntu: all / wrong --> wrong pairs
+security updates. Of the 128<!-- from truth_ubuntu: all / wrong --> wrong pairs
 left, many are byte-identical twins (see "Tell twins apart
 that no instruction separates"). Every fix that changed the code shows
 on a changed row.

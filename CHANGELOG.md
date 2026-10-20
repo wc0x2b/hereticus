@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once. `BENCH_WRONG=1` shows where the true partner of each wrong pair
   went.
 
+### Changed
+
+- Pair a function with the thin wrapper that took its place, where a
+  release moved its whole body into a new function, as cJSON did with
+  `cJSON_ParseWithOpts`. The new function now reads as new
+  (`RESEARCH.md`, "Assemblage-DeepHistory: the wrong pairs a report
+  shows").
+
 ## [0.2.0](https://github.com/wc0x2b/hereticus/compare/v0.1.2...v0.2.0) - 2026-10-20
 
 ### Added

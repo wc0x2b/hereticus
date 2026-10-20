@@ -27,6 +27,20 @@ use super::{Prepared, Symbol};
 /// [`Cascade::unpair_across_files`]: super::cascade::Cascade::unpair_across_files
 pub(super) const MOVED_CODE_MARGIN: f64 = 0.1;
 
+/// The most instructions a thin wrapper holds: see
+/// [`Cascade::thin_wrapper_of`].
+///
+/// Measured against the symbols, a wrapper of at most 3 instructions, at
+/// most a third the size of the old function, paired 641 more right and
+/// 747 fewer wrong over Assemblage-DeepHistory, 13 more right and 7 fewer
+/// wrong over the OpenWrt kernels, and 5 more right and 5 fewer wrong over
+/// the backports, but 1 more wrong over the Ubuntu updates. See
+/// RESEARCH.md, "Assemblage-DeepHistory: the wrong pairs a report shows".
+const MOST_THIN_WRAPPER_INSTRUCTIONS: usize = 3;
+
+/// How many times a thin wrapper the old function must be, in instructions.
+const THIN_WRAPPER_RATIO: usize = 3;
+
 /// The callers of each function of `side`, itself left out.
 fn callers_of(side: &[Prepared<'_>]) -> Vec<BTreeSet<usize>> {
     let mut callers = vec![BTreeSet::new(); side.len()];
@@ -73,6 +87,8 @@ impl Cascade<'_> {
     ///
     /// The free caller must share a paired caller with the other side, so a
     /// function that merely calls the moved code does not take its place.
+    /// Where no caller matches better, a thin wrapper of the new function
+    /// can take the pair: see [`Cascade::thin_wrapper_of`].
     /// The moved code stays free, as the new function or the deleted one
     /// that it is.
     ///
@@ -116,11 +132,16 @@ impl Cascade<'_> {
                     });
                 // The first of the best, so the answer does not depend on how
                 // `max_by` breaks a tie.
-                wrappers
+                let moved = wrappers
                     .chain(inliners)
                     .filter(|&(score, _, _)| score > alone + MOVED_CODE_MARGIN)
                     .reduce(|best, next| if next.0 > best.0 { next } else { best })
-                    .map(|(_, before, after)| Move { index, before, after })
+                    .map(|(_, before, after)| Move { index, before, after });
+                moved.or_else(|| {
+                    let wrapper =
+                        self.thin_wrapper_of(old, new, &left_callers, &right_callers, &partner)?;
+                    Some(Move { index, before: old, after: wrapper })
+                })
             })
             .collect();
 
@@ -141,5 +162,38 @@ impl Cascade<'_> {
                 self.take_pair(before, after, confidence, score);
             }
         }
+    }
+
+    /// The free thin wrapper of `new` that took the place of `old`, where
+    /// a release moved the whole body of `old` into `new`.
+    ///
+    /// The test of [`Cascade::pair_moved_code`] cannot see such a move: the
+    /// body alone already matches `new`, and the wrapper adds nothing to
+    /// it. So the wrapper must be a few instructions that call `new` and no
+    /// other function, and must share a paired caller with `old`, or both
+    /// must have no caller, as two exported functions of a library.
+    fn thin_wrapper_of(
+        &self,
+        old: usize,
+        new: usize,
+        left_callers: &[BTreeSet<usize>],
+        right_callers: &[BTreeSet<usize>],
+        partner: &HashMap<usize, usize>,
+    ) -> Option<usize> {
+        let old_size = self.left[old].symbols.len();
+        right_callers[new].iter().copied().find(|&wrapper| {
+            let size = self.right[wrapper].symbols.len();
+            let calls_only_new = self.right[wrapper]
+                .calls
+                .iter()
+                .all(|callee| !matches!(callee, Callee::Function(other) if *other != new));
+            let in_old_place = share_a_caller(&left_callers[old], &right_callers[wrapper], partner)
+                || (left_callers[old].is_empty() && right_callers[wrapper].is_empty());
+            self.right_free[wrapper]
+                && size <= MOST_THIN_WRAPPER_INSTRUCTIONS
+                && size * THIN_WRAPPER_RATIO <= old_size
+                && calls_only_new
+                && in_old_place
+        })
     }
 }

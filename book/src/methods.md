@@ -250,7 +250,7 @@ pair. The stages, in the order they run:
 | Callers | The calls of the pairs vote that they are one function | `same callers` | BinDiff *call graph expansion* |
 | Context | Their callers, callees and texts agree, and their code is close enough | `same callers`, or `similar` where a pair by similarity moves | |
 | Layout | They sit between the same two pairs, in the same order | `same place` | BinDiff *address sequence*; synteny in genomics |
-| Moved code | One is a wrapper that kept the place of the other, and the wrapper with its new callee matches better than the callee alone; or the reverse, for a callee inlined into its caller | the stage that paired the callee | O2NMatcher and N2NMatcher, *1-to-n* matching |
+| Moved code | One is a wrapper that kept the place of the other, and the wrapper with its new callee matches better than the callee alone, or the wrapper is at most 3 instructions and calls only that callee; or the reverse, for a callee inlined into its caller | the stage that paired the callee | O2NMatcher and N2NMatcher, *1-to-n* matching |
 
 Some stages run again, after a later stage pairs more functions.
 
@@ -259,6 +259,10 @@ leaves a wrapper with the old name. The code of the old function then
 matches the helper, not the wrapper. The moved-code stage reads the
 wrapper and the helper as one function, so the report shows the old
 function as changed and the helper as new. That is what the source did.
+Where the whole body moved, the wrapper adds too little to show. A
+wrapper of at most 3 instructions that calls only the helper then takes
+the place of the old function, if it shares a paired caller with it, or
+if neither has a caller.
 
 At the end, `hereticus` undoes a weak pair when no caller or callee of it
 agrees, or when the other pairs join its two source files elsewhere. Such
@@ -269,7 +273,7 @@ they call each other and share texts. BCD splits a binary into its files
 by the same edges. With these checks, over the OpenWrt kernels,
 0.69%<!-- from truth_kernels: all / wrong% --> of the pairs are wrong
 against the debug symbols, and
-1.76%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% --> across the
+1.77%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% --> across the
 largest kernel upgrade.
 
 ### The Similarity Score
