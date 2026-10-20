@@ -79,7 +79,9 @@ release="$(sed -n 's/^application.release.name=//p' "$GHIDRA_HOME/Ghidra/applica
 extensions="$HOME/.config/ghidra/ghidra_${version}_${release}/Extensions"
 rm -rf "$extensions/Hereticus"
 mkdir -p "$extensions"
-unzip -q "$root"/ghidra/dist/*_Hereticus.zip -d "$extensions"
+# The zip of this Ghidra release only: `gradle clean` keeps the zips of
+# other releases in dist/.
+unzip -q "$root/ghidra/dist/ghidra_${version}_${release}_"*_Hereticus.zip -d "$extensions"
 
 headless="$GHIDRA_HOME/support/analyzeHeadless"
 

@@ -107,6 +107,9 @@ dist:
 # Build the Ghidra extension zip that a release attaches, in ghidra/dist/. The
 # zip installs only in the Ghidra release that fixtures/rivals/Dockerfile pins.
 ghidra-dist:
+    # `gradle clean` keeps the zips of other Ghidra releases, and
+    # `release-assets` takes the one zip left.
+    rm -rf ghidra/dist
     docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
     docker build --quiet --tag {{rivals_image}}-ghidra-extension fixtures/ghidra-extension
     docker run --rm \
