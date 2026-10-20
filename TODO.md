@@ -167,21 +167,22 @@ instructions, mostly small twins that no caller tells apart. See `RESEARCH.md`,
 GCC built (see `RESEARCH.md`, "Assemblage-DeepHistory and entry 19"). It
 found more to do, most valuable first:
 
-- **The wrong pairs a report shows.** A thin wrapper left in the place of
-  a moved body now pairs (`RESEARCH.md`, "Assemblage-DeepHistory: the
-  wrong pairs a report shows"). Most of the rest are near twins that pair
-  one slot off by place, and a deleted function paired with a new one
-  while the true partner of one side stays free.
+- **C++ twins.** About 12,000 wrong pairs are template copies and
+  destructors with the same instructions. They read as unchanged however
+  they pair, but the name of each class in its type information could tell
+  apart its virtual functions, as entry 19 does for a C table. Most of the
+  wrong pairs by place that a report shows are near twins of this kind,
+  one slot off: template copies of protobuf and draco, and the `log_Z3_*`
+  functions of z3 (`RESEARCH.md`, "Assemblage-DeepHistory: the wrong
+  pairs a report shows").
+- **A deleted function paired with a new one.** Of the other wrong pairs
+  a report shows, most join a deleted function to a new one while the
+  true partner of one side stays free.
 - **Pairs across compilers.** The dataset builds each release with GCC
   and with clang. Those pairs make a set across builds, like the
   backports, but far larger.
 - **The rank of a fix.** Only 3 pairs at GCC `-O2` hold a fix that the CVE
   labels name. The other builds may hold more, to rank the fixes too.
-- **C++ twins.** About 12,000 wrong pairs are template copies and
-  destructors with the same instructions. They read as unchanged however
-  they pair, but the name of each class in its type information could tell
-  apart its virtual functions, as entry 19 does for a C table. The near
-  twins that pair one slot off by place are the same problem.
 
 ## Rank a small fix that swaps no call
 
