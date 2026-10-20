@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `research_bench --assemblage` counts each pair of names once per
+  release too, so a library that a package links into many files counts
+  once. `BENCH_WRONG=1` shows where the true partner of each wrong pair
+  went.
+
 ## [0.2.0](https://github.com/wc0x2b/hereticus/compare/v0.1.2...v0.2.0) - 2026-10-20
 
 ### Added

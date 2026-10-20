@@ -959,6 +959,26 @@ fn debug_symbols(path: &str) -> Vec<(u64, u64, String)> {
     symbols
 }
 
+/// Whether the names of a pair agree.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Right,
+    Wrong,
+}
+
+/// One case of [`measure_ubuntu`]: its library, its counts, its line, and
+/// a hash and verdict for each pair it judged.
+type CaseResult = (String, Totals, String, Vec<(u64, Verdict)>);
+
+/// A hash of `value`, to count a pair of name sets once without keeping
+/// the names.
+fn hash_of(value: &impl core::hash::Hash) -> u64 {
+    use core::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Which pairs of two differing names [`measure_ubuntu`] counts as wrong.
 #[derive(Clone, Copy)]
 enum Judge {
@@ -988,13 +1008,27 @@ fn measure_ubuntu(cache: &str, script: &str, judge: Judge) {
     use rayon::prelude::*;
     let mut all = Totals::default();
     let mut libraries: std::collections::BTreeMap<String, Totals> = Default::default();
-    let results: Vec<(String, Totals, String)> =
+    let results: Vec<CaseResult> =
         cases.par_iter().map(|case| measure_ubuntu_case(case, use_names, judge)).collect();
-    for (key, one, line) in results {
+    // A package can link one library into many files, as nng does into
+    // about 100 tests, so the same pair of functions counts once for each
+    // file. Count each such pair once per release too.
+    let mut seen = std::collections::HashSet::new();
+    let (mut distinct_right, mut distinct_wrong) = (0, 0);
+    for ((key, one, line, verdicts), case) in results.into_iter().zip(&cases) {
         if std::env::var_os("BENCH_VERBOSE").is_some() {
             println!("{line}");
         }
         add(libraries.entry(key).or_default(), &one);
+        let release = (&case.library, case.before.rsplit(' ').next(), &case.after);
+        for (pair, verdict) in verdicts {
+            if seen.insert((release, pair)) {
+                match verdict {
+                    Verdict::Right => distinct_right += 1,
+                    Verdict::Wrong => distinct_wrong += 1,
+                }
+            }
+        }
     }
     println!(
         "{:28} {:>6} {:>6} {:>6} {:>6} {:>6}",
@@ -1018,6 +1052,10 @@ fn measure_ubuntu(cache: &str, script: &str, judge: Judge) {
         all.cases - all.missed,
         all.cases
     );
+    println!(
+        "{:28} {distinct_right:>6} {distinct_wrong:>6}  (each pair of names once per release)",
+        "distinct"
+    );
     let ranked_cases = (all.cases - all.missed) as f64;
     for ((name, _), (ranks, top1, top5, mrr)) in ORDERS.iter().zip(&all.orders) {
         println!(
@@ -1027,8 +1065,8 @@ fn measure_ubuntu(cache: &str, script: &str, judge: Judge) {
     }
 }
 
-/// One case of [`measure_ubuntu`]: its library, its counts and its line.
-fn measure_ubuntu_case(case: &Case, use_names: UseNames, judge: Judge) -> (String, Totals, String) {
+/// One case of [`measure_ubuntu`].
+fn measure_ubuntu_case(case: &Case, use_names: UseNames, judge: Judge) -> CaseResult {
     let binaries = [0, 1].map(|side| {
         let data = std::fs::read(&case.files[side].0).expect("cached");
         Binary::parse(&data).expect("the library parses")
@@ -1049,7 +1087,10 @@ fn measure_ubuntu_case(case: &Case, use_names: UseNames, judge: Judge) -> (Strin
             .map(|(_, _, name)| name.clone())
             .collect()
     };
+    let show_wrong = std::env::var_os("BENCH_WRONG").is_some();
+    let partners = if show_wrong { Some(Partners::new(&binaries, &symbols, &diff)) } else { None };
     let mut one = Totals::default();
+    let mut verdicts = Vec::new();
     let totals = &mut one;
     totals.gone += diff.removed.len();
     totals.new += diff.added.len();
@@ -1062,12 +1103,26 @@ fn measure_ubuntu_case(case: &Case, use_names: UseNames, judge: Judge) -> (Strin
         if left.is_empty() || right.is_empty() || !judged {
             continue;
         }
-        if left.is_disjoint(&right) {
+        let verdict = match left.is_disjoint(&right) {
+            true => Verdict::Wrong,
+            false => Verdict::Right,
+        };
+        verdicts.push((hash_of(&(&left, &right)), verdict));
+        if verdict == Verdict::Wrong {
             totals.wrong += 1;
-            if std::env::var_os("BENCH_WRONG").is_some() {
+            if let Some(partners) = &partners {
                 println!(
-                    "WRONG {} {} {} -> {} {:?} {:.2} {left:?} {right:?}",
-                    case.library, case.arch, case.before, case.after, pair.confidence, pair.score
+                    "WRONG {} {} {} -> {} {:?} {:.2} {left:?} {right:?} | {} | {} | {}B {}B",
+                    case.library,
+                    case.arch,
+                    case.before,
+                    case.after,
+                    pair.confidence,
+                    pair.score,
+                    partners.fate(1, &left),
+                    partners.fate(0, &right),
+                    partners.sizes[0][pair.before],
+                    partners.sizes[1][pair.after],
                 );
             }
         } else {
@@ -1116,7 +1171,78 @@ fn measure_ubuntu_case(case: &Case, use_names: UseNames, judge: Judge) -> (Strin
             println!("MISSED {}", why_missed(case, &binaries, &diff, &names));
         }
     }
-    (format!("{} {}", case.library, case.arch), one, line)
+    (format!("{} {}", case.library, case.arch), one, line, verdicts)
+}
+
+/// Where the true partner of each side of a wrong pair went, for
+/// `BENCH_WRONG`.
+struct Partners<'a> {
+    /// For each side, the functions that each name covers.
+    functions: [std::collections::HashMap<&'a str, Vec<usize>>; 2],
+    /// For each side, the pair that holds each function.
+    pairs: [std::collections::HashMap<usize, &'a Match>; 2],
+    /// For each side, the size of each function in bytes.
+    sizes: [Vec<usize>; 2],
+}
+
+impl<'a> Partners<'a> {
+    fn new(
+        binaries: &[Binary; 2],
+        symbols: &'a [Vec<(u64, u64, String)>; 2],
+        diff: &'a Diff,
+    ) -> Self {
+        let functions = [0, 1].map(|side| {
+            let mut spans: Vec<(u64, u64, usize)> = binaries[side]
+                .functions
+                .iter()
+                .enumerate()
+                .map(|(index, function)| {
+                    let start = function.address & !1;
+                    (start, start + function.code.len() as u64, index)
+                })
+                .collect();
+            spans.sort_unstable();
+            let mut by_name: std::collections::HashMap<&str, Vec<usize>> = Default::default();
+            for (low, high, name) in &symbols[side] {
+                // The spans do not overlap, so those that overlap a symbol
+                // follow the last one that starts at or before it.
+                let first = spans.partition_point(|span| span.1 <= *low);
+                for span in spans[first..].iter().take_while(|span| span.0 < *high) {
+                    by_name.entry(name.as_str()).or_default().push(span.2);
+                }
+            }
+            by_name
+        });
+        let pairs = [
+            diff.matched.iter().map(|pair| (pair.before, pair)).collect(),
+            diff.matched.iter().map(|pair| (pair.after, pair)).collect(),
+        ];
+        let sizes = [0, 1].map(|side| {
+            binaries[side].functions.iter().map(|function| function.code.len()).collect()
+        });
+        Self { functions, pairs, sizes }
+    }
+
+    /// What became of the functions on `side` that one of `names` covers:
+    /// `absent` where none does, `free` where one is unpaired, and else the
+    /// reason and score of the pair that took it.
+    fn fate(&self, side: usize, names: &BTreeSet<String>) -> String {
+        let mut fates: Vec<String> = names
+            .iter()
+            .filter_map(|name| self.functions[side].get(name.as_str()))
+            .flatten()
+            .map(|index| match self.pairs[side].get(index) {
+                None => format!("free {}B", self.sizes[side][*index]),
+                Some(pair) => format!("taken {:?} {:.2}", pair.confidence, pair.score),
+            })
+            .collect();
+        fates.sort();
+        fates.dedup();
+        match fates.is_empty() {
+            true => "absent".to_owned(),
+            false => fates.join(", "),
+        }
+    }
 }
 
 /// Why no row of `diff` shows a fix of `case`: what became of each
