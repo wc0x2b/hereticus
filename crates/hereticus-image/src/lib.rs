@@ -13,4 +13,4 @@ pub mod obj;
 use macho::{apply_chained_fixups, indirect_names};
 
 pub use links::Links;
-pub use obj::{Binary, FoundBy, Function, Isa, ObjError, stable_name};
+pub use obj::{Binary, FoundBy, Function, Isa, ObjError, ROW_REACH, RowText, stable_name};

@@ -2805,6 +2805,46 @@ fn twins_pair_by_their_slot_in_a_table() {
     assert!(diff.matched.iter().any(|pair| pair.confidence == Confidence::SameTable));
 }
 
+/// [`binary_with_table`] of `names`, with a record `{text, function}` at
+/// 0x4000 for each of `rows`, and the texts at 0x5000.
+fn binary_with_rows(names: &[&str], rows: &[(&str, &str)]) -> hereticus_image::Binary {
+    let mut binary = binary_with_table(names, &[]);
+    let mut texts = vec![0u8];
+    let mut words = Vec::new();
+    for (text, function) in rows {
+        let index = names.iter().position(|name| name == function).expect("a function");
+        words.push(0x5000 + texts.len() as u32);
+        words.push(0x1000 + 0x100 * index as u32);
+        texts.extend_from_slice(text.as_bytes());
+        texts.push(0);
+    }
+    let words: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+    binary.links =
+        hereticus_image::Links::of_parts(vec![(0x4000, words), (0x5000, texts)], BTreeMap::new());
+    binary
+}
+
+/// Twins that a release reordered pair by the texts of their records, not
+/// in the order of their addresses; with no texts, the order decides.
+#[test]
+fn twins_pair_by_the_text_in_their_row() {
+    let rows = [("recv-size-max", "0"), ("frag-size-limit", "0 again")];
+    let before = binary_with_rows(&["0", "0 again"], &rows);
+    let after = binary_with_rows(&["0 again", "0"], &rows);
+    let options = Options { threshold: 0.0, use_names: UseNames::No };
+    let diff = diff_with(&before, &after, options);
+    assert_eq!(diff.matched.len(), 2);
+    for pair in &diff.matched {
+        assert_eq!(before.functions[pair.before].name, after.functions[pair.after].name);
+        assert_eq!(pair.confidence, Confidence::SameRowText);
+    }
+
+    let (before, after) =
+        (binary_with_rows(&["0", "0 again"], &[]), binary_with_rows(&["0 again", "0"], &[]));
+    let diff = diff_with(&before, &after, options);
+    assert!(diff.matched.iter().all(|pair| pair.confidence == Confidence::TwinInOrder));
+}
+
 /// Two tables are not one where a firm pair joins a function of one to
 /// another slot of the other: an edit moved the slots.
 #[test]

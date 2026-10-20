@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::norm::NormInsn;
 use hereticus_callees::Callee;
+use hereticus_image::RowText;
 
 use super::{Confidence, Prepared, Symbol};
 
@@ -435,12 +436,18 @@ pub(super) enum UniqueReference<'a> {
     CalleeSet(u64),
     /// A constant above [`LARGEST_PLAIN_CONSTANT`].
     Constant(u64),
+    /// A text beside the function in a record of the data, and how many
+    /// words from the function it sits: see
+    /// [`hereticus_image::Binary::row_texts`].
+    Row(RowText<'a>),
 }
 
-/// Each text, large constant and named callee that exactly one function
-/// of `side` holds, and that function.
+/// Each text, large constant, named callee and row text that exactly one
+/// function of `side` holds, and that function. `rows` holds the row texts
+/// of each function of `side`.
 pub(super) fn unique_reference_holders<'a>(
     side: &'a [Prepared<'_>],
+    rows: &'a [Vec<RowText<'a>>],
     paired: &dyn Fn(usize) -> Option<usize>,
 ) -> HashMap<UniqueReference<'a>, usize> {
     let mut holders: HashMap<UniqueReference<'a>, Option<usize>> = HashMap::new();
@@ -453,7 +460,8 @@ pub(super) fn unique_reference_holders<'a>(
             _ => None,
         });
         let callee_set = paired_callee_set(prepared, paired);
-        for key in texts.chain(constants).chain(calls).chain(callee_set) {
+        let row_texts = rows[index].iter().map(|&row| UniqueReference::Row(row));
+        for key in texts.chain(constants).chain(calls).chain(callee_set).chain(row_texts) {
             holders
                 .entry(key)
                 .and_modify(|holder| {

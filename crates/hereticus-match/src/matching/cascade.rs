@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::norm::{NormInsn, Operation};
 use hereticus_callees::Callee;
+use hereticus_image::RowText;
 use rayon::prelude::*;
 
 use super::align::{
@@ -64,6 +65,11 @@ pub(super) struct Cascade<'a> {
     pub(super) left_tables: Vec<Vec<usize>>,
     /// The tables of functions of the second binary.
     pub(super) right_tables: Vec<Vec<usize>>,
+    /// The texts beside each function of the first binary in a record of
+    /// the data: see [`hereticus_image::Binary::row_texts`].
+    pub(super) left_rows: Vec<Vec<RowText<'a>>>,
+    /// The texts beside each function of the second binary.
+    pub(super) right_rows: Vec<Vec<RowText<'a>>>,
 }
 
 impl Cascade<'_> {
@@ -648,9 +654,10 @@ impl Cascade<'_> {
         let mut repaired = Repaired::Nothing;
         let partner: HashMap<usize, usize> =
             self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
-        let left_keys =
-            unique_reference_holders(&self.left, &|callee| partner.get(&callee).copied());
-        let right_keys = unique_reference_holders(&self.right, &|callee| {
+        let left_keys = unique_reference_holders(&self.left, &self.left_rows, &|callee| {
+            partner.get(&callee).copied()
+        });
+        let right_keys = unique_reference_holders(&self.right, &self.right_rows, &|callee| {
             self.right_free.get(callee).is_some_and(|free| !free).then_some(callee)
         });
         let mut shared: HashMap<(usize, usize), usize> = HashMap::new();
@@ -1721,8 +1728,19 @@ impl Cascade<'_> {
         }
 
         let mut pairs: Vec<(usize, usize)> = Vec::new();
+        let mut by_rows: Vec<(usize, usize)> = Vec::new();
         for (mut left, mut right) in groups.into_values() {
-            if left.len() < 2 || left.len() != right.len() {
+            if left.len() < 2 {
+                continue;
+            }
+            // A group of unequal sides pairs nothing in order, even where
+            // the texts pair some of it and leave sides of one size.
+            let in_order = left.len() == right.len();
+            let named = self.twins_by_rows(&left, &right);
+            left.retain(|before| !named.iter().any(|(paired, _)| paired == before));
+            right.retain(|after| !named.iter().any(|(_, paired)| paired == after));
+            by_rows.extend(named);
+            if !in_order {
                 continue;
             }
             left.sort_by_key(|&index| self.left[index].function.address);
@@ -1732,10 +1750,34 @@ impl Cascade<'_> {
 
         // Pairing in a fixed order keeps the result independent of the order
         // the map yields its groups in.
+        by_rows.sort_unstable();
+        for (before, after) in by_rows {
+            self.take_pair(before, after, Confidence::SameRowText, 1.0);
+        }
         pairs.sort_unstable();
         for (before, after) in pairs {
             self.take_pair(before, after, Confidence::TwinInOrder, 1.0);
         }
+    }
+
+    /// The twins of `left` and `right` that the texts of their records
+    /// pair: where one twin on each side holds the same texts, and no other
+    /// twin of the group does.
+    ///
+    /// A release can reorder twins: nng 1.5 moved `ws_dialer_set_fragsize`
+    /// before `ws_dialer_set_recvmax`, the same instructions, but the
+    /// record of each still holds the name of its option.
+    ///
+    /// See RESEARCH.md, entry 19.
+    fn twins_by_rows(&self, left: &[usize], right: &[usize]) -> Vec<(usize, usize)> {
+        let left_holders = row_holders(left, &self.left_rows);
+        let right_holders = row_holders(right, &self.right_rows);
+        let mut pairs: Vec<(usize, usize)> = left_holders
+            .iter()
+            .filter_map(|(texts, before)| Some(((*before)?, right_holders.get(texts).copied()??)))
+            .collect();
+        pairs.sort_unstable();
+        pairs
     }
 
     /// Stage three: the same symbol name.
@@ -2208,4 +2250,20 @@ fn calls_kept_in_place<'a>(
         }
     }
     kept.into_iter()
+}
+
+/// Each set of row texts that exactly one function of `side` holds, and
+/// that function.
+fn row_holders<'r, 't>(
+    side: &[usize],
+    rows: &'r [Vec<RowText<'t>>],
+) -> HashMap<&'r [RowText<'t>], Option<usize>> {
+    let mut holders: HashMap<&[RowText<'_>], Option<usize>> = HashMap::new();
+    for &index in side.iter().filter(|&&index| !rows[index].is_empty()) {
+        holders
+            .entry(rows[index].as_slice())
+            .and_modify(|holder| *holder = None)
+            .or_insert(Some(index));
+    }
+    holders
 }

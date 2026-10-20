@@ -6,8 +6,8 @@ applies in `hereticus`. When code applies an idea, the doc comment of that
 function names the source from this file.
 
 Survey date: 2026-10-04, with entry 13 and more sources added on
-2026-10-07, and entries 16 to 18 on 2026-10-19, with more sources added
-on 2026-10-19. The entries are in order of value for the effort.
+2026-10-07, entries 16 to 18 on 2026-10-19, with more sources added
+on 2026-10-19, and entry 19 on 2026-10-20. The entries are in order of value for the effort.
 The results of each entry, as applied and measured, are in
 [Results](#results).
 
@@ -553,6 +553,32 @@ the two sides, and undo a weak pair where the number of functions
 expected to score as high by chance is above a cut-off.
 
 Code: none; measured and not kept.
+
+## 19. Texts in the record of a function
+
+Source: entry 13 reads the texts that the code of a function reaches.
+Ghidra's *Data Reference Match* correlator ([Ghidra Version Tracking
+correlators](https://ghidradocs.com/11.1_PUBLIC/help/VersionTracking/help/topics/VersionTrackingPlugin/VT_Correlators.html))
+pairs functions by the data their code reads. This survey found no tool
+that reads it the other way: the record of the data that holds the
+address of a function, and the text beside it. Found on the versions of
+Assemblage-DeepHistory (see [Other sources](#other-sources)), where nng's
+option getters were the most common wrong pair.
+
+Idea: a C table of options, commands or methods holds a record for each,
+as `{"recv-size-max", get, set}` in nng or `{"sin", math_sin}` in Lua's
+`luaL_Reg`. The text names the function where its code cannot: two
+getters of nng are the same instructions, and nng 1.5 placed them in
+another order, so A4 paired them the wrong way round. A text a few words
+from the address of a function, in one record with no gap, labels it,
+together with how many words away it sits.
+
+Applies to: twins, before A4 pairs them in order, and every function as
+one more unique reference of entry 13.
+
+Code: `Binary::row_texts`, `RowText` and `ROW_REACH` in
+`crates/hereticus-image`; `Cascade::twins_by_rows` and `row_holders` in
+`matching/cascade.rs`; `Confidence::SameRowText` in `matching.rs`.
 
 ## Lower fit
 
@@ -2152,3 +2178,51 @@ that the hereticus report covers the fixes, not that ghidriff lost them.
 For openssl, the paper diffs `libssl`, but the fixes of its CVEs
 (`OBJ_obj2txt` and the policy tree) are in `libcrypto`, which is the file
 measured here.
+
+### Assemblage-DeepHistory and entry 19
+
+`fixtures/assemblage.py` pairs each file that GCC 13.3 built at `-O2`
+for x86-64 with its next release: 8,872 pairs of 2,440 files from 168
+packages, most of them C++. `research_bench --assemblage` checks the
+pairs against the symbols each file keeps. A C++ name holds its
+namespace, and fmt and Abseil put their version in it (`fmt::v9`,
+`absl::lts_20230802`), so a pair counts only where one of its names is
+in both files. Before that rule, 3.2% of the pairs of the first 2,811
+read as wrong; after it, 1.8%. Only 3 pairs hold a fix that the CVE
+labels of the dataset name, so the set measures pairs, not ranks.
+
+Of the wrong pairs, most are twins with the same instructions (A4 and
+A2), such as C++ destructors and template copies, which read as
+unchanged however they pair. The wrong pairs a report shows, with a
+score below 1, came mostly from place (entry 7), similarity, callers and
+references.
+
+Entry 19, the texts in the record of a function:
+
+| Set | Right | Wrong |
+|---|---|---|
+| Assemblage, before | 5169197 | 72837 |
+| Assemblage, entry 19 | 5175936 (+6739) | 68863 (−3974) |
+| Backports, before | 29815 | 362 |
+| Backports, entry 19 | 29960 (+145) | 357 (−5) |
+| Ubuntu | no change | no change |
+| OpenWrt kernels, before | 243383 | 1795 |
+| OpenWrt kernels, entry 19 | 245510 (+2127) | 1658 (−137) |
+
+nng alone paired 1,733 more right and 1,311 fewer wrong. Over the
+kernels, the wrong pairs fell from 0.75% to 0.69%, and the wrong twins
+from 697 to 245; on mt7628, 53 fewer pairs read as changed in detail. Over the
+backports, 64% of the place hints are right, where 62% were. The rank sum
+of the fixes over the backports went from 3109 to 3124; the top 1 and
+top 5 counts stayed the same.
+
+The reach, the most words between the text and the function: 1 paired
+fewer right over the backports and Assemblage, and the same on Ubuntu. 2 paired 3,334 fewer right and 1,480 more wrong on
+the first 2,811 pairs than 3, but 7 fewer wrong over the backports.
+4 paired 43 fewer right and 7 more wrong over the backports than 3. Two
+guards matter: a word that holds the address of a function is no text,
+and the text must be one `Links::is_sure_text` accepts. Without them, the
+addresses in a vtable of tinyxml2 for Thumb read as texts, and 31 right
+pairs were lost between clang and GCC. Nor do the texts pair the rest of
+a group in order where the two sides had different counts before the
+texts paired some of it.

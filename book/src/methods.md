@@ -267,9 +267,9 @@ similar code. A stripped binary has no source files, so `hereticus`
 guesses them: a compiler emits the functions of one file together, and
 they call each other and share texts. BCD splits a binary into its files
 by the same edges. With these checks, over the OpenWrt kernels,
-0.75%<!-- from truth_kernels: all / wrong% --> of the pairs are wrong
+0.69%<!-- from truth_kernels: all / wrong% --> of the pairs are wrong
 against the debug symbols, and
-1.94%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% --> across the
+1.76%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% --> across the
 largest kernel upgrade.
 
 ### The Similarity Score

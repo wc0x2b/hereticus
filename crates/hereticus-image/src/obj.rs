@@ -245,6 +245,22 @@ pub enum FoundBy {
     Scanning,
 }
 
+/// A text in a record of the data beside a function: see
+/// [`Binary::row_texts`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RowText<'a> {
+    pub text: &'a str,
+    /// How many words after the address of the function the address of
+    /// the text sits; less than zero where it sits before.
+    pub slots: i8,
+}
+
+/// The most words between a function and a text of its record: see
+/// [`Binary::row_texts`].
+///
+/// nng keeps `{name, get, set}`, two words from the text to the setter.
+pub const ROW_REACH: usize = 3;
+
 /// A binary, with the functions found in it.
 #[derive(Clone, Debug)]
 pub struct Binary {
@@ -307,6 +323,64 @@ impl Binary {
         }
         tables.extend(run.end());
         tables
+    }
+
+    /// The texts that sit beside each function in a record of the data,
+    /// by the index of the function: each text, and how many words after
+    /// the address of the function its address sits, from
+    /// −[`ROW_REACH`] to [`ROW_REACH`].
+    ///
+    /// A C table of options or commands holds a record for each, as
+    /// `{"recv-size-max", get, set}` in nng or `{"sin", math_sin}` in
+    /// Lua. The text names the function where its code cannot: nng's
+    /// getters of two options can be the same instructions.
+    ///
+    /// See RESEARCH.md, entry 19.
+    pub fn row_texts(&self) -> Vec<Vec<RowText<'_>>> {
+        let starts: HashMap<u64, usize> = self
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(index, function)| (function.address, index))
+            .collect();
+        let width = self.isa.address_width().bytes() as u64;
+        let words: Vec<(u64, u64)> =
+            self.links.words(self.isa.address_width(), self.isa.byte_order()).collect();
+        let mut rows = vec![Vec::new(); self.functions.len()];
+        for (at, &(address, value)) in words.iter().enumerate() {
+            let Some(&function) = (value != 0)
+                .then(|| starts.get(&scan::symbol_address(self.isa.arch(), value)))
+                .flatten()
+            else {
+                continue;
+            };
+            let low = at.saturating_sub(ROW_REACH);
+            let high = (at + ROW_REACH + 1).min(words.len());
+            for (other, &(other_address, other_value)) in words[low..high].iter().enumerate() {
+                let slots = (low + other) as i64 - at as i64;
+                // Only words of one record, with no gap between them.
+                let same_record =
+                    other_address.wrapping_sub(address) as i64 == slots * width as i64;
+                if slots == 0 || !same_record {
+                    continue;
+                }
+                // The address of another function, as in a vtable, can
+                // read as a short text by chance.
+                let is_function =
+                    starts.contains_key(&scan::symbol_address(self.isa.arch(), other_value));
+                if let Some(text) = self.links.text_at(other_value)
+                    && !is_function
+                    && self.links.is_sure_text(other_value, text)
+                {
+                    rows[function].push(RowText { text, slots: slots as i8 });
+                }
+            }
+        }
+        for texts in &mut rows {
+            texts.sort_unstable();
+            texts.dedup();
+        }
+        rows
     }
 
     /// Read a binary and find the functions in it.
@@ -1157,6 +1231,55 @@ mod tests {
         assert_eq!(
             binary.function_tables(),
             [vec![0, 1], vec![2, 0], vec![1, 2], vec![1, 0], vec![0, 1, 0]]
+        );
+    }
+
+    /// A text in a record names each function of the record, by how many
+    /// words from it the text sits. A word that points at a function, a
+    /// gap between words, or a text past [`ROW_REACH`] names nothing.
+    #[test]
+    fn a_row_text_names_the_functions_of_its_record() {
+        let functions: Vec<Function> = (0..4)
+            .map(|index| Function {
+                name: String::new(),
+                address: 0x1000 + index * 0x10,
+                code: vec![0; 4],
+            })
+            .collect();
+        let words = |words: &[u32]| -> Vec<u8> {
+            words.iter().flat_map(|word| word.to_le_bytes()).collect()
+        };
+        let texts = b"\0recv-size-max\0frag-size-limit\0".to_vec();
+        let (recv, frag) = (0x5001, 0x500f);
+        let memory = vec![
+            (0x5000, texts),
+            // {name, get, set}, as nng keeps its options.
+            (0x2000, words(&[recv, 0x1000, 0x1011])),
+            // {set, name}: the text after the function.
+            (0x3000, words(&[0x1020, frag])),
+            // A gap between the text and the function.
+            (0x4000, words(&[frag])),
+            (0x4010, words(&[0x1030])),
+            // Too far: four words from the text.
+            (0x6000, words(&[recv, 0, 0, 0, 0x1030])),
+        ];
+        let binary = Binary {
+            isa: Isa::Arm32,
+            functions,
+            found_by: FoundBy::Symbols,
+            addresses: AddressSpace::none(),
+            links: Links::of_parts(memory, BTreeMap::new()),
+            other_set: BTreeSet::new(),
+        };
+        let row = |text, slots| RowText { text, slots };
+        assert_eq!(
+            binary.row_texts(),
+            [
+                vec![row("recv-size-max", -1)],
+                vec![row("recv-size-max", -2)],
+                vec![row("frag-size-limit", 1)],
+                vec![],
+            ]
         );
     }
 

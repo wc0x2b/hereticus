@@ -133,12 +133,12 @@ it `Vector` only.
 the symbols and the source files in the DWARF of their builds, so a
 renamed function, a twin and two static functions of one name each count
 apart, and code that the debug file does not describe is left out. Over
-the kernels, 0.75%<!-- from truth_kernels: all / wrong% --> of the pairs are
-wrong, and at most 0.96%<!-- from truth_kernels: all / at most --> where the
-516<!-- from truth_kernels: all / unproven --> pairs only the source file calls
+the kernels, 0.69%<!-- from truth_kernels: all / wrong% --> of the pairs are
+wrong, and at most 0.91%<!-- from truth_kernels: all / at most --> where the
+546<!-- from truth_kernels: all / unproven --> pairs only the source file calls
 renamed are wrong too. Across a kernel upgrade it is
-1.11%<!-- from truth_kernels: 22.03.5/23.05.5 / wrong% --> to
-1.94%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% -->.
+1.03%<!-- from truth_kernels: 22.03.5/23.05.5 / wrong% --> to
+1.76%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% -->.
 
 Most wrong pairs still join a function the upgrade deleted to one of
 similar code. The guessed source files (`RESEARCH.md`, entry 16) undo
@@ -147,17 +147,17 @@ where both sides sit in one file, or in a file with few other pairs. A
 score floor, a floor on the ratio of the sizes, a move to a closer free
 function, or a cut-off on the score that chance gives (entry 18) costs
 more right pairs than it saves. The pairs by callers and by references
-are wrong 6.07%<!-- from truth_kernels: SameCallers / wrong% --> and
-8.23%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
+are wrong 8.53%<!-- from truth_kernels: SameCallers / wrong% --> and
+3.86%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
-Over the upgrades, 7908<!-- from truth_kernels: upgrades / pairs --> pairs of
+Over the upgrades, 6132<!-- from truth_kernels: upgrades / pairs --> pairs of
 functions stay free on both sides, though they share a name and a source
-file: more than four times the wrong pairs. Of these,
-1248<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
+file: about four times the wrong pairs. Of these,
+866<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
 those sit out of place, where the context check undoes them rightly or a
 rival scores within 0.03;
-533<!-- from truth_kernels: upgrades / identical --> have the same
+403<!-- from truth_kernels: upgrades / identical --> have the same
 instructions, mostly small twins that no caller tells apart. See `RESEARCH.md`,
 "The kernel upgrades, checked again".
 
