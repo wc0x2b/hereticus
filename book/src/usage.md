@@ -84,7 +84,7 @@ inflate_table: gone, closest inflate_table at 0.57, same place as inflate_table
 <!-- end output -->
 
 A place is a hint and not a pair: over the backports,
-61%<!-- from cross_build: all / right% --> of them are right.
+62%<!-- from cross_build: all / right% --> of them are right.
 
 ## Look Inside a Function
 

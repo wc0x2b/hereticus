@@ -250,11 +250,27 @@ pair. The stages, in the order they run:
 | Callers | The calls of the pairs vote that they are one function | `same callers` | BinDiff *call graph expansion* |
 | Context | Their callers, callees and texts agree, and their code is close enough | `same callers`, or `similar` where a pair by similarity moves | |
 | Layout | They sit between the same two pairs, in the same order | `same place` | BinDiff *address sequence*; synteny in genomics |
+| Moved code | One is a wrapper that kept the place of the other, and the wrapper with its new callee matches better than the callee alone; or the reverse, for a callee inlined into its caller | the stage that paired the callee | O2NMatcher and N2NMatcher, *1-to-n* matching |
 
-Some stages run again, after a later stage pairs more functions. At the
-end, `hereticus` undoes a weak pair when no caller or callee of it agrees.
-Such a pair is often a deleted function that paired with a new function
-of similar code.
+Some stages run again, after a later stage pairs more functions.
+
+A release often moves the body of a function into a new helper, and
+leaves a wrapper with the old name. The code of the old function then
+matches the helper, not the wrapper. The moved-code stage reads the
+wrapper and the helper as one function, so the report shows the old
+function as changed and the helper as new. That is what the source did.
+
+At the end, `hereticus` undoes a weak pair when no caller or callee of it
+agrees, or when the other pairs join its two source files elsewhere. Such
+a pair is often a deleted function that paired with a new function of
+similar code. A stripped binary has no source files, so `hereticus`
+guesses them: a compiler emits the functions of one file together, and
+they call each other and share texts. BCD splits a binary into its files
+by the same edges. With these checks, over the OpenWrt kernels,
+0.75%<!-- from truth_kernels: all / wrong% --> of the pairs are wrong
+against the debug symbols, and
+1.94%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% --> across the
+largest kernel upgrade.
 
 ### The Similarity Score
 
@@ -284,7 +300,8 @@ them apart. Thus the stages after the similarity stage use what is around
 a function: its callers, its callees, its texts and its place.
 
 Code: [`cascade.rs`][cascade] and [`score.rs`][score]. See `RESEARCH.md`,
-A1 to A10, and entries 1, 7, 13, 14 and 15.
+A1 to A10, and entries 1, 7, 13, 14, 15, 16 and 17. The moved code and the
+source files are in [`moved.rs`][moved] and [`files.rs`][files].
 
 ### Gone and New Functions
 
@@ -373,6 +390,8 @@ the methods that did not help.
 [il]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-il/src/lib.rs
 [cascade]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/cascade.rs
 [score]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/score.rs
+[moved]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/moved.rs
+[files]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/files.rs
 [change]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/change.rs
 [bounded]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/bounded.rs
 [exits]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/exits.rs

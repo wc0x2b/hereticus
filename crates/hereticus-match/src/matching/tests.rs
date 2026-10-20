@@ -2886,3 +2886,150 @@ fn stubs_pair_by_their_import_before_their_bytes() {
     }
     assert_eq!(diff.matched.len(), 2);
 }
+
+mod files {
+    use super::super::files::*;
+
+    /// Functions 0 to `count` in address order: each sits at its own index.
+    fn in_order(count: usize) -> (Vec<usize>, Vec<usize>) {
+        ((0..count).collect(), (0..count).collect())
+    }
+
+    #[test]
+    fn a_call_holds_the_functions_between_its_ends_in_one_file() {
+        let (order, place) = in_order(6);
+        let files = source_files(&order, &place, [(1, 3), (4, 5)]);
+        assert_eq!(files[1], files[2], "between the ends");
+        assert_eq!(files[2], files[3]);
+        assert_eq!(files[4], files[5]);
+        assert_ne!(files[0], files[1], "nothing joins 0 to 1");
+        assert_ne!(files[3], files[4], "nothing spans 3 to 4");
+    }
+
+    #[test]
+    fn functions_with_no_edge_each_sit_alone() {
+        let (order, place) = in_order(4);
+        assert_eq!(source_files(&order, &place, []), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn an_edge_past_the_most_span_joins_nothing() {
+        let (order, place) = in_order(MOST_FILE_SPAN + 2);
+        let files = source_files(&order, &place, [(0, MOST_FILE_SPAN + 1)]);
+        assert_ne!(files[0], files[MOST_FILE_SPAN + 1]);
+        let files = source_files(&order, &place, [(0, MOST_FILE_SPAN)]);
+        assert_eq!(files[0], files[MOST_FILE_SPAN]);
+    }
+
+    #[test]
+    fn the_files_follow_the_address_order_not_the_index() {
+        // Function 2 sits first, then 0, then 1.
+        let (order, place) = (vec![2, 0, 1], vec![1, 2, 0]);
+        let files = source_files(&order, &place, [(2, 0)]);
+        assert_eq!(files[2], files[0]);
+        assert!(files[1] > files[0]);
+    }
+
+    /// Whatever the order and the edges, the files grow along the address
+    /// order, and the two ends of an edge within the span share a file.
+    #[test]
+    fn any_edges_give_files_in_address_order() {
+        bolero::check!().with_type::<(Vec<u8>, Vec<(u8, u8)>)>().for_each(|(keys, edges)| {
+            let count = keys.len();
+            if count == 0 {
+                return;
+            }
+            let mut order: Vec<usize> = (0..count).collect();
+            order.sort_by_key(|&index| (keys[index], index));
+            let mut place = vec![0; count];
+            for (at, &function) in order.iter().enumerate() {
+                place[function] = at;
+            }
+            let edges: Vec<(usize, usize)> = edges
+                .iter()
+                .map(|&(one, other)| (usize::from(one) % count, usize::from(other) % count))
+                .collect();
+            let files = source_files(&order, &place, edges.iter().copied());
+            assert!(order.windows(2).all(|pair| files[pair[0]] <= files[pair[1]]));
+            for &(one, other) in &edges {
+                if place[one].abs_diff(place[other]) <= MOST_FILE_SPAN {
+                    assert_eq!(files[one], files[other]);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn files_disagree_where_their_other_pairs_go_elsewhere() {
+        // Files 1 and 2 hold two more pairs each, all to other files.
+        let votes = FileVotes::new([(1, 2), (1, 7), (1, 7), (8, 2), (9, 2)]);
+        assert!(votes.disagree(1, 2));
+    }
+
+    #[test]
+    fn files_agree_where_another_pair_joins_them() {
+        let votes = FileVotes::new([(1, 2), (1, 2), (1, 7), (8, 2), (9, 2)]);
+        assert!(!votes.disagree(1, 2));
+    }
+
+    #[test]
+    fn files_with_too_few_other_pairs_are_not_judged() {
+        let votes = FileVotes::new([(1, 2), (1, 7), (8, 2), (9, 2)]);
+        assert!(!votes.disagree(1, 2), "file 1 holds one other pair");
+        let votes = FileVotes::new([(1, 2)]);
+        assert!(!votes.disagree(1, 2));
+        assert!(!FileVotes::new([]).disagree(1, 2), "a pair not counted");
+    }
+}
+
+/// `push {r4, lr}`, then `kept`, `bl target` from `from` and
+/// `pop {r4, pc}`, little endian.
+fn wrapper_of(from: u64, kept: &[u32], target: u64) -> Vec<u8> {
+    let call_at = from + 4 * (1 + kept.len() as u64);
+    [
+        code(&[[0xe92d_4010].as_slice(), kept].concat()),
+        bl(call_at, target).to_vec(),
+        code(&[0xe8bd_8010]),
+    ]
+    .concat()
+}
+
+/// `words` as little-endian code.
+fn code(words: &[u32]) -> Vec<u8> {
+    words.iter().flat_map(|word| word.to_le_bytes()).collect()
+}
+
+/// A function whose work moved to a new callee pairs with the wrapper
+/// that kept its place, not with the new callee its code matches; the
+/// reverse, a callee inlined into its caller, pairs with the caller.
+#[test]
+fn moved_code_pairs_with_the_function_that_kept_its_place() {
+    const KEPT: [u32; 3] = [ADC, SBC, RSB];
+    const MOVED: [u32; 6] = [ADD, SUB, ORR, EOR, AND, MUL];
+    let whole = code(&[[0xe92d_4010].as_slice(), &KEPT, &MOVED, &[0xe8bd_8010]].concat());
+    let moved = code(&[MOVED.as_slice(), &[BX_LR]].concat());
+    // The moved work alone scores 0.55 against the whole, and the wrapper
+    // alone 0.36, so the similarity stage pairs the moved work.
+    let options = Options { use_names: UseNames::No, threshold: 0.5 };
+    let before = binary_of(&[("", &caller_of(0x100)), ("", &whole)]);
+    let after =
+        binary_of(&[("", &caller_of(0x100)), ("", &wrapper_of(0x100, &KEPT, 0x200)), ("", &moved)]);
+    let partner = |diff: &Diff, index: usize| {
+        diff.matched.iter().find(|pair| pair.before == index).map(|pair| pair.after)
+    };
+
+    let diff = diff_with(&before, &after, options);
+    assert_eq!(partner(&diff, 1), Some(1), "the wrapper");
+    assert_eq!(diff.added, [2], "the moved work is new");
+
+    let diff = diff_with(&after, &before, options);
+    assert_eq!(partner(&diff, 1), Some(1), "the caller that inlined it");
+    assert_eq!(diff.removed, [2], "the inlined callee is gone");
+}
+
+#[test]
+fn two_functions_read_as_one_hold_the_symbols_of_both() {
+    use super::moved::joined;
+    assert_eq!(joined(&[3, 1], &[2, 1]), [1, 1, 2, 3]);
+    assert_eq!(joined(&[], &[]), Vec::<Symbol>::new());
+}

@@ -12,6 +12,7 @@ use super::align::{
 use super::bounded::is_bounded_swap;
 use super::change::{classify_change, count_edits};
 use super::exits::exits_early;
+use super::files::{FileVotes, file_edges, source_files};
 use super::score::{
     CLOSE_SIMILARITY, CONSTANT_WEIGHT, Context, FEWEST_SHARED_EDGES, FLOW_RESCUE,
     LOWEST_CONTEXT_SIMILARITY, LOWEST_LAYOUT_SIMILARITY, LOWEST_MOVED_SIMILARITY,
@@ -184,13 +185,59 @@ impl Cascade<'_> {
                 lacks_context(pair.confidence, pair.score, place, &context)
             })
             .collect();
+        self.unpair(&undone);
+    }
+
+    /// Undo a weak pair whose two sides sit in guessed source files that the
+    /// other pairs join elsewhere.
+    ///
+    /// Across a kernel upgrade, a function deleted often pairs with one of
+    /// similar code from another source file, and no paired caller or callee
+    /// says otherwise, so [`Self::unpair_without_context`] cannot judge it.
+    /// The rest of each file can: [`source_files`] guesses the files of each
+    /// binary, and a pair is undone where both its files hold
+    /// [`FEWEST_FILE_VOTES`] or more other pairs, and none of those join the
+    /// two. Stronger reasons stand.
+    ///
+    /// Measured against the symbols and the source files in the DWARF, this
+    /// undid 374 wrong pairs and 14 right over the OpenWrt kernels, from 0.95%
+    /// wrong to 0.79%. The Ubuntu updates lost no right pair, and the cross
+    /// builds and the rank of every published fix stayed as before.
+    ///
+    /// See RESEARCH.md, entry 16 (BCD), which splits a binary into its
+    /// source files by the same edges.
+    ///
+    /// [`FEWEST_FILE_VOTES`]: super::files::FEWEST_FILE_VOTES
+    pub(super) fn unpair_across_files(&mut self) {
+        let layout = self.layout();
+        if layout.is_unanchored() {
+            return;
+        }
+        let left = source_files(&layout.left_order, &layout.left_place, file_edges(&self.left));
+        let right = source_files(&layout.right_order, &layout.right_place, file_edges(&self.right));
+        let votes =
+            FileVotes::new(self.matched.iter().map(|pair| (left[pair.before], right[pair.after])));
+        let undone: Vec<bool> = self
+            .matched
+            .iter()
+            .map(|pair| {
+                pair.confidence.is_weak() && votes.disagree(left[pair.before], right[pair.after])
+            })
+            .collect();
+        self.unpair(&undone);
+    }
+
+    /// Undo each pair that `undone` marks, by its index in
+    /// [`Self::matched`], and free both its functions.
+    pub(super) fn unpair(&mut self, undone: &[bool]) {
         let mut index = 0;
+        let (left_free, right_free) = (&mut self.left_free, &mut self.right_free);
         self.matched.retain(|pair| {
             let keep = !undone[index];
             index += 1;
             if !keep {
-                self.left_free[pair.before] = true;
-                self.right_free[pair.after] = true;
+                left_free[pair.before] = true;
+                right_free[pair.after] = true;
             }
             keep
         });
@@ -664,7 +711,7 @@ impl Cascade<'_> {
 
     /// The functions of each side in address order, and the longest chain
     /// of pairs that keep that order on both sides.
-    fn layout(&self) -> Layout {
+    pub(super) fn layout(&self) -> Layout {
         let order = |side: &[Prepared<'_>]| -> Vec<usize> {
             let mut order: Vec<usize> = (0..side.len()).collect();
             order.sort_by_key(|&index| side[index].function.address);

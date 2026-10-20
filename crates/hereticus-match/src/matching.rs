@@ -37,7 +37,9 @@ mod bounded;
 mod cascade;
 mod change;
 mod exits;
+mod files;
 mod lines;
+mod moved;
 mod near_miss;
 mod score;
 mod tables;
@@ -90,6 +92,13 @@ impl Confidence {
     /// how it would do without them can ask.
     pub fn used_name(self) -> bool {
         self == Self::SameName
+    }
+
+    /// Report whether this pairing rests on evidence that other pairs, or
+    /// the source files, can overrule: similar code, a place, callers or
+    /// references.
+    fn is_weak(self) -> bool {
+        matches!(self, Self::Similar | Self::SameLayout | Self::SameCallers | Self::SameReferences)
     }
 }
 
@@ -973,8 +982,11 @@ pub fn diff_reporting(
     cascade.pair_by_tables();
     // Again, now that more of the functions around each gap have paired.
     cascade.pair_close_code_in_gaps();
+    // Once the wrappers and callers that kept the old place have paired.
+    cascade.pair_moved_code();
     // Last, so that every pair that can serve as context has paired.
     cascade.unpair_without_context();
+    cascade.unpair_across_files();
     cascade.compare_callees();
     cascade.find_early_exits();
     cascade.compare_texts();
