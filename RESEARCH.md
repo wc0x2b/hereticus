@@ -2227,3 +2227,71 @@ addresses in a vtable of tinyxml2 for Thumb read as texts, and 31 right
 pairs were lost between clang and GCC. Nor do the texts pair the rest of
 a group in order where the two sides had different counts before the
 texts paired some of it.
+
+### Assemblage-DeepHistory: the wrong pairs a report shows
+
+Measured on 2026-10-20 over all 8,872 release pairs. `BENCH_WRONG=1`
+now prints, for each wrong pair, what became of the true partner of each
+side: `absent` where the other file has no function of that name,
+`free` with its size where that function is unpaired, and else the
+reason and score of the pair that took it. Of the 10,256 wrong pairs
+with a score below 1:
+
+| Kind | Wrong | Body moved to a new name | Both partners taken | Both partners free |
+|---|---|---|---|---|
+| Place | 4466 | 131 | 1797 | 1101 |
+| Similar code | 2487 | 1043 | 285 | 245 |
+| Callers | 1765 | 434 | 270 | 209 |
+| References | 1440 | 395 | 485 | 120 |
+
+- **Body moved to a new name.** A release moved the whole body of a
+  function into a new one and left a wrapper of a few instructions, as
+  cJSON 1.7.13 did with `cJSON_ParseWithOpts` and
+  `cJSON_ParseWithLengthOpts`, or the reverse. About 2,000 pairs, 20%.
+  Entry 17 should move these pairs to the wrapper, but its test cannot
+  see the move: it asks that the wrapper and the new function, read as
+  one, score 0.1 above the new function alone, and a wrapper adds nearly
+  nothing.
+- **Both partners taken by place.** Near twins in one gap pair one slot
+  off: template copies of protobuf and draco, and the `log_Z3_*` functions
+  of z3, which differ only in a constant that a new API function shifts
+  by one. See "C++ twins" in TODO.md.
+- **Both partners free, by place.** 676 of the 1,101 are one change of
+  nng 1.5.1, where `nng_ctx_getopt_int` became a wrapper of
+  `nng_ctx_get_int`, its twin in 1.3.2, copied into about 27 test files.
+- The rest are mostly a deleted function paired with a new one, while
+  the true partner of one side stays free.
+
+A thin wrapper now takes the pair, in `Cascade::thin_wrapper_of`: a free
+function of at most 3 instructions, at most a third the size of the old
+function, that calls the new function and no other, and that shares a
+paired caller with the old function, or where neither has a caller.
+
+| Set | Right | Wrong |
+|---|---|---|
+| Assemblage | +641 | −747 |
+| Assemblage, each pair once | +78 | −37 |
+| OpenWrt kernels | +13 | −7 |
+| Backports | +5 | −5 |
+| Ubuntu | −1 | +1 |
+
+The rank sum of the fixes over the backports went from 3124 to 3119, and
+the ranks of the published fixes stayed the same. Variants, over the
+kernels:
+
+| Variant | Right | Wrong |
+|---|---|---|
+| A third the size, no caller | −9 | +25 |
+| A third the size, shared caller | −54 | +15 |
+| At most 3 instructions, no caller | −2 | +5 |
+| At most 3 instructions, shared caller or no caller | +13 | −7 |
+
+The mirror, a thin old wrapper whose callee a release inlined into it,
+paired 55 fewer right and 37 more wrong over Assemblage, so it is out.
+
+Each pair once: nng links its library into about 100 tests, and many
+packages build one library into several files, so `research_bench
+--assemblage` now also counts each pair of names once per release. That
+leaves 1,574,557 right and 42,833 wrong, 2.65% wrong, where every copy
+counted gives 1.31%. The copies are mostly code that pairs right, so the
+copies made the set look better than it is.

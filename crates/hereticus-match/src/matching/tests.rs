@@ -1920,6 +1920,71 @@ fn close_code_that_moved_keeps_its_partner_over_its_place() {
     assert_eq!(diff.added, vec![1]);
 }
 
+/// A release that moves the whole body of a function into a new one, and
+/// leaves `wrapper` in its place: four anchors, then the old body or the
+/// wrapper at 0x100 and the new body at 0x500.
+fn moved_into_a_new_function(wrapper: &[u8]) -> (hereticus_image::Binary, hereticus_image::Binary) {
+    let anchors = [
+        arm(&[ADC, SBC, RSB, BX_LR]),
+        arm(&[MUL, MUL, ADC, BX_LR]),
+        arm(&[RSB, RSB, BX_LR]),
+        arm(&[SBC, SBC, SBC, BX_LR]),
+    ];
+    let body = arm(&[ADD, SUB, ORR, EOR, AND, BIC, ADC, SBC, RSB, BX_LR]);
+    let body_edited = arm(&[ADD, SUB, ORR, EOR, AND, BIC, ADC, SBC, MUL, BX_LR]);
+    let [first, second, third, fourth] = &anchors;
+    let before = binary_of(&[("", first), ("", &body), ("", second), ("", third), ("", fourth)]);
+    let after = binary_of(&[
+        ("", first),
+        ("", wrapper),
+        ("", second),
+        ("", third),
+        ("", fourth),
+        ("", &body_edited),
+    ]);
+    (before, after)
+}
+
+/// The old function pairs with the thin wrapper that took its place, and
+/// the function that took its body is new.
+#[test]
+fn a_function_pairs_with_the_thin_wrapper_left_in_its_place() {
+    let wrapper = [bl(0x100, 0x500).as_slice(), &arm(&[BX_LR])].concat();
+    let (before, after) = moved_into_a_new_function(&wrapper);
+
+    let diff =
+        diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+    let pair = diff.matched.iter().find(|pair| pair.before == 1).expect("paired");
+    assert_eq!((pair.after, pair.confidence), (1, Confidence::Similar));
+    assert_eq!(diff.added, vec![5]);
+}
+
+/// A wrapper that calls another function too is no thin wrapper, so the
+/// old function keeps the new body.
+#[test]
+fn a_wrapper_that_calls_two_functions_takes_no_pair() {
+    let wrapper = [bl(0x100, 0x500).as_slice(), &bl(0x104, 0x000), &arm(&[BX_LR])].concat();
+    let (before, after) = moved_into_a_new_function(&wrapper);
+
+    let diff =
+        diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+    let pair = diff.matched.iter().find(|pair| pair.before == 1).expect("paired");
+    assert_eq!((pair.after, pair.confidence), (5, Confidence::Similar));
+    assert_eq!(diff.added, vec![1]);
+}
+
+/// A wrapper as large as a third of the old function is no thin wrapper.
+#[test]
+fn a_large_wrapper_takes_no_pair() {
+    let wrapper = [bl(0x100, 0x500).as_slice(), &arm(&[ADD, SUB, ORR, BX_LR])].concat();
+    let (before, after) = moved_into_a_new_function(&wrapper);
+
+    let diff =
+        diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+    let pair = diff.matched.iter().find(|pair| pair.before == 1).expect("paired");
+    assert_eq!(pair.after, 5);
+}
+
 /// Two unrelated binaries pair nothing by place, though each function
 /// has one opposite it.
 #[test]

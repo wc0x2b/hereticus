@@ -4,10 +4,10 @@ expression: kernel_digest(&comparison)
 ---
 functions 22773 -> 22875
 matched 22642
-{No: 20464, Reordered: 10, Data: 5, InDetail: 1506, Yes: 657}
+{No: 20465, Reordered: 10, Data: 5, InDetail: 1506, Yes: 656}
 gone 131
 new 233
-fingerprint 0x857b5f78ce4b2466
+fingerprint 0x82ff13ed1381d327
 
 strongest changes:
 0x80006cac -> 0x80006cb4 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
@@ -16,7 +16,6 @@ strongest changes:
 0x8007d5ac -> 0x8007da30 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x801042b0 -> 0x801051b8 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 7, callees: 2, texts: 0 }
 0x801f36b0 -> 0x801f4c5c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 2, texts: 0 }
-0x802b9bf8 -> 0x802a845c score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x803064e0 -> 0x802f4c50 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x803064e8 -> 0x802f4c58 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
 0x803e2124 -> 0x803e7a94 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0 }
@@ -50,3 +49,4 @@ strongest changes:
 0x80376b6c -> 0x8037b884 score=0.995 edits=Edits { added: 31, removed: 28, edited: 10 } kinds=EditKinds { branches: 8, calls: 4, jumps: 8, memory: 2, other: 47, opaque: 0, constants: 1, callees: 0, texts: 0 }
 0x8048a748 -> 0x80490758 score=0.995 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 1, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 }
 0x802291ec -> 0x80217600 score=0.995 edits=Edits { added: 92, removed: 88, edited: 3 } kinds=EditKinds { branches: 21, calls: 20, jumps: 17, memory: 25, other: 100, opaque: 0, constants: 2, callees: 0, texts: 0 }
+0x805215a8 -> 0x805280a0 score=0.994 edits=Edits { added: 0, removed: 0, edited: 3 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 2, other: 1, opaque: 0, constants: 0, callees: 0, texts: 0 }
