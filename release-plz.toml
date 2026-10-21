@@ -7,6 +7,13 @@ changelog_update = false
 semver_check = true
 pr_labels = ["release"]
 
+# The entries of CHANGELOG.md are written by hand under "Unreleased". A
+# release adds only its heading above them, and no entry from the commits.
+[changelog]
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+"""
+
 [[package]]
 name = "hereticus-cli"
 git_tag_enable = true
