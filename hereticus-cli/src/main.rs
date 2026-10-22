@@ -76,7 +76,16 @@ struct Args {
     #[arg(long, conflicts_with_all = ["diff", "diff_all", "format", "exit_code"])]
     tui: bool,
 
-    /// Open a project that `--tui` saved, in place of two binaries.
+    /// Save the comparison as a project, then report as asked.
+    ///
+    /// The project holds the result of the match, so `--open` reports at once
+    /// with no second match. With `--tui`, a save in the browser offers this
+    /// path. With `--open`, it copies the project, with its marks.
+    #[arg(long, value_name = "PROJECT", conflicts_with = "functions")]
+    save: Option<PathBuf>,
+
+    /// Open a project that `--save` or `--tui` saved, in place of two
+    /// binaries.
     ///
     /// The project names the two binaries and holds the result of their
     /// match, so the report comes at once. Each other flag acts as it does
@@ -499,7 +508,7 @@ fn run(args: &Args) -> Result<bool, String> {
     let after_path = args.after.as_deref().ok_or("needs a later binary to compare with")?;
     let (before_file, after_file) = (read_file(before_path)?, read_file(after_path)?);
     // Only a project needs the hashes, and a large image takes a moment.
-    let hashes = (args.tui || opened.is_some())
+    let hashes = (args.tui || args.save.is_some() || opened.is_some())
         .then(|| [project::sha256_hex(&before_file), project::sha256_hex(&after_file)]);
     if let (Some(project), Some([before_hash, after_hash])) = (&opened, &hashes) {
         let [earlier, later] = &project.source.inputs;
@@ -537,7 +546,25 @@ fn run(args: &Args) -> Result<bool, String> {
         }
     };
 
-    let marks = saved.as_ref().map_or_else(Marks::default, |(_, saved)| Marks::new(&saved.marks));
+    let state = match saved {
+        Some(state) => Some(state),
+        None if args.tui || args.save.is_some() => {
+            let [before_hash, after_hash] = hashes.expect("a project hashes both files");
+            let inputs = [
+                project::Input::new(before_path, before_hash, &before)?,
+                project::Input::new(after_path, after_hash, &after)?,
+            ];
+            let saved = tui::Saved { browser: tui::Browser::from_args(args), marks: Vec::new() };
+            Some((Source::new(args, inputs), saved))
+        }
+        None => None,
+    };
+    if let (Some(path), Some((source, saved))) = (&args.save, &state) {
+        let saved = saved.clone();
+        Project::new(source.clone(), saved.browser, saved.marks, &diff).write(path)?;
+    }
+
+    let marks = state.as_ref().map_or_else(Marks::default, |(_, saved)| Marks::new(&saved.marks));
     let listing = Listing::from_args(args, &marks);
     // `--diff` asks about one function, so it answers and stops rather than
     // printing the whole report.
@@ -548,23 +575,11 @@ fn run(args: &Args) -> Result<bool, String> {
             .map(|()| false);
     }
     if args.tui {
-        let (source, saved) = match saved {
-            Some((source, saved)) => (source, saved),
-            None => {
-                let [before_hash, after_hash] = hashes.expect("the browser hashes both files");
-                let inputs = [
-                    project::Input::new(before_path, before_hash, &before)?,
-                    project::Input::new(after_path, after_hash, &after)?,
-                ];
-                let saved =
-                    tui::Saved { browser: tui::Browser::from_args(args), marks: Vec::new() };
-                (Source::new(args, inputs), saved)
-            }
-        };
+        let (source, saved) = state.expect("the browser has a project to save");
         let start = tui::Start {
             files: [file_name(before_path), file_name(after_path)],
             source,
-            project: args.open.clone(),
+            project: args.save.clone().or_else(|| args.open.clone()),
             saved,
         };
         return tui::run(&diff, &before, &after, start).map(|()| false);

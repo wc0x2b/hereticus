@@ -28,7 +28,8 @@ $ hereticus --diff array_max before.elf after.elf   # the diff of one function
 $ hereticus --diff-all before.elf after.elf         # the diff of every changed function
 $ hereticus --view il --diff array_max a.elf b.elf  # the diff as IL statements
 $ hereticus --tui before.elf after.elf              # browse, sort and open diffs in the terminal
-$ hereticus --tui --open project.hereticus.json     # go on where the last --tui stopped
+$ hereticus --save p.json before.elf after.elf      # keep the match, to open again at once
+$ hereticus --tui --open p.json                     # go on where the last save stopped
 $ hereticus --ignore-names before.elf after.elf     # match from the code alone
 $ hereticus --format markdown before.elf after.elf  # a table to paste into a document
 $ hereticus --format json before.elf after.elf      # for another tool to read

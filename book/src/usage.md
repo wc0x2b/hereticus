@@ -98,7 +98,8 @@ function has the name that the report gives it, as `sub_7630`. See
 
 `--tui` lets you browse the report, and open the diff of each function,
 in the terminal. There you can mark functions and save the comparison as a
-project, which `--open` opens again with no second match. See
+project, which `--open` opens again with no second match. `--save` makes a
+project from the command line. See
 [Terminal Interface](./tui.md) and
 [Marks and Projects](./tui.md#marks-and-projects).
 
@@ -292,7 +293,8 @@ Options:
       --diff <FUNCTION>        Show the instruction-level diff of one function, then stop
       --diff-all               Show the instruction-level diff of every changed function, then stop
       --tui                    Browse the report in the terminal, and change its order, its filters and the diff it shows without a second run
-      --open <PROJECT>         Open a project that `--tui` saved, in place of two binaries
+      --save <PROJECT>         Save the comparison as a project, then report as asked
+      --open <PROJECT>         Open a project that `--save` or `--tui` saved, in place of two binaries
       --functions              List the functions of one binary, then stop
       --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il]
       --ignore-names           Ignore symbol names, as though both binaries were stripped

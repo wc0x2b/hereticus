@@ -383,3 +383,70 @@ fn the_browser_of_a_project_needs_a_terminal() {
     let error = stderr(&scratch.open(&["--tui"]));
     assert!(error.contains("--tui needs a terminal"), "{error}");
 }
+
+#[test]
+fn a_saved_project_holds_what_a_project_by_hand_holds() {
+    let Some(scratch) = Scratch::new("save") else { return };
+    let saved = scratch.directory.join("saved.json");
+    let saving = hereticus()
+        .arg("--save")
+        .arg(&saved)
+        .arg(scratch.binary(0))
+        .arg(scratch.binary(1))
+        .output()
+        .expect("the tool runs");
+    let (_, fresh) = scratch.both(&[]);
+    assert_eq!(stdout(&saving), stdout(&fresh), "a save reports as a run does");
+    assert_eq!(saving.status.code(), Some(0), "{}", stderr(&saving));
+
+    let read = |path: &Path| -> Value {
+        serde_json::from_slice(&std::fs::read(path).expect("a project")).expect("JSON")
+    };
+    let project = read(&saved);
+    let by_hand = scratch.project_json();
+    for member in ["layout", "source", "browser", "marks", "diff"] {
+        assert_eq!(project[member], by_hand[member], "{member}");
+    }
+    assert_eq!(project["hereticus"], env!("CARGO_PKG_VERSION"));
+
+    let opened = hereticus().arg("--open").arg(&saved).output().expect("the tool runs");
+    assert_eq!(stdout(&opened), stdout(&fresh));
+}
+
+#[test]
+fn an_opened_project_saves_a_copy_with_its_marks() {
+    let Some(scratch) = marked_firmware() else { return };
+    let copy = scratch.directory.join("copy.json");
+    let output = scratch.open(&["--save", copy.to_str().expect("a path in UTF-8")]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let read = |path: &Path| -> Value {
+        serde_json::from_slice(&std::fs::read(path).expect("a project")).expect("JSON")
+    };
+    let (original, copied) = (read(&scratch.project()), read(&copy));
+    for member in ["source", "browser", "marks", "diff"] {
+        assert_eq!(copied[member], original[member], "{member}");
+    }
+}
+
+#[test]
+fn a_save_that_fails_stops_with_the_reason() {
+    let Some(scratch) = Scratch::new("save-fails") else { return };
+    let missing = scratch.directory.join("no such directory/p.json");
+    let output = hereticus()
+        .arg("--save")
+        .arg(&missing)
+        .arg(scratch.binary(0))
+        .arg(scratch.binary(1))
+        .output()
+        .expect("the tool runs");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("cannot save the project to"), "{}", stderr(&output));
+    assert!(output.stdout.is_empty(), "no report after a failed save");
+
+    let listing = hereticus()
+        .args(["--functions", "--save", "p.json"])
+        .arg(scratch.binary(0))
+        .output()
+        .expect("the tool runs");
+    assert!(stderr(&listing).contains("cannot be used with"), "{}", stderr(&listing));
+}

@@ -64,6 +64,17 @@ open diff. To go on where you stopped:
 $ hereticus --tui --open fw-v1.elf-fw-v2.elf.hereticus.json
 ```
 
+`--save` makes a project with no browser, as for a match that runs at night.
+It prints the report too:
+
+```console
+$ hereticus --save fw.hereticus.json fw-v1.elf fw-v2.elf
+$ hereticus --tui --open fw.hereticus.json
+```
+
+With `--tui`, `w` then offers that path. With `--open`, `--save` copies the
+project, with its marks.
+
 Without `--tui`, `--open` prints the report as a new run on the two
 binaries does, and takes the same flags: `--format`, `--sort`, `--diff`,
 `--diff-all` and the others. It does not take the flags that read the
