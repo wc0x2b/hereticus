@@ -1,11 +1,10 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
-assertion_line: 1070
 expression: "screen(&mut app, 120, 24)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
  Functions | Diff                                                                            firmware.o → firmware_v2.o 
-── Diff dispatch  il ┌Help────────────────────────────────────────────────────────────────────────┐ next/prev  esc back 
+── Diff dispatch  il ┌Help────────────────────────────────────────────────────────────────────────┐ev  m mark  esc back 
  c0 - flags = compare│Functions                             Diff                                  │                    █
  c4 - if (r1 == 2) go│  j / k      down / up                  j / k      down / up                │                    █
  c8 - flags = compare│  PgDn/PgUp  a page down / up           PgDn/PgUp  a page down / up         │                    █
@@ -21,9 +20,9 @@ expression: "screen(&mut app, 120, 24)"
  fc + r1 = load.32 [r│                                        reordered data same                 │                    ║
 100 + pc = r3 + r1   │Global                                  + added - removed ~ value           │                    ║
 104 + if (eq) r0 = r0│  ?          this help                                                      │                    ║
-108 + if (eq) r0 = r0│  q          quit, after a question                                         │                    ║
-10c + if (eq) r0 = r0│  wheel      scroll                                                         │                    ║
-110 + if (eq) r0 = r0│  click      select, again to open                                          │                    ║
+108 + if (eq) r0 = r0│  q          quit, after a question   Project                               │                    ║
+10c + if (eq) r0 = r0│  wheel      scroll                     m / M      mark and label / unmark  │                    ║
+110 + if (eq) r0 = r0│  click      select, again to open      w          save, to open again      │                    ║
 114   r0 = load.16 [r└───────────────────────────────────────────────────────────────esc/q/? close┘                    ║
 118   r2 = 0                                                                                                           ║
  sort added ↓  │  3 of 5 functions  │  view il  │  hidden retouched, data                         0 gone  0 new  ? help

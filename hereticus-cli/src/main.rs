@@ -551,7 +551,8 @@ fn run(args: &Args) -> Result<bool, String> {
                     project::Input::new(before_path, before_hash, &before)?,
                     project::Input::new(after_path, after_hash, &after)?,
                 ];
-                let saved = tui::Saved { browser: tui::Browser::from_args(args), marks: Vec::new() };
+                let saved =
+                    tui::Saved { browser: tui::Browser::from_args(args), marks: Vec::new() };
                 (Source::new(args, inputs), saved)
             }
         };

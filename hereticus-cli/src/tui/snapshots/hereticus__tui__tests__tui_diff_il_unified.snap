@@ -1,11 +1,10 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
-assertion_line: 1031
 expression: "screen(&mut app, 120, 16)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
  Functions | Diff                                                                            firmware.o → firmware_v2.o 
-── Diff dispatch  il  change 1 of 8 ─────────────────────────── ]/[ change  v asm/il  l layout  n/p next/prev  esc back 
+── Diff dispatch  il  change 1 of 8 ─────────────────── ]/[ change  v asm/il  l layout  n/p next/prev  m mark  esc back 
  c0 - flags = compare(r1, 2)                                                                                           █
  c4 - if (r1 == 2) goto $+0x48                                                                                         ║
  c8 - flags = compare(r1, 1)                                                                                           ║

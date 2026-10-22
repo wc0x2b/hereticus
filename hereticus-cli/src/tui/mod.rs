@@ -394,11 +394,14 @@ impl<'a> App<'a> {
         };
         // A mark on a row that the result does not hold is lost: only a
         // project edited by hand names one.
-        app.marks =
-            marks.into_iter().filter_map(|mark| Some((app.entry_of(mark.row)?, mark.label))).collect();
+        app.marks = marks
+            .into_iter()
+            .filter_map(|mark| Some((app.entry_of(mark.row)?, mark.label)))
+            .collect();
         app.refresh();
         let selected = browser.selected.and_then(|key| app.entry_of(key));
-        if let Some(position) = selected.and_then(|kept| app.rows.iter().position(|&row| row == kept))
+        if let Some(position) =
+            selected.and_then(|kept| app.rows.iter().position(|&row| row == kept))
         {
             app.table.select(Some(position));
             if let Some(scroll) = browser.opened {
@@ -1586,7 +1589,7 @@ mod tests {
     fn any_keys_keep_the_selection_inside_the_rows() {
         let Some((before, after)) = firmware() else { return };
         let diff = diff_with(&before, &after, Options::default());
-        const KEYS: [KeyCode; 23] = [
+        const KEYS: [KeyCode; 25] = [
             KeyCode::Up,
             KeyCode::Down,
             KeyCode::PageUp,
@@ -1610,6 +1613,9 @@ mod tests {
             KeyCode::Char('?'),
             KeyCode::Char('t'),
             KeyCode::Char('S'),
+            // Not `w`: `Enter` on its prompt would write a file.
+            KeyCode::Char('m'),
+            KeyCode::Char('M'),
         ];
         const MICE: [MouseEventKind; 3] = [
             MouseEventKind::ScrollDown,
@@ -1641,6 +1647,207 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Type `text` into the prompt or the filter.
+    fn type_text(app: &mut App<'_>, text: &str) {
+        let keys: Vec<KeyCode> = text.chars().map(KeyCode::Char).collect();
+        press(app, &keys);
+    }
+
+    /// Mark the selected row with `label`.
+    fn mark(app: &mut App<'_>, label: &str) {
+        press(app, &[KeyCode::Char('m')]);
+        type_text(app, label);
+        press(app, &[KeyCode::Enter]);
+    }
+
+    /// A directory of its own for each test that saves.
+    fn scratch(name: &str) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("hereticus-tui-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        directory
+    }
+
+    #[test]
+    fn a_marked_row_rises_to_the_top_with_its_label() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        press(&mut app, &[KeyCode::End]);
+        let chosen = app.selected_entry().expect("a row");
+        assert_ne!(app.rows[0], chosen, "the fixture lists more than one row");
+
+        mark(&mut app, "auth bypass");
+        assert_eq!(app.rows[0], chosen);
+        assert_eq!(app.selected_entry(), Some(chosen), "the selection follows the row");
+        assert_eq!(app.changes, Changes::Unsaved);
+        let shown = screen(&mut app, 120, 12);
+        assert!(shown.contains(&format!("{}{}", draw::MARK_SIGN, app.entries[chosen].label)));
+        assert!(shown.contains("[auth bypass]"), "{shown}");
+        assert!(shown.contains("1 marked"), "{shown}");
+        insta::assert_snapshot!("tui_marked", shown);
+
+        // Each order, and the other way, keeps it first.
+        for _ in 0..5 {
+            press(&mut app, &[KeyCode::Char('s')]);
+            assert_eq!(app.rows[0], chosen, "{:?}", app.sort);
+        }
+        press(&mut app, &[KeyCode::Char('S')]);
+        assert_eq!(app.rows[0], chosen);
+
+        // `m` again edits the label, and `Esc` keeps the old one.
+        press(&mut app, &[KeyCode::Char('m')]);
+        assert_eq!(app.prompt.as_ref().map(|prompt| prompt.text.as_str()), Some("auth bypass"));
+        type_text(&mut app, " again");
+        press(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.marks.get(&chosen).map(String::as_str), Some("auth bypass"));
+
+        press(&mut app, &[KeyCode::Char('M')]);
+        assert!(app.marks.is_empty());
+        let unmarked =
+            App::new(&diff, &before, &after, start_with(Browser { order: app.order, ..browser() }));
+        assert_eq!(app.rows, unmarked.rows, "an unmarked row goes back to its place");
+    }
+
+    #[test]
+    fn a_mark_outlasts_every_filter_but_the_names() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        // A pair that did not change, which the default scope hides.
+        let mut app = App::new(
+            &diff,
+            &before,
+            &after,
+            start_with(Browser { scope: Scope::All, ..browser() }),
+        );
+        let same = app
+            .rows
+            .iter()
+            .position(|&row| matches!(app.entries[row].entry, Entry::Pair(pair) if diff.matched[pair].changed == hereticus::matching::Changed::No))
+            .expect("a pair that did not change");
+        app.table.select(Some(same));
+        let chosen = app.selected_entry().expect("a row");
+        mark(&mut app, "");
+        press(&mut app, &[KeyCode::Char('a')]);
+        assert_eq!(app.scope, Scope::Changed);
+        assert_eq!(app.rows[0], chosen, "out of scope, but marked");
+        for _ in TOUCHED_KINDS {
+            press(&mut app, &[KeyCode::Char('t')]);
+            assert_eq!(app.rows.first(), Some(&chosen), "{:?}", app.touched);
+        }
+        press(&mut app, &[KeyCode::Char('t')]);
+
+        // The filter matches a label as it matches a name.
+        app.table.select(Some(0));
+        mark(&mut app, "zzqx");
+        press(&mut app, &[KeyCode::Char('/')]);
+        type_text(&mut app, "zzqx");
+        assert_eq!(app.rows, [chosen]);
+        press(&mut app, &[KeyCode::Char('#')]);
+        assert!(app.rows.is_empty(), "the filter still applies to a marked row");
+    }
+
+    #[test]
+    fn a_saved_project_opens_as_it_was_left() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        press(&mut app, &[KeyCode::Char('s'), KeyCode::Char('S'), KeyCode::End]);
+        mark(&mut app, "the fix");
+        press(&mut app, &[KeyCode::Down, KeyCode::Enter, KeyCode::Char('v'), KeyCode::Char('l')]);
+        press(&mut app, &[KeyCode::Char(']')]);
+        let left = app.saved();
+        assert!(left.browser.opened.is_some(), "a diff is open");
+
+        let path = scratch("save").join("firmware.hereticus.json");
+        press(&mut app, &[KeyCode::Char('w')]);
+        let offered = app.prompt.as_ref().map(|prompt| prompt.text.clone());
+        assert_eq!(offered.as_deref(), Some("firmware.o-firmware_v2.o.hereticus.json"));
+        let prompt = app.prompt.as_mut().expect("the prompt shows");
+        prompt.text = path.display().to_string();
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.notice, Some(format!("saved to {}", path.display())));
+        assert!(screen(&mut app, 160, 12).contains("saved to"));
+        assert_eq!(app.changes, Changes::Saved);
+        press(&mut app, &[KeyCode::Char('w')]);
+        let offered = app.prompt.as_ref().map(|prompt| prompt.text.clone());
+        assert_eq!(offered, Some(path.display().to_string()), "the next save offers the last path");
+        press(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.notice, None, "a key clears the notice");
+
+        let project = Project::read(&path).expect("the project reads back");
+        assert_eq!(project.source, source());
+        let json = |diff: &Diff| serde_json::to_string(diff).expect("a diff serializes");
+        assert_eq!(json(&project.diff), json(&diff), "the result reads back as it was");
+        let saved = Saved { browser: project.browser, marks: project.marks };
+        assert_eq!(saved.browser, left.browser);
+        assert_eq!(saved.marks, left.marks);
+
+        let start = Start { saved, project: Some(path.clone()), ..start() };
+        let mut opened = App::new(&project.diff, &before, &after, start);
+        let again = opened.saved();
+        assert_eq!(again.browser, left.browser);
+        assert_eq!(again.marks, left.marks);
+        assert_eq!(opened.rows, app.rows);
+        assert_eq!(screen(&mut opened, 120, 24), screen(&mut app, 120, 24));
+        std::fs::remove_dir_all(path.parent().expect("a directory")).expect("clean up");
+    }
+
+    #[test]
+    fn a_save_that_fails_says_why_and_keeps_the_marks_unsaved() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        mark(&mut app, "x");
+        press(&mut app, &[KeyCode::Char('w')]);
+        let missing = scratch("fail").join("no such directory/project.json");
+        app.prompt.as_mut().expect("the prompt shows").text = missing.display().to_string();
+        press(&mut app, &[KeyCode::Enter]);
+        let notice = app.notice.clone().expect("a notice");
+        assert!(notice.starts_with("cannot save the project to"), "{notice}");
+        assert_eq!(app.changes, Changes::Unsaved);
+        let partial = missing.with_extension("json.partial");
+        assert!(!partial.exists(), "no partial file is left");
+
+        press(&mut app, &[KeyCode::Char('w'), KeyCode::Char('q')]);
+        app.prompt.as_mut().expect("the prompt shows").text = "  ".to_string();
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.notice.as_deref(), Some("no path given, so nothing was saved"));
+        std::fs::remove_dir_all(missing.parent().and_then(Path::parent).expect("a directory"))
+            .expect("clean up");
+    }
+
+    #[test]
+    fn quitting_with_unsaved_marks_warns() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        press(&mut app, &[KeyCode::Char('q')]);
+        assert!(!screen(&mut app, 120, 12).contains("not saved"));
+        press(&mut app, &[KeyCode::Esc]);
+        mark(&mut app, "x");
+        press(&mut app, &[KeyCode::Char('q')]);
+        insta::assert_snapshot!("tui_quit_unsaved", screen(&mut app, 120, 12));
+        assert_eq!(press(&mut app, &[KeyCode::Enter]), Flow::Quit);
+    }
+
+    #[test]
+    fn the_prompt_holds_the_keys_and_the_mouse() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        press(&mut app, &[KeyCode::Char('m')]);
+        insta::assert_snapshot!("tui_label", screen(&mut app, 120, 12));
+        let selected = app.table.selected();
+        // `q`, `?` and `j` are letters of the label here.
+        type_text(&mut app, "q?j");
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 10, 10));
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(app.table.selected(), selected);
+        press(&mut app, &[KeyCode::Backspace, KeyCode::Enter]);
+        assert_eq!(app.marks.values().collect::<Vec<_>>(), ["q?"]);
     }
 
     fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {

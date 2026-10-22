@@ -96,16 +96,18 @@ impl Project<'static> {
             list.iter().all(|&index| index < binary.functions.len())
         };
         let diff = &self.diff;
-        let pairs_fit = diff.matched.iter().all(|pair| {
-            pair.before < before.functions.len() && pair.after < after.functions.len()
-        });
-        let misses_fit = |misses: &[hereticus::matching::NearMiss], own: &Binary, other: &Binary| {
-            misses.iter().all(|miss| {
-                miss.unmatched < own.functions.len()
-                    && miss.best.is_none_or(|best| best < other.functions.len())
-                    && miss.in_place.is_none_or(|place| place < other.functions.len())
-            })
-        };
+        let pairs_fit = diff
+            .matched
+            .iter()
+            .all(|pair| pair.before < before.functions.len() && pair.after < after.functions.len());
+        let misses_fit =
+            |misses: &[hereticus::matching::NearMiss], own: &Binary, other: &Binary| {
+                misses.iter().all(|miss| {
+                    miss.unmatched < own.functions.len()
+                        && miss.best.is_none_or(|best| best < other.functions.len())
+                        && miss.in_place.is_none_or(|place| place < other.functions.len())
+                })
+            };
         let fit = pairs_fit
             && fits(&diff.removed, before)
             && fits(&diff.added, after)

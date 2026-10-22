@@ -16,9 +16,7 @@ use super::theme::{
     ADDED, BLUE, DARK_GRAY, EDITED, Focus, GRAY, GRAY_FG, GREEN, ORANGE, PURPLE, REMOVED, YELLOW,
     pane_block, tone_of,
 };
-use super::{
-    App, Changes, Entry, Layout, Order, Overlay, Prompt, Purpose, Scope, Screen, fuzzy,
-};
+use super::{App, Changes, Entry, Layout, Order, Overlay, Prompt, Purpose, Scope, Screen, fuzzy};
 use crate::{
     DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_kind,
     name_of_view, unmatched_word,
@@ -30,7 +28,7 @@ const FILTER_HINTS: &str = "⏎ keep  esc clear";
 const PAIR_HINTS: &str = "]/[ change  v asm/il  l layout  n/p next/prev  m mark  esc back";
 
 /// What leads the name of a marked row.
-const MARK_SIGN: &str = "◆ ";
+pub(super) const MARK_SIGN: &str = "◆ ";
 
 impl App<'_> {
     pub(super) fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -137,11 +135,8 @@ impl App<'_> {
         let offset =
             visible_offset(self.table.offset(), self.table.selected(), shown, self.rows.len());
         *self.table.offset_mut() = offset;
-        let rows: Vec<Row<'static>> = self.rows[offset..]
-            .iter()
-            .take(shown)
-            .map(|&index| self.table_row(index))
-            .collect();
+        let rows: Vec<Row<'static>> =
+            self.rows[offset..].iter().take(shown).map(|&index| self.table_row(index)).collect();
         // The names and the kinds touched are the long cells.
         let widths = [
             Constraint::Fill(3),
@@ -509,8 +504,6 @@ fn draw_help(frame: &mut Frame<'_>) {
         help_entry("/", "filter the names, fuzzy"),
         Line::default(),
         help_header("Global"),
-        help_entry("m / M", "mark and label / unmark"),
-        help_entry("w", "save the project"),
         help_entry("?", "this help"),
         help_entry("q", "quit, after a question"),
         help_entry("wheel", "scroll"),
@@ -546,6 +539,10 @@ fn draw_help(frame: &mut Frame<'_>) {
             swatch("- removed ", REMOVED),
             swatch("~ value", EDITED),
         ]),
+        Line::default(),
+        help_header("Project"),
+        help_entry("m / M", "mark and label / unmark"),
+        help_entry("w", "save, to open again"),
     ];
 
     let height = u16::try_from(left.len().max(right.len()) + 2).unwrap_or(u16::MAX);
@@ -582,13 +579,14 @@ fn draw_text_box(frame: &mut Frame<'_>, area: Rect, block: Block<'_>, text: &str
 fn draw_quit(frame: &mut Frame<'_>, changes: Changes) {
     let [area] = Split::vertical([Constraint::Length(3)]).flex(Flex::Center).areas(frame.area());
     let [area] = Split::horizontal([Constraint::Percentage(60)]).flex(Flex::Center).areas(area);
-    let warning = match changes {
-        Changes::Saved => Span::raw(""),
-        Changes::Unsaved => Span::styled("The marks are not saved. ", Style::new().fg(YELLOW)),
+    let question = match changes {
+        Changes::Saved => Span::raw("Are you sure you want to exit? ("),
+        Changes::Unsaved => {
+            Span::styled("Marks are not saved. Exit anyway? (", Style::new().fg(YELLOW))
+        }
     };
     let question = Paragraph::new(Line::from(vec![
-        warning,
-        Span::raw("Are you sure you want to exit? ("),
+        question,
         Span::styled("Enter", Style::new().fg(GREEN)),
         Span::raw(" to confirm, "),
         Span::styled("Esc", Style::new().fg(GREEN)),
