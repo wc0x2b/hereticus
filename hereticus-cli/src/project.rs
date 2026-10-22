@@ -277,6 +277,46 @@ mod tests {
     }
 
     #[test]
+    fn a_source_reads_the_binaries_again_as_the_first_run_did() {
+        use clap::Parser;
+        let first = Args::parse_from([
+            "hereticus",
+            "--raw",
+            "--base",
+            "0x80000000",
+            "--arch",
+            "mips32-be",
+            "--unpack",
+            "kernel",
+            "--threshold",
+            "0.5",
+            "--ignore-names",
+            "a.bin",
+            "b.bin",
+        ]);
+        let source = Source::new(&first, [input(b"a"), input(b"b")]);
+        let text = serde_json::to_string(&source).expect("a source serializes");
+        assert!(text.contains(r#""arch":"mips32-be""#), "{text}");
+        let source: Source = serde_json::from_str(&text).expect("a source reads back");
+
+        let later = Args::parse_from(["hereticus", "--open", "p.json", "--sort", "removed"]);
+        let replayed = source.replay(&later);
+        assert!(replayed.raw && replayed.ignore_names);
+        assert_eq!(replayed.base, Some(0x8000_0000));
+        assert_eq!(replayed.arch, ArchName::Mips32Be);
+        assert_eq!(replayed.unpack, Some(PartName::Kernel));
+        assert_eq!(replayed.threshold, 0.5);
+        assert_eq!(replayed.before, Some(PathBuf::from("/tmp/a.elf")));
+        assert_eq!(replayed.sort, crate::Sort::Removed, "a flag of the report stays");
+
+        // A binary with a container format leaves `--raw` off.
+        let plain = Args::parse_from(["hereticus", "a.elf", "b.elf"]);
+        let replayed = Source::new(&plain, [input(b"a"), input(b"b")]).replay(&later);
+        assert!(!replayed.raw && !replayed.ignore_names);
+        assert_eq!((replayed.base, replayed.unpack), (None, None));
+    }
+
+    #[test]
     fn a_file_that_is_no_project_fails_to_open() {
         let directory = std::env::temp_dir().join(format!("hereticus-{}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("a directory");
