@@ -108,6 +108,7 @@ pub enum ConstantKind {
 
 /// What a stretch of bytes holds, as far as its words show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Contents {
     /// Instructions a compiler emitted.
     Code,

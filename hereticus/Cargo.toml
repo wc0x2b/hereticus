@@ -16,6 +16,9 @@ include = ["src/**", "LICENSE-*"]
 [lib]
 bench = false
 
+[features]
+serde = ["hereticus-match/serde", "hereticus-memory/serde"]
+
 [dependencies]
 hereticus-il = { path = "../crates/hereticus-il", version = "0.2.1" }
 hereticus-recovery = { path = "../crates/hereticus-recovery", version = "0.2.1" }

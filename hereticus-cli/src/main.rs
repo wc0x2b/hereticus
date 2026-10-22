@@ -5,6 +5,7 @@
 
 mod formats;
 mod functions;
+mod project;
 mod tui;
 
 /// The allocator of musl, the default target, serves the threads of the
@@ -28,21 +29,39 @@ use hereticus::matching::{
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use project::{Project, Source};
+use serde::{Deserialize, Serialize};
 use tabled::settings::object::{Columns, Rows};
 use tabled::settings::style::HorizontalLine;
 use tabled::settings::{Alignment, Color, Style};
 use tabled::{Table, Tabled};
 
 /// Compare two binaries and report the functions that changed.
-#[derive(Parser, Debug)]
+#[derive(Parser, Clone, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
     /// The earlier binary, or with `--functions` the one binary to list.
-    before: PathBuf,
+    #[arg(required_unless_present = "open")]
+    before: Option<PathBuf>,
 
     /// The later binary.
-    #[arg(required_unless_present = "functions")]
+    #[arg(required_unless_present_any = ["functions", "open"])]
     after: Option<PathBuf>,
+
+    /// Open a project that `--tui` saved, in place of two binaries.
+    ///
+    /// The project names the two binaries and holds the result of their
+    /// match, so the report comes at once. Each other flag acts as it does
+    /// on two binaries, and `--tui` opens the browser as it was saved.
+    #[arg(
+        long,
+        value_name = "PROJECT",
+        conflicts_with_all = [
+            "before", "after", "functions", "raw", "base", "unpack", "arch", "threshold",
+            "ignore_names",
+        ]
+    )]
+    open: Option<PathBuf>,
 
     /// Report every function, not only the ones that changed.
     #[arg(short, long)]
@@ -197,8 +216,9 @@ enum When {
     Never,
 }
 
-/// The architectures a raw image can be read as.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+/// The parts `--unpack` takes out of a firmware image.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum PartName {
     /// The decompressor that runs first.
     Stub,
@@ -225,7 +245,8 @@ fn unpack_part(
     Ok((found.bytes, found.load))
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum ArchName {
     /// ARM32, little endian, A32 instructions.
     Arm32,
@@ -243,6 +264,7 @@ enum ArchName {
     Mips16Be,
     /// x86-64.
     #[value(name = "x86-64")]
+    #[serde(rename = "x86-64")]
     X86_64,
     /// 32-bit x86.
     X86,
@@ -306,7 +328,8 @@ impl From<ViewName> for View {
 }
 
 /// How to order the changed functions in the report.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum Sort {
     /// Strongest match first, then closest score.
     Confidence,
@@ -462,17 +485,31 @@ fn run(args: &Args) -> Result<bool, String> {
         return Err("--tui needs a terminal on standard output".to_string());
     }
     if args.functions {
-        let binary = read_one(args, &args.before)?;
+        let path = args.before.as_deref().ok_or("needs a binary to list")?;
+        let binary = read_one(args, path)?;
         functions::print_functions(&binary, args.format);
         return Ok(false);
     }
+    let opened = args.open.as_deref().map(Project::read).transpose()?;
+    let replayed = opened.as_ref().map(|project| project.source.replay(args));
+    let args = replayed.as_ref().unwrap_or(args);
+    let before_path = args.before.as_deref().ok_or("needs an earlier binary to compare")?;
     let after_path = args.after.as_deref().ok_or("needs a later binary to compare with")?;
-    let (before_bytes, load) = unpack_part(read_file(&args.before)?, args.unpack, &args.before)?;
-    let (after_bytes, _) = unpack_part(read_file(after_path)?, args.unpack, after_path)?;
-    let before = read_binary(args, &before_bytes, load, &args.before, BaseCheck::Report)?;
+    let (before_file, after_file) = (read_file(before_path)?, read_file(after_path)?);
+    // Only a project needs the hashes, and a large image takes a moment.
+    let hashes = (args.tui || opened.is_some())
+        .then(|| [project::sha256_hex(&before_file), project::sha256_hex(&after_file)]);
+    if let (Some(project), Some([before_hash, after_hash])) = (&opened, &hashes) {
+        let [earlier, later] = &project.source.inputs;
+        earlier.check_hash(before_hash)?;
+        later.check_hash(after_hash)?;
+    }
+    let (before_bytes, load) = unpack_part(before_file, args.unpack, before_path)?;
+    let (after_bytes, _) = unpack_part(after_file, args.unpack, after_path)?;
+    let before = read_binary(args, &before_bytes, load, before_path, BaseCheck::Report)?;
     // Comparing a file with itself is a normal way to inspect one image,
     // and saying the same thing twice about it helps nobody.
-    let after_check = if after_path == args.before { BaseCheck::Skip } else { BaseCheck::Report };
+    let after_check = if after_path == before_path { BaseCheck::Skip } else { BaseCheck::Report };
     let after = read_binary(args, &after_bytes, load, after_path, after_check)?;
     warn_if_raw(args);
 
@@ -483,11 +520,20 @@ fn run(args: &Args) -> Result<bool, String> {
         ));
     }
 
-    let options = Options {
-        threshold: args.threshold,
-        use_names: if args.ignore_names { UseNames::No } else { UseNames::Yes },
+    let (diff, saved) = match opened {
+        Some(project) => {
+            project.check_binaries(&before, &after)?;
+            let saved = tui::Saved { browser: project.browser, marks: project.marks };
+            (project.diff.into_owned(), Some((project.source, saved)))
+        }
+        None => {
+            let options = Options {
+                threshold: args.threshold,
+                use_names: if args.ignore_names { UseNames::No } else { UseNames::Yes },
+            };
+            (diff_reporting(&before, &after, options, &Bar::new(args.progress)), None)
+        }
     };
-    let diff = diff_reporting(&before, &after, options, &Bar::new(args.progress));
 
     // `--diff` asks about one function, so it answers and stops rather than
     // printing the whole report.
@@ -497,19 +543,23 @@ fn run(args: &Args) -> Result<bool, String> {
             .map(|()| false);
     }
     if args.tui {
-        let file_name = |path: &Path| {
-            path.file_name().map_or_else(
-                || path.display().to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            )
+        let (source, saved) = match saved {
+            Some((source, saved)) => (source, saved),
+            None => {
+                let [before_hash, after_hash] = hashes.expect("the browser hashes both files");
+                let inputs = [
+                    project::Input::new(before_path, before_hash, &before)?,
+                    project::Input::new(after_path, after_hash, &after)?,
+                ];
+                let saved = tui::Saved { browser: tui::Browser::from_args(args), marks: Vec::new() };
+                (Source::new(args, inputs), saved)
+            }
         };
         let start = tui::Start {
-            files: [file_name(&args.before), file_name(after_path)],
-            sort: args.sort,
-            view: args.view.into(),
-            scope: if args.all { tui::Scope::All } else { tui::Scope::Changed },
-            hidden: Hidden::from_args(args),
-            near_miss_floor: args.near_miss,
+            files: [file_name(before_path), file_name(after_path)],
+            source,
+            project: args.open.clone(),
+            saved,
         };
         return tui::run(&diff, &before, &after, start).map(|()| false);
     }
@@ -565,6 +615,12 @@ fn run(args: &Args) -> Result<bool, String> {
     }
 
     Ok(diff.changed().count() > 0 || !diff.removed.is_empty() || !diff.added.is_empty())
+}
+
+/// The name of the file at `path`, as a title shows it.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
 }
 
 /// Whether to warn when the load address looks wrong for an image.
@@ -825,7 +881,7 @@ fn is_retouched(pair: &Match) -> bool {
 }
 
 /// Which quiet changes to list.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Hidden {
     retouched: Retouched,
     data: DataRegions,
@@ -842,7 +898,8 @@ impl Hidden {
 }
 
 /// Whether to list pairs that look like data.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum DataRegions {
     Show,
     Hide,
@@ -855,7 +912,8 @@ impl From<bool> for DataRegions {
 }
 
 /// Whether to list pairs that only differ in a constant.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum Retouched {
     Show,
     Hide,

@@ -16,16 +16,21 @@ use super::theme::{
     ADDED, BLUE, DARK_GRAY, EDITED, Focus, GRAY, GRAY_FG, GREEN, ORANGE, PURPLE, REMOVED, YELLOW,
     pane_block, tone_of,
 };
-use super::{App, Entry, Labeled, Layout, Order, Overlay, Scope, Screen, fuzzy};
+use super::{
+    App, Changes, Entry, Layout, Order, Overlay, Prompt, Purpose, Scope, Screen, fuzzy,
+};
 use crate::{
     DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_kind,
     name_of_view, unmatched_word,
 };
 
 /// The keys of each pane, at the right of its frame.
-const TABLE_HINTS: &str = "⏎ open  s/S sort  t touched  / filter";
+const TABLE_HINTS: &str = "⏎ open  s/S sort  t touched  / filter  m mark  w save";
 const FILTER_HINTS: &str = "⏎ keep  esc clear";
-const PAIR_HINTS: &str = "]/[ change  v asm/il  l layout  n/p next/prev  esc back";
+const PAIR_HINTS: &str = "]/[ change  v asm/il  l layout  n/p next/prev  m mark  esc back";
+
+/// What leads the name of a marked row.
+const MARK_SIGN: &str = "◆ ";
 
 impl App<'_> {
     pub(super) fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -50,8 +55,28 @@ impl App<'_> {
         match self.overlay {
             Overlay::None => {}
             Overlay::Help => draw_help(frame),
-            Overlay::Quit => draw_quit(frame),
+            Overlay::Quit => draw_quit(frame, self.changes),
         }
+        if let Some(prompt) = &self.prompt {
+            self.draw_prompt(frame, prompt);
+        }
+    }
+
+    /// The box a path or a label is typed in, with the cursor at its end.
+    fn draw_prompt(&self, frame: &mut Frame<'_>, prompt: &Prompt) {
+        let title = match prompt.purpose {
+            Purpose::Save => "Save the project to".to_string(),
+            Purpose::Label(index) => format!("Label of {}", self.entries[index].label),
+        };
+        let area = popup_area(frame.area(), 72, 3);
+        let block = Block::bordered()
+            .border_style(Style::new().fg(ORANGE))
+            .title(Span::styled(title, Style::new().fg(YELLOW).bold()))
+            .title_bottom(
+                Line::styled("⏎ keep  esc cancel", Style::new().fg(GRAY_FG)).right_aligned(),
+            );
+        frame.render_widget(Clear, area);
+        draw_text_box(frame, area, block, &prompt.text);
     }
 
     /// The name and version over the tabs of the two screens, with the two
@@ -115,7 +140,7 @@ impl App<'_> {
         let rows: Vec<Row<'static>> = self.rows[offset..]
             .iter()
             .take(shown)
-            .map(|&index| self.table_row(&self.entries[index]))
+            .map(|&index| self.table_row(index))
             .collect();
         // The names and the kinds touched are the long cells.
         let widths = [
@@ -147,8 +172,18 @@ impl App<'_> {
     /// One row of the table. A function gone or new names its closest
     /// candidate where it has one, in the column of what a pair touched, and
     /// the function in its place, in the column of how a pair matched.
-    fn table_row(&self, labeled: &Labeled) -> Row<'static> {
-        let name = Cell::from(highlighted(&labeled.label, &self.filter));
+    fn table_row(&self, index: usize) -> Row<'static> {
+        let labeled = &self.entries[index];
+        let mut name = highlighted(&labeled.label, &self.filter);
+        if let Some(label) = self.marks.get(&index) {
+            let style = Style::new().fg(YELLOW).bold();
+            name.spans.insert(0, Span::styled(MARK_SIGN, style));
+            if !label.is_empty() {
+                name.spans.push(Span::raw("  "));
+                name.spans.extend(highlighted(&format!("[{label}]"), &self.filter).spans);
+            }
+        }
+        let name = Cell::from(name);
         let (word, color, closest_in) = match labeled.entry {
             Entry::Pair(index) => {
                 let pair = &self.diff.matched[index];
@@ -191,17 +226,7 @@ impl App<'_> {
         let block = Block::bordered()
             .border_style(Style::new().fg(ORANGE))
             .title(Span::styled("Filter", Style::new().fg(YELLOW).bold()));
-        let width = usize::from(area.width.saturating_sub(2));
-        let length = self.filter.chars().count();
-        // Keep the end of a long filter, where the cursor is, in sight.
-        let shift = length.saturating_sub(width.saturating_sub(1));
-        let shown: String = self.filter.chars().skip(shift).collect();
-        frame.render_widget(Paragraph::new(shown.as_str()).block(block), area);
-        let column = u16::try_from(length - shift).unwrap_or(u16::MAX);
-        if area.width > 2 && area.height > 2 {
-            frame
-                .set_cursor_position((area.x.saturating_add(1).saturating_add(column), area.y + 1));
-        }
+        draw_text_box(frame, area, block, &self.filter);
     }
 
     fn draw_pair(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -273,6 +298,16 @@ impl App<'_> {
     fn draw_status(&self, frame: &mut Frame<'_>, area: Rect) {
         let separator = || Span::styled("  │  ", Style::new().fg(GRAY_FG));
         let label = |text: &'static str| Span::styled(text, Style::new().fg(GRAY_FG));
+        // A notice, as the path of a save, can be long, so it shows alone
+        // until the next key.
+        if let Some(notice) = &self.notice {
+            let line = Line::from(vec![
+                Span::raw(" "),
+                Span::styled(notice.as_str(), Style::new().fg(YELLOW).bold()),
+            ]);
+            frame.render_widget(Paragraph::new(line).style(Style::new().bg(DARK_GRAY)), area);
+            return;
+        }
         let mut spans = vec![
             Span::raw(" "),
             label("sort "),
@@ -290,6 +325,12 @@ impl App<'_> {
                 Style::new().fg(GREEN),
             ),
         ];
+        if !self.marks.is_empty() {
+            spans.extend([
+                separator(),
+                Span::styled(format!("{} marked", self.marks.len()), Style::new().fg(YELLOW)),
+            ]);
+        }
         if let Some(kind) = self.touched {
             spans.extend([
                 separator(),
@@ -468,6 +509,8 @@ fn draw_help(frame: &mut Frame<'_>) {
         help_entry("/", "filter the names, fuzzy"),
         Line::default(),
         help_header("Global"),
+        help_entry("m / M", "mark and label / unmark"),
+        help_entry("w", "save the project"),
         help_entry("?", "this help"),
         help_entry("q", "quit, after a question"),
         help_entry("wheel", "scroll"),
@@ -520,11 +563,31 @@ fn draw_help(frame: &mut Frame<'_>) {
     frame.render_widget(Paragraph::new(right), right_area);
 }
 
-/// The question whether to quit, over the middle of the screen.
-fn draw_quit(frame: &mut Frame<'_>) {
+/// A line of typed text in `block`, which keeps the end of a long text,
+/// where the cursor is, in sight.
+fn draw_text_box(frame: &mut Frame<'_>, area: Rect, block: Block<'_>, text: &str) {
+    let width = usize::from(area.width.saturating_sub(2));
+    let length = text.chars().count();
+    let shift = length.saturating_sub(width.saturating_sub(1));
+    let shown: String = text.chars().skip(shift).collect();
+    frame.render_widget(Paragraph::new(shown.as_str()).block(block), area);
+    let column = u16::try_from(length - shift).unwrap_or(u16::MAX);
+    if area.width > 2 && area.height > 2 {
+        frame.set_cursor_position((area.x.saturating_add(1).saturating_add(column), area.y + 1));
+    }
+}
+
+/// The question whether to quit, over the middle of the screen. It warns
+/// of marks that no save kept.
+fn draw_quit(frame: &mut Frame<'_>, changes: Changes) {
     let [area] = Split::vertical([Constraint::Length(3)]).flex(Flex::Center).areas(frame.area());
     let [area] = Split::horizontal([Constraint::Percentage(60)]).flex(Flex::Center).areas(area);
+    let warning = match changes {
+        Changes::Saved => Span::raw(""),
+        Changes::Unsaved => Span::styled("The marks are not saved. ", Style::new().fg(YELLOW)),
+    };
     let question = Paragraph::new(Line::from(vec![
+        warning,
         Span::raw("Are you sure you want to exit? ("),
         Span::styled("Enter", Style::new().fg(GREEN)),
         Span::raw(" to confirm, "),

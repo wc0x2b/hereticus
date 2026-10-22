@@ -1090,7 +1090,9 @@ dependencies = [
  "libc",
  "mimalloc",
  "ratatui",
+ "serde",
  "serde_json",
+ "sha2",
  "tabled",
 ]
 
@@ -1135,6 +1137,7 @@ dependencies = [
  "hereticus-recovery",
  "hereticus-view",
  "rayon",
+ "serde",
  "smallvec",
 ]
 
@@ -1143,6 +1146,7 @@ name = "hereticus-memory"
 version = "0.2.1"
 dependencies = [
  "bolero",
+ "serde",
 ]
 
 [[package]]

@@ -54,6 +54,7 @@ use score::{CLOSE_SIMILARITY, FLOW_DEPTH, LARGEST_PLAIN_CONSTANT, sorted_shared}
 /// The order of the variants is the order of the cascade, so a stronger reason
 /// sorts before a weaker one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Confidence {
     /// Two stubs of one import, as the linker names it. See
     /// `Cascade::pair_stubs_by_import`.
@@ -108,6 +109,7 @@ impl Confidence {
 
 /// One pair of functions, and what happened to it.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Match {
     /// Index into the functions of the first binary.
     pub before: usize,
@@ -158,6 +160,7 @@ pub struct Match {
 /// difference amounts to. A function at 0.98 that rewrote forty instructions
 /// deserves a reader's attention before one at 0.98 that rewrote one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Edits {
     /// Instructions the later build has and the earlier one does not.
     pub added: usize,
@@ -194,6 +197,7 @@ impl Edits {
 ///
 /// See RESEARCH.md, A12.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EditKind {
     /// A conditional branch: a gate the code did not have, or lost.
     Branch,
@@ -235,6 +239,7 @@ pub enum EditKind {
 /// constant on purpose, so an instruction whose value changed stays in place
 /// and is never added, removed or rewritten.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EditKinds {
     /// Conditional branches added, removed or rewritten.
     pub branches: usize,
@@ -342,6 +347,7 @@ fn kind_of(insn: &NormInsn) -> EditKind {
 ///
 /// See RESEARCH.md, A12.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Changed {
     /// Nothing a reader would call a change.
     ///
@@ -399,6 +405,7 @@ pub enum Changed {
 ///
 /// See RESEARCH.md, A14.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NearMiss {
     /// The unmatched function this candidate is for, in its own binary.
     pub unmatched: usize,
@@ -418,6 +425,7 @@ pub struct NearMiss {
 
 /// The result of comparing two binaries.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Diff {
     /// Pairs of functions, strongest reason first.
     pub matched: Vec<Match>,

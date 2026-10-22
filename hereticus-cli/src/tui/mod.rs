@@ -1,14 +1,18 @@
 //! Browse a comparison in the terminal.
 //!
 //! The comparison runs once. The view then sorts, filters and opens the
-//! pairs as the reader asks, with no second run. [`App`] holds the state and
-//! reads the keys, apart from the drawing, so a test can drive it with no
-//! terminal.
+//! pairs as the reader asks, with no second run. A reader can mark the
+//! functions that matter, name them, and save it all as a project to open
+//! again later: see [`crate::project`]. [`App`] holds the state and reads the
+//! keys, apart from the drawing, so a test can drive it with no terminal.
 
 mod draw;
 mod fuzzy;
 mod rows;
 mod theme;
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use hereticus::address::Contents;
 use hereticus::matching::{
@@ -23,29 +27,101 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
+use serde::{Deserialize, Serialize};
 
 use rows::{Addresses, change_starts, side_by_side, unified};
 
+use crate::project::{Project, Source};
 use crate::{
-    DataRegions, Hidden, Retouched, Sort, is_interesting, is_shown_unmatched, name_of, rank,
+    Args, DataRegions, Hidden, Retouched, Sort, is_interesting, is_shown_unmatched, name_of, rank,
 };
 
-/// How the browser starts, from the flags of the command line.
+/// How the browser starts.
 #[derive(Clone, Debug)]
 pub struct Start {
     /// The names of the two files, as the title shows them.
     pub files: [String; 2],
+    /// How the two binaries were read, for a project to save.
+    pub source: Source,
+    /// The project the browser opened, where it opened one.
+    pub project: Option<PathBuf>,
+    pub saved: Saved,
+}
+
+/// What a project keeps of the browser.
+#[derive(Clone, Debug)]
+pub struct Saved {
+    pub browser: Browser,
+    pub marks: Vec<Mark>,
+}
+
+/// What the browser shows: each thing that a key changes, so a project
+/// opens as the reader left it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Browser {
     pub sort: Sort,
-    pub view: View,
+    pub order: Order,
+    /// Lists only the pairs whose edit touched this kind of code.
+    pub touched: Option<EditKind>,
     pub scope: Scope,
     pub hidden: Hidden,
     /// The lowest score at which a function gone or new names its closest
     /// candidate, as `--near-miss` sets.
     pub near_miss_floor: f64,
+    pub view: View,
+    pub layout: Layout,
+    /// See [`App::filter`].
+    pub filter: String,
+    pub selected: Option<Key>,
+    /// The first row of the diff of the selected row, where it is open.
+    pub opened: Option<usize>,
+}
+
+impl Browser {
+    /// The browser as the flags of the command line start it.
+    pub fn from_args(args: &Args) -> Self {
+        Self {
+            sort: args.sort,
+            order: Order::Descending,
+            touched: None,
+            scope: if args.all { Scope::All } else { Scope::Changed },
+            hidden: Hidden::from_args(args),
+            near_miss_floor: args.near_miss,
+            view: args.view.into(),
+            layout: Layout::SideBySide,
+            filter: String::new(),
+            selected: None,
+            opened: None,
+        }
+    }
+}
+
+/// A row of the table, by what it stands for, as a project names it.
+///
+/// A pair goes by its two functions, not by its place in the list of pairs,
+/// so a reader of the file can follow it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Key {
+    Pair { before: usize, after: usize },
+    Gone { function: usize },
+    New { function: usize },
+}
+
+/// A function the reader marked, with the label the reader gave it.
+///
+/// Marked rows list first, whatever the order, the scope or the kind
+/// touched. The label shows beside the name, and the filter matches it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mark {
+    pub row: Key,
+    /// May be empty: a mark needs no name.
+    pub label: String,
 }
 
 /// Which pairs the table lists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Scope {
     /// The pairs that changed, less the quiet changes [`Hidden`] holds back.
     Changed,
@@ -54,8 +130,9 @@ pub enum Scope {
 }
 
 /// How the diff of a pair is laid out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Layout {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Layout {
     /// The earlier function on the left, the later one on the right.
     SideBySide,
     /// One column, as a patch reads.
@@ -132,8 +209,9 @@ impl Opened {
 }
 
 /// Which way the sort runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Order {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Order {
     /// As `--sort` names it: the most first, or the strongest match.
     Descending,
     /// The other way.
@@ -180,6 +258,31 @@ enum Overlay {
     Quit,
 }
 
+/// A line of text the reader types, over the screen, and what it is for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Prompt {
+    purpose: Purpose,
+    text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Purpose {
+    /// The path to save the project to.
+    Save,
+    /// The label of a mark on a row, by its index in `entries`.
+    Label(usize),
+}
+
+/// Whether the marks hold a change that no save has kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Changes {
+    Saved,
+    Unsaved,
+}
+
+/// The name a project takes where the reader does not give one.
+const PROJECT_EXTENSION: &str = "hereticus.json";
+
 /// Whether the browser goes on after a key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Flow {
@@ -194,6 +297,9 @@ pub struct App<'a> {
     before: &'a Binary,
     after: &'a Binary,
     files: [String; 2],
+    source: Source,
+    /// Where the project was opened from or last saved to.
+    project: Option<PathBuf>,
     sort: Sort,
     order: Order,
     /// Lists only the pairs whose edit touched this kind of code.
@@ -214,6 +320,13 @@ pub struct App<'a> {
     table: TableState,
     screen: Screen,
     overlay: Overlay,
+    /// The label of each marked row, by its index in `entries`.
+    marks: BTreeMap<usize, String>,
+    changes: Changes,
+    /// Holds the keys while it shows.
+    prompt: Option<Prompt>,
+    /// What the last save did, until the next key.
+    notice: Option<String>,
     /// The height of the last drawn list, which a page moves by.
     page: usize,
     /// Where the last draw put what a click acts on.
@@ -249,31 +362,178 @@ impl<'a> App<'a> {
             label: name_of(after, function),
         });
         let entries = pairs.chain(gone).chain(new).collect();
+        let Saved { browser, marks } = start.saved;
         let mut app = Self {
             diff,
             paired: diff.paired_labels(before, after),
             before,
             after,
             files: start.files,
-            sort: start.sort,
-            order: Order::Descending,
-            touched: None,
-            scope: start.scope,
-            hidden: start.hidden,
-            near_miss_floor: start.near_miss_floor,
-            view: start.view,
-            layout: Layout::SideBySide,
-            filter: String::new(),
+            source: start.source,
+            project: start.project,
+            sort: browser.sort,
+            order: browser.order,
+            touched: browser.touched,
+            scope: browser.scope,
+            hidden: browser.hidden,
+            near_miss_floor: browser.near_miss_floor,
+            view: browser.view,
+            layout: browser.layout,
+            filter: browser.filter,
             entries,
             rows: Vec::new(),
             table: TableState::default(),
             screen: Screen::Table,
             overlay: Overlay::None,
+            marks: BTreeMap::new(),
+            changes: Changes::Saved,
+            prompt: None,
+            notice: None,
             page: 10,
             regions: Regions::default(),
         };
+        // A mark on a row that the result does not hold is lost: only a
+        // project edited by hand names one.
+        app.marks =
+            marks.into_iter().filter_map(|mark| Some((app.entry_of(mark.row)?, mark.label))).collect();
         app.refresh();
+        let selected = browser.selected.and_then(|key| app.entry_of(key));
+        if let Some(position) = selected.and_then(|kept| app.rows.iter().position(|&row| row == kept))
+        {
+            app.table.select(Some(position));
+            if let Some(scroll) = browser.opened {
+                app.open_at(scroll);
+            }
+        }
         app
+    }
+
+    /// The key a project names the row `index` of `entries` by.
+    fn key_of(&self, index: usize) -> Key {
+        match self.entries[index].entry {
+            Entry::Pair(pair) => {
+                let pair = &self.diff.matched[pair];
+                Key::Pair { before: pair.before, after: pair.after }
+            }
+            Entry::Gone { function, .. } => Key::Gone { function },
+            Entry::New { function, .. } => Key::New { function },
+        }
+    }
+
+    /// The index in `entries` of the row that `key` names.
+    fn entry_of(&self, key: Key) -> Option<usize> {
+        (0..self.entries.len()).find(|&index| self.key_of(index) == key)
+    }
+
+    /// What a project keeps of the browser as it is now.
+    fn saved(&self) -> Saved {
+        let browser = Browser {
+            sort: self.sort,
+            order: self.order,
+            touched: self.touched,
+            scope: self.scope,
+            hidden: self.hidden,
+            near_miss_floor: self.near_miss_floor,
+            view: self.view,
+            layout: self.layout,
+            filter: self.filter.clone(),
+            selected: self.selected_entry().map(|index| self.key_of(index)),
+            opened: match &self.screen {
+                Screen::Pair(opened) => Some(opened.scroll),
+                Screen::Table | Screen::Filter => None,
+            },
+        };
+        let marks = self
+            .marks
+            .iter()
+            .map(|(&index, label)| Mark { row: self.key_of(index), label: label.clone() })
+            .collect();
+        Saved { browser, marks }
+    }
+
+    /// Save the project to `path`, and open it from there from now on.
+    fn save(&mut self, path: &Path) -> Result<(), String> {
+        let Saved { browser, marks } = self.saved();
+        Project::new(self.source.clone(), browser, marks, self.diff).write(path)?;
+        self.project = Some(path.to_path_buf());
+        self.changes = Changes::Saved;
+        Ok(())
+    }
+
+    /// The path a save offers first: the last one, or one named for the two
+    /// files.
+    fn save_path(&self) -> String {
+        match &self.project {
+            Some(path) => path.display().to_string(),
+            None => {
+                let [before, after] = &self.files;
+                format!("{before}-{after}.{PROJECT_EXTENSION}")
+            }
+        }
+    }
+
+    /// Ask for the label of the selected row, with its present label to
+    /// edit.
+    fn ask_label(&mut self) {
+        let Some(index) = self.selected_entry() else { return };
+        let text = self.marks.get(&index).cloned().unwrap_or_default();
+        self.prompt = Some(Prompt { purpose: Purpose::Label(index), text });
+    }
+
+    /// Take the mark off the selected row.
+    fn unmark(&mut self) {
+        let Some(index) = self.selected_entry() else { return };
+        if self.marks.remove(&index).is_some() {
+            self.changes = Changes::Unsaved;
+            self.refresh();
+        }
+    }
+
+    /// Type into the prompt. `Enter` acts on the text, and `Esc` goes back.
+    fn handle_prompt(&mut self, code: KeyCode) {
+        let Some(prompt) = &mut self.prompt else { return };
+        match code {
+            KeyCode::Esc => self.prompt = None,
+            KeyCode::Backspace => {
+                prompt.text.pop();
+            }
+            KeyCode::Char(character) => prompt.text.push(character),
+            KeyCode::Enter => {
+                let Some(Prompt { purpose, text }) = self.prompt.take() else { return };
+                match purpose {
+                    Purpose::Save if text.trim().is_empty() => {
+                        self.notice = Some("no path given, so nothing was saved".to_string());
+                    }
+                    Purpose::Save => {
+                        let path = PathBuf::from(text.trim());
+                        self.notice = Some(match self.save(&path) {
+                            Ok(()) => format!("saved to {}", path.display()),
+                            Err(error) => error,
+                        });
+                    }
+                    Purpose::Label(index) => {
+                        self.marks.insert(index, text.trim().to_string());
+                        self.changes = Changes::Unsaved;
+                        self.refresh();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Act on a key that each screen but the filter shares, and report
+    /// whether it was one.
+    fn handle_shared(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Char('m') => self.ask_label(),
+            KeyCode::Char('M') => self.unmark(),
+            KeyCode::Char('w') => {
+                self.prompt = Some(Prompt { purpose: Purpose::Save, text: self.save_path() });
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// Report whether the table lists `entry` with the present scope and
@@ -300,9 +560,15 @@ impl<'a> App<'a> {
     /// selected row stays selected where it is still listed.
     fn refresh(&mut self) {
         let kept = self.selected_entry();
+        let matches = |text: &str| fuzzy::positions(&self.filter, text).is_some();
         let mut rows: Vec<usize> = (0..self.entries.len())
-            .filter(|&index| self.is_listed(self.entries[index].entry))
-            .filter(|&index| fuzzy::positions(&self.filter, &self.entries[index].label).is_some())
+            .filter(|index| {
+                self.marks.contains_key(index) || self.is_listed(self.entries[*index].entry)
+            })
+            .filter(|index| {
+                matches(&self.entries[*index].label)
+                    || self.marks.get(index).is_some_and(|label| matches(label))
+            })
             .collect();
         // The library lists the pairs strongest first, which is the order
         // `confidence` names. The functions gone and new keep their place
@@ -322,6 +588,9 @@ impl<'a> App<'a> {
         if self.order == Order::Ascending {
             rows[..pairs].reverse();
         }
+        // A stable sort keeps the order above within the marked rows and
+        // within the rest.
+        rows.sort_by_key(|row| !self.marks.contains_key(row));
         self.rows = rows;
         let position = kept.and_then(|kept| self.rows.iter().position(|&row| row == kept));
         self.table.select(match (position, self.rows.is_empty()) {
@@ -504,6 +773,11 @@ impl<'a> App<'a> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Flow::Quit;
         }
+        self.notice = None;
+        if self.prompt.is_some() {
+            self.handle_prompt(key.code);
+            return Flow::Continue;
+        }
         match (self.overlay, key.code) {
             (Overlay::Quit, KeyCode::Enter) => return Flow::Quit,
             (Overlay::Help, KeyCode::Esc | KeyCode::Char('q' | '?'))
@@ -532,7 +806,7 @@ impl<'a> App<'a> {
     /// tab changes the screen, and a click on a row selects it, or opens it
     /// where it is selected already.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if self.overlay != Overlay::None {
+        if self.overlay != Overlay::None || self.prompt.is_some() {
             return;
         }
         let step = match mouse.kind {
@@ -573,6 +847,9 @@ impl<'a> App<'a> {
     }
 
     fn handle_table(&mut self, code: KeyCode) -> Flow {
+        if self.handle_shared(code) {
+            return Flow::Continue;
+        }
         let page = self.page as isize;
         match code {
             KeyCode::Char('q') | KeyCode::Esc => self.overlay = Overlay::Quit,
@@ -643,6 +920,9 @@ impl<'a> App<'a> {
     }
 
     fn handle_pair(&mut self, code: KeyCode) -> Flow {
+        if self.handle_shared(code) {
+            return Flow::Continue;
+        }
         let page = self.page as isize;
         let scroll = |app: &mut Self, step: isize| app.scroll_by(step);
         match code {
@@ -770,15 +1050,49 @@ mod tests {
         Some((read("O0")?, read("O2")?))
     }
 
-    fn start() -> Start {
-        Start {
-            files: ["firmware.o".to_string(), "firmware_v2.o".to_string()],
+    fn browser() -> Browser {
+        Browser {
             sort: Sort::Added,
-            view: View::Assembly,
+            order: Order::Descending,
+            touched: None,
             scope: Scope::Changed,
             hidden: Hidden { retouched: Retouched::Hide, data: DataRegions::Hide },
             near_miss_floor: 0.25,
+            view: View::Assembly,
+            layout: Layout::SideBySide,
+            filter: String::new(),
+            selected: None,
+            opened: None,
         }
+    }
+
+    /// A source that names no real file: a test that saves reads the
+    /// project back with no check of the binaries.
+    fn source() -> Source {
+        let input = |name: &str| crate::project::Input {
+            path: PathBuf::from(name),
+            sha256: String::new(),
+            functions: String::new(),
+        };
+        Source {
+            inputs: [input("/firmware.o"), input("/firmware_v2.o")],
+            raw: None,
+            threshold: 0.65,
+            names: crate::project::Names::Use,
+        }
+    }
+
+    fn start_with(browser: Browser) -> Start {
+        Start {
+            files: ["firmware.o".to_string(), "firmware_v2.o".to_string()],
+            source: source(),
+            project: None,
+            saved: Saved { browser, marks: Vec::new() },
+        }
+    }
+
+    fn start() -> Start {
+        start_with(browser())
     }
 
     fn press(app: &mut App<'_>, codes: &[KeyCode]) -> Flow {
@@ -1007,7 +1321,7 @@ mod tests {
         };
         let (Some(before), Some(after)) = (read("before"), read("after")) else { return };
         let diff = diff_with(&before, &after, Options::default());
-        let start = Start { view: View::Il, scope: Scope::All, ..start() };
+        let start = start_with(Browser { view: View::Il, scope: Scope::All, ..browser() });
         let mut app = App::new(&diff, &before, &after, start);
         let per_side = |app: &App<'_>| match &app.screen {
             Screen::Pair(opened) => {
