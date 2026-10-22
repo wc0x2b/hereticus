@@ -97,7 +97,10 @@ function has the name that the report gives it, as `sub_7630`. See
 ## Terminal Interface
 
 `--tui` lets you browse the report, and open the diff of each function,
-in the terminal. See [Terminal Interface](./tui.md).
+in the terminal. There you can mark functions and save the comparison as a
+project, which `--open` opens again with no second match. See
+[Terminal Interface](./tui.md) and
+[Marks and Projects](./tui.md#marks-and-projects).
 
 ## Stripped Binaries
 
@@ -278,10 +281,10 @@ each address by the difference.
 ```console
 Command line tool to compare functions between two binaries
 
-Usage: hereticus [OPTIONS] <BEFORE> [AFTER]
+Usage: hereticus [OPTIONS] [BEFORE] [AFTER]
 
 Arguments:
-  <BEFORE>  The earlier binary, or with `--functions` the one binary to list
+  [BEFORE]  The earlier binary, or with `--functions` the one binary to list
   [AFTER]   The later binary
 
 Options:
@@ -289,6 +292,7 @@ Options:
       --diff <FUNCTION>        Show the instruction-level diff of one function, then stop
       --diff-all               Show the instruction-level diff of every changed function, then stop
       --tui                    Browse the report in the terminal, and change its order, its filters and the diff it shows without a second run
+      --open <PROJECT>         Open a project that `--tui` saved, in place of two binaries
       --functions              List the functions of one binary, then stop
       --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il]
       --ignore-names           Ignore symbol names, as though both binaries were stripped

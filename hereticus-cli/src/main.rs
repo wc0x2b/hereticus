@@ -48,21 +48,6 @@ struct Args {
     #[arg(required_unless_present_any = ["functions", "open"])]
     after: Option<PathBuf>,
 
-    /// Open a project that `--tui` saved, in place of two binaries.
-    ///
-    /// The project names the two binaries and holds the result of their
-    /// match, so the report comes at once. Each other flag acts as it does
-    /// on two binaries, and `--tui` opens the browser as it was saved.
-    #[arg(
-        long,
-        value_name = "PROJECT",
-        conflicts_with_all = [
-            "before", "after", "functions", "raw", "base", "unpack", "arch", "threshold",
-            "ignore_names",
-        ]
-    )]
-    open: Option<PathBuf>,
-
     /// Report every function, not only the ones that changed.
     #[arg(short, long)]
     all: bool,
@@ -88,6 +73,21 @@ struct Args {
     /// and the diff it shows without a second run.
     #[arg(long, conflicts_with_all = ["diff", "diff_all", "format", "exit_code"])]
     tui: bool,
+
+    /// Open a project that `--tui` saved, in place of two binaries.
+    ///
+    /// The project names the two binaries and holds the result of their
+    /// match, so the report comes at once. Each other flag acts as it does
+    /// on two binaries, and `--tui` opens the browser as it was saved.
+    #[arg(
+        long,
+        value_name = "PROJECT",
+        conflicts_with_all = [
+            "before", "after", "functions", "raw", "base", "unpack", "arch", "threshold",
+            "ignore_names",
+        ]
+    )]
+    open: Option<PathBuf>,
 
     /// List the functions of one binary, then stop.
     ///
