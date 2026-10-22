@@ -100,7 +100,7 @@ impl Browser {
 ///
 /// A pair goes by its two functions, not by its place in the list of pairs,
 /// so a reader of the file can follow it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Key {
     Pair { before: usize, after: usize },
@@ -1684,7 +1684,11 @@ mod tests {
         assert_eq!(app.selected_entry(), Some(chosen), "the selection follows the row");
         assert_eq!(app.changes, Changes::Unsaved);
         let shown = screen(&mut app, 120, 12);
-        assert!(shown.contains(&format!("{}{}", draw::MARK_SIGN, app.entries[chosen].label)));
+        assert!(shown.contains(&format!(
+            "{}{}",
+            crate::marks::MARK_SIGN,
+            app.entries[chosen].label
+        )));
         assert!(shown.contains("[auth bypass]"), "{shown}");
         assert!(shown.contains("1 marked"), "{shown}");
         insta::assert_snapshot!("tui_marked", shown);

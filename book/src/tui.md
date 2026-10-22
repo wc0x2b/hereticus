@@ -69,6 +69,15 @@ binaries does, and takes the same flags: `--format`, `--sort`, `--diff`,
 `--diff-all` and the others. It does not take the flags that read the
 binaries, as `--raw` or `--threshold`, because the project keeps them.
 
+Each report shows the marks as the browser does. The marked functions come
+first, also when a filter would hide them, as `◆ handle [auth bypass]`:
+
+- `--format compact` adds a last column to a marked line, as
+  `◆ auth bypass`. The other lines keep their columns.
+- `--format json` adds `"mark": "auth bypass"` to a marked function.
+- `--diff` finds a function by its label too, as
+  `--diff "auth bypass"`.
+
 A project is JSON, and names each binary by its full path, with a SHA-256
 hash. The binaries stay where they are. A project does not open when a
 binary moved or changed, or when this version of `hereticus` finds other

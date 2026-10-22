@@ -17,6 +17,7 @@ use super::theme::{
     pane_block, tone_of,
 };
 use super::{App, Changes, Entry, Layout, Order, Overlay, Prompt, Purpose, Scope, Screen, fuzzy};
+use crate::marks::MARK_SIGN;
 use crate::{
     DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_kind,
     name_of_view, unmatched_word,
@@ -26,9 +27,6 @@ use crate::{
 const TABLE_HINTS: &str = "⏎ open  s/S sort  t touched  / filter  m mark  w save";
 const FILTER_HINTS: &str = "⏎ keep  esc clear";
 const PAIR_HINTS: &str = "]/[ change  v asm/il  l layout  n/p next/prev  m mark  esc back";
-
-/// What leads the name of a marked row.
-pub(super) const MARK_SIGN: &str = "◆ ";
 
 impl App<'_> {
     pub(super) fn draw(&mut self, frame: &mut Frame<'_>) {

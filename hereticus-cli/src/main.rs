@@ -5,6 +5,7 @@
 
 mod formats;
 mod functions;
+mod marks;
 mod project;
 mod tui;
 
@@ -29,6 +30,7 @@ use hereticus::matching::{
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use marks::{MARK_SIGN, Marks, Side, marked};
 use project::{Project, Source};
 use serde::{Deserialize, Serialize};
 use tabled::settings::object::{Columns, Rows};
@@ -535,11 +537,14 @@ fn run(args: &Args) -> Result<bool, String> {
         }
     };
 
+    let marks = saved.as_ref().map_or_else(Marks::default, |(_, saved)| Marks::new(&saved.marks));
+    let listing = Listing::from_args(args, &marks);
     // `--diff` asks about one function, so it answers and stops rather than
     // printing the whole report.
     if let Some(wanted) = &args.diff {
         let paint = Paint::resolve(args.color);
-        return print_one_diff(&diff, &before, &after, wanted, args.view.into(), paint)
+        let binaries = [&before, &after];
+        return print_one_diff(&diff, binaries, &marks, wanted, args.view.into(), paint)
             .map(|()| false);
     }
     if args.tui {
@@ -565,19 +570,15 @@ fn run(args: &Args) -> Result<bool, String> {
         return tui::run(&diff, &before, &after, start).map(|()| false);
     }
     if args.diff_all {
-        let mut shown: Vec<&Match> = diff
-            .matched
-            .iter()
-            .filter(|pair| args.all || is_interesting(pair, Hidden::from_args(args)))
-            .collect();
-        sort_shown(&mut shown, args.sort);
+        let shown = listing.pairs(&diff);
         let paint = Paint::resolve(args.color);
         let paired = diff.paired_labels(&before, &after);
         for (index, pair) in shown.iter().enumerate() {
             if index > 0 {
                 println!();
             }
-            print_pair_diff(pair, &paired, &before, &after, args.view.into(), paint);
+            let label = marks.of_pair(pair);
+            print_pair_diff(pair, label, &paired, &before, &after, args.view.into(), paint);
         }
         return Ok(!shown.is_empty());
     }
@@ -585,34 +586,17 @@ fn run(args: &Args) -> Result<bool, String> {
     match args.format {
         Format::Text => {
             let view = TextView {
-                show_all: args.all,
+                listing,
                 near_miss_floor: args.near_miss,
-                hidden: Hidden::from_args(args),
                 paint: Paint::resolve(args.color),
-                sort: args.sort,
             };
             print_text(&diff, &before, &after, view)
         }
-        Format::Compact => {
-            print_compact(&diff, &before, &after, args.all, Hidden::from_args(args), args.sort)
+        Format::Compact => print_compact(&diff, &before, &after, listing),
+        Format::Markdown => {
+            formats::print_markdown(&diff, &before, &after, listing, args.near_miss)
         }
-        Format::Markdown => formats::print_markdown(
-            &diff,
-            &before,
-            &after,
-            args.all,
-            Hidden::from_args(args),
-            args.sort,
-            args.near_miss,
-        ),
-        Format::Json => formats::print_json(
-            &diff,
-            &before,
-            &after,
-            args.all,
-            Hidden::from_args(args),
-            args.sort,
-        ),
+        Format::Json => formats::print_json(&diff, &before, &after, listing),
     }
 
     Ok(diff.changed().count() > 0 || !diff.removed.is_empty() || !diff.added.is_empty())
@@ -864,6 +848,57 @@ fn is_shown_unmatched(contents: Contents, hidden: Hidden) -> bool {
     contents == Contents::Code || hidden.data == DataRegions::Show
 }
 
+/// Which functions a report lists, and in which order.
+#[derive(Clone, Copy, Debug)]
+struct Listing<'a> {
+    /// List every function, as `--all` asks.
+    show_all: bool,
+    hidden: Hidden,
+    sort: Sort,
+    /// Listed first, whatever would hide them.
+    marks: &'a Marks,
+}
+
+impl<'a> Listing<'a> {
+    fn from_args(args: &Args, marks: &'a Marks) -> Self {
+        Self { show_all: args.all, hidden: Hidden::from_args(args), sort: args.sort, marks }
+    }
+
+    /// The pairs the report lists, in its order.
+    fn pairs<'d>(&self, diff: &'d Diff) -> Vec<&'d Match> {
+        let mut shown: Vec<&Match> = diff
+            .matched
+            .iter()
+            .filter(|pair| {
+                self.show_all
+                    || self.marks.of_pair(pair).is_some()
+                    || is_interesting(pair, self.hidden)
+            })
+            .collect();
+        sort_shown(&mut shown, self.sort);
+        self.marks.first_pairs(&mut shown);
+        shown
+    }
+
+    /// The functions gone, or new, that the report lists, in its order.
+    fn unmatched(&self, diff: &Diff, side: Side) -> Vec<(usize, Contents)> {
+        let all: Vec<(usize, Contents)> = match side {
+            Side::Gone => diff.removed_with_contents().collect(),
+            Side::New => diff.added_with_contents().collect(),
+        };
+        let mut shown: Vec<(usize, Contents)> = all
+            .into_iter()
+            .filter(|&(function, contents)| {
+                self.show_all
+                    || self.marks.of_unmatched(side, function).is_some()
+                    || is_shown_unmatched(contents, self.hidden)
+            })
+            .collect();
+        self.marks.first_unmatched(side, &mut shown);
+        shown
+    }
+}
+
 /// The word that says a function went, or came, for what it holds.
 fn unmatched_word(word: &'static str, contents: Contents) -> String {
     match contents {
@@ -1025,18 +1060,27 @@ fn find_function(binary: &Binary, wanted: &str) -> Option<usize> {
 
 /// Print the instruction-level diff of one function.
 ///
-/// The function is looked up in the earlier binary. If it was matched, the diff
-/// runs against its counterpart; if it was removed, there is nothing to diff
-/// against and the tool says so.
+/// The function is looked up in the earlier binary, by its name or by the
+/// label of its mark. If it was matched, the diff runs against its
+/// counterpart; if it was removed, there is nothing to diff against and the
+/// tool says so.
 fn print_one_diff(
     diff: &Diff,
-    before: &Binary,
-    after: &Binary,
+    [before, after]: [&Binary; 2],
+    marks: &Marks,
     wanted: &str,
     view: View,
     paint: Paint,
 ) -> Result<(), String> {
+    let by_label = match marks.find(wanted) {
+        Some(tui::Key::Pair { before, .. } | tui::Key::Gone { function: before }) => Some(before),
+        Some(tui::Key::New { .. }) => {
+            return Err(format!("`{wanted}` is new in the later binary, so it has no diff"));
+        }
+        None => None,
+    };
     let index = find_function(before, wanted)
+        .or(by_label)
         .ok_or_else(|| format!("no function `{wanted}` in the earlier binary"))?;
 
     let pair = diff.matched.iter().find(|pair| pair.before == index).ok_or_else(|| {
@@ -1051,26 +1095,23 @@ fn print_one_diff(
         }
     })?;
 
-    print_pair_diff(pair, &diff.paired_labels(before, after), before, after, view, paint);
+    let label = marks.of_pair(pair);
+    print_pair_diff(pair, label, &diff.paired_labels(before, after), before, after, view, paint);
     Ok(())
 }
 
-/// Print the name of a pair, then its instruction-level diff.
+/// Print the name of a pair, with the label of its mark, then its
+/// instruction-level diff.
 fn print_pair_diff(
     pair: &Match,
+    label: Option<&str>,
     paired: &PairedLabels,
     before: &Binary,
     after: &Binary,
     view: View,
     paint: Paint,
 ) {
-    let before_name = name_of(before, pair.before);
-    let after_name = name_of(after, pair.after);
-    if before_name == after_name {
-        println!("{before_name}");
-    } else {
-        println!("{before_name} -> {after_name}");
-    }
+    println!("{}", marked(pair_name(pair, before, after), label));
 
     let lines = instruction_diff_in(view, Some(paired), before, pair.before, after, pair.after);
     for line in &lines {
@@ -1172,32 +1213,32 @@ fn is_rescheduled(pair: &Match) -> bool {
 
 /// How the text report shows a comparison.
 #[derive(Copy, Clone, Debug)]
-struct TextView {
-    /// Show every pair, not only the changed ones.
-    show_all: bool,
+struct TextView<'a> {
+    listing: Listing<'a>,
     /// The lowest score at which an unpaired function names its nearest
     /// neighbour.
     near_miss_floor: f64,
-    hidden: Hidden,
     paint: Paint,
-    sort: Sort,
 }
 
-fn print_text(diff: &Diff, before: &Binary, after: &Binary, view: TextView) {
-    let TextView { show_all, near_miss_floor, hidden, paint, sort } = view;
-    let mut shown: Vec<&Match> =
-        diff.matched.iter().filter(|pair| show_all || is_interesting(pair, hidden)).collect();
-    sort_shown(&mut shown, sort);
+/// The name of a pair: one name, or `old -> new` for a function renamed.
+fn pair_name(pair: &Match, before: &Binary, after: &Binary) -> String {
+    let name = name_of(before, pair.before);
+    let renamed = name_of(after, pair.after);
+    if name == renamed { name } else { format!("{name} -> {renamed}") }
+}
+
+fn print_text(diff: &Diff, before: &Binary, after: &Binary, view: TextView<'_>) {
+    let TextView { listing, near_miss_floor, paint } = view;
+    let shown = listing.pairs(diff);
+    let marks = listing.marks;
 
     if !shown.is_empty() {
         let rows = shown.iter().map(|pair| {
-            // A renamed function reads as `old -> new`. The table sizes the
-            // column to the widest label, so a rename cannot push it out of
-            // line.
-            let name = name_of(before, pair.before);
-            let renamed = name_of(after, pair.after);
+            // The table sizes the column to the widest label, so a rename
+            // or a mark cannot push it out of line.
             Row {
-                function: if name == renamed { name } else { format!("{name} -> {renamed}") },
+                function: marked(pair_name(pair, before, after), marks.of_pair(pair)),
                 change: describe(pair.changed),
                 score: format!("{:.2}", pair.score),
                 edits: describe_edits(pair.edits, paint),
@@ -1234,11 +1275,8 @@ fn print_text(diff: &Diff, before: &Binary, after: &Binary, view: TextView) {
 
     // Only the status word takes a color, as in the `CHANGE` column. The name
     // beside it stays plain, so the word is what the eye finds.
-    for (index, contents) in diff.removed_with_contents() {
-        if !is_shown_unmatched(contents, hidden) {
-            continue;
-        }
-        let name = name_of(before, index);
+    for (index, contents) in listing.unmatched(diff, Side::Gone) {
+        let name = marked(name_of(before, index), marks.of_unmatched(Side::Gone, index));
         let gone = paint.pick(REMOVED_COLOR).colorize(unmatched_word("gone", contents));
         let notes = [
             near_miss_note(diff, index, after, near_miss_floor),
@@ -1246,11 +1284,8 @@ fn print_text(diff: &Diff, before: &Binary, after: &Binary, view: TextView) {
         ];
         println!("{name}: {gone}{}", joined_notes(notes));
     }
-    for (index, contents) in diff.added_with_contents() {
-        if !is_shown_unmatched(contents, hidden) {
-            continue;
-        }
-        let name = name_of(after, index);
+    for (index, contents) in listing.unmatched(diff, Side::New) {
+        let name = marked(name_of(after, index), marks.of_unmatched(Side::New, index));
         let new = paint.pick(ADDED_COLOR).colorize(unmatched_word("new", contents));
         let notes = [
             added_near_miss_note(diff, index, before, near_miss_floor),
@@ -1259,7 +1294,7 @@ fn print_text(diff: &Diff, before: &Binary, after: &Binary, view: TextView) {
         println!("{name}: {new}{}", joined_notes(notes));
     }
 
-    summarize(diff, hidden);
+    summarize(diff, listing.hidden);
 }
 
 /// Describe the closest candidate for a function that went unmatched.
@@ -1306,23 +1341,20 @@ fn joined_notes(notes: impl IntoIterator<Item = Option<String>>) -> String {
 }
 
 /// Print one line per function, with no header or alignment.
-fn print_compact(
-    diff: &Diff,
-    before: &Binary,
-    after: &Binary,
-    show_all: bool,
-    hidden: Hidden,
-    sort: Sort,
-) {
-    let mut shown: Vec<&Match> =
-        diff.matched.iter().filter(|pair| show_all || is_interesting(pair, hidden)).collect();
-    sort_shown(&mut shown, sort);
-
-    for pair in shown {
+///
+/// A marked function has one more column, last, so a reader of the others
+/// keeps working: the sign of a mark and its label, as `◆ fix`.
+fn print_compact(diff: &Diff, before: &Binary, after: &Binary, listing: Listing<'_>) {
+    let marks = listing.marks;
+    let mark_column = |label: Option<&str>| match label {
+        None => String::new(),
+        Some(label) => format!("\t{MARK_SIGN}{label}").trim_end().to_string(),
+    };
+    for pair in listing.pairs(diff) {
         // The edit counts go last so a reader of the first four columns keeps
         // working.
         println!(
-            "{}\t{}\t{}\t{:.2}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{:.2}\t{}\t{}\t{}{}",
             describe(pair.changed),
             name_of(before, pair.before),
             name_of(after, pair.after),
@@ -1330,12 +1362,10 @@ fn print_compact(
             pair.edits.added,
             pair.edits.removed,
             pair.edits.edited,
+            mark_column(marks.of_pair(pair)),
         );
     }
-    for (index, contents) in diff.removed_with_contents() {
-        if !show_all && !is_shown_unmatched(contents, hidden) {
-            continue;
-        }
+    for (index, contents) in listing.unmatched(diff, Side::Gone) {
         // The fourth column holds the near-miss score, so a script reading
         // this format finds it where a matched pair keeps its score.
         let miss = diff.near_miss(index);
@@ -1343,12 +1373,10 @@ fn print_compact(
             miss.and_then(|miss| miss.best).map(|best| name_of(after, best)).unwrap_or_default();
         let score = miss.map_or(0.0, |miss| miss.score);
         let gone = unmatched_word("gone", contents);
-        println!("{gone}\t{}\t{closest}\t{score:.2}\t\t\t", name_of(before, index));
+        let mark = mark_column(marks.of_unmatched(Side::Gone, index));
+        println!("{gone}\t{}\t{closest}\t{score:.2}\t\t\t{mark}", name_of(before, index));
     }
-    for (index, contents) in diff.added_with_contents() {
-        if !show_all && !is_shown_unmatched(contents, hidden) {
-            continue;
-        }
+    for (index, contents) in listing.unmatched(diff, Side::New) {
         // The candidate on the first binary and its score go in the same two
         // columns a removed line uses, so one reader parses both.
         let miss = diff.added_near_miss(index);
@@ -1356,7 +1384,8 @@ fn print_compact(
             miss.and_then(|miss| miss.best).map(|best| name_of(before, best)).unwrap_or_default();
         let score = miss.map_or(0.0, |miss| miss.score);
         let new = unmatched_word("new", contents);
-        println!("{new}\t{closest}\t{}\t{score:.2}\t\t\t", name_of(after, index));
+        let mark = mark_column(marks.of_unmatched(Side::New, index));
+        println!("{new}\t{closest}\t{}\t{score:.2}\t\t\t{mark}", name_of(after, index));
     }
 }
 
