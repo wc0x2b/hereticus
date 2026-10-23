@@ -536,3 +536,154 @@ impl Hasher for AddressHasher {
 }
 
 type Fast = BuildHasherDefault<AddressHasher>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hereticus_il::arch::aarch64::Aarch64;
+    use hereticus_il::arch::arm32::Arm32;
+    use hereticus_il::arch::mips::Mips32;
+    use hereticus_il::arch::thumb::Thumb2;
+    use hereticus_il::arch::x86::X86;
+
+    /// `push {r4, lr}`, a prologue of A32.
+    const PUSH: u32 = 0xe92d_4010;
+    /// `pop {r4, pc}`.
+    const POP: u32 = 0xe8bd_8010;
+    /// `mov r0, r0`, filler that opens nothing.
+    const MOV: u32 = 0xe1a0_0000;
+
+    /// A firmware image of A32 that loads at `base`: functions, then texts,
+    /// then a table of pointers to each, as a table of commands holds them.
+    fn firmware(base: u64) -> Vec<u8> {
+        let mut words: Vec<u32> = Vec::new();
+        let mut functions = Vec::new();
+        for index in 0..40 {
+            functions.push(words.len() * 4);
+            words.push(PUSH);
+            words.extend(std::iter::repeat_n(MOV, 3 + index % 5));
+            words.push(POP);
+        }
+        let mut data: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let mut texts = Vec::new();
+        for index in 0..40 {
+            texts.push(data.len());
+            data.extend_from_slice(format!("command number {index} failed\0").as_bytes());
+        }
+        while !data.len().is_multiple_of(4) {
+            data.push(0);
+        }
+        for (function, text) in functions.iter().zip(&texts) {
+            for offset in [function, text] {
+                data.extend_from_slice(&(base as u32).wrapping_add(*offset as u32).to_le_bytes());
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn a_string_is_printable_bytes_that_a_zero_closes() {
+        let data = b"\x01short\0long enough\0\x02text with no end";
+        assert_eq!(string_starts(data), [7]);
+        assert_eq!(string_starts(b"tabs\tand\nnew lines\0"), [0]);
+        assert!(string_starts(b"").is_empty());
+    }
+
+    #[test]
+    fn a_pic_function_of_mips_starts_at_its_global_pointer() {
+        // lui gp, 2; addiu gp, gp, -0x7ff0; addu gp, gp, t9; addiu sp, sp, -32
+        let words: [u32; 4] = [0x3c1c_0002, 0x279c_8010, 0x0399_e021, 0x27bd_ffe0];
+        let mut data: Vec<u8> = 0u32.to_le_bytes().to_vec();
+        data.extend(words.iter().flat_map(|word| word.to_le_bytes()));
+        assert_eq!(function_starts(&data, &Mips32::LITTLE), [4]);
+    }
+
+    #[rstest::rstest]
+    #[case::on_a_page(0x0800_0000)]
+    #[case::off_a_page(0x0801_2344)]
+    #[case::high(0xc000_8000)]
+    fn the_words_of_firmware_show_its_base(#[case] base: u64) {
+        let data = firmware(base);
+        let ranked = rank_bases(&data, &Arm32);
+        assert_eq!(clear_winner(&ranked), Some(base), "{ranked:#?}");
+        let found = ranked[0];
+        assert_eq!((found.strings, found.functions), (40, 40));
+        assert_eq!(measure_base(&data, &Arm32, base), found);
+    }
+
+    #[test]
+    fn a_base_that_does_not_fit_below_the_top_is_no_answer() {
+        // Every pointer wraps past 4 GiB at the base that would fit them.
+        let data = firmware(0xffff_ff00);
+        let ranked = rank_bases(&data, &Arm32);
+        assert!(ranked.iter().all(|candidate| candidate.base + data.len() as u64 <= 1 << 32));
+        assert_eq!(clear_winner(&ranked), None);
+    }
+
+    #[test]
+    fn noise_shows_no_base() {
+        // A fixed stream from xorshift, so the test sees the same bytes each run.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let noise: Vec<u8> = (0..1 << 16)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        for arch in [
+            &Arm32 as &dyn Recovery,
+            &Thumb2,
+            &Aarch64,
+            &Mips32::LITTLE,
+            &X86::BITS32,
+            &X86::BITS64,
+        ] {
+            assert_eq!(clear_winner(&rank_bases(&noise, arch)), None);
+        }
+        assert!(rank_bases(&[], &Arm32).is_empty());
+        assert!(rank_bases(&[0; 4096], &Arm32).is_empty());
+    }
+
+    #[test]
+    fn halves_of_addresses_are_no_evidence() {
+        // `addiu a0, a0, %lo(text)` for each of many texts: as words, each
+        // points at its text from the base 0x24840000.
+        let mut data = Vec::new();
+        let mut texts = Vec::new();
+        for index in 0..60 {
+            texts.push(0x400 + index * 0x20);
+        }
+        for &text in &texts {
+            data.extend_from_slice(&(0x2484_0000_u32 | text as u32).to_le_bytes());
+        }
+        data.resize(0x400, 0);
+        for index in 0..texts.len() {
+            let text = format!("message {index:02} of the loader\0");
+            data.extend_from_slice(text.as_bytes());
+            data.resize(0x400 + (index + 1) * 0x20, 0);
+        }
+        let ranked = rank_bases(&data, &Mips32::LITTLE);
+        let near_opcode =
+            |candidate: &&BaseCandidate| candidate.base.abs_diff(0x2484_0000) < 0x1_0000;
+        assert!(ranked.iter().any(|candidate| near_opcode(&candidate)), "{ranked:#?}");
+        assert!(ranked.iter().filter(near_opcode).all(|candidate| candidate.confined));
+        assert_eq!(clear_winner(&ranked), None);
+    }
+
+    #[test]
+    fn any_bytes_rank_in_order_without_a_panic() {
+        bolero::check!().with_type::<(u8, Vec<u8>)>().for_each(|(arch, data)| {
+            let arches: [&dyn Recovery; 6] =
+                [&Arm32, &Thumb2, &Aarch64, &Mips32::LITTLE, &X86::BITS32, &X86::BITS64];
+            let arch = arches[usize::from(*arch) % arches.len()];
+            let ranked = rank_bases(data, arch);
+            assert!(ranked.len() <= RANKED);
+            assert!(ranked.windows(2).all(|pair| pair[0].excess() >= pair[1].excess()));
+            if let Some(base) = clear_winner(&ranked) {
+                assert_eq!(base, ranked[0].base);
+            }
+        });
+    }
+}

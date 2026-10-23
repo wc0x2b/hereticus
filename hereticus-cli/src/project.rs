@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::tui::{Browser, Mark};
-use crate::{ArchName, Args, PartName};
+use crate::{ArchName, Args, Base, PartName};
 
 /// The layout of the file. A change that an older `hereticus` cannot read
 /// must increment it.
@@ -147,6 +147,10 @@ pub enum Names {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Raw {
     pub base: Option<u64>,
+    /// Whether `--base auto` found the base. The words of the image are
+    /// the same when the project opens, so they give the same base again.
+    #[serde(default)]
+    pub auto_base: bool,
     pub arch: ArchName,
     pub unpack: Option<PartName>,
 }
@@ -205,7 +209,15 @@ impl Input {
 impl Source {
     /// Describe how `args` read the two binaries.
     pub fn new(args: &Args, inputs: [Input; 2]) -> Self {
-        let raw = args.raw.then_some(Raw { base: args.base, arch: args.arch, unpack: args.unpack });
+        let raw = args.raw.then(|| Raw {
+            base: match args.base {
+                Some(Base::Address(base)) => Some(base),
+                Some(Base::Auto) | None => None,
+            },
+            auto_base: args.base == Some(Base::Auto),
+            arch: args.arch,
+            unpack: args.unpack,
+        });
         let names = if args.ignore_names { Names::Ignore } else { Names::Use };
         Self { inputs, raw, threshold: args.threshold, names }
     }
@@ -218,7 +230,10 @@ impl Source {
             before: Some(self.inputs[0].path.clone()),
             after: Some(self.inputs[1].path.clone()),
             raw: raw.is_some(),
-            base: raw.and_then(|raw| raw.base),
+            base: raw.and_then(|raw| match (raw.auto_base, raw.base) {
+                (true, _) => Some(Base::Auto),
+                (false, base) => base.map(Base::Address),
+            }),
             arch: raw.map_or(args.arch, |raw| raw.arch),
             unpack: raw.and_then(|raw| raw.unpack),
             threshold: self.threshold,
@@ -302,12 +317,19 @@ mod tests {
         let later = Args::parse_from(["hereticus", "--open", "p.json", "--sort", "removed"]);
         let replayed = source.replay(&later);
         assert!(replayed.raw && replayed.ignore_names);
-        assert_eq!(replayed.base, Some(0x8000_0000));
+        assert_eq!(replayed.base, Some(Base::Address(0x8000_0000)));
         assert_eq!(replayed.arch, ArchName::Mips32Be);
         assert_eq!(replayed.unpack, Some(PartName::Kernel));
         assert_eq!(replayed.threshold, 0.5);
         assert_eq!(replayed.before, Some(PathBuf::from("/tmp/a.elf")));
         assert_eq!(replayed.sort, crate::Sort::Removed, "a flag of the report stays");
+
+        // `--base auto` finds the base again when the project opens.
+        let auto = Args::parse_from(["hereticus", "--raw", "--base", "auto", "a.bin", "b.bin"]);
+        let source = Source::new(&auto, [input(b"a"), input(b"b")]);
+        let text = serde_json::to_string(&source).expect("a source serializes");
+        let source: Source = serde_json::from_str(&text).expect("a source reads back");
+        assert_eq!(source.replay(&later).base, Some(Base::Auto));
 
         // A binary with a container format leaves `--raw` off.
         let plain = Args::parse_from(["hereticus", "a.elf", "b.elf"]);
