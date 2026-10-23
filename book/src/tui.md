@@ -50,9 +50,15 @@ as a project, and open it again later with no second match.
 - `m` marks the selected function, and asks for a label, as
   `auth bypass`. The label can be empty. `m` again changes the label, and
   `M` removes the mark.
+
+  ![The label of a mark, as you type it](./images/tui-label.png)
+
 - A marked function goes to the top of the list, with `◆` before its name
   and its label after it. It stays in the list when `a`, `r`, `d` or `t`
   would hide it. `/` finds it by its label too.
+
+  ![A marked function at the top of the list](./images/tui-marked.png)
+
 - `w` saves the project. It asks for a path, and gives the last one.
 - `q` warns when a mark is not saved.
 
