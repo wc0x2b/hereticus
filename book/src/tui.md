@@ -90,9 +90,12 @@ first, also when a filter would hide them, as `◆ handle [auth bypass]`:
   `--diff "auth bypass"`.
 
 A project is JSON, and names each binary by its full path, with a SHA-256
-hash. The binaries stay where they are. A project does not open when a
-binary moved or changed, or when this version of `hereticus` finds other
-functions in it. Compare the binaries again in that case.
+hash. The binaries stay where they are.
+
+> [!IMPORTANT]
+> A project does not open when a binary moved or changed, or when this
+> version of `hereticus` finds other functions in it. Compare the binaries
+> again in that case.
 
 ## All Keys
 
