@@ -1,4 +1,4 @@
-# Make the screenshots of the TUI page: `just tui-screenshots`.
+# Make the screenshots of the TUI page: `just book-media`.
 Output "/tmp/hereticus-tui.gif"
 Set Shell bash
 Set FontSize 16
