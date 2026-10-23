@@ -16,12 +16,12 @@ rust-version.workspace = true
 bench = false
 
 [dependencies]
-hereticus-arch = { path = "../hereticus-arch", version = "0.2.1" }
-hereticus-recovery = { path = "../hereticus-recovery", version = "0.2.1" }
-hereticus-callees = { path = "../hereticus-callees", version = "0.2.1" }
-hereticus-image = { path = "../hereticus-image", version = "0.2.1" }
-hereticus-il = { path = "../hereticus-il", version = "0.2.1" }
-hereticus-memory = { path = "../hereticus-memory", version = "0.2.1" }
+hereticus-arch = { path = "../hereticus-arch", version = "0.3.0" }
+hereticus-recovery = { path = "../hereticus-recovery", version = "0.3.0" }
+hereticus-callees = { path = "../hereticus-callees", version = "0.3.0" }
+hereticus-image = { path = "../hereticus-image", version = "0.3.0" }
+hereticus-il = { path = "../hereticus-il", version = "0.3.0" }
+hereticus-memory = { path = "../hereticus-memory", version = "0.3.0" }
 compact_str = "0.9"
 rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = ["std", "MIPS_II"] }
 yaxpeax-arm = "0.4"
