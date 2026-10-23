@@ -72,20 +72,48 @@ dynamic segment still gives the dynamic symbols and the relocations.
 
 A raw image has no header, so `--base` gives the address it loads at. A
 wrong base does not fail: the code still decodes, and each relative branch
-still lands in the image. Thus `hereticus` checks the base on words that
-hold absolute addresses, as a vector table or a table of pointers does.
-Such words fall in the image only at the right base. On MIPS, a `jal`
-holds its target, so at the right base most targets land on a prologue.
-`hereticus` warns when the base looks wrong. With no `--base`, it stops,
-and the error gives the base that the calls show, where they show one.
-It does not use that base by itself, because a wrong base gives a wrong
-report with no other sign. rbasefind and basefind use the same idea.
+still lands in the image. Only the addresses are wrong.
 
-Limits: small position-independent code holds no absolute addresses, so
-nothing shows whether its base is right. A base that is wrong by megabytes
-looks the same as no evidence, not as a wrong base.
+The image holds the full addresses of its own strings and functions: in
+tables of handlers, in literal pools and in x86 immediates. At the right
+base, many such words point at the start of a string or of a function,
+and at any other base few do. `hereticus` finds the base in four steps:
 
-Code: [`check_base` and `suggest_base`][raw]. See `RESEARCH.md`, A17.
+1. **Targets.** Each run of printable bytes that a zero closes is a
+   string. Each prologue is a function, with the `$gp` set up of MIPS PIC
+   before it.
+2. **Votes.** A word `v` that points at the target `t` says the base is
+   `v - t`. A few targets each take a vote from every word, and a short
+   check against other targets keeps a few thousand candidates. Separately,
+   each word votes with each target whose offset into a 4 KiB page agrees
+   with its own, as a base on a page needs. That finds the base where few
+   targets are pointed at at all, as in PIC code.
+3. **Chance.** Words that are not addresses hit targets too, as a run of
+   similar A32 opcodes does. They hit as often a few bytes off, and the
+   right base does not, so the median of the hits a few bytes off is what
+   chance gives. The evidence is the hits above it. A base where the image
+   runs past the top of the address space is no candidate: i686 and ARM
+   PIC hold offsets from the global offset table, which agree with each
+   other about such a base.
+4. **Halves.** An instruction can hold the low half of an address, as MIPS
+   `addiu a0, a0, %lo(text)` does. Read as a word, it points at text from
+   a base just below its opcode. Such hits fall in one window of 64 KiB,
+   and they name only text, so they count for nothing.
+
+The best base must have twice the evidence of the next. On MIPS, the
+calls also show the base, because a `jal` holds its target: at the right
+base most targets land on a function start. Where the two disagree,
+`hereticus` gives no base. `--find-base` lists the evidence, `--base
+auto` takes the base, and each base that `--base` gives is checked
+against it.
+
+Limits: small position-independent code holds too few full addresses, so
+nothing shows its base. A base that is wrong by megabytes looks the same
+as no evidence when it is checked, but `--find-base` still finds the
+right one.
+
+Code: [`rank_bases`, `check_base` and `suggest_base`][raw]. See
+`RESEARCH.md`, A17 and entry 20.
 
 ## Finding Functions
 

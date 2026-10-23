@@ -12,4 +12,4 @@ exit_code: 2
 ----- stdout -----
 
 ----- stderr -----
-hereticus: --raw needs --base, because a raw image does not say where it loads
+hereticus: --raw needs --base, because a raw image does not say where it loads. See what --find-base lists

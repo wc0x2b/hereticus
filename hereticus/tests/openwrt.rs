@@ -546,16 +546,20 @@ fn slow_the_mt7628_kernel_report_is_locked() {
     );
 }
 
-/// Each MIPS kernel names its own base through its calls, in every release.
+/// Each kernel names its own base, in every release: through the words that
+/// point at its strings and functions, and on MIPS through its calls too.
 ///
 /// A kernel holds so many stored pointers that a base a page off still finds
-/// thousands inside the image. The calls tell the two apart.
+/// thousands inside the image. Only at the right base do they land on the
+/// start of a string or of a function, so a base a little off is suspect.
 #[rstest]
 #[case::mipsbe_eap245v3(EAP245V3, &["21.02.7", BEFORE, AFTER, "23.05.5"])]
 #[case::mipsel_r6220(R6220, &["21.02.7", BEFORE, AFTER, "23.05.5"])]
 #[case::mipsbe_vr200(VR200, &[BEFORE, AFTER])]
 #[case::mipsel_mt300nv2(MT300NV2, &[BEFORE, AFTER])]
-fn slow_the_calls_of_a_mips_kernel_give_its_base(#[case] board: Board, #[case] releases: &[&str]) {
+#[case::arm_ex6100v2(EX6100V2, &["21.02.7", BEFORE, AFTER, "23.05.5"])]
+#[case::arm_a385dbap(A385DBAP, &[BEFORE, AFTER])]
+fn slow_a_kernel_gives_its_base(#[case] board: Board, #[case] releases: &[&str]) {
     for &release in releases {
         let data = read(board, Part::Kernel, release);
         let arch = board.isa.arch();
@@ -566,18 +570,17 @@ fn slow_the_calls_of_a_mips_kernel_give_its_base(#[case] board: Board, #[case] r
         {
             let fit = check_base(&data, wrong, arch);
             assert!(
-                matches!(fit, BaseFit::CallsMissFunctions { better_base, .. } if better_base == board.kernel_base),
+                matches!(
+                    fit,
+                    BaseFit::PointsElsewhere { better_base, .. }
+                        | BaseFit::CallsMissFunctions { better_base, .. }
+                        if better_base == board.kernel_base
+                ),
                 "{} {release} at {wrong:#x}: got {fit:?}",
                 board.name
             );
         }
     }
-}
-
-/// An ARM kernel calls by distance, so it names no base.
-#[test]
-fn slow_an_arm_kernel_suggests_no_base() {
-    assert_eq!(suggest_base(&read(EX6100V2, Part::Kernel, BEFORE), Isa::Arm32.arch()), None);
 }
 
 /// The OpenWrt fixtures are all present, so no test above reads a stale or a

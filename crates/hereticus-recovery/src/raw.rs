@@ -67,6 +67,9 @@ use std::collections::HashMap;
 use crate::arch::Recovery;
 use hereticus_memory::SMALLEST_ADDRESS;
 
+mod find;
+pub use find::{BaseCandidate, RANKED, clear_winner, measure_base, rank_bases};
+
 /// How far outside the image still counts as "nearly pointing at it", as a
 /// multiple of the image length.
 ///
@@ -86,6 +89,9 @@ const ENOUGH_POINTERS: usize = 2;
 /// A small image holds a handful of calls, and at that count a wrong base can
 /// land a few on a prologue by chance.
 const ENOUGH_CALLS: usize = 16;
+
+/// The right base lands at least one call in this many on a function start.
+const LANDED_SHARE: usize = 4;
 
 /// How many of the most common call targets vote for a base.
 ///
@@ -130,6 +136,16 @@ pub enum BaseFit {
         /// Words that look like addresses but fall outside the blob.
         pointers_elsewhere: usize,
     },
+    /// Words point at the start of a string or of a function far more often
+    /// at another base: see [`rank_bases`].
+    PointsElsewhere {
+        /// Strings and function starts that a word points at, at this base.
+        hits: usize,
+        /// The base that [`suggest_base`] finds.
+        better_base: u64,
+        /// Strings and function starts that a word points at there.
+        hits_there: usize,
+    },
     /// Calls that name an absolute target land on a function start far more
     /// often at another base.
     CallsMissFunctions {
@@ -147,7 +163,10 @@ pub enum BaseFit {
 impl BaseFit {
     /// Report whether the caller should be warned.
     pub fn is_suspect(self) -> bool {
-        matches!(self, Self::Unlikely { .. } | Self::CallsMissFunctions { .. })
+        matches!(
+            self,
+            Self::Unlikely { .. } | Self::PointsElsewhere { .. } | Self::CallsMissFunctions { .. }
+        )
     }
 }
 
@@ -165,6 +184,13 @@ impl core::fmt::Display for BaseFit {
                     f,
                     "{pointers_elsewhere} words look like addresses, but none point into the \
                      image at this base"
+                )
+            }
+            Self::PointsElsewhere { hits, better_base, hits_there } => {
+                write!(
+                    f,
+                    "words point at {hits} strings and functions at this base, but at \
+                     {hits_there} at {better_base:#x}"
                 )
             }
             Self::CallsMissFunctions { landed, calls, better_base, landed_there } => {
@@ -192,6 +218,11 @@ pub fn check_base(data: &[u8], base: u64, arch: &dyn Recovery) -> BaseFit {
         return by_pointers;
     }
 
+    let by_targets = check_targets(data, base, arch);
+    if by_targets.is_suspect() {
+        return by_targets;
+    }
+
     let Some(calls) = Calls::read(data, arch) else { return by_pointers };
     let landed = calls.landed_at(base);
     match calls.best() {
@@ -207,6 +238,35 @@ pub fn check_base(data: &[u8], base: u64, arch: &dyn Recovery) -> BaseFit {
     }
 }
 
+/// Judge a load address against the base that the words of `data` show,
+/// where they show one clearly: see [`rank_bases`].
+fn check_targets(data: &[u8], base: u64, arch: &dyn Recovery) -> BaseFit {
+    let ranked = rank_bases(data, arch);
+    let Some(better_base) = clear_winner(&ranked) else { return BaseFit::NoEvidence };
+    let here = measure_base(data, arch, base);
+    let there = ranked[0];
+    if better_base != base && there.excess() > here.excess().max(0.0) * CLEARLY_BETTER as f64 {
+        BaseFit::PointsElsewhere { hits: here.hits(), better_base, hits_there: there.hits() }
+    } else {
+        BaseFit::NoEvidence
+    }
+}
+
+/// Find the load address of a blob, or `None` when the blob does not say.
+///
+/// Two kinds of evidence can show it. The words that point at the start of
+/// a string or of a function show it on every architecture: see
+/// [`rank_bases`]. On MIPS, the calls that name an absolute target show it
+/// too. Where both show a base and the two disagree, neither is sure, so
+/// the answer is `None`.
+pub fn suggest_base(data: &[u8], arch: &dyn Recovery) -> Option<u64> {
+    let by_words = clear_winner(&rank_bases(data, arch));
+    match (by_words, suggest_base_from_calls(data, arch)) {
+        (Some(words), Some(calls)) if words != calls => None,
+        (words, calls) => words.or(calls),
+    }
+}
+
 /// Find the load address of a blob from its calls, or `None` when the blob
 /// does not say.
 ///
@@ -214,15 +274,10 @@ pub fn check_base(data: &[u8], base: u64, arch: &dyn Recovery) -> BaseFit {
 /// pointers to a function start choose the region. It is `None` when the
 /// architecture has no calls that name an absolute target, or when either
 /// choice is not clear.
-pub fn suggest_base(data: &[u8], arch: &dyn Recovery) -> Option<u64> {
+fn suggest_base_from_calls(data: &[u8], arch: &dyn Recovery) -> Option<u64> {
     let calls = Calls::read(data, arch)?;
 
-    let ranked = calls.ranked();
-    let &(offset, landed) = ranked.first()?;
-    let runner_up = ranked.get(1).map_or(0, |&(_, landed)| landed);
-    if landed < ENOUGH_CALLS || landed <= runner_up.saturating_mul(CLEARLY_BETTER) {
-        return None;
-    }
+    let (offset, _) = calls.best()?;
 
     // Past a few hundred regions, trying each one costs more than a guess is
     // worth, and no architecture here has that many.
@@ -292,14 +347,17 @@ impl Calls {
         let mut targets: Vec<(u64, usize)> = counts.into_iter().collect();
         targets.sort_unstable_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
 
-        // The address does not change whether an instruction opens a frame.
-        let starts = (0..data.len() / width)
-            .map(|index| {
-                let at = index * width;
-                arch.may_be_prologue(&data[at..])
-                    && arch.decode(data, at, 0).is_ok_and(|insn| arch.is_prologue(&insn))
-            })
-            .collect();
+        // The address does not change whether an instruction opens a
+        // function. A call lands on the first instruction, before the `$gp`
+        // set up of MIPS PIC.
+        let mut starts = vec![false; data.len() / width];
+        for start in find::function_starts(data, arch) {
+            if let Some(slot) =
+                usize::try_from(start / width as u64).ok().and_then(|at| starts.get_mut(at))
+            {
+                *slot = true;
+            }
+        }
 
         Some(Self { targets, total, region, starts, width })
     }
@@ -368,9 +426,21 @@ impl Calls {
     }
 
     /// The candidate base that lands the most calls on a function start, as
-    /// an offset into a region, with that count.
+    /// an offset into a region, with that count, where it lands enough of
+    /// them and clearly more than the next.
+    ///
+    /// PIC code calls through a register, so its few words that read as a
+    /// call with an absolute target are mostly data. Their best base is
+    /// chance. Measured on a static program for MIPS, it landed 19 of 119,
+    /// where the right base of a kernel lands about 60%.
     fn best(&self) -> Option<(u64, usize)> {
-        self.ranked().into_iter().next().filter(|&(_, landed)| landed >= ENOUGH_CALLS)
+        let ranked = self.ranked();
+        let &(offset, landed) = ranked.first()?;
+        let runner_up = ranked.get(1).map_or(0, |&(_, landed)| landed);
+        (landed >= ENOUGH_CALLS
+            && landed >= self.total / LANDED_SHARE
+            && landed > runner_up.saturating_mul(CLEARLY_BETTER))
+        .then_some((offset, landed))
     }
 
     /// The base at `offset` into a region that lies nearest to `base`.

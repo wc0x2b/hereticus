@@ -3,6 +3,7 @@
 //! The library holds the analysis. This binary reads arguments, prints
 //! results, and chooses an exit status.
 
+mod bases;
 mod formats;
 mod functions;
 mod marks;
@@ -47,7 +48,7 @@ struct Args {
     before: Option<PathBuf>,
 
     /// The later binary.
-    #[arg(required_unless_present_any = ["functions", "open"])]
+    #[arg(required_unless_present_any = ["functions", "find_base", "open"])]
     after: Option<PathBuf>,
 
     /// Report every function, not only the ones that changed.
@@ -111,6 +112,23 @@ struct Args {
     )]
     functions: bool,
 
+    /// List the bases a raw image could load at, the best first, then stop.
+    ///
+    /// An image holds the full addresses of its own strings and functions.
+    /// At the right base, many words point at the start of one, and at any
+    /// other base, few do. Each row gives these hits, the hits that chance
+    /// gives near the base, and the evidence: the hits above chance. The
+    /// line after the table gives the base where one stands out. Needs
+    /// `--raw` and `--arch`.
+    #[arg(
+        long,
+        requires = "raw",
+        conflicts_with_all = [
+            "after", "diff", "diff_all", "tui", "functions", "exit_code", "base", "save", "open",
+        ]
+    )]
+    find_base: bool,
+
     /// How `--diff`, `--diff-all` and `--tui` show each instruction.
     #[arg(long, value_enum, default_value_t = ViewName::Asm)]
     view: ViewName,
@@ -163,14 +181,16 @@ struct Args {
     #[arg(long)]
     raw: bool,
 
-    /// Address a raw image loads at, for example `0x08000000`.
+    /// Address a raw image loads at, for example `0x08000000`, or `auto`.
     ///
     /// Required with `--raw`. Branch targets and reported addresses are all
     /// relative to this, so a wrong value produces a report against the wrong
-    /// addresses. Without it, the tool stops, and for MIPS it names the base
-    /// that the calls in the image show.
-    #[arg(long, value_parser = parse_address, requires = "raw")]
-    base: Option<u64>,
+    /// addresses. `auto` takes the base that the words of each image show,
+    /// as `--find-base` lists them, and stops where no base stands out.
+    /// Without `--base`, the tool stops, and names the base where one
+    /// stands out.
+    #[arg(long, value_parser = parse_base, requires = "raw")]
+    base: Option<Base>,
 
     /// Take one part out of each firmware image before reading it raw.
     ///
@@ -295,6 +315,19 @@ impl From<ArchName> for Isa {
             ArchName::X86 => Self::X86,
         }
     }
+}
+
+/// Where `--base` says a raw image loads.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Base {
+    Address(u64),
+    /// Where the words of the image show that it loads.
+    Auto,
+}
+
+/// Read `--base`: `auto`, or an address.
+fn parse_base(text: &str) -> Result<Base, String> {
+    if text.trim() == "auto" { Ok(Base::Auto) } else { parse_address(text).map(Base::Address) }
 }
 
 /// Read a load address, in hex with `0x` or in decimal.
@@ -501,6 +534,12 @@ fn run(args: &Args) -> Result<bool, String> {
         functions::print_functions(&binary, args.format);
         return Ok(false);
     }
+    if args.find_base {
+        let path = args.before.as_deref().ok_or("needs an image to find the base of")?;
+        let (bytes, _) = unpack_part(read_file(path)?, args.unpack, path)?;
+        bases::print_bases(&bytes, args.arch.into(), args.format);
+        return Ok(false);
+    }
     let opened = args.open.as_deref().map(Project::read).transpose()?;
     let replayed = opened.as_ref().map(|project| project.source.replay(args));
     let args = replayed.as_ref().unwrap_or(args);
@@ -661,7 +700,14 @@ fn read_binary(
         return parse(bytes, path);
     }
     let isa: Isa = args.arch.into();
-    let base = args.base.or(load).ok_or_else(|| missing_base(bytes, isa))?;
+    let base = match (args.base, load) {
+        (Some(Base::Address(base)), _) => base,
+        // The base comes from the same evidence that the check reads, so
+        // a check has nothing to add.
+        (Some(Base::Auto), _) => return parse_raw(bytes, found_base(bytes, isa, path)?, isa, path),
+        (None, Some(load)) => load,
+        (None, None) => return Err(missing_base(bytes, isa)),
+    };
     if check == BaseCheck::Report {
         check_and_report_base(bytes, base, isa, path);
     }
@@ -681,15 +727,36 @@ fn parse_raw(data: &[u8], base: u64, isa: Isa, path: &Path) -> Result<Binary, St
         .map_err(|error| format!("cannot read {}: {error}", path.display()))
 }
 
+/// The base that the words of an image show, for `--base auto`, or why
+/// there is none.
+fn found_base(data: &[u8], isa: Isa, path: &Path) -> Result<u64, String> {
+    let base = suggest_base(data, isa.arch()).ok_or_else(|| {
+        format!(
+            "--base auto finds no base that stands out in {}. See what --find-base lists, \
+             and give --base",
+            path.display()
+        )
+    })?;
+    eprintln!(
+        "hereticus: {} loads at {base:#x}, as the words that point into it show",
+        path.display()
+    );
+    Ok(base)
+}
+
 /// Say that `--raw` needs `--base`, and suggest one when the image shows it.
 ///
-/// The suggestion is not used in place of `--base`. It can be wrong, and a
-/// wrong base gives a report against the wrong addresses with no other sign.
+/// The suggestion is not used in place of `--base`, so that a reader sees
+/// it first: a wrong base gives a report against the wrong addresses with
+/// no other sign. `--base auto` takes it.
 fn missing_base(data: &[u8], isa: Isa) -> String {
     let needed = "--raw needs --base, because a raw image does not say where it loads";
     match suggest_base(data, isa.arch()) {
-        Some(base) => format!("{needed}. Its calls show that it loads at --base {base:#x}"),
-        None => needed.to_string(),
+        Some(base) => format!(
+            "{needed}. The words that point into it show that it loads at --base {base:#x}, \
+             which --base auto takes"
+        ),
+        None => format!("{needed}. See what --find-base lists"),
     }
 }
 
