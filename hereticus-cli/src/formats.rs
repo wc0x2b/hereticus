@@ -11,19 +11,11 @@ use hereticus::obj::Binary;
 use tabled::Table;
 use tabled::settings::Style;
 
+use super::marks::{Side, marked};
 use super::{
-    Hidden, Paint, Row, Sort, describe, describe_confidence, describe_edits, describe_kinds,
-    is_interesting, is_shown_unmatched, name_of, name_of_kind, sort_shown, summary_lines,
-    unmatched_word,
+    Listing, Paint, Row, describe, describe_confidence, describe_edits, describe_kinds, name_of,
+    name_of_kind, summary_lines, unmatched_word,
 };
-
-/// The pairs a report lists, in its order.
-fn shown_pairs(diff: &Diff, show_all: bool, hidden: Hidden, sort: Sort) -> Vec<&Match> {
-    let mut shown: Vec<&Match> =
-        diff.matched.iter().filter(|pair| show_all || is_interesting(pair, hidden)).collect();
-    sort_shown(&mut shown, sort);
-    shown
-}
 
 /// A name in code spans, so markdown reads `__init` as a name and not as
 /// bold text.
@@ -46,6 +38,13 @@ fn place_note(miss: Option<&NearMiss>, other: &Binary) -> Option<String> {
     Some(format!("same place as {}", code(&name_of(other, miss?.in_place?))))
 }
 
+/// A name in code spans, with the sign and the label of its mark, as
+/// ``◆ `handle` [fix]``.
+fn marked_code(name: String, label: Option<&str>) -> String {
+    // A `|` would end the cell of a table.
+    marked(name, label.map(|label| label.replace('|', "\\|")).as_deref())
+}
+
 /// The notes that are present, each after a comma.
 fn joined_notes(notes: impl IntoIterator<Item = Option<String>>) -> String {
     notes.into_iter().flatten().map(|note| format!(", {note}")).collect()
@@ -57,22 +56,22 @@ pub(crate) fn print_markdown(
     diff: &Diff,
     before: &Binary,
     after: &Binary,
-    show_all: bool,
-    hidden: Hidden,
-    sort: Sort,
+    listing: Listing<'_>,
     near_miss_floor: f64,
 ) {
-    let shown = shown_pairs(diff, show_all, hidden, sort);
+    let marks = listing.marks;
+    let shown = listing.pairs(diff);
     if !shown.is_empty() {
         let rows = shown.iter().map(|pair| {
             let name = name_of(before, pair.before);
             let renamed = name_of(after, pair.after);
+            let function = if name == renamed {
+                code(&name)
+            } else {
+                format!("{} -> {}", code(&name), code(&renamed))
+            };
             Row {
-                function: if name == renamed {
-                    code(&name)
-                } else {
-                    format!("{} -> {}", code(&name), code(&renamed))
-                },
+                function: marked_code(function, marks.of_pair(pair)),
                 change: describe(pair.changed),
                 score: format!("{:.2}", pair.score),
                 edits: describe_edits(pair.edits, Paint::Off),
@@ -86,36 +85,32 @@ pub(crate) fn print_markdown(
     }
 
     let mut unmatched = Vec::new();
-    for (index, contents) in diff.removed_with_contents() {
-        if show_all || is_shown_unmatched(contents, hidden) {
-            let miss = diff.near_miss(index);
-            let notes = [closest_note(miss, after, near_miss_floor), place_note(miss, after)];
-            unmatched.push(format!(
-                "- {}: {}{}",
-                code(&name_of(before, index)),
-                unmatched_word("gone", contents),
-                joined_notes(notes)
-            ));
-        }
+    for (index, contents) in listing.unmatched(diff, Side::Gone) {
+        let miss = diff.near_miss(index);
+        let notes = [closest_note(miss, after, near_miss_floor), place_note(miss, after)];
+        unmatched.push(format!(
+            "- {}: {}{}",
+            marked_code(code(&name_of(before, index)), marks.of_unmatched(Side::Gone, index)),
+            unmatched_word("gone", contents),
+            joined_notes(notes)
+        ));
     }
-    for (index, contents) in diff.added_with_contents() {
-        if show_all || is_shown_unmatched(contents, hidden) {
-            let miss = diff.added_near_miss(index);
-            let notes = [closest_note(miss, before, near_miss_floor), place_note(miss, before)];
-            unmatched.push(format!(
-                "- {}: {}{}",
-                code(&name_of(after, index)),
-                unmatched_word("new", contents),
-                joined_notes(notes)
-            ));
-        }
+    for (index, contents) in listing.unmatched(diff, Side::New) {
+        let miss = diff.added_near_miss(index);
+        let notes = [closest_note(miss, before, near_miss_floor), place_note(miss, before)];
+        unmatched.push(format!(
+            "- {}: {}{}",
+            marked_code(code(&name_of(after, index)), marks.of_unmatched(Side::New, index)),
+            unmatched_word("new", contents),
+            joined_notes(notes)
+        ));
     }
     // Each part is a block of its own: markdown joins lines that touch.
     let mut blocks = Vec::new();
     if !unmatched.is_empty() {
         blocks.push(unmatched.join("\n"));
     }
-    blocks.extend(summary_lines(diff, hidden));
+    blocks.extend(summary_lines(diff, listing.hidden));
     if !shown.is_empty() {
         println!();
     }
@@ -153,8 +148,14 @@ fn json_function(binary: &Binary, index: usize) -> String {
     )
 }
 
+/// The `mark` member of an object, where the function is marked: the label,
+/// which can be empty.
+fn json_mark(label: Option<&str>) -> String {
+    label.map_or_else(String::new, |label| format!(",\"mark\":{}", json_string(label)))
+}
+
 /// One pair, as a JSON object.
-fn json_pair(pair: &Match, before: &Binary, after: &Binary) -> String {
+fn json_pair(pair: &Match, before: &Binary, after: &Binary, mark: Option<&str>) -> String {
     let touched: Vec<String> = pair
         .kinds
         .present()
@@ -162,7 +163,7 @@ fn json_pair(pair: &Match, before: &Binary, after: &Binary) -> String {
         .collect();
     format!(
         "{{\"before\":{},\"after\":{},\"change\":{},\"score\":{:.4},\
-         \"added\":{},\"removed\":{},\"edited\":{},\"touched\":{{{}}},\"matched_by\":{}}}",
+         \"added\":{},\"removed\":{},\"edited\":{},\"touched\":{{{}}},\"matched_by\":{}{}}}",
         json_function(before, pair.before),
         json_function(after, pair.after),
         json_string(describe(pair.changed)),
@@ -172,6 +173,7 @@ fn json_pair(pair: &Match, before: &Binary, after: &Binary) -> String {
         pair.edits.edited,
         touched.join(","),
         json_string(describe_confidence(pair.confidence)),
+        json_mark(mark),
     )
 }
 
@@ -183,6 +185,7 @@ fn json_unmatched(
     contents: Contents,
     other: &Binary,
     miss: Option<&NearMiss>,
+    mark: Option<&str>,
 ) -> String {
     let holds = match contents {
         Contents::Code => "code",
@@ -200,8 +203,9 @@ fn json_unmatched(
     };
     format!(
         "{{\"function\":{},\"holds\":\"{holds}\",\"closest\":{closest},\
-         \"in_place\":{in_place}}}",
-        json_function(binary, index)
+         \"in_place\":{in_place}{}}}",
+        json_function(binary, index),
+        json_mark(mark),
     )
 }
 
@@ -209,30 +213,27 @@ fn json_unmatched(
 ///
 /// Every address is a number, not a string, so a tool can compare it. The
 /// totals count every function, whatever the report lists.
-pub(crate) fn print_json(
-    diff: &Diff,
-    before: &Binary,
-    after: &Binary,
-    show_all: bool,
-    hidden: Hidden,
-    sort: Sort,
-) {
-    let pairs: Vec<String> = shown_pairs(diff, show_all, hidden, sort)
+pub(crate) fn print_json(diff: &Diff, before: &Binary, after: &Binary, listing: Listing<'_>) {
+    let marks = listing.marks;
+    let pairs: Vec<String> = listing
+        .pairs(diff)
         .into_iter()
-        .map(|pair| json_pair(pair, before, after))
+        .map(|pair| json_pair(pair, before, after, marks.of_pair(pair)))
         .collect();
-    let gone: Vec<String> = diff
-        .removed_with_contents()
-        .filter(|&(_, contents)| show_all || is_shown_unmatched(contents, hidden))
+    let gone: Vec<String> = listing
+        .unmatched(diff, Side::Gone)
+        .into_iter()
         .map(|(index, contents)| {
-            json_unmatched(before, index, contents, after, diff.near_miss(index))
+            let mark = marks.of_unmatched(Side::Gone, index);
+            json_unmatched(before, index, contents, after, diff.near_miss(index), mark)
         })
         .collect();
-    let new: Vec<String> = diff
-        .added_with_contents()
-        .filter(|&(_, contents)| show_all || is_shown_unmatched(contents, hidden))
+    let new: Vec<String> = listing
+        .unmatched(diff, Side::New)
+        .into_iter()
         .map(|(index, contents)| {
-            json_unmatched(after, index, contents, before, diff.added_near_miss(index))
+            let mark = marks.of_unmatched(Side::New, index);
+            json_unmatched(after, index, contents, before, diff.added_near_miss(index), mark)
         })
         .collect();
     let changed = diff.changed().count();

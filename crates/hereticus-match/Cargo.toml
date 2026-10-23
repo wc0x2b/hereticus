@@ -15,7 +15,11 @@ rust-version.workspace = true
 [lib]
 bench = false
 
+[features]
+serde = ["dep:serde", "hereticus-memory/serde"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
 hereticus-arch = { path = "../hereticus-arch", version = "0.2.1" }
 hereticus-recovery = { path = "../hereticus-recovery", version = "0.2.1" }
 hereticus-callees = { path = "../hereticus-callees", version = "0.2.1" }

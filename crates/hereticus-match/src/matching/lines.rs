@@ -38,6 +38,7 @@ pub enum DiffLine {
 
 /// How `--diff` shows each instruction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum View {
     /// As the decoder printed it.
     #[default]

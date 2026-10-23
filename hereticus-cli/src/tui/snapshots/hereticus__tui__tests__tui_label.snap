@@ -1,0 +1,16 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+expression: "screen(&mut app, 120, 12)"
+---
+─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
+ Functions | Diff                                                                            firmware.o → firmware_v2.o 
+── Functions ──────────────────────────────────────────────────── ⏎ open  s/S sort  t touched  / filter  m mark  w save 
+  FUNCTION                                  CHANGE         SCORE +/-/~       TOUCHED                     MATCHED BY     
+▶ dispatch                                  changed         0.62 21/11/5     4 branch, 1 call, 6 jump, 6 same name      
+  check_header          ┌Label of dispatch─────────────────────────────────────────────────────┐ mem     same name      
+  handle                │                                                                      │ jump, 1 same name      
+                        └────────────────────────────────────────────────────⏎ keep  esc cancel┘                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ sort added ↓  │  3 of 5 functions  │  hidden retouched, data                                     0 gone  0 new  ? help

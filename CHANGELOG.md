@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+
+- Save a comparison as a project, and open it again with no second match.
+  `--save <PROJECT>` makes one from the command line, and `w` makes one
+  in the browser. `--open <PROJECT>` gives the report that a new run on
+  the two binaries gives, with the same flags. A project names each
+  binary by its full path and a SHA-256 hash, and does not open when a
+  binary moved or changed. See "Marks and Projects" in the book.
+- Mark a function in the browser with `m`, and give it a label, as
+  `auth bypass`. A marked function goes to the top, as
+  `◆ handle [auth bypass]`, also when a filter would hide it. The project
+  keeps the marks and the state of the browser, so `--tui --open` opens
+  as you left it.
+- Each report of an opened project shows the marks. `--format compact`
+  adds a last column to a marked line, `--format json` adds `"mark"`, and
+  `--diff` finds a function by its label.
+- The crates `hereticus`, `hereticus-match` and `hereticus-memory` have a
+  `serde` feature, which lets a caller save a `Diff` and read it again.
+
 ## [0.2.1](https://github.com/wc0x2b/hereticus/compare/v0.2.0...v0.2.1) - 2026-10-21
 ### Added
 

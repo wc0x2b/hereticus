@@ -15,7 +15,11 @@ rust-version.workspace = true
 [lib]
 bench = false
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 bolero = { version = "0.13", features = ["arbitrary"] }
