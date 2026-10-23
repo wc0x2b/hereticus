@@ -67,6 +67,9 @@ use std::collections::HashMap;
 use crate::arch::Recovery;
 use hereticus_memory::SMALLEST_ADDRESS;
 
+mod find;
+pub use find::{BaseCandidate, RANKED, clear_winner, measure_base, rank_bases};
+
 /// How far outside the image still counts as "nearly pointing at it", as a
 /// multiple of the image length.
 ///

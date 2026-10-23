@@ -182,6 +182,29 @@ else
     echo "fixtures: no ld.lld, skipping the vector table" >&2
 fi
 
+# Static programs, linked with the C library, for the tests that find the
+# base of a raw image. Each is linked at the default base of its target and
+# at another, so that no test can pass on the default alone. A test reads
+# the base from the ELF, and flattens its segments into the raw image.
+# Debian's armhf compiler emits Thumb-2, and its armel one A32.
+moved_base="0x12340000"
+mkdir -p "$build/base"
+for spec in x86-64:gcc-14 x86:i686-linux-gnu-gcc-14 aarch64:aarch64-linux-gnu-gcc-14 \
+    thumb2:arm-linux-gnueabihf-gcc-14 arm32:arm-linux-gnueabi-gcc-14 \
+    mips32:mipsel-linux-gnu-gcc-14 mips32-be:mips-linux-gnu-gcc-14; do
+    arch="${spec%%:*}"
+    compiler="${spec#*:}"
+    if ! command -v "$compiler" >/dev/null 2>&1; then
+        echo "fixtures: no $compiler, skipping the $arch program" >&2
+        continue
+    fi
+    "$compiler" -O2 -static -no-pie "$here/base/program.c" \
+        -o "$build/base/$arch-default.elf"
+    "$compiler" -O2 -static -no-pie "-Wl,-Ttext-segment=$moved_base" \
+        "$here/base/program.c" -o "$build/base/$arch-moved.elf"
+done
+echo "fixtures: static programs linked for the base tests"
+
 # Mach-O dylibs for AArch64, as macOS and iOS ship them. arm64e is the ABI
 # Apple's own binaries use. Each dylib is also stripped of its local symbols,
 # as a shipped one is, so `LC_FUNCTION_STARTS` and the exported names are
