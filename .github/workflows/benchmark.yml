@@ -18,7 +18,7 @@ jobs:
     name: Benchmark (criterion)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -38,7 +38,7 @@ jobs:
 
       # The same cache as the test job of `main.yml`.
       - name: Cache the fixtures
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: fixtures/build
           key: fixtures-${{ hashFiles('justfile', 'fixtures/**', '!fixtures/build/**', '!fixtures/**/__pycache__/**') }}
@@ -47,7 +47,7 @@ jobs:
       - name: Build the fixtures
         run: just backports
 
-      - uses: wcampbell0x2a/rust-bench-compare-action@0af46d10fda7311cff51d53b0a049d248b4dd0eb # v1.1.0
+      - uses: wcampbell0x2a/rust-bench-compare-action@5ed4ab69c252f00848a0c9235b087ed4309d0372 # v1.2.0
         with:
           harness: criterion
           package: hereticus
@@ -59,7 +59,7 @@ jobs:
     name: Benchmark (gungraun)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -76,7 +76,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Cache the fixtures
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: fixtures/build
           key: fixtures-${{ hashFiles('justfile', 'fixtures/**', '!fixtures/build/**', '!fixtures/**/__pycache__/**') }}
@@ -89,7 +89,7 @@ jobs:
       # in Cargo.lock.
       - uses: gungraun/setup-gungraun@v1
 
-      - uses: wcampbell0x2a/rust-bench-compare-action@0af46d10fda7311cff51d53b0a049d248b4dd0eb # v1.1.0
+      - uses: wcampbell0x2a/rust-bench-compare-action@5ed4ab69c252f00848a0c9235b087ed4309d0372 # v1.2.0
         with:
           harness: gungraun
           package: hereticus

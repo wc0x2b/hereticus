@@ -15,7 +15,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The C part of mimalloc builds for the musl target that
       # `.cargo/config.toml` picks.
@@ -36,7 +36,7 @@ jobs:
       # compilers, so the key changes when an input of the build does.
       # `backports.sh` rebuilds only when its own inputs changed.
       - name: Cache the fixtures
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: fixtures/build
           key: fixtures-${{ hashFiles('justfile', 'fixtures/**', '!fixtures/build/**', '!fixtures/**/__pycache__/**') }}
@@ -48,7 +48,7 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install musl
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - name: Install the toolchain of rust-toolchain.toml
