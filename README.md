@@ -12,7 +12,7 @@ Compare two versions of a binary or firmware and find the functions that changed
 
 * **No IDA or Ghidra**: It needs no framework and no GUI. Programmers and agents can use it from a shell.
 * **Or inside Ghidra**: An extension finds the functions that Ghidra misses, and pairs functions for Version Tracking. See [Ghidra Extension](https://wc0x2b.github.io/hereticus/ghidra.html).
-* **Raw firmware, base found**: A flash dump has no header that says where it loads. `--find-base` finds the base on every architecture, from the words that point at the strings and functions of the image, and says so when no base stands out. Over 54<!-- from find_base.rs: images --> test images with a known base, it gives the right base for 40<!-- from find_base.rs: right -->, no base for 14<!-- from find_base.rs: none --> position-independent stubs, and a wrong base for 0<!-- from find_base.rs: wrong -->. See [Find the Base](https://wc0x2b.github.io/hereticus/usage.html#find-the-base).
+* **Raw firmware, base found**: A flash dump has no header that says where it loads. `--find-base` finds the base on every architecture, from the words that point at the strings and functions of the image, and says so when no base stands out. See [Find the Base](https://wc0x2b.github.io/hereticus/usage.html#find-the-base).
 * See the [book](https://wc0x2b.github.io/hereticus/) for usage, examples, and real-life examples.
 
 ## Installation
