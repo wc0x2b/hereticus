@@ -7,7 +7,7 @@ function names the source from this file.
 
 Survey date: 2026-10-04, with entry 13 and more sources added on
 2026-10-07, entries 16 to 18 on 2026-10-19, with more sources added
-on 2026-10-19, and entry 19 on 2026-10-20. The entries are in order of value for the effort.
+on 2026-10-19, entry 19 on 2026-10-20, and entry 20 on 2026-10-23. The entries are in order of value for the effort.
 The results of each entry, as applied and measured, are in
 [Results](#results).
 
@@ -206,7 +206,8 @@ and basefind match pointers against the offsets of strings. Papers:
 *Determining image base of firmware for ARM devices by matching literal
 pools* (DBMLP), and Zhu, *Determining the base address of MIPS firmware
 based on absolute address statistics and string reference matching*,
-Computers & Security 88, 2020.
+Computers & Security 88, 2020. Entry 20 finds the base itself, on every
+architecture.
 
 ### A18. Unpacking firmware
 
@@ -579,6 +580,35 @@ one more unique reference of entry 13.
 Code: `Binary::row_texts`, `RowText` and `ROW_REACH` in
 `crates/hereticus-image`; `Cascade::twins_by_rows` and `row_holders` in
 `matching/cascade.rs`; `Confidence::SameRowText` in `matching.rs`.
+
+## 20. Targets that vote for a load address
+
+Source: rbasefind and basefind (A17) try every base that is a multiple of
+4 KiB, and count the words that point at a string at each one. The papers
+of A17 do the same with literal pools, and with the absolute addresses of
+MIPS. Each gives the base with the most hits, whatever the count.
+
+Idea: a target is the start of a string or of a function. A word `v`
+that points at the target `t` says the base is `v - t`, so the targets
+vote, and no base needs to be tried. Two ways to vote cover the cases. A
+few anchor targets take a vote from every word, which finds any base,
+aligned or not. And every word votes with every target whose offset into
+a page agrees with its own, which finds a base on a page where few targets
+are pointed at at all, as in PIC code. Words that are not addresses hit
+by chance, and they hit as often a few bytes off; the right base is a peak
+there, so the hits above the median of the bases nearby are the evidence.
+Three traps give a base with many hits that is wrong: dense A32 opcodes,
+offsets from the global offset table of i686 and ARM PIC, and the low
+halves of addresses in MIPS `addiu`. The peak test, the end of the address
+space and a window of 64 KiB catch each. Where no base has twice the
+evidence of the next, there is no answer.
+
+Applies to: `--find-base`, `--base auto`, the error for a missing `--base`,
+and the base check.
+
+Code: `rank_bases`, `clear_winner`, `measure_base` and `BaseCandidate` in
+`crates/hereticus-recovery/src/raw/find.rs`; `check_targets` and
+`suggest_base` in `raw.rs`; `print_bases` in `hereticus-cli/src/bases.rs`.
 
 ## Lower fit
 
@@ -2295,3 +2325,33 @@ packages build one library into several files, so `research_bench
 leaves 1,574,557 right and 42,833 wrong, 2.65% wrong, where every copy
 counted gives 1.31%. The copies are mostly code that pairs right, so the
 copies made the set look better than it is.
+
+### 20: the load address of a raw image
+
+Measured on 2026-10-23 over 54 images with a known base, as
+`tests/find_base.rs` reads them: a static program for seven targets at
+two bases each, zlib as Cortex-M firmware at eight builds, and the 18
+kernels and 14 stubs of the OpenWrt boards. rbasefind 0.1.3, with its
+progress bars taken out: as built today, they stop it before it starts.
+Its first answer counts, as it gives one for every image. 16 threads.
+
+| Set | Images | rbasefind right | rbasefind wrong | hereticus right | hereticus none | hereticus wrong |
+|---|---|---|---|---|---|---|
+| Static programs | 14 | 8 | 6 | 14 | 0 | 0 |
+| Cortex-M zlib | 8 | 7 | 1 | 8 | 0 | 0 |
+| OpenWrt kernels | 18 | 18 | 0 | 18 | 0 | 0 |
+| OpenWrt stubs | 14 | 0 | 14 | 0 | 14 | 0 |
+| All | 54 | 33 | 21 | 40 | 14 | 0 |
+
+rbasefind's wrong answers are the traps of entry 20: the A32 opcodes at
+`0xe5993000` on both A32 programs, the MIPS `addiu` halves at
+`0x247d0000` on all four MIPS programs and at `0x24840000` on the MIPS
+stubs, and one Cortex-M build where 11 words hit at `0x79000` against 8 at
+the right base. The stubs are position-independent code, with a few words
+that point at a string by chance, so no answer is right there.
+
+Time, on one machine: rbasefind took 23 to 43 seconds on a kernel and
+about 1.5 seconds on a static program. `hereticus` took 0.2 to 0.8 seconds
+on a kernel, and 25 to 90 milliseconds on a static program, as
+`examples/find_base.rs` measures.
+

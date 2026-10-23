@@ -1,0 +1,17 @@
+---
+source: hereticus-cli/tests/cli.rs
+info:
+  program: hereticus
+  args:
+    - "--raw"
+    - "--base"
+    - auto
+    - fixtures/build/raw/O2-basic.bin
+    - fixtures/build/raw/O2-basic_v2.bin
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+hereticus: --base auto finds no base that stands out in fixtures/build/raw/O2-basic.bin. See what --find-base lists, and give --base

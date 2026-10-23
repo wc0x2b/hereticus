@@ -434,6 +434,108 @@ fn warns_about_a_base_that_looks_wrong() {
     ]));
 }
 
+/// zlib built as Cortex-M firmware and linked into flash at `0x08000000`,
+/// as `just backports` writes its flash image.
+const FIRMWARE: &str = "fixtures/build/backports/zlib-before/cortex-m3-O2/lib.bin";
+const FIRMWARE_FIXED: &str = "fixtures/build/backports/zlib-after/cortex-m3-O2/lib.bin";
+
+fn firmware_present() -> bool {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(FIRMWARE).exists()
+}
+
+/// The table gives the evidence for each base, and the line after it the
+/// base that stands out.
+#[test]
+fn finds_the_base_of_firmware() {
+    if !firmware_present() {
+        eprintln!("skipped: run `just backports` first");
+        return;
+    }
+    assert_cmd_snapshot!(hereticus().args(["--find-base", "--raw", "--arch", "thumb2", FIRMWARE]));
+}
+
+#[test]
+fn the_bases_parse_as_json() {
+    if !firmware_present() {
+        eprintln!("skipped: run `just backports` first");
+        return;
+    }
+    let output = hereticus()
+        .args(["--find-base", "--raw", "--arch", "thumb2", "--format", "json", FIRMWARE])
+        .output()
+        .expect("the tool runs");
+    let found: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    assert_eq!(found["base"], 0x0800_0000);
+    assert_eq!(found["candidates"][0]["base"], 0x0800_0000);
+    assert!(found["candidates"][0]["evidence"].as_f64().is_some_and(|evidence| evidence > 0.0));
+}
+
+/// Where no base stands out, the tool says so and names none.
+#[test]
+fn finds_no_base_in_noise() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+    let output = hereticus()
+        .args(["--find-base", "--raw", "--format", "json", "fixtures/build/raw/O2-basic.bin"])
+        .output()
+        .expect("the tool runs");
+    let found: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    assert_eq!(found["base"], serde_json::Value::Null);
+}
+
+/// `--base auto` takes the base that each image shows, and says which.
+#[test]
+fn compares_firmware_at_the_base_it_shows() {
+    if !firmware_present() {
+        eprintln!("skipped: run `just backports` first");
+        return;
+    }
+    let auto = hereticus()
+        .args(["--raw", "--arch", "thumb2", "--base", "auto", "--format", "compact"])
+        .args([FIRMWARE, FIRMWARE_FIXED])
+        .output()
+        .expect("the tool runs");
+    let given = hereticus()
+        .args(["--raw", "--arch", "thumb2", "--base", "0x08000000", "--format", "compact"])
+        .args([FIRMWARE, FIRMWARE_FIXED])
+        .output()
+        .expect("the tool runs");
+    assert_eq!(String::from_utf8_lossy(&auto.stdout), String::from_utf8_lossy(&given.stdout));
+    let said = String::from_utf8_lossy(&auto.stderr);
+    assert!(said.contains(&format!("{FIRMWARE} loads at 0x8000000")), "{said}");
+}
+
+/// `--base auto` stops where no base stands out, as a missing base does.
+#[test]
+fn auto_stops_where_no_base_stands_out() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+    assert_cmd_snapshot!(hereticus().args([
+        "--raw",
+        "--base",
+        "auto",
+        "fixtures/build/raw/O2-basic.bin",
+        "fixtures/build/raw/O2-basic_v2.bin",
+    ]));
+}
+
+/// The search reads one raw image, so it takes no second one and no base.
+#[test]
+fn the_base_search_takes_one_raw_image() {
+    for args in [
+        &["--find-base", "a.bin"][..],
+        &["--find-base", "--raw", "a.bin", "b.bin"],
+        &["--find-base", "--raw", "--base", "0x1000", "a.bin"],
+    ] {
+        let output = hereticus().args(args).output().expect("the tool runs");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+}
+
 #[test]
 fn explains_a_file_it_cannot_find() {
     assert_cmd_snapshot!(hereticus().args(["does-not-exist.o", "fixtures/build/O2/basic.o"]));

@@ -10,8 +10,7 @@
 //!
 //! rbasefind tries every base that is a multiple of 4 KiB, and counts the
 //! words that point at a string at each one: a million bases on a 32-bit
-//! image, and none on a 64-bit one. Measured on a 13 MiB ARM kernel, it did
-//! not finish in ten minutes on 16 threads.
+//! image. See RESEARCH.md, entry 20, for how the two compare.
 //!
 //! Here the targets vote instead. A target is the start of a string or of
 //! a function. Each word `v` says that if it points at the target `t`, the

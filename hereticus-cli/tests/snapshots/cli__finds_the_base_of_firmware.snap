@@ -1,0 +1,30 @@
+---
+source: hereticus-cli/tests/cli.rs
+info:
+  program: hereticus
+  args:
+    - "--find-base"
+    - "--raw"
+    - "--arch"
+    - thumb2
+    - fixtures/build/backports/zlib-before/cortex-m3-O2/lib.bin
+---
+success: true
+exit_code: 0
+----- stdout -----
+╭────────────┬─────────┬───────────┬───────────┬──────────╮
+│ BASE       │ STRINGS │ FUNCTIONS │ BY CHANCE │ EVIDENCE │
+├────────────┼─────────┼───────────┼───────────┼──────────┤
+│ 0x8000000  │       8 │         3 │         0 │       11 │
+│ 0x7ea86    │       2 │         3 │         2 │        3 │
+│ 0xf1be3228 │       2 │         1 │         0 │        3 │
+│ 0xf8d89a28 │       2 │         1 │         0 │        3 │
+│ 0xf8d8d1ce │       2 │         1 │         0 │        3 │
+│ 0xea7e     │       1 │         1 │         0 │        2 │
+│ 0x4e31c    │       1 │         1 │         0 │        2 │
+│ 0x7ea46    │       2 │         2 │         2 │        2 │
+╰────────────┴─────────┴───────────┴───────────┴──────────╯
+
+The image loads at 0x8000000. Give --base 0x8000000 or --base auto.
+
+----- stderr -----

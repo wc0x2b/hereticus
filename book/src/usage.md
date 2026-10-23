@@ -125,41 +125,75 @@ $ hereticus --raw --arch mips32 --base 0x80000000 v1.bin v2.bin
 
 ### Find the Base
 
-When you do not know the base, leave out `--base`. `hereticus` then stops,
-and gives the base that the calls of the image show, where they show one:
+`--find-base` finds where a raw image loads, on every architecture. It
+lists the bases with the most evidence, and gives the base where one
+stands out:
+
+<!-- output: --find-base --raw --arch arm32 fixtures/build/openwrt/arm-a385dbap-kernel-22.03.2.bin -->
+```console
+$ hereticus --find-base --raw --arch arm32 fixtures/build/openwrt/arm-a385dbap-kernel-22.03.2.bin
+╭────────────┬─────────┬───────────┬───────────┬──────────╮
+│ BASE       │ STRINGS │ FUNCTIONS │ BY CHANCE │ EVIDENCE │
+├────────────┼─────────┼───────────┼───────────┼──────────┤
+│ 0xc0008000 │   13231 │     10001 │      2286 │    20946 │
+│ 0xe2751000 │    1572 │       483 │      1923 │      132 │
+...
+╰────────────┴─────────┴───────────┴───────────┴──────────╯
+
+The image loads at 0xc0008000. Give --base 0xc0008000 or --base auto.
+```
+<!-- end output -->
+
+`--base auto` takes that base, for each image, and says which it took:
+
+<!-- output: --functions --raw --arch mips32 --base auto fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin -->
+```console
+$ hereticus --functions --raw --arch mips32 --base auto fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin
+hereticus: fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin loads at 0x80000000, as the words that point into it show
+...
+```
+<!-- end output -->
+
+Without `--base`, `hereticus` stops, and names the base where one stands
+out:
 
 <!-- output: --functions --raw --arch mips32 fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin -->
 ```console
 $ hereticus --functions --raw --arch mips32 kernel.bin
-hereticus: --raw needs --base, because a raw image does not say where it loads. Its calls show that it loads at --base 0x80000000
+hereticus: --raw needs --base, because a raw image does not say where it loads. The words that point into it show that it loads at --base 0x80000000, which --base auto takes
 ```
 <!-- end output -->
 
+An image holds the full addresses of its own strings and functions: in
+tables of handlers, in the literal pools of ARM, and in the immediates of
+x86. At the right base, many of these words point at the start of a
+string or of a function. At any other base, few do. Each row gives these
+hits, the hits that bases a few bytes off get, which is what chance
+gives, and the evidence: the hits above chance. On MIPS, the calls also
+show the base, because a `jal` holds its target.
+
+`hereticus` gives no base where none stands out by more than twice the
+next. It does not guess:
+
+- **Small position-independent code**, as the decompressor before a
+  kernel, holds too few full addresses.
+- **Halves of addresses** in an instruction, as MIPS `addiu a0, a0,
+  %lo(text)`, point at text from a base just below the opcode. The
+  column `EVIDENCE` shows `halves` there, and the row counts for nothing.
+
+Over 54<!-- from find_base.rs: images --> images of seven
+architectures with a known base, `hereticus` gives the right base for
+40<!-- from find_base.rs: right -->, no base for the other
+14<!-- from find_base.rs: none -->, all position-independent stubs, and
+a wrong base for 0<!-- from find_base.rs: wrong -->. rbasefind, which
+tries each base on a page, gives a base for every image, the stubs too,
+and falls into the traps above. `RESEARCH.md`, entry 20, compares the two.
+See [The Load Address of a Raw Image](./methods.md#the-load-address-of-a-raw-image).
+
 > [!WARNING]
-> `hereticus` does not use that base by itself. A wrong base does not
-> fail: it gives a report against the wrong addresses, with no other sign.
-> Where the base that you give looks wrong, `hereticus` warns.
-
-Only MIPS images show their base, because only a MIPS call holds its
-target. `hereticus` finds the base in two steps:
-
-1. **The low bits, from the calls.** A `jal` holds the low 28 bits of its
-   target, which is an offset into a region of 256 MB. At the right base,
-   most targets land on the start of a function, as `addiu sp, sp, -N`.
-   At each other base, few do. The most common targets each vote for the
-   bases that put them on a function start, and the base that lands the
-   most calls wins.
-2. **The region, from the stored pointers.** The image also holds the
-   full addresses of its functions, in tables and in data. The region
-   where the most of these words point at a function start gives the high
-   bits of the base.
-
-Where either step has no clear winner, by more than twice the next base,
-`hereticus` gives no base. It does not guess.
-
-On ARM, AArch64 and x86, each call is relative to where it is, so the
-calls do not show the base, and `hereticus` gives none. Look for it in
-these places:
+> A wrong base does not fail: it gives a report against the wrong
+> addresses, with no other sign. Where no base stands out, look for it in
+> these places, then give it with `--base`.
 
 - **The vector table** of a Cortex-M image, at its start. The second word
   is the address of the reset handler, which is in the image. The base is
@@ -168,29 +202,22 @@ these places:
 - **The boot log**, where the bootloader often prints the address that it
   loads the image at.
 - **The memory map** in the datasheet of the chip.
-- **rbasefind** and **basefind**, which find a base from the strings that
-  an image points at.
 
 ### Check the Base
 
 `hereticus` checks each base that you give, and warns where the image
-shows a better one. It counts the words of the image that hold an address
-in the image, as a vector table or a table of pointers does. On MIPS, it
-also counts the calls that land on a function start, as above:
+shows a better one, by the same evidence as `--find-base`:
 
 <!-- output: --functions --raw --arch mips32 --base 0x80001000 fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin -->
 ```console
 $ hereticus --functions --raw --arch mips32 --base 0x80001000 fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin
-hereticus: fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin may not load at 0x80001000: 550 of 73551 calls land on a function start at this base, but 43295 do at 0x80000000
+hereticus: fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin may not load at 0x80001000: words point at 833 strings and functions at this base, but at 16245 at 0x80000000
 ...
 ```
 <!-- end output -->
 
 Small position-independent code holds no full addresses, so `hereticus`
-cannot check its base, and does not warn. A base that is wrong by
-megabytes also gives no warning: at that distance, no word points into
-the image, which is the same as no evidence. See
-[The Load Address of a Raw Image](./methods.md#the-load-address-of-a-raw-image).
+cannot check its base, and does not warn.
 
 A firmware image holds the kernel compressed, often after a small
 decompressor. `--unpack kernel` takes out the kernel, and `--unpack stub`
@@ -351,6 +378,7 @@ Options:
       --save <PROJECT>         Save the comparison as a project, then report as asked
       --open <PROJECT>         Open a project that `--save` or `--tui` saved, in place of two binaries
       --functions              List the functions of one binary, then stop
+      --find-base              List the bases a raw image could load at, the best first, then stop
       --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il]
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
@@ -359,7 +387,7 @@ Options:
       --exit-code              Exit with a failure status when anything changed
       --near-miss <NEAR_MISS>  Lowest score at which an unmatched function names its closest candidate, from 0.0 to 1.0 [default: 0.25]
       --raw                    Read the inputs as raw code with no container format
-      --base <BASE>            Address a raw image loads at, for example `0x08000000`
+      --base <BASE>            Address a raw image loads at, for example `0x08000000`, or `auto`
       --unpack <UNPACK>        Take one part out of each firmware image before reading it raw [possible values: stub, kernel]
       --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, aarch64, mips32, mips32-be, mips16, mips16-be, x86-64, x86]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact, markdown, json]
