@@ -123,6 +123,8 @@ architecture with `--arch`, and the address the image loads at with
 $ hereticus --raw --arch mips32 --base 0x80000000 v1.bin v2.bin
 ```
 
+### Find the Base
+
 When you do not know the base, leave out `--base`. `hereticus` then stops,
 and gives the base that the calls of the image show, where they show one:
 
@@ -137,6 +139,58 @@ hereticus: --raw needs --base, because a raw image does not say where it loads. 
 > `hereticus` does not use that base by itself. A wrong base does not
 > fail: it gives a report against the wrong addresses, with no other sign.
 > Where the base that you give looks wrong, `hereticus` warns.
+
+Only MIPS images show their base, because only a MIPS call holds its
+target. `hereticus` finds the base in two steps:
+
+1. **The low bits, from the calls.** A `jal` holds the low 28 bits of its
+   target, which is an offset into a region of 256 MB. At the right base,
+   most targets land on the start of a function, as `addiu sp, sp, -N`.
+   At each other base, few do. The most common targets each vote for the
+   bases that put them on a function start, and the base that lands the
+   most calls wins.
+2. **The region, from the stored pointers.** The image also holds the
+   full addresses of its functions, in tables and in data. The region
+   where the most of these words point at a function start gives the high
+   bits of the base.
+
+Where either step has no clear winner, by more than twice the next base,
+`hereticus` gives no base. It does not guess.
+
+On ARM, AArch64 and x86, each call is relative to where it is, so the
+calls do not show the base, and `hereticus` gives none. Look for it in
+these places:
+
+- **The vector table** of a Cortex-M image, at its start. The second word
+  is the address of the reset handler, which is in the image. The base is
+  usually that address rounded down to the start of the flash, as
+  `0x08000000` on an STM32.
+- **The boot log**, where the bootloader often prints the address that it
+  loads the image at.
+- **The memory map** in the datasheet of the chip.
+- **rbasefind** and **basefind**, which find a base from the strings that
+  an image points at.
+
+### Check the Base
+
+`hereticus` checks each base that you give, and warns where the image
+shows a better one. It counts the words of the image that hold an address
+in the image, as a vector table or a table of pointers does. On MIPS, it
+also counts the calls that land on a function start, as above:
+
+<!-- output: --functions --raw --arch mips32 --base 0x80001000 fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin -->
+```console
+$ hereticus --functions --raw --arch mips32 --base 0x80001000 fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin
+hereticus: fixtures/build/openwrt/mipsel-mt300nv2-kernel-22.03.2.bin may not load at 0x80001000: 550 of 73551 calls land on a function start at this base, but 43295 do at 0x80000000
+...
+```
+<!-- end output -->
+
+Small position-independent code holds no full addresses, so `hereticus`
+cannot check its base, and does not warn. A base that is wrong by
+megabytes also gives no warning: at that distance, no word points into
+the image, which is the same as no evidence. See
+[The Load Address of a Raw Image](./methods.md#the-load-address-of-a-raw-image).
 
 A firmware image holds the kernel compressed, often after a small
 decompressor. `--unpack kernel` takes out the kernel, and `--unpack stub`
