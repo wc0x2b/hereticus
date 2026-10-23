@@ -7,6 +7,10 @@ on:
     paths:
       - 'book/**'
       - 'real-life-reports/**'
+  pull_request:
+    paths:
+      - 'book/**'
+      - 'real-life-reports/**'
 
 permissions:
   contents: read
@@ -31,12 +35,23 @@ jobs:
       - name: Build book
         run: mdbook build book
 
+      # A pull request only checks the book: each link and each #anchor.
+      - name: Check links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --offline --include-fragments --no-progress
+            --root-dir ${{ github.workspace }}/book/book
+            'book/book/**/*.html'
+
       - name: Upload artifact
+        if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v5
         with:
           path: book/book
 
   deploy:
+    if: github.event_name == 'push'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

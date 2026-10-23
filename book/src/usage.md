@@ -133,9 +133,10 @@ hereticus: --raw needs --base, because a raw image does not say where it loads. 
 ```
 <!-- end output -->
 
-`hereticus` does not use that base by itself. A wrong base does not
-fail: it gives a report against the wrong addresses, with no other sign.
-Where the base that you give looks wrong, `hereticus` warns.
+> [!WARNING]
+> `hereticus` does not use that base by itself. A wrong base does not
+> fail: it gives a report against the wrong addresses, with no other sign.
+> Where the base that you give looks wrong, `hereticus` warns.
 
 A firmware image holds the kernel compressed, often after a small
 decompressor. `--unpack kernel` takes out the kernel, and `--unpack stub`

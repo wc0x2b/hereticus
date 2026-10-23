@@ -6,4 +6,5 @@ src = "src"
 
 [output.html]
 git-repository-url = "https://github.com/wc0x2b/hereticus"
+edit-url-template = "https://github.com/wc0x2b/hereticus/edit/master/book/{path}"
 additional-css = ["theme/custom.css"]

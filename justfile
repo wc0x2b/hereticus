@@ -210,6 +210,11 @@ run level="O2" *args: fixtures
 bench *args: backports
     cargo bench -p hereticus {{args}}
 
+# Build the book, and check each link and #anchor in it. Needs `lychee`.
+book:
+    mdbook build book
+    lychee --offline --include-fragments --no-progress --root-dir "$PWD/book/book" 'book/book/**/*.html'
+
 # Make the screenshots of the TUI page of the book. Needs `vhs`.
 tui-screenshots: build
     vhs book/tapes/tui.tape
