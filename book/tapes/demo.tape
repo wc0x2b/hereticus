@@ -1,4 +1,4 @@
-# The demo at the top of the README: `just readme-demo`.
+# The demo at the top of the README: `just book-media`.
 Output "book/src/images/demo.gif"
 Set Shell bash
 Set FontSize 15

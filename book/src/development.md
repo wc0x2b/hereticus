@@ -119,3 +119,12 @@ Each page of [Real-Life Examples](./real-life-examples.md) includes a file of
 ```
 mdbook serve book
 ```
+
+`just book` builds the book and checks each link and `#anchor` in it.
+
+The screenshots of the book and the demo of the README are images, so no
+test can read them. `just book-media` records them again from
+`book/tapes/`, and writes the hash of the screens they show to
+`book/tapes/media.sha256`. Where a snapshot of a screen, a snapshot of a
+report or a tape changes after, `just quick-test` fails until you run
+`just book-media`, look at the images, and commit them.

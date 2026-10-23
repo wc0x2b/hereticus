@@ -130,5 +130,6 @@ hash. The binaries stay where they are.
 The mouse wheel scrolls, and a click selects a row.
 
 The screenshots come from `book/tapes/tui.tape`. To make them again, run
-`just tui-screenshots`. The tests of `hereticus-cli/src/tui/` lock the
-text of each screen.
+`just book-media`. The tests of `hereticus-cli/src/tui/` lock the
+text of each screen, and `hereticus-cli/tests/book_media.rs` fails when a
+screen changes after the screenshots were made.

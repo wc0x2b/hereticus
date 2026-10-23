@@ -215,13 +215,13 @@ book:
     mdbook build book
     lychee --offline --include-fragments --no-progress --root-dir "$PWD/book/book" 'book/book/**/*.html'
 
-# Record the demo at the top of the README. Needs `vhs`.
-readme-demo: build
-    vhs book/tapes/demo.tape
-
-# Make the screenshots of the TUI page of the book. Needs `vhs`.
-tui-screenshots: build
+# Record the screenshots of the book and the demo of the README, then
+# stamp them, so `book_media.rs` knows they are as new as the screens they
+# show. Needs `vhs`.
+book-media: build
     vhs book/tapes/tui.tape
+    vhs book/tapes/demo.tape
+    BOOK_MEDIA_UPDATE=1 cargo nextest run --release -p hereticus-cli --test book_media
 
 lint:
     cargo fmt
