@@ -6,22 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-### Added
-
-- `--find-base` finds where a raw image loads, on every architecture:
-  ARM, Thumb-2, AArch64, MIPS and x86. It lists the bases with the most
-  evidence, and gives the base where one stands out, by more than twice
-  the next. `--base auto` takes that base. See "Find the Base" in the
-  book.
-- The base check warns on every architecture where the words of an image
-  show a better base, not only on MIPS. The error for a missing `--base`
-  names the base on every architecture too.
-
-### Changed
-
-- The base check of MIPS no longer reads a few words of data in
-  position-independent code as calls, which made it warn at the right
-  base.
 
 ### Added
 
@@ -41,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--diff` finds a function by its label.
 - The crates `hereticus`, `hereticus-match` and `hereticus-memory` have a
   `serde` feature, which lets a caller save a `Diff` and read it again.
+- `--find-base` finds where a raw image loads, on every architecture:
+  ARM, Thumb-2, AArch64, MIPS and x86. It lists the bases with the most
+  evidence, and gives the base where one stands out, by more than twice
+  the next. `--base auto` takes that base. See "Find the Base" in the
+  book.
+- The base check warns on every architecture where the words of an image
+  show a better base, not only on MIPS. The error for a missing `--base`
+  names the base on every architecture too.
+
+### Changed
+
+- The base check of MIPS no longer reads a few words of data in
+  position-independent code as calls, which made it warn at the right
+  base.
 
 ## [0.2.1](https://github.com/wc0x2b/hereticus/compare/v0.2.0...v0.2.1) - 2026-10-21
 ### Added
