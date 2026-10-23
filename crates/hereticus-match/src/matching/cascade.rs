@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::norm::{NormInsn, Operation};
 use hereticus_callees::Callee;
-use hereticus_image::RowText;
+use hereticus_image::{RowText, VirtualSlot};
 use rayon::prelude::*;
 
 use super::align::{
@@ -70,6 +70,11 @@ pub(super) struct Cascade<'a> {
     pub(super) left_rows: Vec<Vec<RowText<'a>>>,
     /// The texts beside each function of the second binary.
     pub(super) right_rows: Vec<Vec<RowText<'a>>>,
+    /// The vtable slots each function of the first binary fills, by class:
+    /// see [`hereticus_image::Binary::virtual_slots`].
+    pub(super) left_classes: Vec<Vec<VirtualSlot<'a>>>,
+    /// The vtable slots each function of the second binary fills.
+    pub(super) right_classes: Vec<Vec<VirtualSlot<'a>>>,
 }
 
 impl Cascade<'_> {
@@ -654,12 +659,15 @@ impl Cascade<'_> {
         let mut repaired = Repaired::Nothing;
         let partner: HashMap<usize, usize> =
             self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
-        let left_keys = unique_reference_holders(&self.left, &self.left_rows, &|callee| {
+        let (left_rows, left_classes) = (&self.left_rows, &self.left_classes);
+        let left_keys = unique_reference_holders(&self.left, left_rows, left_classes, &|callee| {
             partner.get(&callee).copied()
         });
-        let right_keys = unique_reference_holders(&self.right, &self.right_rows, &|callee| {
-            self.right_free.get(callee).is_some_and(|free| !free).then_some(callee)
-        });
+        let (right_rows, right_classes) = (&self.right_rows, &self.right_classes);
+        let right_keys =
+            unique_reference_holders(&self.right, right_rows, right_classes, &|callee| {
+                self.right_free.get(callee).is_some_and(|free| !free).then_some(callee)
+            });
         let mut shared: HashMap<(usize, usize), usize> = HashMap::new();
         for (key, &x) in &left_keys {
             if let Some(&y) = right_keys.get(key) {
@@ -1729,6 +1737,7 @@ impl Cascade<'_> {
 
         let mut pairs: Vec<(usize, usize)> = Vec::new();
         let mut by_rows: Vec<(usize, usize)> = Vec::new();
+        let mut by_classes: Vec<(usize, usize)> = Vec::new();
         for (mut left, mut right) in groups.into_values() {
             if left.len() < 2 {
                 continue;
@@ -1740,6 +1749,10 @@ impl Cascade<'_> {
             left.retain(|before| !named.iter().any(|(paired, _)| paired == before));
             right.retain(|after| !named.iter().any(|(_, paired)| paired == after));
             by_rows.extend(named);
+            let named = self.twins_by_classes(&left, &right);
+            left.retain(|before| !named.iter().any(|(paired, _)| paired == before));
+            right.retain(|after| !named.iter().any(|(_, paired)| paired == after));
+            by_classes.extend(named);
             if !in_order {
                 continue;
             }
@@ -1753,6 +1766,10 @@ impl Cascade<'_> {
         by_rows.sort_unstable();
         for (before, after) in by_rows {
             self.take_pair(before, after, Confidence::SameRowText, 1.0);
+        }
+        by_classes.sort_unstable();
+        for (before, after) in by_classes {
+            self.take_pair(before, after, Confidence::SameClassSlot, 1.0);
         }
         pairs.sort_unstable();
         for (before, after) in pairs {
@@ -1778,6 +1795,43 @@ impl Cascade<'_> {
             .collect();
         pairs.sort_unstable();
         pairs
+    }
+
+    /// The twins of `left` and `right` that their vtable slots pair: where
+    /// a slot of a class holds one twin of the group on each side, and no
+    /// other slot pairs either twin with another.
+    ///
+    /// Template copies and destructors of many classes can be the same
+    /// instructions, so their order alone pairs them: `MemPoolT<52>::Free`
+    /// and `MemPoolT<60>::Free` of tinyxml2. The name of the class tells
+    /// them apart. One function can fill a slot of several classes, as a
+    /// virtual function that a subclass does not override, and a release
+    /// can add a subclass, so each slot votes on its own. A slot of a
+    /// vtable that changed its length votes for nothing, as a release that
+    /// adds a virtual function moves the slots after it. Measured over the
+    /// versions of Assemblage-DeepHistory, a vote from such a slot paired
+    /// 69 more right and 1,623 more wrong.
+    ///
+    /// See RESEARCH.md, entry 21.
+    fn twins_by_classes(&self, left: &[usize], right: &[usize]) -> Vec<(usize, usize)> {
+        let left_holders = class_slot_holders(left, &self.left_classes);
+        let right_holders = class_slot_holders(right, &self.right_classes);
+        let mut votes_before: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        let mut votes_after: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        for (slot, &before) in &left_holders {
+            if let Some(&after) = right_holders.get(slot) {
+                votes_before.entry(before).or_default().insert(after);
+                votes_after.entry(after).or_default().insert(before);
+            }
+        }
+        let only = |set: &BTreeSet<usize>| set.first().copied().filter(|_| set.len() == 1);
+        votes_before
+            .iter()
+            .filter_map(|(&before, afters)| {
+                let after = only(afters)?;
+                (only(&votes_after[&after]) == Some(before)).then_some((before, after))
+            })
+            .collect()
     }
 
     /// Stage three: the same symbol name.
@@ -2250,6 +2304,21 @@ fn calls_kept_in_place<'a>(
         }
     }
     kept.into_iter()
+}
+
+/// Each vtable slot that exactly one function of `side` fills, and that
+/// function.
+fn class_slot_holders<'s, 't>(
+    side: &[usize],
+    classes: &'s [Vec<VirtualSlot<'t>>],
+) -> HashMap<&'s VirtualSlot<'t>, usize> {
+    let mut holders: HashMap<&VirtualSlot<'_>, Option<usize>> = HashMap::new();
+    for &index in side {
+        for slot in &classes[index] {
+            holders.entry(slot).and_modify(|holder| *holder = None).or_insert(Some(index));
+        }
+    }
+    holders.into_iter().filter_map(|(slot, holder)| Some((slot, holder?))).collect()
 }
 
 /// Each set of row texts that exactly one function of `side` holds, and

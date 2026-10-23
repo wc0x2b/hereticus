@@ -895,6 +895,7 @@ fn describe_confidence(confidence: Confidence) -> &'static str {
         Confidence::IdenticalShape => "identical shape",
         Confidence::SameName => "same name",
         Confidence::SameRowText => "twin, by the text in its row",
+        Confidence::SameClassSlot => "twin, by the class of its vtable",
         Confidence::TwinInOrder => "twin, in order",
         Confidence::SameTable => "same slot of a table",
         Confidence::SameImport => "same import",

@@ -269,6 +269,8 @@ pair. The stages, in the order they run:
 | Identical code | Their bytes are the same | `identical bytes` | BinDiff *hash matching* |
 | Identical shape | Their normalized bodies are the same | `identical shape` | Ghidra *Exact Function Instructions Match* |
 | Names | Their symbols have the same name, unless `--ignore-names` | `same name` | BinDiff *name hash matching* |
+| Twins by their row | A text in the record of the data beside a twin names it, as the name of an option | `twin, by the text in its row` | |
+| Twins by their class | A twin fills the same slot of the vtable of the same class, by the name that its type information keeps | `twin, by the class of its vtable` | |
 | Twins in order | Equal groups of twins sit in the same order | `twin, in order` | BinDiff *address sequence* |
 | Stubs in order | The stubs align as two ordered lists, with the calls of the pairs as votes | `same callers` | |
 | Twins by what they reach | One constant, callee or text tells a twin from the others | `identical shape` | Diaphora *Same constants* |
@@ -332,7 +334,7 @@ them apart. Thus the stages after the similarity stage use what is around
 a function: its callers, its callees, its texts and its place.
 
 Code: [`cascade.rs`][cascade] and [`score.rs`][score]. See `RESEARCH.md`,
-A1 to A10, and entries 1, 7, 13, 14, 15, 16 and 17. The moved code and the
+A1 to A10, and entries 1, 7, 13, 14, 15, 16, 17, 19 and 21. The moved code and the
 source files are in [`moved.rs`][moved] and [`files.rs`][files].
 
 ### Gone and New Functions

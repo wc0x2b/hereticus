@@ -20,6 +20,7 @@ final class Confidence {
 		Map.entry("identical shape", 9.0),
 		Map.entry("same name", 8.0),
 		Map.entry("twin, by the text in its row", 7.5),
+		Map.entry("twin, by the class of its vtable", 7.25),
 		Map.entry("twin, in order", 7.0),
 		Map.entry("same slot of a table", 6.0),
 		Map.entry("same import", 6.0),

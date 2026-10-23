@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use hereticus::dynamic::Dynamic;
+use hereticus::obj::Binary;
 use object::{Object, ObjectSymbol, SymbolKind};
 use rstest::rstest;
 
@@ -59,6 +60,35 @@ fn the_slots_are_named_for_dynamic_symbols(
     for (slot, name) in &slots {
         assert!(names.contains(name), "{arch}: slot {slot:#x} names {name}");
     }
+}
+
+/// A shared library fills its vtables through dynamic relocations, so
+/// the tables of functions of tinyxml2 read the same on x86 as on ARM of
+/// the same word size, by the names of their functions. GNU `ld` leaves
+/// zero in each word that an absolute relocation of x86 fills.
+#[rstest]
+#[case::x86_64("x86_64", "aarch64")]
+#[case::x86("i686", "arm")]
+fn the_vtables_read_the_same_on_x86_as_on_arm(#[case] arch: &str, #[case] same_width: &str) {
+    let tables = |arch: &str| -> Vec<Vec<String>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/build/backports/tinyxml2-before")
+            .join(format!("{arch}-O2"))
+            .join("lib.so");
+        let data = std::fs::read(&path)
+            .unwrap_or_else(|err| panic!("{}: {err}, run `just backports` first", path.display()));
+        let binary = Binary::parse(&data).expect("a fixture library parses");
+        let mut tables: Vec<Vec<String>> = binary
+            .function_tables()
+            .iter()
+            .map(|table| table.iter().map(|&index| binary.functions[index].name.clone()).collect())
+            .collect();
+        tables.sort_unstable();
+        tables
+    };
+    let expected = tables(same_width);
+    assert!(expected.len() > 10, "tinyxml2 holds a vtable for each kind of node");
+    assert_eq!(tables(arch), expected, "{arch}");
 }
 
 /// Any bytes written over the dynamic segment and the tables it names read

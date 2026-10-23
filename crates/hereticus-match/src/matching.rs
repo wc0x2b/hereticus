@@ -70,6 +70,10 @@ pub enum Confidence {
     /// the data, as the name of an option. See `Cascade::twins_by_rows`.
     SameRowText,
     /// One of a group of functions with the same normalized instructions,
+    /// paired with its counterpart by its slot in the vtable of a class
+    /// that its type information names. See `Cascade::twins_by_classes`.
+    SameClassSlot,
+    /// One of a group of functions with the same normalized instructions,
     /// paired with its counterpart by position. See
     /// `Cascade::match_twins_in_order`.
     TwinInOrder,
@@ -956,6 +960,8 @@ pub fn diff_reporting(
         right_tables: after.function_tables(),
         left_rows: before.row_texts(),
         right_rows: after.row_texts(),
+        left_classes: before.virtual_slots(),
+        right_classes: after.virtual_slots(),
     };
 
     cascade.pair_stubs_by_import();
