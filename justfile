@@ -215,6 +215,10 @@ book:
     mdbook build book
     lychee --offline --include-fragments --no-progress --root-dir "$PWD/book/book" 'book/book/**/*.html'
 
+# Record the demo at the top of the README. Needs `vhs`.
+readme-demo: build
+    vhs book/tapes/demo.tape
+
 # Make the screenshots of the TUI page of the book. Needs `vhs`.
 tui-screenshots: build
     vhs book/tapes/tui.tape
