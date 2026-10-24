@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pair C++ twins by the class of their vtable. A vtable points to the
+  type information of its class, which keeps the name of the class after
+  stripping, so template copies and destructors with the same
+  instructions pair by the class and slot that each fills. `MATCHED BY`
+  names such a pair `twin, by the class of its vtable`, and the Ghidra
+  extension gives it a confidence between the two other kinds of twin.
+  Over the versions of Assemblage-DeepHistory, 78,358 more pairs are
+  right and 15,805 fewer wrong (`RESEARCH.md`, entry 21).
+
+### Changed
+
+- Find the vtables and the tables of handlers of a shared library for
+  x86 and x86-64. Each word that an absolute relocation fills read as
+  zero, so the tables of each exported class were not found: on tinyxml2
+  for x86-64, 1 table in place of 15.
+
 ## [0.3.0](https://github.com/wc0x2b/hereticus/compare/v0.2.1...v0.3.0) - 2026-10-23
 ### Added
 

@@ -79,9 +79,11 @@ release="$(sed -n 's/^application.release.name=//p' "$GHIDRA_HOME/Ghidra/applica
 extensions="$HOME/.config/ghidra/ghidra_${version}_${release}/Extensions"
 rm -rf "$extensions/Hereticus"
 mkdir -p "$extensions"
-# The zip of this Ghidra release only: `gradle clean` keeps the zips of
-# other releases in dist/.
-unzip -q "$root/ghidra/dist/ghidra_${version}_${release}_"*_Hereticus.zip -d "$extensions"
+# The newest zip of this Ghidra release only: `gradle clean` keeps the zips
+# of other releases in dist/, and the name of each zip holds the day it was
+# built, so a build on another day leaves a second zip of one release.
+zip="$(ls -t "$root/ghidra/dist/ghidra_${version}_${release}_"*_Hereticus.zip | head -n 1)"
+unzip -q "$zip" -d "$extensions"
 
 headless="$GHIDRA_HOME/support/analyzeHeadless"
 

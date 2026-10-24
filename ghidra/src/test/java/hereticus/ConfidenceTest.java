@@ -11,7 +11,7 @@ class ConfidenceTest {
 
 	/** The stages of hereticus, the surest first, as the CLI names them. */
 	private static final List<String> STAGES = List.of("identical bytes", "identical shape",
-		"same name", "twin, by the text in its row", "twin, in order", "same slot of a table", "same references",
+		"same name", "twin, by the text in its row", "twin, by the class of its vtable", "twin, in order", "same slot of a table", "same references",
 		"same callers", "same place", "similar");
 
 	@Test

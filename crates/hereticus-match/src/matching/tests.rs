@@ -2910,6 +2910,70 @@ fn twins_pair_by_the_text_in_their_row() {
     assert!(diff.matched.iter().all(|pair| pair.confidence == Confidence::TwinInOrder));
 }
 
+/// [`binary_with_table`] of `names`, with a vtable at 0x4000 for each of
+/// `classes`: its header, the offset and the type information, then its
+/// functions. The type information is at 0x6000, and the names at 0x5000.
+fn binary_with_vtables(names: &[&str], classes: &[(&str, &[&str])]) -> hereticus_image::Binary {
+    let mut binary = binary_with_table(names, &[]);
+    let mut texts = vec![0u8];
+    let mut type_infos = Vec::new();
+    let mut vtables = Vec::new();
+    for (class, functions) in classes {
+        vtables.extend([0, 0x6000 + 4 * type_infos.len() as u32]);
+        type_infos.extend([0, 0x5000 + texts.len() as u32]);
+        texts.extend_from_slice(class.as_bytes());
+        texts.push(0);
+        for function in *functions {
+            let index = names.iter().position(|name| name == function).expect("a function");
+            vtables.push(0x1000 + 0x100 * index as u32);
+        }
+    }
+    let bytes =
+        |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|word| word.to_le_bytes()).collect() };
+    binary.links = hereticus_image::Links::of_parts(
+        vec![(0x4000, bytes(&vtables)), (0x5000, texts), (0x6000, bytes(&type_infos))],
+        BTreeMap::new(),
+    );
+    binary
+}
+
+/// Twins in the vtables of two classes, which a release reordered, pair by
+/// the name of their class, not in the order of their addresses. A
+/// subclass that the release added, which inherits one of them, does not
+/// change that.
+#[test]
+fn twins_pair_by_the_class_of_their_vtable() {
+    let names = ["0", "0 again"];
+    let classes: [(&str, &[&str]); 2] = [("8MemPoolTE", &["0"]), ("9MemPoolT2E", &["0 again"])];
+    let before = binary_with_vtables(&names, &classes);
+    let mut added = classes.to_vec();
+    added.push(("3SubE", &["0 again"]));
+    for after_classes in [&classes[..], &added[..]] {
+        let after = binary_with_vtables(&["0 again", "0"], after_classes);
+        let options = Options { threshold: 0.0, use_names: UseNames::No };
+        let diff = diff_with(&before, &after, options);
+        assert_eq!(diff.matched.len(), 2);
+        for pair in &diff.matched {
+            assert_eq!(before.functions[pair.before].name, after.functions[pair.after].name);
+            assert_eq!(pair.confidence, Confidence::SameClassSlot);
+        }
+    }
+
+    // A virtual function added before a twin, itself a twin, moves the
+    // slot of the first, so only the twin of the other class pairs by its
+    // slot.
+    let grown: [(&str, &[&str]); 2] = [("8MemPoolTE", &["0 added", "0"]), classes[1]];
+    let after = binary_with_vtables(&["0 again", "0", "0 added"], &grown);
+    let diff = diff_with(&before, &after, Options { threshold: 0.0, use_names: UseNames::No });
+    let by_slot: Vec<&str> = diff
+        .matched
+        .iter()
+        .filter(|pair| pair.confidence == Confidence::SameClassSlot)
+        .map(|pair| before.functions[pair.before].name.as_str())
+        .collect();
+    assert_eq!(by_slot, ["0 again"]);
+}
+
 /// Two tables are not one where a firm pair joins a function of one to
 /// another slot of the other: an edit moved the slots.
 #[test]

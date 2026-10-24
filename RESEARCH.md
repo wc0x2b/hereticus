@@ -7,7 +7,7 @@ function names the source from this file.
 
 Survey date: 2026-10-04, with entry 13 and more sources added on
 2026-10-07, entries 16 to 18 on 2026-10-19, with more sources added
-on 2026-10-19, entry 19 on 2026-10-20, and entry 20 on 2026-10-23. The entries are in order of value for the effort.
+on 2026-10-19, entry 19 on 2026-10-20, and entries 20 and 21 on 2026-10-23. The entries are in order of value for the effort.
 The results of each entry, as applied and measured, are in
 [Results](#results).
 
@@ -610,6 +610,33 @@ Code: `rank_bases`, `clear_winner`, `measure_base` and `BaseCandidate` in
 `crates/hereticus-recovery/src/raw/find.rs`; `check_targets` and
 `suggest_base` in `raw.rs`; `print_bases` in `hereticus-cli/src/bases.rs`.
 
+## 21. The class of a vtable
+
+Source: the Itanium C++ ABI
+(<https://itanium-cxx-abi.github.io/cxx-abi/abi.html>, "Virtual Table
+Layout" and "Run-Time Type Information"), which GCC and clang follow on
+each target here. Entry 15 reads the vtables as runs of addresses, as
+Marx does; Ghidra's `RecoverClassesFromRTTIScript` reads their type
+information to recover the classes.
+
+Idea: a vtable starts with the offset of its object and the address of
+the type information of its class, which holds the address of the name
+of the class, as `N8tinyxml27XMLNodeE`. Stripping keeps that name. So
+each slot of a vtable has a label, the class and the place in it, that
+holds across releases where the code cannot tell twins apart: template
+copies and destructors, as `MemPoolT<52>::Free` and `MemPoolT<60>::Free`
+of tinyxml2. A slot of a vtable that grew is another slot, as a new
+virtual function moves the slots after it.
+
+Applies to: twins, before A4 pairs them in order, and every function as
+one more unique reference of entry 13.
+
+Code: `Binary::virtual_slots`, `VirtualSlot`, `is_type_name` and
+`is_object_offset` in `crates/hereticus-image`; `Cascade::twins_by_classes`
+and `class_slot_holders` in `matching/cascade.rs`;
+`unique_reference_holders` in `matching/score.rs`;
+`Confidence::SameClassSlot` in `matching.rs`.
+
 ## Lower fit
 
 - Ye, Zhou and Zhang, *Enhancing Semantic-Aware Binary Diffing with
@@ -781,6 +808,7 @@ Before any change, on the backports: 25260 right, 956 wrong, 6282 gone,
 | 13. Unique references | `Cascade::pair_by_unique_references` | +547 right, −135 wrong | Kept |
 | 14. Ratio test | `RIVAL_MARGIN` in `Cascade::match_by_similarity` | −24 right, −159 wrong | Kept |
 | 15. Slots of a table | `Cascade::pair_by_tables` | +275 right, −54 wrong | Kept |
+| 21. The class of a vtable | `Cascade::twins_by_classes` | +30 right, −15 wrong | Kept |
 
 ### 1 and 2: context
 
@@ -2285,7 +2313,7 @@ with a score below 1:
 - **Both partners taken by place.** Near twins in one gap pair one slot
   off: template copies of protobuf and draco, and the `log_Z3_*` functions
   of z3, which differ only in a constant that a new API function shifts
-  by one. See "C++ twins" in TODO.md.
+  by one. See "C++ twins that no vtable names" in TODO.md.
 - **Both partners free, by place.** 676 of the 1,101 are one change of
   nng 1.5.1, where `nng_ctx_getopt_int` became a wrapper of
   `nng_ctx_get_int`, its twin in 1.3.2, copied into about 27 test files.
@@ -2355,3 +2383,56 @@ about 1.5 seconds on a static program. `hereticus` took 0.2 to 0.8 seconds
 on a kernel, and 25 to 90 milliseconds on a static program, as
 `examples/find_base.rs` measures.
 
+### 21: the class of a vtable
+
+Measured on 2026-10-23 over all 8,872 release pairs of
+Assemblage-DeepHistory, then the other sets.
+
+First a fault: `Links::words` read no x86 relocation, so on x86-64 each
+word that an `R_X86_64_64` fills read as zero. GNU `ld` leaves zero there,
+and such a relocation fills the vtable of each class that a shared library
+exports. On tinyxml2 for x86-64, `Binary::function_tables` found 1 table
+where AArch64 found 15. `address_relocations` now names the two
+relocations of each architecture that store an address, as each
+architecture numbers its relocations from 1.
+
+Each part, in the order it was tried, against the step before:
+
+| Part | Assemblage | Assemblage, each pair once | Backports |
+|---|---|---|---|
+| x86 relocations | +5214, −2393 | +4670, −2011 | none |
+| Twins by the slots of their class | +69790, −11438 | +52709, −8097 | +4, −3 |
+| Slots as unique references too | +3423, −351 | +2038, −192 | +26, −12 |
+| A slot of a vtable that grew votes for nothing | −69, −1623 | +925, −1372 | none |
+
+| Set | Right | Wrong |
+|---|---|---|
+| Assemblage, before | 5176577 | 68116 |
+| Assemblage, entry 21 | 5254935 (+78358) | 52311 (−15805) |
+| Assemblage, each pair once, before | 1574635 | 42796 |
+| Assemblage, each pair once, entry 21 | 1634977 (+60342) | 31124 (−11672) |
+| Backports, before | 29965 | 352 |
+| Backports, entry 21 | 29995 (+30) | 337 (−15) |
+| Ubuntu | no change | no change |
+| OpenWrt kernels | no change | no change |
+
+Counted each pair once, 1.87% of the pairs are wrong, where 2.65% were.
+63,612 fewer functions read as gone. The wrong twins in order fell from
+29,935 to 21,504, the wrong pairs by table from 4,376 to 239, and the
+twins paired by the slots of their class are wrong 3 times. The wrong
+pairs a report shows, with a score below 1, fell from 9,877 to 8,989, and
+those by place from 4,233 to 3,510. The ranks of the fixes over the
+backports went from a sum of 3119 to 3122; the top 1 and top 5 counts
+stayed the same.
+
+Without the length of the vtable in its slot, 1,392 pairs by slot were
+wrong, most of them twins one slot off where a release added a virtual
+function, as vsg 1.0.9 did to `vsg::Value`. The slot keeps the length,
+and a class whose vtable grew pairs nothing by its slots.
+
+Many of the wrong twins left are destructors, as those of the exceptions
+of cxxopts. GCC emits the destructors `D1` and `D2` of a class as one
+body, and the symbols name it twice, so the bench reads two functions at
+one address, and only one of them holds the slot. A stripped file holds
+one function there. Giving the slot to both paired 1,023 fewer right and
+5 more wrong, as two holders of one slot vote for nothing, so it is out.

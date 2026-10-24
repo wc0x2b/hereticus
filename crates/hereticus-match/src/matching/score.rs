@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::norm::NormInsn;
 use hereticus_callees::Callee;
-use hereticus_image::RowText;
+use hereticus_image::{RowText, VirtualSlot};
 
 use super::{Confidence, Prepared, Symbol};
 
@@ -440,14 +440,18 @@ pub(super) enum UniqueReference<'a> {
     /// words from the function it sits: see
     /// [`hereticus_image::Binary::row_texts`].
     Row(RowText<'a>),
+    /// A slot of the vtable of a named class: see
+    /// [`hereticus_image::Binary::virtual_slots`].
+    ClassSlot(VirtualSlot<'a>),
 }
 
-/// Each text, large constant, named callee and row text that exactly one
-/// function of `side` holds, and that function. `rows` holds the row texts
-/// of each function of `side`.
+/// Each text, large constant, named callee, row text and vtable slot that
+/// exactly one function of `side` holds, and that function. `rows` holds
+/// the row texts of each function of `side`, and `classes` its slots.
 pub(super) fn unique_reference_holders<'a>(
     side: &'a [Prepared<'_>],
     rows: &'a [Vec<RowText<'a>>],
+    classes: &'a [Vec<VirtualSlot<'a>>],
     paired: &dyn Fn(usize) -> Option<usize>,
 ) -> HashMap<UniqueReference<'a>, usize> {
     let mut holders: HashMap<UniqueReference<'a>, Option<usize>> = HashMap::new();
@@ -461,7 +465,9 @@ pub(super) fn unique_reference_holders<'a>(
         });
         let callee_set = paired_callee_set(prepared, paired);
         let row_texts = rows[index].iter().map(|&row| UniqueReference::Row(row));
-        for key in texts.chain(constants).chain(calls).chain(callee_set).chain(row_texts) {
+        let class_slots = classes[index].iter().map(|&slot| UniqueReference::ClassSlot(slot));
+        let keys = texts.chain(constants).chain(calls).chain(callee_set).chain(row_texts);
+        for key in keys.chain(class_slots) {
             holders
                 .entry(key)
                 .and_modify(|holder| {

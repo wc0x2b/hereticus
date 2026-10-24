@@ -298,6 +298,14 @@ impl Links {
         })
     }
 
+    /// The word of `width` bytes at `address`, as [`Self::words`] reads it.
+    pub fn word_at(&self, address: u64, width: Width, order: ByteOrder) -> Option<u64> {
+        if let Some(&value) = self.relocated.get(&address) {
+            return Some(value);
+        }
+        Some(order.read(self.bytes_at(address)?.get(..width.bytes())?))
+    }
+
     /// The loaded bytes from `address` to the end of their section.
     pub fn bytes_at(&self, address: u64) -> Option<&[u8]> {
         self.memory.iter().find_map(|(start, data)| {
@@ -362,8 +370,9 @@ impl ByteOrder {
 /// which adds the address of a symbol, and a relative one, which adds the
 /// load address, zero as the file is linked.
 fn relocated_addresses(file: &object::File<'_>, memory: &[(u64, Vec<u8>)]) -> BTreeMap<u64, u64> {
-    use object::elf::{R_AARCH64_ABS64, R_AARCH64_RELATIVE, R_ARM_ABS32, R_ARM_RELATIVE};
-    use object::elf::{R_MIPS_32, R_MIPS_REL32};
+    let Some(stores_address) = address_relocations(file.architecture()) else {
+        return BTreeMap::new();
+    };
     let Some(relocations) = file.dynamic_relocations() else { return BTreeMap::new() };
     let symbols = file.dynamic_symbol_table();
     let order = if file.is_little_endian() { ByteOrder::Little } else { ByteOrder::Big };
@@ -377,16 +386,7 @@ fn relocated_addresses(file: &object::File<'_>, memory: &[(u64, Vec<u8>)]) -> BT
     relocations
         .filter_map(|(address, relocation)| {
             let object::RelocationFlags::Elf { r_type } = relocation.flags() else { return None };
-            if ![
-                R_AARCH64_ABS64,
-                R_AARCH64_RELATIVE,
-                R_ARM_ABS32,
-                R_ARM_RELATIVE,
-                R_MIPS_32,
-                R_MIPS_REL32,
-            ]
-            .contains(&r_type)
-            {
+            if !stores_address.contains(&r_type) {
                 return None;
             }
             let base = match relocation.target() {
@@ -404,6 +404,31 @@ fn relocated_addresses(file: &object::File<'_>, memory: &[(u64, Vec<u8>)]) -> BT
             Some((address, base.wrapping_add(addend)))
         })
         .collect()
+}
+
+/// The absolute and the relative relocation of `architecture`, the two that
+/// store an address in a word, or `None` where this crate reads neither.
+///
+/// Each architecture numbers its relocations from 1, so a number alone
+/// says nothing: 1 is `R_X86_64_64` but `R_ARM_PC24`. On x86-64, GNU `ld`
+/// writes the address of a `RELATIVE` relocation into the file too, but
+/// zero for an `R_X86_64_64`, which fills the vtable of each class that a
+/// shared library exports.
+fn address_relocations(
+    architecture: object::Architecture,
+) -> Option<[object::elf::RelocationType; 2]> {
+    use object::Architecture;
+    use object::elf::{R_386_32, R_386_RELATIVE, R_AARCH64_ABS64, R_AARCH64_RELATIVE};
+    use object::elf::{R_ARM_ABS32, R_ARM_RELATIVE, R_MIPS_32, R_MIPS_REL32};
+    use object::elf::{R_X86_64_64, R_X86_64_RELATIVE};
+    match architecture {
+        Architecture::Aarch64 => Some([R_AARCH64_ABS64, R_AARCH64_RELATIVE]),
+        Architecture::Arm => Some([R_ARM_ABS32, R_ARM_RELATIVE]),
+        Architecture::Mips => Some([R_MIPS_32, R_MIPS_REL32]),
+        Architecture::X86_64 => Some([R_X86_64_64, R_X86_64_RELATIVE]),
+        Architecture::I386 => Some([R_386_32, R_386_RELATIVE]),
+        _ => None,
+    }
 }
 
 /// Fewer bytes than this are as likely a small number as text: the word

@@ -261,6 +261,26 @@ pub struct RowText<'a> {
 /// nng keeps `{name, get, set}`, two words from the text to the setter.
 pub const ROW_REACH: usize = 3;
 
+/// A slot of a C++ vtable whose type information names its class: see
+/// [`Binary::virtual_slots`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VirtualSlot<'a> {
+    /// The name of the class as its type information keeps it, mangled
+    /// without the `_ZTS` of its symbol, as `N8tinyxml27XMLNodeE`.
+    pub class: &'a str,
+    /// The place of the function in the vtable, from 0.
+    pub slot: u16,
+    /// How many slots the vtable holds. A release that adds a virtual
+    /// function to a class moves the slots after it, so a slot of a vtable
+    /// of another length is another slot.
+    pub length: u16,
+}
+
+/// The most a vtable is from the start of its object, in bytes: the
+/// offset of a base class, which a vtable stores negated before its type
+/// information. More than any class holds, and far less than an address.
+const FARTHEST_BASE: u64 = 1 << 24;
+
 /// A binary, with the functions found in it.
 #[derive(Clone, Debug)]
 pub struct Binary {
@@ -381,6 +401,78 @@ impl Binary {
             texts.dedup();
         }
         rows
+    }
+
+    /// The slots of C++ vtables that each function fills, by the index of
+    /// the function, each with the name of its class.
+    ///
+    /// In the Itanium C++ ABI, which GCC and clang use on each target
+    /// here, a vtable holds the offset of its object, then the address of
+    /// the type information of its class, then the virtual functions in the
+    /// order the source declares them. The type information holds the
+    /// address of the name of the class, which stripping keeps. Template
+    /// copies and destructors can be the same instructions in many classes,
+    /// and the name tells them apart: `MemPoolT<52>::Free` and
+    /// `MemPoolT<60>::Free` of tinyxml2.
+    ///
+    /// A slot counts only from a run of functions with no gap, so a slot
+    /// after one that holds no function of this binary, as
+    /// `__cxa_pure_virtual`, names nothing.
+    ///
+    /// See RESEARCH.md, entry 21.
+    pub fn virtual_slots(&self) -> Vec<Vec<VirtualSlot<'_>>> {
+        let starts: HashMap<u64, usize> = self
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(index, function)| (function.address, index))
+            .collect();
+        let width = self.isa.address_width();
+        let words: Vec<(u64, u64)> = self.links.words(width, self.isa.byte_order()).collect();
+        let function_at = |value: u64| {
+            (value != 0)
+                .then(|| starts.get(&scan::symbol_address(self.isa.arch(), value)).copied())
+                .flatten()
+        };
+        let in_a_row = |pair: &[(u64, u64)]| pair[1].0 == pair[0].0 + width.bytes() as u64;
+        let mut slots = vec![Vec::new(); self.functions.len()];
+        for (at, window) in words.windows(3).enumerate() {
+            let [(_, offset), (_, type_info), (_, first)] = *window else {
+                unreachable!("a window of three words")
+            };
+            let ends_header = is_object_offset(offset, width)
+                && window.windows(2).all(in_a_row)
+                && function_at(first).is_some();
+            let Some(class) = ends_header.then(|| self.class_name(type_info)).flatten() else {
+                continue;
+            };
+            let run = words[at + 2..]
+                .iter()
+                .zip(&words[at + 1..])
+                .take_while(|&(&this, &before)| in_a_row(&[before, this]))
+                .map_while(|(&(_, value), _)| function_at(value))
+                .take(usize::from(u16::MAX));
+            let run: Vec<usize> = run.collect();
+            let length = run.len() as u16;
+            for (slot, &function) in run.iter().enumerate() {
+                slots[function].push(VirtualSlot { class, slot: slot as u16, length });
+            }
+        }
+        for held in &mut slots {
+            held.sort_unstable();
+            held.dedup();
+        }
+        slots
+    }
+
+    /// The name of the class whose type information is at `type_info`,
+    /// where the name reads as a type of the Itanium C++ ABI.
+    fn class_name(&self, type_info: u64) -> Option<&str> {
+        let width = self.isa.address_width();
+        let name_at = type_info.checked_add(width.bytes() as u64)?;
+        let name = self.links.word_at(name_at, width, self.isa.byte_order())?;
+        let text = self.links.text_at(name)?;
+        is_type_name(text).then_some(text)
     }
 
     /// Read a binary and find the functions in it.
@@ -1184,6 +1276,42 @@ fn covers_little_code(file: &object::File<'_>, functions: &[Function]) -> bool {
     covered * 2 < code
 }
 
+/// Report whether `word` can be the offset of a vtable in its object, the
+/// first word of its header: zero, or the negated offset of a base class.
+fn is_object_offset(word: u64, width: Width) -> bool {
+    let negated = match width {
+        Width::Bits32 => u64::from((word as u32).wrapping_neg()),
+        Width::Bits64 => word.wrapping_neg(),
+    };
+    negated < FARTHEST_BASE && negated % width.bytes() as u64 == 0
+}
+
+/// Report whether `text` reads as the name a type information of the
+/// Itanium C++ ABI keeps for a class: a length and an identifier, as
+/// `3Foo`, a nested name, as `N8tinyxml27XMLNodeE`, a name in `std`, as
+/// `St9exception`, or a class local to a function, as `Z4mainE3Foo`.
+/// GCC marks the name of a class of internal linkage with `*`.
+///
+/// The name of a class is a C++ identifier, so a text of other bytes is a
+/// pointer that only looks like a vtable.
+fn is_type_name(text: &str) -> bool {
+    let name = text.strip_prefix('*').unwrap_or(text);
+    let bytes = name.as_bytes();
+    let first = bytes.first().copied().unwrap_or_default();
+    let valid_bytes = bytes.iter().all(|&byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    let well_formed = match first {
+        b'1'..=b'9' => {
+            let digits = bytes.iter().take_while(|byte| byte.is_ascii_digit()).count();
+            let length: usize = name[..digits].parse().unwrap_or(usize::MAX);
+            length <= bytes.len() - digits
+        }
+        b'N' | b'Z' => bytes.len() > 2 && bytes.contains(&b'E'),
+        b'S' => bytes.len() > 2,
+        _ => false,
+    };
+    valid_bytes && well_formed
+}
+
 fn has_code_section(file: &object::File<'_>) -> bool {
     file.sections().any(|section| section.kind() == object::SectionKind::Text && section.size() > 0)
 }
@@ -1281,6 +1409,109 @@ mod tests {
                 vec![],
             ]
         );
+    }
+
+    /// A vtable after its header names the class of each of its slots: the
+    /// type information it points to holds the name of the class. A
+    /// header whose first word is no offset, a name that is no type, or a
+    /// gap names nothing, and a run ends at a word that is no function.
+    #[test]
+    fn a_vtable_names_the_class_of_each_slot() {
+        let functions: Vec<Function> = (0..4)
+            .map(|index| Function {
+                name: String::new(),
+                address: 0x1000 + index * 0x10,
+                code: vec![0; 4],
+            })
+            .collect();
+        let words = |words: &[u32]| -> Vec<u8> {
+            words.iter().flat_map(|word| word.to_le_bytes()).collect()
+        };
+        let names = b"\0N3foo4NodeE\x003Bar\0not a type\0".to_vec();
+        let (node, bar, not_a_type) = (0x5001, 0x500d, 0x5012);
+        // Each type information: the vtable of its kind, then the name.
+        let type_infos = words(&[0, node, 0, bar, 0, not_a_type]);
+        let (node_info, bar_info, bad_info) = (0x6000, 0x6008, 0x6010);
+        let memory = vec![
+            (0x5000, names),
+            (0x6000, type_infos),
+            // Node: its offset, its type, then three functions and a null.
+            (0x2000, words(&[0, node_info, 0x1000, 0x1011, 0x1020, 0, 0x1030])),
+            // Bar, as a base class 8 bytes into its object.
+            (0x3000, words(&[(-8i32) as u32, bar_info, 0x1020])),
+            // An offset too large, a name that is no type, and a gap.
+            (0x4000, words(&[0x10_0000, node_info, 0x1030])),
+            (0x4100, words(&[0, bad_info, 0x1030])),
+            (0x4200, words(&[0, node_info])),
+            (0x4210, words(&[0x1030])),
+        ];
+        let binary = Binary {
+            isa: Isa::Arm32,
+            functions,
+            found_by: FoundBy::Symbols,
+            addresses: AddressSpace::none(),
+            links: Links::of_parts(memory, BTreeMap::new()),
+            other_set: BTreeSet::new(),
+        };
+        let slot = |class, slot, length| VirtualSlot { class, slot, length };
+        assert_eq!(
+            binary.virtual_slots(),
+            [
+                vec![slot("N3foo4NodeE", 0, 3)],
+                vec![slot("N3foo4NodeE", 1, 3)],
+                vec![slot("3Bar", 0, 1), slot("N3foo4NodeE", 2, 3)],
+                vec![],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_type_name_is_a_mangled_class() {
+        for name in
+            ["3Foo", "N8tinyxml27XMLNodeE", "St9exception", "Z4mainE3Foo", "*N12_GLOBAL__N_13FooE"]
+        {
+            assert!(is_type_name(name), "{name}");
+        }
+        for name in [
+            "",
+            "*",
+            "Foo",
+            "4Foo",
+            "0Foo",
+            "N",
+            "NE",
+            "St",
+            "N3foo",
+            "3Foo bar",
+            "%d",
+            "99999999999999999999x",
+        ] {
+            assert!(!is_type_name(name), "{name}");
+        }
+    }
+
+    /// Any text reads as a type name or not without a panic, and a length
+    /// and an identifier of that length always reads as one.
+    #[test]
+    fn any_text_reads_as_a_type_name_without_a_panic() {
+        bolero::check!().with_type::<String>().for_each(|text| {
+            let _ = is_type_name(text);
+            let identifier: String = text.chars().filter(char::is_ascii_alphabetic).collect();
+            if !identifier.is_empty() {
+                assert!(is_type_name(&format!("{}{identifier}", identifier.len())));
+            }
+        });
+    }
+
+    #[test]
+    fn an_object_offset_is_zero_or_a_small_negative_word() {
+        assert!(is_object_offset(0, Width::Bits64));
+        assert!(is_object_offset((-16i64) as u64, Width::Bits64));
+        assert!(is_object_offset(u64::from((-8i32) as u32), Width::Bits32));
+        assert!(!is_object_offset((-4i64) as u64, Width::Bits64), "not a multiple of a word");
+        assert!(!is_object_offset(8, Width::Bits64), "a base is after the start");
+        assert!(!is_object_offset(0x1000, Width::Bits32), "an address");
+        assert!(!is_object_offset((-(1i64 << 30)) as u64, Width::Bits64), "too far");
     }
 
     /// Cuts take their bytes out of the regions they overlap, and a cut

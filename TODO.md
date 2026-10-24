@@ -167,14 +167,16 @@ instructions, mostly small twins that no caller tells apart. See `RESEARCH.md`,
 GCC built (see `RESEARCH.md`, "Assemblage-DeepHistory and entry 19"). It
 found more to do, most valuable first:
 
-- **C++ twins.** About 12,000 wrong pairs are template copies and
-  destructors with the same instructions. They read as unchanged however
-  they pair, but the name of each class in its type information could tell
-  apart its virtual functions, as entry 19 does for a C table. Most of the
-  wrong pairs by place that a report shows are near twins of this kind,
-  one slot off: template copies of protobuf and draco, and the `log_Z3_*`
-  functions of z3 (`RESEARCH.md`, "Assemblage-DeepHistory: the wrong
-  pairs a report shows").
+- **C++ twins that no vtable names.** Entry 21 pairs the virtual
+  functions of a class by the name its type information keeps
+  (`RESEARCH.md`, "21: the class of a vtable"), but 21,504 twins still
+  pair wrong in order. 6,021 are destructors, 4,808 of them one body that
+  the symbols name twice, as `D1` and `D2`, which only the bench reads as
+  two functions. Among the rest are template copies that no vtable holds,
+  as those of z3 and fmt. Most of the wrong pairs by place that a report
+  shows are near twins of this kind, one slot off: template copies of
+  protobuf and draco, and the `log_Z3_*` functions of z3 (`RESEARCH.md`,
+  "Assemblage-DeepHistory: the wrong pairs a report shows").
 - **A deleted function paired with a new one.** Of the other wrong pairs
   a report shows, most join a deleted function to a new one while the
   true partner of one side stays free.
