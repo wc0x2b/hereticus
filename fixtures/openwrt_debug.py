@@ -97,9 +97,12 @@ def check(path: Path, expected: str) -> None:
 
 
 def main() -> int:
+    # Only OpenWrt builds a debug kernel for each target; the other boards,
+    # as Alpine, name no target.
     targets = {
         (release, board["path"])
         for board in BOARDS.values()
+        if "path" in board
         for release in board.get("releases", RELEASES)
     }
     for release, target in sorted(targets):

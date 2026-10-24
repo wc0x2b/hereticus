@@ -8,7 +8,7 @@ use crate::arch::arm32::{
     Arm32, Decoded, Encoding, Extend, Flags, IntegerWord, NEON_LOAD_STORE, NEON_TEXT, UNKNOWN_TEXT,
     classify, condition_name, decode_fallback, decoded_of, decoder_misreads, lift_named_with,
 };
-use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};
+use crate::arch::{ByteOrder, DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder as _, U8Reader};
 use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
@@ -57,10 +57,33 @@ pub const HALFWORD: usize = 2;
 pub const WORD: usize = 4;
 
 /// ARM32 in T32 (Thumb-2) mode.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Thumb2;
+///
+/// As for [`Arm32`](super::arm32::Arm32), the data is little endian but
+/// for BE8: see [`THUMB2_BE8`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Thumb2 {
+    data: ByteOrder,
+}
+
+/// T32 with little-endian data, as almost every ARM image is.
+#[allow(non_upper_case_globals)]
+pub const Thumb2: Thumb2 = Thumb2 { data: ByteOrder::Little };
+
+/// T32 with big-endian data: BE8, as `ld --be8` links it.
+pub const THUMB2_BE8: Thumb2 = Thumb2 { data: ByteOrder::Big };
+
+impl Default for Thumb2 {
+    fn default() -> Self {
+        Thumb2
+    }
+}
 
 impl Thumb2 {
+    /// T32 with its data in `order`.
+    pub const fn with_data(order: ByteOrder) -> Self {
+        Self { data: order }
+    }
+
     /// Lift `insn`, with the name of each operand where `printing` asks for
     /// them, as [`Thumb2::read`] prints them.
     fn lift_as(self, insn: &Insn, printing: Printing) -> Option<crate::Named> {
@@ -353,7 +376,11 @@ impl Decoder for Thumb2 {
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
-        u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        u64::from(self.data.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn data_order(&self) -> ByteOrder {
+        self.data
     }
 }
 

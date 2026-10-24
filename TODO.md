@@ -74,12 +74,13 @@ image, Lua built by GCC for ARMv5TE joins the first words of `.rodata` to
 of where its code ends. A run of words that no branch reaches and that
 decodes as no code a compiler emits could end it.
 
-## Read big-endian ARM
+## Read BE32
 
-Some networking parts run ARM big endian (BE8, or BE32 on older cores).
-The A32 and T32 decoders read little endian only: BE8 keeps instructions
-little endian but data big endian, and BE32 swaps both. Add the byte
-order to the ARM architectures, and a fixture built with `-mbig-endian`.
+ARM big endian of BE8 is read, as `ld --be8` links it and every core
+since ARMv6 runs it (`tests/be8.rs`). Older cores ran BE32, which stores
+the instructions big endian too. The A32 and T32 decoders read
+instructions little endian only. Add BE32 where a target shows it is
+worth reading, with a fixture that GNU `ld` links without `--be8`.
 
 ## Read MIPS64
 

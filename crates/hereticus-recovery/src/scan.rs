@@ -1122,9 +1122,10 @@ pub fn find_exception_index(data: &[u8], base: u64, arch: &dyn Recovery) -> Vec<
     }
     let end = base + data.len() as u64;
     let in_image = |address: u64| address >= base && address < end;
+    let order = arch.data_order();
     let word = |offset: usize| {
         data.get(offset..offset + 4)
-            .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .map(|bytes| order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
     };
     let prel31 = |offset: usize, value: u32| {
         (value & 0x8000_0000 == 0)
@@ -1294,10 +1295,12 @@ fn exception_index(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<IndexEnt
     // relocatable object has not, so its `PREL31` fields still hold targets.
     let relocated = !matches!(file.kind(), object::ObjectKind::Relocatable);
 
+    // The index is data, so BE8 keeps it big endian.
+    let order = arch.data_order();
     let mut out = Vec::new();
     for (index, entry) in data.as_chunks::<EXIDX_ENTRY_LEN>().0.iter().enumerate() {
-        let raw = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
-        let unwinding = match u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]) {
+        let raw = order.read_word([entry[0], entry[1], entry[2], entry[3]]);
+        let unwinding = match order.read_word([entry[4], entry[5], entry[6], entry[7]]) {
             EXIDX_CANTUNWIND => Unwinding::CannotUnwind,
             _ => Unwinding::Described,
         };

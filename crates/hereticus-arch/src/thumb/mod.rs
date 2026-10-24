@@ -3,6 +3,7 @@
 //! functions are in [`hereticus_recovery::arch::thumb`].
 
 use super::{Arch, Insn, Memory};
+use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::Arm32;
 use hereticus_il::arch::thumb::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
@@ -26,11 +27,19 @@ impl Arch for Thumb2 {
     ) -> Vec<ConstantKind> {
         match split_at_switch(code, body) {
             Some((offset, index)) => {
-                let mut kinds = track_pool_words(code, &body[..index], space, PcModel::T32).kinds;
+                let mut kinds = track_pool_words(
+                    code,
+                    &body[..index],
+                    space,
+                    PcModel::T32.with_data(self.data_order()),
+                )
+                .kinds;
                 kinds.extend(Arm32.constant_kinds(&code[offset..], &body[index..], space));
                 kinds
             }
-            None => track_pool_words(code, body, space, PcModel::T32).kinds,
+            None => {
+                track_pool_words(code, body, space, PcModel::T32.with_data(self.data_order())).kinds
+            }
         }
     }
 
@@ -41,7 +50,7 @@ impl Arch for Thumb2 {
         space: &AddressSpace,
         _memory: &Memory<'_>,
     ) -> Vec<Option<u64>> {
-        track_pool_words(code, body, space, PcModel::T32).formed
+        track_pool_words(code, body, space, PcModel::T32.with_data(self.data_order())).formed
     }
 }
 

@@ -14,6 +14,10 @@ public enum InstructionSet {
 	ARM32("arm32", "TMode", 0),
 	@SerializedName("thumb2")
 	THUMB2("thumb2", "TMode", 1),
+	@SerializedName("arm32-be8")
+	ARM32_BE8("arm32-be8", "TMode", 0),
+	@SerializedName("thumb2-be8")
+	THUMB2_BE8("thumb2-be8", "TMode", 1),
 	@SerializedName("aarch64")
 	AARCH64("aarch64", null, 0),
 	@SerializedName("mips32")

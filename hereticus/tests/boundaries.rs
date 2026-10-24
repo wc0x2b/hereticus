@@ -38,6 +38,8 @@ fn builds() -> Vec<PathBuf> {
         .filter(|build| build.join("lib-stripped.so").exists())
         // `tests/nopic.rs` measures the builds that are not PIC.
         .filter(|build| !build.to_string_lossy().contains("-nopic-"))
+        // `tests/be8.rs` measures the builds for ARM big endian.
+        .filter(|build| !build.to_string_lossy().contains("be8-"))
         .collect();
     builds.sort();
     builds

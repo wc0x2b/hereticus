@@ -260,6 +260,41 @@ link_nopic() {
     finish "$dest"
 }
 
+# Build the listed sources for ARM big endian, as some networking parts
+# run it: BE8, where the linker stores each instruction little endian and
+# the data stays big endian. clang builds it with the headers of the
+# little-endian sysroot, which pick the byte order from `__ARMEB__`; no GCC
+# for it is in the image. It lands in `armbe8-<level>` and
+# `thumbbe8-<level>`.
+be8_flags=(--target=armeb-linux-gnueabi --sysroot=/usr/arm-linux-gnueabi
+    -isystem /usr/arm-linux-gnueabi/include/c++/14
+    -isystem /usr/arm-linux-gnueabi/include/c++/14/arm-linux-gnueabi)
+build_be8() {
+    local name="$1" variant="$2" source_dir="$3"
+    shift 3
+    local sources=("$@")
+    for target in armbe8:"${arm_flags[*]}" thumbbe8:"${thumb_flags[*]}"; do
+        local arch="${target%%:*}"
+        if [ -n "${BACKPORTS_TARGETS:-}" ] && [[ " $BACKPORTS_TARGETS " != *" $arch "* ]]; then
+            continue
+        fi
+        local set_flags
+        read -r -a set_flags <<< "${target#*:}"
+        for level in "${levels[@]}"; do
+            local dest="$out/$name-$variant/$arch-$level"
+            local objects="$dest/obj"
+            mkdir -p "$objects"
+            for source in "${sources[@]}"; do
+                "${compiler[@]}" "${be8_flags[@]}" "${set_flags[@]}" "${common_flags[@]}" \
+                    "${project_flags[@]}" "-$level" \
+                    -c "$source_dir/$source.$suffix" -o "$objects/$source.o"
+            done
+            ld.lld --be8 -shared -o "$dest/lib.so" "$objects"/*.o
+            finish "$dest"
+        done
+    done
+}
+
 # Write the stripped library and the raw image of a linked `lib.so`.
 finish() {
     local dest="$1"
@@ -382,23 +417,27 @@ for version in 1.2.11 1.2.12 1.2.13 1.3; do
     project_flags=(-DHAVE_UNISTD_H)
     build zlib "$version" "$out/src/zlib-$version" "${zlib_sources[@]}"
     build_nopic zlib "$version" "$out/src/zlib-$version" "${zlib_sources[@]}"
+    build_be8 zlib "$version" "$out/src/zlib-$version" "${zlib_sources[@]}"
 done
 project_flags=()
 for version in 5.1.4 5.1.5; do
     unpack "lua-$version.tar.gz" lua "$version"
     build lua "$version" "$out/src/lua-$version/src" "${lua_sources[@]}"
     build_nopic lua "$version" "$out/src/lua-$version/src" "${lua_sources[@]}"
+    build_be8 lua "$version" "$out/src/lua-$version/src" "${lua_sources[@]}"
 done
 for version in 5.3.5 5.3.6; do
     unpack "lua-$version.tar.gz" lua "$version"
     build lua "$version" "$out/src/lua-$version/src" "${lua53_sources[@]}"
     build_nopic lua "$version" "$out/src/lua-$version/src" "${lua53_sources[@]}"
+    build_be8 lua "$version" "$out/src/lua-$version/src" "${lua53_sources[@]}"
 done
 # expat: 2.4.5 fixes five CVEs, and 2.4.9 fixes CVE-2022-40674.
 project_flags=(-I"$here/expat")
 for version in 2.4.4 2.4.5 2.4.8 2.4.9; do
     unpack "expat-$version.tar.gz" expat "$version"
     build expat "$version" "$out/src/expat-$version/lib" xmlparse xmlrole xmltok
+    build_be8 expat "$version" "$out/src/expat-$version/lib" xmlparse xmlrole xmltok
 done
 project_flags=()
 compiler=(clang++ -std=c++17)
@@ -407,6 +446,7 @@ suffix=cpp
 for version in 8.0.0 9.0.0 10.0.0; do
     unpack "tinyxml2-$version.tar.gz" tinyxml2 "$version"
     build tinyxml2 "$version" "$out/src/tinyxml2-$version" "${tinyxml2_sources[@]}"
+    build_be8 tinyxml2 "$version" "$out/src/tinyxml2-$version" "${tinyxml2_sources[@]}"
 done
 compiler=(clang)
 gcc_standard=()
