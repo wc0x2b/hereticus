@@ -2,12 +2,14 @@
 
 ## Tell twins apart that no instruction separates
 
-The slots of a vtable (`RESEARCH.md` entry 15) paired 54 of the 58
-byte-identical twins that paired wrong between clang and GCC. The 4 left
-are `MemPoolT<52>::SetTracked` and `MemPoolT<60>::SetTracked` of
-tinyxml2, in two comparisons: find what keeps their tables apart. A twin
-in no table, as a C function reached only by calls from twins, can only
-be told apart by its name.
+The slots of a vtable (`RESEARCH.md` entry 15) and the class each
+vtable names (entry 21) pair every byte-identical twin of the backports
+built two ways right, `MemPoolT<52>::SetTracked` and
+`MemPoolT<60>::SetTracked` of tinyxml2 too. The wrong pairs of the same
+bytes left there are no twins, but a function and the static copy of the
+other build, as `adler32_combine` at `-O2` and `adler32_combine_` at
+`-Os`. A twin in no table, as a C function reached only by calls from
+twins, can only be told apart by its name.
 
 ## Unpack more firmware containers
 
