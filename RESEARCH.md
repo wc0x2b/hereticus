@@ -2463,3 +2463,79 @@ body, and the symbols name it twice, so the bench reads two functions at
 one address, and only one of them holds the slot. A stripped file holds
 one function there. Giving the slot to both paired 1,023 fewer right and
 5 more wrong, as two holders of one slot vote for nothing, so it is out.
+
+### The low half of an A64 register
+
+`track_pages` follows each register that holds a page from `adrp`, or an
+address from `adr` or `add`, and ends what it holds at a write of the
+whole register. A write of the low half, as `mov w24, w0`, clears the
+high half too, but the tracker keeps what `x24` held. Measured on the
+nine consecutive libgnutls updates for arm64 of Ubuntu 22.04, with
+`--all` and `--diff-all` in both views:
+
+| Change | Rows that change | Truth tests |
+|---|---|---|
+| End the page and the address at a write of `w` | 12 | none move, as measured first |
+| As above, and after an end, the page taken last first | 10 | not run |
+| As above, and an address held as a page is, with the value taken last first after an end | 36 | 6 move |
+
+The first change is right for the code it reads straight down.
+`x1 = x1 + 0x17f` after `w1 = load.16 [...]` is a sum, where the tracker
+read the text `"received unexpected packet: %s(%d)\n"`, and in
+`_gnutls_figure_common_ciphersuite` an index that `w25 = w28` set read
+as `"DHE-PSK"`. Of its 12 rows, 4 that read as changed values read as
+the same, but 5 read `gnutls_priority_init` as changed where it is not:
+1.1 against 1.2 in 10 texts,
+as `"1.3.14.3.2.29"` against `"1.3.14.3.2.25"`, which no security update
+edits. GCC keeps the address of a table in `x24`, puts `w24` to work as a
+count in the blocks below, and uses `x24` again in a block that only a
+branch reaches. The tracker reads a region as one body, so past an end,
+the page that a register may hold comes from the earliest `adrp` into it,
+mostly in a function far above. The old reading of the same block was
+right only because the write of `w24` ended nothing.
+
+Following the address on another path as the page is followed, with the
+value taken last first, gave the right texts in `gnutls_priority_init`
+and showed 5 fewer rows as changed over the nine updates. It also moved
+these: over the Ubuntu updates, one pair of libssh for arm64 went from
+right to wrong and the sum of the ranks of the fixes went from 365 to
+364; on garbled Go for arm64, 9 more pairs were right, but 8 fewer
+functions were found exact and 9 more starts were invented, as an
+address guessed past an end read as a pointer to a function; and the
+ranks of the published fixes moved. So none of these is in. To read the
+low half right, the tracker must know which block a branch reaches, and
+the value each path brings there, not the values of the whole region.
+
+### Functions of the library that never return
+
+8 of the 9 starts that the scan misses in the stripped releases follow a
+call to a function of the library that never returns: `luaM_toobig`
+before `auxsetnode`, and `luaG_opinterror` before `luaV_shiftl`. The scan
+knows only the imports that never return, by name. A try found the
+others from the code: every function that a call reaches was taken to
+never return, and each with a path from its start to a return, a jump
+through a register or a jump out of the code was dropped, until none
+was; a call that never returns ended a path. This finds `luaD_throw`,
+which calls itself, and the error functions above it.
+
+Read so, a call to such a function opened a function after it, as a
+call to `abort` does, and invented 2,313 starts, where 3 were. Lua 5.1
+declares none of its error functions as ones that never return, so the
+compiler puts more of the caller after the call: an epilogue, as
+`add sp, sp, 0x10` and `pop` in `luaG_typeerror` for ARM, a jump back
+into the caller, as in `luaD_call`, or a block that a branch from before
+the call reaches, as in `luaK_checkstack`. Taking each of these as more
+of the caller, and stepping over the words that LLD fills a gap of A32
+code with, which trap, left these, over the 210 builds:
+
+| Reading | Exact | Invented | Missed |
+|---|---|---|---|
+| Before | 64488 | 3 | 9 |
+| Library functions that never return, with the checks above | 64486 | 15 | 5 |
+| As above, only where a jump from another function reaches the code after the call | 64488 | 3 | 9 |
+
+It found 4 more starts. The 12 more invented are code that GCC puts after the call in
+`luaV_execute`, a null load and `udf`, which the decoder reads as code,
+and words of a pool after `nop` padding that no load names, as after
+`error_expected` in `luaY_parser` for ARM. So the reading is out: it
+costs more starts than it finds.

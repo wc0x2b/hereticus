@@ -163,6 +163,25 @@ impl Recovery for Thumb2 {
         }
     }
 
+    /// A stub that T32 code calls opens with the prefix that switches to
+    /// A32, and the prefix is part of it.
+    fn plt_entries(&self, code: &[u8], base: u64) -> Vec<Range<u64>> {
+        super::arm32::plt_stubs(code, base, |stub, address| {
+            let prefix = match stub.starts_with(&THUMB_STUB_PREFIX) {
+                true => THUMB_STUB_PREFIX.len(),
+                false => 0,
+            };
+            super::arm32::opens_a32_stub(&stub[prefix..])
+                .then(|| self.stub_slot(stub, address))
+                .flatten()?;
+            Some(prefix + super::arm32::STUB_LENGTH)
+        })
+    }
+
+    fn plt_header(&self, code: &[u8], base: u64, first_stub: u64) -> Option<u64> {
+        Arm32.plt_header(code, base, first_stub)
+    }
+
     fn is_prologue(&self, insn: &Insn) -> bool {
         Arm32.is_prologue(insn)
     }
@@ -758,6 +777,25 @@ mod tests {
         assert!(slot.is_some());
         assert_eq!(Thumb2.stub_slot(&stub, 0x149c), slot);
         assert_eq!(Thumb2.stub_slot(&stub[4..], 0x14a0), slot, "a stub with no prefix");
+    }
+
+    /// A stub that T32 code calls starts at its prefix, and one that only
+    /// A32 code calls has none: the PLT of zlib for Thumb-2, as GNU `ld`
+    /// wrote it.
+    #[test]
+    fn a_plt_entry_starts_at_its_thumb_prefix() {
+        let stub = [0xe28f_c600_u32, 0xe28c_ca1e, 0xe5bc_fb6c];
+        let prefix = u32::from_le_bytes(THUMB_STUB_PREFIX);
+        let code: Vec<u8> = [&[prefix][..], &stub, &stub, &[prefix], &stub]
+            .concat()
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        assert_eq!(
+            Thumb2.plt_entries(&code, 0x1494),
+            [0x1494..0x14a4, 0x14a4..0x14b0, 0x14b0..0x14c0]
+        );
+        assert!(Thumb2.plt_entries(&code[..4], 0x1494).is_empty(), "a prefix alone");
     }
 
     #[test]

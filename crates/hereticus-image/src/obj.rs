@@ -576,7 +576,15 @@ impl Binary {
             }
         }
         let links = Links::of_object(&file);
-        let scanned: Vec<Function> = scan::recover_functions(data, isa.arch())
+        let found = scan::recover_functions(data, isa.arch());
+        // The scan reads the PLT of a Thumb-2 library as A32.
+        other_set.extend(
+            found
+                .iter()
+                .filter(|function| function.set == scan::InstructionSet::Stub)
+                .map(|function| function.address),
+        );
+        let scanned: Vec<Function> = found
             .into_iter()
             .map(unnamed)
             .map(|function| match exported.get(&function.address) {
@@ -872,6 +880,27 @@ impl Binary {
             let ranges = unwind::find_function_ranges(data, base, order);
             index = scan::index_from_ranges(&ranges, isa.arch());
         }
+        // Where the unwind index lists a function at the end of a PLT, its
+        // entry closes the last stub already.
+        let plt = scan::raw_plt_index(data, base, isa.arch());
+        let listed: BTreeSet<u64> = index.iter().map(|entry| entry.address).collect();
+        index.extend(plt.iter().filter(|entry| !listed.contains(&entry.address)));
+        index.sort_by_key(|entry| entry.address);
+        // The PLT of a Thumb-2 image is A32, but for the prefix that
+        // switches a stub that T32 code calls.
+        let other_set: BTreeSet<u64> = match isa.arch().stub_arch() {
+            Some(_) => plt
+                .iter()
+                .filter(|entry| entry.unwinding == scan::Unwinding::Listed)
+                .map(|entry| entry.address)
+                .filter(|&address| {
+                    let offset = usize::try_from(address - base).unwrap_or(usize::MAX);
+                    let code = data.get(offset..).unwrap_or_default();
+                    isa.arch().switch_at_start(code, address).is_none()
+                })
+                .collect(),
+            None => BTreeSet::new(),
+        };
         let links = Links::of_raw_image(base, data, isa.arch().pointer_width(), isa.byte_order());
         let functions: Vec<Function> = scan::recover_from_regions(&regions, &index, isa.arch())
             .into_iter()
@@ -884,14 +913,7 @@ impl Binary {
         }
 
         let addresses = AddressSpace::of_raw_image(base, data.len() as u64);
-        Ok(Self {
-            isa,
-            functions,
-            found_by: FoundBy::Scanning,
-            addresses,
-            links,
-            other_set: BTreeSet::new(),
-        })
+        Ok(Self { isa, functions, found_by: FoundBy::Scanning, addresses, links, other_set })
     }
 }
 

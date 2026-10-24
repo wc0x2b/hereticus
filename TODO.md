@@ -2,22 +2,14 @@
 
 ## Tell twins apart that no instruction separates
 
-The slots of a vtable (`RESEARCH.md` entry 15) paired 54 of the 58
-byte-identical twins that paired wrong between clang and GCC. The 4 left
-are `MemPoolT<52>::SetTracked` and `MemPoolT<60>::SetTracked` of
-tinyxml2, in two comparisons: find what keeps their tables apart. A twin
-in no table, as a C function reached only by calls from twins, can only
-be told apart by its name.
-
-## Split the PLT of a stripped library into its entries
-
-The scan lists the whole `.plt` of a stripped library as one function. In a
-Thumb-2 library it also lists it as Thumb-2, but each entry is A32 code.
-The Ghidra extension skips such a start, because its body holds the PLT
-entries that Ghidra marks up, so the Ghidra test does not show the fault.
-List each entry as its own function, in the instruction set it is in. This
-changes the reports of every stripped library, so their snapshots change
-with it.
+The slots of a vtable (`RESEARCH.md` entry 15) and the class each
+vtable names (entry 21) pair every byte-identical twin of the backports
+built two ways right, `MemPoolT<52>::SetTracked` and
+`MemPoolT<60>::SetTracked` of tinyxml2 too. The wrong pairs of the same
+bytes left there are no twins, but a function and the static copy of the
+other build, as `adler32_combine` at `-O2` and `adler32_combine_` at
+`-Os`. A twin in no table, as a C function reached only by calls from
+twins, can only be told apart by its name.
 
 ## Unpack more firmware containers
 
@@ -45,8 +37,13 @@ stubs of MIPS left out (`RESEARCH.md`, "Function recovery, again"). 8 of
 the 9 missed follow a call that never returns, to a function of the
 library, and open with no frame: `auxsetnode` of Lua 5.3 by clang for
 ARM and Thumb-2, which a pointer reaches, and `luaV_shiftl` by GCC for
-MIPS, which only tail calls reach. Telling such a call from one that
-returns needs to know which functions of the library never return.
+MIPS, which only tail calls reach. Which functions of the library never
+return can be read from the code, but where the compiler did not know,
+it puts more of the caller after the call, and taking that for a new
+function invented 12 more starts than it found (`RESEARCH.md`,
+"Functions of the library that never return"). A start after such a
+call needs a sign of its own, as a pointer to it that the scan does not
+yet read.
 
 ## Scan a raw binary that mixes two instruction sets
 
@@ -256,9 +253,11 @@ bytes, which took 10% off libgnutls; keeping the decoded operands in
 every `Insn` took 237 MB in place of 137 MB and no time. MIPS compares
 register names packed into words. `track_pages` still reads `w24` and
 `x24` as two registers, as the text did, though a write of `w24` clears
-`x24` too. Ending the page of `x24` there changed the texts of two
-functions of the libgnutls update and moved no truth test; find out
-whether those two show a real change before it ends them.
+`x24` too. Ending the page there is right for the code that it reads
+straight down, but past a jump, the tracker then guesses a page from a
+function far above, and the texts it shows change where the code does
+not (`RESEARCH.md`, "The low half of an A64 register"). It must follow
+the value that each path brings to a block before it ends them.
 
 ## Rust has the idea of MIR, an in-between IL. Would that help this project?
 

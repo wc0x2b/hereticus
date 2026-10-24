@@ -156,6 +156,19 @@ pub(super) struct Layout {
     pub(super) left_place: Vec<usize>,
     /// The place of each function of the second binary in `right_order`.
     pub(super) right_place: Vec<usize>,
+    /// Whether each function of the first binary is a PLT stub whose
+    /// import is known.
+    ///
+    /// The linker places the PLT, before the code or after it, and orders
+    /// its stubs by when it first meets each import, so a stub says
+    /// nothing of the order of the source. It anchors no chain, sits in no
+    /// gap and counts toward no share. GNU `ld` puts the PLT of an ARM
+    /// library before the code and LLD after it, and with the stubs
+    /// counted, too few pairs anchored the order of a comparison of the
+    /// two.
+    pub(super) left_stub: Vec<bool>,
+    /// As `left_stub`, for the second binary.
+    pub(super) right_stub: Vec<bool>,
     /// The longest chain of pairs in the same order on both sides, as
     /// places.
     pub(super) chain: Vec<(usize, usize)>,
@@ -167,7 +180,8 @@ impl Layout {
     /// Two unrelated binaries pair few functions, and the place of one there
     /// means nothing: see [`LEAST_ANCHORED_SHARE`].
     pub(super) fn is_unanchored(&self) -> bool {
-        let smaller = self.left_order.len().min(self.right_order.len());
+        let code = |stub: &[bool]| stub.iter().filter(|&&stub| !stub).count();
+        let smaller = code(&self.left_stub).min(code(&self.right_stub));
         (self.chain.len() as f64) < LEAST_ANCHORED_SHARE * smaller as f64
     }
 
@@ -181,16 +195,21 @@ impl Layout {
         left_free: &'a [bool],
         right_free: &'a [bool],
     ) -> impl Iterator<Item = (Vec<usize>, Vec<usize>)> + 'a {
-        let free_in = |order: &[usize], free: &[bool], places: core::ops::Range<usize>| {
-            order[places].iter().copied().filter(|&index| free[index]).collect::<Vec<_>>()
-        };
+        let free_in =
+            |order: &[usize], free: &[bool], stub: &[bool], places: core::ops::Range<usize>| {
+                order[places]
+                    .iter()
+                    .copied()
+                    .filter(|&index| free[index] && !stub[index])
+                    .collect::<Vec<_>>()
+            };
         let ends =
             self.chain.iter().copied().chain([(self.left_order.len(), self.right_order.len())]);
         let starts = [(0, 0)].into_iter().chain(self.chain.iter().map(|&(x, y)| (x + 1, y + 1)));
         starts.zip(ends).map(move |(start, end)| {
             (
-                free_in(&self.left_order, left_free, start.0..end.0),
-                free_in(&self.right_order, right_free, start.1..end.1),
+                free_in(&self.left_order, left_free, &self.left_stub, start.0..end.0),
+                free_in(&self.right_order, right_free, &self.right_stub, start.1..end.1),
             )
         })
     }

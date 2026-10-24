@@ -193,18 +193,18 @@ fn tally_all(project: &str, versions: [&str; 2], reading: Reading) -> Tally {
 }
 
 #[rstest]
-#[case::zlib_1_2_11("zlib", ["1.2.11", "1.2.12"], Tally { right: 1218, wrong: 0, gone: 32, new: 55, missed: 0 },
-        Tally { right: 1199, wrong: 0, gone: 95, new: 112, missed: 0 })]
+#[case::zlib_1_2_11("zlib", ["1.2.11", "1.2.12"], Tally { right: 1218, wrong: 0, gone: 31, new: 62, missed: 0 },
+        Tally { right: 1199, wrong: 0, gone: 84, new: 97, missed: 0 })]
 #[case::zlib_1_2_12("zlib", ["1.2.12", "1.2.13"], Tally { right: 1268, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 1250, wrong: 0, gone: 2, new: 3, missed: 0 })]
 #[case::zlib_1_2_13("zlib", ["1.2.13", "1.3"], Tally { right: 1268, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 1250, wrong: 0, gone: 3, new: 6, missed: 0 })]
 #[case::lua_5_1("lua", ["5.1.4", "5.1.5"], Tally { right: 4927, wrong: 0, gone: 0, new: 0, missed: 0 }, Tally { right: 4916, wrong: 0, gone: 3, new: 2, missed: 0 })]
 #[case::lua_5_3("lua", ["5.3.5", "5.3.6"], Tally { right: 5723, wrong: 0, gone: 1, new: 1, missed: 0 },
-        Tally { right: 5711, wrong: 0, gone: 74, new: 96, missed: 0 })]
-#[case::tinyxml2_8("tinyxml2", ["8.0.0", "9.0.0"], Tally { right: 2482, wrong: 0, gone: 129, new: 167, missed: 0 },
-        Tally { right: 2409, wrong: 0, gone: 229, new: 286, missed: 0 })]
-#[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 2, new: 27, missed: 0 }, Tally { right: 2550, wrong: 23, gone: 74, new: 96, missed: 0 })]
+        Tally { right: 5711, wrong: 0, gone: 6, new: 21, missed: 0 })]
+#[case::tinyxml2_8("tinyxml2", ["8.0.0", "9.0.0"], Tally { right: 2482, wrong: 0, gone: 145, new: 191, missed: 0 },
+        Tally { right: 2409, wrong: 0, gone: 195, new: 251, missed: 0 })]
+#[case::tinyxml2_9("tinyxml2", ["9.0.0", "10.0.0"], Tally { right: 2622, wrong: 22, gone: 10, new: 39, missed: 0 }, Tally { right: 2550, wrong: 23, gone: 64, new: 82, missed: 0 })]
 #[case::expat_2_4_4("expat", ["2.4.4", "2.4.5"], Tally { right: 2928, wrong: 0, gone: 10, new: 0, missed: 0 },
-        Tally { right: 2877, wrong: 0, gone: 45, new: 23, missed: 0 })]
+        Tally { right: 2877, wrong: 0, gone: 43, new: 22, missed: 0 })]
 #[case::expat_2_4_8("expat", ["2.4.8", "2.4.9"], Tally { right: 2928, wrong: 0, gone: 0, new: 0, missed: 0 },
         Tally { right: 2877, wrong: 1, gone: 3, new: 6, missed: 0 })]
 fn releases_pair_and_show_their_changes(
@@ -221,4 +221,71 @@ fn releases_pair_and_show_their_changes(
         [stripped, raw],
         "{project} {versions:?}, stripped then raw"
     );
+}
+
+/// Each pair of releases the tests above compare.
+const RELEASES: [(&str, [&str; 2]); 9] = [
+    ("zlib", ["1.2.11", "1.2.12"]),
+    ("zlib", ["1.2.12", "1.2.13"]),
+    ("zlib", ["1.2.13", "1.3"]),
+    ("lua", ["5.1.4", "5.1.5"]),
+    ("lua", ["5.3.5", "5.3.6"]),
+    ("tinyxml2", ["8.0.0", "9.0.0"]),
+    ("tinyxml2", ["9.0.0", "10.0.0"]),
+    ("expat", ["2.4.4", "2.4.5"]),
+    ("expat", ["2.4.8", "2.4.9"]),
+];
+
+/// The pairs of two PLT stubs, each named for its import, that jump to
+/// two imports, in one comparison.
+fn stubs_of_other_imports(
+    project: &str,
+    versions: [&str; 2],
+    build: &str,
+    reading: Reading,
+) -> usize {
+    let arch = build.split('-').next().expect("a build names its architecture");
+    let [before, after] = [0, 1].map(|side| match reading {
+        Reading::Stripped => parse(&read_file(project, versions[side], build, "lib-stripped.so")),
+        Reading::Raw => parse_raw(
+            &read_file(project, versions[side], build, "lib.so"),
+            &read_file(project, versions[side], build, "lib.bin"),
+            arch,
+        ),
+    });
+    let diff =
+        diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
+    diff.matched
+        .iter()
+        .filter(|pair| {
+            let names = [&before.functions[pair.before].name, &after.functions[pair.after].name];
+            names.iter().all(|name| name.ends_with("@plt")) && names[0] != names[1]
+        })
+        .count()
+}
+
+/// A stub that a relocation names pairs with the stub of its import, or
+/// goes or comes, and does not pair with the stub in its place.
+///
+/// Every stub is the same code but for its slot, so before, the stubs of
+/// a comparison without names paired in order, and an import added moved
+/// each stub after it onto the stub of another import: 435 such pairs
+/// stripped and 1540 raw. Those left are stubs of an import on one side
+/// only, which a stub of the same bytes, or a twin in order, takes.
+#[test]
+fn a_stub_pairs_with_the_stub_of_its_import() {
+    let count = |reading: Reading| -> usize {
+        RELEASES
+            .iter()
+            .flat_map(|&(project, versions)| {
+                ["arm", "thumb", "aarch64", "mips", "mipsel"].into_iter().flat_map(move |arch| {
+                    ["O2", "gcc-O2"].map(|level| (project, versions, format!("{arch}-{level}")))
+                })
+            })
+            .map(|(project, versions, build)| {
+                stubs_of_other_imports(project, versions, &build, reading)
+            })
+            .sum()
+    };
+    assert_eq!([count(Reading::Stripped), count(Reading::Raw)], [5, 5], "stripped then raw");
 }

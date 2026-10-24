@@ -741,15 +741,20 @@ impl Cascade<'_> {
         };
         let (left_order, right_order) = (order(&self.left), order(&self.right));
         let (left_place, right_place) = (place_of(&left_order), place_of(&right_order));
+        let stubs = |side: &[Prepared<'_>]| -> Vec<bool> {
+            side.iter().map(|prepared| prepared.stub_of.is_some()).collect()
+        };
+        let (left_stub, right_stub) = (stubs(&self.left), stubs(&self.right));
 
         let mut anchors: Vec<(usize, usize)> = self
             .matched
             .iter()
+            .filter(|pair| !left_stub[pair.before] && !right_stub[pair.after])
             .map(|pair| (left_place[pair.before], right_place[pair.after]))
             .collect();
         anchors.sort_unstable();
         let chain = longest_increasing_chain(&anchors);
-        Layout { left_order, right_order, left_place, right_place, chain }
+        Layout { left_order, right_order, left_place, right_place, left_stub, right_stub, chain }
     }
 
     /// For each unpaired function, the unpaired function of the other side
@@ -956,13 +961,23 @@ impl Cascade<'_> {
         const CALLER_WEIGHT: usize = 2;
 
         // A stub named for its callee pairs by that name, and one with no
-        // partner of its name went or came, as a new import does.
+        // partner of its name went or came, as a new import does. So does
+        // a stub of an import that no other stub of its side jumps to,
+        // which `pair_stubs_by_import` paired or left free; its import is
+        // no name a person gave.
         let use_names = self.options.use_names;
         let stubs = |side: &[Prepared<'_>]| -> Vec<usize> {
+            let mut stubs_of: HashMap<&str, usize> = HashMap::new();
+            for import in side.iter().filter_map(|prepared| prepared.stub_of) {
+                *stubs_of.entry(import).or_default() += 1;
+            }
             (0..side.len())
                 .filter(|&index| {
                     let function = side[index].function;
+                    let paired_by_import =
+                        side[index].stub_of.is_some_and(|import| stubs_of[import] == 1);
                     side[index].isa.arch().stub_slot(&function.code, function.address).is_some()
+                        && !paired_by_import
                         && (use_names == UseNames::No || function.name.is_empty())
                 })
                 .collect()
