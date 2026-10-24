@@ -155,8 +155,8 @@ fn slow_hides_the_data_regions_of_a_mips_kernel() {
     assert!(!shown.contains("data regions changed, hidden"));
 }
 
-/// Without `--base`, the tool says where a MIPS kernel loads, from its calls,
-/// and still refuses to guess.
+/// Without `--base`, the tool says where a MIPS kernel loads, from the words
+/// that point into it, and still refuses to guess.
 #[test]
 fn slow_suggests_a_base_for_a_mips_kernel() {
     let output = hereticus()
@@ -169,8 +169,8 @@ fn slow_suggests_a_base_for_a_mips_kernel() {
     let stderr = String::from_utf8(output.stderr).expect("the error is text");
     assert!(
         stderr.contains(
-            "--raw needs --base, because a raw image does not say where it loads. Its calls \
-             show that it loads at --base 0x80002000"
+            "--raw needs --base, because a raw image does not say where it loads. The words \
+             that point into it show that it loads at --base 0x80002000"
         ),
         "got {stderr}"
     );
@@ -187,7 +187,7 @@ fn slow_warns_about_a_mips_kernel_base_a_page_off() {
 
     let stderr = String::from_utf8(output.stderr).expect("the warning is text");
     assert!(stderr.contains("may not load at 0x80003000"), "got {stderr}");
-    assert!(stderr.contains("58113 do at 0x80002000"), "got {stderr}");
+    assert!(stderr.contains("but at 18562 at 0x80002000"), "got {stderr}");
 }
 
 /// Across a major version, data regions go as well as change. They are
