@@ -206,6 +206,60 @@ build_firmware() {
     done
 }
 
+# Build the listed sources as x86 code that is not PIC, as firmware for x86
+# is, linked into an executable at a fixed address. A `switch` there jumps
+# through a table of whole addresses, which no PIC build holds. Firmware
+# keeps no unwind tables, and with them the call frame information would
+# give each function in the raw image too, so they are left out. No C
+# library is linked, so a call to one is left at zero.
+# The executable is named `lib.so`, as the libraries are, so the same tests
+# read it; it lands in `<arch>-nopic-<level>` and `<arch>-nopic-gcc-<level>`.
+nopic_targets=(x86_64:x86_64-linux-gnu i686:i686-linux-gnu)
+build_nopic() {
+    local name="$1" variant="$2" source_dir="$3"
+    shift 3
+    local sources=("$@")
+    for target in "${nopic_targets[@]}"; do
+        local arch="${target%%:*}" triple="${target##*:}"
+        if [ -n "${BACKPORTS_TARGETS:-}" ] && [[ " $BACKPORTS_TARGETS " != *" $arch "* ]]; then
+            continue
+        fi
+        local flags=(-fno-pic -fno-asynchronous-unwind-tables -fno-unwind-tables
+            -fno-stack-protector -w "${project_flags[@]}")
+        [ "$arch" = x86_64 ] && flags+=("${x86_64_flags[@]}")
+        [ "$arch" = i686 ] && flags+=("${i686_flags[@]}")
+        for level in "${gcc_levels[@]}"; do
+            link_nopic "$out/$name-$variant/$arch-nopic-$level" -fuse-ld=lld -- \
+                clang --target="$triple"
+            # GCC builds a PIE by default.
+            link_nopic "$out/$name-$variant/$arch-nopic-gcc-$level" -no-pie -- \
+                "$triple-gcc-$gcc_version"
+        done
+    done
+}
+
+# Compile `sources` with the compiler after `--`, at `level` with `flags`
+# as `build_nopic` sets them, and link them into `dest/lib.so` with the
+# link flags before `--`.
+link_nopic() {
+    local dest="$1"
+    shift
+    local linker=()
+    while [ "$1" != -- ]; do
+        linker+=("$1")
+        shift
+    done
+    shift
+    local objects="$dest/obj"
+    mkdir -p "$objects"
+    for source in "${sources[@]}"; do
+        "$@" "${flags[@]}" "-$level" -c "$source_dir/$source.c" -o "$objects/$source.o"
+    done
+    "$@" "${linker[@]}" -static -nostdlib \
+        -Wl,--unresolved-symbols=ignore-all -Wl,-e,0 -o "$dest/lib.so" "$objects"/*.o
+    finish "$dest"
+}
+
 # Write the stripped library and the raw image of a linked `lib.so`.
 finish() {
     local dest="$1"
@@ -305,6 +359,9 @@ build_rust after
 # and one way with GCC, for the comparisons across versions. The symbols of
 # each release are the answer there too.
 out="$here/build/versions"
+# A build that a change of this script dropped must not stay for the tests
+# to read, so the releases are built again from nothing.
+rm -rf "$out"
 # The releases are measured on the current cores, read one set at a time.
 current=()
 for target in "${targets[@]}"; do
@@ -324,15 +381,18 @@ for version in 1.2.11 1.2.12 1.2.13 1.3; do
     unpack "zlib-$version.tar.gz" zlib "$version"
     project_flags=(-DHAVE_UNISTD_H)
     build zlib "$version" "$out/src/zlib-$version" "${zlib_sources[@]}"
+    build_nopic zlib "$version" "$out/src/zlib-$version" "${zlib_sources[@]}"
 done
 project_flags=()
 for version in 5.1.4 5.1.5; do
     unpack "lua-$version.tar.gz" lua "$version"
     build lua "$version" "$out/src/lua-$version/src" "${lua_sources[@]}"
+    build_nopic lua "$version" "$out/src/lua-$version/src" "${lua_sources[@]}"
 done
 for version in 5.3.5 5.3.6; do
     unpack "lua-$version.tar.gz" lua "$version"
     build lua "$version" "$out/src/lua-$version/src" "${lua53_sources[@]}"
+    build_nopic lua "$version" "$out/src/lua-$version/src" "${lua53_sources[@]}"
 done
 # expat: 2.4.5 fixes five CVEs, and 2.4.9 fixes CVE-2022-40674.
 project_flags=(-I"$here/expat")

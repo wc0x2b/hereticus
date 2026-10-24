@@ -36,6 +36,8 @@ fn builds() -> Vec<PathBuf> {
         .flat_map(|release| std::fs::read_dir(release.path()).into_iter().flatten().flatten())
         .map(|build| build.path())
         .filter(|build| build.join("lib-stripped.so").exists())
+        // `tests/nopic.rs` measures the builds that are not PIC.
+        .filter(|build| !build.to_string_lossy().contains("-nopic-"))
         .collect();
     builds.sort();
     builds

@@ -22,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offset. Before, `--unpack` read only an xz kernel filtered for A32.
 - Read the jump tables of x86 code that is not PIC, as
   `jmp qword ptr [8*rax + table]`, whose entries are whole addresses.
-  Before, a raw image of such code was cut at the return of each case:
-  GCC's `switch` of eight cases read as 8 functions.
+  Before, the scan cut such code at the return of each case. Over the
+  releases of zlib and Lua built so for x86-64 and i686 with no unwind
+  tables, the scan of a raw image invents 8 starts in place of 305.
 
 ### Changed
 
