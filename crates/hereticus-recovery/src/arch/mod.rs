@@ -179,13 +179,20 @@ pub trait Recovery: Decoder {
         None
     }
 
-    /// The start of each entry of the PLT `code` at `base`, in address
-    /// order, where the shape of a stub tells where it starts, as on ARM,
-    /// whose stubs are not all one size. The first entry, which calls the
-    /// lazy resolver, has no such shape and is not among them. Defaults to
-    /// none.
-    fn plt_entries(&self, _code: &[u8], _base: u64) -> Vec<u64> {
+    /// Where each PLT stub in `code` at `base` lies, in address order,
+    /// where the shape of a stub tells where it starts, as on ARM, whose
+    /// stubs are not all one size. The first entry of a PLT, which calls
+    /// the lazy resolver, is no stub: see [`Recovery::plt_header`].
+    /// Defaults to none.
+    fn plt_entries(&self, _code: &[u8], _base: u64) -> Vec<core::ops::Range<u64>> {
         Vec::new()
+    }
+
+    /// Where the first entry of the PLT starts, in `code` at `base`, where
+    /// the first stub starts at `first_stub`. A raw image has no section
+    /// that says where the PLT starts. Defaults to `None`.
+    fn plt_header(&self, _code: &[u8], _base: u64, _first_stub: u64) -> Option<u64> {
+        None
     }
 
     /// The distance from the global offset table of the slot that the PLT

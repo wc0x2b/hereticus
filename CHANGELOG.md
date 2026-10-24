@@ -29,12 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the instruction set it is in: A32, or T32 where GNU `ld` puts the
   prefix that switches to A32 before it. Before, the scan found the full
   PLT as one function, and in a Thumb-2 library it read the A32 stubs as
-  T32.
+  T32. A raw image has no sections, so the scan finds each PLT there by
+  the shape of its stubs. In a raw Thumb-2 image, it cut the prefix of a
+  stub into two functions and some stubs into two.
 - Pair a PLT stub only with the stub of its import, also when names are
   off. Before, the stubs of a comparison without names paired in order,
   so a new import moved each stub after it onto the stub of a different
   import: over the releases of `tests/versions.rs`, 435 such pairs
-  stripped and 1540 raw, now 5 and 38. Stubs also do not count toward
+  stripped and 1540 raw, now 5 and 5. Stubs also do not count toward
   the order of the code, because the linker puts the PLT before the code
   or after it. Across clang and GCC, 13 more pairs are right and 1 more
   is wrong.

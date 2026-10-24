@@ -250,18 +250,47 @@ fn plt_index(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<IndexEntry> {
         .filter_map(|section| Some((section.address(), section.data().ok()?)))
         .flat_map(|(base, code)| {
             let stubs = arch.plt_entries(code, base);
-            let Some(&first_stub) = stubs.first() else { return Vec::new() };
+            let Some(first_stub) = stubs.first().map(|stub| stub.start) else { return Vec::new() };
             let first_entry = (first_stub != base).then_some(base);
-            let listed = first_entry
-                .into_iter()
-                .chain(stubs)
-                .map(|address| IndexEntry { address, unwinding: Unwinding::Listed });
-            let end = IndexEntry {
-                address: base + code.len() as u64,
-                unwinding: Unwinding::CannotUnwind,
-            };
-            listed.chain([end]).collect()
+            let end = base + code.len() as u64;
+            listed_plt(first_entry, stubs.iter().map(|stub| stub.start), end)
         })
+        .collect()
+}
+
+/// The entries of each PLT in a raw image, `code` at `base`, as
+/// [`plt_index`] lists them: each run of stubs that lie end to end, with
+/// the first entry before it where [`Recovery::plt_header`] finds one.
+///
+/// The image has no section that says where a PLT lies, so the shape of
+/// each stub says it. Measured on tinyxml2 for Thumb-2 as a raw image, the
+/// scan cut the T32 prefix of a stub into two functions of a halfword and
+/// some stubs in two, so a stub of one import paired with that of another.
+pub fn raw_plt_index(code: &[u8], base: u64, arch: &dyn Recovery) -> Vec<IndexEntry> {
+    let stubs = arch.plt_entries(code, base);
+    stubs
+        .chunk_by(|before, after| before.end == after.start)
+        .flat_map(|run| {
+            let first_stub = run[0].start;
+            let header = arch.plt_header(code, base, first_stub);
+            let end = run[run.len() - 1].end;
+            listed_plt(header, run.iter().map(|stub| stub.start), end)
+        })
+        .collect()
+}
+
+/// The first entry of a PLT, where it is known, and each of its `stubs`,
+/// listed alone, and its `end`, which closes the last stub.
+fn listed_plt(
+    first_entry: Option<u64>,
+    stubs: impl Iterator<Item = u64>,
+    end: u64,
+) -> Vec<IndexEntry> {
+    first_entry
+        .into_iter()
+        .chain(stubs)
+        .map(|address| IndexEntry { address, unwinding: Unwinding::Listed })
+        .chain([IndexEntry { address: end, unwinding: Unwinding::CannotUnwind }])
         .collect()
 }
 
@@ -2155,6 +2184,28 @@ mod tests {
     use super::*;
     use hereticus_il::arch::Decoder as _;
     use hereticus_il::arch::arm32::Arm32;
+
+    /// A raw image lists the first entry of its PLT, each stub and the end
+    /// of the last, as GNU `ld` wrote them for zlib on ARM, after a word of
+    /// other code.
+    #[test]
+    fn a_raw_image_lists_the_entries_of_its_plt() {
+        let first = [0xe52d_e004_u32, 0xe59f_e004, 0xe08f_e00e, 0xe5be_f008, 0x0002_eb70];
+        let stub = [0xe28f_c600_u32, 0xe28c_ca2e, 0xe5bc_fb70];
+        let words = [&[0xe12f_ff1e][..], &first, &stub, &stub, &[0xe12f_ff1e]].concat();
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let listed = |address| IndexEntry { address, unwinding: Unwinding::Listed };
+        assert_eq!(
+            raw_plt_index(&code, 0x147c, &Arm32),
+            [
+                listed(0x1480),
+                listed(0x1494),
+                listed(0x14a0),
+                IndexEntry { address: 0x14ac, unwinding: Unwinding::CannotUnwind },
+            ]
+        );
+        assert!(raw_plt_index(&code[..24], 0x147c, &Arm32).is_empty(), "no stub");
+    }
 
     /// Thumb-2 halfwords as little-endian bytes.
     fn halfwords(halfwords: &[u16]) -> Vec<u8> {

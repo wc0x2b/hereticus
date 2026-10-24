@@ -52,10 +52,6 @@ stubs as changed (`KNOWN_EXTRAS` in `tests/backports.rs`). A call says which set
 unwind index, so a scan could follow them per function.
 Measured on the OpenWrt 22.03.5 images for the EX6100v2 and the A385
 DB AP, every executable of user space is A32: 41 and 38, none Thumb-2.
-A raw Thumb-2 library built by GNU `ld` shows the cost: the scan cuts
-the T32 prefix of each PLT stub from the A32 stub after it, so two
-functions jump to one import and neither pairs by it
-(`a_stub_pairs_with_the_stub_of_its_import` in `tests/versions.rs`).
 
 ## End the code of a raw image where its data begins
 

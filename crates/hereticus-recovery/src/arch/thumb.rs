@@ -165,14 +165,21 @@ impl Recovery for Thumb2 {
 
     /// A stub that T32 code calls opens with the prefix that switches to
     /// A32, and the prefix is part of it.
-    fn plt_entries(&self, code: &[u8], base: u64) -> Vec<u64> {
-        super::arm32::plt_stub_starts(code, base, |stub, address| {
+    fn plt_entries(&self, code: &[u8], base: u64) -> Vec<Range<u64>> {
+        super::arm32::plt_stubs(code, base, |stub, address| {
             let prefix = match stub.starts_with(&THUMB_STUB_PREFIX) {
                 true => THUMB_STUB_PREFIX.len(),
                 false => 0,
             };
-            self.stub_slot(stub, address).map(|_| prefix + super::arm32::STUB_LENGTH)
+            super::arm32::opens_a32_stub(&stub[prefix..])
+                .then(|| self.stub_slot(stub, address))
+                .flatten()?;
+            Some(prefix + super::arm32::STUB_LENGTH)
         })
+    }
+
+    fn plt_header(&self, code: &[u8], base: u64, first_stub: u64) -> Option<u64> {
+        Arm32.plt_header(code, base, first_stub)
     }
 
     fn is_prologue(&self, insn: &Insn) -> bool {
@@ -784,7 +791,10 @@ mod tests {
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect();
-        assert_eq!(Thumb2.plt_entries(&code, 0x1494), [0x1494, 0x14a4, 0x14b0]);
+        assert_eq!(
+            Thumb2.plt_entries(&code, 0x1494),
+            [0x1494..0x14a4, 0x14a4..0x14b0, 0x14b0..0x14c0]
+        );
         assert!(Thumb2.plt_entries(&code[..4], 0x1494).is_empty(), "a prefix alone");
     }
 

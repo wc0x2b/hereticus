@@ -179,46 +179,82 @@ fn an_x86_thunk_with_no_size_is_a_function() {
 }
 
 /// Each entry of the PLT of a stripped ARM library is a function of its
-/// own, named for its import, in the instruction set it is in. GNU `ld`
-/// puts a T32 prefix that switches to A32 before each stub that T32 code
-/// calls, and LLD writes A32 stubs alone.
+/// own, named for its import, in the instruction set it is in, and so is
+/// each entry of the raw image of the same build. GNU `ld` puts a T32
+/// prefix that switches to A32 before each stub that T32 code calls, and
+/// LLD writes A32 stubs alone.
 #[rstest::rstest]
-#[case::gnu_arm("arm-gcc-O2", 57, 0)]
-#[case::lld_arm("arm-O2", 49, 0)]
-#[case::gnu_thumb("thumb-gcc-O2", 57, 17)]
-#[case::lld_thumb("thumb-O2", 49, 0)]
+#[case::gnu_arm("arm-gcc-O2", Isa::Arm32, 57, 0)]
+#[case::lld_arm("arm-O2", Isa::Arm32, 49, 0)]
+#[case::gnu_thumb("thumb-gcc-O2", Isa::Thumb2, 57, 17)]
+#[case::lld_thumb("thumb-O2", Isa::Thumb2, 49, 0)]
 fn each_plt_entry_is_a_function(
     #[case] build: &str,
+    #[case] isa: Isa,
     #[case] entries: usize,
     #[case] prefixed: usize,
+) {
+    let build = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/build/versions/zlib-1.2.13")
+        .join(build);
+    let read = |file: &str| std::fs::read(build.join(file)).expect("run `just backports` first");
+    let (stripped, image) = (read("lib-stripped.so"), read("lib.bin"));
+    let file = object::File::parse(stripped.as_slice()).expect("the build parses");
+    let plt = file.section_by_name(".plt").expect("a library calls through its PLT");
+    let range = plt.address()..plt.address() + plt.size();
+    // `llvm-objcopy -O binary` starts the image at the first section that
+    // loads.
+    let base = file
+        .sections()
+        .filter(|section| section.address() != 0 && section.size() != 0)
+        .filter(|section| section.kind() != object::SectionKind::UninitializedData)
+        .map(|section| section.address())
+        .min()
+        .expect("a library loads something");
+    let readings = [
+        ("stripped", Binary::parse(&stripped).expect("the build parses")),
+        ("raw", Binary::parse_raw(&image, base, isa).expect("the image reads")),
+    ];
+    for (reading, binary) in &readings {
+        check_plt(binary, range.clone(), entries, prefixed, reading);
+    }
+}
+
+/// Check that the functions of `binary` in the PLT at `range` are its
+/// `entries`, of which `prefixed` open with the T32 prefix.
+fn check_plt(
+    binary: &Binary,
+    range: core::ops::Range<u64>,
+    entries: usize,
+    prefixed: usize,
+    reading: &str,
 ) {
     /// `bx pc`, little endian.
     const BX_PC: [u8; 2] = [0x78, 0x47];
 
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../fixtures/build/versions/zlib-1.2.13")
-        .join(build)
-        .join("lib-stripped.so");
-    let data = std::fs::read(&path).expect("run `just backports` first");
-    let file = object::File::parse(data.as_slice()).expect("the build parses");
-    let plt = file.section_by_name(".plt").expect("a library calls through its PLT");
-    let range = plt.address()..plt.address() + plt.size();
-    let binary = Binary::parse(&data).expect("the build parses");
     let in_plt: Vec<_> =
         binary.functions.iter().filter(|function| range.contains(&function.address)).collect();
-    assert_eq!(in_plt.len(), entries, "the first entry and each stub");
+    assert_eq!(in_plt.len(), entries, "{reading}: the first entry and each stub");
 
     let (first, stubs) = in_plt.split_first().expect("the PLT holds functions");
-    assert_eq!(first.address, range.start);
-    assert!(first.name.is_empty(), "the first entry calls the lazy resolver");
-    assert_eq!(binary.isa_of(first), Isa::Arm32);
-    assert!(stubs.iter().all(|stub| stub.name.ends_with("@plt")), "each stub has its import");
+    assert_eq!(first.address, range.start, "{reading}");
+    assert!(first.name.is_empty(), "{reading}: the first entry calls the lazy resolver");
+    assert_eq!(binary.isa_of(first), Isa::Arm32, "{reading}");
+    assert!(
+        stubs.iter().all(|stub| stub.name.ends_with("@plt")),
+        "{reading}: each stub has its import"
+    );
     let opens_in_t32 = |code: &[u8]| code.starts_with(&BX_PC);
-    assert_eq!(stubs.iter().filter(|stub| opens_in_t32(&stub.code)).count(), prefixed);
+    let prefixes = stubs.iter().filter(|stub| opens_in_t32(&stub.code)).count();
+    assert_eq!(prefixes, prefixed, "{reading}");
     for stub in stubs {
         let set = if opens_in_t32(&stub.code) { Isa::Thumb2 } else { Isa::Arm32 };
-        assert_eq!(binary.isa_of(stub), set, "{}", stub.name);
+        assert_eq!(binary.isa_of(stub), set, "{reading}: {}", stub.name);
     }
-    let ends = in_plt.iter().map(|function| function.address + function.code.len() as u64);
-    assert_eq!(ends.max(), Some(range.end), "the stubs cover the PLT");
+    // A raw Thumb-2 image is read as T32, which trims the word that traps
+    // after a stub of LLD as padding.
+    const TRAP_WORD: u64 = 4;
+    let end = in_plt.iter().map(|function| function.address + function.code.len() as u64).max();
+    let covers = end.is_some_and(|end| end == range.end || end + TRAP_WORD == range.end);
+    assert!(covers, "{reading}: the stubs cover the PLT, to {end:x?}");
 }

@@ -223,9 +223,21 @@ impl Recovery for Arm32 {
         shape.then(|| address + PC_AHEAD + high + middle + low)
     }
 
-    fn plt_entries(&self, code: &[u8], base: u64) -> Vec<u64> {
-        plt_stub_starts(code, base, |stub, address| {
-            self.stub_slot(stub, address).map(|_| STUB_LENGTH)
+    fn plt_entries(&self, code: &[u8], base: u64) -> Vec<Range<u64>> {
+        plt_stubs(code, base, |stub, address| {
+            opens_a32_stub(stub).then(|| self.stub_slot(stub, address)).flatten()?;
+            Some(STUB_LENGTH)
+        })
+    }
+
+    /// GNU `ld` writes a first entry of 5 words, and LLD one of 8, padded
+    /// with words that trap. Each opens with `str lr, [sp, -4]!`.
+    fn plt_header(&self, code: &[u8], base: u64, first_stub: u64) -> Option<u64> {
+        const HEADER_WORDS: [u64; 2] = [5, 8];
+        HEADER_WORDS.iter().find_map(|words| {
+            let header = first_stub.checked_sub(words * WORD_WIDTH as u64)?;
+            let offset = usize::try_from(header.checked_sub(base)?).ok()?;
+            (code.get(offset..offset + WORD_WIDTH)? == PUSH_LR).then_some(header)
         })
     }
 
@@ -234,34 +246,54 @@ impl Recovery for Arm32 {
     }
 }
 
-/// The bytes of the A32 stub that `stub_slot` reads. LLD pads
-/// each stub with a word that traps, and GNU `ld` does not.
+/// The bytes of the A32 stub that `stub_slot` reads.
 pub(super) const STUB_LENGTH: usize = 3 * WORD_WIDTH;
 
-/// The address of each PLT stub in `code` at `base`, where
-/// `stub_length` gives the bytes of the stub that opens at an address, or
-/// `None` where none opens there.
+/// The word LLD pads each stub with, which traps.
+const TRAP_WORD: [u8; WORD_WIDTH] = [0xd4; WORD_WIDTH];
+
+/// `str lr, [sp, -4]!`, little endian, which opens the first entry of a PLT.
+const PUSH_LR: [u8; WORD_WIDTH] = [0x04, 0xe0, 0x2d, 0xe5];
+
+/// Whether `code` opens with `add ip, pc, imm`, as each A32 stub does. A
+/// raw image is searched for stubs word by word, and this costs less than
+/// to decode each word.
+pub(super) fn opens_a32_stub(code: &[u8]) -> bool {
+    /// The bits of `add ip, pc, imm` but for the immediate.
+    const MASK: u32 = 0xffff_f000;
+    const ADD_IP_PC: u32 = 0xe28f_c000;
+    code.first_chunk::<WORD_WIDTH>()
+        .is_some_and(|word| u32::from_le_bytes(*word) & MASK == ADD_IP_PC)
+}
+
+/// Where each PLT stub in `code` at `base` lies, where `stub_length` gives
+/// the bytes of the stub that opens at an address, or `None` where none
+/// opens there. A stub takes in the word that traps after it, as LLD
+/// writes one.
 ///
 /// A stub starts on a word, and a word inside a stub opens none, so the
 /// search goes on past the stub.
-pub(super) fn plt_stub_starts(
+pub(super) fn plt_stubs(
     code: &[u8],
     base: u64,
     stub_length: impl Fn(&[u8], u64) -> Option<usize>,
-) -> Vec<u64> {
-    let mut starts = Vec::new();
+) -> Vec<Range<u64>> {
+    let mut stubs = Vec::new();
     let mut offset = 0;
     while offset < code.len() {
         let address = base + offset as u64;
         match stub_length(&code[offset..], address) {
-            Some(length) => {
-                starts.push(address);
+            Some(mut length) => {
+                if code.get(offset + length..offset + length + WORD_WIDTH) == Some(&TRAP_WORD) {
+                    length += WORD_WIDTH;
+                }
+                stubs.push(address..address + length as u64);
                 offset += length;
             }
             None => offset += WORD_WIDTH,
         }
     }
-    starts
+    stubs
 }
 
 /// Read the table behind `add pc, rB, rX`, where `earlier` holds the
@@ -1402,8 +1434,8 @@ mod tests {
     }
 
     /// The PLT of zlib for ARM, as GNU `ld` wrote it: the first entry,
-    /// then stubs of three words, and as LLD wrote it, with a word that
-    /// traps after each stub.
+    /// then stubs of three words, and as LLD wrote it, with a first entry
+    /// of eight words and a word that traps after each stub.
     #[test]
     fn finds_each_entry_of_a_plt() {
         let words = |words: &[u32]| -> Vec<u8> {
@@ -1412,15 +1444,23 @@ mod tests {
         let first = [0xe52d_e004, 0xe59f_e004, 0xe08f_e00e, 0xe5be_f008, 0x0002_eb70];
         let stub = [0xe28f_c600, 0xe28c_ca2e, 0xe5bc_fb70];
         let gnu = words(&[&first[..], &stub, &stub].concat());
-        assert_eq!(Arm32.plt_entries(&gnu, 0x1480), [0x1494, 0x14a0]);
+        assert_eq!(Arm32.plt_entries(&gnu, 0x1480), [0x1494..0x14a0, 0x14a0..0x14ac]);
+        assert_eq!(Arm32.plt_header(&gnu, 0x1480, 0x1494), Some(0x1480));
 
         let trap = 0xd4d4_d4d4;
-        let lld = words(&[&stub[..], &[trap], &stub, &[trap]].concat());
-        assert_eq!(Arm32.plt_entries(&lld, 0x249a0), [0x249a0, 0x249b0]);
+        let lld = words(&[&first[..1], &[trap; 7], &stub, &[trap], &stub, &[trap]].concat());
+        assert_eq!(Arm32.plt_entries(&lld, 0x24980), [0x249a0..0x249b0, 0x249b0..0x249c0]);
+        assert_eq!(Arm32.plt_header(&lld, 0x24980, 0x249a0), Some(0x24980));
 
         assert!(Arm32.plt_entries(&words(&first), 0x1480).is_empty(), "no stub");
         assert!(Arm32.plt_entries(&[], 0x1480).is_empty());
-        assert_eq!(Arm32.plt_entries(&gnu[..gnu.len() - 2], 0x1480), [0x1494], "a cut stub");
+        let cut = Arm32.plt_entries(&gnu[..gnu.len() - 2], 0x1480);
+        assert_eq!(
+            cut.iter().map(|stub| (stub.start, stub.end)).collect::<Vec<_>>(),
+            [(0x1494, 0x14a0)]
+        );
+        assert_eq!(Arm32.plt_header(&gnu, 0x1480, 0x14ac), None, "no first entry before");
+        assert_eq!(Arm32.plt_header(&gnu, 0x1490, 0x1494), None, "before the code");
     }
 
     /// `sub sp, sp, 0xc` before a `push` opens a variadic function.
