@@ -177,9 +177,6 @@ found more to do, most valuable first:
   shows are near twins of this kind, one slot off: template copies of
   protobuf and draco, and the `log_Z3_*` functions of z3 (`RESEARCH.md`,
   "Assemblage-DeepHistory: the wrong pairs a report shows").
-- **A deleted function paired with a new one.** Of the other wrong pairs
-  a report shows, most join a deleted function to a new one while the
-  true partner of one side stays free.
 - **Pairs across compilers.** The dataset builds each release with GCC
   and with clang. Those pairs make a set across builds, like the
   backports, but far larger.

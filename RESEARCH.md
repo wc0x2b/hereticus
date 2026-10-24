@@ -2354,6 +2354,33 @@ leaves 1,574,557 right and 42,833 wrong, 2.65% wrong, where every copy
 counted gives 1.31%. The copies are mostly code that pairs right, so the
 copies made the set look better than it is.
 
+### Assemblage-DeepHistory: a new function in the place of an old one
+
+Measured on 2026-10-23, after entry 21. Of the 8,989 wrong pairs a
+report shows, 2,367 join an old function to a new one while the true
+partner of the old one stays free, and 1,773 the reverse. A free partner
+under 48 bytes is the case of `Cascade::thin_wrapper_of`, about 680
+pairs, but 459 of those partners do not call the new function at all: a
+release rewrote the old function, and the new one holds code like its
+old body. Only the names tell which pair is right, so this is left as it
+is. Each change tried, against entry 21, or against the row above where
+it starts with "And"; each cell right then wrong:
+
+| Change | Assemblage | Backports | Ubuntu, kernels |
+|---|---|---|---|
+| A thin wrapper of at most 6 instructions | +101, −115 | −8, +9 | −1, −3 on the kernels |
+| And a wrapper with no caller is in the old place | −511, +382 | −18, +18 | −272, +171 on the kernels |
+| A call through a PLT stub of the binary reads as a call to its export, in the whole stage | not measured | −95, +70 | no change |
+| The same, for a thin wrapper only | not measured | −63, +63 | no change |
+| And no wrapper where the old function had one | not measured | −59, +59 | no change |
+
+A stripped library calls what it exports through its own PLT stub, as
+`jmp ecs_modified_id@plt` in the wrapper `ecs_modified_w_entity` of flecs
+2.4, so the stage cannot see such a wrapper. But where one build inlines
+a wrapper, as `gzgetc_` of zlib, the other build seems to add it, and the
+pair moves to the wrapper. The bench of Assemblage reads the symbols, so
+it cannot measure the gain in a stripped library.
+
 ### 20: the load address of a raw image
 
 Measured on 2026-10-23 over 54 images with a known base, as
