@@ -35,8 +35,13 @@ stubs of MIPS left out (`RESEARCH.md`, "Function recovery, again"). 8 of
 the 9 missed follow a call that never returns, to a function of the
 library, and open with no frame: `auxsetnode` of Lua 5.3 by clang for
 ARM and Thumb-2, which a pointer reaches, and `luaV_shiftl` by GCC for
-MIPS, which only tail calls reach. Telling such a call from one that
-returns needs to know which functions of the library never return.
+MIPS, which only tail calls reach. Which functions of the library never
+return can be read from the code, but where the compiler did not know,
+it puts more of the caller after the call, and taking that for a new
+function invented 12 more starts than it found (`RESEARCH.md`,
+"Functions of the library that never return"). A start after such a
+call needs a sign of its own, as a pointer to it that the scan does not
+yet read.
 
 ## Scan a raw binary that mixes two instruction sets
 

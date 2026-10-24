@@ -2505,3 +2505,37 @@ address guessed past an end read as a pointer to a function; and the
 ranks of the published fixes moved. So none of these is in. To read the
 low half right, the tracker must know which block a branch reaches, and
 the value each path brings there, not the values of the whole region.
+
+### Functions of the library that never return
+
+8 of the 9 starts that the scan misses in the stripped releases follow a
+call to a function of the library that never returns: `luaM_toobig`
+before `auxsetnode`, and `luaG_opinterror` before `luaV_shiftl`. The scan
+knows only the imports that never return, by name. A try found the
+others from the code: every function that a call reaches was taken to
+never return, and each with a path from its start to a return, a jump
+through a register or a jump out of the code was dropped, until none
+was; a call that never returns ended a path. This finds `luaD_throw`,
+which calls itself, and the error functions above it.
+
+Read so, a call to such a function opened a function after it, as a
+call to `abort` does, and invented 2,313 starts, where 3 were. Lua 5.1
+declares none of its error functions as ones that never return, so the
+compiler puts more of the caller after the call: an epilogue, as
+`add sp, sp, 0x10` and `pop` in `luaG_typeerror` for ARM, a jump back
+into the caller, as in `luaD_call`, or a block that a branch from before
+the call reaches, as in `luaK_checkstack`. Taking each of these as more
+of the caller, and stepping over the words that LLD fills a gap of A32
+code with, which trap, left these, over the 210 builds:
+
+| Reading | Exact | Invented | Missed |
+|---|---|---|---|
+| Before | 64488 | 3 | 9 |
+| Library functions that never return, with the checks above | 64486 | 15 | 5 |
+| As above, only where a jump from another function reaches the code after the call | 64488 | 3 | 9 |
+
+It found 4 more starts. The 12 more invented are code that GCC puts after the call in
+`luaV_execute`, a null load and `udf`, which the decoder reads as code,
+and words of a pool after `nop` padding that no load names, as after
+`error_expected` in `luaY_parser` for ARM. So the reading is out: it
+costs more starts than it finds.
