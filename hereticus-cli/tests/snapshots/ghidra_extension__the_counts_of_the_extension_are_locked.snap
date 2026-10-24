@@ -1,15 +1,14 @@
 ---
 source: hereticus-cli/tests/ghidra_extension.rs
-assertion_line: 273
 expression: table
 ---
 binary            off  on  hereticus  hereticus in on
-zlib-arm-O2       186 186        124              123
-zlib-thumb-O2     188 189        132              126
+zlib-arm-O2       186 187        172              170
+zlib-thumb-O2     188 192        180              175
 zlib-aarch64-O2   187 187        171              171
 zlib-mips-O2      137 139        123              123
 arm-stub           19  66         66               66
 
 pair              matches  hereticus pairs
-zlib-arm-O2           123              124
+zlib-arm-O2           170              172
 zlib-mips-O2          123              123

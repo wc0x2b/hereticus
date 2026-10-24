@@ -65,7 +65,7 @@ each of the 66<!-- from ghidra_extension: arm-stub / hereticus --> starts
 that `hereticus` finds. On a stripped library, Ghidra already finds almost
 every function. On the zlib backport for Thumb-2, Ghidra finds
 188<!-- from ghidra_extension: zlib-thumb-O2 / off --> functions alone and
-189<!-- from ghidra_extension: zlib-thumb-O2 / on --> with the analyzer.
+192<!-- from ghidra_extension: zlib-thumb-O2 / on --> with the analyzer.
 
 ## Function Match
 
@@ -88,10 +88,9 @@ The correlator has these options:
 A pair is proposed only if both programs have a function at its addresses.
 Thus, run the Function Finder on both programs first. On the zlib backport
 for ARM, the correlator proposes
-123<!-- from ghidra_extension: zlib-arm-O2 / matches --> of the
-124<!-- from ghidra_extension: zlib-arm-O2 / hereticus pairs --> pairs of
-`hereticus`. The one it does not propose is the PLT, which Ghidra holds as
-one function for each entry.
+170<!-- from ghidra_extension: zlib-arm-O2 / matches --> of the
+172<!-- from ghidra_extension: zlib-arm-O2 / hereticus pairs --> pairs of
+`hereticus`. The two it does not propose are PLT stubs.
 
 ## Limits
 
