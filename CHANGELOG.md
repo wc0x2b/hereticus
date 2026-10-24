@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unpack a zImage whose kernel is gzip or zstd, and an xz kernel
   filtered for x86, PowerPC, Thumb-2, AArch64 or SPARC, or with a start
   offset. Before, `--unpack` read only an xz kernel filtered for A32.
+- Read the jump tables of x86 code that is not PIC, as
+  `jmp qword ptr [8*rax + table]`, whose entries are whole addresses.
+  Before, a raw image of such code was cut at the return of each case:
+  GCC's `switch` of eight cases read as 8 functions.
 
 ### Changed
 
