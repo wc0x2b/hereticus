@@ -223,9 +223,45 @@ impl Recovery for Arm32 {
         shape.then(|| address + PC_AHEAD + high + middle + low)
     }
 
+    fn plt_entries(&self, code: &[u8], base: u64) -> Vec<u64> {
+        plt_stub_starts(code, base, |stub, address| {
+            self.stub_slot(stub, address).map(|_| STUB_LENGTH)
+        })
+    }
+
     fn unwind_section(&self) -> Option<&'static str> {
         Some(UNWIND_SECTION)
     }
+}
+
+/// The bytes of the A32 stub that `stub_slot` reads. LLD pads
+/// each stub with a word that traps, and GNU `ld` does not.
+pub(super) const STUB_LENGTH: usize = 3 * WORD_WIDTH;
+
+/// The address of each PLT stub in `code` at `base`, where
+/// `stub_length` gives the bytes of the stub that opens at an address, or
+/// `None` where none opens there.
+///
+/// A stub starts on a word, and a word inside a stub opens none, so the
+/// search goes on past the stub.
+pub(super) fn plt_stub_starts(
+    code: &[u8],
+    base: u64,
+    stub_length: impl Fn(&[u8], u64) -> Option<usize>,
+) -> Vec<u64> {
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    while offset < code.len() {
+        let address = base + offset as u64;
+        match stub_length(&code[offset..], address) {
+            Some(length) => {
+                starts.push(address);
+                offset += length;
+            }
+            None => offset += WORD_WIDTH,
+        }
+    }
+    starts
 }
 
 /// Read the table behind `add pc, rB, rX`, where `earlier` holds the
@@ -1363,6 +1399,28 @@ mod tests {
         let mut zero = stub.clone();
         zero[8..].copy_from_slice(&0xe5bc_f000_u32.to_le_bytes());
         assert_eq!(Arm32.stub_slot(&zero, 0x1dd60), Some(0x3dd68));
+    }
+
+    /// The PLT of zlib for ARM, as GNU `ld` wrote it: the first entry,
+    /// then stubs of three words, and as LLD wrote it, with a word that
+    /// traps after each stub.
+    #[test]
+    fn finds_each_entry_of_a_plt() {
+        let words = |words: &[u32]| -> Vec<u8> {
+            words.iter().flat_map(|word| word.to_le_bytes()).collect()
+        };
+        let first = [0xe52d_e004, 0xe59f_e004, 0xe08f_e00e, 0xe5be_f008, 0x0002_eb70];
+        let stub = [0xe28f_c600, 0xe28c_ca2e, 0xe5bc_fb70];
+        let gnu = words(&[&first[..], &stub, &stub].concat());
+        assert_eq!(Arm32.plt_entries(&gnu, 0x1480), [0x1494, 0x14a0]);
+
+        let trap = 0xd4d4_d4d4;
+        let lld = words(&[&stub[..], &[trap], &stub, &[trap]].concat());
+        assert_eq!(Arm32.plt_entries(&lld, 0x249a0), [0x249a0, 0x249b0]);
+
+        assert!(Arm32.plt_entries(&words(&first), 0x1480).is_empty(), "no stub");
+        assert!(Arm32.plt_entries(&[], 0x1480).is_empty());
+        assert_eq!(Arm32.plt_entries(&gnu[..gnu.len() - 2], 0x1480), [0x1494], "a cut stub");
     }
 
     /// `sub sp, sp, 0xc` before a `push` opens a variadic function.

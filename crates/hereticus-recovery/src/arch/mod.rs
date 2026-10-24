@@ -179,6 +179,15 @@ pub trait Recovery: Decoder {
         None
     }
 
+    /// The start of each entry of the PLT `code` at `base`, in address
+    /// order, where the shape of a stub tells where it starts, as on ARM,
+    /// whose stubs are not all one size. The first entry, which calls the
+    /// lazy resolver, has no such shape and is not among them. Defaults to
+    /// none.
+    fn plt_entries(&self, _code: &[u8], _base: u64) -> Vec<u64> {
+        Vec::new()
+    }
+
     /// The distance from the global offset table of the slot that the PLT
     /// stub `code` jumps through, where the stub finds the table in a
     /// register and so names no slot of its own, as 32-bit x86 PIC does.

@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use hereticus::obj::Binary;
+use hereticus::obj::{Binary, Isa};
 use object::{Object, ObjectSection};
 
 /// What recovery found, summed over every build.
@@ -176,4 +176,49 @@ fn an_x86_thunk_with_no_size_is_a_function() {
             .any(|function| function.address == thunk.address && function.code == thunk.code),
         "the scan finds the same thunk"
     );
+}
+
+/// Each entry of the PLT of a stripped ARM library is a function of its
+/// own, named for its import, in the instruction set it is in. GNU `ld`
+/// puts a T32 prefix that switches to A32 before each stub that T32 code
+/// calls, and LLD writes A32 stubs alone.
+#[rstest::rstest]
+#[case::gnu_arm("arm-gcc-O2", 57, 0)]
+#[case::lld_arm("arm-O2", 49, 0)]
+#[case::gnu_thumb("thumb-gcc-O2", 57, 17)]
+#[case::lld_thumb("thumb-O2", 49, 0)]
+fn each_plt_entry_is_a_function(
+    #[case] build: &str,
+    #[case] entries: usize,
+    #[case] prefixed: usize,
+) {
+    /// `bx pc`, little endian.
+    const BX_PC: [u8; 2] = [0x78, 0x47];
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/build/versions/zlib-1.2.13")
+        .join(build)
+        .join("lib-stripped.so");
+    let data = std::fs::read(&path).expect("run `just backports` first");
+    let file = object::File::parse(data.as_slice()).expect("the build parses");
+    let plt = file.section_by_name(".plt").expect("a library calls through its PLT");
+    let range = plt.address()..plt.address() + plt.size();
+    let binary = Binary::parse(&data).expect("the build parses");
+    let in_plt: Vec<_> =
+        binary.functions.iter().filter(|function| range.contains(&function.address)).collect();
+    assert_eq!(in_plt.len(), entries, "the first entry and each stub");
+
+    let (first, stubs) = in_plt.split_first().expect("the PLT holds functions");
+    assert_eq!(first.address, range.start);
+    assert!(first.name.is_empty(), "the first entry calls the lazy resolver");
+    assert_eq!(binary.isa_of(first), Isa::Arm32);
+    assert!(stubs.iter().all(|stub| stub.name.ends_with("@plt")), "each stub has its import");
+    let opens_in_t32 = |code: &[u8]| code.starts_with(&BX_PC);
+    assert_eq!(stubs.iter().filter(|stub| opens_in_t32(&stub.code)).count(), prefixed);
+    for stub in stubs {
+        let set = if opens_in_t32(&stub.code) { Isa::Thumb2 } else { Isa::Arm32 };
+        assert_eq!(binary.isa_of(stub), set, "{}", stub.name);
+    }
+    let ends = in_plt.iter().map(|function| function.address + function.code.len() as u64);
+    assert_eq!(ends.max(), Some(range.end), "the stubs cover the PLT");
 }

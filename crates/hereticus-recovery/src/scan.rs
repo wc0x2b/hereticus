@@ -123,6 +123,19 @@ pub struct Recovered {
     pub code: Vec<u8>,
     /// What told the scan where the function starts.
     pub source: Source,
+    /// The instruction set the function is in.
+    pub set: InstructionSet,
+}
+
+/// The instruction set of a function the scan found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstructionSet {
+    /// The set the scan reads the binary in.
+    Main,
+    /// The set that [`Recovery::stub_arch`] names, which the PLT stubs are
+    /// in. A stub that opens with a switch from the main set, as GNU `ld`
+    /// writes one that T32 code calls, is in the main set.
+    Stub,
 }
 
 /// Find the functions in a binary with no usable symbol table.
@@ -181,6 +194,15 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
         index.sort_by_key(|entry| entry.address);
     }
 
+    // Where the unwind index lists a function at the end of the PLT, its
+    // entry closes the last stub already.
+    let plt = plt_index(&file, arch);
+    if stub_arch.is_none() {
+        let listed: BTreeSet<u64> = index.iter().map(|entry| entry.address).collect();
+        index.extend(plt.iter().filter(|entry| !listed.contains(&entry.address)));
+        index.sort_by_key(|entry| entry.address);
+    }
+
     // Tables that code reads, such as those a `switch` jumps through, can
     // lie in any section the binary loads.
     let loaded: Vec<(u64, &[u8])> = file
@@ -201,10 +223,46 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
         && !stubs.is_empty()
     {
         let none = Linked::default();
-        found.extend(recover_in_memory(&stubs, &[], &none, Regions::CodeOnly, stub_arch, &memory));
+        let found_stubs =
+            recover_in_memory(&stubs, &plt, &none, Regions::CodeOnly, stub_arch, &memory)
+                .into_iter()
+                .map(|stub| match arch.switch_at_start(&stub.code, stub.address) {
+                    Some(_) => stub,
+                    None => Recovered { set: InstructionSet::Stub, ..stub },
+                });
+        found.extend(found_stubs);
         found.sort_by_key(|recovered| recovered.address);
     }
     found
+}
+
+/// The entries of each `.plt` of `file` whose stubs [`Recovery::plt_entries`]
+/// finds, each listed alone: the first entry, the stubs, and the end of
+/// the section.
+///
+/// No symbol and no unwind entry names a stub, and a jump through a slot
+/// is no return, so without this the scan lists the whole PLT of an ARM
+/// library as one function. The end closes the last stub, so the index
+/// says nothing of the code past it.
+fn plt_index(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<IndexEntry> {
+    file.sections()
+        .filter(|section| section.name() == Ok(".plt") && section.kind() == SectionKind::Text)
+        .filter_map(|section| Some((section.address(), section.data().ok()?)))
+        .flat_map(|(base, code)| {
+            let stubs = arch.plt_entries(code, base);
+            let Some(&first_stub) = stubs.first() else { return Vec::new() };
+            let first_entry = (first_stub != base).then_some(base);
+            let listed = first_entry
+                .into_iter()
+                .chain(stubs)
+                .map(|address| IndexEntry { address, unwinding: Unwinding::Listed });
+            let end = IndexEntry {
+                address: base + code.len() as u64,
+                unwinding: Unwinding::CannotUnwind,
+            };
+            listed.chain([end]).collect()
+        })
+        .collect()
 }
 
 /// What a linked object file says about its functions, beyond its code.
@@ -971,7 +1029,12 @@ fn build_functions(
             continue;
         }
 
-        out.push(Recovered { address: *address, code: bytes.to_vec(), source: *source });
+        out.push(Recovered {
+            address: *address,
+            code: bytes.to_vec(),
+            source: *source,
+            set: InstructionSet::Main,
+        });
     }
 
     out

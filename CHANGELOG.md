@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   x86 and x86-64. Each word that an absolute relocation fills read as
   zero, so the tables of each exported class were not found: on tinyxml2
   for x86-64, 1 table in place of 15.
+- Split the PLT of a stripped ARM or Thumb-2 library into its entries.
+  Each stub is a function with the name of its import, as `malloc@plt`,
+  in the instruction set it is in: A32, or T32 where GNU `ld` puts the
+  prefix that switches to A32 before it. Before, the scan found the full
+  PLT as one function, and in a Thumb-2 library it read the A32 stubs as
+  T32.
+- Pair a PLT stub only with the stub of its import, also when names are
+  off. Before, the stubs of a comparison without names paired in order,
+  so a new import moved each stub after it onto the stub of a different
+  import: over the releases of `tests/versions.rs`, 435 such pairs
+  stripped and 1540 raw, now 5 and 38. Stubs also do not count toward
+  the order of the code, because the linker puts the PLT before the code
+  or after it. Across clang and GCC, 13 more pairs are right and 1 more
+  is wrong.
 
 ## [0.3.0](https://github.com/wc0x2b/hereticus/compare/v0.2.1...v0.3.0) - 2026-10-23
 ### Added

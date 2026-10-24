@@ -26,9 +26,7 @@ import ghidra.util.task.TaskMonitor;
  * It changes nothing Ghidra already decided. A start inside a function Ghidra
  * made, on data Ghidra defined, or whose body would hold the start of a
  * function Ghidra made is left alone: the two disagree, and the analysis that
- * put the function or the data there may know better than a scan. A stripped
- * library shows why: a scan reads its whole PLT as one function, where Ghidra
- * marks up each entry.
+ * put the function or the data there may know better than a scan.
  */
 public final class FunctionMaker {
 

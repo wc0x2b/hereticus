@@ -9,16 +9,6 @@ tinyxml2, in two comparisons: find what keeps their tables apart. A twin
 in no table, as a C function reached only by calls from twins, can only
 be told apart by its name.
 
-## Split the PLT of a stripped library into its entries
-
-The scan lists the whole `.plt` of a stripped library as one function. In a
-Thumb-2 library it also lists it as Thumb-2, but each entry is A32 code.
-The Ghidra extension skips such a start, because its body holds the PLT
-entries that Ghidra marks up, so the Ghidra test does not show the fault.
-List each entry as its own function, in the instruction set it is in. This
-changes the reports of every stripped library, so their snapshots change
-with it.
-
 ## Unpack more firmware containers
 
 `--unpack` reads the containers the OpenWrt fixtures use: a zImage, alone
@@ -62,6 +52,10 @@ stubs as changed (`KNOWN_EXTRAS` in `tests/backports.rs`). A call says which set
 unwind index, so a scan could follow them per function.
 Measured on the OpenWrt 22.03.5 images for the EX6100v2 and the A385
 DB AP, every executable of user space is A32: 41 and 38, none Thumb-2.
+A raw Thumb-2 library built by GNU `ld` shows the cost: the scan cuts
+the T32 prefix of each PLT stub from the A32 stub after it, so two
+functions jump to one import and neither pairs by it
+(`a_stub_pairs_with_the_stub_of_its_import` in `tests/versions.rs`).
 
 ## End the code of a raw image where its data begins
 

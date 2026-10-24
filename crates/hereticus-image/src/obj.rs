@@ -576,7 +576,15 @@ impl Binary {
             }
         }
         let links = Links::of_object(&file);
-        let scanned: Vec<Function> = scan::recover_functions(data, isa.arch())
+        let found = scan::recover_functions(data, isa.arch());
+        // The scan reads the PLT of a Thumb-2 library as A32.
+        other_set.extend(
+            found
+                .iter()
+                .filter(|function| function.set == scan::InstructionSet::Stub)
+                .map(|function| function.address),
+        );
+        let scanned: Vec<Function> = found
             .into_iter()
             .map(unnamed)
             .map(|function| match exported.get(&function.address) {
