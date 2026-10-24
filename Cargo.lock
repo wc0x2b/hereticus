@@ -1172,7 +1172,9 @@ name = "hereticus-unpack"
 version = "0.3.0"
 dependencies = [
  "bolero",
+ "flate2",
  "lzma-rs",
+ "ruzstd",
  "tar",
 ]
 
