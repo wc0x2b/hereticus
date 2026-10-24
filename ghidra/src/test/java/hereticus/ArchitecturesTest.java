@@ -17,6 +17,13 @@ class ArchitecturesTest {
 	}
 
 	@Test
+	void bigEndianArmIsReadOnlyAsBe8() {
+		assertEquals(Optional.of(InstructionSet.ARM32_BE8),
+			Architectures.of("ARM", true, 32, "v8LEInstruction"));
+		assertEquals(Optional.empty(), Architectures.of("ARM", true, 32, "v8"), "BE32");
+	}
+
+	@Test
 	void eachMipsByteOrderHasItsOwnSet() {
 		assertEquals(Optional.of(InstructionSet.MIPS32),
 			Architectures.of("MIPS", false, 32, "default"));

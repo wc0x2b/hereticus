@@ -6,7 +6,7 @@
 
 use crate as il;
 use crate::arch::neon::{Neon, NeonWord};
-use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};
+use crate::arch::{ByteOrder, DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};
 use compact_str::CompactString;
 use yaxpeax_arch::{Decoder as _, Reader, U8Reader, U32le};
 use yaxpeax_arm::armv7::{
@@ -382,10 +382,33 @@ pub fn core_opcode(insn: &Insn) -> Option<Opcode> {
 }
 
 /// ARM32 in A32 (not Thumb) mode.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Arm32;
+///
+/// The instructions are little endian in every image this reads. The data
+/// is too, but for BE8, where it is big endian: see [`ARM32_BE8`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Arm32 {
+    data: ByteOrder,
+}
+
+/// A32 with little-endian data, as almost every ARM image is.
+#[allow(non_upper_case_globals)]
+pub const Arm32: Arm32 = Arm32 { data: ByteOrder::Little };
+
+/// A32 with big-endian data: BE8, as `ld --be8` links it.
+pub const ARM32_BE8: Arm32 = Arm32 { data: ByteOrder::Big };
+
+impl Default for Arm32 {
+    fn default() -> Self {
+        Arm32
+    }
+}
 
 impl Arm32 {
+    /// A32 with its data in `order`.
+    pub const fn with_data(order: ByteOrder) -> Self {
+        Self { data: order }
+    }
+
     /// The instruction at `offset` of `code`, which starts at `address`,
     /// and its text where `printing` asks for it.
     pub fn read(
@@ -470,7 +493,11 @@ impl Decoder for Arm32 {
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
-        u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        u64::from(self.data.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn data_order(&self) -> ByteOrder {
+        self.data
     }
 
     fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
