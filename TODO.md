@@ -189,8 +189,12 @@ found more to do, most valuable first:
   the backports; a wrapper with no caller in the old place paired 511
   fewer right and 382 more wrong over Assemblage. A wrapper that reaches
   the new function through its own PLT stub, as in a stripped library,
-  reads as a call to an import, so the stage cannot see it there; the
-  bench reads the symbols, so it cannot measure that.
+  reads as a call to an import, so the stage cannot see it there. Reading
+  such a call as a call to the export changed nothing over the Ubuntu
+  updates and the kernels, and over the backports paired 63 fewer right
+  and 63 more wrong: where one build inlines a wrapper, as `gzgetc_` of
+  zlib, the other build seems to add it. Not to pair a wrapper where the
+  old function had one too left 59 fewer right and 59 more wrong.
 - **Pairs across compilers.** The dataset builds each release with GCC
   and with clang. Those pairs make a set across builds, like the
   backports, but far larger.
