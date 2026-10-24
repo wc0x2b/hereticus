@@ -19,8 +19,10 @@ lzma-loader, an ELF lzma-loader and a TP-Link v2 image, and the tests pin
 its output to the bytes `fixtures/firmware.py` extracts. A zImage can
 also hold a gzip or zstd kernel, and xz can filter for any instruction
 set but IA-64 and RISC-V, which the unit tests check against streams that
-`xz`, `gzip` and `zstd` wrote. Add the containers still missing, as AVM
-EVA, and an OpenWrt fixture for a gzip or zstd kernel.
+`xz`, `gzip` and `zstd` wrote, and the gzip kernels of Alpine Linux
+3.20.2 and 3.20.3 for ARMv7 unpack as `fixtures/firmware.py` extracts
+them. No distribution found ships a zstd zImage to check against. Add the
+containers still missing, as AVM EVA.
 
 ## Read the dyld shared cache
 

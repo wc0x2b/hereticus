@@ -2,7 +2,9 @@
 """Download real OpenWrt firmware and extract the code the tests compare.
 
 Run by `just firmware`. Each board ships in two releases, 22.03.2 and 22.03.5,
-so the tests compare what one real release changed. The images are not
+so the tests compare what one real release changed. The kernel of Alpine
+Linux for ARMv7 comes too, as most builds other than OpenWrt's compress
+their kernel with gzip, not xz. The images are not
 committed: they are large and are not ours to redistribute. Instead each
 download and each extracted file is pinned by its SHA-256, so every machine
 tests the same bytes, and a changed mirror fails here rather than as a
@@ -26,6 +28,7 @@ import struct
 import sys
 import tarfile
 import urllib.request
+import zlib
 from pathlib import Path
 
 MIRROR = "https://downloads.openwrt.org/releases"
@@ -41,6 +44,8 @@ DOWNLOADS = OUT / "download"
 # The zImage magic word, at offset 0x24 of an ARM zImage.
 ZIMAGE_MAGIC = struct.pack("<I", 0x016F2818)
 XZ_MAGIC = b"\xfd7zXZ\x00"
+# A gzip member, with the method byte of deflate.
+GZIP_MAGIC = b"\x1f\x8b\x08"
 # The header OpenWrt's lzma-loader payload starts with: `-lc1 -lp2`, which is
 # the properties byte 0x6d, then a dictionary of 8 MiB.
 LZMA_HEADER = b"\x6d\x00\x00\x80\x00"
@@ -100,6 +105,17 @@ BOARDS = {
             "22.03.5": "6f5389f2ced5d95f79c1e187544af3c15e1e744ab872c627794564f49abc45c5",
         },
     },
+    # ARM, little endian: the netboot kernel of Alpine Linux, a zImage of a
+    # gzip kernel. Two releases, one kernel point release apart.
+    "arm-alpine": {
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/armv7/netboot-{release}/vmlinuz-lts",
+        "file": "alpine-{release}-armv7-vmlinuz-lts",
+        "download": {
+            "3.20.2": "e5cc010d8da013443bcd514f949d12197594b1b946c3fb63c5b84ad80f91cd9e",
+            "3.20.3": "ec67f35b6d371fe57cc1df9c7a8cbdd5d89602c951ae178f7a09bbcae5e44c23",
+        },
+        "releases": ("3.20.2", "3.20.3"),
+    },
     # MIPS, little endian. The kernel is an lzma-loader inside a uImage.
     "mipsel-r6220": {
         "path": "ramips/mt7621",
@@ -149,6 +165,10 @@ EXTRACTED = {
     "mipsbe-vr200-kernel-22.03.5.bin": "dcf7b836d149b4be316c3992843186c18cfda92b1780db11d1fbbae00168478e",
     "mipsel-mt300nv2-kernel-22.03.2.bin": "d6f4edca5c09084cca3a18755d62aa6d4a15213113d4bcbf2986c68feceb16a8",
     "mipsel-mt300nv2-kernel-22.03.5.bin": "dcdf1e35d494f15b0a89f6b7d2799d7b24046821c39fbd40d57fabb74d4cf2ca",
+    "arm-alpine-stub-3.20.2.bin": "48ef8cfe8794580b376d9ed636dd052eeb1ae80b845da0c0ddd89ba94b5daad0",
+    "arm-alpine-kernel-3.20.2.bin": "87f62584122ef8a7bff90c77d1b9ea00eb83f41278a076f0e047190ea7f29a65",
+    "arm-alpine-stub-3.20.3.bin": "f1aff14e1e0d8b17950a3c48bb4dadbebd67a27877726beb9b335ba2b759a25a",
+    "arm-alpine-kernel-3.20.3.bin": "d5a6815a0aed97d78fd67dcd9ed41f4a77eacf3733c1a876cc643dea7a114424",
 }
 
 
@@ -169,7 +189,10 @@ def fetch(board: dict, release: str) -> bytes:
     if cached.exists() and sha256(cached.read_bytes()) == expected:
         return cached.read_bytes()
 
-    url = f"{MIRROR}/{release}/targets/{board['path']}/{name}"
+    if "url" in board:
+        url = board["url"].format(release=release)
+    else:
+        url = f"{MIRROR}/{release}/targets/{board['path']}/{name}"
     print(f"firmware: downloading {url}", file=sys.stderr)
     with urllib.request.urlopen(url, timeout=120) as response:
         data = response.read()
@@ -200,15 +223,35 @@ def first_stream(data: bytes, start: int, end: int, magic: bytes, fmt: int) -> t
     raise ExtractError(f"no stream with magic {magic.hex()} decodes")
 
 
+def first_gzip(data: bytes, start: int, end: int) -> tuple[int, bytes]:
+    """Find the first gzip member in `data[start:end]` that decodes, as
+    `first_stream` finds an xz or LZMA stream."""
+    offset = data.find(GZIP_MAGIC, start, end)
+    while offset != -1:
+        decoder = zlib.decompressobj(wbits=zlib.MAX_WBITS | 16)
+        try:
+            kernel = decoder.decompress(data[offset:end])
+            if decoder.eof:
+                return offset, kernel
+        except zlib.error:
+            pass
+        offset = data.find(GZIP_MAGIC, offset + 1, end)
+    raise ExtractError("no gzip member decodes")
+
+
 def extract_arm_zimage(image: bytes) -> dict[str, bytes]:
-    """Split a zImage into its decompressor stub and the kernel it holds."""
+    """Split a zImage into its decompressor stub and the kernel it holds:
+    xz, as OpenWrt builds it, or gzip, as most other builds do."""
     magic = image.find(ZIMAGE_MAGIC)
     if magic == -1:
         raise ExtractError("no zImage")
     zimage = magic - 0x24
     _, end = struct.unpack("<II", image[magic + 4 : magic + 12])
 
-    payload, kernel = first_stream(image, zimage, zimage + end, XZ_MAGIC, lzma.FORMAT_XZ)
+    try:
+        payload, kernel = first_stream(image, zimage, zimage + end, XZ_MAGIC, lzma.FORMAT_XZ)
+    except ExtractError:
+        payload, kernel = first_gzip(image, zimage, zimage + end)
     return {"stub": image[zimage:payload], "kernel": kernel}
 
 
@@ -273,6 +316,7 @@ EXTRACTORS = {
     "arm-a385dbap": extract_tar_zimage,
     "mipsbe-vr200": extract_tplink_v2_lzma,
     "mipsel-mt300nv2": extract_uimage_lzma,
+    "arm-alpine": extract_arm_zimage,
 }
 
 
