@@ -16,13 +16,17 @@ const RECIPE: &str = "just ghidra-extension";
 
 /// The binaries the finder runs on, as `fixtures/ghidra_extension.sh` names
 /// them. A stripped backport is the after side of its pair.
-const FINDS: [Find; 5] = [
+const FINDS: [Find; 6] = [
     Find::Backport("zlib-arm-O2"),
     Find::Backport("zlib-thumb-O2"),
     Find::Backport("zlib-aarch64-O2"),
     Find::Backport("zlib-mips-O2"),
     Find::RawStub,
+    Find::RawFirmware,
 ];
+
+/// Where the Cortex-M3 firmware loads, as `tests/cli.rs` says.
+const FIRMWARE_BASE: u64 = 0x0800_0000;
 
 /// The backport pairs the correlator runs on.
 const PAIRS: [&str; 2] = ["zlib-arm-O2", "zlib-mips-O2"];
@@ -35,6 +39,9 @@ enum Find {
     Backport(&'static str),
     /// The raw zImage stub of the Netgear EX6100v2.
     RawStub,
+    /// The raw Cortex-M3 firmware of the zlib backport, which the Hereticus
+    /// raw loader imported at the base it found.
+    RawFirmware,
 }
 
 /// Whether the finder ran.
@@ -49,6 +56,7 @@ impl Find {
         match self {
             Self::Backport(name) => name,
             Self::RawStub => "arm-stub",
+            Self::RawFirmware => "m3-firmware",
         }
     }
 
@@ -64,6 +72,14 @@ impl Find {
                     .display()
                     .to_string()])
                 .collect(),
+            Self::RawFirmware => {
+                let base = format!("{FIRMWARE_BASE:#x}");
+                ["--raw", "--base", &base, "--arch", "thumb2"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .chain([firmware().display().to_string()])
+                    .collect()
+            }
         }
     }
 
@@ -101,6 +117,11 @@ impl Find {
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures")
+}
+
+/// The raw Cortex-M3 firmware of the after side of the zlib backport.
+fn firmware() -> PathBuf {
+    fixtures().join("build/backports/zlib-after/cortex-m3-O2/lib.bin")
 }
 
 fn output() -> PathBuf {
@@ -226,6 +247,29 @@ fn the_finder_more_than_doubles_the_functions_of_a_raw_stub() {
     let off = Find::RawStub.ghidra_starts(Setting::Off).len();
     let on = Find::RawStub.ghidra_starts(Setting::On).len();
     assert!(on > 2 * off, "{off} functions without the finder, {on} with it");
+}
+
+/// The Hereticus raw loader imports raw firmware at the base that
+/// `--find-base` finds, with no base given.
+#[test]
+fn the_raw_loader_imports_at_the_base_hereticus_finds() {
+    let found = hereticus(&[
+        "--find-base".to_owned(),
+        "--raw".to_owned(),
+        "--arch".to_owned(),
+        "thumb2".to_owned(),
+        "--format".to_owned(),
+        "json".to_owned(),
+        firmware().display().to_string(),
+    ]);
+    assert_eq!(found["base"], FIRMWARE_BASE);
+    for setting in ["off", "on"] {
+        let path = output().join(format!("bases/{}-{setting}.txt", Find::RawFirmware.name()));
+        let text = read(&path);
+        let base = u64::from_str_radix(text.trim(), 16)
+            .unwrap_or_else(|err| panic!("{}: {text:?}: {err}", path.display()));
+        assert_eq!(base, FIRMWARE_BASE, "{}", path.display());
+    }
 }
 
 /// The correlator proposes the pairs of hereticus, with their scores and

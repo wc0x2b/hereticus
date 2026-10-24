@@ -3,6 +3,8 @@
 This Ghidra extension runs the `hereticus` command line tool from inside
 Ghidra:
 
+* **Raw Binary (Hereticus Base)** is a loader. It imports a raw image at
+  the base that `hereticus --find-base` finds.
 * **Hereticus Function Finder** is an analyzer. It makes a function at each
   start that `hereticus` finds and Ghidra does not.
 * **Hereticus Function Match** is a Version Tracking correlator. It proposes
@@ -23,6 +25,8 @@ Then install the zip in `dist/` with *File → Install Extensions*.
 
 | Class                               | Does                                                   |
 |-------------------------------------|--------------------------------------------------------|
+| `HereticusRawLoader`                | The loader                                             |
+| `BaseSearch`                        | Runs `--find-base`, and reads its JSON                 |
 | `HereticusFunctionAnalyzer`         | The analyzer                                           |
 | `FunctionMaker`                     | Makes the functions, and says why it skips a start     |
 | `HereticusProgramCorrelatorFactory` | Offers the correlator to Version Tracking              |

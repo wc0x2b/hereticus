@@ -3,6 +3,7 @@ package hereticus;
 import java.util.Optional;
 
 import ghidra.program.model.lang.Language;
+import ghidra.program.model.lang.LanguageDescription;
 
 /**
  * Which Ghidra languages hereticus reads, and the instruction set to give it
@@ -18,9 +19,13 @@ public final class Architectures {
 	 * nothing where hereticus cannot read the language.
 	 */
 	public static Optional<InstructionSet> of(Language language) {
-		return of(language.getProcessor().toString(), language.isBigEndian(),
-			language.getLanguageDescription().getSize(),
-			language.getLanguageDescription().getVariant());
+		return of(language.getLanguageDescription());
+	}
+
+	/** The same, from a language that a loader offers before it makes a program. */
+	public static Optional<InstructionSet> of(LanguageDescription language) {
+		return of(language.getProcessor().toString(), language.getEndian().isBigEndian(),
+			language.getSize(), language.getVariant());
 	}
 
 	/**

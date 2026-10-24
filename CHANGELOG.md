@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Ghidra extension has a loader, *Raw Binary (Hereticus Base)*. It is
+  the *Raw Binary* loader of Ghidra, but its default *Base Address* is the
+  base that `hereticus --find-base` finds for the language of the import.
+  Before, a raw image went to 0 unless the user typed the base.
 - Pair C++ twins by the class of their vtable. A vtable points to the
   type information of its class, which keeps the name of the class after
   stripping, so template copies and destructors with the same

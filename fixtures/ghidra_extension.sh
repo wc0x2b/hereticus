@@ -10,6 +10,9 @@
 #       the linked address of each function Ghidra finds in one binary, one
 #       hexadecimal address a line, without and with the Hereticus Function
 #       Finder. A raw stub is linked where it loads.
+#   bases/<name>-<setting>.txt
+#       the address of the first byte of a raw image that the Hereticus raw
+#       loader imported with no base given, as one hexadecimal address.
 #   matches/<name>.json
 #       the matches the Hereticus Function Match correlator proposes for one
 #       backport pair.
@@ -22,6 +25,7 @@ root="$(dirname "$here")"
 hereticus="$root/target/x86_64-unknown-linux-musl/release/hereticus"
 backports="$here/build/backports"
 stub="$here/build/openwrt/arm-ex6100v2-stub-22.03.2.bin"
+firmware="$backports/zlib-after/cortex-m3-O2/lib.bin"
 out="$here/build/ghidra-extension"
 # The stripped backports the finder runs on: project, arch and level.
 finds=(
@@ -43,7 +47,7 @@ pairs=(
 inputs_hash="$(
     {
         cat "$here/ghidra_extension.sh" "$here/rivals/Dockerfile" \
-            "$here/ghidra-extension/Dockerfile" "$hereticus" "$stub"
+            "$here/ghidra-extension/Dockerfile" "$hereticus" "$stub" "$firmware"
         find "$root/ghidra" -path "$root/ghidra/build" -prune -o -path "$root/ghidra/dist" -prune \
             -o -path "$root/ghidra/.gradle" -prune -o -type f -print | sort | xargs cat
         cat "$here"/ghidra-extension/*.java
@@ -62,7 +66,7 @@ if [ -z "${RIVALS_FORCE:-}" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$inpu
     exit 0
 fi
 rm -rf "$out"
-mkdir -p "$out/starts" "$out/matches" "$out/logs"
+mkdir -p "$out/starts" "$out/bases" "$out/matches" "$out/logs"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -144,6 +148,15 @@ done
 for setting in off on; do
     find_starts arm-stub "$stub" "$setting" -loader BinaryLoader \
         -loader-baseAddr 0x80208000 -processor ARM:LE:32:v7 &
+    jobs+=($!)
+done
+# The Hereticus raw loader finds where the Cortex-M3 firmware loads, as
+# hereticus-cli/tests/cli.rs says: 0x8000000. The loader runs the hereticus
+# on the PATH.
+for setting in off on; do
+    PATH="$(dirname "$hereticus"):$PATH" find_starts m3-firmware "$firmware" "$setting" \
+        -loader HereticusRawLoader -processor ARM:LE:32:Cortex \
+        -postScript HereticusFileBase.java "$out/bases/m3-firmware-$setting.txt" &
     jobs+=($!)
 done
 for entry in "${pairs[@]}"; do

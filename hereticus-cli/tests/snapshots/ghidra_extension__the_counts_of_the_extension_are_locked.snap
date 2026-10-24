@@ -8,6 +8,7 @@ zlib-thumb-O2     188 192        180              175
 zlib-aarch64-O2   187 187        171              171
 zlib-mips-O2      137 139        123              123
 arm-stub           19  66         66               66
+m3-firmware        51  88         88               84
 
 pair              matches  hereticus pairs
 zlib-arm-O2           170              172

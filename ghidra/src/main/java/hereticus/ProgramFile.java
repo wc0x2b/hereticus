@@ -50,8 +50,7 @@ public final class ProgramFile implements AutoCloseable {
 	 *         cannot read it
 	 */
 	public static ProgramFile write(Program program) throws HereticusException {
-		Kind kind = BinaryLoader.BINARY_NAME.equals(program.getExecutableFormat()) ? Kind.RAW
-				: Kind.CONTAINER;
+		Kind kind = isRaw(program.getExecutableFormat()) ? Kind.RAW : Kind.CONTAINER;
 		List<String> readArguments = kind == Kind.RAW ? rawArguments(program) : List.of();
 		FileBytes bytes = importedFile(program);
 		Path path;
@@ -70,6 +69,12 @@ public final class ProgramFile implements AutoCloseable {
 				e.getMessage(), e);
 		}
 		return new ProgramFile(path, kind, readArguments);
+	}
+
+	/** Whether a loader of `executableFormat` loads the file as raw code. */
+	static boolean isRaw(String executableFormat) {
+		return BinaryLoader.BINARY_NAME.equals(executableFormat) ||
+			HereticusRawLoader.NAME.equals(executableFormat);
 	}
 
 	/** Where the file is. */
