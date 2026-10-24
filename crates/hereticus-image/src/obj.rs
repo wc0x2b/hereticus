@@ -70,6 +70,12 @@ pub enum Isa {
     /// ARM32 in Thumb-2 mode, as most Cortex-M firmware and much ARM user
     /// space is built.
     Thumb2,
+    /// ARM32 big endian, BE8: the instructions little endian, as for
+    /// [`Isa::Arm32`], and the data big endian. Some networking parts run
+    /// it.
+    Arm32Be8,
+    /// Thumb-2 of BE8.
+    Thumb2Be8,
     /// ARMv8-A in AArch64 mode, 64-bit.
     Aarch64,
     /// MIPS32, little endian, as a desktop-built object usually is.
@@ -96,6 +102,8 @@ impl Isa {
         match self {
             Self::Arm32 => &Arm32,
             Self::Thumb2 => &Thumb2,
+            Self::Arm32Be8 => &hereticus_il::arch::arm32::ARM32_BE8,
+            Self::Thumb2Be8 => &hereticus_il::arch::thumb::THUMB2_BE8,
             Self::Aarch64 => &Aarch64,
             Self::Mips32 => &Mips32::LITTLE,
             Self::Mips32Be => &Mips32::BIG,
@@ -112,6 +120,8 @@ impl Isa {
         match self {
             Self::Arm32 => Some(Self::Thumb2),
             Self::Thumb2 => Some(Self::Arm32),
+            Self::Arm32Be8 => Some(Self::Thumb2Be8),
+            Self::Thumb2Be8 => Some(Self::Arm32Be8),
             Self::Mips32 => Some(Self::Mips16),
             Self::Mips16 => Some(Self::Mips32),
             Self::Mips32Be => Some(Self::Mips16Be),
@@ -131,18 +141,20 @@ impl Isa {
     /// The order of the bytes of a word of data.
     pub fn byte_order(self) -> ByteOrder {
         match self {
-            Self::Mips32Be | Self::Mips16Be => ByteOrder::Big,
+            Self::Mips32Be | Self::Mips16Be | Self::Arm32Be8 | Self::Thumb2Be8 => ByteOrder::Big,
             _ => ByteOrder::Little,
         }
     }
 
     /// Choose a decoder for what an object file says it holds.
     ///
-    /// `little_endian` decides nothing for ARM, which is only read in that
-    /// order anyway, and decides which decoder for MIPS, which ships in both.
+    /// `little_endian` decides which decoder, as MIPS ships in both orders,
+    /// and ARM in both for its data: a big-endian ARM file is read as BE8,
+    /// as every ARMv6 and later core runs it.
     fn from_object(arch: object::Architecture, little_endian: bool) -> Result<Self, ObjError> {
         match arch {
-            object::Architecture::Arm => Ok(Self::Arm32),
+            object::Architecture::Arm if little_endian => Ok(Self::Arm32),
+            object::Architecture::Arm => Ok(Self::Arm32Be8),
             object::Architecture::Aarch64 => Ok(Self::Aarch64),
             object::Architecture::Mips if little_endian => Ok(Self::Mips32),
             object::Architecture::Mips => Ok(Self::Mips32Be),
@@ -484,7 +496,7 @@ impl Binary {
         let data = crate::macho::aarch64_slice(data);
         let file = object::File::parse(data)?;
         let isa = match Isa::from_object(file.architecture(), file.is_little_endian())? {
-            isa @ (Isa::Arm32 | Isa::Mips32 | Isa::Mips32Be) => {
+            isa @ (Isa::Arm32 | Isa::Arm32Be8 | Isa::Mips32 | Isa::Mips32Be) => {
                 set_of_symbol(isa, most_functions_encoded(&file))
             }
             isa => isa,
@@ -868,7 +880,9 @@ impl Binary {
         let mut index = scan::find_exception_index(data, base, isa.arch());
         if index.is_empty() {
             let order = match isa {
-                Isa::Mips32Be | Isa::Mips16Be => unwind::ByteOrder::Big,
+                Isa::Mips32Be | Isa::Mips16Be | Isa::Arm32Be8 | Isa::Thumb2Be8 => {
+                    unwind::ByteOrder::Big
+                }
                 Isa::Arm32
                 | Isa::Thumb2
                 | Isa::Aarch64
@@ -1024,6 +1038,8 @@ fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
         (Isa::Mips32 | Isa::Mips16, Encoding::Full) => Isa::Mips32,
         (Isa::Mips32Be | Isa::Mips16Be, Encoding::Compact) => Isa::Mips16Be,
         (Isa::Mips32Be | Isa::Mips16Be, Encoding::Full) => Isa::Mips32Be,
+        (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Compact) => Isa::Thumb2Be8,
+        (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Full) => Isa::Arm32Be8,
         (Isa::Aarch64 | Isa::X86_64 | Isa::X86, _) => isa,
     }
 }
@@ -1144,7 +1160,13 @@ fn lazy_stubs(isa: Isa, code: &[(u64, &[u8])]) -> Vec<mips_stubs::LazyStub> {
     let order = match isa {
         Isa::Mips32 | Isa::Mips16 => mips_stubs::ByteOrder::Little,
         Isa::Mips32Be | Isa::Mips16Be => mips_stubs::ByteOrder::Big,
-        Isa::Arm32 | Isa::Thumb2 | Isa::Aarch64 | Isa::X86_64 | Isa::X86 => return Vec::new(),
+        Isa::Arm32
+        | Isa::Thumb2
+        | Isa::Arm32Be8
+        | Isa::Thumb2Be8
+        | Isa::Aarch64
+        | Isa::X86_64
+        | Isa::X86 => return Vec::new(),
     };
     code.iter().flat_map(|&(base, data)| mips_stubs::lazy_stubs(base, data, order)).collect()
 }
@@ -1618,9 +1640,11 @@ mod tests {
         assert_eq!(stable_name(""), "");
     }
 
-    const EVERY_ISA: [Isa; 7] = [
+    const EVERY_ISA: [Isa; 9] = [
         Isa::Arm32,
         Isa::Thumb2,
+        Isa::Arm32Be8,
+        Isa::Thumb2Be8,
         Isa::Aarch64,
         Isa::Mips32,
         Isa::Mips32Be,
@@ -1636,6 +1660,20 @@ mod tests {
         assert_eq!(clip(0x100, &data, 0x106..0x200), (0x106, &data[6..]));
         assert_eq!(clip(0x100, &data, 0x200..0x300), (0x100, &data[..]), "no overlap");
         assert_eq!(clip(0x100, &data, 0x104..0x104), (0x100, &data[..]), "empty range");
+    }
+
+    /// A big-endian ARM file is read as BE8, and each set of BE8 keeps to
+    /// BE8: only the data is big endian there.
+    #[test]
+    fn a_big_endian_arm_file_reads_as_be8() {
+        assert!(matches!(Isa::from_object(object::Architecture::Arm, false), Ok(Isa::Arm32Be8)));
+        assert!(matches!(Isa::from_object(object::Architecture::Arm, true), Ok(Isa::Arm32)));
+        assert_eq!(set_of_symbol(Isa::Arm32Be8, Encoding::Compact), Isa::Thumb2Be8);
+        assert_eq!(Isa::Thumb2Be8.byte_order(), ByteOrder::Big);
+        assert_eq!(Isa::Thumb2.byte_order(), ByteOrder::Little);
+        let word = [0x00, 0x01, 0x02, 0x03];
+        assert_eq!(Isa::Arm32Be8.arch().read_pointer(&word), 0x0001_0203);
+        assert_eq!(Isa::Arm32.arch().read_pointer(&word), 0x0302_0100);
     }
 
     #[test]

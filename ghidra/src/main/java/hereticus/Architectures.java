@@ -3,6 +3,7 @@ package hereticus;
 import java.util.Optional;
 
 import ghidra.program.model.lang.Language;
+import ghidra.program.model.lang.LanguageDescription;
 
 /**
  * Which Ghidra languages hereticus reads, and the instruction set to give it
@@ -18,26 +19,39 @@ public final class Architectures {
 	 * nothing where hereticus cannot read the language.
 	 */
 	public static Optional<InstructionSet> of(Language language) {
-		return of(language.getProcessor().toString(), language.isBigEndian(),
-			language.getLanguageDescription().getSize(),
-			language.getLanguageDescription().getVariant());
+		return of(language.getLanguageDescription());
+	}
+
+	/** The same, from a language that a loader offers before it makes a program. */
+	public static Optional<InstructionSet> of(LanguageDescription language) {
+		return of(language.getProcessor().toString(), language.getEndian().isBigEndian(),
+			language.getSize(), language.getVariant());
 	}
 
 	/**
 	 * The same, from the parts of a language ID, as `ARM:LE:32:Cortex`.
 	 *
 	 * A Cortex-M part runs only Thumb-2, so its raw image is Thumb-2. Another
-	 * ARM image is read as A32, as `--arch` reads it by default.
+	 * ARM image is read as A32, as `--arch` reads it by default. A big-endian
+	 * ARM language whose instructions are little endian, as
+	 * `ARM:LEBE:32:v8LEInstruction`, reads BE8; one whose instructions are big
+	 * endian too, BE32, is not read.
 	 */
 	public static Optional<InstructionSet> of(String processor, boolean bigEndian, int size,
 			String variant) {
 		switch (processor) {
 			case "ARM":
-				if (bigEndian || size != 32) {
+				boolean thumb = variant.contains("Cortex");
+				if (size != 32) {
 					return Optional.empty();
 				}
-				return Optional.of(
-					variant.contains("Cortex") ? InstructionSet.THUMB2 : InstructionSet.ARM32);
+				if (bigEndian) {
+					if (!variant.contains("LEInstruction")) {
+						return Optional.empty();
+					}
+					return Optional.of(thumb ? InstructionSet.THUMB2_BE8 : InstructionSet.ARM32_BE8);
+				}
+				return Optional.of(thumb ? InstructionSet.THUMB2 : InstructionSet.ARM32);
 			case "AARCH64":
 				return bigEndian || size != 64 ? Optional.empty()
 						: Optional.of(InstructionSet.AARCH64);

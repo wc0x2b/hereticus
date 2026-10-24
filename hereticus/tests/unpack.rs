@@ -75,3 +75,53 @@ fn a_container_names_where_its_parts_load() {
     let Some(mt300) = image("mipsel-mt300nv2", "22.03.5") else { return };
     assert_eq!(unpack(&mt300).expect("unpacks").kernel.load, Some(0x8000_0000));
 }
+
+/// The netboot kernel of Alpine Linux for ARMv7, a zImage of a gzip
+/// kernel, unpacks as `firmware.py` extracts it with Python's `zlib`.
+#[rstest]
+fn a_gzip_kernel_unpacks_as_the_fixture_script_does(#[values("3.20.2", "3.20.3")] release: &str) {
+    let path = openwrt().join(format!("download/alpine-{release}-armv7-vmlinuz-lts"));
+    let image = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("{}: {err}, run `just firmware`", path.display()));
+    let unpacked = unpack(&image).unwrap_or_else(|err| panic!("Alpine {release}: {err}"));
+    assert_eq!(unpacked.container, Container::ZImage, "Alpine {release}");
+    assert!(
+        unpacked.kernel.bytes == extracted("arm-alpine", "kernel", release),
+        "Alpine {release}: the kernel differs"
+    );
+    let stub = unpacked.stub.expect("a zImage holds a stub");
+    assert!(
+        stub.bytes == extracted("arm-alpine", "stub", release),
+        "Alpine {release}: the stub differs"
+    );
+}
+
+/// The two decompressors of the Alpine kernels compare as raw A32 images.
+/// The stub is built from the same source in both releases, so each of its
+/// functions pairs, and the counts are locked.
+#[test]
+fn the_stubs_of_two_gzip_kernels_compare() {
+    let stub = |release: &str| {
+        hereticus::obj::Binary::parse_raw(
+            &extracted("arm-alpine", "stub", release),
+            0,
+            hereticus::obj::Isa::Arm32,
+        )
+        .expect("a stub reads raw")
+    };
+    let (before, after) = (stub("3.20.2"), stub("3.20.3"));
+    let diff = hereticus::matching::diff(&before, &after);
+    let counts = (
+        before.functions.len(),
+        after.functions.len(),
+        diff.matched.len(),
+        diff.changed().count(),
+        diff.removed.len(),
+        diff.added.len(),
+    );
+    assert_eq!(
+        counts,
+        (218, 218, 218, 37, 0, 0),
+        "functions before, after, paired, changed, gone, new"
+    );
+}

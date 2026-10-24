@@ -115,29 +115,7 @@ pub(crate) const UNKNOWN_TEXT: &str = "(unknown)";
 /// MIPS32 and Release 2 words it refuses are read by [`crate::arch::mips32`]
 /// instead, which leaves every word MIPS II reads as it was.
 pub(crate) const ISA: IsaVersion = IsaVersion::MIPS_II;
-
-/// The byte order a word is stored in.
-///
-/// MIPS ships in both, and a whole image is one or the other. Reading an
-/// image at the wrong order does not fail: every word still decodes, into a
-/// different instruction, so the order has to be known rather than guessed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ByteOrder {
-    /// `mipsel`, as a desktop-built object usually is.
-    Little,
-    /// `mips`, as most shipped firmware is.
-    Big,
-}
-
-impl ByteOrder {
-    /// Assemble one stored word.
-    pub fn read_word(self, bytes: [u8; INSN_WIDTH]) -> u32 {
-        match self {
-            Self::Little => u32::from_le_bytes(bytes),
-            Self::Big => u32::from_be_bytes(bytes),
-        }
-    }
-}
+pub use super::ByteOrder;
 
 /// MIPS32, in either byte order.
 #[derive(Clone, Copy, Debug)]
@@ -328,6 +306,10 @@ impl Decoder for Mips32 {
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
         u64::from(self.order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn data_order(&self) -> ByteOrder {
+        self.order
     }
 
     /// What `rabbitizer` reads is lifted from its decoded fields, and the

@@ -4,6 +4,7 @@
 
 use super::{Arch, Insn, InsnKind, Memory};
 use hereticus_il as il;
+use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
 use hereticus_recovery::arch::arm32::{PcModel, track_pool_words};
@@ -71,7 +72,7 @@ impl Arch for Arm32 {
         body: &[Insn],
         space: &AddressSpace,
     ) -> Vec<ConstantKind> {
-        track_pool_words(code, body, space, PcModel::A32).kinds
+        track_pool_words(code, body, space, PcModel::A32.with_data(self.data_order())).kinds
     }
 
     fn formed_addresses(
@@ -81,7 +82,7 @@ impl Arch for Arm32 {
         space: &AddressSpace,
         _memory: &Memory<'_>,
     ) -> Vec<Option<u64>> {
-        track_pool_words(code, body, space, PcModel::A32).formed
+        track_pool_words(code, body, space, PcModel::A32.with_data(self.data_order())).formed
     }
 
     /// Almost every ARM instruction runs always: its top four bits are
@@ -113,8 +114,6 @@ impl Arch for Arm32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::Decoder as _;
 
     use compact_str::CompactString;
 

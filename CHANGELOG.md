@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Ghidra extension has a loader, *Raw Binary (Hereticus Base)*. It is
+  the *Raw Binary* loader of Ghidra, but its default *Base Address* is the
+  base that `hereticus --find-base` finds for the language of the import.
+  Before, a raw image went to 0 unless the user typed the base.
 - Pair C++ twins by the class of their vtable. A vtable points to the
   type information of its class, which keeps the name of the class after
   stripping, so template copies and destructors with the same
@@ -25,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, the scan cut such code at the return of each case. Over the
   releases of zlib and Lua built so for x86-64 and i686 with no unwind
   tables, the scan of a raw image invents 8 starts in place of 305.
+- Read ARM big endian, BE8: a big-endian ARM file reads as such, and
+  `--arch arm32-be8` and `thumb2-be8` read a raw image. The instructions
+  of BE8 are little endian and its data big endian: the literal pools, the
+  unwind index, the jump tables and every pointer. Before, the data read
+  little endian, and over the releases built so, 18 pairs were wrong
+  stripped and 29 raw, now 6 and 6, as little endian gives. The Ghidra
+  extension reads a BE8 program too.
 
 ### Changed
 

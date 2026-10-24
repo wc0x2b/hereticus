@@ -389,7 +389,7 @@ Options:
       --raw                    Read the inputs as raw code with no container format
       --base <BASE>            Address a raw image loads at, for example `0x08000000`, or `auto`
       --unpack <UNPACK>        Take one part out of each firmware image before reading it raw [possible values: stub, kernel]
-      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, aarch64, mips32, mips32-be, mips16, mips16-be, x86-64, x86]
+      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, arm32-be8, thumb2-be8, aarch64, mips32, mips32-be, mips16, mips16-be, x86-64, x86]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact, markdown, json]
       --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified, rare]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]

@@ -1,8 +1,10 @@
 # Ghidra Extension
 
 The Ghidra extension in `ghidra/` runs `hereticus` from inside Ghidra. It
-adds two things:
+adds three things:
 
+* **Raw Binary (Hereticus Base)**, a loader. It imports a raw image at the
+  base that `hereticus --find-base` finds.
 * **Hereticus Function Finder**, an analyzer. It makes a function at each
   start that `hereticus` finds and Ghidra does not.
 * **Hereticus Function Match**, a Version Tracking correlator. It proposes
@@ -33,13 +35,44 @@ the command line does.
    the zip. Restart Ghidra.
 
 If `hereticus` is not on the `PATH`, give its path in the
-`Hereticus Executable` option of the analyzer and of the correlator.
+`Hereticus Executable` option of the analyzer and of the correlator. The
+loader has no such option and always runs the `hereticus` on the `PATH`.
+Ghidra gets the options of a loader before you can change them.
+
+## Raw Loader
+
+A firmware image has no header that says where it loads. The *Raw Binary*
+loader of Ghidra puts it at 0 unless you give the base. The *Raw Binary
+(Hereticus Base)* loader is the same loader, but it finds the base for you:
+
+1. Select *File → Import File*, then the image.
+2. Set *Format* to *Raw Binary (Hereticus Base)*, and select the language.
+3. The loader runs `hereticus --find-base` on the image, in the instruction
+   set of the language, and puts the base in the *Base Address* option.
+   Look at it in *Options…* before you select *OK*.
+
+The Ghidra log shows `hereticus finds that <file> loads at <base>`. If no
+base stands out, or `hereticus` cannot read the language, the *Base
+Address* stays as *Raw Binary* gives it. Then find the base as
+[Find the Base](./usage.md#find-the-base) tells, and type it.
+
+In headless Ghidra, give the loader and the language, and no base:
+
+```console
+$ analyzeHeadless <project> <name> -import firmware.bin \
+    -loader HereticusRawLoader -processor ARM:LE:32:Cortex
+```
+
+`just ghidra-extension` imports the Cortex-M3 firmware of the zlib backport
+so. The loader puts it at 0x8000000, where it is linked. Ghidra then finds
+51<!-- from ghidra_extension: m3-firmware / off --> functions alone and
+88<!-- from ghidra_extension: m3-firmware / on --> with the Function Finder.
 
 ## Function Finder
 
 The analyzer runs during auto-analysis of each ARM, AArch64 or MIPS
 program, after the function analysis of Ghidra. It reads ELF and Mach-O
-files, and raw images that Ghidra loaded with the *Raw Binary* loader. A
+files, and raw images that Ghidra loaded with either raw loader. A
 raw image goes to `hereticus` at the address of its first byte, in the
 instruction set of its language. A Cortex language gives Thumb-2.
 
