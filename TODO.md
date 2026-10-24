@@ -177,24 +177,6 @@ found more to do, most valuable first:
   shows are near twins of this kind, one slot off: template copies of
   protobuf and draco, and the `log_Z3_*` functions of z3 (`RESEARCH.md`,
   "Assemblage-DeepHistory: the wrong pairs a report shows").
-- **A new function that took the place of an old one.** Of the 8,989
-  wrong pairs a report shows over Assemblage-DeepHistory, 2,367 join an
-  old function to a new one while the true partner of the old one stays
-  free, and 1,773 the reverse. A free partner under 48 bytes is the case
-  of `Cascade::thin_wrapper_of`, about 680 pairs, but 459 of those
-  partners do not call the new function at all, and the place rule
-  rejects 125. Measured on 2026-10-23, against entry 21, neither change
-  is clear: a wrapper of at most 6 instructions paired 101 more right and
-  115 fewer wrong over Assemblage, but 8 fewer right and 9 more wrong over
-  the backports; a wrapper with no caller in the old place paired 511
-  fewer right and 382 more wrong over Assemblage. A wrapper that reaches
-  the new function through its own PLT stub, as in a stripped library,
-  reads as a call to an import, so the stage cannot see it there. Reading
-  such a call as a call to the export changed nothing over the Ubuntu
-  updates and the kernels, and over the backports paired 63 fewer right
-  and 63 more wrong: where one build inlines a wrapper, as `gzgetc_` of
-  zlib, the other build seems to add it. Not to pair a wrapper where the
-  old function had one too left 59 fewer right and 59 more wrong.
 - **Pairs across compilers.** The dataset builds each release with GCC
   and with clang. Those pairs make a set across builds, like the
   backports, but far larger.
