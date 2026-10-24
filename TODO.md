@@ -246,9 +246,11 @@ bytes, which took 10% off libgnutls; keeping the decoded operands in
 every `Insn` took 237 MB in place of 137 MB and no time. MIPS compares
 register names packed into words. `track_pages` still reads `w24` and
 `x24` as two registers, as the text did, though a write of `w24` clears
-`x24` too. Ending the page of `x24` there changed the texts of two
-functions of the libgnutls update and moved no truth test; find out
-whether those two show a real change before it ends them.
+`x24` too. Ending the page there is right for the code that it reads
+straight down, but past a jump, the tracker then guesses a page from a
+function far above, and the texts it shows change where the code does
+not (`RESEARCH.md`, "The low half of an A64 register"). It must follow
+the value that each path brings to a block before it ends them.
 
 ## Rust has the idea of MIR, an in-between IL. Would that help this project?
 
