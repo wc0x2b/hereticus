@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unpack a zImage whose kernel is gzip or zstd, and an xz kernel
   filtered for x86, PowerPC, Thumb-2, AArch64 or SPARC, or with a start
   offset. Before, `--unpack` read only an xz kernel filtered for A32.
+- Read ARM big endian, BE8: a big-endian ARM file reads as such, and
+  `--arch arm32-be8` and `thumb2-be8` read a raw image. The instructions
+  of BE8 are little endian and its data big endian: the literal pools, the
+  unwind index, the jump tables and every pointer. Before, the data read
+  little endian, and over the releases built so, 18 pairs were wrong
+  stripped and 29 raw, now 6 and 6, as little endian gives. The Ghidra
+  extension reads a BE8 program too.
 
 ### Changed
 

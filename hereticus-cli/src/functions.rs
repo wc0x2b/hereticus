@@ -128,6 +128,8 @@ fn name_of_isa(isa: Isa) -> &'static str {
     match isa {
         Isa::Arm32 => "arm32",
         Isa::Thumb2 => "thumb2",
+        Isa::Arm32Be8 => "arm32-be8",
+        Isa::Thumb2Be8 => "thumb2-be8",
         Isa::Aarch64 => "aarch64",
         Isa::Mips32 => "mips32",
         Isa::Mips32Be => "mips32-be",

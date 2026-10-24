@@ -16,6 +16,39 @@ use core::fmt;
 
 use compact_str::CompactString;
 
+/// The byte order a word is stored in.
+///
+/// MIPS ships in both, and a whole image is one or the other. Reading an
+/// image at the wrong order does not fail: every word still decodes, into a
+/// different instruction, so the order has to be known rather than guessed.
+/// ARM big endian, BE8, stores each instruction little endian, and only its
+/// data in this order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByteOrder {
+    /// `mipsel` and `arm`, as a desktop-built object usually is.
+    Little,
+    /// `mips` and `armeb`, as most shipped MIPS firmware is.
+    Big,
+}
+
+impl ByteOrder {
+    /// Assemble one stored word.
+    pub fn read_word(self, bytes: [u8; 4]) -> u32 {
+        match self {
+            Self::Little => u32::from_le_bytes(bytes),
+            Self::Big => u32::from_be_bytes(bytes),
+        }
+    }
+
+    /// Assemble one stored halfword.
+    pub fn read_halfword(self, bytes: [u8; 2]) -> u16 {
+        match self {
+            Self::Little => u16::from_le_bytes(bytes),
+            Self::Big => u16::from_be_bytes(bytes),
+        }
+    }
+}
+
 /// What decodes and lifts the instructions of one instruction set, with
 /// the facts of the set a decoder knows, as its pointer width.
 pub trait Decoder {
@@ -92,6 +125,12 @@ pub trait Decoder {
     ///
     /// `bytes` is at least [`Decoder::pointer_width`] long.
     fn read_pointer(&self, bytes: &[u8]) -> u64;
+
+    /// The byte order of the data the code reads, as a literal pool or an
+    /// unwind index holds it. Defaults to little endian.
+    fn data_order(&self) -> ByteOrder {
+        ByteOrder::Little
+    }
 }
 
 /// Report whether an operand is a branch target.
@@ -179,7 +218,6 @@ pub enum Opcode {
 /// each instruction.
 pub fn reader_of(insn: &Insn) -> Option<&'static dyn Decoder> {
     use InstructionSet as Set;
-    use mips::ByteOrder;
     Some(match insn.opcode {
         Opcode::None | Opcode::Data => return None,
         Opcode::Aarch64(_) | Opcode::Unread(Set::Aarch64) => &aarch64::Aarch64,

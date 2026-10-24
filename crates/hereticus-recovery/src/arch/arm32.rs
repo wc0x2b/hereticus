@@ -3,6 +3,7 @@
 use super::{DataAmongCode, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery};
 use core::ops::Range;
 use hereticus_il as il;
+use hereticus_il::arch::ByteOrder;
 use hereticus_il::arch::arm32::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
 use std::collections::BTreeSet;
@@ -22,6 +23,11 @@ const NOP_BYTES: [u8; 4] = [0x00, 0xf0, 0x20, 0xe3];
 
 /// Zero words, which some linkers pad with instead.
 const ZERO_BYTES: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+
+/// The A32 `nop`, big endian. In BE8, LLD writes the padding after a
+/// literal pool in the order of the data: measured on Lua 5.3.5, after the
+/// pool that ends `luaopen_os`, where it started a function.
+const NOP_BYTES_BIG: [u8; 4] = [0xe3, 0x20, 0xf0, 0x00];
 
 /// The program counter, as an operand names it.
 const PC_OPERAND: il::Operand = il::Operand::Reg(il::Reg::ProgramCounter);
@@ -76,6 +82,7 @@ impl Recovery for Arm32 {
             || (insn.kind == InsnKind::Unknown
                 && insn.opcode != super::Opcode::Data
                 && (insn.bytes() == NOP_BYTES || insn.bytes() == ZERO_BYTES))
+            || (self.data_order() == ByteOrder::Big && insn.bytes() == NOP_BYTES_BIG)
     }
 
     /// Only whole words at the end are removed, and only the two encodings a
@@ -84,7 +91,8 @@ impl Recovery for Arm32 {
         let mut end = bytes.len();
         while end >= INSN_WIDTH {
             let word = &bytes[end - INSN_WIDTH..end];
-            if word == NOP_BYTES || word == ZERO_BYTES {
+            let big_nop = self.data_order() == ByteOrder::Big && word == NOP_BYTES_BIG;
+            if word == NOP_BYTES || word == ZERO_BYTES || big_nop {
                 end -= INSN_WIDTH;
             } else {
                 break;
@@ -104,7 +112,7 @@ impl Recovery for Arm32 {
         space: &AddressSpace,
         _memory: &Memory<'_>,
     ) -> Vec<u64> {
-        track_pool_words(code, body, space, PcModel::A32).addresses
+        track_pool_words(code, body, space, PcModel::A32.with_data(self.data_order())).addresses
     }
 
     /// `bx` through a register other than `lr`. A `switch` jumps with `add pc`
@@ -170,7 +178,9 @@ impl Recovery for Arm32 {
         insns
             .iter()
             .enumerate()
-            .filter_map(|(index, jump)| read_jump_table(memory, &code, &insns[..index], jump))
+            .filter_map(|(index, jump)| {
+                read_jump_table(memory, &code, &insns[..index], jump, self.data_order())
+            })
             .collect()
     }
 
@@ -303,6 +313,7 @@ fn read_jump_table(
     code: &Range<u64>,
     earlier: &[Insn],
     jump: &Insn,
+    order: ByteOrder,
 ) -> Option<JumpTable> {
     /// How far back the load of the table and its address may be. GCC puts
     /// them right before the jump, but can move other work between.
@@ -313,7 +324,7 @@ fn read_jump_table(
     if let Some(table) = read_branch_table(memory, code, jump) {
         return Some(table);
     }
-    if let Some(table) = read_offset_table(memory, code, earlier, jump) {
+    if let Some(table) = read_offset_table(memory, code, earlier, jump, order) {
         return Some(table);
     }
     if !is_plain(jump, Opcode::ADD) || jump.kind != (InsnKind::Jump { target: None }) {
@@ -368,7 +379,7 @@ fn read_jump_table(
     while word < first_case && targets.len() < MOST_CASES {
         // The end of the section ends the table.
         let Some(bytes) = memory.bytes(word, INSN_WIDTH) else { break };
-        let delta = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let delta = order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]) as i32;
         let target = table.checked_add_signed(i64::from(delta))?;
         // A case lies inside the code, on a whole word, and outside the
         // table. It can lie before the table: GCC sends a case with no code
@@ -457,6 +468,7 @@ fn read_offset_table(
     code: &Range<u64>,
     earlier: &[Insn],
     jump: &Insn,
+    order: ByteOrder,
 ) -> Option<JumpTable> {
     const LOOK_BACK: usize = 16;
     /// How far back the table's address may be made. A `switch` in a loop
@@ -543,7 +555,7 @@ fn read_offset_table(
     };
     let pool = pool_load.address.checked_add(PC_AHEAD)?.checked_add_signed(pool_offset)?;
     let pool_word = memory.bytes(pool, INSN_WIDTH)?;
-    let distance = u32::from_le_bytes([pool_word[0], pool_word[1], pool_word[2], pool_word[3]]);
+    let distance = order.read_word([pool_word[0], pool_word[1], pool_word[2], pool_word[3]]);
     let table = (add.address + PC_AHEAD).wrapping_add(u64::from(distance)) & 0xffff_ffff;
 
     // `cmp rI, n` bounds the case number, so there are n + 1 cases.
@@ -562,7 +574,7 @@ fn read_offset_table(
         let entry = if width == 1 {
             u64::from(bytes[0])
         } else {
-            u64::from(u16::from_le_bytes([bytes[0], bytes[1]]))
+            u64::from(order.read_halfword([bytes[0], bytes[1]]))
         };
         let target = base + entry * INSN_WIDTH as u64;
         if !code.contains(&target) {
@@ -574,13 +586,16 @@ fn read_offset_table(
     Some(JumpTable { jump: jump.address, words, targets })
 }
 
-/// How `pc` reads in one instruction set.
+/// How `pc` reads in one instruction set, and the byte order of the words
+/// a load from `[pc, imm]` reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PcModel {
     /// How far past an instruction `pc` reads.
     ahead: u64,
     /// Whether a load from `[pc, imm]` rounds `pc` down to a word first.
     aligns_literal_loads: Alignment,
+    /// The byte order of the data, big endian in BE8.
+    data: ByteOrder,
 }
 
 /// Whether an address rounds down to a word.
@@ -592,10 +607,22 @@ enum Alignment {
 
 impl PcModel {
     /// A32: `pc` reads two instructions, 8 bytes, ahead.
-    pub const A32: Self = Self { ahead: 8, aligns_literal_loads: Alignment::AsIs };
+    pub const A32: Self =
+        Self { ahead: 8, aligns_literal_loads: Alignment::AsIs, data: ByteOrder::Little };
     /// T32: `pc` reads 4 bytes ahead, and a literal load rounds it down to a
     /// word.
-    pub const T32: Self = Self { ahead: 4, aligns_literal_loads: Alignment::ToWord };
+    pub const T32: Self =
+        Self { ahead: 4, aligns_literal_loads: Alignment::ToWord, data: ByteOrder::Little };
+
+    /// This model, with its data in `order`.
+    pub const fn with_data(self, order: ByteOrder) -> Self {
+        Self { data: order, ..self }
+    }
+
+    /// The word of data `bytes` holds.
+    pub(super) fn read_word(self, bytes: &[u8]) -> Option<u32> {
+        Some(self.data.read_word(bytes.get(..4)?.try_into().ok()?))
+    }
 
     /// What `pc` reads in the instruction at `address`.
     pub(super) fn of(self, address: u64) -> u64 {
@@ -831,8 +858,7 @@ pub fn track_pool_words(
 
     let word_at = |pool: u64| -> Option<u32> {
         let offset = usize::try_from(pool.checked_sub(start)?).ok()?;
-        let bytes = code.get(offset..offset.checked_add(WORD_WIDTH)?)?;
-        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        pc_model.read_word(code.get(offset..offset.checked_add(WORD_WIDTH)?)?)
     };
 
     for (index, insn) in body.iter().enumerate() {
@@ -1112,6 +1138,29 @@ mod tests {
     mod words {
         pub const PUSH_R4_LR: [u8; 4] = [0x10, 0x40, 0x2d, 0xe9];
         pub const ADDEQ_R0: [u8; 4] = [0x01, 0x00, 0x80, 0x02];
+    }
+
+    /// In BE8, LLD writes the padding after a pool big endian, as the pool.
+    #[test]
+    fn be8_pads_with_a_big_endian_nop_too() {
+        use hereticus_il::arch::arm32::ARM32_BE8;
+        let insn = ARM32_BE8.decode(&NOP_BYTES_BIG, 0, 0x1000).expect("bytes must decode");
+        assert!(ARM32_BE8.is_padding(&insn));
+        assert!(!Arm32.is_padding(&insn), "little endian, these bytes are work");
+        let code = [&words::PUSH_R4_LR[..], &NOP_BYTES_BIG].concat();
+        assert_eq!(ARM32_BE8.trim_padding(&code), &code[..4]);
+        assert_eq!(Arm32.trim_padding(&code), &code[..]);
+    }
+
+    /// A pool word of BE8 is big endian, so the address it holds reads so.
+    #[test]
+    fn a_pool_word_of_be8_reads_big_endian() {
+        use hereticus_il::arch::arm32::ARM32_BE8;
+        let pool = PcModel::A32.with_data(ByteOrder::Big);
+        assert_eq!(pool.read_word(&[0x00, 0x01, 0x02, 0x03]), Some(0x0001_0203));
+        assert_eq!(PcModel::A32.read_word(&[0x00, 0x01, 0x02, 0x03]), Some(0x0302_0100));
+        assert_eq!(pool.read_word(&[0x00]), None, "cut short");
+        assert_eq!(ARM32_BE8.data_order(), ByteOrder::Big);
     }
 
     #[test]

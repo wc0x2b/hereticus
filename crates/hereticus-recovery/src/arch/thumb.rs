@@ -25,7 +25,8 @@ use super::{
     DataAmongCode, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery, TableJumps, VectorTable,
 };
 use core::ops::Range;
-use hereticus_il::arch::arm32::{Arm32, Decoded, Flags, core_opcode};
+use hereticus_il::arch::ByteOrder;
+use hereticus_il::arch::arm32::{ARM32_BE8, Arm32, Decoded, Flags, core_opcode};
 use hereticus_il::arch::thumb::*;
 use hereticus_memory::AddressSpace;
 use std::collections::BTreeSet;
@@ -49,6 +50,11 @@ const TABLE_LOOK_BACK: usize = 16;
 /// cut 170 functions two bytes short.
 const PADDING: [[u8; 2]; 3] = [[0x00, 0xbf], [0xc0, 0x46], [0xd4, 0xd4]];
 
+/// `nop` and `mov r8, r8`, big endian. In BE8, LLD writes the padding after
+/// a literal pool in the order of the data: measured on Lua 5.3.5, after the
+/// pool that ends `luaopen_os`, where it started a function.
+const PADDING_BIG: [[u8; 2]; 2] = [[0xbf, 0x00], [0x46, 0xc0]];
+
 impl Recovery for Thumb2 {
     /// T32 has no condition field to test, so the first instruction must
     /// read as one and not as padding.
@@ -67,8 +73,8 @@ impl Recovery for Thumb2 {
         match split_at_switch(code, body) {
             Some((offset, index)) => {
                 let mut addresses =
-                    track_pool_words(code, &body[..index], space, PcModel::T32).addresses;
-                addresses.extend(Arm32.data_addresses(
+                    track_pool_words(code, &body[..index], space, self.pc()).addresses;
+                addresses.extend(self.a32().data_addresses(
                     &code[offset..],
                     &body[index..],
                     space,
@@ -76,7 +82,7 @@ impl Recovery for Thumb2 {
                 ));
                 addresses
             }
-            None => track_pool_words(code, body, space, PcModel::T32).addresses,
+            None => track_pool_words(code, body, space, self.pc()).addresses,
         }
     }
 
@@ -105,8 +111,8 @@ impl Recovery for Thumb2 {
     fn jump_tables(&self, memory: &Memory<'_>, code: Range<u64>, insns: &[Insn]) -> Vec<JumpTable> {
         (0..insns.len())
             .filter_map(|index| {
-                read_branch_table(memory, &code, insns, index)
-                    .or_else(|| read_word_table(memory, &code, insns, index))
+                read_branch_table(memory, &code, insns, index, self.data_order())
+                    .or_else(|| read_word_table(memory, &code, insns, index, self.data_order()))
             })
             .collect()
     }
@@ -123,7 +129,7 @@ impl Recovery for Thumb2 {
             .as_chunks::<WORD>()
             .0
             .iter()
-            .map(|word| u64::from(u32::from_le_bytes([word[0], word[1], word[2], word[3]])));
+            .map(|word| u64::from(self.data_order().read_word(*word)));
         let stack = words.next()?;
         if inside(stack) || !stack.is_multiple_of(WORD as u64) {
             return None;
@@ -197,7 +203,7 @@ impl Recovery for Thumb2 {
     fn switch_at_start(&self, code: &[u8], address: u64) -> Option<(&'static dyn Recovery, u64)> {
         (code.get(..HALFWORD)? == BX_PC).then(|| {
             let lands = PcModel::T32.of_literal_load(address);
-            (&Arm32 as &'static dyn Recovery, lands)
+            (self.a32_static(), lands)
         })
     }
 
@@ -228,6 +234,8 @@ impl Recovery for Thumb2 {
             // LLD's fill, `0xd4d4`, reads as this branch back. No compiler
             // branches back into the middle of the fill before a function.
             || (is(Opcode::B, ConditionCode::MI, Flags::Kept) && branches_back(0x54))
+            || (self.data_order() == ByteOrder::Big
+                && PADDING_BIG.iter().any(|pad| insn.bytes() == pad))
             || (insn.kind == InsnKind::Unknown
                 && insn.opcode != super::Opcode::Data
                 && insn.bytes() == [0, 0])
@@ -237,7 +245,12 @@ impl Recovery for Thumb2 {
     /// pads with.
     fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
         let mut end = bytes.len() - bytes.len() % HALFWORD;
-        while end >= HALFWORD && PADDING.iter().any(|pad| bytes[end - HALFWORD..end] == *pad) {
+        let big = self.data_order() == ByteOrder::Big;
+        let is_pad = |halfword: &[u8]| {
+            PADDING.iter().any(|pad| halfword == pad)
+                || (big && PADDING_BIG.iter().any(|pad| halfword == pad))
+        };
+        while end >= HALFWORD && is_pad(&bytes[end - HALFWORD..end]) {
             end -= HALFWORD;
         }
         &bytes[..end]
@@ -248,7 +261,7 @@ impl Recovery for Thumb2 {
     }
 
     fn stub_arch(&self) -> Option<&'static dyn Recovery> {
-        Some(&Arm32)
+        Some(self.a32_static())
     }
 
     fn function_address(&self, pointer: u64) -> u64 {
@@ -260,7 +273,34 @@ impl Recovery for Thumb2 {
     }
 
     fn distance_words(&self, code: &[u8], insns: &[Insn]) -> BTreeSet<u64> {
-        track_pool_words(code, insns, &AddressSpace::default(), PcModel::T32).distances
+        track_pool_words(code, insns, &AddressSpace::default(), self.pc()).distances
+    }
+}
+
+/// The model of `pc` and of the data of T32 code that `thumb` reads.
+trait WithData {
+    /// The model of `pc` of T32, with the data in this decoder's order.
+    fn pc(&self) -> PcModel;
+    /// A32, with the data in this decoder's order.
+    fn a32(&self) -> Arm32;
+    /// As [`WithData::a32`], to hand on as a `'static` decoder.
+    fn a32_static(&self) -> &'static dyn Recovery;
+}
+
+impl WithData for Thumb2 {
+    fn pc(&self) -> PcModel {
+        PcModel::T32.with_data(self.data_order())
+    }
+
+    fn a32(&self) -> Arm32 {
+        Arm32::with_data(self.data_order())
+    }
+
+    fn a32_static(&self) -> &'static dyn Recovery {
+        match self.data_order() {
+            ByteOrder::Little => &Arm32,
+            ByteOrder::Big => &ARM32_BE8,
+        }
     }
 }
 
@@ -403,6 +443,7 @@ fn read_word_table(
     code: &Range<u64>,
     insns: &[Insn],
     index: usize,
+    order: ByteOrder,
 ) -> Option<JumpTable> {
     let words = word_table_extent(insns, index)?;
     let targets = words
@@ -410,7 +451,7 @@ fn read_word_table(
         .step_by(WORD)
         .map(|word| {
             let bytes = memory.bytes(word, WORD)?;
-            let distance = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let distance = order.read_word([bytes[0], bytes[1], bytes[2], bytes[3]]) as i32;
             let target =
                 Thumb2.tagged_function(words.start.checked_add_signed(distance.into())?)?;
             code.contains(&target).then_some(target)
@@ -445,6 +486,7 @@ fn read_branch_table(
     code: &Range<u64>,
     insns: &[Insn],
     index: usize,
+    order: ByteOrder,
 ) -> Option<JumpTable> {
     let jump = &insns[index];
     let (table_bytes, width) = table_extent(insns, index)?;
@@ -455,7 +497,7 @@ fn read_branch_table(
         let entry = memory.bytes(table + (case * width) as u64, width)?;
         let halfwords = match entry {
             [byte] => u64::from(*byte),
-            [low, high] => u64::from(u16::from_le_bytes([*low, *high])),
+            [low, high] => u64::from(order.read_halfword([*low, *high])),
             _ => return None,
         };
         let target = table + halfwords * HALFWORD as u64;
@@ -763,6 +805,18 @@ mod tests {
         assert!(Thumb2.is_padding(&decode_one(&[0x46c0])));
         assert!(Thumb2.is_padding(&decode_one(&[0x0000])), "lsls r0, r0, 0");
         assert!(!Thumb2.is_padding(&decode_one(&[0x0048])), "lsls r0, r1, 1");
+    }
+
+    /// In BE8, LLD writes the padding after a pool big endian, as the pool.
+    #[test]
+    fn be8_pads_with_a_big_endian_nop_too() {
+        let big_nop = [0xbf, 0x00];
+        let insn = THUMB2_BE8.decode(&big_nop, 0, 0x1000).expect("bytes must decode");
+        assert!(THUMB2_BE8.is_padding(&insn));
+        assert!(!Thumb2.is_padding(&insn), "little endian, these bytes are work");
+        let code = [&halfwords(&[0x4770])[..], &big_nop, &big_nop].concat();
+        assert_eq!(THUMB2_BE8.trim_padding(&code), &code[..2]);
+        assert_eq!(Thumb2.trim_padding(&code), &code[..]);
     }
 
     /// The PLT stub of `malloc` in zlib for Thumb-2, as GNU `ld` wrote it:
