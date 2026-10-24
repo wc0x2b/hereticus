@@ -24,9 +24,11 @@ with it.
 `--unpack` reads the containers the OpenWrt fixtures use: a zImage, alone
 or in a FIT image or a sysupgrade tar, a uImage of a kernel or of an
 lzma-loader, an ELF lzma-loader and a TP-Link v2 image, and the tests pin
-its output to the bytes `fixtures/firmware.py` extracts. Add the formats
-still missing, as AVM EVA, a gzip or zstd kernel, and the other branch
-filters of xz.
+its output to the bytes `fixtures/firmware.py` extracts. A zImage can
+also hold a gzip or zstd kernel, and xz can filter for any instruction
+set but IA-64 and RISC-V, which the unit tests check against streams that
+`xz`, `gzip` and `zstd` wrote. Add the containers still missing, as AVM
+EVA, and an OpenWrt fixture for a gzip or zstd kernel.
 
 ## Read the dyld shared cache
 

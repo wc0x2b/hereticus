@@ -56,7 +56,8 @@ A vendor ships a kernel compressed, behind a header, and often with a
 small decompressor before it. `--unpack stub` takes out the decompressor,
 and `--unpack kernel` takes out the kernel it holds. `hereticus` reads
 these containers: zImage, FIT, uImage, the sysupgrade tar of OpenWrt,
-lzma-loader and TP-Link v2. Where a container gives the address its part
+lzma-loader and TP-Link v2. A zImage can hold its kernel as xz, with any
+branch filter of xz, or as gzip or zstd. Where a container gives the address its part
 loads at, `hereticus` keeps it as the base of the raw image. binwalk finds
 such containers by their signatures in the same way.
 
