@@ -97,10 +97,10 @@ worth reading.
 ## Read the rest of x86
 
 x86-64 and 32-bit x86 ELF are read, with the backports built by GCC and
-clang for both. Still to do: the jump tables of code that is not PIC,
-which jump through `[4*eax + table]` and hold whole addresses; Windows PE
-and Intel Mach-O files, which no fixture covers; and the published fixes
-of `real-life-reports/` for x86-64, where most of them ship.
+clang for both, and the releases built as executables that are not PIC
+(`tests/nopic.rs`). Still to do: Windows PE and Intel Mach-O files, which
+no fixture covers; and the published fixes of `real-life-reports/` for
+x86-64, where most of them ship.
 
 ## Read RISC-V
 

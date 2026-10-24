@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unpack a zImage whose kernel is gzip or zstd, and an xz kernel
   filtered for x86, PowerPC, Thumb-2, AArch64 or SPARC, or with a start
   offset. Before, `--unpack` read only an xz kernel filtered for A32.
+- Read the jump tables of x86 code that is not PIC, as
+  `jmp qword ptr [8*rax + table]`, whose entries are whole addresses.
+  Before, the scan cut such code at the return of each case. Over the
+  releases of zlib and Lua built so for x86-64 and i686 with no unwind
+  tables, the scan of a raw image invents 8 starts in place of 305.
 
 ### Changed
 

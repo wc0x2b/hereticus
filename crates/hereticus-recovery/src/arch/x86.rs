@@ -275,13 +275,17 @@ fn read_jump_table(
         return None;
     }
     let jump_inst = instruction(jump)?;
-    if jump_inst.op0_kind() != OpKind::Register {
-        return None;
-    }
     let earlier = &insns[index.saturating_sub(TABLE_LOOK_BACK)..index];
     let decoded: Vec<iced_x86::Instruction> = earlier.iter().filter_map(instruction).collect();
     if decoded.len() != earlier.len() {
         return None;
+    }
+    match jump_inst.op0_kind() {
+        OpKind::Register => {}
+        OpKind::Memory => {
+            return read_table_of_addresses(memory, code, jump, &jump_inst, earlier, &decoded);
+        }
+        _ => return None,
     }
     let target = jump_inst.op0_register().full_register();
     let writes = |inst: &iced_x86::Instruction, register: Register| {
@@ -331,19 +335,7 @@ fn read_jump_table(
         _ => return None,
     };
     let index_register = load.memory_index().full_register();
-    let masked = last_write(index_register, load_at)
-        .map(|at| &decoded[at])
-        .filter(|inst| inst.mnemonic() == Mnemonic::And)
-        .and_then(constant_operand)
-        .filter(|mask| (mask + 1).is_power_of_two());
-    let cases = match masked {
-        // `and eax, 3`: the cases run from 0 to the mask.
-        Some(mask) => mask + 1,
-        None => cases_before(&earlier[..load_at], &decoded[..load_at])?,
-    };
-    if !(1..=MOST_CASES).contains(&cases) {
-        return None;
-    }
+    let cases = case_count(index_register, &earlier[..load_at], &decoded[..load_at])?;
 
     let mut targets = Vec::new();
     for case in 0..cases {
@@ -356,6 +348,82 @@ fn read_jump_table(
         targets.push(target);
     }
     Some(JumpTable { jump: jump.address, words: table..table + cases * ENTRY_WIDTH, targets })
+}
+
+/// The table of whole addresses that `jump`, `inst` decoded, goes through,
+/// as code that is not PIC jumps:
+///
+/// ```text
+/// cmp eax, 5                          ; the last case
+/// ja  default
+/// jmp dword ptr [4*eax + table]       ; or qword ptr [8*rax + table]
+/// ```
+///
+/// Each entry is the address of its case, as wide as a pointer, so only
+/// the instructions before the jump bound the cases.
+fn read_table_of_addresses(
+    memory: &Memory<'_>,
+    code: &Range<u64>,
+    jump: &Insn,
+    inst: &iced_x86::Instruction,
+    earlier: &[Insn],
+    decoded: &[iced_x86::Instruction],
+) -> Option<JumpTable> {
+    let width: u64 = match mode_of(jump)? {
+        Mode::Bits32 => 4,
+        Mode::Bits64 => 8,
+    };
+    let reads_a_table = inst.memory_base() == Register::None
+        && inst.memory_index() != Register::None
+        && u64::from(inst.memory_index_scale()) == width;
+    if !reads_a_table {
+        return None;
+    }
+    // A 32-bit displacement is sign-extended in 64-bit code.
+    let table = match width {
+        4 => inst.memory_displacement64() & 0xffff_ffff,
+        _ => inst.memory_displacement64(),
+    };
+    let cases = case_count(inst.memory_index().full_register(), earlier, decoded)?;
+    let targets = (0..cases)
+        .map(|case| {
+            let bytes = memory.bytes(table.checked_add(case * width)?, width as usize)?;
+            let target = match bytes {
+                &[a, b, c, d] => u64::from(u32::from_le_bytes([a, b, c, d])),
+                bytes => u64::from_le_bytes(bytes.try_into().ok()?),
+            };
+            code.contains(&target).then_some(target)
+        })
+        .collect::<Option<Vec<u64>>>()?;
+    Some(JumpTable { jump: jump.address, words: table..table + cases * width, targets })
+}
+
+/// How many cases a table that `index_register` indexes holds, by the
+/// instructions before it: an `and` with a mask of low bits, or else the
+/// last bound, as [`cases_before`] reads it.
+fn case_count(
+    index_register: Register,
+    earlier: &[Insn],
+    decoded: &[iced_x86::Instruction],
+) -> Option<u64> {
+    let writes = |inst: &iced_x86::Instruction| {
+        inst.op_count() >= 1
+            && inst.op0_kind() == OpKind::Register
+            && inst.op0_register().full_register() == index_register
+    };
+    let masked = decoded
+        .iter()
+        .rev()
+        .find(|inst| writes(inst))
+        .filter(|inst| inst.mnemonic() == Mnemonic::And)
+        .and_then(constant_operand)
+        .filter(|mask| (mask + 1).is_power_of_two());
+    let cases = match masked {
+        // `and eax, 3`: the cases run from 0 to the mask.
+        Some(mask) => mask + 1,
+        None => cases_before(earlier, decoded)?,
+    };
+    (1..=MOST_CASES).contains(&cases).then_some(cases)
 }
 
 /// How many cases the last bound before a table jump admits: a `cmp` of a
@@ -1370,6 +1438,86 @@ mod tests {
         // A case outside the code is no table.
         let tables = X86::BITS64.jump_tables(&Memory::new(&regions), 0x1000..0x1018, &insns);
         assert!(tables.is_empty());
+    }
+
+    /// Code that is not PIC jumps through a table of whole addresses, as
+    /// wide as a pointer.
+    #[test]
+    fn a_switch_that_is_not_pic_names_its_cases_by_address() {
+        let code_32 = [
+            0x83, 0xf8, 0x02, //                         0x1000 cmp eax, 2
+            0x77, 0x09, //                               0x1003 ja 0x100e
+            0xff, 0x24, 0x85, 0x00, 0x20, 0x00, 0x00, // 0x1005 jmp dword ptr [4*eax + 0x2000]
+            0xc3, 0xc3, 0xc3, //                         0x100c ret; ret; ret
+        ];
+        let entries_32: Vec<u8> =
+            [0x100c_u32, 0x100d, 0x100c].iter().flat_map(|entry| entry.to_le_bytes()).collect();
+        let regions = [(0x2000, &entries_32[..])];
+        let insns = decode_all(&X86::BITS32, &code_32, 0x1000).0;
+        let tables = X86::BITS32.jump_tables(&Memory::new(&regions), 0x1000..0x100f, &insns);
+        assert_eq!(
+            tables,
+            [JumpTable {
+                jump: 0x1005,
+                words: 0x2000..0x200c,
+                targets: vec![0x100c, 0x100d, 0x100c]
+            }]
+        );
+        // A case outside the code is no table.
+        let tables = X86::BITS32.jump_tables(&Memory::new(&regions), 0x1000..0x100d, &insns);
+        assert!(tables.is_empty());
+        // Nor is a jump through a slot of no table, with no index.
+        let slot = [0xff, 0x25, 0x00, 0x20, 0x00, 0x00]; // jmp dword ptr [0x2000]
+        let insns = decode_all(&X86::BITS32, &[&code_32[..5], &slot[..]].concat(), 0x1000).0;
+        assert!(X86::BITS32.jump_tables(&Memory::new(&regions), 0x1000..0x100f, &insns).is_empty());
+
+        let mut code_64 = code_32;
+        code_64[7] = 0xc5; //                            0x1005 jmp qword ptr [8*rax + 0x2000]
+        let entries_64: Vec<u8> =
+            [0x100c_u64, 0x100e, 0x100d].iter().flat_map(|entry| entry.to_le_bytes()).collect();
+        let regions = [(0x2000, &entries_64[..])];
+        let insns = decode(&code_64, 0x1000);
+        let tables = X86::BITS64.jump_tables(&Memory::new(&regions), 0x1000..0x100f, &insns);
+        assert_eq!(
+            tables,
+            [JumpTable {
+                jump: 0x1005,
+                words: 0x2000..0x2018,
+                targets: vec![0x100c, 0x100e, 0x100d]
+            }]
+        );
+        // Entries of 4 bytes are no table of 64-bit code.
+        let insns = decode(&code_32, 0x1000);
+        assert!(X86::BITS64.jump_tables(&Memory::new(&regions), 0x1000..0x100f, &insns).is_empty());
+    }
+
+    /// A `switch` of eight cases, as GCC 15 built it with `-O2 -fno-pic
+    /// -no-pie` for x86-64, and the table it jumps through. Each case ends
+    /// with `ret`, and read with no table, the scan cut the function at
+    /// each one into 8 pieces.
+    #[test]
+    fn a_switch_that_is_not_pic_stays_one_function() {
+        #[rustfmt::skip]
+        let code: [u8; 148] = [
+            0x83, 0xff, 0x07, 0x0f, 0x87, 0xc7, 0xfe, 0xff, 0xff, 0x89, 0xff, 0xff, 0x24, 0xfd, 0x08, 0x20, 0x40, 0x00, 0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0x48, 0x63, 0xc6, 0x89, 0xf2, 0x48, 0x69, 0xc0, 0xe9, 0xa2, 0x8b, 0x2e, 0xc1, 0xfa, 0x1f, 0x48, 0xc1, 0xf8, 0x21, 0x29, 0xd0, 0x8d, 0x14, 0x80, 0x8d, 0x14, 0x50, 0x89, 0xf0, 0x29, 0xd0, 0xc3, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x89, 0xf0, 0xf7, 0xd0, 0xc3, 0x0f, 0x1f, 0x00, 0x8d, 0x46, 0x01, 0xc3, 0x0f, 0x1f, 0x40, 0x00, 0x8d, 0x04, 0x76, 0xc3, 0x0f, 0x1f, 0x40, 0x00, 0x8d, 0x46, 0xf9, 0xc3, 0x0f, 0x1f, 0x40, 0x00, 0x89, 0xf0, 0x83, 0xf0, 0x05, 0xc3, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8d, 0x04, 0xb5, 0x00, 0x00, 0x00, 0x00, 0xc3, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0x63, 0xc6, 0xc1, 0xfe, 0x1f, 0x48, 0x69, 0xc0, 0x56, 0x55, 0x55, 0x55, 0x48, 0xc1, 0xe8, 0x20, 0x29, 0xf0, 0xc3
+        ];
+        let entries: Vec<u8> =
+            [0x4011b8_u64, 0x4011c0, 0x4011c8, 0x4011d0, 0x4011e0, 0x4011f0, 0x401188, 0x4011b0]
+                .iter()
+                .flat_map(|entry| entry.to_le_bytes())
+                .collect();
+        let memory = [(0x401170, &code[..]), (0x402008, &entries[..])];
+        let found = crate::scan::recover_in_memory(
+            &memory[..1],
+            &[],
+            &crate::scan::Linked::default(),
+            crate::scan::Regions::CodeOnly,
+            &X86::BITS64,
+            &Memory::new(&memory),
+        );
+        let spans: Vec<(u64, usize)> =
+            found.iter().map(|function| (function.address, function.code.len())).collect();
+        assert_eq!(spans, [(0x401170, 148)]);
     }
 
     #[test]
