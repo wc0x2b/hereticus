@@ -64,7 +64,7 @@ $ analyzeHeadless <project> <name> -import firmware.bin \
 ```
 
 `just ghidra-extension` imports the Cortex-M3 firmware of the zlib backport
-so. The loader puts it at 0x8000000, where it is linked. Ghidra then finds
+this way. The loader puts it at 0x8000000, where it is linked. Ghidra then finds
 51<!-- from ghidra_extension: m3-firmware / off --> functions alone and
 88<!-- from ghidra_extension: m3-firmware / on --> with the Function Finder.
 
