@@ -70,11 +70,11 @@ $ hereticus --format markdown --show-retouched fw-v1.elf fw-v2.elf
 | `validate_length` | changed values | 1.00  | -       | -                                        | identical shape |
 <!-- end output -->
 
-The `1 call` on `check_header` is an added call to an authentication routine.
-The `1 const` on `handle` is a bound that moved from 1024 to 512, arriving
-through inlining: that function was never edited. Both would otherwise read as
-plain `changed`, and the constant is invisible to every other column, because
-the edit around it is far too large to read as `changed values`.
+The `1 call` on `check_header` is a new call to an authentication routine.
+The `1 const` on `handle` is a bound that changed from 1024 to 512. It came
+in through inlining, and the source of `handle` did not change. The edit
+around the constant is too large for the row to be `changed values`, so only
+the `TOUCHED` column shows the constant.
 
 ## The Diff of One Function
 
