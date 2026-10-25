@@ -2,7 +2,7 @@
 
 ## GitHub Releases
 
-The fastest way: download a built binary from
+Download a built binary from
 [GitHub releases](https://github.com/wc0x2b/hereticus/releases).
 Each release has these assets:
 

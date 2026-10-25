@@ -87,7 +87,7 @@ image does not show where those tables are, and Ghidra does not read data
 words as pointers unless it is told to. The Aggressive Instruction Finder
 does not follow them either.
 
-This is not a fault in Ghidra. Ghidra is made for a person who reads the
+Ghidra does this on purpose. It is made for a person who reads the
 result, and code that it reads from data by mistake is hard to remove. So it
 adds only the functions it is sure of, and a person adds the rest. A script
 that reads the data words as pointers can close much of the gap. With an

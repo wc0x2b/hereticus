@@ -38,9 +38,9 @@
 
 ### `--raw needs --base, because a raw image does not say where it loads`
 
-Give the load address with `--base`. Where the calls of the image show
-the base, the message ends with
-`Its calls show that it loads at --base <address>`. Check that address
+Give the load address with `--base`. Where the words of the image show
+the base, the message ends with `The words that point into it show that it
+loads at --base <address>, which --base auto takes`. Check that address
 against the datasheet or the boot log of the device before you use it.
 
 ### `<file> may not load at <address>: ...`

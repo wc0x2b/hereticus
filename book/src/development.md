@@ -3,13 +3,14 @@
 All patches/merge requests are welcome!
 
 ```
-just quick-test   # about a minute
-just test         # the same, plus the slow and the `truth_*` tests
-just fixtures     # rebuild the ARM32, MIPS, Mach-O and garbled Go corpus
-just rivals       # run radiff2 on the backports, which `quick-test` compares with
-just rivals-ghidra  # run Ghidra Version Tracking on them, which `test` compares with
+just quick-test        # about a minute
+just test              # the same, plus the slow and the `truth_*` tests
+just test-research     # the measurements of RESEARCH.md, which no test runs
+just fixtures          # rebuild the ARM32, MIPS, Mach-O and garbled Go corpus
+just rivals            # run radiff2 on the backports, which `quick-test` compares with
+just rivals-ghidra     # run Ghidra Version Tracking on them, which `test` compares with
 just ghidra-extension  # build the Ghidra extension and run it in Ghidra, which `test` checks
-just bench        # time the read and the comparison of the backports
+just bench             # time the read and the comparison of the backports
 ```
 
 ## Tests
