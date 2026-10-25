@@ -244,7 +244,7 @@ if command -v ld64.lld >/dev/null 2>&1 && command -v llvm-lipo >/dev/null 2>&1; 
     # Universal binaries, as macOS ships most of its own: one with an
     # AArch64 slice, and one without.
     build_dylib x86_64 "$src/firmware.c"
-    # No decoder reads x86-64, and the tests read every object they find.
+    # The tests read every object they find, and need only the x86-64 dylib.
     rm "$macho/x86_64-firmware.o"
     llvm-lipo -create "$macho/x86_64-firmware.dylib" "$macho/arm64e-firmware.dylib" \
         -output "$macho/universal-firmware.dylib"
