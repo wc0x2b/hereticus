@@ -172,8 +172,8 @@ hits, the hits that bases a few bytes off get, which is what chance
 gives, and the evidence: the hits above chance. On MIPS, the calls also
 show the base, because a `jal` holds its target.
 
-`hereticus` gives no base where none stands out by more than twice the
-next. It does not guess:
+`hereticus` gives no base where none has more than twice the evidence of
+the next. These cases cause it:
 
 - **Small position-independent code**, as the decompressor before a
   kernel, holds too few full addresses.
@@ -186,8 +186,7 @@ architectures with a known base, `hereticus` gives the right base for
 40<!-- from find_base.rs: right -->, no base for the other
 14<!-- from find_base.rs: none -->, all position-independent stubs, and
 a wrong base for 0<!-- from find_base.rs: wrong -->. rbasefind, which
-tries each base on a page, gives a base for every image, the stubs too,
-and falls into the traps above. `RESEARCH.md`, entry 20, compares the two.
+tries each base on a page, gives a base for every image, the stubs too. `RESEARCH.md`, entry 20, compares the two.
 See [The Load Address of a Raw Image](./methods.md#the-load-address-of-a-raw-image).
 
 > [!WARNING]
@@ -400,9 +399,9 @@ Options:
 <!-- end output -->
 
 ## Limits
-* **Little-endian A32 (ARMv5TE and later, soft-float or hard-float, with
-  VFP and NEON), Thumb-2 (Cortex-M too) and AArch64, MIPS32 and MIPS16e
-  in either byte order, and x86-64 and 32-bit x86.** A library that
+* **A32 (ARMv5TE and later, soft-float or hard-float, with VFP and NEON)
+  and Thumb-2 (Cortex-M too), little endian or BE8, AArch64, MIPS32 and
+  MIPS16e in either byte order, and x86-64 and 32-bit x86.** A library that
   mixes A32 and Thumb-2, or MIPS32 and MIPS16e, is read function by function
   where its symbols say which set each is in. Stripped or raw, it is read in
   one set, so its minority reads as nonsense.
