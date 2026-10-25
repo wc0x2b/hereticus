@@ -10,10 +10,9 @@ Compare two versions of a binary or firmware and find the functions that changed
 
 ![hereticus reports the functions that changed between two builds of a firmware, then shows the diff of one in the terminal, as assembly and as IL](https://raw.githubusercontent.com/wc0x2b/hereticus/master/book/src/images/demo.gif)
 
-* **No IDA or Ghidra**: It needs no framework and no GUI. Programmers and agents can use it from a shell.
-* **Or inside Ghidra**: An extension imports firmware at the base it finds, finds the functions that Ghidra misses, and pairs functions for Version Tracking. See [Ghidra Extension](https://wc0x2b.github.io/hereticus/ghidra.html).
-* **Raw firmware, base found**: A flash dump has no header that says where it loads. `--find-base` finds the base on every architecture, from the words that point at the strings and functions of the image, and says so when no base stands out. See [Find the Base](https://wc0x2b.github.io/hereticus/usage.html#find-the-base).
-* See the [book](https://wc0x2b.github.io/hereticus/) for usage, examples, and real-life examples.
+* **No IDA or Ghidra**: `hereticus` is one command-line program, so a script or a coding agent can run it.
+* **Or inside Ghidra**: The [Ghidra extension](https://wc0x2b.github.io/hereticus/ghidra.html) gives Ghidra what `hereticus` finds: the load base of a raw image, the functions that Ghidra missed, and the function pairs for Version Tracking.
+* **Raw firmware, base found**: A flash dump does not say where it loads. For any `--arch`, `--find-base` tries each base and counts the words in the image that then point at the start of a string or a function. The correct base gets many more hits than chance gives. See [Find the Base](https://wc0x2b.github.io/hereticus/usage.html#find-the-base).
 
 ## Installation
 Either build from published source in crates.io.
@@ -49,10 +48,10 @@ the limits, every option, and the crates.
 All patches/merge requests are welcome!
 
 ```
-just quick-test   # about a minute
-just test         # the same, plus the slow and the `truth_*` tests
+just quick-test     # about a minute
+just test           # the same, plus the slow and the `truth_*` tests
 just test-research  # the measurements of RESEARCH.md, which no test runs
-just fixtures     # rebuild the ARM32, MIPS and Mach-O corpus
+just fixtures       # rebuild the ARM32, MIPS and Mach-O corpus
 ```
 
 ## License
