@@ -83,7 +83,7 @@ gives one answer, so an agent runs it as it runs `grep`:
   compare, a call or a text in one form, as `if (w0 == 0) goto ...` and
   `call strncmp`, so the agent does not need to know each instruction set.
 - **An error tells what to do next.** With no `--base`, the error gives
-  the base that the calls of the image show, where they show one. A
+  the base that the words of the image show, where they show one. A
   failure exits with 2, and `--exit-code` makes a change exit with 1.
 
 See [Use With a Coding Agent](./usage.md#use-with-a-coding-agent).
