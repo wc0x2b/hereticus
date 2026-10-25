@@ -14,8 +14,7 @@ $ hereticus before.bin after.bin
 
 A vendor ships a security update with one line of advisory: "a memory
 corruption issue was fixed". To know what the bug was, you must find the
-function that the update changed. This is patch diffing. Three problems
-make it slow:
+function that the update changed. This is patch diffing, and it is slow:
 
 - **The binaries are stripped.** Firmware and kernels ship with no
   symbols, and often with no ELF header at all.
@@ -28,7 +27,7 @@ make it slow:
 `hereticus` is one static binary. It reads the two files, pairs their
 functions, and prints a short list, the most likely fix first.
 
-### It finds the fix, on the first rows
+### Published Fixes
 
 On published security fixes, the fixed function is on the first rows of
 the report:
@@ -43,7 +42,7 @@ the report:
 See [Real-Life Examples](./real-life-examples.md) for all of them, each
 with the commands to do it again.
 
-### It shows less noise than other tools
+### Against Other Tools
 
 On 35<!-- from rivals_radare2: hereticus / builds --> stripped libraries,
 each built before and after one upstream fix:
@@ -58,7 +57,7 @@ This is a narrow test, which `hereticus` was developed with. See
 [Comparison With Other Tools](./comparison.md) for how it scores each
 tool, and for its limits.
 
-### It finds the functions of stripped code
+### Stripped Code
 
 Before a tool can compare functions, it must find them. In one raw OpenWrt
 kernel, with no symbols and no sections, `hereticus` finds
@@ -68,14 +67,14 @@ starts, and Ghidra finds
 13210<!-- from truth_function_starts: ghidra default / real -->. The
 [Ghidra extension](./ghidra.md) adds the functions that Ghidra misses.
 
-### It is made for coding agents too
+### Coding Agents
 
 Ghidra, IDA and BinDiff are made for a person at a GUI. An agent can use
 them only through a server or a plugin. `hereticus` is one command that
 gives one answer, so an agent runs it as it runs `grep`:
 
 - **The answer comes first.** The most likely fix is on the first rows,
-  so `| head` is enough, and the agent reads a few rows, not a project.
+  so `| head` is enough.
 - **The output is short.** `--format compact` gives one line for each
   pair, and `--format json` gives one object for each pair.
 - **Each name works as input.** The report names a stripped function
@@ -85,13 +84,11 @@ gives one answer, so an agent runs it as it runs `grep`:
   `call strncmp`, so the agent does not need to know each instruction set.
 - **An error tells what to do next.** With no `--base`, the error gives
   the base that the calls of the image show, where they show one. A
-  failure exits with 2.
-- **No setup.** One static binary, with no IDA, Ghidra, Python, server or
-  project. `--exit-code` lets a CI job or a script stop on a change.
+  failure exits with 2, and `--exit-code` makes a change exit with 1.
 
 See [Use With a Coding Agent](./usage.md#use-with-a-coding-agent).
 
-### It reads what firmware ships
+### Supported Files
 
 - **Architectures:** A32 and Thumb-2, also big endian (BE8), AArch64,
   MIPS32, MIPS16e, x86-64 and 32-bit x86.
@@ -99,14 +96,6 @@ See [Use With a Coding Agent](./usage.md#use-with-a-coding-agent).
   Mach-O and iOS kernelcaches, and raw flash dumps.
 - **Firmware images:** zImage, FIT, uImage, sysupgrade, lzma-loader and
   TP-Link containers, with `--unpack`.
-
-## Who It Is For
-
-- **Security researchers** who find the bug that an update fixed.
-- **Vendors and integrators** who check that a backport of a fix is in a
-  build.
-- **Malware analysts** who compare two builds of one family. See
-  [Malware](./malware.md).
 
 ## Where to Go Next
 
@@ -116,5 +105,6 @@ See [Use With a Coding Agent](./usage.md#use-with-a-coding-agent).
    function.
 4. [Real-Life Examples](./real-life-examples.md): published fixes, step by
    step.
-5. [Methods](./methods.md): how it finds and pairs the functions, and why
+5. [Malware](./malware.md): two builds of one malware family.
+6. [Methods](./methods.md): how it finds and pairs the functions, and why
    each method is there.
