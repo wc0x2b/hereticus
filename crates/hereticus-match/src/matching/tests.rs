@@ -479,6 +479,20 @@ fn a_changed_constant_touches_no_instruction() {
 /// `cmp r0, 0` then `bx lr`, the body the kind tests start from.
 const COMPARE_THEN_RETURN: &[u8] = &[0x00, 0x00, 0x50, 0xe3, 0x1e, 0xff, 0x2f, 0xe1];
 
+/// The same body with a `bl` after the compare.
+const WITH_CALL: &[u8] = &[
+    0x00, 0x00, 0x50, 0xe3, // cmp r0, 0
+    0x03, 0x00, 0x00, 0xeb, // bl
+    0x1e, 0xff, 0x2f, 0xe1, // bx lr
+];
+
+/// The same body with a `ldr r1, [r0]` after the compare.
+const WITH_LOAD: &[u8] = &[
+    0x00, 0x00, 0x50, 0xe3, // cmp r0, 0
+    0x00, 0x10, 0x90, 0xe5, // ldr r1, [r0]
+    0x1e, 0xff, 0x2f, 0xe1, // bx lr
+];
+
 /// A gate the later build added is reported as a branch.
 #[test]
 fn an_added_branch_is_classified_as_control_flow() {
@@ -491,6 +505,7 @@ fn an_added_branch_is_classified_as_control_flow() {
 
     let kinds = kinds_between(COMPARE_THEN_RETURN, with_branch);
     assert_eq!(kinds.branches, 1, "the added instruction was a branch");
+    assert_eq!((kinds.branches_added, kinds.branches_removed), (1, 0));
     assert_eq!(kinds.constants, 0, "no stored value changed");
     assert!(kinds.touches_control_flow());
 }
@@ -498,27 +513,91 @@ fn an_added_branch_is_classified_as_control_flow() {
 /// A call the later build added is told apart from a branch.
 #[test]
 fn an_added_call_is_classified_as_a_call() {
-    let with_call: &[u8] = &[
+    let kinds = kinds_between(COMPARE_THEN_RETURN, WITH_CALL);
+    assert_eq!(kinds.calls, 1);
+    assert_eq!(kinds.branches, 0, "a call is not a branch");
+    assert_eq!((kinds.calls_added, kinds.calls_removed), (1, 0));
+}
+
+/// The same edit read the other way is a call removed.
+#[test]
+fn a_removed_call_is_counted_as_removed() {
+    let kinds = kinds_between(WITH_CALL, COMPARE_THEN_RETURN);
+    assert_eq!((kinds.calls_added, kinds.calls_removed), (0, 1));
+    assert_eq!((kinds.branches_added, kinds.branches_removed), (0, 0));
+}
+
+/// A call in the place of a load adds a call, and a load in the place of a
+/// call removes one.
+#[test]
+fn a_call_that_takes_the_place_of_a_load_is_added() {
+    let kinds = kinds_between(WITH_LOAD, WITH_CALL);
+    assert_eq!((kinds.calls_added, kinds.calls_removed), (1, 0));
+
+    let kinds = kinds_between(WITH_CALL, WITH_LOAD);
+    assert_eq!((kinds.calls_added, kinds.calls_removed), (0, 1));
+}
+
+/// A direct call rewritten as a call through a register is still one call,
+/// so it is neither added nor removed.
+#[test]
+fn a_call_rewritten_as_another_call_is_neither_added_nor_removed() {
+    let with_register_call: &[u8] = &[
         0x00, 0x00, 0x50, 0xe3, // cmp r0, 0
-        0x03, 0x00, 0x00, 0xeb, // bl
+        0x33, 0xff, 0x2f, 0xe1, // blx r3
         0x1e, 0xff, 0x2f, 0xe1, // bx lr
     ];
 
-    let kinds = kinds_between(COMPARE_THEN_RETURN, with_call);
-    assert_eq!(kinds.calls, 1);
-    assert_eq!(kinds.branches, 0, "a call is not a branch");
+    let kinds = kinds_between(WITH_CALL, with_register_call);
+    assert_eq!(kinds.calls, 1, "the call was rewritten");
+    assert_eq!((kinds.calls_added, kinds.calls_removed), (0, 0));
+}
+
+/// Whatever the edit, the calls added less the calls removed is how many
+/// more calls the later body holds, and the same for branches.
+#[test]
+fn the_calls_added_less_removed_is_the_change_in_calls() {
+    // Each A32 word that can make up a body, and whether it is a call or a
+    // conditional branch.
+    const WORDS: [([u8; 4], bool, bool); 6] = [
+        ([0x00, 0x00, 0x50, 0xe3], false, false), // cmp r0, 0
+        ([0x02, 0x00, 0x00, 0x0a], false, true),  // beq
+        ([0x03, 0x00, 0x00, 0xeb], true, false),  // bl
+        ([0x33, 0xff, 0x2f, 0xe1], true, false),  // blx r3
+        ([0x00, 0x10, 0x90, 0xe5], false, false), // ldr r1, [r0]
+        ([0x01, 0x00, 0xa0, 0xe3], false, false), // mov r0, 1
+    ];
+    let body = |picks: &[u8]| -> (Vec<u8>, isize, isize) {
+        let words: Vec<_> =
+            picks.iter().map(|&pick| WORDS[usize::from(pick) % WORDS.len()]).collect();
+        let count = |which: fn(&([u8; 4], bool, bool)) -> bool| {
+            words.iter().filter(|word| which(word)).count() as isize
+        };
+        let calls = count(|word| word.1);
+        let branches = count(|word| word.2);
+        let mut code: Vec<u8> = words.iter().flat_map(|word| word.0).collect();
+        code.extend([0x1e, 0xff, 0x2f, 0xe1]); // bx lr
+        (code, calls, branches)
+    };
+    bolero::check!().with_type::<(Vec<u8>, Vec<u8>)>().for_each(|(left, right)| {
+        let (left, right) = (&left[..left.len().min(12)], &right[..right.len().min(12)]);
+        let (before, calls_before, branches_before) = body(left);
+        let (after, calls_after, branches_after) = body(right);
+
+        let kinds = kinds_between(&before, &after);
+        let net = |added: usize, removed: usize| added as isize - removed as isize;
+        assert_eq!(net(kinds.calls_added, kinds.calls_removed), calls_after - calls_before);
+        assert_eq!(
+            net(kinds.branches_added, kinds.branches_removed),
+            branches_after - branches_before
+        );
+    });
 }
 
 /// A load the later build added is reported as memory, not control flow.
 #[test]
 fn an_added_load_is_classified_as_memory() {
-    let with_load: &[u8] = &[
-        0x00, 0x00, 0x50, 0xe3, // cmp r0, 0
-        0x00, 0x10, 0x90, 0xe5, // ldr r1, [r0]
-        0x1e, 0xff, 0x2f, 0xe1, // bx lr
-    ];
-
-    let kinds = kinds_between(COMPARE_THEN_RETURN, with_load);
+    let kinds = kinds_between(COMPARE_THEN_RETURN, WITH_LOAD);
     assert_eq!(kinds.memory, 1);
     assert!(!kinds.touches_control_flow(), "a load changes no control flow");
 }

@@ -1,13 +1,13 @@
 ---
 source: hereticus/tests/openwrt.rs
-assertion_line: 211
+assertion_line: 220
 expression: report
 ---
-0x80001000 -> 0x80001000 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
-0x80001044 -> 0x80001044 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 4, callees: 0, texts: 0 } confidence=IdenticalShape
-0x80001128 -> 0x80001128 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
-0x8000115c -> 0x8000115c No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
-0x80001318 -> 0x80001318 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
-0x800018ec -> 0x800018ec No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
-0x80001920 -> 0x80001920 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 6, callees: 0, texts: 0 } confidence=IdenticalShape
-0x80002504 -> 0x80002504 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0 } confidence=IdenticalCode
+0x80001000 -> 0x80001000 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=IdenticalCode
+0x80001044 -> 0x80001044 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 4, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=IdenticalShape
+0x80001128 -> 0x80001128 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=IdenticalCode
+0x8000115c -> 0x8000115c No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=IdenticalCode
+0x80001318 -> 0x80001318 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=IdenticalCode
+0x800018ec -> 0x800018ec No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=IdenticalCode
+0x80001920 -> 0x80001920 InDetail score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 6, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=IdenticalShape
+0x80002504 -> 0x80002504 No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=IdenticalCode

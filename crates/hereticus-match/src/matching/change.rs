@@ -421,7 +421,7 @@ pub(super) fn count_edits(left: &[NormInsn], right: &[NormInsn]) -> (Edits, Edit
                 }
                 edits.removed += unpaired_removals.len();
                 for index in unpaired_removals.drain(..) {
-                    kinds.add(kind_of(&left[index]));
+                    kinds.add_lost(kind_of(&left[index]));
                 }
                 i += 1;
                 j += 1;
@@ -435,12 +435,12 @@ pub(super) fn count_edits(left: &[NormInsn], right: &[NormInsn]) -> (Edits, Edit
                 // took another's place, which is a rewrite rather than a pair
                 // of length changes. The later build's instruction names the
                 // kind, because that is the code the reader now has.
-                if unpaired_removals.pop().is_some() {
-                    edits.edited += 1;
-                } else {
-                    edits.added += 1;
+                let replaced = unpaired_removals.pop();
+                match replaced {
+                    Some(_) => edits.edited += 1,
+                    None => edits.added += 1,
                 }
-                kinds.add(kind_of(&right[j]));
+                kinds.add_gained(kind_of(&right[j]), replaced.map(|index| kind_of(&left[index])));
                 j += 1;
             }
         }
@@ -448,7 +448,7 @@ pub(super) fn count_edits(left: &[NormInsn], right: &[NormInsn]) -> (Edits, Edit
 
     edits.removed += unpaired_removals.len();
     for index in unpaired_removals {
-        kinds.add(kind_of(&left[index]));
+        kinds.add_lost(kind_of(&left[index]));
     }
 
     (edits, kinds)
