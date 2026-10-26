@@ -19,7 +19,7 @@ use crate::{ArchName, Args, Base, PartName};
 
 /// The layout of the file. A change that an older `hereticus` cannot read
 /// must increment it.
-const LAYOUT: u32 = 1;
+const LAYOUT: u32 = 2;
 
 /// A saved comparison.
 #[derive(Debug, Serialize, Deserialize)]

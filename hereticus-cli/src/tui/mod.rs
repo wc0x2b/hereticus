@@ -33,7 +33,8 @@ use rows::{Addresses, change_starts, side_by_side, unified};
 
 use crate::project::{Project, Source};
 use crate::{
-    Args, DataRegions, Hidden, Retouched, Sort, is_interesting, is_shown_unmatched, name_of, rank,
+    Args, DataRegions, Feature, Hidden, Retouched, Sort, has_features, is_interesting,
+    is_shown_unmatched, name_of, rank,
 };
 
 /// How the browser starts.
@@ -63,6 +64,8 @@ pub struct Browser {
     pub order: Order,
     /// Lists only the pairs whose edit touched this kind of code.
     pub touched: Option<EditKind>,
+    /// Lists only the pairs that have each of these features.
+    pub only: Vec<Feature>,
     pub scope: Scope,
     pub hidden: Hidden,
     /// The lowest score at which a function gone or new names its closest
@@ -84,6 +87,7 @@ impl Browser {
             sort: args.sort,
             order: Order::Descending,
             touched: None,
+            only: args.only.clone(),
             scope: if args.all { Scope::All } else { Scope::Changed },
             hidden: Hidden::from_args(args),
             near_miss_floor: args.near_miss,
@@ -242,6 +246,20 @@ enum Direction {
 const CONTEXT: usize = 3;
 
 /// The kind `t` steps to after `touched`, and none after the last.
+/// The features to list by after `only`: the first feature, then each one
+/// alone in turn, then none. Two or more, as `--only` can give, go to none.
+fn next_features(only: &[Feature]) -> Vec<Feature> {
+    let next = match only {
+        [] => Feature::ALL.first(),
+        [feature] => Feature::ALL
+            .iter()
+            .position(|known| known == feature)
+            .and_then(|at| Feature::ALL.get(at + 1)),
+        _ => None,
+    };
+    next.copied().into_iter().collect()
+}
+
 fn next_touched(touched: Option<EditKind>) -> Option<EditKind> {
     let Some(touched) = touched else { return TOUCHED_KINDS.first().copied() };
     let at = TOUCHED_KINDS.iter().position(|&kind| kind == touched)?;
@@ -304,6 +322,8 @@ pub struct App<'a> {
     order: Order,
     /// Lists only the pairs whose edit touched this kind of code.
     touched: Option<EditKind>,
+    /// Lists only the pairs that have each of these features.
+    only: Vec<Feature>,
     scope: Scope,
     hidden: Hidden,
     near_miss_floor: f64,
@@ -374,6 +394,7 @@ impl<'a> App<'a> {
             sort: browser.sort,
             order: browser.order,
             touched: browser.touched,
+            only: browser.only,
             scope: browser.scope,
             hidden: browser.hidden,
             near_miss_floor: browser.near_miss_floor,
@@ -434,6 +455,7 @@ impl<'a> App<'a> {
             sort: self.sort,
             order: self.order,
             touched: self.touched,
+            only: self.only.clone(),
             scope: self.scope,
             hidden: self.hidden,
             near_miss_floor: self.near_miss_floor,
@@ -556,7 +578,11 @@ impl<'a> App<'a> {
             }
             (Some(_), Entry::Gone { .. } | Entry::New { .. }) => false,
         };
-        in_scope && touches
+        let has = match entry {
+            Entry::Pair(index) => has_features(&self.diff.matched[index], &self.only),
+            Entry::Gone { .. } | Entry::New { .. } => self.only.is_empty(),
+        };
+        in_scope && touches && has
     }
 
     /// List the rows again, after the order or a filter changed. The
@@ -879,6 +905,10 @@ impl<'a> App<'a> {
                 self.touched = next_touched(self.touched);
                 self.refresh();
             }
+            KeyCode::Char('f') => {
+                self.only = next_features(&self.only);
+                self.refresh();
+            }
             KeyCode::Char('a') => {
                 self.scope = match self.scope {
                     Scope::Changed => Scope::All,
@@ -1058,6 +1088,7 @@ mod tests {
             sort: Sort::Added,
             order: Order::Descending,
             touched: None,
+            only: Vec::new(),
             scope: Scope::Changed,
             hidden: Hidden { retouched: Retouched::Hide, data: DataRegions::Hide },
             near_miss_floor: 0.25,
@@ -1371,6 +1402,42 @@ mod tests {
             |side: fn(&rows::SideRow<'_>) -> Option<u64>| rows.iter().filter_map(side).count();
         assert_eq!(count(|row| row.left.address), opened.addresses.before.len());
         assert_eq!(count(|row| row.right.address), opened.addresses.after.len());
+    }
+
+    #[test]
+    fn a_feature_narrows_the_pairs_and_cycles_back() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        let every = app.rows.len();
+        for feature in Feature::ALL {
+            press(&mut app, &[KeyCode::Char('f')]);
+            assert_eq!(app.only, [feature]);
+            for &row in &app.rows {
+                let Entry::Pair(index) = app.entries[row].entry else {
+                    panic!("only pairs have a feature");
+                };
+                assert!(feature.holds(&diff.matched[index]), "{feature:?}");
+            }
+        }
+        press(&mut app, &[KeyCode::Char('f')]);
+        assert!(app.only.is_empty(), "after the last feature, every pair");
+        assert_eq!(app.rows.len(), every);
+
+        // The fixture adds a call, so `added-call` keeps a row.
+        app.only = vec![Feature::AddedCall];
+        app.refresh();
+        assert!(!app.rows.is_empty());
+        assert!(screen(&mut app, 120, 12).contains("only added-call"));
+    }
+
+    /// Two features, as `--only` can give, go to none with one key.
+    #[test]
+    fn the_next_features_after_two_are_none() {
+        assert!(next_features(&[Feature::AddedCall, Feature::Text]).is_empty());
+        assert_eq!(next_features(&[]), [Feature::AddedCall]);
+        assert_eq!(next_features(&[Feature::AddedCall]), [Feature::RemovedCall]);
+        assert!(next_features(&[Feature::Constant]).is_empty(), "the last goes to none");
     }
 
     #[test]

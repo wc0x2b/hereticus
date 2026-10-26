@@ -13,8 +13,8 @@ use tabled::settings::Style;
 
 use super::marks::{Side, marked};
 use super::{
-    Listing, Paint, Row, describe, describe_confidence, describe_edits, describe_kinds, name_of,
-    name_of_kind, summary_lines, unmatched_word,
+    Feature, Listing, Paint, Row, describe, describe_confidence, describe_edits, describe_kinds,
+    name_of, name_of_kind, summary_lines, unmatched_word,
 };
 
 /// A name in code spans, so markdown reads `__init` as a name and not as
@@ -110,7 +110,7 @@ pub(crate) fn print_markdown(
     if !unmatched.is_empty() {
         blocks.push(unmatched.join("\n"));
     }
-    blocks.extend(summary_lines(diff, listing.hidden));
+    blocks.extend(summary_lines(diff, listing.hidden, listing.only));
     if !shown.is_empty() {
         println!();
     }
@@ -161,9 +161,15 @@ fn json_pair(pair: &Match, before: &Binary, after: &Binary, mark: Option<&str>) 
         .present()
         .map(|(kind, count)| format!("{}:{count}", json_string(name_of_kind(kind))))
         .collect();
+    let features: Vec<String> = Feature::ALL
+        .into_iter()
+        .filter(|feature| feature.holds(pair))
+        .map(|feature| json_string(feature.name()))
+        .collect();
     format!(
         "{{\"before\":{},\"after\":{},\"change\":{},\"score\":{:.4},\
-         \"added\":{},\"removed\":{},\"edited\":{},\"touched\":{{{}}},\"matched_by\":{}{}}}",
+         \"added\":{},\"removed\":{},\"edited\":{},\"touched\":{{{}}},\"features\":[{}],\
+         \"matched_by\":{}{}}}",
         json_function(before, pair.before),
         json_function(after, pair.after),
         json_string(describe(pair.changed)),
@@ -172,6 +178,7 @@ fn json_pair(pair: &Match, before: &Binary, after: &Binary, mark: Option<&str>) 
         pair.edits.removed,
         pair.edits.edited,
         touched.join(","),
+        features.join(","),
         json_string(describe_confidence(pair.confidence)),
         json_mark(mark),
     )

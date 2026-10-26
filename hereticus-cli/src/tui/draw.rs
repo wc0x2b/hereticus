@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// The keys of each pane, at the right of its frame.
-const TABLE_HINTS: &str = "⏎ open  s/S sort  t touched  / filter  m mark  w save";
+const TABLE_HINTS: &str = "⏎ open  s/S sort  t touched  f feature  / filter  m mark  w save";
 const FILTER_HINTS: &str = "⏎ keep  esc clear";
 const PAIR_HINTS: &str = "]/[ change  v asm/il  l layout  n/p next/prev  m mark  esc back";
 
@@ -331,6 +331,14 @@ impl App<'_> {
                 Span::styled(name_of_kind(kind), Style::new().fg(YELLOW).bold()),
             ]);
         }
+        if !self.only.is_empty() {
+            let names: Vec<&str> = self.only.iter().map(|feature| feature.name()).collect();
+            spans.extend([
+                separator(),
+                label("only "),
+                Span::styled(names.join(", "), Style::new().fg(YELLOW).bold()),
+            ]);
+        }
         if let Screen::Pair(_) = self.screen {
             spans.extend([
                 separator(),
@@ -496,6 +504,7 @@ fn draw_help(frame: &mut Frame<'_>) {
         help_entry("s", "next order"),
         help_entry("S", "reverse the order"),
         help_entry("t", "next kind touched"),
+        help_entry("f", "next feature"),
         help_entry("a", "every function"),
         help_entry("r", "retouched pairs"),
         help_entry("d", "data regions"),

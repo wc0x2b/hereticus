@@ -1,10 +1,11 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
+assertion_line: 1761
 expression: shown
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
  Functions | Diff                                                                            firmware.o → firmware_v2.o 
-── Functions ──────────────────────────────────────────────────── ⏎ open  s/S sort  t touched  / filter  m mark  w save 
+── Functions ───────────────────────────────────────── ⏎ open  s/S sort  t touched  f feature  / filter  m mark  w save 
   FUNCTION                                  CHANGE         SCORE +/-/~       TOUCHED                     MATCHED BY     
 ▶ ◆ handle  [auth bypass]                   changed         0.82 8/4/2       1 branch, 1 call, 1 jump, 1 same name      
   dispatch                                  changed         0.62 21/11/5     4 branch, 1 call, 6 jump, 6 same name      

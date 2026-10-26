@@ -261,7 +261,7 @@ a number, so a tool can compare it:
 <!-- output: --format json fixtures/build/O2/basic.o fixtures/build/O2/basic_v2.o -->
 ```console
 $ hereticus --format json basic-v1.elf basic-v2.elf
-{"pairs":[{"before":{"name":"array_max","address":144},"after":{"name":"array_min","address":144},"change":"changed","score":0.8378,"added":0,"removed":0,"edited":3,"touched":{"other":3},"matched_by":"similar"}],"gone":[],"new":[],"totals":{"matched":8,"unchanged":4,"changed":4,"gone":0,"new":0}}
+{"pairs":[{"before":{"name":"array_max","address":144},"after":{"name":"array_min","address":144},"change":"changed","score":0.8378,"added":0,"removed":0,"edited":3,"touched":{"other":3},"features":[],"matched_by":"similar"}],"gone":[],"new":[],"totals":{"matched":8,"unchanged":4,"changed":4,"gone":0,"new":0}}
 ```
 <!-- end output -->
 
@@ -356,6 +356,16 @@ each address by the difference.
   check. `rare` gives more weight to code that few other functions add.
   `removed` and `modified` sort by the other two counts, and `confidence`
   keeps the order of the pairing.
+- `--only` lists only the changed pairs that have each feature it names.
+  `--only added-call` lists the functions that call something more, and
+  `--only added-branch,early-exit` those that added a check that leaves
+  the function early. A feature is read from the aligned instructions of
+  the two bodies: a call that takes the place of a load is an added call,
+  and a call that takes the place of another call is neither added nor
+  removed. The features are `added-call`, `removed-call`, `added-branch`,
+  `removed-branch`, `other-callee` (a call in place that reaches another
+  function), `bounded-call`, `early-exit`, `text` and `constant`.
+  `--format json` gives the features of each pair in `features`.
 
 ## All Options
 
@@ -382,6 +392,7 @@ Options:
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
       --show-data              List regions that look like data rather than code
+      --only <ONLY>            List only the changed pairs that have every feature given [possible values: added-call, removed-call, added-branch, removed-branch, other-callee, bounded-call, early-exit, text, constant]
       --threshold <THRESHOLD>  Lowest similarity that still counts as a match, from 0.0 to 1.0 [default: 0.65]
       --exit-code              Exit with a failure status when anything changed
       --near-miss <NEAR_MISS>  Lowest score at which an unmatched function names its closest candidate, from 0.0 to 1.0 [default: 0.25]

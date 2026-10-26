@@ -17,6 +17,9 @@ functions that are gone or new come after the pairs.
 
 - `s` changes the order, and `S` reverses it.
 - `t` lists only the pairs that touched one kind of code, as `call`.
+- `f` lists only the pairs with one feature, as `added-call`. Each press
+  goes to the next feature that `--only` takes, and after the last one,
+  to every pair. `--only` sets the features that the browser starts with.
 - `/` filters on the names. The letters must come in order, but need not
   be next to each other.
 - `a` shows every function, `r` the pairs that changed only a constant,
@@ -54,8 +57,8 @@ as a project, and open it again later with no second match.
   ![The label of a mark, as you type it](./images/tui-label.png)
 
 - A marked function goes to the top of the list, with `◆` before its name
-  and its label after it. It stays in the list when `a`, `r`, `d` or `t`
-  would hide it. `/` finds it by its label too.
+  and its label after it. It stays in the list when `a`, `r`, `d`, `t` or
+  `f` would hide it. `/` finds it by its label too.
 
   ![A marked function at the top of the list](./images/tui-marked.png)
 
@@ -115,6 +118,7 @@ hash. The binaries stay where they are.
 | `Enter` | open the diff | |
 | `s` / `S` | next order / reverse the order | |
 | `t` | next kind touched | |
+| `f` | next feature | |
 | `a` / `r` / `d` | every function / retouched pairs / data regions | |
 | `/` | filter the names | |
 | `]` / `[` | | next / previous change |

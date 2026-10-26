@@ -102,7 +102,7 @@ impl Scratch {
             })
         };
         json!({
-            "layout": 1,
+            "layout": 2,
             "hereticus": "0.0.0",
             "source": {
                 "inputs": [input(0, &before), input(1, &after)],
@@ -114,6 +114,7 @@ impl Scratch {
                 "sort": "added",
                 "order": "descending",
                 "touched": null,
+                "only": [],
                 "scope": "changed",
                 "hidden": { "retouched": "hide", "data": "hide" },
                 "near_miss_floor": 0.25,
@@ -343,12 +344,12 @@ fn a_result_that_does_not_fit_the_binaries_stops_the_project() {
 fn a_newer_layout_stops_the_project() {
     let Some(scratch) = Scratch::new("layout") else { return };
     let mut project = scratch.project_json();
-    project["layout"] = json!(2);
+    project["layout"] = json!(3);
     project["hereticus"] = json!("9.0.0");
     scratch.write_project(&project);
 
     let error = stderr(&scratch.open(&[]));
-    assert!(error.contains("hereticus 9.0.0 saved it in layout 2"), "{error}");
+    assert!(error.contains("hereticus 9.0.0 saved it in layout 3"), "{error}");
 }
 
 #[test]
