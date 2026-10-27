@@ -1083,6 +1083,84 @@ fn a_renamed_statement_folds_in_runs_of_other_lengths() {
     assert!(matches!(folded[..], [DiffLine::Added(_), DiffLine::Changed { .. }]), "{folded:?}");
 }
 
+/// The fix of CVE-2021-30883 in the iPhone kernel widens a product of 32
+/// bits to one of 64: `mul w10, w10, w8` to `mul x10, x10, x8`. The two
+/// differ in the width of their registers, so they are no same line.
+#[test]
+fn a_statement_on_registers_of_another_width_is_no_same_line() {
+    const MUL_W10_W10_W8: u32 = 0x1b08_7d4a;
+    const MUL_X10_X10_X8: u32 = 0x9b08_7d4a;
+    const MUL_W11_W11_W9: u32 = 0x1b09_7d6b;
+    let one_pair = [Step::Left, Step::Right];
+    let widened = fold_il(&[MUL_W10_W10_W8], &[MUL_X10_X10_X8], &one_pair);
+    assert!(matches!(widened[..], [DiffLine::Removed(_), DiffLine::Added(_)]), "{widened:?}");
+    let renamed = fold_il(&[MUL_W10_W10_W8], &[MUL_W11_W11_W9], &one_pair);
+    assert!(matches!(renamed[..], [DiffLine::Same(_)]), "{renamed:?}");
+}
+
+#[test]
+fn a_register_name_tells_its_width_on_each_architecture() {
+    use RegisterClass::{General, Named, Vector};
+    let class = register_class;
+    assert_eq!(class("aarch64-linux-gnu", "x19"), General(64));
+    assert_eq!(class("aarch64-linux-gnu", "w19"), General(32));
+    assert_eq!(class("aarch64-linux-gnu", "xzr"), class("aarch64-linux-gnu", "x0"));
+    assert_eq!(class("aarch64-linux-gnu", "wzr"), class("aarch64-linux-gnu", "w0"));
+    assert_eq!(class("aarch64-linux-gnu", "d8"), Vector('d'));
+    assert_ne!(class("aarch64-linux-gnu", "d8"), class("aarch64-linux-gnu", "s8"));
+    assert_eq!(class("x86_64-linux-gnu", "rax"), class("x86_64-linux-gnu", "r12"));
+    assert_eq!(class("x86_64-linux-gnu", "eax"), class("x86_64-linux-gnu", "r9d"));
+    assert_ne!(class("x86_64-linux-gnu", "eax"), class("x86_64-linux-gnu", "rax"));
+    assert_eq!(class("x86_64-linux-gnu", "al"), class("x86_64-linux-gnu", "r15b"));
+    assert_eq!(class("x86_64-linux-gnu", "ax"), General(16));
+    assert_eq!(class("i386-linux-gnu", "esi"), General(32));
+    assert_eq!(class("x86_64-linux-gnu", "r16"), Named("r16"));
+    assert_eq!(class("arm-linux-gnueabi", "r4"), class("thumbv7-linux-gnueabi", "lr"));
+    assert_eq!(class("arm-linux-gnueabi", "d16"), Vector('d'));
+    assert_eq!(class("mipsel", "s0"), class("mips", "t9"));
+    assert_eq!(class("mips", "f12"), Vector('f'));
+    assert_eq!(class("mips", "hi"), Named("hi"));
+    assert_eq!(class("riscv64", "a0"), Named("a0"), "an architecture this does not know");
+}
+
+/// A register that the statements around a run keep under its own name is
+/// no other register renamed: the fix of CVE-2025-14282 in `dropbear` tests
+/// what `getuid` returned in `w0`, right after `w0 = 1`, where the old code
+/// tested a global in `w1`.
+#[test]
+fn a_register_kept_around_a_run_is_no_renamed_one() {
+    const MOV_W0_1: u32 = 0x5280_0020;
+    const ADD_W1_W1_1: u32 = 0x1100_0421;
+    const ADD_W0_W0_1: u32 = 0x1100_0400;
+    let alone = fold_il(&[ADD_W1_W1_1], &[ADD_W0_W0_1], &[Step::Left, Step::Right]);
+    assert!(matches!(alone[..], [DiffLine::Same(_)]), "{alone:?}");
+    let kept = fold_il(
+        &[MOV_W0_1, ADD_W1_W1_1],
+        &[MOV_W0_1, ADD_W0_W0_1],
+        &[Step::Both, Step::Left, Step::Right],
+    );
+    assert!(
+        matches!(kept[..], [DiffLine::Same(_), DiffLine::Removed(_), DiffLine::Added(_)]),
+        "{kept:?}"
+    );
+}
+
+#[test]
+fn a_renaming_is_one_to_one() {
+    let words =
+        |names: &[&str]| -> Vec<String> { names.iter().map(|name| name.to_string()).collect() };
+    let none = std::collections::HashSet::new();
+    let mut renaming = Renaming::default();
+    assert!(renaming.take(&words(&["x2", "x1"]), &words(&["x3", "x1"]), &none));
+    assert!(renaming.take(&words(&["x2"]), &words(&["x3"]), &none), "the same again");
+    assert!(!renaming.take(&words(&["x2"]), &words(&["x4"]), &none), "x2 is x3 already");
+    assert!(!renaming.take(&words(&["x5"]), &words(&["x3"]), &none), "x3 is x2 already");
+    assert!(!renaming.take(&words(&["x1"]), &words(&["x1", "x2"]), &none), "other counts");
+    let kept: std::collections::HashSet<String> = words(&["w0"]).into_iter().collect();
+    assert!(!renaming.take(&words(&["w1"]), &words(&["w0"]), &kept));
+    assert!(renaming.take(&words(&["w0"]), &words(&["w0"]), &kept), "w0 as itself");
+}
+
 /// Each side of a folded diff shows each of its statements once, in
 /// order, as the TUI and `--diff` need to give each line its address.
 #[test]

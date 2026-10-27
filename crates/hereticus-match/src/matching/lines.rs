@@ -1,6 +1,6 @@
 //! The diff of two paired functions, one line per instruction or IL statement.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use hereticus_arch::Arch;
 
@@ -204,7 +204,7 @@ impl<'a> IlSide<'a> {
 }
 
 /// Pair a run of removed statements with the run of added ones right after
-/// it, one for one where the two runs are as long.
+/// it, where they align as [`IlRun::fold_aligned`] says.
 ///
 /// Each pair of the same shape is one statement: the same, where only a
 /// register differs, as a register is the compiler's free choice, and else
@@ -237,36 +237,97 @@ pub(super) fn fold_il_runs(
             continue;
         }
         let run = IlRun { before, before_at: i..i + removed, after, after_at: j..j + added };
-        let pairs: Option<Vec<DiffLine>> =
-            (removed == added).then(|| (0..removed).map(|at| run.fold(at, at)).collect()).flatten();
-        match pairs {
-            Some(pairs) => folded.extend(pairs),
-            None => match run.fold_aligned() {
-                Some(lines) => folded.extend(lines),
-                // Runs that share no statement but for their registers fold
-                // only where they meet.
-                None => {
-                    folded.extend(
-                        (0..removed - 1)
-                            .map(|at| DiffLine::Removed(run.before_text(at).to_string())),
-                    );
-                    match run.fold(removed - 1, 0) {
-                        Some(line) => folded.push(line),
-                        None => folded.extend([
-                            DiffLine::Removed(run.before_text(removed - 1).to_string()),
-                            DiffLine::Added(run.after_text(0).to_string()),
-                        ]),
-                    }
-                    folded.extend(
-                        (1..added).map(|at| DiffLine::Added(run.after_text(at).to_string())),
-                    );
+        match run.fold_aligned(&kept_around(steps, index, removed + added, before, i)) {
+            Some(lines) => folded.extend(lines),
+            // Runs that share no statement but for their registers fold
+            // only where they meet.
+            None => {
+                folded.extend(
+                    (0..removed - 1).map(|at| DiffLine::Removed(run.before_text(at).to_string())),
+                );
+                match run.fold(removed - 1, 0) {
+                    Some(line) => folded.push(line),
+                    None => folded.extend([
+                        DiffLine::Removed(run.before_text(removed - 1).to_string()),
+                        DiffLine::Added(run.after_text(0).to_string()),
+                    ]),
                 }
-            },
+                folded.extend((1..added).map(|at| DiffLine::Added(run.after_text(at).to_string())));
+            }
         }
         (i, j) = (i + removed, j + added);
         index += removed + added;
     }
     folded
+}
+
+/// How many statements on each side of a run say which registers keep
+/// their names around it.
+const KEPT_AROUND: usize = 3;
+
+/// The registers of the statements that both sides hold around the run of
+/// `length` steps at `index` of `steps`, which starts at statement `at` of
+/// `before`: up to [`KEPT_AROUND`] before the run and after it. The two
+/// sides name each of them alike.
+fn kept_around(
+    steps: &[Step],
+    index: usize,
+    length: usize,
+    before: &IlSide<'_>,
+    at: usize,
+) -> HashSet<String> {
+    let registers = |statement: usize| -> Vec<String> {
+        words_of(&il_key(&before.statements[statement].text))
+            .into_iter()
+            .filter(|word| {
+                !word.starts_with(|c: char| c.is_ascii_digit()) && before.printed.contains(word)
+            })
+            .collect()
+    };
+    let shared_before = steps[..index].iter().rev().take_while(|step| **step == Step::Both).count();
+    let earlier = (at - shared_before.min(KEPT_AROUND).min(at))..at;
+    let removed = steps[index..index + length].iter().filter(|step| **step == Step::Left).count();
+    let shared_after =
+        steps[index + length..].iter().take_while(|step| **step == Step::Both).count();
+    let later = (at + removed)..(at + removed + shared_after.min(KEPT_AROUND));
+    earlier.chain(later).flat_map(registers).collect()
+}
+
+/// The registers that the folded pairs of a run rename, from the name on
+/// the earlier side to the name on the later, which must be one to one.
+#[derive(Default)]
+pub(super) struct Renaming {
+    to_after: HashMap<String, String>,
+    to_before: HashMap<String, String>,
+}
+
+impl Renaming {
+    /// Take the renaming of a pair whose registers are `before` and
+    /// `after`, in order, where it agrees with the pairs taken so far and
+    /// renames no register of `kept`. Report whether it did.
+    pub(super) fn take(
+        &mut self,
+        before: &[String],
+        after: &[String],
+        kept: &HashSet<String>,
+    ) -> bool {
+        if before.len() != after.len() {
+            return false;
+        }
+        let agrees = before.iter().zip(after).all(|(old, new)| {
+            let renamed = old != new && (kept.contains(old) || kept.contains(new));
+            !renamed
+                && self.to_after.get(old).is_none_or(|known| known == new)
+                && self.to_before.get(new).is_none_or(|known| known == old)
+        });
+        if agrees {
+            for (old, new) in before.iter().zip(after) {
+                self.to_after.insert(old.clone(), new.clone());
+                self.to_before.insert(new.clone(), old.clone());
+            }
+        }
+        agrees
+    }
 }
 
 /// The pairs of indices that `steps` align, in order.
@@ -303,7 +364,14 @@ impl IlRun<'_> {
     /// with each number left out too, between the pairs found, so that a
     /// statement with another constant pairs only where no statement with
     /// the same one does.
-    fn fold_aligned(&self) -> Option<Vec<DiffLine>> {
+    ///
+    /// Two names are one register renamed only where the renaming is one
+    /// to one over the run: a register the statements around the run keep
+    /// under its own name, which `kept` holds, is no other register. The fix
+    /// of CVE-2025-14282 in `dropbear` turns `if (w1 != 0)`, a test of a
+    /// global that `w1` loaded, into `if (w0 != 0)`, a test of what
+    /// `getuid` returned, right after `w0 = 1`.
+    fn fold_aligned(&self, kept: &HashSet<String>) -> Option<Vec<DiffLine>> {
         let keys = |side: &IlSide<'_>, at: &core::ops::Range<usize>, shape: bool| -> Vec<String> {
             at.clone()
                 .map(|index| {
@@ -344,6 +412,7 @@ impl IlRun<'_> {
             return None;
         }
         let mut lines = Vec::with_capacity(self.before_at.len() + self.after_at.len());
+        let mut renaming = Renaming::default();
         let (mut i, mut j) = (0, 0);
         let ends = all.into_iter().chain([(self.before_at.len(), self.after_at.len())]);
         for (pair_i, pair_j) in ends {
@@ -352,7 +421,15 @@ impl IlRun<'_> {
             if pair_i == self.before_at.len() {
                 break;
             }
-            match self.fold(pair_i, pair_j) {
+            let folded = self.fold(pair_i, pair_j).filter(|line| match line {
+                DiffLine::Same(_) => renaming.take(
+                    &self.registers_of(self.before, self.before_text(pair_i)),
+                    &self.registers_of(self.after, self.after_text(pair_j)),
+                    kept,
+                ),
+                _ => true,
+            });
+            match folded {
                 Some(line) => lines.push(line),
                 None => lines.extend([
                     DiffLine::Removed(self.before_text(pair_i).to_string()),
@@ -362,6 +439,17 @@ impl IlRun<'_> {
             (i, j) = (pair_i + 1, pair_j + 1);
         }
         Some(lines)
+    }
+
+    /// The words of `line` that the instructions of `side` print as
+    /// registers, in order.
+    fn registers_of(&self, side: &IlSide<'_>, line: &str) -> Vec<String> {
+        words_of(&il_key(line))
+            .into_iter()
+            .filter(|word| {
+                !word.starts_with(|c: char| c.is_ascii_digit()) && side.printed.contains(word)
+            })
+            .collect()
     }
 
     fn before_text(&self, at: usize) -> &str {
@@ -416,10 +504,107 @@ impl IlRun<'_> {
         }
         let before = words_of(&before_key);
         let after = words_of(&after_key);
+        let (before_triple, after_triple) = (self.before.arch.triple(), self.after.arch.triple());
         before.len() == after.len()
             && before.iter().zip(&after).all(|(a, b)| {
-                a == b || (self.before.printed.contains(a) && self.after.printed.contains(b))
+                a == b
+                    || (self.before.printed.contains(a)
+                        && self.after.printed.contains(b)
+                        && register_class(before_triple, a) == register_class(after_triple, b))
             })
+    }
+}
+
+/// What the name of a register says of the value it holds, on the
+/// architecture of `triple`.
+///
+/// Two names of one class are a free choice of the compiler. Two of other
+/// classes hold values of other widths: the fix of CVE-2021-30883 in the
+/// iPhone kernel turns `mul w10, w10, w8` into `mul x10, x10, x8`, so a
+/// product of 32 bits that overflowed is one of 64 bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RegisterClass<'a> {
+    /// A general register of this many bits.
+    General(u8),
+    /// A floating point or vector register, by the letter of its kind, as
+    /// `d` for a double of AArch64.
+    Vector(char),
+    /// A name of no class this knows, which matches only itself.
+    Named(&'a str),
+}
+
+/// The class of the register `name` on the architecture of `triple`.
+pub(super) fn register_class<'a>(triple: &str, name: &'a str) -> RegisterClass<'a> {
+    let numbered = |prefixes: &str| {
+        let mut characters = name.chars();
+        characters.next().is_some_and(|first| prefixes.contains(first))
+            && name.len() > 1
+            && characters.all(|character| character.is_ascii_digit())
+    };
+    let first = name.chars().next().unwrap_or(' ');
+    if triple.starts_with("aarch64") {
+        return match name {
+            "sp" | "xzr" => RegisterClass::General(64),
+            "wsp" | "wzr" => RegisterClass::General(32),
+            _ if numbered("x") => RegisterClass::General(64),
+            _ if numbered("w") => RegisterClass::General(32),
+            _ if numbered("bhsdqv") => RegisterClass::Vector(first),
+            _ => RegisterClass::Named(name),
+        };
+    }
+    if triple.starts_with("x86_64") || triple.starts_with("i386") || triple.starts_with("i686") {
+        return x86_register_class(name);
+    }
+    if triple.starts_with("arm") || triple.starts_with("thumb") {
+        return match name {
+            "sb" | "sl" | "fp" | "ip" | "sp" | "lr" | "pc" => RegisterClass::General(32),
+            _ if numbered("r") => RegisterClass::General(32),
+            _ if numbered("sdq") => RegisterClass::Vector(first),
+            _ => RegisterClass::Named(name),
+        };
+    }
+    if triple.starts_with("mips") {
+        const GENERAL: [&str; 32] = [
+            "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5",
+            "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1",
+            "gp", "sp", "fp", "ra",
+        ];
+        return match name {
+            _ if GENERAL.contains(&name) || name == "s8" => RegisterClass::General(32),
+            _ if numbered("f") => RegisterClass::Vector('f'),
+            _ => RegisterClass::Named(name),
+        };
+    }
+    RegisterClass::Named(name)
+}
+
+/// The class of an x86 register: `rax` holds 64 bits, `eax` 32, `ax` 16
+/// and `al` 8, and so on for each.
+fn x86_register_class(name: &str) -> RegisterClass<'_> {
+    const BITS_64: [&str; 8] = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp"];
+    const BITS_32: [&str; 8] = ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"];
+    const BITS_16: [&str; 8] = ["ax", "bx", "cx", "dx", "si", "di", "bp", "sp"];
+    const BITS_8: [&str; 12] =
+        ["al", "bl", "cl", "dl", "ah", "bh", "ch", "dh", "sil", "dil", "bpl", "spl"];
+    // `r8` to `r15`, with `d`, `w` or `b` for a part of 32, 16 or 8 bits.
+    let numbered = name.strip_prefix('r').and_then(|rest| {
+        let digits = rest.trim_end_matches(['d', 'w', 'b']);
+        let number: u8 = digits.parse().ok()?;
+        (8..=15).contains(&number).then_some(&rest[digits.len()..])
+    });
+    match (name, numbered) {
+        (_, Some("")) => RegisterClass::General(64),
+        (_, Some("d")) => RegisterClass::General(32),
+        (_, Some("w")) => RegisterClass::General(16),
+        (_, Some("b")) => RegisterClass::General(8),
+        _ if BITS_64.contains(&name) => RegisterClass::General(64),
+        _ if BITS_32.contains(&name) => RegisterClass::General(32),
+        _ if BITS_16.contains(&name) => RegisterClass::General(16),
+        _ if BITS_8.contains(&name) => RegisterClass::General(8),
+        _ if name.starts_with("xmm") => RegisterClass::Vector('x'),
+        _ if name.starts_with("ymm") => RegisterClass::Vector('y'),
+        _ if name.starts_with("zmm") => RegisterClass::Vector('z'),
+        _ => RegisterClass::Named(name),
     }
 }
 
