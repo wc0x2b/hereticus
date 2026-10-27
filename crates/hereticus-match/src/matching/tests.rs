@@ -1098,6 +1098,26 @@ fn a_statement_on_registers_of_another_width_is_no_same_line() {
     assert!(matches!(renamed[..], [DiffLine::Same(_)]), "{renamed:?}");
 }
 
+/// The width of a register says nothing of a number: a slot of the
+/// frame moves when the frame grows, as `[rsp + 0x8]` to `[rsp + 0x10]`.
+#[test]
+fn a_load_from_another_frame_slot_into_a_renamed_register_folds() {
+    let arch: &dyn Arch = &hereticus_il::arch::x86::X86::BITS64;
+    let side = |code: &[u8]| {
+        let insns = decode_all(arch, code, 0x1000).0;
+        IlSide::new(arch, code, insns, None)
+    };
+    // `mov rdi, [rsp + 8]` against `mov rax, [rsp + 0x10]`.
+    let (before, after) =
+        (side(&[0x48, 0x8b, 0x7c, 0x24, 0x08]), side(&[0x48, 0x8b, 0x44, 0x24, 0x10]));
+    let folded = fold_il_runs(&[Step::Left, Step::Right], &before, &after);
+    assert!(matches!(folded[..], [DiffLine::Same(_)]), "{folded:?}");
+    // `mov edi, [rsp + 8]` loads 32 bits.
+    let narrow = side(&[0x8b, 0x7c, 0x24, 0x08]);
+    let folded = fold_il_runs(&[Step::Left, Step::Right], &narrow, &after);
+    assert!(matches!(folded[..], [DiffLine::Removed(_), DiffLine::Added(_)]), "{folded:?}");
+}
+
 #[test]
 fn a_register_name_tells_its_width_on_each_architecture() {
     use RegisterClass::{General, Named, Vector};

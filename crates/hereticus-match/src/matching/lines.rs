@@ -507,10 +507,12 @@ impl IlRun<'_> {
         let (before_triple, after_triple) = (self.before.arch.triple(), self.after.arch.triple());
         before.len() == after.len()
             && before.iter().zip(&after).all(|(a, b)| {
+                let number = a.starts_with(|c: char| c.is_ascii_digit());
                 a == b
                     || (self.before.printed.contains(a)
                         && self.after.printed.contains(b)
-                        && register_class(before_triple, a) == register_class(after_triple, b))
+                        && (number
+                            || register_class(before_triple, a) == register_class(after_triple, b)))
             })
     }
 }
