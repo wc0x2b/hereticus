@@ -1431,6 +1431,17 @@ mod tests {
         assert!(screen(&mut app, 120, 12).contains("only added-call"));
     }
 
+    /// The screen of the book that shows a feature in use.
+    #[test]
+    fn the_screen_of_a_feature_is_locked() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        press(&mut app, &[KeyCode::Char('f'); 4]);
+        assert_eq!(app.only, [Feature::RemovedBranch], "as `book/tapes/tui.tape` presses it");
+        insta::assert_snapshot!("tui_feature", screen(&mut app, 120, 12));
+    }
+
     /// Two features, as `--only` can give, go to none with one key.
     #[test]
     fn the_next_features_after_two_are_none() {

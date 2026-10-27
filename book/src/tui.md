@@ -20,6 +20,9 @@ functions that are gone or new come after the pairs.
 - `f` lists only the pairs with one feature, as `added-call`. Each press
   goes to the next feature that `--only` takes, and after the last one,
   to every pair. `--only` sets the features that the browser starts with.
+
+  ![Only the pairs that removed a branch](./images/tui-feature.png)
+
 - `/` filters on the names. The letters must come in order, but need not
   be next to each other.
 - `a` shows every function, `r` the pairs that changed only a constant,
