@@ -108,6 +108,11 @@ impl RegSet {
         self.0 |= 1 << reg.bit();
     }
 
+    /// Take `reg` out of the set.
+    pub fn remove(&mut self, reg: Reg) {
+        self.0 &= !(1 << reg.bit());
+    }
+
     /// Whether `reg` is in the set.
     pub fn contains(self, reg: Reg) -> bool {
         self.0 & (1 << reg.bit()) != 0

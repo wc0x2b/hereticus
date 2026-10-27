@@ -22,7 +22,7 @@ use hereticus_il::arch::mips::{self, Decoded as MipsDecoded};
 use hereticus_il::arch::mips16::Op as Mips16Op;
 use hereticus_il::arch::mips32::Op as Mips32Op;
 use hereticus_il::arch::neon::NeonOperation;
-use hereticus_il::arch::{Insn, InsnKind, aarch64, is_branch_target};
+use hereticus_il::arch::{Insn, aarch64, is_branch_target};
 use hereticus_il::{AccessKind, Comparison, Cond, Lifted, Named, Op, Operand, Reg, Test};
 use hereticus_image::Links;
 use hereticus_memory::{AddressSpace, Function};
@@ -277,6 +277,9 @@ fn instruction_lines(
             // leaves out.
             let shown: Vec<&str> =
                 tokens.iter().copied().filter(|token| !token.is_empty()).collect();
+            if let Some(named) = named {
+                forget_overwritten_flags(insn, &named.lifted, &shown, &mut last_compare);
+            }
             // A call can run on a condition, as `blne` does.
             let conditional = |text: String, op| match a32_condition(insn, op) {
                 Some(cond) => format!("if ({cond}) {text}"),
@@ -772,6 +775,37 @@ enum CompareKind {
     Subtract,
     Add,
     And,
+    /// The flags of the result of an operation, as `subs x0, x0, #1` or
+    /// the x86 `sub` leaves them, held in `left`. They tell only whether
+    /// the result is zero and whether it is negative: the value before the
+    /// operation is gone.
+    Result,
+}
+
+/// What the flags hold after `lifted`, where it writes them and is no
+/// compare: the result of an `add`, `sub`, `and`, `or` or `xor` that runs
+/// always, against zero, or else nothing a branch can name.
+///
+/// A compare sets `last_compare` where its statement is made.
+fn forget_overwritten_flags(
+    insn: &Insn,
+    lifted: &Lifted,
+    shown: &[&str],
+    last_compare: &mut Option<Compared>,
+) {
+    if !lifted.writes.contains(Reg::Flags) || lifted.op == Op::Compare {
+        return;
+    }
+    let sets_by_result = matches!(lifted.op, Op::Add | Op::Subtract | Op::And | Op::Or | Op::Xor);
+    let runs_always = a32_condition(insn, Some(lifted.op)).is_none();
+    *last_compare = match (sets_by_result && runs_always, shown.first()) {
+        (true, Some(dest)) => Some(Compared {
+            left: (*dest).to_string(),
+            right: "0".to_string(),
+            kind: CompareKind::Result,
+        }),
+        _ => None,
+    };
 }
 
 /// The statement of a MIPS16e `save` or `restore`: the arguments `save`
@@ -951,6 +985,11 @@ fn condition_text(cond: Cond, compared: Option<&Compared>) -> String {
             None => format!("flags.{cond:?}"),
         },
         (CompareKind::And, cond) => format!("flags.{cond:?}"),
+        (CompareKind::Result, Cond::Equal) => format!("{left} == 0"),
+        (CompareKind::Result, Cond::NotEqual) => format!("{left} != 0"),
+        (CompareKind::Result, Cond::Negative) => format!("{left} < 0"),
+        (CompareKind::Result, Cond::NotNegative) => format!("{left} >= 0"),
+        (CompareKind::Result, cond) => format!("flags.{cond:?}"),
     }
 }
 
@@ -1374,13 +1413,14 @@ fn statement(
                 };
                 // `cmp` writes the zero register, which comes first.
                 let [.., left, right] = operands.as_slice() else { return None };
-                *last_compare = Some(Compared { left: left.clone(), right: right.clone(), kind });
-                match kind {
-                    CompareKind::And => format!("flags = {left} & {right}"),
-                    CompareKind::Subtract | CompareKind::Add => {
+                let text = match comparison {
+                    Comparison::And { .. } => format!("flags = {left} & {right}"),
+                    Comparison::Subtract { .. } | Comparison::Add { .. } => {
                         format!("flags = compare({left}, {right})")
                     }
-                }
+                };
+                *last_compare = Some(Compared { left: left.clone(), right: right.clone(), kind });
+                text
             }
             Some(Test::SetOnCompare { cond, .. }) => {
                 let [dest, left, right] = operands.as_slice() else { return None };
@@ -1450,6 +1490,7 @@ fn statement(
 mod tests {
     use super::*;
     use hereticus_il::arch::Decoder as _;
+    use hereticus_il::arch::InsnKind;
     use hereticus_il::arch::aarch64::Aarch64;
     use hereticus_recovery::arch::decode_all;
     use std::collections::BTreeMap;
@@ -2216,7 +2257,7 @@ mod tests {
                 (0, "if (x0 == 0) goto $+0x10"),
                 (2, "x1 = x1 + 1"),
                 (2, "x0 = x0 - 1"),
-                (1, "if (flags.NotEqual) goto $-0x8"),
+                (1, "if (x0 != 0) goto $-0x8"),
                 (0, "return"),
             ])
         );
@@ -2375,5 +2416,69 @@ mod tests {
                 assert!(depths.iter().all(|&depth| depth <= jumps), "{depths:?}");
             }
         });
+    }
+
+    /// x86 code from `llvm-mc --triple=x86_64 -x86-asm-syntax=intel`.
+    fn x86_lines(code: &str) -> Vec<String> {
+        use hereticus_il::arch::x86::X86;
+        let code = hex(code);
+        let (insns, _) = decode_all(&X86::BITS64, &code, 0x1000);
+        il_lines(&X86::BITS64, &code, &insns)
+    }
+
+    /// An operation that sets the flags from its result replaces the
+    /// compare before it: the branch tests the result against zero.
+    #[test]
+    fn a_branch_after_a_sub_tests_its_result_on_x86() {
+        // loop: test rdi, rdi; sub rdi, 1; jne loop
+        let shown = x86_lines("4885ff4883ef0175f7");
+        assert_eq!(shown[2], "if (rdi != 0) goto $-0x7", "{shown:?}");
+        // cmp rdi, 5; and rsi, rax; je $+0x2
+        let shown = x86_lines("4883ff054821c67400");
+        assert_eq!(shown[2], "if (rsi == 0) goto $+0x2", "{shown:?}");
+        // cmp rdi, 5; sub rsi, 1; jl $+0x2: a signed less needs the value
+        // before the sub.
+        let shown = x86_lines("4883ff054883ee017c00");
+        assert_eq!(shown[2], "if (flags.SignedLess) goto $+0x2", "{shown:?}");
+    }
+
+    /// An operation that sets the flags, but not from one result a branch
+    /// can name, leaves no compare.
+    #[test]
+    fn a_branch_after_a_shift_tests_only_the_flags_on_x86() {
+        // cmp rdi, 5; shl rsi, 1; jne $+0x2
+        let shown = x86_lines("4883ff0548d1e67500");
+        assert_eq!(shown[2], "if (flags.NotEqual) goto $+0x2", "{shown:?}");
+        // cmp rdi, 5; mov rsi, rax; jne $+0x2: a move keeps the flags.
+        let shown = x86_lines("4883ff054889c67500");
+        assert_eq!(shown[2], "if (rdi != 5) goto $+0x2", "{shown:?}");
+    }
+
+    #[test]
+    fn a_branch_after_adds_tests_its_result_on_aarch64() {
+        let shown = lines(&[
+            0xf100_0c1f, // cmp x0, #3
+            0xb100_0421, // adds x1, x1, #1
+            0x5400_0040, // b.eq $+0x8
+            0x5400_002b, // b.lt $+0x4
+        ]);
+        assert_eq!(shown[2], "if (x1 == 0) goto $+0x8");
+        assert_eq!(shown[3], "if (flags.SignedLess) goto $+0x4");
+    }
+
+    /// A conditional `addsne` sets the flags only where it runs, so the
+    /// branch after it names neither compare.
+    #[test]
+    fn a_branch_after_a_conditional_adds_tests_only_the_flags_on_a32() {
+        use hereticus_il::arch::arm32::Arm32;
+        let words: [u32; 3] = [
+            0xe350_0003, // cmp r0, #3
+            0x1291_1001, // addsne r1, r1, #1
+            0x0a00_0000, // beq $+0x8
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        let shown = il_lines(&Arm32, &code, &insns);
+        assert_eq!(shown[2], "if (flags.Equal) goto $+0x8", "{shown:?}");
     }
 }

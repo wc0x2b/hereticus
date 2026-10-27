@@ -136,6 +136,15 @@ impl Thumb2 {
                 *name = REGISTER_NAMES[usize::from(second >> 8 & 0xf)].into();
             }
         }
+        // The bytes alone read a 16-bit form as one that sets the flags,
+        // as it does outside an `it`. Inside one it keeps them, which
+        // [`Decoder::after_decoding`] wrote into the opcode.
+        if let crate::arch::Opcode::Thumb(Decoded::Core { opcode, flags: Flags::Kept, .. }) =
+            insn.opcode
+            && !super::arm32::is_compare(opcode)
+        {
+            named.lifted.writes.remove(crate::Reg::Flags);
+        }
         if printing == Printing::Skip {
             return Some(named);
         }
@@ -1141,6 +1150,33 @@ mod tests {
 
     /// A 16-bit form names its destination once, and lifts as the 32-bit
     /// form that names it twice.
+    /// A 16-bit `movs` or `adds` sets the flags, but inside an `it` the same
+    /// bytes keep them. A compare sets them in both places.
+    #[test]
+    fn a_narrow_form_keeps_the_flags_inside_an_it() {
+        const ITTT_EQ: u16 = 0xbf02;
+        const MOVS_R2_0: u16 = 0x2200;
+        const ADDS_R1_1: u16 = 0x3101;
+        const CMP_R0_0: u16 = 0x2800;
+        let writes_flags = |insn: &Insn| {
+            Thumb2.lift(insn).expect("the halfwords lift").writes.contains(crate::Reg::Flags)
+        };
+        let alone: Vec<Insn> =
+            [MOVS_R2_0, ADDS_R1_1, CMP_R0_0].iter().map(|&value| decode_one(&[value])).collect();
+        assert!(alone.iter().all(writes_flags), "outside an it");
+        let mut covered: Vec<Insn> = [ITTT_EQ, MOVS_R2_0, ADDS_R1_1, CMP_R0_0]
+            .iter()
+            .enumerate()
+            .map(|(at, &value)| {
+                Thumb2.decode(&halfwords(&[value]), 0, 0x1000 + 2 * at as u64).expect("decodes")
+            })
+            .collect();
+        Thumb2.after_decoding(&mut covered);
+        assert!(!writes_flags(&covered[1]), "moveq keeps the flags");
+        assert!(!writes_flags(&covered[2]), "addeq keeps the flags");
+        assert!(writes_flags(&covered[3]), "cmpeq sets them");
+    }
+
     #[test]
     fn a_two_address_form_names_its_destination_twice() {
         use crate::{Op, Operand};

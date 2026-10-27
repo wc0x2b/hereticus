@@ -67,7 +67,7 @@ dispatch
   vmovl.u8 q9, d18
   vmovl.u16 q9, d18
   vadd.i32 q8, q8, q9
-  if (lr != 4) goto $-0x1c
+  if (r1 != 0) goto $-0x1c
   vadd.i32 d16, d16, d17
   flags = compare(ip, lr)
   r1 = d16[1]
@@ -80,7 +80,7 @@ dispatch
   r3 = load.8 [r0]; r0 = r0 + 0x1
   r1 = r1 - 1
   r2 = r2 + r3
-  if (ip != lr) goto $-0xc
+  if (r1 != 0) goto $-0xc
   goto $+0x48
 - r2 = 0
 - sp = sp + 4
@@ -193,7 +193,7 @@ handle
   vmovl.u8 q9, d18
   vmovl.u16 q9, d18
   vadd.i32 q8, q8, q9
-  if (r1 != 4) goto $-0x1c
+  if (r3 != 0) goto $-0x1c
   vadd.i32 d16, d16, d17
 - flags = compare(ip, lr)
 - r1 = d16[1]
@@ -206,7 +206,7 @@ handle
 - r3 = load.8 [r0]; r0 = r0 + 0x1
 - r2 = r2 - 1
 - r1 = r1 + r3
-- if (ip != lr) goto $-0xc
+- if (r2 != 0) goto $-0xc
 - goto $-0x90
 - r1 = 0
 + flags = compare(r2, r1)
@@ -220,7 +220,7 @@ handle
 + r3 = load.8 [r2]; r2 = r2 + 0x1
 + r1 = r1 - 1
 + r0 = r0 + r3
-+ if (r2 != r1) goto $-0xc
++ if (r1 != 0) goto $-0xc
   goto $-0x84
 + r0 = 0
 + sp = sp + 8
