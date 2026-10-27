@@ -11,6 +11,7 @@ use ratatui::widgets::{
     Table, TableState, Tabs,
 };
 
+use super::columns::{self, Column, fit};
 use super::rows::{Half, Side, side_by_side, unified};
 use super::theme::{
     ADDED, BLUE, DARK_GRAY, EDITED, Focus, GRAY, GRAY_FG, GREEN, ORANGE, PURPLE, REMOVED, YELLOW,
@@ -22,6 +23,12 @@ use crate::{
     DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_kind,
     name_of_view, unmatched_word,
 };
+
+/// The blank columns between two columns of the table of functions.
+const COLUMN_GAP: u16 = 2;
+
+/// Marks the selected row of the table, before its name.
+const SELECTED_SIGN: &str = "▶ ";
 
 /// The keys of each pane, at the right of its frame.
 const TABLE_HINTS: &str = "⏎ open  s/S sort  t touched  f feature  / filter  m mark  w save";
@@ -126,29 +133,38 @@ impl App<'_> {
         let context = (!self.filter.is_empty()).then(|| format!("filter: \"{}\"", self.filter));
         let block = pane_block("Functions", context, hints, focus);
 
-        let header = Row::new(["FUNCTION", "CHANGE", "SCORE", "+/-/~", "TOUCHED", "MATCHED BY"])
-            .style(Style::new().fg(BLUE).bold());
+        // The frame, the sign of the selected row and the gaps between
+        // the columns take the rest.
+        let gaps = (Column::ALL.len() as u16 - 1) * COLUMN_GAP;
+        let available =
+            area.width.saturating_sub(2 + Span::raw(SELECTED_SIGN).width() as u16 + gaps);
+        let widths = columns::allocate(self.natural, available);
+        let header = Row::new(
+            Column::ALL.map(|column| fit(Line::from(column.heading()), widths[column as usize])),
+        )
+        .style(Style::new().fg(BLUE).bold());
         // Only the rows in sight are built: a kernel lists many thousand.
         let shown = usize::from(area.height.saturating_sub(2));
         let offset =
             visible_offset(self.table.offset(), self.table.selected(), shown, self.rows.len());
         *self.table.offset_mut() = offset;
-        let rows: Vec<Row<'static>> =
-            self.rows[offset..].iter().take(shown).map(|&index| self.table_row(index)).collect();
-        // The names and the kinds touched are the long cells.
-        let widths = [
-            Constraint::Fill(3),
-            Constraint::Length(14),
-            Constraint::Length(5),
-            Constraint::Length(11),
-            Constraint::Fill(2),
-            Constraint::Length(15),
-        ];
-        let table = Table::new(rows, widths)
+        let rows: Vec<Row<'static>> = self.rows[offset..]
+            .iter()
+            .take(shown)
+            .map(|&index| {
+                let cells = self.cells(index);
+                Row::new(Column::ALL.map(|column| {
+                    let at = column as usize;
+                    Cell::from(fit(cells[at].clone(), widths[at]))
+                }))
+            })
+            .collect();
+        let table = Table::new(rows, widths.map(Constraint::Length))
             .header(header)
             .block(block)
             .row_highlight_style(Style::new().fg(ORANGE).bold())
-            .highlight_symbol("▶ ");
+            .highlight_symbol(SELECTED_SIGN)
+            .column_spacing(COLUMN_GAP);
         let selected = self.table.selected().map(|selected| selected - offset);
         frame.render_stateful_widget(
             table,
@@ -162,10 +178,11 @@ impl App<'_> {
         draw_scrollbar(frame, area, self.rows.len(), position);
     }
 
-    /// One row of the table. A function gone or new names its closest
-    /// candidate where it has one, in the column of what a pair touched, and
-    /// the function in its place, in the column of how a pair matched.
-    fn table_row(&self, index: usize) -> Row<'static> {
+    /// The cells of one row of the table, by [`Column::ALL`]. A function
+    /// gone or new names its closest candidate where it has one, in the
+    /// column of what a pair touched, and the function in its place, in the
+    /// column of how a pair matched.
+    pub(super) fn cells(&self, index: usize) -> [Line<'static>; Column::ALL.len()] {
         let labeled = &self.entries[index];
         let mut name = highlighted(&labeled.label, &self.filter);
         if let Some(label) = self.marks.get(&index) {
@@ -176,20 +193,20 @@ impl App<'_> {
                 name.spans.extend(highlighted(&format!("[{label}]"), &self.filter).spans);
             }
         }
-        let name = Cell::from(name);
         let (word, color, closest_in) = match labeled.entry {
             Entry::Pair(index) => {
                 let pair = &self.diff.matched[index];
-                return Row::new([
+                return [
                     name,
-                    Cell::from(describe(pair.changed))
-                        .style(Style::new().fg(tone_of(pair.changed))),
-                    Cell::from(Line::from(format!("{:.2}", pair.score)).right_aligned()),
-                    Cell::from(edits_line(pair.edits)),
-                    Cell::from(describe_kinds(pair.kinds, pair.changed))
-                        .style(Style::new().fg(GRAY_FG)),
-                    Cell::from(describe_confidence(pair.confidence)).style(Style::new().fg(PURPLE)),
-                ]);
+                    Line::styled(describe(pair.changed), Style::new().fg(tone_of(pair.changed))),
+                    Line::from(format!("{:.2}", pair.score)).right_aligned(),
+                    edits_line(pair.edits),
+                    Line::styled(
+                        describe_kinds(pair.kinds, pair.changed),
+                        Style::new().fg(GRAY_FG),
+                    ),
+                    Line::styled(describe_confidence(pair.confidence), Style::new().fg(PURPLE)),
+                ];
             }
             Entry::Gone { contents, .. } => (unmatched_word("gone", contents), REMOVED, self.after),
             Entry::New { contents, .. } => (unmatched_word("new", contents), ADDED, self.before),
@@ -204,14 +221,14 @@ impl App<'_> {
             Some(place) => format!("same place as {}", name_of(closest_in, place)),
             None => "-".to_string(),
         };
-        Row::new([
+        [
             name,
-            Cell::from(word).style(Style::new().fg(color)),
-            Cell::from(Line::styled(score, Style::new().fg(GRAY_FG)).right_aligned()),
-            Cell::from(Line::styled("-", Style::new().fg(GRAY_FG))),
-            Cell::from(note).style(Style::new().fg(GRAY_FG)),
-            Cell::from(Line::styled(place, Style::new().fg(GRAY_FG))),
-        ])
+            Line::styled(word, Style::new().fg(color)),
+            Line::styled(score, Style::new().fg(GRAY_FG)).right_aligned(),
+            Line::styled("-", Style::new().fg(GRAY_FG)),
+            Line::styled(note, Style::new().fg(GRAY_FG)),
+            Line::styled(place, Style::new().fg(GRAY_FG)),
+        ]
     }
 
     /// The box the filter is typed in, with the cursor at its end.

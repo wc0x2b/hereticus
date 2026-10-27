@@ -1094,6 +1094,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tabled",
+ "unicode-width",
 ]
 
 [[package]]
