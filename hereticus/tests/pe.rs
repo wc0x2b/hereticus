@@ -203,44 +203,49 @@ fn a_thunk_of_the_delay_load_directory_takes_its_import(
     }
 }
 
-/// Flattening the control flow of a function, as an obfuscator does,
-/// rewrites its machine code, but `hereticus` still pairs it with the plain
-/// function. Each function the fixture exports or imports keeps its name,
-/// so it pairs by name; the rest pair by shape.
+/// Obfuscating a function, as a mutation engine does, rewrites its machine
+/// code, but `hereticus` still pairs it with the plain function. The pass
+/// plugin flattens the control flow of one copy and adds bogus flow to
+/// another. Each function the fixture exports or imports keeps its name, so
+/// it pairs by name; the rest pair by shape.
 ///
-/// `handle` of the firmware fixture branches and loops, so flattening it
-/// adds a dispatcher. It still pairs, which is the point: an analyst can
-/// read a flattened binary against a plain one.
-#[test]
-fn flattening_changes_the_code_but_the_functions_still_pair() {
+/// `handle` of the firmware fixture branches and loops, so the transform
+/// changes it the most. It still pairs, which is the point: an analyst can
+/// read an obfuscated binary against a plain one.
+#[rstest]
+fn obfuscation_changes_the_code_but_the_functions_still_pair(
+    #[values("flattened", "bogus")] obfuscation: &str,
+) {
     let plain = read("x86_64-firmware.dll");
-    let flattened = read("x86_64-firmware-flattened.dll");
+    let obfuscated = read(&format!("x86_64-firmware-{obfuscation}.dll"));
 
-    // The code changed: `handle` is flattened, so it is far from the plain
-    // one, yet the two still pair.
-    let diff = diff_with(&plain, &flattened, Options::default());
-    assert!(diff.removed.is_empty(), "no function of the plain DLL is lost");
-    assert!(diff.added.is_empty(), "the flattened DLL adds no function");
+    let diff = diff_with(&plain, &obfuscated, Options::default());
+    assert!(diff.removed.is_empty(), "{obfuscation}: no function of the plain DLL is lost");
+    assert!(diff.added.is_empty(), "{obfuscation}: the obfuscated DLL adds no function");
     assert_eq!(diff.matched.len(), plain.functions.len());
     let handle = plain.functions.iter().position(|function| function.name == "handle");
     let handle = handle.expect("the plain DLL has `handle`");
     let pair = diff.matched.iter().find(|pair| pair.before == handle).expect("`handle` pairs");
-    assert!(pair.score < 0.75, "flattening `handle` moved its code, score {}", pair.score);
+    assert!(pair.score < 0.75, "{obfuscation}: `handle` moved, score {}", pair.score);
 }
 
-/// Two flattened builds pair as the plain builds do: the planned edits are
-/// found, nothing is lost, and `crypto_verify` is the one new function.
+/// Two obfuscated builds pair as the plain builds do: nothing is lost, and
+/// `crypto_verify` is the one new function.
 #[rstest]
-fn the_planned_edits_show_through_flattening(
+fn the_planned_edits_show_through_obfuscation(
+    #[values("flattened", "bogus")] obfuscation: &str,
     #[values(UseNames::Yes, UseNames::No)] use_names: UseNames,
 ) {
-    let before = read("x86_64-firmware-flattened-stripped.dll");
-    let after = read("x86_64-firmware_v2-flattened-stripped.dll");
-    let truth = (read("x86_64-firmware-flattened.dll"), read("x86_64-firmware_v2-flattened.dll"));
+    let before = read(&format!("x86_64-firmware-{obfuscation}-stripped.dll"));
+    let after = read(&format!("x86_64-firmware_v2-{obfuscation}-stripped.dll"));
+    let truth = (
+        read(&format!("x86_64-firmware-{obfuscation}.dll")),
+        read(&format!("x86_64-firmware_v2-{obfuscation}.dll")),
+    );
     let diff = diff_with(&before, &after, Options { use_names, ..Default::default() });
 
-    assert!(diff.removed.is_empty(), "no function is lost");
+    assert!(diff.removed.is_empty(), "{obfuscation}: no function is lost");
     let added: Vec<&str> =
         diff.added.iter().map(|&index| name_at(&truth.1, after.functions[index].address)).collect();
-    assert_eq!(added, ["crypto_verify"], "only the new import is new");
+    assert_eq!(added, ["crypto_verify"], "{obfuscation}: only the new import is new");
 }

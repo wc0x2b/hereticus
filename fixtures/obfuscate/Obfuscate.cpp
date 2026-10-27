@@ -2,7 +2,7 @@
 //! obfuscators of the game-hacking scene do, so a test can check that
 //! `hereticus` still pairs each function with the one it came from.
 //!
-//! Two passes, from Obfuscator-LLVM:
+//! Three passes, from Obfuscator-LLVM:
 //!
 //! * `substitution` rewrites integer arithmetic. `a + b` becomes
 //!   `a - (-b)`, and `a ^ b` becomes `(a | b) & ~(a & b)`. The x86 and
@@ -14,18 +14,31 @@
 //!   jumps back to the `switch` in place of branching to its successor. The
 //!   back end cannot undo this, so the machine code of a flattened function
 //!   shares few instructions with the plain one, yet does the same work.
+//! * `bogus` adds bogus control flow. It guards the body of each block with
+//!   a branch on an opaque predicate, `x * (x + 1)` is even, which holds for
+//!   every `x` but which the compiler cannot fold, because `x` is a load
+//!   from a mutable global. The branch that is never taken goes to a clone
+//!   of the body, so the function grows a path that never runs.
 //!
-//! Both passes are deterministic, so a function and its edit mutate the
-//! same way, and a diff of the two mutated binaries shows only the edit.
-//! They run after the optimizer, through `registerOptimizerLastEPCallback`,
-//! so the optimizer does not fold the longer forms back.
+//! Each pass is deterministic, so a function and its edit mutate the same
+//! way, and a diff of the two mutated binaries shows only the edit. The
+//! passes run after the optimizer, through `registerOptimizerLastEPCallback`,
+//! so the optimizer does not fold the longer forms back. The environment
+//! variable `HERETICUS_OBFUSCATE`, a comma-separated list of pass names,
+//! says which to run there; it defaults to `flatten`.
 
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
+
+#include <cstdlib>
 // Debian's LLVM 22 keeps `PassPlugin.h` under `llvm/Plugins`, where upstream
 // keeps it under `llvm/Passes`.
 #if __has_include("llvm/Passes/PassPlugin.h")
@@ -185,6 +198,76 @@ bool flatten(Function &function) {
   return true;
 }
 
+// A mutable global the compiler cannot read, so a predicate on it stays.
+GlobalVariable *opaqueGlobal(Module &module) {
+  IntegerType *i32 = Type::getInt32Ty(module.getContext());
+  if (auto *existing = module.getGlobalVariable("cff.opaque"))
+    return existing;
+  return new GlobalVariable(module, i32, /*isConstant=*/false,
+                            GlobalValue::InternalLinkage,
+                            ConstantInt::get(i32, 0), "cff.opaque");
+}
+
+// A clone of `block` in `function`, with each value its own instructions
+// define remapped to the clone.
+BasicBlock *cloneBlock(BasicBlock *block, Function &function) {
+  ValueToValueMapTy map;
+  BasicBlock *clone = CloneBasicBlock(block, map, ".bogus", &function);
+  for (Instruction &instruction : *clone)
+    RemapInstruction(&instruction, map,
+                     RF_NoModuleLevelChanges | RF_IgnoreMissingLocals);
+  return clone;
+}
+
+// Guard the body of `block` with an opaque predicate, and send the branch
+// that never runs to a clone of the body.
+void addBogusFlow(BasicBlock *block, GlobalVariable *global) {
+  Function &function = *block->getParent();
+  IntegerType *i32 = cast<IntegerType>(global->getValueType());
+
+  BasicBlock *body =
+      block->splitBasicBlock(block->getFirstInsertionPt(), block->getName() + ".body");
+  BasicBlock *bogus = cloneBlock(body, function);
+  bogus->getTerminator()->eraseFromParent();
+  IRBuilder<>(bogus).CreateBr(body);
+
+  // `block` now ends in the split's unconditional branch; replace it with
+  // the opaque choice. `x * (x + 1)` is even, so the low bit is zero and
+  // the real body always runs.
+  block->getTerminator()->eraseFromParent();
+  IRBuilder<> builder(block);
+  Value *x = builder.CreateLoad(i32, global, "cff.x");
+  Value *product = builder.CreateMul(x, builder.CreateAdd(x, ConstantInt::get(i32, 1)));
+  Value *low = builder.CreateAnd(product, ConstantInt::get(i32, 1));
+  Value *even = builder.CreateICmpEQ(low, ConstantInt::get(i32, 0));
+  builder.CreateCondBr(even, body, bogus);
+}
+
+bool bogusFlow(Function &function) {
+  if (function.isDeclaration())
+    return false;
+  SmallVector<BasicBlock *, 16> blocks;
+  for (BasicBlock &block : function) {
+    if (block.isEHPad() || block.isLandingPad())
+      return false;
+    Instruction *terminator = block.getTerminator();
+    if (isa<InvokeInst>(terminator) || isa<IndirectBrInst>(terminator))
+      return false;
+    // A block with only a few instructions in its body gives the clone
+    // nothing worth hiding, so it is left as it is.
+    if (block.size() >= 3)
+      blocks.push_back(&block);
+  }
+  if (blocks.empty())
+    return false;
+
+  GlobalVariable *global = opaqueGlobal(*function.getParent());
+  for (BasicBlock *block : blocks)
+    addBogusFlow(block, global);
+  demoteAcrossBlocks(function);
+  return true;
+}
+
 struct Substitution : PassInfoMixin<Substitution> {
   PreservedAnalyses run(Function &function, FunctionAnalysisManager &) {
     bool changed = substituteIn(function);
@@ -200,6 +283,35 @@ struct Flatten : PassInfoMixin<Flatten> {
   }
   static bool isRequired() { return true; }
 };
+
+struct Bogus : PassInfoMixin<Bogus> {
+  PreservedAnalyses run(Function &function, FunctionAnalysisManager &) {
+    bool changed = bogusFlow(function);
+    return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  }
+  static bool isRequired() { return true; }
+};
+
+// Add the passes that `HERETICUS_OBFUSCATE` names to `manager`, or
+// flattening where the variable is unset. Each name is run as it reads.
+void addSelected(FunctionPassManager &manager) {
+  const char *selection = std::getenv("HERETICUS_OBFUSCATE");
+  if (!selection || !*selection) {
+    manager.addPass(Flatten());
+    return;
+  }
+  for (StringRef rest = selection; !rest.empty();) {
+    StringRef name;
+    std::tie(name, rest) = rest.split(',');
+    name = name.trim();
+    if (name == "flatten")
+      manager.addPass(Flatten());
+    else if (name == "bogus")
+      manager.addPass(Bogus());
+    else if (name == "substitution")
+      manager.addPass(Substitution());
+  }
+}
 
 } // namespace
 
@@ -219,12 +331,18 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
                     manager.addPass(Flatten());
                     return true;
                   }
+                  if (name == "bogus") {
+                    manager.addPass(Bogus());
+                    return true;
+                  }
                   return false;
                 });
             builder.registerOptimizerLastEPCallback(
                 [](ModulePassManager &manager, OptimizationLevel,
                    ThinOrFullLTOPhase) {
-                  manager.addPass(createModuleToFunctionPassAdaptor(Flatten()));
+                  FunctionPassManager functions;
+                  addSelected(functions);
+                  manager.addPass(createModuleToFunctionPassAdaptor(std::move(functions)));
                 });
           }};
 }

@@ -125,14 +125,20 @@ if command -v cmake >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1 \
 fi
 
 if [ -n "$plugin" ]; then
-    for source in "$src/firmware.c" "$src/firmware_v2.c"; do
-        name="x86_64-$(basename "$source" .c)-flattened"
-        compile x86_64 "$source" "$name" names "-fpass-plugin=$plugin"
-        link x86_64 "$name" "$name.dll" /dll /noentry /export:handle
+    # One copy with its control flow flattened, and one with bogus flow,
+    # as `HERETICUS_OBFUSCATE` selects. Each names the function after the
+    # transform, so a test can read them apart.
+    for pass in flattened bogus; do
+        for source in "$src/firmware.c" "$src/firmware_v2.c"; do
+            name="x86_64-$(basename "$source" .c)-$pass"
+            HERETICUS_OBFUSCATE="${pass/flattened/flatten}" \
+                compile x86_64 "$source" "$name" names "-fpass-plugin=$plugin"
+            link x86_64 "$name" "$name.dll" /dll /noentry /export:handle
+        done
     done
-    echo "fixtures: flattened PE DLLs built in $pe"
+    echo "fixtures: obfuscated PE DLLs built in $pe"
 else
-    echo "fixtures: no LLVM development files, skipping the flattened DLLs" >&2
+    echo "fixtures: no LLVM development files, skipping the obfuscated DLLs" >&2
 fi
 
 echo "fixtures: PE files built in $pe"
