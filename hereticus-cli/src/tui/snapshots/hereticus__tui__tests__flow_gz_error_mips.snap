@@ -71,7 +71,6 @@ expression: text
 │││   6ad4   return
 │││   6ad8   sp = sp + 0x38
 │││┌< 6adc   if (s2 == v0) goto $+0x48
-││││  6ae0   nop
 ││││  6ae4     store.32 [s0] = zero
 ││└┼< 6ae8     if (s1 == 0) goto $-0x28
 ││ │  6aec     store.32 [s0 + 0x64] = s2
@@ -85,7 +84,6 @@ expression: text
 ││ │  6b0c     return
 ││ │  6b10     sp = sp + 0x38
 ││ │  6b14   call t9
-││ │  6b18   nop
 ││ │  6b1c   goto $-0x10c
 ││ │  6b20   gp = load.32 [sp + 0x18]
 ││ └> 6b24   if (s1 != 0) goto $-0x100

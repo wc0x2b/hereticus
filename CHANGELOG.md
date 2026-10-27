@@ -6,7 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-## [0.5.0](https://github.com/wc0x2b/hereticus/compare/v0.4.1...v0.5.0) - 2026-10-27### Added
+
+### Added
+
+- The IL view indents each statement two spaces for each jump that it is
+  in, in the browser and in `--diff`. A forward jump indents the lines it
+  steps over, up to the first line that another path also comes into, so
+  an error path that the compiler moves after the return indents only the
+  lines before it comes back. A backward jump indents the body of its loop,
+  where the target of the jump can run again.
+- The diff draws a line from each jump, marked `<`, to its target, marked
+  `>`, at the left of the code, in the browser and in `--diff`. The line
+  of a jump that a change added or removed takes the color of the change.
+  Four lines can pass one row, or as many as the jumps of a change need,
+  up to eight. Where more pass, the jumps of a change are drawn first and
+  then the shortest.
+- A removed or added IL line in a block of at least three lines that the
+  other side holds in another place prints in gray, in the browser and in
+  `--diff`, as `git diff --color-moved` shows one. The compiler moved the
+  code. A block with a branch, a call or a return stays red and green,
+  as a fix can move a check before the use it guards.
+
+### Changed
+
+- The IL diff shows a statement that only names other registers as the
+  same line, also where the runs of removed and added lines differ in
+  length. One more register in use moved such statements, so a whole
+  block showed as removed and added. Two names are one register only where
+  they hold values of one width, and where the renaming is one to one and
+  keeps each register that the lines around it name alike.
+- The IL view shows no line for padding that does nothing: `nop`,
+  `xchg ax, ax` and `mov r0, r0`. A trap that pads, as `int3`, still shows.
+
+### Fixed
+
+- In the IL view, a branch after an operation that writes the flags named
+  the last compare before it. A branch after `sub rdi, 1` or
+  `subs r1, r1, #1` now tests the result, as `if (rdi != 0)`, and a branch
+  after a shift or a multiply tests only the flags.
+- A 16-bit Thumb instruction inside an `it` block keeps the flags, but the
+  IL read it as one that sets them.
+- The IL diff showed a statement on registers of another width as the
+  same line where the runs of removed and added lines were as long, as
+  `mul w10, w10, w8` against `mul x10, x10, x8`, where a product of 32
+  bits became one of 64.
+
+## [0.5.0](https://github.com/wc0x2b/hereticus/compare/v0.4.1...v0.5.0) - 2026-10-27
+
+### Added
 
 - `--only` lists only the changed pairs that have each feature it names,
   as `added-call`, `removed-call`, `added-branch` or `early-exit`. Each
@@ -32,7 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the mark. `M` asks for the label. Before, `m` asked for the label and
   `M` removed the mark.
 
-## [0.4.1](https://github.com/wc0x2b/hereticus/compare/v0.4.0...v0.4.1) - 2026-10-25## [0.4.0](https://github.com/wc0x2b/hereticus/compare/v0.3.0...v0.4.0) - 2026-10-24
+## [0.4.1](https://github.com/wc0x2b/hereticus/compare/v0.4.0...v0.4.1) - 2026-10-25
+
+## [0.4.0](https://github.com/wc0x2b/hereticus/compare/v0.3.0...v0.4.0) - 2026-10-24
 ### Added
 
 - The Ghidra extension has a loader, *Raw Binary (Hereticus Base)*. It is

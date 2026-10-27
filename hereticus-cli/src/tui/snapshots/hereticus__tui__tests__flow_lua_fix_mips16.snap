@@ -30,4 +30,3 @@ expression: "flow_text(&lines, &places)"
 └──┼> 1e02c + v0 = 1
    │  1e02e   v0 = -v0
    └< 1e030   goto $-0xc
-      1e032   nop

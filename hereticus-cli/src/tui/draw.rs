@@ -274,7 +274,7 @@ impl App<'_> {
         let total = opened.changes.len();
         match self.layout {
             Layout::SideBySide => {
-                let rows = side_by_side(&opened.lines, places);
+                let rows = side_by_side(&opened.lines, places, &opened.motions);
                 let gutter = |column: usize, row: usize| {
                     opened.gutters.get(column).map_or(&[][..], |gutter| gutter.row(row))
                 };
@@ -304,7 +304,7 @@ impl App<'_> {
                 frame.render_widget(Paragraph::new(right), right_area);
             }
             Layout::Unified => {
-                let sides = unified(&opened.lines, places);
+                let sides = unified(&opened.lines, places, &opened.motions);
                 let gutter =
                     |row: usize| opened.gutters.first().map_or(&[][..], |gutter| gutter.row(row));
                 let lines: Vec<Line<'_>> = sides
@@ -467,6 +467,7 @@ pub(super) fn address_width(addresses: impl Iterator<Item = u64>) -> usize {
 /// its instruction in gray, then the line with the sign and the color of a
 /// patch, indented two spaces for each level deep it sits.
 pub(super) fn half_line(half: Half<'_>, width: usize, gutter: &[flows::Cell]) -> Line<'static> {
+    let moved = half.motion == hereticus::matching::Motion::Moved;
     let (sign, text, color) = match half.side {
         // A jump goes on past a row that shows no line of its side.
         Side::Empty if gutter.iter().all(|cell| cell.glyph == flows::Glyph::Blank) => {
@@ -474,8 +475,10 @@ pub(super) fn half_line(half: Half<'_>, width: usize, gutter: &[flows::Cell]) ->
         }
         Side::Empty => return Line::from(gutter_spans(gutter)),
         Side::Same(text) => (' ', text, None),
-        Side::Removed(text) => ('-', text, Some(REMOVED)),
-        Side::Added(text) => ('+', text, Some(ADDED)),
+        // A line in a block of code that moved is the same code in another
+        // place, so it is gray where a change is red or green.
+        Side::Removed(text) => ('-', text, Some(if moved { GRAY_FG } else { REMOVED })),
+        Side::Added(text) => ('+', text, Some(if moved { GRAY_FG } else { ADDED })),
         Side::Changed(text) => ('~', text, Some(EDITED)),
     };
     let address = match half.address() {
@@ -709,6 +712,15 @@ mod tests {
                 }
             },
         );
+    }
+
+    #[test]
+    fn a_line_that_moved_is_gray() {
+        let half = Half::shown(Side::Added("x = 1"), [None, None]);
+        let color =
+            |half: Half<'_>| half_line(half, 2, &[]).spans.last().and_then(|span| span.style.fg);
+        assert_eq!(color(half), Some(ADDED));
+        assert_eq!(color(half.moving(hereticus::matching::Motion::Moved)), Some(GRAY_FG));
     }
 
     #[test]

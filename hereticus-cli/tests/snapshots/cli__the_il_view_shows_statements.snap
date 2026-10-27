@@ -21,8 +21,8 @@ dispatch
 ││    + sp = sp - 8
 ││      r2 = -0x1
 ││    -     flags = compare(r1, 0)
+││    + flags = compare(r1, 3)
 ││┌─< -     if (r1 != 0) goto $+0x2c
-│││   + flags = compare(r1, 3)
 │││┌< + if (r1 u> 3) goto $+0x100
 ││││  +   adr r3, pc, 0x4
 ││││  +   r1 = load.32 [r3 + (r1 lsl 2)]
@@ -83,8 +83,8 @@ dispatch
 │└┼┼<         if (r1 != 0) goto $-0xc
 │┌┼┼<         goto $+0x48
 ││││  -   r2 = 0
+││││  +       r1 = load.16 [r0 + 0x2]
 │└┴┼> - sp = sp + 4
-│  │  +       r1 = load.16 [r0 + 0x2]
 │  │  +       r0 = r0 + 4
 │  │  +       sp = sp + 8
 │  │          r4, lr = load.32 [sp]; sp = sp + 8
@@ -106,13 +106,10 @@ dispatch
         return
 
 check_header
-- r0 = load.16 [r0]
-- r1 = 0x5a5a
-- r0 = r0 - r1
-- if (ne) r0 = -0x1
-+ r1 = load.16 [r0]
+  r1 = load.16 [r0]
 + r2 = r0
-+ r3 = 0x5a5a
+  r3 = 0x5a5a
+- r0 = r0 - r1
 + r0 = -0x1
 + flags = compare(r1, r3)
 + if (ne) return
@@ -121,109 +118,91 @@ check_header
 + r0 = r2 + 4
 + call crypto_verify
 + flags = compare(r0, 0)
+- if (ne) r0 = -0x1
 + if (ne) r0 = -0x2
 + fp, lr = load.32 [sp]; sp = sp + 8
   return
 
 handle
-         - store.32 [sp - 8] = r4, lr; sp = sp - 8
-         + store.32 [sp - 0x10] = r4, r5, r6, lr; sp = sp - 0x10
-           sp = sp - 8
-         - r2 = load.16 [r0]
-         - r1 = 1
-         - r3 = 0x5a5a
-         - flags = compare(r2, r3)
-┌──────< - if (r2 != r3) goto $+0x14
-│        -   lr = load.16 [r0 + 0x2]
-│        -   r1 = 2
-│        -   flags = compare(lr, 0x400)
-│┌─────< -   if (lr u<= 0x400) goto $+0x1c
-└┼─────>   r4 = r0
- │       + r0 = load.16 [r0]
- │       + r6 = 1
- │       + r1 = 0x5a5a
- │       + flags = compare(r0, r1)
-┌┼─────< + if (r0 != r1) goto $+0x2c
-││       +   r5 = r4 + 4
-││       +   r1 = load.16 [r4 + 0x2]
-││       +   r0 = r5
-││       +   call crypto_verify
-││       +   flags = compare(r0, 0)
-││┌────< +   if (r0 != 0) goto $+0x14
-│││      +     r1 = load.16 [r4 + 0x2]
-│││      +     r6 = 2
-│││      +     flags = compare(r1, 0x200)
-│││┌───< +     if (r1 u<= 0x200) goto $+0x18
-└┼┴┼───> + r0 = r6
- │ │       call log_event
- │ │     - r1 = -0x1
-┌┼┬┼───> - r0 = r1
-││││     + r0 = -0x1
-││││┌──>   sp = sp + 8
-│││││      return
-│└┼┼┼──> - flags = compare(lr, 0)
-│┌┼┼┼──< - if (lr == 0) goto $+0x84
-│││││    -   ip = 0
-│││││    -   r1 = 0
-│││││    -   flags = compare(lr, 4)
-│││││┌─< -   if (lr u< 4) goto $+0x54
-││││││   -     r2 = 0x7fc
-││││││   -     ip = lr & r2
-│││└┼┼─> + flags = compare(r1, 0)
-│││┌┼┼─< + if (r1 == 0) goto $+0x7c
-││││││   +   r2 = 0
-││││││   +   r0 = 0
-││││││   +   flags = compare(r1, 4)
-││││││┌< +   if (r1 u< 4) goto $+0x4c
-│││││││  +     r2 = r1 & 0x3fc
-│││││││        q8 = 0
-│││││││  -     r1 = r0 + 4
-│││││││  -     r3 = sp + 4
-│││││││  -     r2 = ip
-│││││││  -       r4 = load.32 [r1]; r1 = r1 + 0x4
-│││││││  -       r2 = r2 - 4
-│││││││  -       store.32 [sp + 0x4] = r4
-│││││││  -       {d18[0]} = load.32 [r3:32]
-│││││││  +     r0 = sp + 4
-│││││││  +     r3 = r2
-│││││││  +       r6 = load.32 [r5]; r5 = r5 + 0x4
-│││││││  +       r3 = r3 - 4
-│││││││  +       store.32 [sp + 0x4] = r6
-│││││││  +       {d18[0]} = load.32 [r0:32]
-│││││││          vmovl.u8 q9, d18
-│││││││          vmovl.u16 q9, d18
-│││││││          vadd.i32 q8, q8, q9
-│││││││        if (r3 != 0) goto $-0x1c
-│││││││        vadd.i32 d16, d16, d17
-│││││││  -     flags = compare(ip, lr)
-│││││││  -     r1 = d16[1]
-│││││││  -     r2 = d16[0]
-│││││││  -     r1 = r2 + r1
-││└┼┼┼┼< -     if (ip == lr) goto $-0x70
-││ ││└┼> -   r0 = ip + r0
-││ ││ │  -   r2 = lr - ip
-││ ││ │  -   r0 = r0 + 4
-││┌┼┼─┼> -     r3 = load.8 [r0]; r0 = r0 + 0x1
-│││││ │  -     r2 = r2 - 1
-│││││ │  -     r1 = r1 + r3
-││└┼┼─┼< -   if (r2 != 0) goto $-0xc
-└┼─┼┼─┼< -   goto $-0x90
- └─┼┼─┼> - r1 = 0
-   ││ │  +     flags = compare(r2, r1)
-   ││ │  +     r0 = d16[1]
-   ││ │  +     r3 = d16[0]
-   ││ │  +     r0 = r3 + r0
-   │└─┼< +     if (r2 == r1) goto $-0x64
-   │  └> +   r1 = r1 - r2
-   │     +   r2 = r2 + r4
-   │     +   r2 = r2 + 4
-┌──┼───> +     r3 = load.8 [r2]; r2 = r2 + 0x1
-│  │     +     r1 = r1 - 1
-│  │     +     r0 = r0 + r3
-└──┼───< +   if (r1 != 0) goto $-0xc
-   │         goto $-0x84
-   └───> + r0 = 0
-         + sp = sp + 8
-         + return
+       - store.32 [sp - 8] = r4, lr; sp = sp - 8
+       + store.32 [sp - 0x10] = r4, r5, r6, lr; sp = sp - 0x10
+         sp = sp - 8
+       + r4 = r0
+         r0 = load.16 [r0]
+         r6 = 1
+         r1 = 0x5a5a
+       - flags = compare(r2, r3)
+       + flags = compare(r0, r1)
+┌────< - if (r2 != r3) goto $+0x14
+│┌───< + if (r0 != r1) goto $+0x2c
+││     +   r5 = r4 + 4
+││     -   lr = load.16 [r0 + 0x2]
+││     +   r1 = load.16 [r4 + 0x2]
+││     +   r0 = r5
+││     +   call crypto_verify
+││     +   flags = compare(r0, 0)
+││┌──< +   if (r0 != 0) goto $+0x14
+│││    +     r1 = load.16 [r4 + 0x2]
+│││          r6 = 2
+│││    -   flags = compare(lr, 0x400)
+│││    +     flags = compare(r1, 0x200)
+│││┌─< -   if (lr u<= 0x400) goto $+0x1c
+││││┌< +     if (r1 u<= 0x200) goto $+0x18
+└┴┴┼┼>   r0 = r6
+   ││    call log_event
+   ││    r0 = -0x1
+┌──┼┼> - r0 = r1
+│  ││    sp = sp + 8
+│  ││    return
+│  └┴>   flags = compare(r1, 0)
+│        if (r1 == 0) goto $+0x7c
+│          r2 = 0
+│          r0 = 0
+│          flags = compare(r1, 4)
+│┌┬──<     if (r1 u< 4) goto $+0x4c
+│││    -     r2 = 0x7fc
+│││    -     ip = lr & r2
+│││    +     r2 = r1 & 0x3fc
+│││          q8 = 0
+│││          r0 = sp + 4
+│││    -     r3 = sp + 4
+│││          r3 = r2
+│││┌─> -       r4 = load.32 [r1]; r1 = r1 + 0x4
+││││┌> +       r6 = load.32 [r5]; r5 = r5 + 0x4
+│││││          r3 = r3 - 4
+│││││  -       store.32 [sp + 0x4] = r4
+│││││  +       store.32 [sp + 0x4] = r6
+│││││  -       {d18[0]} = load.32 [r3:32]
+│││││  +       {d18[0]} = load.32 [r0:32]
+│││││          vmovl.u8 q9, d18
+│││││          vmovl.u16 q9, d18
+│││││          vadd.i32 q8, q8, q9
+│││└┴<       if (r3 != 0) goto $-0x1c
+│││          vadd.i32 d16, d16, d17
+│││          flags = compare(r2, r1)
+│││          r0 = d16[1]
+│││          r3 = d16[0]
+│││          r0 = r3 + r0
+│││          if (r2 == r1) goto $-0x64
+││└──> -   r0 = ip + r0
+││     -   r2 = lr - ip
+│└───> +   r1 = r1 - r2
+│      +   r2 = r2 + r4
+│      -   r0 = r0 + 4
+│      +   r2 = r2 + 4
+│┌───> -     r3 = load.8 [r0]; r0 = r0 + 0x1
+││┌──> +     r3 = load.8 [r2]; r2 = r2 + 0x1
+│││    -     r2 = r2 - 1
+│││    +     r1 = r1 - 1
+│││    -     r1 = r1 + r3
+│││    +     r0 = r0 + r3
+│└┼──< -   if (r2 != 0) goto $-0xc
+│ └──< +   if (r1 != 0) goto $-0xc
+└────< -   goto $-0x90
+       - r1 = 0
+           goto $-0x84
+       + r0 = 0
+       + sp = sp + 8
+       + return
 
 ----- stderr -----

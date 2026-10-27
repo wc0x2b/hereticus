@@ -1,7 +1,7 @@
 //! Lay the lines of a diff out in rows, each with the address of the
 //! instruction it shows and its depth in the jumps of the function.
 
-use hereticus::matching::{DiffLine, LinePlace};
+use hereticus::matching::{DiffLine, LinePlace, Motion};
 
 /// The most levels a line of a diff is indented by. A function whose
 /// jumps cross, as to the cases of a `switch`, can sit many levels deep,
@@ -30,15 +30,22 @@ pub struct Half<'l> {
     /// A half of a side-by-side row stands for one side. A line both sides
     /// hold stands for both in a unified diff, which shows the later.
     pub places: [Option<LinePlace>; 2],
+    /// Whether a removed or added line is in a block of code that moved.
+    pub motion: Motion,
 }
 
 impl<'l> Half<'l> {
-    const EMPTY: Self = Self { side: Side::Empty, places: [None, None] };
+    const EMPTY: Self = Self { side: Side::Empty, places: [None, None], motion: Motion::Stayed };
 
     /// The half that shows `side`, at `places` of the earlier and the later
     /// function.
     pub fn shown(side: Side<'l>, places: [Option<LinePlace>; 2]) -> Self {
-        Self { side, places }
+        Self { side, places, motion: Motion::Stayed }
+    }
+
+    /// The half, in `motion`.
+    pub fn moving(self, motion: Motion) -> Self {
+        Self { motion, ..self }
     }
 
     /// The place the half shows: of the later function where it stands
@@ -89,30 +96,45 @@ pub struct Places {
 /// order: a line
 /// both hold, or a changed one, takes the next of each side, a removed line
 /// the next of the earlier function, and an added one the next of the later.
+///
+/// Each line takes its motion from `motions`, and stays where `motions`
+/// holds none for it.
 fn locate<'l>(
     lines: &'l [DiffLine],
     places: &Places,
-) -> impl Iterator<Item = (&'l DiffLine, Option<LinePlace>, Option<LinePlace>)> {
+    motions: &'l [Motion],
+) -> impl Iterator<Item = (&'l DiffLine, Option<LinePlace>, Option<LinePlace>, Motion)> {
     let (mut before, mut after) = (places.before.iter().copied(), places.after.iter().copied());
-    lines.iter().map(move |line| match line {
-        DiffLine::Same(_) | DiffLine::Changed { .. } => (line, before.next(), after.next()),
-        DiffLine::Removed(_) => (line, before.next(), None),
-        DiffLine::Added(_) => (line, None, after.next()),
+    lines.iter().enumerate().map(move |(at, line)| {
+        let motion = motions.get(at).copied().unwrap_or_default();
+        match line {
+            DiffLine::Same(_) | DiffLine::Changed { .. } => {
+                (line, before.next(), after.next(), motion)
+            }
+            DiffLine::Removed(_) => (line, before.next(), None, motion),
+            DiffLine::Added(_) => (line, None, after.next(), motion),
+        }
     })
 }
 
 /// Lay a diff side by side. A run of removed lines and the run of added
 /// lines next to it share rows, so a rewritten block reads across.
-pub fn side_by_side<'l>(lines: &'l [DiffLine], places: &Places) -> Vec<SideRow<'l>> {
+pub fn side_by_side<'l>(
+    lines: &'l [DiffLine],
+    places: &Places,
+    motions: &'l [Motion],
+) -> Vec<SideRow<'l>> {
     let mut rows = Vec::with_capacity(lines.len());
     let mut removed: Vec<Half<'l>> = Vec::new();
     let mut added: Vec<Half<'l>> = Vec::new();
-    for (line, before, after) in locate(lines, places) {
+    for (line, before, after, motion) in locate(lines, places, motions) {
         match line {
             DiffLine::Removed(text) => {
-                removed.push(Half::shown(Side::Removed(text), [before, None]))
+                removed.push(Half::shown(Side::Removed(text), [before, None]).moving(motion))
             }
-            DiffLine::Added(text) => added.push(Half::shown(Side::Added(text), [None, after])),
+            DiffLine::Added(text) => {
+                added.push(Half::shown(Side::Added(text), [None, after]).moving(motion))
+            }
             DiffLine::Same(text) => {
                 flush_runs(&mut rows, &mut removed, &mut added);
                 rows.push(SideRow {
@@ -147,14 +169,16 @@ fn flush_runs<'l>(
 
 /// Lay a diff in one column, as a patch reads. A line both sides hold
 /// stands for both, and shows the address of the later function.
-pub fn unified<'l>(lines: &'l [DiffLine], places: &Places) -> Vec<Half<'l>> {
-    locate(lines, places)
-        .flat_map(|(line, before, after)| match line {
+pub fn unified<'l>(lines: &'l [DiffLine], places: &Places, motions: &'l [Motion]) -> Vec<Half<'l>> {
+    locate(lines, places, motions)
+        .flat_map(|(line, before, after, motion)| match line {
             DiffLine::Same(text) => [Half::shown(Side::Same(text), [before, after]), Half::EMPTY],
             DiffLine::Removed(text) => {
-                [Half::shown(Side::Removed(text), [before, None]), Half::EMPTY]
+                [Half::shown(Side::Removed(text), [before, None]).moving(motion), Half::EMPTY]
             }
-            DiffLine::Added(text) => [Half::shown(Side::Added(text), [None, after]), Half::EMPTY],
+            DiffLine::Added(text) => {
+                [Half::shown(Side::Added(text), [None, after]).moving(motion), Half::EMPTY]
+            }
             DiffLine::Changed { before: old, after: new } => [
                 Half::shown(Side::Removed(old), [before, None]),
                 Half::shown(Side::Added(new), [None, after]),
@@ -213,7 +237,7 @@ mod tests {
             DiffLine::Added("h".into()),
         ];
         let addresses = places(&[0, 4, 8, 12, 16], &[0, 4, 8, 12, 16]);
-        let rows: Vec<_> = side_by_side(&lines, &addresses)
+        let rows: Vec<_> = side_by_side(&lines, &addresses, &[])
             .into_iter()
             .map(|row| (seen(row.left), seen(row.right)))
             .collect();
@@ -229,13 +253,13 @@ mod tests {
                 (empty, (Side::Added("h"), Some(16))),
             ]
         );
-        assert!(side_by_side(&[], &addresses).is_empty());
+        assert!(side_by_side(&[], &addresses, &[]).is_empty());
     }
 
     #[test]
     fn each_half_of_a_side_by_side_row_stands_for_its_side() {
         let lines = [same("a")];
-        let rows = side_by_side(&lines, &places(&[0x10], &[0x20]));
+        let rows = side_by_side(&lines, &places(&[0x10], &[0x20]), &[]);
         assert_eq!(rows[0].left.places, [Some(place(0x10)), None]);
         assert_eq!(rows[0].right.places, [None, Some(place(0x20))]);
     }
@@ -244,7 +268,7 @@ mod tests {
     fn a_line_past_the_addresses_has_none() {
         let lines = [same("a"), same("b")];
         let addresses = places(&[0x10], &[]);
-        let rows = side_by_side(&lines, &addresses);
+        let rows = side_by_side(&lines, &addresses, &[]);
         assert_eq!(rows[0].left.address(), Some(0x10));
         assert_eq!(rows[1].left.address(), None);
         assert_eq!(rows[0].right.address(), None);
@@ -254,7 +278,7 @@ mod tests {
     fn a_unified_diff_puts_a_changed_line_on_two_rows() {
         let lines = [same("a"), DiffLine::Changed { before: "b".into(), after: "c".into() }];
         let addresses = places(&[0x100, 0x104], &[0x200, 0x204]);
-        let halves = unified(&lines, &addresses);
+        let halves = unified(&lines, &addresses, &[]);
         assert_eq!(
             halves.iter().copied().map(seen).collect::<Vec<_>>(),
             [
@@ -277,10 +301,30 @@ mod tests {
             after: vec![place(0x200, 1), place(0x204, 3)],
         };
         let depths = |row: &SideRow<'_>| (row.left.depth(), row.right.depth());
-        let rows = side_by_side(&lines, &places);
+        let rows = side_by_side(&lines, &places, &[]);
         assert_eq!(rows.iter().map(depths).collect::<Vec<_>>(), [(0, 1), (2, 3)]);
-        let halves = unified(&lines, &places);
+        let halves = unified(&lines, &places, &[]);
         assert_eq!(halves.iter().map(|half| half.depth()).collect::<Vec<_>>(), [1, 2, 3]);
+    }
+
+    #[test]
+    fn a_removed_or_added_line_keeps_its_motion() {
+        let lines = [
+            DiffLine::Removed("a".into()),
+            same("b"),
+            DiffLine::Added("a".into()),
+            DiffLine::Changed { before: "c".into(), after: "d".into() },
+        ];
+        let motions = [Motion::Moved, Motion::Stayed, Motion::Moved, Motion::Stayed];
+        let addresses = places(&[0, 4, 8], &[0, 4, 8]);
+        let rows = side_by_side(&lines, &addresses, &motions);
+        assert_eq!(rows[0].left.motion, Motion::Moved);
+        assert_eq!(rows[1].left.motion, Motion::Stayed);
+        assert_eq!(rows[2].right.motion, Motion::Moved);
+        let halves = unified(&lines, &addresses, &motions);
+        let moved: Vec<bool> = halves.iter().map(|half| half.motion == Motion::Moved).collect();
+        assert_eq!(moved, [true, false, true, false, false]);
+        assert!(unified(&lines, &addresses, &[]).iter().all(|half| half.motion == Motion::Stayed));
     }
 
     #[test]
