@@ -987,7 +987,8 @@ fn name_of_kind(kind: EditKind) -> &'static str {
 const ADDED_COLOR: Color = Color::FG_GREEN;
 const REMOVED_COLOR: Color = Color::FG_RED;
 const EDITED_COLOR: Color = Color::FG_YELLOW;
-/// The color of the lines of a jump that both sides hold.
+/// The color of the lines of a jump that both sides hold, and of a line in
+/// a block of code that moved.
 const GUTTER_COLOR: Color = Color::FG_BRIGHT_BLACK;
 
 /// Describe why two functions were paired.
@@ -1311,7 +1312,7 @@ fn print_pair_diff(
         before: line_places(view, before, pair.before),
         after: line_places(view, after, pair.after),
     };
-    for row in diff_rows(&lines, &places, paint) {
+    for row in diff_rows(&lines, &places, view, paint) {
         println!("{row}");
     }
 }
@@ -1321,8 +1322,9 @@ fn print_pair_diff(
 /// its target, marked `>`. The IL view indents each line by its depth in
 /// the jumps of the function. A function that draws no jump shows no
 /// lines at the left.
-fn diff_rows(lines: &[DiffLine], places: &tui::Places, paint: Paint) -> Vec<String> {
-    let halves = tui::unified(lines, places);
+fn diff_rows(lines: &[DiffLine], places: &tui::Places, view: View, paint: Paint) -> Vec<String> {
+    let motions = hereticus::matching::motions(lines, view);
+    let halves = tui::unified(lines, places, &motions);
     let gutter = tui::Gutter::of(&halves);
     let drawn = (0..halves.len())
         .any(|row| gutter.row(row).iter().any(|cell| cell.glyph != tui::Glyph::Blank));
@@ -1361,18 +1363,25 @@ fn render_gutter(cells: &[tui::Cell], paint: Paint) -> String {
 /// Draw one line of a diff with a leading sign, in the color of its kind.
 ///
 /// The signs follow a patch: a space for an unchanged line, `+` added, `-`
-/// removed, `~` for a line kept but retouched. Color repeats the sign so the line reads on a terminal that
-/// drops it and on one that keeps it.
+/// removed, `~` for a line kept but retouched. Color repeats the sign so the
+/// line reads on a terminal that drops it and on one that keeps it. A
+/// removed or added line in a block of code that moved is gray, as `git
+/// diff --color-moved` dims one: the code is the same, in another place.
 fn render_half(half: tui::Half<'_>, paint: Paint) -> String {
     let indent = half.indent();
+    let moved = half.motion == hereticus::matching::Motion::Moved;
+    let (added, removed) = match moved {
+        true => (GUTTER_COLOR, GUTTER_COLOR),
+        false => (ADDED_COLOR, REMOVED_COLOR),
+    };
     match half.side {
         tui::Side::Empty => String::new(),
         tui::Side::Same(text) => format!("  {indent}{text}"),
         tui::Side::Added(text) => {
-            paint.pick(ADDED_COLOR).colorize(format!("+ {indent}{text}")).to_string()
+            paint.pick(added).colorize(format!("+ {indent}{text}")).to_string()
         }
         tui::Side::Removed(text) => {
-            paint.pick(REMOVED_COLOR).colorize(format!("- {indent}{text}")).to_string()
+            paint.pick(removed).colorize(format!("- {indent}{text}")).to_string()
         }
         tui::Side::Changed(text) => {
             paint.pick(EDITED_COLOR).colorize(format!("~ {indent}{text}")).to_string()
@@ -2158,7 +2167,7 @@ mod tests {
         let after = places_of(&[(0, Some(3)), (1, None), (1, None), (0, None)]);
         let places = tui::Places { before, after };
         assert_eq!(
-            diff_rows(&lines, &places, Paint::Off),
+            diff_rows(&lines, &places, View::Il, Paint::Off),
             [
                 "┌───<   if (r0 == 0) goto $+0xc",
                 "│         r1 = 1",
@@ -2177,8 +2186,28 @@ mod tests {
             before: places_of(&[(0, None)]),
             after: places_of(&[(0, None), (0, None)]),
         };
-        assert_eq!(diff_rows(&lines, &places, Paint::Off), ["  r0 = 1", "+ return"]);
-        assert!(diff_rows(&[], &tui::Places::default(), Paint::Off).is_empty());
+        assert_eq!(diff_rows(&lines, &places, View::Il, Paint::Off), ["  r0 = 1", "+ return"]);
+        assert!(diff_rows(&[], &tui::Places::default(), View::Il, Paint::Off).is_empty());
+    }
+
+    /// A block of code that moved prints gray, and a line that changed
+    /// prints red or green.
+    #[test]
+    fn a_block_that_moved_prints_gray() {
+        let mut lines: Vec<DiffLine> =
+            ["a", "b", "c"].iter().map(|text| DiffLine::Removed(text.to_string())).collect();
+        lines.push(DiffLine::Same("x".into()));
+        lines.extend(["a", "b", "c"].iter().map(|text| DiffLine::Added(text.to_string())));
+        lines.push(DiffLine::Added("d".into()));
+        let places =
+            tui::Places { before: places_of(&[(0, None); 4]), after: places_of(&[(0, None); 5]) };
+        let rows = diff_rows(&lines, &places, View::Il, Paint::On);
+        let gray = Paint::On.pick(GUTTER_COLOR).colorize("- a").to_string();
+        let green = Paint::On.pick(ADDED_COLOR).colorize("+ d").to_string();
+        assert_eq!(rows[0], gray);
+        assert_eq!(rows[7], green);
+        let plain = diff_rows(&lines, &places, View::Il, Paint::Off);
+        assert_eq!(plain[0], "- a", "the sign stays");
     }
 
     /// The line of an added jump takes the color of an added line.
@@ -2189,7 +2218,7 @@ mod tests {
             before: places_of(&[(0, None)]),
             after: places_of(&[(0, Some(1)), (0, None)]),
         };
-        let rows = diff_rows(&lines, &places, Paint::On);
+        let rows = diff_rows(&lines, &places, View::Il, Paint::On);
         let green = Paint::On.pick(ADDED_COLOR).colorize("<").to_string();
         assert!(rows[0].contains(&green), "{rows:?}");
     }

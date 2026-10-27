@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use hereticus::address::Contents;
 use hereticus::matching::{
-    Diff, DiffLine, EditKind, PairedLabels, View, instruction_diff_in, line_places,
+    Diff, DiffLine, EditKind, Motion, PairedLabels, View, instruction_diff_in, line_places, motions,
 };
 use hereticus::obj::Binary;
 use ratatui::DefaultTerminal;
@@ -182,6 +182,8 @@ struct Labeled {
 /// again.
 #[derive(Debug)]
 struct Opened {
+    /// The view the lines show.
+    view: View,
     lines: Vec<DiffLine>,
     /// The lines of the other view and their places, once shown, so `v`
     /// back is at once.
@@ -201,14 +203,17 @@ struct Opened {
     /// The jumps of each column of the present layout, drawn as lines: the
     /// left and the right side by side, or the one column unified.
     gutters: Vec<flows::Gutter>,
+    /// Whether each line of `lines` is in a block of code that moved.
+    motions: Vec<Motion>,
 }
 
 impl Opened {
     /// Lay the rows out again, for another layout or other lines.
     fn relayout(&mut self, layout: Layout) {
+        self.motions = motions(&self.lines, self.view);
         (self.changes, self.gutters) = match layout {
             Layout::SideBySide => {
-                let rows = side_by_side(&self.lines, &self.places);
+                let rows = side_by_side(&self.lines, &self.places, &self.motions);
                 let left: Vec<_> = rows.iter().map(|row| row.left).collect();
                 let right: Vec<_> = rows.iter().map(|row| row.right).collect();
                 (
@@ -217,7 +222,7 @@ impl Opened {
                 )
             }
             Layout::Unified => {
-                let halves = unified(&self.lines, &self.places);
+                let halves = unified(&self.lines, &self.places, &self.motions);
                 (
                     halves.iter().map(|half| half.is_change()).collect(),
                     vec![flows::Gutter::of(&halves)],
@@ -809,6 +814,7 @@ impl<'a> App<'a> {
             (Entry::New { function, .. }, None) => (alone(after, function, DiffLine::Added), None),
         };
         let mut opened = Opened {
+            view,
             lines,
             other_view: None,
             places,
@@ -817,6 +823,7 @@ impl<'a> App<'a> {
             changes: Vec::new(),
             starts: Vec::new(),
             gutters: Vec::new(),
+            motions: Vec::new(),
         };
         opened.relayout(self.layout);
         self.screen = Screen::Pair(Box::new(opened));
@@ -835,6 +842,7 @@ impl<'a> App<'a> {
             let lines = core::mem::replace(&mut opened.lines, lines);
             let places = core::mem::replace(&mut opened.places, places);
             opened.other_view = Some((lines, places));
+            opened.view = self.view;
             opened.relayout(self.layout);
             return;
         }
@@ -1517,7 +1525,7 @@ mod tests {
                 indented |= depths(&il).iter().any(|&depth| depth > 0);
                 if let Screen::Pair(opened) = &app.screen {
                     assert_eq!(opened.gutters.len(), 2, "{arch}: a gutter for each side");
-                    let rows = side_by_side(&opened.lines, &opened.places).len();
+                    let rows = side_by_side(&opened.lines, &opened.places, &opened.motions).len();
                     jumps_drawn |= opened.gutters.iter().any(|gutter| {
                         (0..rows).any(|row| gutter.head(row).glyph == flows::Glyph::Source)
                     });
@@ -1527,12 +1535,14 @@ mod tests {
                 press(&mut app, &[KeyCode::Char('v')]);
                 assert_eq!(places(&app), il, "{arch}: the IL again");
                 let side_by_side_depths: Vec<usize> = match &app.screen {
-                    Screen::Pair(opened) => side_by_side(&opened.lines, &opened.places)
-                        .iter()
-                        .flat_map(|row| [row.left, row.right])
-                        .filter(|half| half.address().is_some())
-                        .map(|half| half.depth())
-                        .collect(),
+                    Screen::Pair(opened) => {
+                        side_by_side(&opened.lines, &opened.places, &opened.motions)
+                            .iter()
+                            .flat_map(|row| [row.left, row.right])
+                            .filter(|half| half.address().is_some())
+                            .map(|half| half.depth())
+                            .collect()
+                    }
                     _ => panic!("the diff stays open"),
                 };
                 assert_eq!(
@@ -1559,7 +1569,7 @@ mod tests {
         };
         let pair = &diff.matched[index];
         let Screen::Pair(opened) = &app.screen else { panic!("the diff opens") };
-        let rows = side_by_side(&opened.lines, &opened.places);
+        let rows = side_by_side(&opened.lines, &opened.places, &opened.motions);
         let first = |side: fn(&rows::SideRow<'_>) -> Option<u64>| rows.iter().find_map(side);
         assert_eq!(first(|row| row.left.address()), Some(before.functions[pair.before].address));
         assert_eq!(first(|row| row.right.address()), Some(after.functions[pair.after].address));
@@ -2259,7 +2269,7 @@ mod tests {
     /// The text of each row of `lines` in one column, as the TUI draws it:
     /// the jumps at the left, then the address, the sign and the line.
     fn flow_text(lines: &[DiffLine], places: &Places) -> String {
-        let halves = unified(lines, places);
+        let halves = unified(lines, places, &[]);
         let gutter = flows::Gutter::of(&halves);
         let width = draw::address_width(
             places.before.iter().chain(&places.after).map(|place| place.address),

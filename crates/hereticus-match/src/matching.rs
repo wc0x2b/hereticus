@@ -39,6 +39,7 @@ mod change;
 mod exits;
 mod files;
 mod lines;
+mod motion;
 mod moved;
 mod near_miss;
 mod score;
@@ -46,6 +47,7 @@ mod tables;
 
 use cascade::Cascade;
 pub use lines::{DiffLine, LinePlace, View, instruction_diff, instruction_diff_in, line_places};
+pub use motion::{FEWEST_MOVED_LINES, Motion, motions};
 pub use score::similarity;
 use score::{CLOSE_SIMILARITY, FLOW_DEPTH, LARGEST_PLAIN_CONSTANT, sorted_shared};
 
