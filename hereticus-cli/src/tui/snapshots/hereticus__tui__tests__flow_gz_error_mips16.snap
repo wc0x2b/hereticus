@@ -1,0 +1,107 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+expression: text
+---
+      4c50   v0 = _gp
+      4c52   store.32 [sp - 0xc] = s0, s1, ra; sp = sp - 0x40
+      4c54   a3 = a0
+      4c56   a0 = load.32 [a0 + 0x68]
+      4c58   gp = v0
+      4c5a   store.32 [sp + 0x18] = v0
+      4c5c   s0 = gp
+      4c5e   s1 = a2
+┌───< 4c60   if (a0 == 0) goto $+0xc
+│     4c62     v0 = load.32 [a3 + 0x64]
+│     4c64     v0 = v0 + 4
+│     4c66     if (v0 != 0) goto $+0xa6
+│     4c68       v0 = 0
+│     4c6a       store.32 [a3 + 0x68] = v0
+└───> 4c6c   if (a1 != 0) goto $+0x8c
+      4c6e     store.32 [a3 + 0x64] = a1
+┌───< 4c70     if (s1 == 0) goto $+0x84
+│     4c72   v0 = load.32 [a3 + 0x18]
+│     4c74   store.32 [sp + 0x40] = a3
+│     4c76   a0 = v0
+│     4c78   store.32 [sp + 0x20] = v0
+│     4c7a   v0 = load.32 [@strlen]
+│     4c7e   call strlen
+│     4c80   t9 = v0
+│     4c82   a0 = s1
+│     4c84   a2 = load.32 [sp + 0x18]
+│     4c86   store.32 [sp + 0x24] = v0
+│     4c88   v0 = load.32 [@strlen]
+│     4c8c   gp = a2
+│     4c8e   call strlen
+│     4c90   t9 = v0
+│     4c92   v1 = load.32 [sp + 0x24]
+│     4c94   a2 = load.32 [sp + 0x18]
+│     4c96   a0 = v1 + v0
+│     4c98   v0 = load.32 [@malloc]
+│     4c9c   gp = a2
+│     4c9e   a0 = a0 + 3
+│     4ca0   call malloc
+│     4ca2   t9 = v0
+│     4ca4   a3 = load.32 [sp + 0x40]
+│     4ca6   a2 = load.32 [sp + 0x18]
+│     4ca8   store.32 [sp + 0x24] = v0
+│     4caa   gp = a2
+│     4cac   store.32 [a3 + 0x68] = v0
+│     4cae   if (v0 == 0) goto $+0x7e
+│     4cb0     v0 = load.32 [@strlen]
+│     4cb4     a0 = load.32 [sp + 0x20]
+│     4cb6     call strlen
+│     4cb8     t9 = v0
+│     4cba     a0 = s1
+│     4cbc     a2 = load.32 [sp + 0x18]
+│     4cbe     store.32 [sp + 0x28] = v0
+│     4cc0     v0 = load.32 [@strlen]
+│     4cc4     gp = a2
+│     4cc6     call strlen
+│     4cc8     t9 = v0
+│     4cca     v1 = load.32 [sp + 0x28]
+│     4ccc     a2 = load.32 [sp + 0x18]
+│     4cce     a3 = load.32 [sp + 0x20]
+│     4cd0     a1 = v1 + v0
+│     4cd2     v0 = &page
+│     4cd6     gp = a2
+│     4cd8     a2 = &page
+│     4cdc     s0 = load.32 [@snprintf]
+│     4ce0     a1 = a1 + 3
+│     4ce2     v0 = &": "
+│     4ce6     a0 = load.32 [sp + 0x24]
+│     4ce8     a2 = &"%s%s%s"
+│     4cec     store.32 [sp + 0x14] = s1
+│     4cee     store.32 [sp + 0x10] = v0
+│     4cf0     call snprintf
+│     4cf2     t9 = s0
+└┬┬┬> 4cf4   s0, s1, ra = load.32 [sp + 0x34]; sp = sp + 0x40
+ │││  4cf6   return
+ │││  4cf8   v0 = a1 + 5
+┌┼┼┼< 4cfa   if (v0 == 0) goto $+0x2c
+││││  4cfc     v0 = 0
+││││  4cfe     store.32 [a3 + 0x64] = a1
+││││  4d00     store.32 [a3] = v0
+│││└< 4d02     if (s1 == 0) goto $-0xe
+│││   4d04     a1 = a1 + 4
+│││   4d06     if (a1 != 0) goto $-0x94
+│││   4d08     s0, s1, ra = load.32 [sp + 0x34]; sp = sp + 0x40
+│││   4d0a     return
+│││   4d0c   v0 = load.32 [s0 + -0x7FD4]
+│││   4d10   store.32 [sp + 0x44] = a1
+│││   4d12   store.32 [sp + 0x40] = a3
+│││   4d14   call v0
+│││   4d16   t9 = v0
+│││   4d18   v0 = 0
+│││   4d1a   a3 = load.32 [sp + 0x40]
+│││   4d1c   a2 = load.32 [sp + 0x18]
+│││   4d1e   a1 = load.32 [sp + 0x44]
+│││   4d20   gp = a2
+│││   4d22   store.32 [a3 + 0x68] = v0
+│││   4d24   goto $-0xb8
+└┼┼─> 4d26   store.32 [a3 + 0x64] = a1
+ ││   4d28   if (s1 != 0) goto $-0xb6
+ │└─< 4d2a   goto $-0x36
+ │    4d2c   v0 = 4
+ │    4d2e   v0 = -v0
+ │    4d30   store.32 [a3 + 0x64] = v0
+ └──< 4d32   goto $-0x3e

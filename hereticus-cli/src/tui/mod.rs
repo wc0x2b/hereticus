@@ -2244,4 +2244,81 @@ mod tests {
         app.handle_mouse(click(10, app.regions.list.y));
         assert_eq!(app.table.selected(), selected);
     }
+
+    /// A library of the backports, built by GCC at -O2 for `arch`.
+    fn library(project: &str, variant: &str, arch: &str) -> Binary {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../fixtures/build/backports/{project}-{variant}"))
+            .join(format!("{arch}-gcc-O2/lib.so"));
+        let data = std::fs::read(&path)
+            .unwrap_or_else(|err| panic!("{}: {err}, run `just backports` first", path.display()));
+        Binary::parse(&data).expect("a fixture library parses")
+    }
+
+    /// The text of each row of `lines` in one column, as the TUI draws it:
+    /// the jumps at the left, then the address, the sign and the line.
+    fn flow_text(lines: &[DiffLine], places: &Places) -> String {
+        let halves = unified(lines, places);
+        let gutter = flows::Gutter::of(&halves);
+        let width = draw::address_width(
+            places.before.iter().chain(&places.after).map(|place| place.address),
+        );
+        halves
+            .iter()
+            .enumerate()
+            .map(|(row, half)| {
+                let line = draw::half_line(*half, width, gutter.row(row));
+                let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+                text.trim_end().to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The IL of `gz_error` of zlib with the lines of its jumps, as the TUI
+    /// shows a function alone, so a change to how any jump is drawn shows
+    /// in review. It mirrors `the_il_of_a_function_is_locked` of the
+    /// library.
+    #[test]
+    fn the_flow_of_a_function_is_locked() {
+        for arch in ["arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64"] {
+            let binary = library("zlib", "before", arch);
+            let index =
+                binary.functions.iter().position(|f| f.name == "gz_error").expect("gz_error");
+            let lines = instruction_diff_in(View::Il, None, &binary, index, &binary, index);
+            let shown = line_places(View::Il, &binary, index);
+            let places = Places { before: shown.clone(), after: shown };
+            let text = flow_text(&lines, &places);
+            assert!(text.contains('<') && text.contains('>'), "{arch}: a jump is drawn\n{text}");
+            insta::assert_snapshot!(format!("flow_gz_error_{arch}"), text);
+        }
+    }
+
+    /// The IL diff of the Lua fix with the lines of its jumps, as the TUI
+    /// shows it unified. It mirrors `the_il_diff_of_a_fix_is_locked` of the
+    /// library.
+    #[test]
+    fn the_flow_of_a_fix_is_locked() {
+        for arch in ["arm", "aarch64", "mips16"] {
+            let (before, after) = (library("lua", "before", arch), library("lua", "after", arch));
+            let diff = diff_with(&before, &after, Options::default());
+            let index =
+                before.functions.iter().position(|f| f.name == "luaZ_fill").expect("luaZ_fill");
+            let pair =
+                diff.matched.iter().find(|pair| pair.before == index).expect("luaZ_fill pairs");
+            let lines = instruction_diff_in(
+                View::Il,
+                Some(&diff.paired_labels(&before, &after)),
+                &before,
+                pair.before,
+                &after,
+                pair.after,
+            );
+            let places = Places {
+                before: line_places(View::Il, &before, pair.before),
+                after: line_places(View::Il, &after, pair.after),
+            };
+            insta::assert_snapshot!(format!("flow_lua_fix_{arch}"), flow_text(&lines, &places));
+        }
+    }
 }

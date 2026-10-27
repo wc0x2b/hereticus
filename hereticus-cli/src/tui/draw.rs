@@ -459,7 +459,7 @@ fn name_span(text: String, matched: bool) -> Span<'static> {
 }
 
 /// How many hex digits the widest address takes.
-fn address_width(addresses: impl Iterator<Item = u64>) -> usize {
+pub(super) fn address_width(addresses: impl Iterator<Item = u64>) -> usize {
     let widest = addresses.max().unwrap_or(0);
     (u64::BITS - widest.leading_zeros()).div_ceil(4).max(1) as usize
 }
@@ -472,7 +472,11 @@ const MOST_INDENT_LEVELS: usize = 8;
 /// A line of a diff: the lines of the jumps that pass it, the address of
 /// its instruction in gray, then the line with the sign and the color of a
 /// patch, indented two spaces for each level deep it sits.
-fn half_line(half: Half<'_>, width: usize, gutter: [flows::Cell; flows::WIDTH]) -> Line<'static> {
+pub(super) fn half_line(
+    half: Half<'_>,
+    width: usize,
+    gutter: [flows::Cell; flows::WIDTH],
+) -> Line<'static> {
     let (sign, text, color) = match half.side {
         // A jump goes on past a row that shows no line of its side.
         Side::Empty if gutter.iter().all(|cell| cell.glyph == flows::Glyph::Blank) => {
