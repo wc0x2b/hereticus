@@ -258,6 +258,7 @@ fn instruction_lines(
     let lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
     let pages = page_loads(insns, &lifts, &formed);
     let mut last_compare: Option<Compared> = None;
+    let carry = CarryFlag::of(arch.triple());
     let is_mips = arch.triple().starts_with("mips");
     let mut float_conditions = FloatConditions::default();
     // The callee of each call, as the architecture follows it, as through
@@ -296,7 +297,7 @@ fn instruction_lines(
             let shown: Vec<&str> =
                 tokens.iter().copied().filter(|token| !token.is_empty()).collect();
             if let Some(named) = named {
-                forget_overwritten_flags(insn, &named.lifted, &shown, &mut last_compare);
+                forget_overwritten_flags(insn, &named.lifted, &shown, carry, &mut last_compare);
             }
             // A call can run on a condition, as `blne` does.
             let conditional = |text: String, op| match a32_condition(insn, op) {
@@ -787,6 +788,47 @@ struct Compared {
     kind: CompareKind,
 }
 
+/// Which condition on the flags reads a carry out of a sum: the order of
+/// unsigned values that a compare would leave with the carry flag set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CarryFlag {
+    /// x86 sets the carry flag where a compare finds `left < right`, the
+    /// borrow of the subtract.
+    SetBelow,
+    /// A32, T32 and AArch64 set it where a compare finds `left >= right`:
+    /// a subtract sets it where it does not borrow.
+    SetAtOrAbove,
+}
+
+impl CarryFlag {
+    fn of(triple: &str) -> Self {
+        match triple.starts_with("x86_64") || triple.starts_with("i386") {
+            true => Self::SetBelow,
+            false => Self::SetAtOrAbove,
+        }
+    }
+
+    /// The condition that tests that the carry flag is set.
+    fn set(self) -> Cond {
+        match self {
+            Self::SetBelow => Cond::UnsignedLess,
+            Self::SetAtOrAbove => Cond::UnsignedGreaterOrEqual,
+        }
+    }
+}
+
+/// What made the result whose flags a branch tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResultOf {
+    /// An add, whose carry says that the sum of unsigned values overflowed.
+    Sum(CarryFlag),
+    /// A subtract, whose carry says that it borrowed.
+    Difference,
+    /// Another operation, whose flags say only whether the result is zero
+    /// and whether it is negative.
+    Other,
+}
+
 /// How a compare combined its two values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CompareKind {
@@ -794,33 +836,51 @@ enum CompareKind {
     Add,
     And,
     /// The flags of the result of an operation, as `subs x0, x0, #1` or
-    /// the x86 `sub` leaves them, held in `left`. They tell only whether
-    /// the result is zero and whether it is negative: the value before the
-    /// operation is gone.
-    Result,
+    /// the x86 `sub` leaves them, held in `left`. They tell whether the
+    /// result is zero and whether it is negative, and for an add or a
+    /// subtract whether it carried and overflowed: the values before the
+    /// operation are gone.
+    Result(ResultOf),
 }
 
 /// What the flags hold after `lifted`, where it writes them and is no
-/// compare: the result of an `add`, `sub`, `and`, `or` or `xor` that runs
-/// always, against zero, or else nothing a branch can name.
+/// compare: the result of an `add`, `sub`, `and`, `or`, `xor`, or of a
+/// shift by a constant that is not 0, that runs always, or else nothing a
+/// branch can name. A shift by a register can shift by 0 and keep the
+/// flags, and a rotate of x86 writes only the carry.
 ///
 /// A compare sets `last_compare` where its statement is made.
 fn forget_overwritten_flags(
     insn: &Insn,
     lifted: &Lifted,
     shown: &[&str],
+    carry: CarryFlag,
     last_compare: &mut Option<Compared>,
 ) {
     if !lifted.writes.contains(Reg::Flags) || lifted.op == Op::Compare {
         return;
     }
-    let sets_by_result = matches!(lifted.op, Op::Add | Op::Subtract | Op::And | Op::Or | Op::Xor);
+    // `inc` and `dec` of x86 keep the carry flag of the code before them.
+    let keeps_carry = || {
+        let text = insn.to_string();
+        text.starts_with("inc ") || text.starts_with("dec ")
+    };
+    let shifts_by_constant = matches!(lifted.operands.last(), Some(Operand::Const(1..)));
+    let result_of = match lifted.op {
+        Op::Add if !keeps_carry() => Some(ResultOf::Sum(carry)),
+        Op::Subtract if !keeps_carry() => Some(ResultOf::Difference),
+        Op::Add | Op::Subtract | Op::And | Op::Or | Op::Xor => Some(ResultOf::Other),
+        Op::ShiftLeft | Op::ShiftRight | Op::ShiftRightArithmetic if shifts_by_constant => {
+            Some(ResultOf::Other)
+        }
+        _ => None,
+    };
     let runs_always = a32_condition(insn, Some(lifted.op)).is_none();
-    *last_compare = match (sets_by_result && runs_always, shown.first()) {
-        (true, Some(dest)) => Some(Compared {
+    *last_compare = match (result_of.filter(|_| runs_always), shown.first()) {
+        (Some(result_of), Some(dest)) => Some(Compared {
             left: (*dest).to_string(),
             right: "0".to_string(),
-            kind: CompareKind::Result,
+            kind: CompareKind::Result(result_of),
         }),
         _ => None,
     };
@@ -1003,11 +1063,31 @@ fn condition_text(cond: Cond, compared: Option<&Compared>) -> String {
             None => format!("flags.{cond:?}"),
         },
         (CompareKind::And, cond) => format!("flags.{cond:?}"),
-        (CompareKind::Result, Cond::Equal) => format!("{left} == 0"),
-        (CompareKind::Result, Cond::NotEqual) => format!("{left} != 0"),
-        (CompareKind::Result, Cond::Negative) => format!("{left} < 0"),
-        (CompareKind::Result, Cond::NotNegative) => format!("{left} >= 0"),
-        (CompareKind::Result, cond) => format!("flags.{cond:?}"),
+        (CompareKind::Result(_), Cond::Equal) => format!("{left} == 0"),
+        (CompareKind::Result(_), Cond::NotEqual) => format!("{left} != 0"),
+        (CompareKind::Result(_), Cond::Negative) => format!("{left} < 0"),
+        (CompareKind::Result(_), Cond::NotNegative) => format!("{left} >= 0"),
+        (
+            CompareKind::Result(ResultOf::Sum(_) | ResultOf::Difference),
+            Cond::Overflow | Cond::NoOverflow,
+        ) => match cond == Cond::Overflow {
+            true => "overflow".to_string(),
+            false => "!overflow".to_string(),
+        },
+        (
+            CompareKind::Result(ResultOf::Sum(carry)),
+            Cond::UnsignedLess | Cond::UnsignedGreaterOrEqual,
+        ) => match cond == carry.set() {
+            true => "carry".to_string(),
+            false => "!carry".to_string(),
+        },
+        // A compare finds `left < right`, unsigned, where the subtract
+        // borrows, on every architecture.
+        (CompareKind::Result(ResultOf::Difference), Cond::UnsignedLess) => "borrow".to_string(),
+        (CompareKind::Result(ResultOf::Difference), Cond::UnsignedGreaterOrEqual) => {
+            "!borrow".to_string()
+        }
+        (CompareKind::Result(_), cond) => format!("flags.{cond:?}"),
     }
 }
 
@@ -2489,16 +2569,53 @@ mod tests {
         assert_eq!(shown[2], "if (flags.SignedLess) goto $+0x2", "{shown:?}");
     }
 
-    /// An operation that sets the flags, but not from one result a branch
-    /// can name, leaves no compare.
+    /// A shift by a constant that is not 0 sets the zero flag from its
+    /// result. A shift by a register can shift by 0 and keep the flags, and
+    /// a rotate writes only the carry, so a branch after either tests only
+    /// the flags.
     #[test]
-    fn a_branch_after_a_shift_tests_only_the_flags_on_x86() {
+    fn a_branch_after_a_shift_tests_its_result_where_it_can_on_x86() {
         // cmp rdi, 5; shl rsi, 1; jne $+0x2
         let shown = x86_lines("4883ff0548d1e67500");
+        assert_eq!(shown[2], "if (rsi != 0) goto $+0x2", "{shown:?}");
+        // cmp rdi, 5; shl rsi, cl; jne; cmp rdi, 5; rol rsi, 3; jne
+        let shown = x86_lines("4883ff0548d3e675004883ff0548c1c6037500");
         assert_eq!(shown[2], "if (flags.NotEqual) goto $+0x2", "{shown:?}");
+        assert_eq!(shown[5], "if (flags.NotEqual) goto $+0x2", "{shown:?}");
         // cmp rdi, 5; mov rsi, rax; jne $+0x2: a move keeps the flags.
         let shown = x86_lines("4883ff054889c67500");
         assert_eq!(shown[2], "if (rdi != 5) goto $+0x2", "{shown:?}");
+    }
+
+    /// The carry after an add says that the sum overflowed, and after a
+    /// subtract that it borrowed. x86 sets the carry flag on a borrow, and
+    /// ARM clears it.
+    #[test]
+    fn a_branch_on_the_carry_after_an_add_or_a_subtract_names_it() {
+        let tests = |lines: Vec<String>| -> Vec<String> {
+            lines
+                .iter()
+                .filter_map(|line| line.strip_prefix("if (")?.split(") goto").next())
+                .map(str::to_string)
+                .collect()
+        };
+        // add eax, edx; jb; jae; jo
+        assert_eq!(tests(x86_lines("01d0720473027000")), ["carry", "!carry", "overflow"]);
+        // sub eax, edx; jb; jae
+        assert_eq!(tests(x86_lines("29d072027300")), ["borrow", "!borrow"]);
+        // cmp rdi, 5; inc eax; jb; je: `inc` keeps the carry of the code
+        // before it, and sets the zero flag.
+        assert_eq!(tests(x86_lines("4883ff05ffc072027400")), ["flags.UnsignedLess", "eax == 0"]);
+        // adds r1, r4, r6; bhs; blo; subs r2, r2, #1; blo; bvs
+        use hereticus_il::arch::arm32::Arm32;
+        let code = hex("061094e00300002a0200003a012052e20000003affffff6a");
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        let arm = tests(il_lines(&Arm32, &code, &insns));
+        assert_eq!(arm, ["carry", "!carry", "borrow", "overflow"]);
+        // adds x1, x1, x2; b.cs; b.cc
+        let code = hex("210002ab4200005423000054");
+        let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
+        assert_eq!(tests(il_lines(&Aarch64, &code, &insns)), ["carry", "!carry"]);
     }
 
     #[test]
