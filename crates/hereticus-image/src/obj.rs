@@ -534,11 +534,12 @@ impl Binary {
                 other_set.insert(address);
             }
             let Some(code) = symbol_code(&file, &symbol, address, size) else { continue };
-            functions.push(Function {
-                name: stable_name(symbol.name().unwrap_or_default()).to_string(),
-                address,
-                code,
-            });
+            let name = symbol.name().unwrap_or_default();
+            let name = match (file.format(), isa) {
+                (object::BinaryFormat::Pe, Isa::X86) => undecorated_c_name(name),
+                _ => name,
+            };
+            functions.push(Function { name: stable_name(name).to_string(), address, code });
         }
 
         if file.kind() == ObjectKind::Relocatable
@@ -979,9 +980,12 @@ fn symbol_code(
 /// GCC writes `__x86.get_pc_thunk.bx` and the other thunks of 32-bit PIC
 /// with no size once they are linked, and they are functions all the same:
 /// left out, each thunk read as code of the function before it. On another
-/// architecture a symbol of code with no size marks no function.
+/// architecture a symbol of code with no size marks no function in ELF.
+/// A COFF symbol of a PE file never gives a size, on any architecture.
 fn unsized_function_ends(file: &object::File<'_>, isa: Isa) -> BTreeMap<u64, u64> {
-    if !matches!(isa, Isa::X86 | Isa::X86_64) || file.kind() == ObjectKind::Relocatable {
+    let gives_no_size =
+        matches!(isa, Isa::X86 | Isa::X86_64) || file.format() == object::BinaryFormat::Pe;
+    if !gives_no_size || file.kind() == ObjectKind::Relocatable {
         return BTreeMap::new();
     }
     let starts: BTreeSet<u64> = file
@@ -1003,6 +1007,28 @@ fn unsized_function_ends(file: &object::File<'_>, isa: Isa) -> BTreeMap<u64, u64
             (!code.is_empty()).then(|| (start, start + code.len() as u64))
         })
         .collect()
+}
+
+/// The name of a C function of 32-bit Windows, as its symbol `name` gives
+/// it with the decoration of its calling convention.
+///
+/// MSVC and clang put `_` before a `__cdecl` or `__stdcall` name and `@`
+/// before a `__fastcall` one, and the size of the arguments after a
+/// `__stdcall` or `__fastcall` one, as `_send@16`. The export and import
+/// directories name the function without them. A C++ name starts with `?`
+/// and keeps its decoration.
+fn undecorated_c_name(name: &str) -> &str {
+    let Some(bare) = name.strip_prefix('_').or_else(|| name.strip_prefix('@')) else {
+        return name;
+    };
+    match bare.rsplit_once('@') {
+        Some((base, size))
+            if !base.is_empty() && !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => bare,
+    }
 }
 
 /// How a function's instructions are encoded, where an architecture has a
@@ -1368,6 +1394,19 @@ fn has_code_section(file: &object::File<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_32_bit_windows_c_name_loses_its_decoration() {
+        assert_eq!(undecorated_c_name("_handle"), "handle");
+        assert_eq!(undecorated_c_name("_send@16"), "send");
+        assert_eq!(undecorated_c_name("@fast@8"), "fast");
+        assert_eq!(undecorated_c_name("__imp_log"), "_imp_log", "one `_` only");
+        assert_eq!(undecorated_c_name("?f@@YAHH@Z"), "?f@@YAHH@Z", "C++");
+        assert_eq!(undecorated_c_name("plain"), "plain");
+        assert_eq!(undecorated_c_name("_a@b"), "a@b", "no size after the `@`");
+        assert_eq!(undecorated_c_name("_@4"), "@4", "no name before the size");
+        assert_eq!(undecorated_c_name("_"), "");
+    }
 
     #[test]
     fn rejects_bytes_that_are_not_an_object() {

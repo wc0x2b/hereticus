@@ -240,10 +240,11 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
 }
 
 /// The index of a PE file: each function its exception directory lists,
-/// and each function it exports. Empty where `file` is no PE file.
+/// each function it exports, and its entry point. Empty where `file` is no
+/// PE file.
 ///
-/// The directory leaves out each leaf function, and an export of one is
-/// exact at its start only, so an export with no entry of its own starts
+/// The directory leaves out each leaf function, and an export or the entry
+/// point is exact at its start only, so one with no entry of its own starts
 /// a range that is scanned as code with no index.
 fn pe_index(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<IndexEntry> {
     let mut index = index_from_ranges(&crate::pe::function_ranges(file), arch);
@@ -252,6 +253,7 @@ fn pe_index(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<IndexEntry> {
         crate::pe::exports(file)
             .into_iter()
             .map(|(address, _)| address)
+            .chain(crate::pe::entry_point(file))
             .filter(|address| !listed.contains(address))
             .map(|address| IndexEntry { address, unwinding: Unwinding::CannotUnwind }),
     );

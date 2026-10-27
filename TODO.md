@@ -102,10 +102,9 @@ worth reading.
 x86-64 and 32-bit x86 ELF are read, with the backports built by GCC and
 clang for both, and the releases built as executables that are not PIC
 (`tests/nopic.rs`). An Intel Mach-O dylib is read too, but a universal
-binary only by its AArch64 slice (`tests/macho.rs`). x86-64 PE DLLs are
-read, stripped or not (`tests/pe.rs`). Still to do: the exception
-directory of 32-bit x86 and ARM64 PE files, and imports that load late
-(the delay-load directory); the x86-64 slice of a universal binary; and
+binary only by its AArch64 slice (`tests/macho.rs`). PE DLLs for x86-64,
+32-bit x86 and ARM64 are read, stripped or not, and x86-64 executables
+(`tests/pe.rs`). Still to do: the x86-64 slice of a universal binary; and
 the published fixes of `real-life-reports/` for x86-64, where most of them
 ship.
 

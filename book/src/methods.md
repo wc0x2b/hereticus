@@ -71,8 +71,11 @@ dynamic segment still gives the dynamic symbols and the relocations.
 
 A call from a PE file to a DLL goes through a slot of the import address
 table, directly or through a thunk that jumps through the slot. The import
-directory names the symbol of each slot, so each thunk takes the name of
-its import, as the linker gives it.
+directory names the symbol of each slot, and the delay-load directory each
+slot of a DLL that loads on the first call, so each thunk takes the name of
+its import, as the linker gives it. A symbol of 32-bit Windows drops the
+`_` or `@` that its calling convention adds, as `_send@16`, so that it
+agrees with the names of the exports and the imports.
 
 ### The Load Address of a Raw Image
 
@@ -132,8 +135,8 @@ uses these sources, the strongest first:
    directory, which gives the start of each function it exports.
 2. **The unwind tables.** `.ARM.exidx` and `.eh_frame` give the start of
    each function, and `.eh_frame` gives its end too. The exception
-   directory of an x86-64 PE file, `.pdata`, gives the start and the end
-   of each function that changes the stack. They stay after stripping,
+   directory of an x86-64 or ARM64 PE file, `.pdata`, gives the start and
+   the length of each function that changes the stack. They stay after stripping,
    because the unwinder needs them at run time.
 3. **Call targets.** A call goes to the start of a function. A slot of the
    GOT that a call goes through holds the start of one.

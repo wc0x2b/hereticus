@@ -1,20 +1,23 @@
 //! Read what a Windows PE file says about its functions and its calls.
 //!
-//! An x86-64 PE file holds an exception directory, the `.pdata` section,
-//! with the start and the end of each function that changes the stack.
-//! Windows unwinds through it, so stripping keeps it. A leaf function that
-//! does not change the stack needs no entry, so the code between two entries
-//! is scanned as code with no index.
+//! An x86-64 or ARM64 PE file holds an exception directory, the `.pdata`
+//! section, with the start and the length of each function that changes
+//! the stack. Windows unwinds through it, so stripping keeps it. A leaf
+//! function that does not change the stack needs no entry, so the code
+//! between two entries is scanned as code with no index. 32-bit x86 has no
+//! such directory.
 //!
 //! A call to another DLL goes through a slot of the import address table,
-//! and the import directory names the symbol each slot holds. The export
-//! directory names each function the DLL exports, by its start only.
+//! and the import directory names the symbol each slot holds. A DLL that
+//! loads on its first call has a slot in the delay-load directory instead.
+//! The export directory names each function the DLL exports, by its start
+//! only.
 
 use core::ops::Range;
 use std::collections::BTreeMap;
 
 use object::pe;
-use object::read::pe::{ExportTarget, ImageNtHeaders, Import, PeFile};
+use object::read::pe::{ExportTarget, ImageNtHeaders, Import, ImportThunkList, PeFile};
 use object::{LittleEndian as LE, Object, ObjectSection, SectionKind};
 
 /// The flag of unwind information that says the entry continues the
@@ -22,32 +25,60 @@ use object::{LittleEndian as LE, Object, ObjectSection, SectionKind};
 /// does.
 const UNW_FLAG_CHAININFO: u8 = 0x4;
 
+/// The bits of an ARM64 entry that say where its length is.
+const ARM64_FLAG: u32 = 0b11;
+/// The flag of an ARM64 entry whose unwind information lies in `.xdata`.
+const ARM64_XDATA: u32 = 0;
+/// The flag of an ARM64 entry that packs its unwind information.
+const ARM64_PACKED: u32 = 1;
+/// The flag of an ARM64 entry that packs the unwind information of a
+/// fragment of a function, with no prologue.
+const ARM64_PACKED_FRAGMENT: u32 = 2;
+/// The bits of the length, in words, of the function of an ARM64 entry,
+/// past the flag where the entry packs it, and at bit 0 of `.xdata`.
+const ARM64_PACKED_LENGTH: u32 = 0x7ff;
+const ARM64_XDATA_LENGTH: u32 = 0x3_ffff;
+/// An ARM64 instruction is one word.
+const ARM64_WORD: u64 = 4;
+
 /// Where each function that the exception directory of `file` lists starts
-/// and ends, in address order. Empty where `file` is no x86-64 PE file.
+/// and ends, in address order. Empty where `file` is no x86-64 or ARM64 PE
+/// file.
 ///
-/// An entry with chained unwind information that starts where the entry
-/// before it ends is one function with that entry, so the two are joined.
-/// A chained entry elsewhere, as a block that the compiler moved away from
-/// its function, is a range of its own.
+/// An entry with chained unwind information, or an ARM64 fragment, that
+/// starts where the entry before it ends is one function with that entry,
+/// so the two are joined. A chained entry elsewhere, as a block that the
+/// compiler moved away from its function, is a range of its own.
 pub fn function_ranges(file: &object::File<'_>) -> Vec<Range<u64>> {
     let object::File::Pe64(pe) = file else { return Vec::new() };
-    if pe.nt_headers().file_header.machine.get(LE) != pe::IMAGE_FILE_MACHINE_AMD64 {
-        return Vec::new();
-    }
     let data = pe.data();
     let sections = pe.section_table();
     let Some(directory) = pe.data_directory(pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION) else {
         return Vec::new();
     };
     let Ok(table) = directory.data(data, &sections) else { return Vec::new() };
+    let base = pe.relative_address_base();
+    let at = |rva: u32| sections.pe_data_at(data, rva);
+    match pe.nt_headers().file_header.machine.get(LE) {
+        pe::IMAGE_FILE_MACHINE_AMD64 => x64_ranges(table, base, at),
+        pe::IMAGE_FILE_MACHINE_ARM64 => arm64_ranges(table, base, at),
+        _ => Vec::new(),
+    }
+}
+
+/// The ranges of the x86-64 exception directory `table`, of an image at
+/// `base`, where `at` gives the bytes at an address relative to `base`.
+fn x64_ranges<'data>(
+    table: &[u8],
+    base: u64,
+    at: impl Fn(u32) -> Option<&'data [u8]>,
+) -> Vec<Range<u64>> {
     let Ok(entries) = object::pod::slice_from_all_bytes::<pe::ImageRuntimeFunctionEntry>(table)
     else {
         return Vec::new();
     };
-
-    let base = pe.relative_address_base();
     let unwind_of = |unwind_info: u32| {
-        let flags = sections.pe_data_at(data, unwind_info).and_then(|info| info.first());
+        let flags = at(unwind_info).and_then(|info| info.first());
         match flags
             .is_some_and(|&version_and_flags| (version_and_flags >> 3) & UNW_FLAG_CHAININFO != 0)
         {
@@ -59,6 +90,40 @@ pub fn function_ranges(file: &object::File<'_>) -> Vec<Range<u64>> {
         let start = base + u64::from(entry.begin_address.get(LE));
         let end = base + u64::from(entry.end_address.get(LE));
         (start..end, unwind_of(entry.unwind_info_address_or_data.get(LE)))
+    }))
+}
+
+/// The ranges of the ARM64 exception directory `table`, as
+/// [`x64_ranges`] reads one of x86-64.
+///
+/// An ARM64 entry gives the start of its function and the length, in
+/// words, either packed in the entry or at the start of its `.xdata`. An
+/// entry whose flag is reserved, or whose `.xdata` is not there, is left
+/// out.
+fn arm64_ranges<'data>(
+    table: &[u8],
+    base: u64,
+    at: impl Fn(u32) -> Option<&'data [u8]>,
+) -> Vec<Range<u64>> {
+    let Ok(entries) =
+        object::pod::slice_from_all_bytes::<pe::ImageArm64RuntimeFunctionEntry>(table)
+    else {
+        return Vec::new();
+    };
+    let packed_length = |unwind: u32| (unwind >> 2) & ARM64_PACKED_LENGTH;
+    let length_and_unwind = |unwind: u32| match unwind & ARM64_FLAG {
+        ARM64_XDATA => {
+            let header = at(unwind)?.first_chunk::<4>()?;
+            Some((u32::from_le_bytes(*header) & ARM64_XDATA_LENGTH, Unwind::Own))
+        }
+        ARM64_PACKED => Some((packed_length(unwind), Unwind::Own)),
+        ARM64_PACKED_FRAGMENT => Some((packed_length(unwind), Unwind::Chained)),
+        _ => None,
+    };
+    joined(entries.iter().filter_map(|entry| {
+        let (words, unwind) = length_and_unwind(entry.unwind_data.get(LE))?;
+        let start = base + u64::from(entry.begin_address.get(LE));
+        Some((start..start + u64::from(words) * ARM64_WORD, unwind))
     }))
 }
 
@@ -126,8 +191,9 @@ fn exports_of<'data, Pe: ImageNtHeaders>(pe: &PeFile<'data, Pe>) -> Vec<(u64, &'
         .collect()
 }
 
-/// The symbol each slot of the import address table of `file` holds, by the
-/// address of the slot. Empty where `file` is no PE file.
+/// The symbol each slot of the import address table of `file` holds, and
+/// each slot of its delay-load directory, by the address of the slot.
+/// Empty where `file` is no PE file.
 ///
 /// An import by ordinal has no name, so it reads as the DLL and the
 /// ordinal, as `ws2_32.dll#23`.
@@ -140,11 +206,19 @@ pub fn import_slot_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
 }
 
 fn slot_names_of<Pe: ImageNtHeaders>(pe: &PeFile<'_, Pe>) -> BTreeMap<u64, String> {
+    let mut names = bound_slot_names_of(pe);
+    // A DLL can import only through the delay-load directory, with no
+    // import directory at all.
+    names.extend(delayed_slot_names_of(pe));
+    names
+}
+
+/// The symbol each slot of the import directory of `pe` holds.
+fn bound_slot_names_of<Pe: ImageNtHeaders>(pe: &PeFile<'_, Pe>) -> BTreeMap<u64, String> {
     let mut names = BTreeMap::new();
     let Ok(Some(table)) = pe.import_table() else { return names };
     let Ok(mut descriptors) = table.descriptors() else { return names };
     let base = pe.relative_address_base();
-    let slot_width = core::mem::size_of::<Pe::ImageThunkData>() as u64;
     while let Ok(Some(descriptor)) = descriptors.next() {
         let Ok(library) = table.name(descriptor.name.get(LE)) else { continue };
         let library = String::from_utf8_lossy(library);
@@ -156,19 +230,83 @@ fn slot_names_of<Pe: ImageNtHeaders>(pe: &PeFile<'_, Pe>) -> BTreeMap<u64, Strin
             0 => slots,
             lookup => lookup,
         };
-        let Ok(mut thunks) = table.thunks(lookup) else { continue };
-        let mut slot = base + u64::from(slots);
-        while let Ok(Some(thunk)) = thunks.next::<Pe>() {
-            let name = match table.import::<Pe>(thunk) {
-                Ok(Import::Name(_, name)) => String::from_utf8_lossy(name).into_owned(),
-                Ok(Import::Ordinal(ordinal)) => format!("{library}#{ordinal}"),
-                Err(_) => break,
-            };
-            names.insert(slot, name);
-            slot += slot_width;
-        }
+        let Ok(thunks) = table.thunks(lookup) else { continue };
+        let first_slot = base + u64::from(slots);
+        name_slots::<Pe>(&mut names, thunks, first_slot, &library, |thunk| {
+            table.import::<Pe>(thunk)
+        });
     }
     names
+}
+
+/// The symbol each slot of the delay-load directory of `pe` holds.
+///
+/// A slot holds a thunk that loads the DLL, until the first call binds it.
+/// Only a directory that gives addresses relative to the image is read, as
+/// every linker since Visual C++ 7 writes it.
+fn delayed_slot_names_of<Pe: ImageNtHeaders>(pe: &PeFile<'_, Pe>) -> BTreeMap<u64, String> {
+    /// The attribute that says the directory gives relative addresses.
+    const RELATIVE_ADDRESSES: u32 = 1;
+
+    let mut names = BTreeMap::new();
+    let Ok(Some(table)) = pe.delay_load_import_table() else { return names };
+    let Ok(mut descriptors) = table.descriptors() else { return names };
+    let base = pe.relative_address_base();
+    while let Ok(Some(descriptor)) = descriptors.next() {
+        if descriptor.attributes.get(LE) & RELATIVE_ADDRESSES == 0 {
+            continue;
+        }
+        let Ok(library) = table.name(descriptor.dll_name_rva.get(LE)) else { continue };
+        let library = String::from_utf8_lossy(library);
+        let Ok(thunks) = table.thunks(descriptor.import_name_table_rva.get(LE)) else {
+            continue;
+        };
+        let first_slot = base + u64::from(descriptor.import_address_table_rva.get(LE));
+        name_slots::<Pe>(&mut names, thunks, first_slot, &library, |thunk| {
+            table.import::<Pe>(thunk)
+        });
+    }
+    names
+}
+
+/// Name the slots from `first_slot` on, one for each of `thunks`, which
+/// `import` reads, in `names`. An import by ordinal reads as `library` and
+/// the ordinal. A thunk that does not read ends the list.
+fn name_slots<'data, Pe: ImageNtHeaders>(
+    names: &mut BTreeMap<u64, String>,
+    mut thunks: ImportThunkList<'data>,
+    first_slot: u64,
+    library: &str,
+    import: impl Fn(Pe::ImageThunkData) -> object::Result<Import<'data>>,
+) {
+    let slot_width = core::mem::size_of::<Pe::ImageThunkData>() as u64;
+    let mut slot = first_slot;
+    while let Ok(Some(thunk)) = thunks.next::<Pe>() {
+        let name = match import(thunk) {
+            Ok(Import::Name(_, name)) => String::from_utf8_lossy(name).into_owned(),
+            Ok(Import::Ordinal(ordinal)) => format!("{library}#{ordinal}"),
+            Err(_) => break,
+        };
+        names.insert(slot, name);
+        slot += slot_width;
+    }
+}
+
+/// Where the entry point of `file` is, where it is a PE file that has one.
+/// A DLL linked with `/noentry` has none.
+pub fn entry_point(file: &object::File<'_>) -> Option<u64> {
+    use object::read::pe::ImageOptionalHeader;
+
+    let (base, rva) = match file {
+        object::File::Pe32(pe) => {
+            (pe.relative_address_base(), pe.nt_headers().optional_header.address_of_entry_point())
+        }
+        object::File::Pe64(pe) => {
+            (pe.relative_address_base(), pe.nt_headers().optional_header.address_of_entry_point())
+        }
+        _ => return None,
+    };
+    (rva != 0).then(|| base + u64::from(rva))
 }
 
 #[cfg(test)]
@@ -201,6 +339,64 @@ mod tests {
         assert!(joined(entries).is_empty());
     }
 
+    /// An ARM64 entry: the start of its function, relative to the image,
+    /// and its unwind word.
+    fn arm64_entry(start: u32, unwind: u32) -> [u8; 8] {
+        let mut entry = [0; 8];
+        entry[..4].copy_from_slice(&start.to_le_bytes());
+        entry[4..].copy_from_slice(&unwind.to_le_bytes());
+        entry
+    }
+
+    /// The unwind word of an ARM64 entry that packs a function of `words`.
+    fn packed(flag: u32, words: u32) -> u32 {
+        flag | (words << 2)
+    }
+
+    #[test]
+    fn an_arm64_entry_gives_its_length_packed_or_in_xdata() {
+        const BASE: u64 = 0x1_8000_0000;
+        let xdata_at = 0x3000;
+        let table: Vec<u8> = [
+            arm64_entry(0x1000, packed(ARM64_PACKED, 4)),
+            arm64_entry(0x1010, packed(ARM64_PACKED_FRAGMENT, 2)),
+            arm64_entry(0x1100, xdata_at),
+            arm64_entry(0x1200, 0b11),
+        ]
+        .concat();
+        let xdata = 8u32.to_le_bytes();
+        let at = |rva: u32| (rva == xdata_at).then_some(&xdata[..]);
+        assert_eq!(
+            arm64_ranges(&table, BASE, at),
+            [BASE + 0x1000..BASE + 0x1018, BASE + 0x1100..BASE + 0x1120],
+            "the fragment joins the entry before it, and the reserved flag is left out"
+        );
+    }
+
+    #[test]
+    fn an_arm64_entry_with_no_xdata_is_left_out() {
+        let table = arm64_entry(0x1000, 0x3000);
+        assert!(arm64_ranges(&table, 0, |_| None).is_empty());
+        assert!(arm64_ranges(&table[..7], 0, |_| None).is_empty(), "a broken table");
+    }
+
+    #[test]
+    fn an_x64_entry_reads_chained_from_its_unwind_information() {
+        let entry = |start: u32, end: u32, unwind: u32| {
+            [start, end, unwind].iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<u8>>()
+        };
+        let table = [entry(0x1000, 0x1010, 0x3000), entry(0x1010, 0x1020, 0x3010)].concat();
+        let own = [1u8];
+        let chained = [1 | (UNW_FLAG_CHAININFO << 3)];
+        let at = |rva: u32| match rva {
+            0x3000 => Some(&own[..]),
+            0x3010 => Some(&chained[..]),
+            _ => None,
+        };
+        assert_eq!(x64_ranges(&table, 0, at), vec![(0x1000..0x1020)]);
+        assert_eq!(x64_ranges(&table, 0, |_| Some(&own[..])), [0x1000..0x1010, 0x1010..0x1020]);
+    }
+
     #[test]
     fn a_file_that_is_no_pe_file_has_no_index_exports_or_imports() {
         use object::write::Object as Writer;
@@ -214,6 +410,7 @@ mod tests {
         assert!(function_ranges(&file).is_empty());
         assert!(exports(&file).is_empty());
         assert!(import_slot_names(&file).is_empty());
+        assert_eq!(entry_point(&file), None);
     }
 
     /// Each joined range is in order and apart from the next, and covers
@@ -250,6 +447,7 @@ mod tests {
                 let _ = function_ranges(&file);
                 let _ = exports(&file);
                 let _ = import_slot_names(&file);
+                let _ = entry_point(&file);
             }
         });
     }

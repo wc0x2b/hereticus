@@ -93,7 +93,7 @@ See [Use With a Coding Agent](./usage.md#use-with-a-coding-agent).
 - **Architectures:** A32 and Thumb-2, also big endian (BE8), AArch64,
   MIPS32, MIPS16e, x86-64 and 32-bit x86.
 - **Files:** ELF (also with no section headers, as `sstrip` leaves it),
-  Mach-O and iOS kernelcaches, x86-64 Windows DLLs, and raw flash dumps.
+  Mach-O and iOS kernelcaches, Windows PE, and raw flash dumps.
 - **Firmware images:** zImage, FIT, uImage, sysupgrade, lzma-loader and
   TP-Link containers, with `--unpack`.
 
