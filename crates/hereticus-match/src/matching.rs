@@ -269,6 +269,23 @@ pub struct EditKinds {
     ///
     /// Outside the sum above, for the same reason as `constants`.
     pub texts: usize,
+    /// Calls the later build added, or put where the earlier build had
+    /// another kind of instruction.
+    ///
+    /// This less `calls_removed` is how many more calls the later body
+    /// holds than the earlier one.
+    /// `calls` counts a rewrite by the later instruction only, so it can
+    /// leave out a call that `calls_removed` counts.
+    pub calls_added: usize,
+    /// Calls the later build removed, or put another kind of instruction in
+    /// the place of.
+    pub calls_removed: usize,
+    /// Conditional branches the later build added, or put where the earlier
+    /// build had another kind of instruction. As `calls_added`.
+    pub branches_added: usize,
+    /// Conditional branches the later build removed, or put another kind of
+    /// instruction in the place of.
+    pub branches_removed: usize,
 }
 
 impl EditKinds {
@@ -286,6 +303,37 @@ impl EditKinds {
             EditKind::Opaque => &mut self.opaque,
         };
         *count += 1;
+    }
+
+    /// Count an instruction that only the later build has, in the place
+    /// of `replaced` where it took the place of one.
+    fn add_gained(&mut self, gained: EditKind, replaced: Option<EditKind>) {
+        self.add(gained);
+        if replaced == Some(gained) {
+            return;
+        }
+        if let Some(replaced) = replaced {
+            self.count_lost(replaced);
+        }
+        match gained {
+            EditKind::Call => self.calls_added += 1,
+            EditKind::Branch => self.branches_added += 1,
+            _ => {}
+        }
+    }
+
+    /// Count an instruction that only the earlier build has.
+    fn add_lost(&mut self, lost: EditKind) {
+        self.add(lost);
+        self.count_lost(lost);
+    }
+
+    fn count_lost(&mut self, lost: EditKind) {
+        match lost {
+            EditKind::Call => self.calls_removed += 1,
+            EditKind::Branch => self.branches_removed += 1,
+            _ => {}
+        }
     }
 
     /// Every kind that appears, most telling first.

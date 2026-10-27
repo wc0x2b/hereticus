@@ -16,6 +16,14 @@ Sleep 1s
 Screenshot "book/src/images/tui-functions.png"
 # A key right after a screenshot can reach it first.
 Sleep 500ms
+# The fourth feature is removed-branch, which only `dispatch` has.
+Type "ffff"
+Sleep 500ms
+Screenshot "book/src/images/tui-feature.png"
+Sleep 500ms
+# Six more go past the last feature, back to every pair.
+Type "ffffff"
+Sleep 500ms
 Enter
 Sleep 500ms
 Screenshot "book/src/images/tui-diff.png"

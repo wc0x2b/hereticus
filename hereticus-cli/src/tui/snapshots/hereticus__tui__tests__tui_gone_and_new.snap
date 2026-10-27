@@ -1,10 +1,11 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
+assertion_line: 1274
 expression: "screen(&mut app, 120, 12)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
  Functions | Diff                                                                            firmware.o → firmware_v2.o 
-── Functions ──────────────────────────────────────────────────── ⏎ open  s/S sort  t touched  / filter  m mark  w save 
+── Functions ───────────────────────────────────────── ⏎ open  s/S sort  t touched  f feature  / filter  m mark  w save 
   FUNCTION                                  CHANGE         SCORE +/-/~       TOUCHED                     MATCHED BY    █
 ▶ add                                       gone            0.33 -           closest add                 -             █
   mul_by_constant                           gone            0.50 -           closest mul_by_constant     -             █

@@ -1,5 +1,6 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
+assertion_line: 1641
 expression: "screen(&mut app, 120, 24)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
@@ -13,16 +14,16 @@ expression: "screen(&mut app, 120, 24)"
  e8 + sp = sp - 8    │  s          next order                 v          assembly or IL           │                    ║
  ec   r2 = -0x1      │  S          reverse the order          l          side by side or one      │                    ║
  d4 - flags = compare│  t          next kind touched          n / p      next / previous          │                    ║
- d8 - if (r1 != 0) go│  a          every function             esc        back to the list         │                    ║
- f0 + flags = compare│  r          retouched pairs                                                │                    ║
- f4 + if (r1 u> 3) go│  d          data regions             Colors                                │                    ║
- f8 + adr r3, pc, 0x4│  /          filter the names, fuzzy    changed values unread               │                    ║
- fc + r1 = load.32 [r│                                        reordered data same                 │                    ║
-100 + pc = r3 + r1   │Global                                  + added - removed ~ value           │                    ║
-104 + if (eq) r0 = r0│  ?          this help                                                      │                    ║
-108 + if (eq) r0 = r0│  q          quit, after a question   Project                               │                    ║
-10c + if (eq) r0 = r0│  wheel      scroll                     m / M      mark and label / unmark  │                    ║
-110 + if (eq) r0 = r0│  click      select, again to open      w          save, to open again      │                    ║
-114   r0 = load.16 [r└───────────────────────────────────────────────────────────────esc/q/? close┘                    ║
-118   r2 = 0                                                                                                           ║
+ d8 - if (r1 != 0) go│  f          next feature               esc        back to the list         │                    ║
+ f0 + flags = compare│  a          every function                                                 │                    ║
+ f4 + if (r1 u> 3) go│  r          retouched pairs          Colors                                │                    ║
+ f8 + adr r3, pc, 0x4│  d          data regions               changed values unread               │                    ║
+ fc + r1 = load.32 [r│  /          filter the names, fuzzy    reordered data same                 │                    ║
+100 + pc = r3 + r1   │                                        + added - removed ~ value           │                    ║
+104 + if (eq) r0 = r0│Global                                                                      │                    ║
+108 + if (eq) r0 = r0│  ?          this help                Project                               │                    ║
+10c + if (eq) r0 = r0│  q          quit, after a question     m / M      mark and label / unmark  │                    ║
+110 + if (eq) r0 = r0│  wheel      scroll                     w          save, to open again      │                    ║
+114   r0 = load.16 [r│  click      select, again to open                                          │                    ║
+118   r2 = 0         └───────────────────────────────────────────────────────────────esc/q/? close┘                    ║
  sort added ↓  │  3 of 5 functions  │  view il  │  hidden retouched, data                         0 gone  0 new  ? help

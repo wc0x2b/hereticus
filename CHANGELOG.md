@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+
+- `--only` lists only the changed pairs that have each feature it names,
+  as `added-call`, `removed-call`, `added-branch` or `early-exit`. Each
+  feature is read from the aligned instructions of the two bodies, so a
+  call that takes the place of a load is an added call, and a direct call
+  rewritten as a call through a register is neither added nor removed.
+  The `f` key of the browser steps through the features, `--format json`
+  gives the features of each pair, and the summary says how many rows
+  `--only` hid. A project that an older version saved does not open.
+
 ## [0.4.1](https://github.com/wc0x2b/hereticus/compare/v0.4.0...v0.4.1) - 2026-10-25## [0.4.0](https://github.com/wc0x2b/hereticus/compare/v0.3.0...v0.4.0) - 2026-10-24
 ### Added
 

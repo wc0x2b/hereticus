@@ -175,6 +175,24 @@ fn a_universal_binary_reads_as_its_aarch64_slice() {
     assert_eq!(names(&universal), names(&slice));
 }
 
+/// An x86-64 dylib that is not universal is read as x86-64, and stripping
+/// it keeps where each function starts.
+#[test]
+fn an_x86_64_dylib_reads_as_x86_64() {
+    let truth = read("x86_64-firmware.dylib");
+    let stripped = read("x86_64-firmware-stripped.dylib");
+
+    assert_eq!(truth.isa, Isa::X86_64);
+    assert_eq!(truth.found_by, FoundBy::Symbols);
+    assert_eq!(names(&truth), names(&read("arm64-firmware.dylib")));
+    assert_eq!(extents(&stripped), extents(&truth));
+
+    let diff =
+        diff_with(&truth, &stripped, Options { use_names: UseNames::No, ..Default::default() });
+    assert_eq!(diff.changed().count(), 0);
+    assert!(diff.removed.is_empty() && diff.added.is_empty());
+}
+
 /// A universal binary with no AArch64 slice says why it cannot be read.
 #[test]
 fn a_universal_binary_with_no_aarch64_slice_is_refused() {

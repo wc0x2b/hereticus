@@ -155,6 +155,15 @@ struct Args {
     #[arg(long)]
     show_data: bool,
 
+    /// List only the changed pairs that have every feature given.
+    ///
+    /// Give a feature more than once, or separate features with commas. A
+    /// function gone or new has none of these, so only marked ones are
+    /// listed. `--all` lists the unchanged pairs too, but still only those
+    /// with the features.
+    #[arg(long, value_enum, value_delimiter = ',')]
+    only: Vec<Feature>,
+
     /// Lowest similarity that still counts as a match, from 0.0 to 1.0.
     #[arg(long, default_value_t = 0.65, value_parser = parse_threshold)]
     threshold: f64,
@@ -434,6 +443,89 @@ impl Sort {
             Self::Rare => "rare",
         }
     }
+}
+
+/// A thing a changed pair can do, which `--only` and the `f` key of the
+/// browser list the pairs by.
+///
+/// Each one is read from the lifted instructions of the two bodies, as
+/// aligned: see [`EditKinds`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Feature {
+    /// Adds a call, or puts a call in the place of another instruction.
+    AddedCall,
+    /// Removes a call, or puts another instruction in its place.
+    RemovedCall,
+    /// Adds a conditional branch, or puts one in the place of another
+    /// instruction.
+    AddedBranch,
+    /// Removes a conditional branch, or puts another instruction in its
+    /// place.
+    RemovedBranch,
+    /// Keeps a call in place that now reaches another function.
+    OtherCallee,
+    /// Turns a call into its bounded form, as `strcmp` into `strncmp`.
+    BoundedCall,
+    /// Adds a check that leaves the function early.
+    EarlyExit,
+    /// Changes a text that the function points at.
+    Text,
+    /// Changes a constant, with the instructions around it the same.
+    Constant,
+}
+
+impl Feature {
+    /// Every feature, in the order the `f` key steps through them.
+    const ALL: [Self; 9] = [
+        Self::AddedCall,
+        Self::RemovedCall,
+        Self::AddedBranch,
+        Self::RemovedBranch,
+        Self::OtherCallee,
+        Self::BoundedCall,
+        Self::EarlyExit,
+        Self::Text,
+        Self::Constant,
+    ];
+
+    /// Report whether `pair` has this feature.
+    fn holds(self, pair: &Match) -> bool {
+        let kinds = pair.kinds;
+        let count = match self {
+            Self::AddedCall => kinds.calls_added,
+            Self::RemovedCall => kinds.calls_removed,
+            Self::AddedBranch => kinds.branches_added,
+            Self::RemovedBranch => kinds.branches_removed,
+            Self::OtherCallee => kinds.callees,
+            Self::BoundedCall => pair.bounded_calls,
+            Self::EarlyExit => pair.early_exits,
+            Self::Text => kinds.texts,
+            Self::Constant => kinds.constants,
+        };
+        count > 0
+    }
+
+    /// The name `--only` takes for this feature.
+    fn name(self) -> &'static str {
+        match self {
+            Self::AddedCall => "added-call",
+            Self::RemovedCall => "removed-call",
+            Self::AddedBranch => "added-branch",
+            Self::RemovedBranch => "removed-branch",
+            Self::OtherCallee => "other-callee",
+            Self::BoundedCall => "bounded-call",
+            Self::EarlyExit => "early-exit",
+            Self::Text => "text",
+            Self::Constant => "constant",
+        }
+    }
+}
+
+/// Report whether `pair` has every feature of `only`. An empty list asks
+/// for none, so every pair has it.
+fn has_features(pair: &Match, only: &[Feature]) -> bool {
+    only.iter().all(|feature| feature.holds(pair))
 }
 
 /// Reject a threshold outside the range a similarity score can take.
@@ -945,13 +1037,21 @@ struct Listing<'a> {
     show_all: bool,
     hidden: Hidden,
     sort: Sort,
+    /// The features each listed pair must have, as `--only` names them.
+    only: &'a [Feature],
     /// Listed first, whatever would hide them.
     marks: &'a Marks,
 }
 
 impl<'a> Listing<'a> {
-    fn from_args(args: &Args, marks: &'a Marks) -> Self {
-        Self { show_all: args.all, hidden: Hidden::from_args(args), sort: args.sort, marks }
+    fn from_args(args: &'a Args, marks: &'a Marks) -> Self {
+        Self {
+            show_all: args.all,
+            hidden: Hidden::from_args(args),
+            sort: args.sort,
+            only: &args.only,
+            marks,
+        }
     }
 
     /// The pairs the report lists, in its order.
@@ -960,9 +1060,9 @@ impl<'a> Listing<'a> {
             .matched
             .iter()
             .filter(|pair| {
-                self.show_all
-                    || self.marks.of_pair(pair).is_some()
-                    || is_interesting(pair, self.hidden)
+                self.marks.of_pair(pair).is_some()
+                    || ((self.show_all || is_interesting(pair, self.hidden))
+                        && has_features(pair, self.only))
             })
             .collect();
         sort_shown(&mut shown, self.sort);
@@ -979,9 +1079,9 @@ impl<'a> Listing<'a> {
         let mut shown: Vec<(usize, Contents)> = all
             .into_iter()
             .filter(|&(function, contents)| {
-                self.show_all
-                    || self.marks.of_unmatched(side, function).is_some()
-                    || is_shown_unmatched(contents, self.hidden)
+                self.marks.of_unmatched(side, function).is_some()
+                    || (self.only.is_empty()
+                        && (self.show_all || is_shown_unmatched(contents, self.hidden)))
             })
             .collect();
         self.marks.first_unmatched(side, &mut shown);
@@ -1384,7 +1484,7 @@ fn print_text(diff: &Diff, before: &Binary, after: &Binary, view: TextView<'_>) 
         println!("{name}: {new}{}", joined_notes(notes));
     }
 
-    summarize(diff, listing.hidden);
+    summarize(diff, listing.hidden, listing.only);
 }
 
 /// Describe the closest candidate for a function that went unmatched.
@@ -1479,8 +1579,8 @@ fn print_compact(diff: &Diff, before: &Binary, after: &Binary, listing: Listing<
     }
 }
 
-fn summarize(diff: &Diff, hidden: Hidden) {
-    let lines = summary_lines(diff, hidden);
+fn summarize(diff: &Diff, hidden: Hidden, only: &[Feature]) {
+    let lines = summary_lines(diff, hidden, only);
     // A table or a list comes before the totals, so a blank line parts them.
     if lines.len() > 1 || !nothing_happened(diff) {
         println!();
@@ -1496,7 +1596,7 @@ fn nothing_happened(diff: &Diff) -> bool {
 }
 
 /// The totals of a report, and how many rows it held back, a line each.
-fn summary_lines(diff: &Diff, hidden: Hidden) -> Vec<String> {
+fn summary_lines(diff: &Diff, hidden: Hidden, only: &[Feature]) -> Vec<String> {
     let changed = diff.changed().count();
     let same = diff.matched.len() - changed;
 
@@ -1522,6 +1622,20 @@ fn summary_lines(diff: &Diff, hidden: Hidden) -> Vec<String> {
         0
     };
 
+    // A function gone or new has no feature, so `--only` hides each one
+    // that the report would list.
+    let lacking = if only.is_empty() {
+        0
+    } else {
+        let pairs = diff
+            .matched
+            .iter()
+            .filter(|pair| is_interesting(pair, hidden) && !has_features(pair, only))
+            .count();
+        let unmatched = diff.removed_contents.iter().chain(&diff.added_contents);
+        pairs + unmatched.filter(|&&contents| is_shown_unmatched(contents, hidden)).count()
+    };
+
     let mut lines = vec![format!(
         "{} matched ({same} unchanged, {changed} changed), {} gone, {} new",
         diff.matched.len(),
@@ -1538,6 +1652,9 @@ fn summary_lines(diff: &Diff, hidden: Hidden) -> Vec<String> {
         lines.push(format!(
             "{hidden_data} data {regions} changed, hidden. Use --show-data to list them."
         ));
+    }
+    if lacking > 0 {
+        lines.push(format!("{lacking} without each feature --only names, hidden."));
     }
     lines
 }
@@ -1696,6 +1813,91 @@ mod tests {
 
         sort_shown(&mut shown, Sort::Confidence);
         assert_eq!(shown[0].edits.edited, 1, "the library's order is untouched");
+    }
+
+    /// Each feature holds for a pair that does only that, and for no other
+    /// feature: the pair a fix makes is not taken for another.
+    #[test]
+    fn each_feature_holds_only_for_what_it_names() {
+        let kinds = |kinds: EditKinds| Match { kinds, ..edited_pair(Changed::Yes) };
+        let doing = |feature| match feature {
+            Feature::AddedCall => kinds(EditKinds { calls_added: 1, ..EditKinds::default() }),
+            Feature::RemovedCall => kinds(EditKinds { calls_removed: 1, ..EditKinds::default() }),
+            Feature::AddedBranch => kinds(EditKinds { branches_added: 1, ..EditKinds::default() }),
+            Feature::RemovedBranch => {
+                kinds(EditKinds { branches_removed: 1, ..EditKinds::default() })
+            }
+            Feature::OtherCallee => kinds(EditKinds { callees: 1, ..EditKinds::default() }),
+            Feature::BoundedCall => Match { bounded_calls: 1, ..edited_pair(Changed::Yes) },
+            Feature::EarlyExit => Match { early_exits: 1, ..edited_pair(Changed::Yes) },
+            Feature::Text => kinds(EditKinds { texts: 1, ..EditKinds::default() }),
+            Feature::Constant => kinds(EditKinds { constants: 1, ..EditKinds::default() }),
+        };
+        for feature in Feature::ALL {
+            let pair = doing(feature);
+            for other in Feature::ALL {
+                assert_eq!(other.holds(&pair), other == feature, "{other:?} of {feature:?}");
+            }
+        }
+        assert!(!Feature::ALL.iter().any(|feature| feature.holds(&edited_pair(Changed::Yes))));
+    }
+
+    /// `--only` takes the name each feature gives itself.
+    #[test]
+    fn each_feature_is_named_as_only_takes_it() {
+        for feature in Feature::ALL {
+            assert_eq!(Feature::from_str(feature.name(), false), Ok(feature));
+        }
+        assert_eq!(Feature::value_variants().len(), Feature::ALL.len(), "ALL holds each one");
+    }
+
+    /// A pair must have every feature listed, and an empty list asks for
+    /// none.
+    #[test]
+    fn a_pair_has_the_features_only_when_it_has_each() {
+        let pair = Match {
+            kinds: EditKinds { calls_added: 1, ..EditKinds::default() },
+            ..edited_pair(Changed::Yes)
+        };
+        assert!(has_features(&pair, &[]));
+        assert!(has_features(&pair, &[Feature::AddedCall]));
+        assert!(!has_features(&pair, &[Feature::AddedCall, Feature::AddedBranch]));
+    }
+
+    /// `--only` hides the pairs without the feature, and every function
+    /// gone or new, and the summary says how many.
+    #[test]
+    fn only_lists_the_pairs_with_the_features_and_counts_the_rest() {
+        let with_call = Match {
+            kinds: EditKinds { calls_added: 1, ..EditKinds::default() },
+            ..edited_pair(Changed::Yes)
+        };
+        let diff = Diff {
+            matched: vec![with_call, edited_pair(Changed::Yes)],
+            removed: vec![1],
+            removed_contents: vec![Contents::Code],
+            added: Vec::new(),
+            added_contents: Vec::new(),
+            near_misses: Vec::new(),
+            added_near_misses: Vec::new(),
+        };
+        let marks = Marks::default();
+        let only = [Feature::AddedCall];
+        let listing = Listing {
+            show_all: false,
+            hidden: DEFAULT,
+            sort: Sort::Added,
+            only: &only,
+            marks: &marks,
+        };
+
+        let shown = listing.pairs(&diff);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].kinds.calls_added, 1);
+        assert!(listing.unmatched(&diff, Side::Gone).is_empty());
+        let lines = summary_lines(&diff, DEFAULT, &only);
+        assert_eq!(lines.last().unwrap(), "2 without each feature --only names, hidden.");
+        assert!(summary_lines(&diff, DEFAULT, &[]).iter().all(|line| !line.contains("--only")));
     }
 
     /// Build a pair that scores below a perfect match and rewrote one
