@@ -12,6 +12,7 @@ use ratatui::widgets::{
 };
 
 use super::columns::{self, Column, fit};
+use super::flows;
 use super::rows::{Half, Side, side_by_side, unified};
 use super::theme::{
     ADDED, BLUE, DARK_GRAY, EDITED, Focus, GRAY, GRAY_FG, GREEN, ORANGE, PURPLE, REMOVED, YELLOW,
@@ -274,11 +275,20 @@ impl App<'_> {
         match self.layout {
             Layout::SideBySide => {
                 let rows = side_by_side(&opened.lines, places);
+                let gutter = |column: usize, row: usize| {
+                    opened.gutters.get(column).map(|gutter| gutter.row(row)).unwrap_or_default()
+                };
                 let (left, right): (Vec<Line<'_>>, Vec<Line<'_>>) = rows
                     .iter()
+                    .enumerate()
                     .skip(scroll)
                     .take(shown)
-                    .map(|row| (half_line(row.left, width), half_line(row.right, width)))
+                    .map(|(at, row)| {
+                        (
+                            half_line(row.left, width, gutter(0, at)),
+                            half_line(row.right, width, gutter(1, at)),
+                        )
+                    })
                     .unzip();
                 let [left_area, divider, right_area] = Split::horizontal([
                     Constraint::Fill(1),
@@ -295,11 +305,15 @@ impl App<'_> {
             }
             Layout::Unified => {
                 let sides = unified(&opened.lines, places);
+                let gutter = |row: usize| {
+                    opened.gutters.first().map(|gutter| gutter.row(row)).unwrap_or_default()
+                };
                 let lines: Vec<Line<'_>> = sides
                     .iter()
+                    .enumerate()
                     .skip(scroll)
                     .take(shown)
-                    .map(|half| half_line(*half, width))
+                    .map(|(at, half)| half_line(*half, width, gutter(at)))
                     .collect();
                 frame.render_widget(Paragraph::new(lines), content);
             }
@@ -455,27 +469,57 @@ fn address_width(addresses: impl Iterator<Item = u64>) -> usize {
 /// and a deeper indent pushes the code out of the pane.
 const MOST_INDENT_LEVELS: usize = 8;
 
-/// A line of a diff: the address of its instruction in gray, then the line
-/// with the sign and the color of a patch, indented two spaces for each
-/// level deep it sits.
-fn half_line(half: Half<'_>, width: usize) -> Line<'static> {
+/// A line of a diff: the lines of the jumps that pass it, the address of
+/// its instruction in gray, then the line with the sign and the color of a
+/// patch, indented two spaces for each level deep it sits.
+fn half_line(half: Half<'_>, width: usize, gutter: [flows::Cell; flows::WIDTH]) -> Line<'static> {
     let (sign, text, color) = match half.side {
-        Side::Empty => return Line::default(),
+        // A jump goes on past a row that shows no line of its side.
+        Side::Empty if gutter.iter().all(|cell| cell.glyph == flows::Glyph::Blank) => {
+            return Line::default();
+        }
+        Side::Empty => return Line::from(gutter_spans(gutter)),
         Side::Same(text) => (' ', text, None),
         Side::Removed(text) => ('-', text, Some(REMOVED)),
         Side::Added(text) => ('+', text, Some(ADDED)),
         Side::Changed(text) => ('~', text, Some(EDITED)),
     };
-    let address = match half.address {
+    let address = match half.address() {
         Some(address) => format!("{address:>width$x} "),
         None => " ".repeat(width + 1),
     };
     let style = color.map_or_else(Style::new, |color| Style::new().fg(color));
-    let indent = "  ".repeat(half.depth.min(MOST_INDENT_LEVELS));
-    Line::from(vec![
+    let indent = "  ".repeat(half.depth().min(MOST_INDENT_LEVELS));
+    let mut spans = gutter_spans(gutter);
+    spans.extend([
         Span::styled(address, Style::new().fg(GRAY_FG)),
         Span::styled(format!("{sign} {indent}{text}"), style),
-    ])
+    ]);
+    Line::from(spans)
+}
+
+/// The cells of the gutter, a span for each run of one color.
+fn gutter_spans(gutter: [flows::Cell; flows::WIDTH]) -> Vec<Span<'static>> {
+    let color = |tint| match tint {
+        flows::Tint::Same => GRAY_FG,
+        flows::Tint::Removed => REMOVED,
+        flows::Tint::Added => ADDED,
+        flows::Tint::Changed => EDITED,
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut tint = gutter[0].tint;
+    for cell in gutter {
+        if cell.tint != tint && cell.glyph != flows::Glyph::Blank {
+            spans.push(Span::styled(core::mem::take(&mut run), Style::new().fg(color(tint))));
+            tint = cell.tint;
+        }
+        run.push(cell.glyph.symbol());
+    }
+    // One space keeps the heads of the arrows off the address.
+    run.push(' ');
+    spans.push(Span::styled(run, Style::new().fg(color(tint))));
+    spans
 }
 
 /// The `+/-/~` cell, each count in the color of its kind.
@@ -688,13 +732,20 @@ mod tests {
     #[test]
     fn a_line_of_a_diff_is_indented_by_its_depth() {
         let text = |depth| {
-            let half = Half { side: Side::Same("x = 1"), address: Some(0x10), depth };
-            half_line(half, 2).spans[1].content.to_string()
+            let place = hereticus::matching::LinePlace { address: 0x10, depth, jump: None };
+            let half = Half::shown(Side::Same("x = 1"), [None, Some(place)]);
+            let line = half_line(half, 2, Default::default());
+            line.spans.last().expect("the text").content.to_string()
         };
         assert_eq!(text(0), "  x = 1");
         assert_eq!(text(2), "      x = 1");
         assert_eq!(text(MOST_INDENT_LEVELS + 5), text(MOST_INDENT_LEVELS), "the indent stops");
-        let empty = Half { side: Side::Empty, address: None, depth: 3 };
-        assert!(half_line(empty, 2).spans.is_empty(), "an empty half shows nothing");
+        let empty = Half::shown(Side::Empty, [None, None]);
+        assert!(half_line(empty, 2, Default::default()).spans.is_empty(), "shows nothing");
+        let mut passing = [flows::Cell::default(); flows::WIDTH];
+        passing[0].glyph = flows::Glyph::Vertical;
+        let line = half_line(empty, 2, passing);
+        let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "│     ", "a jump goes on past an empty half");
     }
 }

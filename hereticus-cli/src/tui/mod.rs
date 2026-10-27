@@ -8,6 +8,7 @@
 
 mod columns;
 mod draw;
+mod flows;
 mod fuzzy;
 mod rows;
 mod theme;
@@ -195,18 +196,30 @@ struct Opened {
     changes: Vec<bool>,
     /// Where each run of changes starts, from `changes`.
     starts: Vec<usize>,
+    /// The jumps of each column of the present layout, drawn as lines: the
+    /// left and the right side by side, or the one column unified.
+    gutters: Vec<flows::Gutter>,
 }
 
 impl Opened {
     /// Lay the rows out again, for another layout or other lines.
     fn relayout(&mut self, layout: Layout) {
-        self.changes = match layout {
-            Layout::SideBySide => side_by_side(&self.lines, &self.places)
-                .iter()
-                .map(|row| row.left.is_change() || row.right.is_change())
-                .collect(),
+        (self.changes, self.gutters) = match layout {
+            Layout::SideBySide => {
+                let rows = side_by_side(&self.lines, &self.places);
+                let left: Vec<_> = rows.iter().map(|row| row.left).collect();
+                let right: Vec<_> = rows.iter().map(|row| row.right).collect();
+                (
+                    rows.iter().map(|row| row.left.is_change() || row.right.is_change()).collect(),
+                    vec![flows::Gutter::of(&left), flows::Gutter::of(&right)],
+                )
+            }
             Layout::Unified => {
-                unified(&self.lines, &self.places).iter().map(|half| half.is_change()).collect()
+                let halves = unified(&self.lines, &self.places);
+                (
+                    halves.iter().map(|half| half.is_change()).collect(),
+                    vec![flows::Gutter::of(&halves)],
+                )
             }
         };
         self.starts = change_starts(self.changes.iter().copied());
@@ -801,6 +814,7 @@ impl<'a> App<'a> {
             scroll,
             changes: Vec::new(),
             starts: Vec::new(),
+            gutters: Vec::new(),
         };
         opened.relayout(self.layout);
         self.screen = Screen::Pair(Box::new(opened));
@@ -1495,9 +1509,18 @@ mod tests {
             let mut app = App::new(&diff, &before, &after, start);
             press(&mut app, &[KeyCode::Enter]);
             let mut indented = false;
+            let mut jumps_drawn = false;
             for _ in 0..app.rows.len().min(30) {
                 let il = places(&app);
                 indented |= depths(&il).iter().any(|&depth| depth > 0);
+                if let Screen::Pair(opened) = &app.screen {
+                    assert_eq!(opened.gutters.len(), 2, "{arch}: a gutter for each side");
+                    let rows = side_by_side(&opened.lines, &opened.places).len();
+                    jumps_drawn |= opened.gutters.iter().any(|gutter| {
+                        (0..rows)
+                            .any(|row| gutter.row(row)[flows::LANES].glyph == flows::Glyph::Source)
+                    });
+                }
                 press(&mut app, &[KeyCode::Char('v')]);
                 assert!(depths(&places(&app)).iter().all(|&depth| depth == 0), "{arch}: asm");
                 press(&mut app, &[KeyCode::Char('v')]);
@@ -1506,8 +1529,8 @@ mod tests {
                     Screen::Pair(opened) => side_by_side(&opened.lines, &opened.places)
                         .iter()
                         .flat_map(|row| [row.left, row.right])
-                        .filter(|half| half.address.is_some())
-                        .map(|half| half.depth)
+                        .filter(|half| half.address().is_some())
+                        .map(|half| half.depth())
                         .collect(),
                     _ => panic!("the diff stays open"),
                 };
@@ -1519,6 +1542,7 @@ mod tests {
                 press(&mut app, &[KeyCode::Char('n')]);
             }
             assert!(indented, "{arch}: a function of Lua has a jump");
+            assert!(jumps_drawn, "{arch}: a jump of Lua is drawn");
         }
     }
 
@@ -1536,12 +1560,12 @@ mod tests {
         let Screen::Pair(opened) = &app.screen else { panic!("the diff opens") };
         let rows = side_by_side(&opened.lines, &opened.places);
         let first = |side: fn(&rows::SideRow<'_>) -> Option<u64>| rows.iter().find_map(side);
-        assert_eq!(first(|row| row.left.address), Some(before.functions[pair.before].address));
-        assert_eq!(first(|row| row.right.address), Some(after.functions[pair.after].address));
+        assert_eq!(first(|row| row.left.address()), Some(before.functions[pair.before].address));
+        assert_eq!(first(|row| row.right.address()), Some(after.functions[pair.after].address));
         let count =
             |side: fn(&rows::SideRow<'_>) -> Option<u64>| rows.iter().filter_map(side).count();
-        assert_eq!(count(|row| row.left.address), opened.places.before.len());
-        assert_eq!(count(|row| row.right.address), opened.places.after.len());
+        assert_eq!(count(|row| row.left.address()), opened.places.before.len());
+        assert_eq!(count(|row| row.right.address()), opened.places.after.len());
     }
 
     #[test]

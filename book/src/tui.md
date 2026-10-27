@@ -39,7 +39,10 @@ rank.
 
 The diff shows the two bodies side by side, with the address of each
 instruction. Red lines were removed, green lines were added, and yellow
-lines changed only a value:
+lines changed only a value. At the left of each address, a line goes from
+each jump, marked `<`, to its target, marked `>`. The line of a jump that
+a change added or removed takes the color of the change. Up to four lines
+can pass one row; a jump that finds no free column is not drawn:
 
 ![The diff of one function, as assembly](./images/tui-diff.png)
 

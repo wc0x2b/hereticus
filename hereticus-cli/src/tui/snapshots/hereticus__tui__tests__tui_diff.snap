@@ -5,24 +5,24 @@ expression: "screen(&mut app, 120, 24)"
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
  Functions | Diff                                                                            firmware.o → firmware_v2.o 
 ── Diff dispatch  asm  change 1 of 9 ────────────────── ]/[ change  v asm/il  l layout  n/p next/prev  m mark  esc back 
- c0 - cmp r1, 0x2                                          │ e4 + push {r4, lr}                                        █
- c4 - beq $+0x48                                           │ e8 + sub sp, sp, 0x8                                      █
- c8 - cmp r1, 0x1                                          │                                                           █
- cc - beq $+0x28                                           │                                                           █
- d0   mvn r2, 0x0                                          │ ec   mvn r2, 0x0                                          ║
- d4 - cmp r1, 0x0                                          │ f0 + cmp r1, 0x3                                          ║
- d8 - bne $+0x2c                                           │ f4 + bhi $+0x100                                          ║
-                                                           │ f8 + adr r3, pc, 0x4                                      ║
-                                                           │ fc + ldr r1, [r3, r1, lsl 2]                              ║
-                                                           │100 + add pc, r3, r1                                       ║
-                                                           │104 + andeq r0, r0, r0, lsl r0                             ║
-                                                           │108 + andeq r0, r0, r0, asr 1                              ║
-                                                           │10c + andeq r0, r0, r4, lsr 0                              ║
-                                                           │110 + andeq r0, r0, ip, lsr 1                              ║
- dc   ldrh r0, [r0, 0x2]                                   │114   ldrh r0, [r0, 0x2]                                   ║
- e0   mov r2, 0x0                                          │118   mov r2, 0x0                                          ║
- e4 ~ cmp r0, 0x400                                        │11c ~ cmp r0, 0x200                                        ║
- e8   mvnhi r2, 0x0                                        │120   mvnhi r2, 0x0                                        ║
- ec - mov r0, r2                                           │124 + b $+0xd0                                             ║
- f0 - bx lr                                                │                                                           ║
+       c0 - cmp r1, 0x2                                    │       e4 + push {r4, lr}                                  █
+┌───<  c4 - beq $+0x48                                     │       e8 + sub sp, sp, 0x8                                █
+│      c8 - cmp r1, 0x1                                    │                                                           █
+│┌──<  cc - beq $+0x28                                     │                                                           █
+││     d0   mvn r2, 0x0                                    │       ec   mvn r2, 0x0                                    ║
+││     d4 - cmp r1, 0x0                                    │       f0 + cmp r1, 0x3                                    ║
+││┌─<  d8 - bne $+0x2c                                     │┌───<  f4 + bhi $+0x100                                    ║
+│││                                                        ││      f8 + adr r3, pc, 0x4                                ║
+│││                                                        ││      fc + ldr r1, [r3, r1, lsl 2]                        ║
+│││                                                        ││     100 + add pc, r3, r1                                 ║
+│││                                                        ││     104 + andeq r0, r0, r0, lsl r0                       ║
+│││                                                        ││     108 + andeq r0, r0, r0, asr 1                        ║
+│││                                                        ││     10c + andeq r0, r0, r4, lsr 0                        ║
+│││                                                        ││     110 + andeq r0, r0, ip, lsr 1                        ║
+│││    dc   ldrh r0, [r0, 0x2]                             ││     114   ldrh r0, [r0, 0x2]                             ║
+│││    e0   mov r2, 0x0                                    ││     118   mov r2, 0x0                                    ║
+│││    e4 ~ cmp r0, 0x400                                  ││     11c ~ cmp r0, 0x200                                  ║
+│││    e8   mvnhi r2, 0x0                                  ││     120   mvnhi r2, 0x0                                  ║
+│││    ec - mov r0, r2                                     ││┌──< 124 + b $+0xd0                                       ║
+│││    f0 - bx lr                                          │││                                                         ║
  sort added ↓  │  3 of 5 functions  │  view asm  │  hidden retouched, data                        0 gone  0 new  ? help
