@@ -9,9 +9,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # `just quick-test`, not `just test`: the `truth_*` tests read about 1.6 GB,
-  # and the Apple binaries among them come only from an IPSW with the `ipsw`
-  # tool.
+  # `just quick-test` and `just slow-test`, not `just test`: the `truth_*`
+  # tests read about 1.6 GB, and the Apple binaries among them come only from
+  # an IPSW with the `ipsw` tool. The slow tests of the kernels read only the
+  # fixtures; before CI ran them, a change to the report left their snapshots
+  # wrong for a release.
   test:
     runs-on: ubuntu-24.04
     steps:
@@ -44,6 +46,9 @@ jobs:
 
       - name: Test
         run: just quick-test
+
+      - name: Test the kernels
+        run: just slow-test
 
   lint:
     runs-on: ubuntu-24.04

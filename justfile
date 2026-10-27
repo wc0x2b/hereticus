@@ -164,6 +164,13 @@ test *args: build fixtures firmware backports truth ghidra-extension
 quick-test *args: build fixtures firmware backports rivals
     cargo nextest run --release -E 'not test(/slow/) and not {{truth_tests}} and not {{ghidra_tests}}' {{args}}
 
+# The slow tests that read only the fixtures, as CI runs them after
+# `quick-test`: the kernels of OpenWrt. The outputs of the reports read
+# ~/.cache, and a test of the time a key takes depends on the machine, so
+# only `just test` runs those.
+slow-test *args: build fixtures firmware
+    cargo nextest run --release -E 'test(/slow/) and not binary(docs_output) and not test(slow_a_kernel_stays_responsive)' {{args}}
+
 # Measure the research sets of RESEARCH.md, which no test runs: the pairs and
 # the ranks of `examples/research_bench.rs` and the Patch2Vuln updates. Give
 # the sets to run, as `just test-research ubuntu kernels`. `assemblage` needs

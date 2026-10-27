@@ -4,6 +4,7 @@ All patches/merge requests are welcome!
 
 ```
 just quick-test        # about a minute
+just slow-test         # the slow tests of the OpenWrt kernels, which CI runs too
 just test              # the same, plus the slow and the `truth_*` tests
 just test-research     # the measurements of RESEARCH.md, which no test runs
 just fixtures          # rebuild the ARM32, MIPS, Mach-O and garbled Go corpus
