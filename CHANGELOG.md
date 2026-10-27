@@ -21,6 +21,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Four lines can pass one row, or as many as the jumps of a change need,
   up to eight. Where more pass, the jumps of a change are drawn first and
   then the shortest.
+- A removed or added IL line in a block of at least three lines that the
+  other side holds in another place prints in gray, in the browser and in
+  `--diff`, as `git diff --color-moved` shows one. The compiler moved the
+  code. A block with a branch, a call or a return stays red and green,
+  as a fix can move a check before the use it guards.
+
+### Changed
+
+- The IL diff shows a statement that only names other registers as the
+  same line, also where the runs of removed and added lines differ in
+  length. One more register in use moved such statements, so a whole
+  block showed as removed and added. Two names are one register only where
+  they hold values of one width, and where the renaming is one to one and
+  keeps each register that the lines around it name alike.
+- The IL view shows no line for padding that does nothing: `nop`,
+  `xchg ax, ax` and `mov r0, r0`. A trap that pads, as `int3`, still shows.
 
 ### Fixed
 
@@ -30,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after a shift or a multiply tests only the flags.
 - A 16-bit Thumb instruction inside an `it` block keeps the flags, but the
   IL read it as one that sets them.
+- The IL diff showed a statement on registers of another width as the
+  same line where the runs of removed and added lines were as long, as
+  `mul w10, w10, w8` against `mul x10, x10, x8`, where a product of 32
+  bits became one of 64.
 
 ## [0.5.0](https://github.com/wc0x2b/hereticus/compare/v0.4.1...v0.5.0) - 2026-10-27
 
