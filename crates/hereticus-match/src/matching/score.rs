@@ -323,6 +323,13 @@ pub(super) struct Context<'a> {
     pub(super) paired_right: usize,
 }
 
+/// Whether [`lacks_context`] judges a pair of `confidence`: a pair by
+/// identical code, shape or name keeps itself whatever its callers and
+/// callees say.
+pub(super) fn is_judged_by_context(confidence: Confidence) -> bool {
+    matches!(confidence, Confidence::SameCallers | Confidence::Similar | Confidence::SameLayout)
+}
+
 /// Whether the callers and callees of a pair say it is wrong: see
 /// [`Cascade::unpair_without_context`].
 ///

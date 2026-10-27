@@ -20,9 +20,10 @@ use super::score::{
     LOWEST_UNEVEN_GAP_SIMILARITY, LOWEST_UNIQUE_REFERENCE_SIMILARITY, MOST_HOLDERS_OF_AN_EDGE,
     MOST_PLACE_CELLS, MOST_UNIQUE_REFERENCE_ROUNDS, MOVED_SIMILARITY_MARGIN, Place,
     REFERENCE_WEIGHT, RIVAL_MARGIN, ReferenceKey, SHIFTED_GAP_MARGIN, common_keys,
-    constant_agreement, group_by_shape_and_references, keep_best_candidates, lacks_context,
-    long_texts, reference_agreement, saturated, short_texts_changed, similarity_of_symbols,
-    sorted_only_in, sorted_shared, texts_that_differ, unique_reference_holders,
+    constant_agreement, group_by_shape_and_references, is_judged_by_context, keep_best_candidates,
+    lacks_context, long_texts, reference_agreement, saturated, short_texts_changed,
+    similarity_of_symbols, sorted_only_in, sorted_shared, texts_that_differ,
+    unique_reference_holders,
 };
 use super::{
     Changed, Confidence, Diff, EditKinds, Edits, LOWEST_JOINED_SIMILARITY, Match, Options, Phase,
@@ -181,6 +182,13 @@ impl Cascade<'_> {
             .matched
             .iter()
             .map(|pair| {
+                // Most pairs are of identical code, and the callers and
+                // callees of a function that many call, as one that copies
+                // memory, are many: the iPhone kernel spent 9 seconds on
+                // the context of pairs that it never judges.
+                if !is_judged_by_context(pair.confidence) {
+                    return false;
+                }
                 let context = Context {
                     partners_of_left: left[pair.before]
                         .iter()
@@ -693,9 +701,16 @@ impl Cascade<'_> {
                 .then_with(|| a.3.cmp(&b.3))
         });
 
+        // The place in `matched` of the pair of each function, kept as the
+        // pairs below change: to look through every pair for each
+        // candidate took the iPhone kernel, with 114,843 pairs, 10 seconds.
+        let mut pair_of_before: HashMap<usize, usize> =
+            self.matched.iter().enumerate().map(|(at, pair)| (pair.before, at)).collect();
+        let mut pair_of_after: HashMap<usize, usize> =
+            self.matched.iter().enumerate().map(|(at, pair)| (pair.after, at)).collect();
         for (count, score, x, y) in candidates {
-            let pair_of_x = self.matched.iter().position(|pair| pair.before == x);
-            let pair_of_y = self.matched.iter().position(|pair| pair.after == y);
+            let pair_of_x = pair_of_before.get(&x).copied();
+            let pair_of_y = pair_of_after.get(&y).copied();
             if pair_of_x.is_some() && pair_of_x == pair_of_y {
                 continue;
             }
@@ -715,10 +730,19 @@ impl Cascade<'_> {
             broken.sort_unstable_by(|a, b| b.cmp(a));
             for index in broken {
                 let pair = self.matched.swap_remove(index);
+                pair_of_before.remove(&pair.before);
+                pair_of_after.remove(&pair.after);
+                // The last pair took the place of the one removed.
+                if let Some(moved) = self.matched.get(index) {
+                    pair_of_before.insert(moved.before, index);
+                    pair_of_after.insert(moved.after, index);
+                }
                 self.left_free[pair.before] = true;
                 self.right_free[pair.after] = true;
             }
             self.take_pair(x, y, Confidence::SameReferences, score);
+            pair_of_before.insert(x, self.matched.len() - 1);
+            pair_of_after.insert(y, self.matched.len() - 1);
             repaired = Repaired::Some;
         }
         repaired
@@ -1619,6 +1643,10 @@ impl Cascade<'_> {
             }
             UseNames::No => HashSet::new(),
         };
+        // Each side by shape, so a function looks only among those of its
+        // own shape: the iPhone kernel holds 114,844 functions, and to look
+        // through all of them for each took 20 seconds.
+        let (left_by_shape, right_by_shape) = (by_shape(&self.left), by_shape(&self.right));
         for index in 0..self.left.len() {
             progress.advance(1);
             // An empty body carries no evidence, so pairing on it would be a
@@ -1626,11 +1654,15 @@ impl Cascade<'_> {
             if !self.left_free[index] || self.left[index].is_empty() {
                 continue;
             }
+            let shape = shape_key(&self.left[index].ordered);
+            let left_twins = left_by_shape.get(&shape).map_or(&[][..], Vec::as_slice);
+            let right_twins = right_by_shape.get(&shape).map_or(&[][..], Vec::as_slice);
 
-            let mut candidates: Vec<usize> = (0..self.right.len())
-                .filter(|other| {
-                    self.right_free[*other]
-                        && self.left[index].ordered == self.right[*other].ordered
+            let mut candidates: Vec<usize> = right_twins
+                .iter()
+                .copied()
+                .filter(|&other| {
+                    self.right_free[other] && self.left[index].ordered == self.right[other].ordered
                 })
                 .collect();
             let name = self.left[index].function.name.as_str();
@@ -1659,7 +1691,7 @@ impl Cascade<'_> {
             // table of short strings at an offset that changes each release.
             if candidates.len() > 1 {
                 let referents = self.left[index].referents();
-                let shared = (0..self.left.len()).any(|other| {
+                let shared = left_twins.iter().any(|&other| {
                     other != index
                         && self.left_free[other]
                         && self.left[other].ordered == self.left[index].ordered
@@ -1678,7 +1710,7 @@ impl Cascade<'_> {
             }
 
             if let [only] = candidates[..]
-                && !self.has_free_twin_for(index, only)
+                && !self.has_free_twin_for(index, only, left_twins)
             {
                 self.take_pair(index, only, Confidence::IdenticalShape, 1.0);
             }
@@ -1687,7 +1719,8 @@ impl Cascade<'_> {
     }
 
     /// Report whether another free function of the first binary has the
-    /// shape of `before` and could take `after` as well.
+    /// shape of `before` and could take `after` as well. `twins` holds each
+    /// function of the first binary that can have that shape.
     ///
     /// The shape stage asks only whether `after` is the one candidate of
     /// `before`. Where a release deletes one of two twins and keeps the
@@ -1696,7 +1729,7 @@ impl Cascade<'_> {
     /// and 41 fewer wrong over the OpenWrt kernels, 23 more right and 30
     /// fewer wrong over the backports built two ways, and 28 more right and
     /// 22 fewer wrong over the Ubuntu updates.
-    fn has_free_twin_for(&self, before: usize, after: usize) -> bool {
+    fn has_free_twin_for(&self, before: usize, after: usize, twins: &[usize]) -> bool {
         let referents = self.right[after].referents();
         // The same tests that narrow the candidates of `before`, the other
         // way: a twin of another name, or that refers to other things where
@@ -1706,7 +1739,7 @@ impl Cascade<'_> {
             && !self.left[before].function.name.is_empty()
             && self.left[before].function.name == self.right[after].function.name;
         !named_alike
-            && (0..self.left.len()).any(|other| {
+            && twins.iter().any(|&other| {
                 other != before
                     && self.left_free[other]
                     && self.left[other].ordered == self.left[before].ordered
@@ -2350,4 +2383,24 @@ fn row_holders<'r, 't>(
             .or_insert(Some(index));
     }
     holders
+}
+
+/// A key of the normalized instructions `ordered`: two functions of one
+/// shape share it, and two of other shapes almost never do.
+fn shape_key(ordered: &[Symbol]) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ordered.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The functions of `side` by [`shape_key`], each list in the order of
+/// `side`. A key can stand for two shapes, so a reader compares the shapes
+/// too.
+fn by_shape(side: &[Prepared<'_>]) -> HashMap<u64, Vec<usize>> {
+    let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (index, prepared) in side.iter().enumerate() {
+        groups.entry(shape_key(&prepared.ordered)).or_default().push(index);
+    }
+    groups
 }

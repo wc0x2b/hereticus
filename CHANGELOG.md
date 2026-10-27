@@ -37,6 +37,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps each register that the lines around it name alike.
 - The IL view shows no line for padding that does nothing: `nop`,
   `xchg ax, ax` and `mov r0, r0`. A trap that pads, as `int3`, still shows.
+- In the IL view, a branch on the carry after an add reads as
+  `if (carry)`, as `add eax, edx` then `jb` tests that the sum overflowed,
+  and after a subtract as `if (borrow)`. A branch on the signed overflow
+  after either reads as `if (overflow)`. A branch after a shift by a
+  constant that is not 0 tests its result, as `lsls r3, r2, #26` then
+  `bmi` reads `if (r3 < 0)`.
+- The IL diff aligns a slot of the stack of x86, at `[rsp + …]` or
+  `[esp + …]`, as one kind, as it does for the other architectures, so a
+  frame that grew no longer shows each access to it as removed and added.
+- The IL diff shows no statement as the same line where, under a name
+  that the other side does not read, it reads a value that an added or
+  removed statement wrote: it does other work on another value.
+- A comparison of a large binary, as an iPhone kernel, is faster. Three
+  stages looked through every function or pair of the binary for each
+  one, and now each looks only at those that can take part. The pairs are
+  the same.
 
 ### Fixed
 

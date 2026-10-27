@@ -269,6 +269,22 @@ the value that each path brings to a block before it ends them.
 ## Rust has the idea of MIR, an in-between IL. Would that help this project?
 
 ## Our IL is cool, but maybe it could be even better!
-1. Tui could show branches graphically, like other tools
-2. IL could be an emulator?
-3. IL could be an input/output simulator, might be nice for function diffing...
+1. IL could be an emulator?
+2. IL could be an input/output simulator, might be nice for function diffing...
+
+## Make the IL diff show less that did not change
+
+A move between two registers, as `x0 = x19`, is the largest kind of line
+that the IL diffs of Assemblage still show as removed or added, and most
+of those moves were added or dropped (`RESEARCH.md`, "What the IL diff
+shows of a change, again"). A move that only carries a value to the
+register a call reads it from could fold where the value is the same on
+both sides, but this needs the value each register holds, as
+`track_pages` would.
+
+## Prepare the functions of a large binary faster
+
+Now that the stages that looked through every function for each are
+gone, the preparing of the functions takes most of the comparison of an
+iPhone kernel (`RESEARCH.md`, "What the IL diff shows of a change,
+again").

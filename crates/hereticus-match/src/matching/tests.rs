@@ -989,6 +989,9 @@ fn an_il_shape_collapses_numbers_but_not_names() {
     assert_eq!(il_key("r2 = load.32 [pc + 0x5c]"), "r2 = load.32 [pc + ]");
     assert_eq!(il_key("store.64 [sp + 0x20] = x22, x21"), "store.64 [sp + ] = x22, x21");
     assert_eq!(il_key("sp = sp - 0x40"), "sp = sp - 0x40", "the frame size stays");
+    assert_eq!(il_key("rdi = load.64 [rsp + 0x8]"), "rdi = load.64 [rsp + ]");
+    assert_eq!(il_key("store.32 [esp + 0x1c] = eax"), "store.32 [esp + ] = eax");
+    assert_eq!(il_key("rax = load.64 [rbp + 0x18]"), "rax = load.64 [rbp + 0x18]", "a field");
     assert_eq!(il_key("x1 = &\"usage\""), "x1 = &\"usage\"");
     assert_eq!(il_key("x1 = &\"DEVPATH\"[3]"), "x1 = &@", "a pointer into a text moves");
     assert_eq!(il_key("x1 = load.64 [\"a\\\"b\"[1]]"), "x1 = load.64 [@]", "past an escaped quote");
@@ -1163,6 +1166,28 @@ fn a_register_kept_around_a_run_is_no_renamed_one() {
         matches!(kept[..], [DiffLine::Same(_), DiffLine::Removed(_), DiffLine::Added(_)]),
         "{kept:?}"
     );
+}
+
+/// A renamed statement that reads, under its new name, a value that an
+/// added statement wrote is other work: the fix of CVE-2026-28825 in
+/// `smbfs` keeps a new count in `x8`, where the old code kept another in
+/// `x9`. A value that both sides read, as one loaded again, still folds.
+#[test]
+fn a_renamed_statement_that_reads_a_new_value_is_no_same_line() {
+    const ADD_X9_X9_1: u32 = 0x9100_0529;
+    const LDR_X8_X21_688: u32 = 0xf943_46a8;
+    const ADD_X8_X8_1: u32 = 0x9100_0508;
+    const ADD_X3_X9_1: u32 = 0x9100_0523;
+    const LDR_X9_X21_688: u32 = 0xf943_46a9;
+    const ADD_X4_X9_1: u32 = 0x9100_0524;
+    let steps = [Step::Left, Step::Right, Step::Right];
+    let count = fold_il(&[ADD_X9_X9_1], &[LDR_X8_X21_688, ADD_X8_X8_1], &steps);
+    assert!(
+        matches!(count[..], [DiffLine::Added(_), DiffLine::Removed(_), DiffLine::Added(_)]),
+        "{count:?}"
+    );
+    let reloaded = fold_il(&[ADD_X3_X9_1], &[LDR_X9_X21_688, ADD_X4_X9_1], &steps);
+    assert!(matches!(reloaded[..], [DiffLine::Added(_), DiffLine::Same(_)]), "{reloaded:?}");
 }
 
 #[test]
