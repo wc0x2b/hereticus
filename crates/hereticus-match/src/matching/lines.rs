@@ -627,7 +627,10 @@ pub(super) fn il_key(line: &str) -> String {
     // and so does the distance from `pc` to a literal pool. A slot of the
     // stack frame moves when the frame grows, which the compiler decides:
     // the matcher reads every frame slot as one kind too. The size of the
-    // frame stays, as `sp = sp - 0x40`, since a stack buffer can grow.
+    // frame stays, as `sp = sp - 0x40`, since a stack buffer can grow. On
+    // x86 only the stack pointer marks a slot: code built with `-O2` keeps
+    // a value of its own in `rbp` or `ebp`, so `[rbp + 0x10]` can be a
+    // field of a struct.
     let mut key = words.join(" ");
     for marker in [
         "@0x",
@@ -635,6 +638,8 @@ pub(super) fn il_key(line: &str) -> String {
         "[pc - 0x",
         "[sp + 0x",
         "[sp - 0x",
+        "[rsp + 0x",
+        "[esp + 0x",
         "[x29 + 0x",
         "[x29 - 0x",
         "[fp + 0x",
