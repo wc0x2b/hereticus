@@ -20,9 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   function that changes the stack, and the scan finds the leaf functions
   between them. The entry point of an executable starts a function. On
   the fixtures, a stripped DLL gives the same functions as the DLL with
-  its symbols. A COFF symbol gives no size, so each function ends where
-  the next symbol starts, and a symbol of 32-bit Windows drops the
-  decoration of its calling convention, as `_send@16` reads as `send`.
+  its symbols. A COFF symbol gives no size, so a PE file with symbols is
+  scanned too, with each symbol as the start and the name of a function.
+  A symbol of 32-bit Windows drops the decoration of its calling
+  convention, as `_send@16` reads as `send`.
 - The IL view indents each statement two spaces for each jump that it is
   in, in the browser and in `--diff`. A forward jump indents the lines it
   steps over, up to the first line that another path also comes into, so

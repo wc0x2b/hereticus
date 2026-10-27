@@ -176,17 +176,28 @@ fn an_import_by_ordinal_reads_as_its_dll_and_ordinal() {
 /// A DLL that loads `host.dll` on its first call jumps through a slot of
 /// the delay-load directory, which names each thunk.
 ///
-/// The symbol table names nothing in the code that LLD writes after the
-/// thunks to load the DLL, so there that code reads as part of the last
-/// thunk. Only the stripped DLL bounds each thunk.
-#[test]
-fn a_thunk_of_the_delay_load_directory_takes_its_import() {
-    let stripped = read("x86_64-firmware_v2-delayed-stripped.dll");
-    let truth = read("x86_64-firmware_v2-delayed.dll");
+/// LLD writes the code that loads the DLL after the thunks, with no
+/// symbol, so the thunks end where the scan finds that code starts, and
+/// the DLL with symbols reads as scanned.
+#[rstest]
+fn a_thunk_of_the_delay_load_directory_takes_its_import(
+    #[values("firmware", "firmware_v2")] fixture: &str,
+) {
+    let truth = read(&format!("x86_64-{fixture}-delayed.dll"));
+    let stripped = read(&format!("x86_64-{fixture}-delayed-stripped.dll"));
 
-    for import in ["crypto_verify", "log_event"] {
-        let thunk = truth.functions.iter().find(|function| function.name == import);
+    assert_eq!(extents(&stripped), extents(&truth));
+    assert_eq!(truth.found_by, FoundBy::Scanning);
+    /// `jmp [rip + slot]`.
+    const THUNK_BYTES: usize = 6;
+    let imports = match fixture {
+        "firmware" => &["log_event"][..],
+        _ => &["crypto_verify", "log_event"],
+    };
+    for import in imports {
+        let thunk = stripped.functions.iter().find(|function| function.name == *import);
         let thunk = thunk.unwrap_or_else(|| panic!("{import}: a thunk"));
-        assert_eq!(name_at(&stripped, thunk.address), import);
+        assert_eq!(thunk.code.len(), THUNK_BYTES, "{import}");
+        assert_eq!(name_at(&truth, thunk.address), *import);
     }
 }

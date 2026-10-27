@@ -519,7 +519,13 @@ impl Binary {
         let mut functions = Vec::new();
         let mut other_set = BTreeSet::new();
         let unsized_ends = unsized_function_ends(&file, isa);
-        for symbol in file.symbols() {
+        // A COFF symbol of a PE file gives no size, and LLD writes the code
+        // that loads a DLL on its first call with no symbol at all, so the
+        // thunk before it would run on to the next symbol. A PE file is
+        // scanned with each symbol as a start, which names the function
+        // there, below.
+        let sized_symbols = file.symbols().filter(|_| file.format() != object::BinaryFormat::Pe);
+        for symbol in sized_symbols {
             let size = match symbol.size() {
                 0 => unsized_ends.get(&symbol.address()).map_or(0, |end| end - symbol.address()),
                 size => size,
@@ -534,12 +540,11 @@ impl Binary {
                 other_set.insert(address);
             }
             let Some(code) = symbol_code(&file, &symbol, address, size) else { continue };
-            let name = symbol.name().unwrap_or_default();
-            let name = match (file.format(), isa) {
-                (object::BinaryFormat::Pe, Isa::X86) => undecorated_c_name(name),
-                _ => name,
-            };
-            functions.push(Function { name: stable_name(name).to_string(), address, code });
+            functions.push(Function {
+                name: stable_name(symbol.name().unwrap_or_default()).to_string(),
+                address,
+                code,
+            });
         }
 
         if file.kind() == ObjectKind::Relocatable
@@ -588,8 +593,11 @@ impl Binary {
                 *name_of = (*name_of).min(name);
             }
         }
-        // A PE file names its exports in a directory of its own.
-        for (address, name) in hereticus_recovery::pe::exports(&file) {
+        // A PE file names its exports in a directory of its own, and each
+        // function in its symbols, where it keeps them.
+        let pe_names =
+            hereticus_recovery::pe::exports(&file).into_iter().chain(pe_symbol_names(&file, isa));
+        for (address, name) in pe_names {
             let name_of = exported.entry(address).or_insert(name);
             *name_of = (*name_of).min(name);
         }
@@ -616,11 +624,20 @@ impl Binary {
         if scanned.is_empty() {
             return Err(ObjError::NoFunctions);
         }
+        // A PE file whose symbols name every function the scan finds is
+        // read as one with symbols.
+        let named_by_symbols = file.format() == object::BinaryFormat::Pe
+            && file.symbols().next().is_some()
+            && scanned.iter().all(|function| !function.name.is_empty());
+        let found_by = match named_by_symbols {
+            true => FoundBy::Symbols,
+            false => FoundBy::Scanning,
+        };
 
         Ok(Self {
             isa,
             functions: scanned,
-            found_by: FoundBy::Scanning,
+            found_by,
             addresses: address_space(&file),
             links,
             other_set,
@@ -980,12 +997,9 @@ fn symbol_code(
 /// GCC writes `__x86.get_pc_thunk.bx` and the other thunks of 32-bit PIC
 /// with no size once they are linked, and they are functions all the same:
 /// left out, each thunk read as code of the function before it. On another
-/// architecture a symbol of code with no size marks no function in ELF.
-/// A COFF symbol of a PE file never gives a size, on any architecture.
+/// architecture a symbol of code with no size marks no function.
 fn unsized_function_ends(file: &object::File<'_>, isa: Isa) -> BTreeMap<u64, u64> {
-    let gives_no_size =
-        matches!(isa, Isa::X86 | Isa::X86_64) || file.format() == object::BinaryFormat::Pe;
-    if !gives_no_size || file.kind() == ObjectKind::Relocatable {
+    if !matches!(isa, Isa::X86 | Isa::X86_64) || file.kind() == ObjectKind::Relocatable {
         return BTreeMap::new();
     }
     let starts: BTreeSet<u64> = file
@@ -1005,6 +1019,25 @@ fn unsized_function_ends(file: &object::File<'_>, isa: Isa) -> BTreeMap<u64, u64
             let to = usize::try_from(next.min(section_end) - section.address()).ok()?;
             let code = isa.arch().trim_padding(data.get(from..to)?);
             (!code.is_empty()).then(|| (start, start + code.len() as u64))
+        })
+        .collect()
+}
+
+/// The start and the name of each function the symbols of the PE file
+/// `file` name. Empty where `file` is no PE file.
+fn pe_symbol_names<'data>(file: &object::File<'data>, isa: Isa) -> Vec<(u64, &'data str)> {
+    if file.format() != object::BinaryFormat::Pe {
+        return Vec::new();
+    }
+    file.symbols()
+        .filter(|symbol| symbol.kind() == SymbolKind::Text)
+        .filter_map(|symbol| {
+            let name = symbol.name().ok().filter(|name| !name.is_empty())?;
+            let name = match isa {
+                Isa::X86 => undecorated_c_name(name),
+                _ => name,
+            };
+            Some((symbol.address(), name))
         })
         .collect()
 }

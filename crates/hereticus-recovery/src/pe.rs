@@ -292,6 +292,20 @@ fn name_slots<'data, Pe: ImageNtHeaders>(
     }
 }
 
+/// Where each function the symbols of `file` name starts, where `file` is
+/// a PE file that keeps its symbols, as one linked with `/debug:symtab`.
+pub fn symbol_starts(file: &object::File<'_>) -> Vec<u64> {
+    use object::ObjectSymbol;
+
+    if !matches!(file, object::File::Pe32(_) | object::File::Pe64(_)) {
+        return Vec::new();
+    }
+    file.symbols()
+        .filter(|symbol| symbol.kind() == object::SymbolKind::Text)
+        .map(|symbol| symbol.address())
+        .collect()
+}
+
 /// Where the entry point of `file` is, where it is a PE file that has one.
 /// A DLL linked with `/noentry` has none.
 pub fn entry_point(file: &object::File<'_>) -> Option<u64> {
@@ -411,6 +425,7 @@ mod tests {
         assert!(exports(&file).is_empty());
         assert!(import_slot_names(&file).is_empty());
         assert_eq!(entry_point(&file), None);
+        assert!(symbol_starts(&file).is_empty());
     }
 
     /// Each joined range is in order and apart from the next, and covers
@@ -448,6 +463,7 @@ mod tests {
                 let _ = exports(&file);
                 let _ = import_slot_names(&file);
                 let _ = entry_point(&file);
+                let _ = symbol_starts(&file);
             }
         });
     }
