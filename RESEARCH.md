@@ -2572,18 +2572,32 @@ fix of CVE-2021-30883 widens `mul w10, w10, w8` to `mul x10, x10, x8`.
 The renaming of a run must also be one to one, and keep each register
 that the statements around the run name alike: the fix of CVE-2025-14282
 tests what `getuid` returned in `w0` right after `w0 = 1`, where the old
-code tested a global in `w1`. Statements of the later function that a
-diff shows as added or changed:
+code tested a global in `w1`.
 
-| Set | Before | After | Change |
-|---|---|---|---|
-| Assemblage, x86-64 | 19,180,700 | 17,329,768 | −9.6% |
-| Backports, A32 | 4,564 | 3,890 | −14.8% |
-| Backports, T32 | 3,173 | 2,790 | −12.1% |
-| Backports, AArch64 | 2,271 | 2,038 | −10.3% |
-| Backports, x86-64 | 4,188 | 3,673 | −12.3% |
-| Backports, MIPS32 | 3,270 | 3,021 | −7.6% |
-| Backports, A32 and T32 mixed | 622 | 638 | +2.6% |
+The IL view also shows no line for padding that does nothing: `nop`,
+`xchg ax, ax` and `mov r0, r0`. An assembler pads with it to align a
+loop, so it comes and goes wherever the code before it changes size. A
+trap that pads still shows. Statements of the later function that a diff
+shows as added or changed:
 
-The two rules undo some folds that the old rule made where the runs were
-as long, which is the most of the rise in the mixed builds.
+| Set | Before | Fold | And no padding | Change |
+|---|---|---|---|---|
+| Assemblage, x86-64 | 19,180,700 | 17,329,768 | 16,669,990 | −13.1% |
+| Backports, A32 | 4,564 | 3,890 | 3,889 | −14.8% |
+| Backports, T32 | 3,173 | 2,790 | 2,779 | −12.4% |
+| Backports, AArch64 | 2,271 | 2,038 | 1,994 | −12.2% |
+| Backports, x86-64 | 4,188 | 3,673 | 3,604 | −13.9% |
+| Backports, i686 | 5,069 | 4,610 | 4,493 | −11.4% |
+| Backports, MIPS32 | 3,270 | 3,021 | 2,883 | −11.8% |
+| Backports, A32 and T32 mixed | 622 | 638 | 630 | +1.3% |
+| All | 19,212,715 | 17,358,741 | 16,698,434 | −13.1% |
+
+The two rules of the fold undo some folds that the old rule made where
+the runs were as long, which is the most of the rise in the mixed builds.
+
+A block of at least three removed lines that the other side adds whole
+in another place now prints in gray, as `git diff --color-moved` shows
+one. A block with a branch, a call or a return stays red and green, as a
+fix can move a check before the use it guards. Of the removed and added
+lines, 4.2% of the backports and 2.5% of 300 pairs of Assemblage are in
+such a block.
