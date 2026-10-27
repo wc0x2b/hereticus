@@ -269,6 +269,31 @@ the value that each path brings to a block before it ends them.
 ## Rust has the idea of MIR, an in-between IL. Would that help this project?
 
 ## Our IL is cool, but maybe it could be even better!
-1. Tui could show branches graphically, like other tools
-2. IL could be an emulator?
-3. IL could be an input/output simulator, might be nice for function diffing...
+1. IL could be an emulator?
+2. IL could be an input/output simulator, might be nice for function diffing...
+
+## Make the IL diff show less that did not change
+
+Found while measuring the IL diffs of Assemblage and the backports
+(`RESEARCH.md`, "What the IL diff shows of a change"):
+
+1. Each release puts its heading in place of the blank line after
+   `## [Unreleased]` in `CHANGELOG.md`, so the next heading joins the line
+   after it unless someone puts the blank line back.
+2. `il_key` reads a slot of the frame of A32, AArch64 and MIPS as one
+   kind, so a frame that grew still aligns, but not one of x86, at
+   `[rsp + …]` or `[rbp - …]`.
+3. The diff of the fix of CVE-2021-30883 reads an iPhone kernelcache and
+   takes about 45 seconds, where the outputs of all other reports take 2.
+4. A branch on the carry after an `add`, as `add eax, edx` then `jb`,
+   reads as `flags.UnsignedLess`, where it tests that the sum overflowed.
+5. A shift by a constant that is not 0 sets the zero flag from its
+   result, so `shr rcx, 0x28` then `jne` could read `if (rcx != 0)`.
+6. The fold pairs a statement with one of the same shape that does other
+   work: in the fix of CVE-2026-28825 in `smbfs`, `x9 = x9 + 1` with a new
+   `x8 = x8 + 1` between a load and a store.
+7. A move between two registers, `x0 = x19`, is 17% of the lines that
+   the IL diffs of Assemblage still show as removed or added. The rule
+   that a renaming is one to one keeps most of them out of the fold.
+8. Old worktrees of the repository are left, as `/tmp/hstep1` and
+   `/tmp/nice`, whose folders are gone.
