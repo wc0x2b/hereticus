@@ -16,8 +16,8 @@ rust-version.workspace = true
 bench = false
 
 [dependencies]
-hereticus-il = { path = "../hereticus-il", version = "0.4.1" }
-hereticus-memory = { path = "../hereticus-memory", version = "0.4.1" }
+hereticus-il = { path = "../hereticus-il", version = "0.5.0" }
+hereticus-memory = { path = "../hereticus-memory", version = "0.5.0" }
 compact_str = "0.9"
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "intel", "instr_info"] }
 rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = ["std", "MIPS_II"] }
