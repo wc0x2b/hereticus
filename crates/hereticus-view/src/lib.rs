@@ -185,6 +185,23 @@ enum Fold {
     GlobalPointer(String),
 }
 
+/// Whether `insn` pads the code and does nothing, so the IL view shows no
+/// line for it: a `nop` of any length, `xchg ax, ax`, which is the `nop` of
+/// two bytes on x86, and `mov r0, r0`, which GCC pads A32 code with before
+/// ARMv6K. An assembler puts such padding before a loop to align it, so it
+/// comes and goes wherever the code before it changes size: about 4% of the
+/// lines that the IL diffs of Assemblage show as removed or added.
+///
+/// A trap that pads code still shows, as `int3` or a zero word of AArch64:
+/// where it runs, the program stops.
+fn is_padding_that_does_nothing(arch: &dyn Arch, insn: &Insn) -> bool {
+    if !arch.is_padding(insn) || arch.is_trap_fill(insn) {
+        return false;
+    }
+    let text = insn.to_string();
+    text.starts_with("nop") || text == "xchg ax, ax" || text == "mov r0, r0"
+}
+
 /// How the IL view shows each instruction of `insns`.
 fn folds(arch: &dyn Arch, insns: &[Insn]) -> Vec<Fold> {
     let mut folds = vec![Fold::Own; insns.len()];
@@ -193,6 +210,7 @@ fn folds(arch: &dyn Arch, insns: &[Insn]) -> Vec<Fold> {
         // holds.
         if hereticus_il::arch::thumb::is_it(&insns[index])
             || insns[index].opcode == hereticus_il::arch::Opcode::Data
+            || is_padding_that_does_nothing(arch, &insns[index])
         {
             folds[index] = Fold::Hidden;
         }
@@ -2100,15 +2118,15 @@ mod tests {
             0x279c_59ec, // addiu gp, gp, 0x59ec
             0x27bd_ffc8, // addiu sp, sp, -0x38
             0x0399_e021, // addu gp, gp, t9
-            0x0000_0000, // nop
+            0x0000_0000, // nop, which shows no line
         ];
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
         let (insns, _) = decode_all(&Mips32::BIG, &code, 0x1000);
         let statements = il_statements_in(&Mips32::BIG, &code, &insns, None);
         let shown: Vec<(u64, &str)> =
             statements.iter().map(|line| (line.address, line.text.as_str())).collect();
-        assert_eq!(shown, [(0x1008, "sp = sp + -0x38"), (0x100c, "gp = _gp"), (0x1010, "nop")]);
-        assert_eq!(il_line_addresses(&Mips32::BIG, &insns), [0x1008, 0x100c, 0x1010]);
+        assert_eq!(shown, [(0x1008, "sp = sp + -0x38"), (0x100c, "gp = _gp")]);
+        assert_eq!(il_line_addresses(&Mips32::BIG, &insns), [0x1008, 0x100c]);
     }
 
     #[test]
@@ -2150,8 +2168,30 @@ mod tests {
 
     #[test]
     fn what_the_il_does_not_name_reads_as_the_decoder_printed_it() {
-        let shown = lines(&[0xd503_201f]); // nop
-        assert_eq!(shown, ["nop"]);
+        let shown = lines(&[0xd503_3fdf]); // isb
+        assert_eq!(shown, ["isb"]);
+    }
+
+    /// Padding that does nothing shows no line: it comes and goes wherever
+    /// the code before it changes size. A trap that pads still shows.
+    #[test]
+    fn padding_that_does_nothing_shows_no_line() {
+        use hereticus_il::arch::x86::X86;
+        assert!(lines(&[0xd503_201f]).is_empty(), "nop");
+        assert_eq!(lines(&[0x0000_0000]).len(), 1, "a zero word traps");
+        let x86 = |code: &[u8]| {
+            let (insns, _) = decode_all(&X86::BITS64, code, 0x1000);
+            il_lines(&X86::BITS64, code, &insns)
+        };
+        // nop; nop word ptr cs:[rax + rax]; xchg ax, ax; nop dword ptr [rax]
+        let padding = hex("902e660f1f040066900f1f00");
+        assert!(x86(&padding).is_empty(), "{:?}", x86(&padding));
+        assert_eq!(x86(&[0xcc]).len(), 1, "int3 traps");
+        // lea rsi, [rsi + 0] pads too, but is no nop.
+        assert_eq!(x86(&[0x48, 0x8d, 0x76, 0x00]).len(), 1);
+        let (insns, _) = decode_all(&X86::BITS64, &padding, 0x1000);
+        assert!(il_line_addresses(&X86::BITS64, &insns).is_empty());
+        assert!(il_line_depths(&X86::BITS64, &insns).is_empty());
     }
 
     /// Each operand reads by its name from the lift, so an operand that
@@ -2303,23 +2343,31 @@ mod tests {
         );
     }
 
-    /// A delay slot sits at the depth of its branch.
+    /// A delay slot sits at the depth of its branch. The `nop` in the slot
+    /// of `jr` pads and shows no line.
     #[test]
     fn a_loop_in_an_if_indents_on_mips32_of_each_byte_order() {
         use hereticus_il::arch::mips::Mips32;
-        // beqz a0, end; nop; loop: addiu a1, a1, 1; addiu a0, a0, -1;
-        // bnez a0, loop; nop; end: jr ra; nop
-        let big = hex("108000050000000024a500012484ffff1480fffd0000000003e0000800000000");
-        let little = hex("05008010000000000100a524ffff8424fdff8014000000000800e00300000000");
+        let words: [u32; 8] = [
+            0x1080_0005, // beqz a0, end
+            0x24c6_0001, // addiu a2, a2, 1, in the slot
+            0x24a5_0001, // loop: addiu a1, a1, 1
+            0x2484_ffff, // addiu a0, a0, -1
+            0x1480_fffd, // bnez a0, loop
+            0x24e7_0001, // addiu a3, a3, 1, in the slot
+            0x03e0_0008, // end: jr ra
+            0x0000_0000, // nop
+        ];
+        let big: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let little: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
         let expected = at_depths([
             (0, "if (a0 == 0) goto $+0x18"),
-            (0, "nop"),
+            (0, "a2 = a2 + 1"),
             (2, "a1 = a1 + 1"),
             (2, "a0 = a0 + -0x1"),
             (1, "if (a0 != 0) goto $-0x8"),
-            (1, "nop"),
+            (1, "a3 = a3 + 1"),
             (0, "return"),
-            (0, "nop"),
         ]);
         assert_eq!(indented(&Mips32::BIG, &big), expected);
         assert_eq!(indented(&Mips32::LITTLE, &little), expected);
@@ -2343,7 +2391,6 @@ mod tests {
             (2, "a0 = a0 + -0x1"),
             (1, "if (a0 != 0) goto $-0x4"),
             (0, "return"),
-            (0, "nop"),
         ]);
         let big: Vec<u8> = halfwords.iter().flat_map(|half| half.to_be_bytes()).collect();
         let little: Vec<u8> = halfwords.iter().flat_map(|half| half.to_le_bytes()).collect();
@@ -2381,8 +2428,8 @@ mod tests {
         ];
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
         let lines = indented(&Mips32::BIG, &code);
-        assert_eq!(lines[2], (1, "gp = _gp".to_string()), "{lines:?}");
-        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert_eq!(lines[1], (1, "gp = _gp".to_string()), "{lines:?}");
+        assert_eq!(lines.len(), 3, "the nop in the slot shows no line: {lines:?}");
     }
 
     #[test]
