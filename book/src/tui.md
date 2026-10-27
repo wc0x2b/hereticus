@@ -15,6 +15,12 @@ functions that are gone or new come after the pairs.
 
 ![The list of changed functions](./images/tui-functions.png)
 
+The `#` column gives the rank of each function in the present order. The
+rank counts the functions that `a`, `r` and `d` list, so `/`, `t`, `f` and
+the marks do not change it. A filtered function keeps the rank it has in
+the full list. A marked function that `a`, `r` or `d` hides has `-` as its
+rank.
+
 - `s` changes the order, and `S` reverses it.
 - `t` lists only the pairs that touched one kind of code, as `call`.
 - `f` lists only the pairs with one feature, as `added-call`. Each press
@@ -53,9 +59,10 @@ architecture:
 A large comparison can take minutes, and a review can take days. Save it
 as a project, and open it again later with no second match.
 
-- `m` marks the selected function, and asks for a label, as
-  `auth bypass`. The label can be empty. `m` again changes the label, and
-  `M` removes the mark.
+- `m` marks the selected function with no label, and `m` again removes
+  the mark.
+- `M` asks for a label of the selected function, as `auth bypass`, and
+  marks it. The label can be empty. `M` again changes the label.
 
   ![The label of a mark, as you type it](./images/tui-label.png)
 
@@ -129,7 +136,7 @@ hash. The binaries stay where they are.
 | `l` | | side by side or one column |
 | `n` / `p` | | next / previous function |
 | `Esc` | | back to the list |
-| `m` / `M` | mark and label / unmark | mark and label / unmark |
+| `m` / `M` | mark or unmark / label | mark or unmark / label |
 | `w` | save the project | save the project |
 | `?` | this help | this help |
 | `q` | quit, after a question | quit, after a question |

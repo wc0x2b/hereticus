@@ -1,17 +1,16 @@
 ---
 source: hereticus-cli/src/tui/mod.rs
-assertion_line: 1307
 expression: "screen(&mut app, 120, 12)"
 ---
 ─────────────────────────────────────────────────── hereticus vX     ───────────────────────────────────────────────────
  Functions | Diff                                                                            firmware.o → firmware_v2.o 
 ── Functions ───────────────────────────────────────── ⏎ open  s/S sort  t touched  f feature  / filter  m mark  w save 
-  FUNCTION                                                   CHANGE  SCORE  +/-/~  TOUCHED                  MATCHED BY █
-▶ add                                                        gone     0.33  -      closest add              -          █
-  mul_by_constant                                            gone     0.50  -      closest mul_by_constant  -          █
-  sum_to                                                     gone           -      -                        -          ║
-  classify                                                   gone     0.30  -      closest classify         -          ║
-  switch_dense                                               gone           -      -                        -          ║
-  call_chain                                                 gone           -      -                        -          ║
-  array_max                                                  gone           -      -                        -          ║
+  #   FUNCTION                                               CHANGE  SCORE  +/-/~  TOUCHED                  MATCHED BY █
+▶  1  add                                                    gone     0.33  -      closest add              -          █
+   2  mul_by_constant                                        gone     0.50  -      closest mul_by_constant  -          █
+   3  sum_to                                                 gone           -      -                        -          ║
+   4  classify                                               gone     0.30  -      closest classify         -          ║
+   5  switch_dense                                           gone           -      -                        -          ║
+   6  call_chain                                             gone           -      -                        -          ║
+   7  array_max                                              gone           -      -                        -          ║
  sort added ↓  │  16 of 16 functions  │  hidden retouched, data                                   8 gone  8 new  ? help

@@ -37,7 +37,7 @@ use crate::{
     Args, DataRegions, Feature, Hidden, Retouched, Sort, has_features, is_interesting,
     is_shown_unmatched, name_of, rank,
 };
-use columns::Widths;
+use columns::{Column, Widths};
 
 /// How the browser starts.
 #[derive(Clone, Debug)]
@@ -339,6 +339,10 @@ pub struct App<'a> {
     entries: Vec<Labeled>,
     /// The rows the table lists, in order, by their index in `entries`.
     rows: Vec<usize>,
+    /// The place of each entry in the order, among the rows the scope
+    /// lists, from 1. The filters and the marks do not change it, so a
+    /// filtered row keeps the rank it has in the full list.
+    ranks: Vec<Option<usize>>,
     /// The width of the cells of each entry, as unmarked.
     cell_widths: Vec<Widths>,
     /// The width of the widest cell of each column, over the rows listed.
@@ -409,6 +413,7 @@ impl<'a> App<'a> {
             filter: browser.filter,
             entries,
             rows: Vec::new(),
+            ranks: Vec::new(),
             cell_widths: Vec::new(),
             natural: columns::heading_widths(),
             table: TableState::default(),
@@ -449,14 +454,17 @@ impl<'a> App<'a> {
     /// The width of the widest cell of each column, over the rows listed.
     /// The widths of the cells are kept from the start, as building each
     /// row of a kernel again for each order took longer than a sort; a
-    /// marked row is measured again, as its label widens its name.
+    /// marked row is measured again, as its label widens its name. The
+    /// rank changes with the order, so it is measured each time.
     fn measure(&self) -> Widths {
         self.rows.iter().fold(columns::heading_widths(), |mut widest, &index| {
-            let widths = if self.marks.contains_key(&index) {
+            let mut widths = if self.marks.contains_key(&index) {
                 self.widths_of(index)
             } else {
                 self.cell_widths[index]
             };
+            widths[Column::Rank.index()] =
+                u16::try_from(self.rank_text(index).len()).unwrap_or(u16::MAX);
             for (wide, width) in widest.iter_mut().zip(widths) {
                 *wide = (*wide).max(width);
             }
@@ -529,21 +537,22 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Mark the selected row with no label, or take its mark off.
+    fn toggle_mark(&mut self) {
+        let Some(index) = self.selected_entry() else { return };
+        if self.marks.remove(&index).is_none() {
+            self.marks.insert(index, String::new());
+        }
+        self.changes = Changes::Unsaved;
+        self.refresh();
+    }
+
     /// Ask for the label of the selected row, with its present label to
-    /// edit.
+    /// edit. `Enter` marks the row.
     fn ask_label(&mut self) {
         let Some(index) = self.selected_entry() else { return };
         let text = self.marks.get(&index).cloned().unwrap_or_default();
         self.prompt = Some(Prompt { purpose: Purpose::Label(index), text });
-    }
-
-    /// Take the mark off the selected row.
-    fn unmark(&mut self) {
-        let Some(index) = self.selected_entry() else { return };
-        if self.marks.remove(&index).is_some() {
-            self.changes = Changes::Unsaved;
-            self.refresh();
-        }
     }
 
     /// Type into the prompt. `Enter` acts on the text, and `Esc` goes back.
@@ -583,8 +592,8 @@ impl<'a> App<'a> {
     /// whether it was one.
     fn handle_shared(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Char('m') => self.ask_label(),
-            KeyCode::Char('M') => self.unmark(),
+            KeyCode::Char('m') => self.toggle_mark(),
+            KeyCode::Char('M') => self.ask_label(),
             KeyCode::Char('w') => {
                 self.prompt = Some(Prompt { purpose: Purpose::Save, text: self.save_path() });
             }
@@ -593,15 +602,21 @@ impl<'a> App<'a> {
         true
     }
 
+    /// Report whether the present scope and the kinds hidden list `entry`.
+    fn is_in_scope(&self, entry: Entry) -> bool {
+        self.scope == Scope::All
+            || match entry {
+                Entry::Pair(index) => is_interesting(&self.diff.matched[index], self.hidden),
+                Entry::Gone { contents, .. } | Entry::New { contents, .. } => {
+                    is_shown_unmatched(contents, self.hidden)
+                }
+            }
+    }
+
     /// Report whether the table lists `entry` with the present scope and
     /// the kind of code asked for.
     fn is_listed(&self, entry: Entry) -> bool {
-        let shown = |contents| is_shown_unmatched(contents, self.hidden);
-        let in_scope = self.scope == Scope::All
-            || match entry {
-                Entry::Pair(index) => is_interesting(&self.diff.matched[index], self.hidden),
-                Entry::Gone { contents, .. } | Entry::New { contents, .. } => shown(contents),
-            };
+        let in_scope = self.is_in_scope(entry);
         // A function gone or new has no edit to touch anything.
         let touches = match (self.touched, entry) {
             (None, _) => true,
@@ -621,16 +636,9 @@ impl<'a> App<'a> {
     /// selected row stays selected where it is still listed.
     fn refresh(&mut self) {
         let kept = self.selected_entry();
-        let matches = |text: &str| fuzzy::positions(&self.filter, text).is_some();
-        let mut rows: Vec<usize> = (0..self.entries.len())
-            .filter(|index| {
-                self.marks.contains_key(index) || self.is_listed(self.entries[*index].entry)
-            })
-            .filter(|index| {
-                matches(&self.entries[*index].label)
-                    || self.marks.get(index).is_some_and(|label| matches(label))
-            })
-            .collect();
+        // Each entry is put in order, so that each has its rank before the
+        // filters take some out.
+        let mut rows: Vec<usize> = (0..self.entries.len()).collect();
         // The library lists the pairs strongest first, which is the order
         // `confidence` names. The functions gone and new keep their place
         // after the pairs, as the text report lists them.
@@ -649,6 +657,20 @@ impl<'a> App<'a> {
         if self.order == Order::Ascending {
             rows[..pairs].reverse();
         }
+        let mut ranks = vec![None; self.entries.len()];
+        let in_scope = rows.iter().filter(|&&row| self.is_in_scope(self.entries[row].entry));
+        for (rank, &row) in (1..).zip(in_scope) {
+            ranks[row] = Some(rank);
+        }
+        self.ranks = ranks;
+        let matches = |text: &str| fuzzy::positions(&self.filter, text).is_some();
+        rows.retain(|index| {
+            let listed =
+                self.marks.contains_key(index) || self.is_listed(self.entries[*index].entry);
+            listed
+                && (matches(&self.entries[*index].label)
+                    || self.marks.get(index).is_some_and(|label| matches(label)))
+        });
         // A stable sort keeps the order above within the marked rows and
         // within the rest.
         rows.sort_by_key(|row| !self.marks.contains_key(row));
@@ -660,6 +682,16 @@ impl<'a> App<'a> {
             (Some(position), false) => Some(position),
             (None, false) => Some(0),
         });
+    }
+
+    /// The rank of the row `index` of `entries`, or `-` where the scope
+    /// does not list it but a mark does.
+    fn rank_text(&self, index: usize) -> String {
+        self.ranks
+            .get(index)
+            .copied()
+            .flatten()
+            .map_or_else(|| "-".to_string(), |rank| rank.to_string())
     }
 
     /// The index in `entries` of the selected row.
@@ -1090,7 +1122,15 @@ mod tests {
     }
 
     fn fixture(name: &str) -> Option<Binary> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/O2").join(name);
+        fixture_in("O2", name)
+    }
+
+    /// The fixture `name` of `directory` in `fixtures/build`.
+    fn fixture_in(directory: &str, name: &str) -> Option<Binary> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/build")
+            .join(directory)
+            .join(name);
         let Ok(data) = std::fs::read(&path) else {
             eprintln!("skipped: run `just fixtures` first");
             return None;
@@ -1101,6 +1141,15 @@ mod tests {
     /// The firmware fixture before and after its edit.
     fn firmware() -> Option<(Binary, Binary)> {
         Some((fixture("firmware.o")?, fixture("firmware_v2.o")?))
+    }
+
+    /// The firmware fixture with no symbols, so each function is named
+    /// `sub_<hex>` of its address.
+    fn stripped_firmware() -> Option<(Binary, Binary)> {
+        Some((
+            fixture_in("O2-stripped", "firmware.o")?,
+            fixture_in("O2-stripped", "firmware_v2.o")?,
+        ))
     }
 
     /// `basic` at `-O0` and `-O2`, compared from the code alone, where every
@@ -1785,7 +1834,7 @@ mod tests {
 
     /// Mark the selected row with `label`.
     fn mark(app: &mut App<'_>, label: &str) {
-        press(app, &[KeyCode::Char('m')]);
+        press(app, &[KeyCode::Char('M')]);
         type_text(app, label);
         press(app, &[KeyCode::Enter]);
     }
@@ -1829,18 +1878,98 @@ mod tests {
         press(&mut app, &[KeyCode::Char('S')]);
         assert_eq!(app.rows[0], chosen);
 
-        // `m` again edits the label, and `Esc` keeps the old one.
-        press(&mut app, &[KeyCode::Char('m')]);
+        // `M` again edits the label, and `Esc` keeps the old one.
+        press(&mut app, &[KeyCode::Char('M')]);
         assert_eq!(app.prompt.as_ref().map(|prompt| prompt.text.as_str()), Some("auth bypass"));
         type_text(&mut app, " again");
         press(&mut app, &[KeyCode::Esc]);
         assert_eq!(app.marks.get(&chosen).map(String::as_str), Some("auth bypass"));
 
-        press(&mut app, &[KeyCode::Char('M')]);
+        press(&mut app, &[KeyCode::Char('m')]);
         assert!(app.marks.is_empty());
         let unmarked =
             App::new(&diff, &before, &after, start_with(Browser { order: app.order, ..browser() }));
         assert_eq!(app.rows, unmarked.rows, "an unmarked row goes back to its place");
+    }
+
+    #[test]
+    fn m_marks_with_no_label_and_again_unmarks() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        let unmarked = app.rows.clone();
+        press(&mut app, &[KeyCode::End]);
+        let chosen = app.selected_entry().expect("a row");
+
+        press(&mut app, &[KeyCode::Char('m')]);
+        assert!(app.prompt.is_none(), "no label is asked for");
+        assert_eq!(app.marks.get(&chosen).map(String::as_str), Some(""));
+        assert_eq!(app.rows[0], chosen);
+        assert_eq!(app.changes, Changes::Unsaved);
+
+        press(&mut app, &[KeyCode::Char('m')]);
+        assert!(app.marks.is_empty());
+        assert_eq!(app.rows, unmarked);
+        assert_eq!(app.selected_entry(), Some(chosen), "the selection follows the row");
+    }
+
+    #[test]
+    fn a_stripped_function_marks_with_and_without_a_label() {
+        let Some((before, after)) = stripped_firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        assert!(
+            app.rows.iter().all(|&row| app.entries[row].label.starts_with("sub_")),
+            "a stripped binary names no function"
+        );
+        press(&mut app, &[KeyCode::End]);
+        let unlabeled = app.selected_entry().expect("a row");
+        press(&mut app, &[KeyCode::Char('m')]);
+        press(&mut app, &[KeyCode::End]);
+        let labeled = app.selected_entry().expect("a row");
+        mark(&mut app, "parser");
+
+        let shown = screen(&mut app, 120, 12);
+        let name =
+            |index: usize| format!("{}{}", crate::marks::MARK_SIGN, app.entries[index].label);
+        assert!(shown.contains(&name(unlabeled)), "{shown}");
+        assert!(shown.contains(&format!("{}  [parser]", name(labeled))), "{shown}");
+        assert!(shown.contains("2 marked"), "{shown}");
+        insta::assert_snapshot!("tui_marked_stripped", shown);
+
+        // The filter finds a row by the address in its name.
+        press(&mut app, &[KeyCode::Char('/')]);
+        let address = app.entries[unlabeled].label.trim_start_matches("sub_").to_string();
+        type_text(&mut app, &address);
+        assert_eq!(app.rows.first(), Some(&unlabeled), "{:?}", app.rows);
+    }
+
+    #[test]
+    fn a_row_keeps_its_rank_through_the_filters_and_the_marks() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        let ranks: Vec<String> = app.rows.iter().map(|&row| app.rank_text(row)).collect();
+        let wanted: Vec<String> = (1..=app.rows.len()).map(|rank| rank.to_string()).collect();
+        assert_eq!(ranks, wanted, "with no filter, the rank is the place in the list");
+
+        let last = *app.rows.last().expect("a row");
+        let rank = app.rank_text(last);
+        press(&mut app, &[KeyCode::End, KeyCode::Char('m')]);
+        assert_eq!(app.rows[0], last);
+        assert_eq!(app.rank_text(last), rank, "a mark lifts the row but keeps its rank");
+
+        press(&mut app, &[KeyCode::Char('m'), KeyCode::Char('/')]);
+        let name = app.entries[last].label.clone();
+        type_text(&mut app, &name);
+        assert_eq!(app.rows.first(), Some(&last));
+        assert_eq!(app.rank_text(last), rank, "the filter keeps the rank");
+        let shown = screen(&mut app, 120, 12);
+        assert!(shown.contains(&format!("{rank}  {}", app.entries[last].label)), "{shown}");
+
+        // The other order turns the ranks around.
+        press(&mut app, &[KeyCode::Esc, KeyCode::Char('S')]);
+        assert_eq!(app.rank_text(last), "1");
     }
 
     #[test]
@@ -1865,6 +1994,7 @@ mod tests {
         press(&mut app, &[KeyCode::Char('a')]);
         assert_eq!(app.scope, Scope::Changed);
         assert_eq!(app.rows[0], chosen, "out of scope, but marked");
+        assert_eq!(app.rank_text(chosen), "-", "out of scope, so with no rank");
         for _ in TOUCHED_KINDS {
             press(&mut app, &[KeyCode::Char('t')]);
             assert_eq!(app.rows.first(), Some(&chosen), "{:?}", app.touched);
@@ -1970,7 +2100,7 @@ mod tests {
         let Some((before, after)) = firmware() else { return };
         let diff = diff_with(&before, &after, Options::default());
         let mut app = App::new(&diff, &before, &after, start());
-        press(&mut app, &[KeyCode::Char('m')]);
+        press(&mut app, &[KeyCode::Char('M')]);
         insta::assert_snapshot!("tui_label", screen(&mut app, 120, 12));
         let selected = app.table.selected();
         // `q`, `?` and `j` are letters of the label here.

@@ -193,10 +193,12 @@ impl App<'_> {
                 name.spans.extend(highlighted(&format!("[{label}]"), &self.filter).spans);
             }
         }
+        let rank = Line::styled(self.rank_text(index), Style::new().fg(GRAY_FG)).right_aligned();
         let (word, color, closest_in) = match labeled.entry {
             Entry::Pair(index) => {
                 let pair = &self.diff.matched[index];
                 return [
+                    rank,
                     name,
                     Line::styled(describe(pair.changed), Style::new().fg(tone_of(pair.changed))),
                     Line::from(format!("{:.2}", pair.score)).right_aligned(),
@@ -222,6 +224,7 @@ impl App<'_> {
             None => "-".to_string(),
         };
         [
+            rank,
             name,
             Line::styled(word, Style::new().fg(color)),
             Line::styled(score, Style::new().fg(GRAY_FG)).right_aligned(),
@@ -565,7 +568,7 @@ fn draw_help(frame: &mut Frame<'_>) {
         ]),
         Line::default(),
         help_header("Project"),
-        help_entry("m / M", "mark and label / unmark"),
+        help_entry("m / M", "mark or unmark / label"),
         help_entry("w", "save, to open again"),
     ];
 

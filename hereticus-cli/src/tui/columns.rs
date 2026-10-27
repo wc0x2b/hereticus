@@ -10,6 +10,7 @@ use unicode_width::UnicodeWidthStr;
 /// A column of the table, in the order it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Column {
+    Rank,
     Function,
     Change,
     Score,
@@ -19,11 +20,19 @@ pub enum Column {
 }
 
 impl Column {
-    pub const ALL: [Self; 6] =
-        [Self::Function, Self::Change, Self::Score, Self::Edits, Self::Touched, Self::MatchedBy];
+    pub const ALL: [Self; 7] = [
+        Self::Rank,
+        Self::Function,
+        Self::Change,
+        Self::Score,
+        Self::Edits,
+        Self::Touched,
+        Self::MatchedBy,
+    ];
 
     pub fn heading(self) -> &'static str {
         match self {
+            Self::Rank => "#",
             Self::Function => "FUNCTION",
             Self::Change => "CHANGE",
             Self::Score => "SCORE",
@@ -33,7 +42,7 @@ impl Column {
         }
     }
 
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         self as usize
     }
 }
@@ -121,7 +130,7 @@ pub fn fit(line: Line<'static>, width: u16) -> Line<'static> {
 mod tests {
     use super::*;
 
-    const NATURAL: Widths = [20, 14, 5, 7, 30, 32];
+    const NATURAL: Widths = [3, 20, 14, 5, 7, 30, 32];
 
     fn sum(widths: Widths) -> u16 {
         widths.iter().sum()
@@ -130,7 +139,9 @@ mod tests {
     #[test]
     fn a_wide_table_gives_each_column_its_cells_and_the_rest_to_the_names() {
         let widths = allocate(NATURAL, 200);
-        assert_eq!(widths[1..], NATURAL[1..]);
+        let function = Column::Function.index();
+        assert_eq!(widths[..function], NATURAL[..function]);
+        assert_eq!(widths[function + 1..], NATURAL[function + 1..]);
         assert_eq!(sum(widths), 200);
     }
 
@@ -148,6 +159,7 @@ mod tests {
         assert_eq!(widths[Column::MatchedBy.index()], 0);
         assert_eq!(widths[Column::Function.index()], 16);
         assert_eq!(widths[Column::Change.index()], 14, "the kind of change stays");
+        assert_eq!(widths[Column::Rank.index()], 3, "the rank stays");
         assert_eq!(sum(widths), 50);
     }
 
@@ -158,10 +170,10 @@ mod tests {
         bolero::check!().with_type::<(Widths, u16)>().for_each(|&(natural, available)| {
             let natural = natural.map(|width| width % 300);
             let widths = allocate(natural, available);
-            for column in Column::ALL.into_iter().skip(1) {
+            for column in Column::ALL.into_iter().filter(|&column| column != Column::Function) {
                 assert!(widths[column.index()] <= natural[column.index()], "{column:?}");
             }
-            let fixed: u16 = [Column::Change, Column::Score, Column::Edits]
+            let fixed: u16 = [Column::Rank, Column::Change, Column::Score, Column::Edits]
                 .map(|column| natural[column.index()])
                 .iter()
                 .sum::<u16>()

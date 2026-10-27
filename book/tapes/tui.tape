@@ -33,7 +33,7 @@ Sleep 500ms
 Screenshot "book/src/images/tui-diff-il.png"
 Sleep 500ms
 Escape
-Type "Gm"
+Type "GM"
 Sleep 300ms
 Type "auth bypass"
 Sleep 500ms
