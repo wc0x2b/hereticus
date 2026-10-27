@@ -33,7 +33,6 @@ expression: text
 │ ││  7083   pop r12
 │ ││  7085   pop r13
 │ ││  7087   return
-│ ││  7088   nop dword ptr [rax + rax]
 └─┼┼> 7090   store.32 [rbx + 0x74] = ebp
   ││  7093   flags = r12 & r12
   │└< 7096   if ((r12 & r12) == 0) goto $-0x19
@@ -67,7 +66,6 @@ expression: text
 │     70fc     pop r12
 │     70fe     pop r13
 │     7100     goto snprintf
-│     7105     nop dword ptr [rax]
 │     7108   call free
 │     710d   goto $-0xb4
 └───> 7112   store.32 [rbx + 0x74] = -0x4

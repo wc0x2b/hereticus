@@ -1,6 +1,5 @@
 ---
 source: hereticus/tests/view.rs
-assertion_line: 51
 expression: "gz_error(arch).join(\"\\n\")"
 ---
 gp = _gp
@@ -72,7 +71,6 @@ s0 = load.32 [sp + 0x24]
 return
 sp = sp + 0x38
 if (s2 == v0) goto $+0x48
-nop
 store.32 [s0] = zero
 if (s1 == 0) goto $-0x28
 store.32 [s0 + 0x64] = s2
@@ -86,7 +84,6 @@ s0 = load.32 [sp + 0x24]
 return
 sp = sp + 0x38
 call t9
-nop
 goto $-0x10c
 gp = load.32 [sp + 0x18]
 if (s1 != 0) goto $-0x100

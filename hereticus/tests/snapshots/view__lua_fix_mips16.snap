@@ -1,6 +1,5 @@
 ---
 source: hereticus/tests/view.rs
-assertion_line: 71
 expression: "shown.join(\"\\n\")"
 ---
   store.32 [sp - 8] = s0, ra; sp = sp - 0x28
@@ -31,4 +30,3 @@ expression: "shown.join(\"\\n\")"
 + v0 = 1
   v0 = -v0
   goto $-0xc
-  nop
