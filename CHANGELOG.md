@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The `f` key of the browser steps through the features, `--format json`
   gives the features of each pair, and the summary says how many rows
   `--only` hid. A project that an older version saved does not open.
+- The table of functions in the browser has a `#` column with the rank of
+  each function in the present order. The filters and the marks do not
+  change the rank, so a filtered function shows its place in the full
+  list.
 
 ### Changed
 
@@ -24,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, the columns had fixed widths, which cut the kinds touched and
   how a pair matched. In a narrow terminal, the kinds touched and how a
   pair matched shrink first, and a cell cut short ends in `…`.
+- `m` in the browser marks a function with no label, and `m` again removes
+  the mark. `M` asks for the label. Before, `m` asked for the label and
+  `M` removed the mark.
 
 ## [0.4.1](https://github.com/wc0x2b/hereticus/compare/v0.4.0...v0.4.1) - 2026-10-25## [0.4.0](https://github.com/wc0x2b/hereticus/compare/v0.3.0...v0.4.0) - 2026-10-24
 ### Added
