@@ -13,8 +13,8 @@ expression: "screen(&mut app, 120, 16)"
 ││     e8 + sp = sp - 8                                                                                                ║
 ││     ec   r2 = -0x1                                                                                                  ║
 ││     d4 -     flags = compare(r1, 0)                                                                                 ║
+││     f0 + flags = compare(r1, 3)                                                                                     ║
 ││┌─<  d8 -     if (r1 != 0) goto $+0x2c                                                                               ║
-│││    f0 + flags = compare(r1, 3)                                                                                     ║
 │││┌<  f4 + if (r1 u> 3) goto $+0x100                                                                                  ║
 ││││   f8 +   adr r3, pc, 0x4                                                                                          ║
  sort added ↓  │  3 of 5 functions  │  view il  │  hidden retouched, data                         0 gone  0 new  ? help

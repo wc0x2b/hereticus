@@ -13,8 +13,8 @@ expression: "screen(&mut app, 120, 24)"
 ││     e8 + sp = sp -│  s          next order                 v          assembly or IL           │                    ║
 ││     ec   r2 = -0x1│  S          reverse the order          l          side by side or one      │                    ║
 ││     d4 -     flags│  t          next kind touched          n / p      next / previous          │                    ║
-││┌─<  d8 -     if (r│  f          next feature               esc        back to the list         │                    ║
-│││    f0 + flags = c│  a          every function                                                 │                    ║
+││     f0 + flags = c│  f          next feature               esc        back to the list         │                    ║
+││┌─<  d8 -     if (r│  a          every function                                                 │                    ║
 │││┌<  f4 + if (r1 u>│  r          retouched pairs          Colors                                │                    ║
 ││││   f8 +   adr r3,│  d          data regions               changed values unread               │                    ║
 ││││   fc +   r1 = lo│  /          filter the names, fuzzy    reordered data same                 │                    ║
