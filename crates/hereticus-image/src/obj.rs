@@ -519,7 +519,13 @@ impl Binary {
         let mut functions = Vec::new();
         let mut other_set = BTreeSet::new();
         let unsized_ends = unsized_function_ends(&file, isa);
-        for symbol in file.symbols() {
+        // A COFF symbol of a PE file gives no size, and LLD writes the code
+        // that loads a DLL on its first call with no symbol at all, so the
+        // thunk before it would run on to the next symbol. A PE file is
+        // scanned with each symbol as a start, which names the function
+        // there, below.
+        let sized_symbols = file.symbols().filter(|_| file.format() != object::BinaryFormat::Pe);
+        for symbol in sized_symbols {
             let size = match symbol.size() {
                 0 => unsized_ends.get(&symbol.address()).map_or(0, |end| end - symbol.address()),
                 size => size,
@@ -587,6 +593,14 @@ impl Binary {
                 *name_of = (*name_of).min(name);
             }
         }
+        // A PE file names its exports in a directory of its own, and each
+        // function in its symbols, where it keeps them.
+        let pe_names =
+            hereticus_recovery::pe::exports(&file).into_iter().chain(pe_symbol_names(&file, isa));
+        for (address, name) in pe_names {
+            let name_of = exported.entry(address).or_insert(name);
+            *name_of = (*name_of).min(name);
+        }
         let links = Links::of_object(&file);
         let found = scan::recover_functions(data, isa.arch());
         // The scan reads the PLT of a Thumb-2 library as A32.
@@ -610,11 +624,20 @@ impl Binary {
         if scanned.is_empty() {
             return Err(ObjError::NoFunctions);
         }
+        // A PE file whose symbols name every function the scan finds is
+        // read as one with symbols.
+        let named_by_symbols = file.format() == object::BinaryFormat::Pe
+            && file.symbols().next().is_some()
+            && scanned.iter().all(|function| !function.name.is_empty());
+        let found_by = match named_by_symbols {
+            true => FoundBy::Symbols,
+            false => FoundBy::Scanning,
+        };
 
         Ok(Self {
             isa,
             functions: scanned,
-            found_by: FoundBy::Scanning,
+            found_by,
             addresses: address_space(&file),
             links,
             other_set,
@@ -1000,6 +1023,47 @@ fn unsized_function_ends(file: &object::File<'_>, isa: Isa) -> BTreeMap<u64, u64
         .collect()
 }
 
+/// The start and the name of each function the symbols of the PE file
+/// `file` name. Empty where `file` is no PE file.
+fn pe_symbol_names<'data>(file: &object::File<'data>, isa: Isa) -> Vec<(u64, &'data str)> {
+    if file.format() != object::BinaryFormat::Pe {
+        return Vec::new();
+    }
+    file.symbols()
+        .filter(|symbol| symbol.kind() == SymbolKind::Text)
+        .filter_map(|symbol| {
+            let name = symbol.name().ok().filter(|name| !name.is_empty())?;
+            let name = match isa {
+                Isa::X86 => undecorated_c_name(name),
+                _ => name,
+            };
+            Some((symbol.address(), name))
+        })
+        .collect()
+}
+
+/// The name of a C function of 32-bit Windows, as its symbol `name` gives
+/// it with the decoration of its calling convention.
+///
+/// MSVC and clang put `_` before a `__cdecl` or `__stdcall` name and `@`
+/// before a `__fastcall` one, and the size of the arguments after a
+/// `__stdcall` or `__fastcall` one, as `_send@16`. The export and import
+/// directories name the function without them. A C++ name starts with `?`
+/// and keeps its decoration.
+fn undecorated_c_name(name: &str) -> &str {
+    let Some(bare) = name.strip_prefix('_').or_else(|| name.strip_prefix('@')) else {
+        return name;
+    };
+    match bare.rsplit_once('@') {
+        Some((base, size))
+            if !base.is_empty() && !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => bare,
+    }
+}
+
 /// How a function's instructions are encoded, where an architecture has a
 /// compact set beside its full one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1363,6 +1427,19 @@ fn has_code_section(file: &object::File<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_32_bit_windows_c_name_loses_its_decoration() {
+        assert_eq!(undecorated_c_name("_handle"), "handle");
+        assert_eq!(undecorated_c_name("_send@16"), "send");
+        assert_eq!(undecorated_c_name("@fast@8"), "fast");
+        assert_eq!(undecorated_c_name("__imp_log"), "_imp_log", "one `_` only");
+        assert_eq!(undecorated_c_name("?f@@YAHH@Z"), "?f@@YAHH@Z", "C++");
+        assert_eq!(undecorated_c_name("plain"), "plain");
+        assert_eq!(undecorated_c_name("_a@b"), "a@b", "no size after the `@`");
+        assert_eq!(undecorated_c_name("_@4"), "@4", "no name before the size");
+        assert_eq!(undecorated_c_name("_"), "");
+    }
 
     #[test]
     fn rejects_bytes_that_are_not_an_object() {

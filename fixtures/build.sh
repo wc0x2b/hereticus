@@ -255,6 +255,7 @@ else
     echo "fixtures: no ld64.lld or llvm-lipo, skipping the Mach-O dylibs" >&2
 fi
 
+"$here/pe.sh"
 "$here/go.sh"
 
 echo "fixtures: built $(find "$build" -name '*.o' -o -name '*.bin' | wc -l) files in $build"

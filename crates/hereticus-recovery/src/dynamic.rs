@@ -389,10 +389,12 @@ where
 }
 
 /// The symbol each slot of the global offset table holds, where a
-/// relocation or the order of the MIPS global slots names it.
+/// relocation or the order of the MIPS global slots names it, and each slot
+/// of the import address table of a PE file.
 pub fn slot_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
     let mut slots = jump_slot_names(file);
     slots.extend(mips_global_slot_names(file));
+    slots.extend(crate::pe::import_slot_names(file));
     // A file with no section headers names its slots only through the
     // dynamic segment.
     if file.sections().next().is_none()

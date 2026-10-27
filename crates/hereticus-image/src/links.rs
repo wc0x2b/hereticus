@@ -33,6 +33,19 @@ pub struct Links {
     /// word it writes. A shared library fills its vtables this way, so
     /// the file holds zero or an addend where the loader puts a function.
     relocated: BTreeMap<u64, u64>,
+    /// How a stub is named for the symbol it jumps to.
+    stub_names: StubNames,
+}
+
+/// How a stub that jumps through a named slot is named.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum StubNames {
+    /// As an entry of the PLT of an ELF file, as `getpwnam@plt`.
+    #[default]
+    Plt,
+    /// As the import thunk of a PE file, which the linker names for its
+    /// import, as `log_event`.
+    Import,
 }
 
 impl Links {
@@ -93,7 +106,20 @@ impl Links {
         let relocated = relocated_addresses(file, &memory);
         let table = hereticus_recovery::dynamic::Dynamic::of(file)
             .and_then(|dynamic| dynamic.global_offset_table());
-        Self { memory, slots, stubs, table, sites: BTreeMap::new(), read_only_starts, relocated }
+        let stub_names = match file.format() {
+            object::BinaryFormat::Pe => StubNames::Import,
+            _ => StubNames::Plt,
+        };
+        Self {
+            memory,
+            slots,
+            stubs,
+            table,
+            sites: BTreeMap::new(),
+            read_only_starts,
+            relocated,
+            stub_names,
+        }
     }
 
     /// Links for a kernel module, or another unlinked object, whose code
@@ -130,13 +156,19 @@ impl Links {
 
     /// The name of the function whose PLT stub `function` is, as
     /// `getpwnam@plt`, where a relocation names the slot it jumps through.
+    /// The import thunk of a PE file takes the name of its import alone, as
+    /// its linker gives it.
     pub fn stub_name(
         &self,
         arch: &dyn Arch,
         function: &hereticus_memory::Function,
     ) -> Option<String> {
         let slot = self.stub_slot(arch, &function.code, function.address)?;
-        self.slots.get(&slot).map(|name| format!("{name}@plt"))
+        let name = self.slots.get(&slot)?;
+        Some(match self.stub_names {
+            StubNames::Plt => format!("{name}@plt"),
+            StubNames::Import => name.clone(),
+        })
     }
 
     /// The slot the PLT stub `code` at `address` jumps through: the one it
@@ -162,6 +194,7 @@ impl Links {
             sites: BTreeMap::new(),
             read_only_starts: BTreeSet::new(),
             relocated: BTreeMap::new(),
+            stub_names: StubNames::Plt,
         }
     }
 

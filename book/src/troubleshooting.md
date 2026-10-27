@@ -61,7 +61,7 @@ finds its functions from the code. See
 
 ### `cannot read <file>: cannot parse object: ...`
 
-The file is not an ELF or Mach-O file. For a flash dump or a kernel
+The file is not an ELF, Mach-O or PE file. For a flash dump or a kernel
 image, use `--raw`. For a firmware image, use `--unpack` too. See
 [Raw Images and Firmware](./usage.md#raw-images-and-firmware).
 

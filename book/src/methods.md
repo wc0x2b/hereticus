@@ -65,9 +65,17 @@ Code: [`unpack`][unpack]. See `RESEARCH.md`, A18.
 
 ## Reading a Binary
 
-`hereticus` reads ELF, Mach-O and raw images. An ELF file with no section
+`hereticus` reads ELF, Mach-O, PE and raw images. An ELF file with no section
 headers, as `sstrip` leaves it, is read through its program headers. The
 dynamic segment still gives the dynamic symbols and the relocations.
+
+A call from a PE file to a DLL goes through a slot of the import address
+table, directly or through a thunk that jumps through the slot. The import
+directory names the symbol of each slot, and the delay-load directory each
+slot of a DLL that loads on the first call, so each thunk takes the name of
+its import, as the linker gives it. A symbol of 32-bit Windows drops the
+`_` or `@` that its calling convention adds, as `_send@16`, so that it
+agrees with the names of the exports and the imports.
 
 ### The Load Address of a Raw Image
 
@@ -123,10 +131,13 @@ A binary with symbols names its functions. A stripped binary does not, so
 uses these sources, the strongest first:
 
 1. **The dynamic symbols.** A shared library keeps them after stripping,
-   because the loader links through them.
+   because the loader links through them. A Windows DLL keeps its export
+   directory, which gives the start of each function it exports.
 2. **The unwind tables.** `.ARM.exidx` and `.eh_frame` give the start of
-   each function, and `.eh_frame` gives its end too. They stay after
-   stripping, because the unwinder needs them at run time.
+   each function, and `.eh_frame` gives its end too. The exception
+   directory of an x86-64 or ARM64 PE file, `.pdata`, gives the start and
+   the length of each function that changes the stack. They stay after stripping,
+   because the unwinder needs them at run time.
 3. **Call targets.** A call goes to the start of a function. A slot of the
    GOT that a call goes through holds the start of one.
 4. **The code after a return, and prologues.** Code after the end of a

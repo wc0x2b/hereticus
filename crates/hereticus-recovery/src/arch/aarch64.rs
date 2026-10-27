@@ -176,12 +176,13 @@ impl Recovery for Aarch64 {
         (0..insns.len()).filter_map(|index| read_jump_table(memory, &code, insns, index)).collect()
     }
 
-    /// The stub LLD and GNU `ld` write for each PLT entry:
+    /// The stub LLD and GNU `ld` write for each PLT entry, and the import
+    /// thunk that LLD and MSVC write in a PE file:
     ///
     /// ```text
-    /// adrp x16, page
-    /// ldr  x17, [x16, #lo12]
-    /// add  x16, x16, #lo12
+    /// adrp x16, page               adrp x16, page
+    /// ldr  x17, [x16, #lo12]       ldr  x16, [x16, #lo12]
+    /// add  x16, x16, #lo12         br   x16
     /// br   x17
     /// ```
     fn stub_slot(&self, code: &[u8], address: u64) -> Option<u64> {
@@ -191,26 +192,34 @@ impl Recovery for Aarch64 {
         if first & ADR_MASK != ADR_BITS {
             return None;
         }
-        let (insns, _) = super::decode_all(self, code.get(..4 * INSN_WIDTH)?, address);
-        let [adrp, load, add, jump] = insns.as_slice() else { return None };
-        let page = page_of(adrp)?;
-        let low = match operands_of(load).as_slice() {
-            [x17, Operand::RegPreIndex(16, offset, false)] if is_x(*x17, 17) => {
-                i64::from(*offset) as u64
+        let length = code.len().min(4 * INSN_WIDTH) / INSN_WIDTH * INSN_WIDTH;
+        let (insns, _) = super::decode_all(self, &code[..length], address);
+        let loaded_into = |load: &Insn, dest: u16| match operands_of(load).as_slice() {
+            [loaded, Operand::RegPreIndex(16, offset, false)]
+                if is_x(*loaded, dest) && opcode_of(load) == Some(Opcode::LDR) =>
+            {
+                Some(i64::from(*offset) as u64)
             }
-            _ => return None,
+            _ => None,
         };
+        let jumps_through = |jump: &Insn, register: u16| {
+            opcode_of(jump) == Some(Opcode::BR)
+                && matches!(operands_of(jump).as_slice(), [target] if is_x(*target, register))
+        };
+        let page = page_of(insns.first()?)?;
+        if let [_, load, jump, ..] = insns.as_slice()
+            && let Some(low) = loaded_into(load, 16)
+            && jumps_through(jump, 16)
+        {
+            return Some(page + low);
+        }
+        let [_, load, add, jump] = insns.as_slice() else { return None };
+        let low = loaded_into(load, 17)?;
         let adds_to_x16 = matches!(
             operands_of(add).as_slice(),
             [dest, source, ..] if is_x(*dest, 16) && is_x(*source, 16)
         );
-        let jumps_through_x17 =
-            matches!(operands_of(jump).as_slice(), [target] if is_x(*target, 17));
-        let shape = opcode_of(load) == Some(Opcode::LDR)
-            && opcode_of(add) == Some(Opcode::ADD)
-            && adds_to_x16
-            && opcode_of(jump) == Some(Opcode::BR)
-            && jumps_through_x17;
+        let shape = opcode_of(add) == Some(Opcode::ADD) && adds_to_x16 && jumps_through(jump, 17);
         shape.then_some(page + low)
     }
 
@@ -823,6 +832,18 @@ mod tests {
         // starts its page: `ldr x17, [x16]`.
         let at_page = code(&[0xd000_0110, 0xf940_0211, 0x9100_0210, 0xd61f_0220]);
         assert_eq!(Aarch64.stub_slot(&at_page, 0x36710), Some(0x58000));
+    }
+
+    /// The import thunk of `log_event` that LLD writes in the ARM64 DLL of
+    /// the firmware fixture.
+    #[test]
+    fn reads_the_slot_a_pe_import_thunk_jumps_through() {
+        let thunk = code(&[0xb000_0010, 0xf940_4610, 0xd61f_0200]);
+        assert_eq!(Aarch64.stub_slot(&thunk, 0x1_8000_144c), Some(0x1_8000_2088));
+        assert_eq!(Aarch64.stub_slot(&thunk[..8], 0x1_8000_144c), None, "no jump");
+        // `br x17` after `ldr x16` jumps through no slot that was loaded.
+        let other = code(&[0xb000_0010, 0xf940_4610, 0xd61f_0220]);
+        assert_eq!(Aarch64.stub_slot(&other, 0x1_8000_144c), None);
     }
 
     #[test]
