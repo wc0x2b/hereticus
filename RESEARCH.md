@@ -2539,3 +2539,51 @@ It found 4 more starts. The 12 more invented are code that GCC puts after the ca
 and words of a pool after `nop` padding that no load names, as after
 `error_expected` in `luaY_parser` for ARM. So the reading is out: it
 costs more starts than it finds.
+
+### What the IL diff shows of a change
+
+Measured on 2026-10-27 over the 8,872 pairs of files of Assemblage and
+the 240 pairs of the backports, on each pair of changed functions. These
+changes do not touch the matching: the pairs of Assemblage are the same,
+5,254,938 right and 52,310 wrong.
+
+A branch on the flags named the last compare, even where an `add`, a
+`sub` or another operation wrote the flags after it. Of the 10,663,104
+conditional branches in the changed functions of Assemblage, 1,073,186
+(10.1%) read otherwise once an operation that writes the flags replaces
+the compare. Each one checked against its instructions was right after
+the change: `sub rdx, fs:[0x28]` then `jne` tests `rdx != 0`, the check of
+a stack canary that named the `test rax, rax` before the call, and
+`sub dword ptr [rsi + 8], 1` then `jne`, the drop of a count of
+references, tests `[rsi + 0x8] != 0`.
+
+The lines of the jumps draw a jump that a change added or removed first.
+With four lanes, 67.4% of those jumps of the backports, and 52.1% of 300
+pairs of Assemblage, have a line. With four lanes, or as many as the
+jumps of the change need up to eight, 85.1% and 65.8% do. A jump out of
+the function, as to a `.cold` part, has no line in either.
+
+A removed statement and an added one that differ only in their
+registers folded into one line only where the two runs were as long. In
+a run of other lengths, the statements now align on their text with the
+registers left out, and then with the numbers left out too. Two names
+are one register renamed only where they hold values of one width: the
+fix of CVE-2021-30883 widens `mul w10, w10, w8` to `mul x10, x10, x8`.
+The renaming of a run must also be one to one, and keep each register
+that the statements around the run name alike: the fix of CVE-2025-14282
+tests what `getuid` returned in `w0` right after `w0 = 1`, where the old
+code tested a global in `w1`. Statements of the later function that a
+diff shows as added or changed:
+
+| Set | Before | After | Change |
+|---|---|---|---|
+| Assemblage, x86-64 | 19,180,700 | 17,329,768 | −9.6% |
+| Backports, A32 | 4,564 | 3,890 | −14.8% |
+| Backports, T32 | 3,173 | 2,790 | −12.1% |
+| Backports, AArch64 | 2,271 | 2,038 | −10.3% |
+| Backports, x86-64 | 4,188 | 3,673 | −12.3% |
+| Backports, MIPS32 | 3,270 | 3,021 | −7.6% |
+| Backports, A32 and T32 mixed | 622 | 638 | +2.6% |
+
+The two rules undo some folds that the old rule made where the runs were
+as long, which is the most of the rise in the mixed builds.
