@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use hereticus_arch::Arch;
 
+use hereticus_il as il;
 use hereticus_il::arch::{Insn, InsnKind, is_branch_target};
 
 use hereticus_image::{Binary, Function, Isa};
@@ -413,32 +414,108 @@ impl IlRun<'_> {
         }
         let mut lines = Vec::with_capacity(self.before_at.len() + self.after_at.len());
         let mut renaming = Renaming::default();
+        // The registers that a removed or an added statement wrote, so far.
+        let (mut fresh_before, mut fresh_after) = (il::RegSet::EMPTY, il::RegSet::EMPTY);
         let (mut i, mut j) = (0, 0);
         let ends = all.into_iter().chain([(self.before_at.len(), self.after_at.len())]);
         for (pair_i, pair_j) in ends {
             lines.extend((i..pair_i).map(|at| DiffLine::Removed(self.before_text(at).to_string())));
             lines.extend((j..pair_j).map(|at| DiffLine::Added(self.after_text(at).to_string())));
+            (i..pair_i).for_each(|at| {
+                self.mark_written(self.before, &self.before_at, at, &mut fresh_before)
+            });
+            (j..pair_j)
+                .for_each(|at| self.mark_written(self.after, &self.after_at, at, &mut fresh_after));
             if pair_i == self.before_at.len() {
                 break;
             }
+            let reads_fresh = self.reads_fresh(pair_i, pair_j, fresh_before, fresh_after);
             let folded = self.fold(pair_i, pair_j).filter(|line| match line {
-                DiffLine::Same(_) => renaming.take(
-                    &self.registers_of(self.before, self.before_text(pair_i)),
-                    &self.registers_of(self.after, self.after_text(pair_j)),
-                    kept,
-                ),
+                DiffLine::Same(_) => {
+                    !reads_fresh
+                        && renaming.take(
+                            &self.registers_of(self.before, self.before_text(pair_i)),
+                            &self.registers_of(self.after, self.after_text(pair_j)),
+                            kept,
+                        )
+                }
                 _ => true,
             });
             match folded {
                 Some(line) => lines.push(line),
-                None => lines.extend([
-                    DiffLine::Removed(self.before_text(pair_i).to_string()),
-                    DiffLine::Added(self.after_text(pair_j).to_string()),
-                ]),
+                None => {
+                    lines.extend([
+                        DiffLine::Removed(self.before_text(pair_i).to_string()),
+                        DiffLine::Added(self.after_text(pair_j).to_string()),
+                    ]);
+                    self.mark_written(self.before, &self.before_at, pair_i, &mut fresh_before);
+                    self.mark_written(self.after, &self.after_at, pair_j, &mut fresh_after);
+                }
             }
             (i, j) = (pair_i + 1, pair_j + 1);
         }
         Some(lines)
+    }
+
+    /// The lift of statement `at` of the run `run` of `side`.
+    fn lifted(
+        &self,
+        side: &IlSide<'_>,
+        run: &core::ops::Range<usize>,
+        at: usize,
+    ) -> Option<il::Lifted> {
+        let insn = side.insn_of(&side.statements[run.start + at])?;
+        side.arch.lift(insn)
+    }
+
+    /// Put the registers that statement `at` of the run writes in `fresh`.
+    /// A statement with no counterpart on the other side gives its
+    /// registers a value of its own. The stack pointer is no such value: a
+    /// frame that grows writes it, and each slot of the frame still reads
+    /// as one kind.
+    fn mark_written(
+        &self,
+        side: &IlSide<'_>,
+        run: &core::ops::Range<usize>,
+        at: usize,
+        fresh: &mut il::RegSet,
+    ) {
+        if let Some(lifted) = self.lifted(side, run, at) {
+            lifted
+                .writes
+                .iter()
+                .filter(|reg| !matches!(reg, il::Reg::Stack | il::Reg::ProgramCounter))
+                .for_each(|reg| fresh.insert(reg));
+        }
+    }
+
+    /// Whether the pair of statements `before_at` and `after_at` reads,
+    /// under a name that only one side of the pair reads, a value that a
+    /// statement with no counterpart wrote: `fresh_before` and `fresh_after`
+    /// hold what such statements wrote. Then the rename is no same line,
+    /// but other work on another value. The fix of CVE-2026-28825 in
+    /// `smbfs` adds `x8 = load.64 [x21 + 0x688]; x8 = x8 + 1`, a count that
+    /// the old code did not keep, where it kept another in `x9`. A
+    /// register that both sides read is left: a value loaded again from
+    /// the stack after a spill is the same value.
+    fn reads_fresh(
+        &self,
+        before_at: usize,
+        after_at: usize,
+        fresh_before: il::RegSet,
+        fresh_after: il::RegSet,
+    ) -> bool {
+        let (Some(before), Some(after)) = (
+            self.lifted(self.before, &self.before_at, before_at),
+            self.lifted(self.after, &self.after_at, after_at),
+        ) else {
+            return false;
+        };
+        let renamed_fresh = |reads: il::RegSet, other: il::RegSet, fresh: il::RegSet| {
+            reads.iter().any(|reg| !other.contains(reg) && fresh.contains(reg))
+        };
+        renamed_fresh(before.reads, after.reads, fresh_before)
+            || renamed_fresh(after.reads, before.reads, fresh_after)
     }
 
     /// The words of `line` that the instructions of `side` print as

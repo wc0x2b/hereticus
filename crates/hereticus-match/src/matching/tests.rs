@@ -1168,6 +1168,28 @@ fn a_register_kept_around_a_run_is_no_renamed_one() {
     );
 }
 
+/// A renamed statement that reads, under its new name, a value that an
+/// added statement wrote is other work: the fix of CVE-2026-28825 in
+/// `smbfs` keeps a new count in `x8`, where the old code kept another in
+/// `x9`. A value that both sides read, as one loaded again, still folds.
+#[test]
+fn a_renamed_statement_that_reads_a_new_value_is_no_same_line() {
+    const ADD_X9_X9_1: u32 = 0x9100_0529;
+    const LDR_X8_X21_688: u32 = 0xf943_46a8;
+    const ADD_X8_X8_1: u32 = 0x9100_0508;
+    const ADD_X3_X9_1: u32 = 0x9100_0523;
+    const LDR_X9_X21_688: u32 = 0xf943_46a9;
+    const ADD_X4_X9_1: u32 = 0x9100_0524;
+    let steps = [Step::Left, Step::Right, Step::Right];
+    let count = fold_il(&[ADD_X9_X9_1], &[LDR_X8_X21_688, ADD_X8_X8_1], &steps);
+    assert!(
+        matches!(count[..], [DiffLine::Added(_), DiffLine::Removed(_), DiffLine::Added(_)]),
+        "{count:?}"
+    );
+    let reloaded = fold_il(&[ADD_X3_X9_1], &[LDR_X9_X21_688, ADD_X4_X9_1], &steps);
+    assert!(matches!(reloaded[..], [DiffLine::Added(_), DiffLine::Same(_)]), "{reloaded:?}");
+}
+
 #[test]
 fn a_renaming_is_one_to_one() {
     let words =
