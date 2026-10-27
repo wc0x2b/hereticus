@@ -1046,6 +1046,88 @@ fn an_il_statement_folds_on_its_instruction() {
     assert!(matches!(grew[..], [DiffLine::Changed { .. }, DiffLine::Added(_)]), "{grew:?}");
 }
 
+/// A statement that names other registers folds into the same line where
+/// the runs differ in length: one more register in use moved it below a
+/// new statement.
+#[test]
+fn a_renamed_statement_folds_in_runs_of_other_lengths() {
+    const MOV_X5_X1: u32 = 0xaa01_03e5;
+    const ADD_X3_X20_4: u32 = 0x9100_1283;
+    const ADD_X3_X19_4: u32 = 0x9100_1263;
+    const ADD_X3_X19_8: u32 = 0x9100_2263;
+    const SUB_X2_X2_1: u32 = 0xd100_0442;
+    let steps = [Step::Left, Step::Right, Step::Right];
+    let folded = fold_il(&[ADD_X3_X20_4], &[MOV_X5_X1, ADD_X3_X19_4], &steps);
+    assert!(matches!(folded[..], [DiffLine::Added(_), DiffLine::Same(_)]), "{folded:?}");
+    // Where they meet, the two statements share nothing but their
+    // registers, so the old fold of the meeting pair would not take them.
+    let steps = [Step::Left, Step::Left, Step::Right, Step::Right, Step::Right];
+    let folded =
+        fold_il(&[ADD_X3_X20_4, SUB_X2_X2_1], &[MOV_X5_X1, ADD_X3_X19_4, SUB_X2_X2_1], &steps);
+    assert!(
+        matches!(folded[..], [DiffLine::Added(_), DiffLine::Same(_), DiffLine::Same(_)]),
+        "{folded:?}"
+    );
+    // A statement with another register and another constant pairs with
+    // its old form, but is no same line and no changed one: `~` says only
+    // a value changed.
+    let one_and_two = [Step::Left, Step::Right, Step::Right];
+    let folded = fold_il(&[ADD_X3_X20_4], &[MOV_X5_X1, ADD_X3_X19_8], &one_and_two);
+    assert!(
+        matches!(folded[..], [DiffLine::Added(_), DiffLine::Removed(_), DiffLine::Added(_)]),
+        "{folded:?}"
+    );
+    // With the same register, it is a changed line.
+    const ADD_X3_X20_8: u32 = 0x9100_2283;
+    let folded = fold_il(&[ADD_X3_X20_4], &[MOV_X5_X1, ADD_X3_X20_8], &one_and_two);
+    assert!(matches!(folded[..], [DiffLine::Added(_), DiffLine::Changed { .. }]), "{folded:?}");
+}
+
+/// Each side of a folded diff shows each of its statements once, in
+/// order, as the TUI and `--diff` need to give each line its address.
+#[test]
+fn any_fold_shows_each_statement_of_each_side_once() {
+    const WORDS: [u32; 7] =
+        [0xaa01_03e5, 0x9100_1283, 0x9100_1263, 0x9100_2263, 0x5280_0020, 0xd100_0442, 0xf940_0020];
+    bolero::check!().with_type::<(Vec<u8>, Vec<u8>)>().for_each(|(left, right)| {
+        let words = |picks: &[u8]| -> Vec<u32> {
+            picks.iter().take(24).map(|pick| WORDS[usize::from(*pick) % WORDS.len()]).collect()
+        };
+        let (before, after) = (il_side(&words(left)), il_side(&words(right)));
+        let keys = |side: &IlSide<'_>| -> Vec<String> {
+            side.statements.iter().map(|statement| il_key(&statement.text)).collect()
+        };
+        let steps = align(&keys(&before), &keys(&after));
+        let folded = fold_il_runs(&steps, &before, &after);
+        let (mut shown_before, mut shown_after) = (0, 0);
+        let mut after_texts = Vec::new();
+        for line in &folded {
+            match line {
+                DiffLine::Same(text) => {
+                    shown_before += 1;
+                    shown_after += 1;
+                    after_texts.push(text.clone());
+                }
+                DiffLine::Changed { after, .. } => {
+                    shown_before += 1;
+                    shown_after += 1;
+                    after_texts.push(after.clone());
+                }
+                DiffLine::Removed(_) => shown_before += 1,
+                DiffLine::Added(text) => {
+                    shown_after += 1;
+                    after_texts.push(text.clone());
+                }
+            }
+        }
+        assert_eq!(shown_before, before.statements.len());
+        assert_eq!(shown_after, after.statements.len());
+        let expected: Vec<String> =
+            after.statements.iter().map(|statement| statement.text.clone()).collect();
+        assert_eq!(after_texts, expected);
+    });
+}
+
 /// A call whose target moved is a free choice, but not where the IL
 /// view names another callee: the name is no word of the instruction.
 #[test]

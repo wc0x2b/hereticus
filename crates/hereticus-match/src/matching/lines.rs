@@ -170,6 +170,31 @@ impl<'a> IlSide<'a> {
         Self { arch, insns, statements, printed }
     }
 
+    /// The key of `line` to align on, with each word that an instruction of
+    /// this side prints as a register written `R`. A number stays, as two
+    /// statements that differ in a constant can differ in what they do.
+    fn without_registers(&self, line: &str) -> String {
+        let key = il_key(line);
+        let mut out = String::with_capacity(key.len());
+        let mut word = String::new();
+        let flush = |word: &mut String, out: &mut String| {
+            let register = !word.starts_with(|c: char| c.is_ascii_digit())
+                && self.printed.contains(word.as_str());
+            out.push_str(if register { "R" } else { word });
+            word.clear();
+        };
+        for character in key.chars() {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                word.push(character);
+            } else {
+                flush(&mut word, &mut out);
+                out.push(character);
+            }
+        }
+        flush(&mut word, &mut out);
+        out
+    }
+
     /// The instruction that `statement` shows.
     fn insn_of(&self, statement: &hereticus_view::Statement) -> Option<&Insn> {
         let index =
@@ -216,25 +241,46 @@ pub(super) fn fold_il_runs(
             (removed == added).then(|| (0..removed).map(|at| run.fold(at, at)).collect()).flatten();
         match pairs {
             Some(pairs) => folded.extend(pairs),
-            // Runs of other lengths fold only where they meet.
-            None => {
-                folded.extend(
-                    (0..removed - 1).map(|at| DiffLine::Removed(run.before_text(at).to_string())),
-                );
-                match run.fold(removed - 1, 0) {
-                    Some(line) => folded.push(line),
-                    None => folded.extend([
-                        DiffLine::Removed(run.before_text(removed - 1).to_string()),
-                        DiffLine::Added(run.after_text(0).to_string()),
-                    ]),
+            None => match run.fold_aligned() {
+                Some(lines) => folded.extend(lines),
+                // Runs that share no statement but for their registers fold
+                // only where they meet.
+                None => {
+                    folded.extend(
+                        (0..removed - 1)
+                            .map(|at| DiffLine::Removed(run.before_text(at).to_string())),
+                    );
+                    match run.fold(removed - 1, 0) {
+                        Some(line) => folded.push(line),
+                        None => folded.extend([
+                            DiffLine::Removed(run.before_text(removed - 1).to_string()),
+                            DiffLine::Added(run.after_text(0).to_string()),
+                        ]),
+                    }
+                    folded.extend(
+                        (1..added).map(|at| DiffLine::Added(run.after_text(at).to_string())),
+                    );
                 }
-                folded.extend((1..added).map(|at| DiffLine::Added(run.after_text(at).to_string())));
-            }
+            },
         }
         (i, j) = (i + removed, j + added);
         index += removed + added;
     }
     folded
+}
+
+/// The pairs of indices that `steps` align, in order.
+fn aligned_pairs(steps: &[Step]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let (mut i, mut j) = (0, 0);
+    steps.iter().filter_map(move |step| {
+        let pair = (*step == Step::Both).then_some((i, j));
+        match step {
+            Step::Both => (i, j) = (i + 1, j + 1),
+            Step::Left => i += 1,
+            Step::Right => j += 1,
+        }
+        pair
+    })
 }
 
 /// A run of removed IL statements and the run of added ones after it.
@@ -246,6 +292,78 @@ struct IlRun<'a> {
 }
 
 impl IlRun<'_> {
+    /// The lines of the run, where the statements of the two runs align on
+    /// their text with each register left out, and each aligned pair folds
+    /// as [`IlRun::fold`] allows. `None` where no two statements align.
+    ///
+    /// A compiler picks the registers freely, and one more register in
+    /// use moves the rest: `x2 = x1 + 1` in one release is `x3 = x1 + 1`
+    /// in the next, a line below, so the runs differ in length and do not
+    /// fold pair by pair. The statements that do not align so align again
+    /// with each number left out too, between the pairs found, so that a
+    /// statement with another constant pairs only where no statement with
+    /// the same one does.
+    fn fold_aligned(&self) -> Option<Vec<DiffLine>> {
+        let keys = |side: &IlSide<'_>, at: &core::ops::Range<usize>, shape: bool| -> Vec<String> {
+            at.clone()
+                .map(|index| {
+                    let key = side.without_registers(&side.statements[index].text);
+                    if shape { il_shape(&key) } else { key }
+                })
+                .collect()
+        };
+        let pairs =
+            |shape: bool, before: core::ops::Range<usize>, after: core::ops::Range<usize>| {
+                let before_keys = keys(
+                    self.before,
+                    &(self.before_at.start + before.start..self.before_at.start + before.end),
+                    shape,
+                );
+                let after_keys = keys(
+                    self.after,
+                    &(self.after_at.start + after.start..self.after_at.start + after.end),
+                    shape,
+                );
+                aligned_pairs(&align(&before_keys, &after_keys))
+                    .map(|(i, j)| (before.start + i, after.start + j))
+                    .collect::<Vec<_>>()
+            };
+        let exact = pairs(false, 0..self.before_at.len(), 0..self.after_at.len());
+        // The gaps between the exact pairs, and after the last.
+        let ends = exact.iter().copied().chain([(self.before_at.len(), self.after_at.len())]);
+        let mut all = Vec::new();
+        let (mut i, mut j) = (0, 0);
+        for (next_i, next_j) in ends {
+            all.extend(pairs(true, i..next_i, j..next_j));
+            if next_i < self.before_at.len() {
+                all.push((next_i, next_j));
+            }
+            (i, j) = (next_i + 1, next_j + 1);
+        }
+        if all.is_empty() {
+            return None;
+        }
+        let mut lines = Vec::with_capacity(self.before_at.len() + self.after_at.len());
+        let (mut i, mut j) = (0, 0);
+        let ends = all.into_iter().chain([(self.before_at.len(), self.after_at.len())]);
+        for (pair_i, pair_j) in ends {
+            lines.extend((i..pair_i).map(|at| DiffLine::Removed(self.before_text(at).to_string())));
+            lines.extend((j..pair_j).map(|at| DiffLine::Added(self.after_text(at).to_string())));
+            if pair_i == self.before_at.len() {
+                break;
+            }
+            match self.fold(pair_i, pair_j) {
+                Some(line) => lines.push(line),
+                None => lines.extend([
+                    DiffLine::Removed(self.before_text(pair_i).to_string()),
+                    DiffLine::Added(self.after_text(pair_j).to_string()),
+                ]),
+            }
+            (i, j) = (pair_i + 1, pair_j + 1);
+        }
+        Some(lines)
+    }
+
     fn before_text(&self, at: usize) -> &str {
         &self.before.statements[self.before_at.start + at].text
     }
