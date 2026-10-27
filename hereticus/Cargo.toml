@@ -20,15 +20,15 @@ bench = false
 serde = ["hereticus-match/serde", "hereticus-memory/serde"]
 
 [dependencies]
-hereticus-il = { path = "../crates/hereticus-il", version = "0.5.0" }
-hereticus-recovery = { path = "../crates/hereticus-recovery", version = "0.5.0" }
-hereticus-arch = { path = "../crates/hereticus-arch", version = "0.5.0" }
-hereticus-callees = { path = "../crates/hereticus-callees", version = "0.5.0" }
-hereticus-image = { path = "../crates/hereticus-image", version = "0.5.0" }
-hereticus-match = { path = "../crates/hereticus-match", version = "0.5.0" }
-hereticus-memory = { path = "../crates/hereticus-memory", version = "0.5.0" }
-hereticus-unpack = { path = "../crates/hereticus-unpack", version = "0.5.0" }
-hereticus-view = { path = "../crates/hereticus-view", version = "0.5.0" }
+hereticus-il = { path = "../crates/hereticus-il", version = "0.6.0" }
+hereticus-recovery = { path = "../crates/hereticus-recovery", version = "0.6.0" }
+hereticus-arch = { path = "../crates/hereticus-arch", version = "0.6.0" }
+hereticus-callees = { path = "../crates/hereticus-callees", version = "0.6.0" }
+hereticus-image = { path = "../crates/hereticus-image", version = "0.6.0" }
+hereticus-match = { path = "../crates/hereticus-match", version = "0.6.0" }
+hereticus-memory = { path = "../crates/hereticus-memory", version = "0.6.0" }
+hereticus-unpack = { path = "../crates/hereticus-unpack", version = "0.6.0" }
+hereticus-view = { path = "../crates/hereticus-view", version = "0.6.0" }
 
 [dev-dependencies]
 # One test body runs as a plain property test on stable, and under a
