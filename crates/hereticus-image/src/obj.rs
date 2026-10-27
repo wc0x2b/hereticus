@@ -587,6 +587,11 @@ impl Binary {
                 *name_of = (*name_of).min(name);
             }
         }
+        // A PE file names its exports in a directory of its own.
+        for (address, name) in hereticus_recovery::pe::exports(&file) {
+            let name_of = exported.entry(address).or_insert(name);
+            *name_of = (*name_of).min(name);
+        }
         let links = Links::of_object(&file);
         let found = scan::recover_functions(data, isa.arch());
         // The scan reads the PLT of a Thumb-2 library as A32.

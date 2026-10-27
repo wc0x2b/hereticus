@@ -7,7 +7,7 @@ just quick-test        # about a minute
 just slow-test         # the slow tests of the OpenWrt kernels, which CI runs too
 just test              # the same, plus the slow and the `truth_*` tests
 just test-research     # the measurements of RESEARCH.md, which no test runs
-just fixtures          # rebuild the ARM32, MIPS, Mach-O and garbled Go corpus
+just fixtures          # rebuild the ARM32, MIPS, Mach-O, PE and garbled Go corpus
 just rivals            # run radiff2 on the backports, which `quick-test` compares with
 just rivals-ghidra     # run Ghidra Version Tracking on them, which `test` compares with
 just ghidra-extension  # build the Ghidra extension and run it in Ghidra, which `test` checks
@@ -81,7 +81,7 @@ row.
 | `hereticus-unpack`   | Unpack firmware archives                  | nothing                                          |
 | `hereticus-recovery` | Find functions in stripped binaries       | il, memory                                       |
 | `hereticus-arch`     | The rules the matching reads              | il, memory, recovery                             |
-| `hereticus-image`    | Read ELF, Mach-O and raw images           | arch, il, memory, recovery                       |
+| `hereticus-image`    | Read ELF, Mach-O, PE and raw images       | arch, il, memory, recovery                       |
 | `hereticus-callees`  | Find the callee of each call              | arch, il, image, memory, recovery                |
 | `hereticus-view`     | Show code as instructions or as IL        | arch, callees, il, image, memory, recovery       |
 | `hereticus-match`    | Compare the functions of two binaries     | arch, callees, il, image, memory, recovery, view |

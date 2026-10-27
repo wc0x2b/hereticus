@@ -427,6 +427,10 @@ Options:
   and iOS ship it, arm64 or arm64e, stripped or not, and a universal binary
   as its AArch64 slice. A kernelcache of iOS 15 and later is read kext by
   kext. The dyld shared cache and 32-bit Mach-O are not read.
+* **x86-64 Windows DLLs.** A DLL is read stripped or not. Stripped, it
+  keeps the names of its exports and of its imports, and its exception
+  directory bounds each function that changes the stack. The exception
+  directory of a 32-bit x86 or an ARM64 PE file is not read.
 * **Unoptimized against optimized is out of scope.** At `-O2` the compiler
   changes the algorithm, which normalizing cannot bridge. Shipped firmware is
   built optimized.

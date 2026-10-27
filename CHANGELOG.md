@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `hereticus` reads stripped x86-64 Windows DLLs. A stripped DLL keeps the
+  names of its exports and of its imports: each thunk that jumps through
+  a slot of the import address table takes the name of its import. The
+  exception directory, `.pdata`, gives the start and the end of each
+  function that changes the stack, and the scan finds the leaf functions
+  between them. On the fixtures, a stripped DLL gives the same functions
+  as the DLL with its symbols.
 - The IL view indents each statement two spaces for each jump that it is
   in, in the browser and in `--diff`. A forward jump indents the lines it
   steps over, up to the first line that another path also comes into, so

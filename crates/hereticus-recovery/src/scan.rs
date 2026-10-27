@@ -164,6 +164,9 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
     // Where the ABI has no index of its own, as on MIPS, the call frame
     // information of C++ and of C built with unwind tables serves as one.
     let mut index = exception_index(&file, arch);
+    if index.is_empty() {
+        index = pe_index(&file, arch);
+    }
     if index.is_empty()
         && let Some(section) = file.section_by_name(".eh_frame")
         && let Ok(bytes) = section.data()
@@ -234,6 +237,27 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
         found.sort_by_key(|recovered| recovered.address);
     }
     found
+}
+
+/// The index of a PE file: each function its exception directory lists,
+/// and each function it exports. Empty where `file` is no PE file.
+///
+/// The directory leaves out each leaf function, and an export of one is
+/// exact at its start only, so an export with no entry of its own starts
+/// a range that is scanned as code with no index.
+fn pe_index(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<IndexEntry> {
+    let mut index = index_from_ranges(&crate::pe::function_ranges(file), arch);
+    let listed: BTreeSet<u64> = index.iter().map(|entry| entry.address).collect();
+    index.extend(
+        crate::pe::exports(file)
+            .into_iter()
+            .map(|(address, _)| address)
+            .filter(|address| !listed.contains(address))
+            .map(|address| IndexEntry { address, unwinding: Unwinding::CannotUnwind }),
+    );
+    index.sort_by_key(|entry| entry.address);
+    index.dedup_by_key(|entry| entry.address);
+    index
 }
 
 /// The entries of each `.plt` of `file` whose stubs [`Recovery::plt_entries`]

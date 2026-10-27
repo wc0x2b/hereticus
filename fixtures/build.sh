@@ -255,6 +255,42 @@ else
     echo "fixtures: no ld64.lld or llvm-lipo, skipping the Mach-O dylibs" >&2
 fi
 
+# x86-64 Windows DLLs, built as MSVC builds them. Each imports its undefined
+# functions from `host.dll`, so each call to one goes through a slot of the
+# import address table. Each exports one function, as a DLL exports some of
+# its functions and not all. The symbol table that `/debug:symtab` keeps
+# names every function, and a stripped copy keeps only the exception
+# directory, the exports and the imports.
+if command -v lld-link >/dev/null 2>&1 && command -v llvm-dlltool >/dev/null 2>&1; then
+    pe="$build/pe"
+    mkdir -p "$pe"
+    build_dll() {
+        local source="$1" export="$2"
+        local name
+        name="$(basename "$source" .c)"
+        clang --target=x86_64-pc-windows-msvc "${common_flags[@]}" \
+            -ffreestanding -c -O2 "$source" -o "$pe/$name.obj"
+        {
+            echo "LIBRARY host.dll"
+            echo "EXPORTS"
+            llvm-nm --undefined-only --format=just-symbols "$pe/$name.obj"
+        } >"$pe/$name-host.def"
+        llvm-dlltool -m i386:x86-64 -d "$pe/$name-host.def" -l "$pe/$name-host.lib"
+        lld-link /dll /noentry /nodefaultlib /debug:symtab "/export:$export" \
+            "/out:$pe/$name.dll" "$pe/$name.obj" "$pe/$name-host.lib"
+        llvm-strip --strip-all "$pe/$name.dll" -o "$pe/$name-stripped.dll"
+        rm "$pe/$name.obj" "$pe/$name.lib" "$pe/$name-host.def" "$pe/$name-host.lib"
+    }
+    build_dll "$src/basic.c" call_chain
+    build_dll "$src/basic_v2.c" call_chain
+    build_dll "$src/firmware.c" handle
+    build_dll "$src/firmware_v2.c" handle
+    build_dll "$src/calls.c" nested
+    echo "fixtures: PE DLLs built in $pe"
+else
+    echo "fixtures: no lld-link or llvm-dlltool, skipping the PE DLLs" >&2
+fi
+
 "$here/go.sh"
 
 echo "fixtures: built $(find "$build" -name '*.o' -o -name '*.bin' | wc -l) files in $build"

@@ -1,4 +1,4 @@
-//! Read a binary: an ELF or Mach-O file, or a raw image, and the functions
+//! Read a binary: an ELF, Mach-O or PE file, or a raw image, and the functions
 //! in it.
 //!
 //! [`Binary::parse`] takes the functions from the symbols where the binary

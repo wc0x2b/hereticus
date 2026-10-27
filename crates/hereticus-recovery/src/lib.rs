@@ -12,6 +12,7 @@
 pub mod arch;
 pub mod dynamic;
 pub mod mips_stubs;
+pub mod pe;
 pub mod raw;
 pub mod scan;
 pub mod unwind;

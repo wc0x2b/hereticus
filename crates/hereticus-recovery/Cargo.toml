@@ -30,3 +30,4 @@ object = "0.40"
 [dev-dependencies]
 bolero = { version = "0.13", features = ["arbitrary"] }
 rstest = "0.27"
+object = { version = "0.40", features = ["write"] }
