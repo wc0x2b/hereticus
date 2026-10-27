@@ -16,59 +16,59 @@ flags = rdi & rdi
 if ((rdi & rdi) == 0) goto $+0x14
   flags = compare([rbx + 0x74], -0x4)
   if ([rbx + 0x74] != -0x4) goto $+0xb5
-      store.64 [rbx + 0x78] = 0
-    flags = ebp & ebp
-    if ((ebp & ebp) == 0) goto $+0x2d
-      flags = compare(ebp, -0x5)
-      if (ebp == -0x5) goto $+0x28
-        store.32 [rbx] = 0
-        store.32 [rbx + 0x74] = ebp
-        flags = r12 & r12
-        if ((r12 & r12) == 0) goto $+0x7
-          flags = compare(ebp, -0x4)
-          if (ebp != -0x4) goto $+0x1d
-              rsp = rsp + 8
-              pop rbx
-              pop rbp
-              pop r12
-              pop r13
-              return
-              nop dword ptr [rax + rax]
-          store.32 [rbx + 0x74] = ebp
-          flags = r12 & r12
-        if ((r12 & r12) == 0) goto $-0x19
-      rbp = load.64 [rbx + 0x20]
-      rdi = rbp
-      call strlen
-      rdi = r12
-      r13 = rax
-      call strlen
-      rdi = rdi + [r13 + rax + 0x3]
-      call malloc
-      store.64 [rbx + 0x78] = rax
-      r13 = rax
-      flags = rax & rax
-      if ((rax & rax) == 0) goto $+0x4f
-        rdi = rbp
-        call strlen
-        rdi = r12
-        rbx = rax
-        call strlen
-        rsp = rsp + 8
-        r9 = r12
-        rcx = rbp
-        rsi = rsi + [rbx + rax + 0x3]
-        rdi = r13
-        pop rbx
-        eax = 0
-        pop rbp
-        r8 = &": "
-        rdx = &"%s%s%s"
-        pop r12
-        pop r13
-        goto snprintf
-        nop dword ptr [rax]
-      call free
-    goto $-0xb4
-  store.32 [rbx + 0x74] = -0x4
+store.64 [rbx + 0x78] = 0
+flags = ebp & ebp
+if ((ebp & ebp) == 0) goto $+0x2d
+  flags = compare(ebp, -0x5)
+  if (ebp == -0x5) goto $+0x28
+    store.32 [rbx] = 0
+    store.32 [rbx + 0x74] = ebp
+    flags = r12 & r12
+    if ((r12 & r12) == 0) goto $+0x7
+      flags = compare(ebp, -0x4)
+      if (ebp != -0x4) goto $+0x1d
+rsp = rsp + 8
+pop rbx
+pop rbp
+pop r12
+pop r13
+return
+nop dword ptr [rax + rax]
+store.32 [rbx + 0x74] = ebp
+flags = r12 & r12
+if ((r12 & r12) == 0) goto $-0x19
+rbp = load.64 [rbx + 0x20]
+rdi = rbp
+call strlen
+rdi = r12
+r13 = rax
+call strlen
+rdi = rdi + [r13 + rax + 0x3]
+call malloc
+store.64 [rbx + 0x78] = rax
+r13 = rax
+flags = rax & rax
+if ((rax & rax) == 0) goto $+0x4f
+  rdi = rbp
+  call strlen
+  rdi = r12
+  rbx = rax
+  call strlen
+  rsp = rsp + 8
+  r9 = r12
+  rcx = rbp
+  rsi = rsi + [rbx + rax + 0x3]
+  rdi = r13
+  pop rbx
+  eax = 0
+  pop rbp
+  r8 = &": "
+  rdx = &"%s%s%s"
+  pop r12
+  pop r13
+  goto snprintf
+  nop dword ptr [rax]
+call free
+goto $-0xb4
+store.32 [rbx + 0x74] = -0x4
 goto $-0x9c

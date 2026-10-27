@@ -16,92 +16,92 @@ if (a0 == 0) goto $+0xc
   if (v0 != 0) goto $+0xa6
     v0 = 0
     store.32 [a3 + 0x68] = v0
-    if (a1 != 0) goto $+0x8c
-      store.32 [a3 + 0x64] = a1
-      if (s1 == 0) goto $+0x84
-            v0 = load.32 [a3 + 0x18]
-            store.32 [sp + 0x40] = a3
-            a0 = v0
-            store.32 [sp + 0x20] = v0
-            v0 = load.32 [@strlen]
-            call strlen
-            t9 = v0
-            a0 = s1
-            a2 = load.32 [sp + 0x18]
-            store.32 [sp + 0x24] = v0
-            v0 = load.32 [@strlen]
-            gp = a2
-            call strlen
-            t9 = v0
-            v1 = load.32 [sp + 0x24]
-            a2 = load.32 [sp + 0x18]
-            a0 = v1 + v0
-            v0 = load.32 [@malloc]
-            gp = a2
-            a0 = a0 + 3
-            call malloc
-            t9 = v0
-            a3 = load.32 [sp + 0x40]
-            a2 = load.32 [sp + 0x18]
-            store.32 [sp + 0x24] = v0
-            gp = a2
-            store.32 [a3 + 0x68] = v0
-            if (v0 == 0) goto $+0x7e
-              v0 = load.32 [@strlen]
-              a0 = load.32 [sp + 0x20]
-              call strlen
-              t9 = v0
-              a0 = s1
-              a2 = load.32 [sp + 0x18]
-              store.32 [sp + 0x28] = v0
-              v0 = load.32 [@strlen]
-              gp = a2
-              call strlen
-              t9 = v0
-              v1 = load.32 [sp + 0x28]
-              a2 = load.32 [sp + 0x18]
-              a3 = load.32 [sp + 0x20]
-              a1 = v1 + v0
-              v0 = &page
-              gp = a2
-              a2 = &page
-              s0 = load.32 [@snprintf]
-              a1 = a1 + 3
-              v0 = &": "
-              a0 = load.32 [sp + 0x24]
-              a2 = &"%s%s%s"
-              store.32 [sp + 0x14] = s1
-              store.32 [sp + 0x10] = v0
-              call snprintf
-              t9 = s0
-                  s0, s1, ra = load.32 [sp + 0x34]; sp = sp + 0x40
-                  return
-                v0 = a1 + 5
-                if (v0 == 0) goto $+0x2c
-                  v0 = 0
-                  store.32 [a3 + 0x64] = a1
-                  store.32 [a3] = v0
-                if (s1 == 0) goto $-0xe
-                a1 = a1 + 4
-              if (a1 != 0) goto $-0x94
-              s0, s1, ra = load.32 [sp + 0x34]; sp = sp + 0x40
-              return
-            v0 = load.32 [s0 + -0x7FD4]
-            store.32 [sp + 0x44] = a1
-            store.32 [sp + 0x40] = a3
-            call v0
-            t9 = v0
-            v0 = 0
-            a3 = load.32 [sp + 0x40]
-            a2 = load.32 [sp + 0x18]
-            a1 = load.32 [sp + 0x44]
-            gp = a2
-            store.32 [a3 + 0x68] = v0
-          goto $-0xb8
-        store.32 [a3 + 0x64] = a1
-      if (s1 != 0) goto $-0xb6
-    goto $-0x36
-  v0 = 4
-  v0 = -v0
-  store.32 [a3 + 0x64] = v0
+if (a1 != 0) goto $+0x8c
+  store.32 [a3 + 0x64] = a1
+  if (s1 == 0) goto $+0x84
+v0 = load.32 [a3 + 0x18]
+store.32 [sp + 0x40] = a3
+a0 = v0
+store.32 [sp + 0x20] = v0
+v0 = load.32 [@strlen]
+call strlen
+t9 = v0
+a0 = s1
+a2 = load.32 [sp + 0x18]
+store.32 [sp + 0x24] = v0
+v0 = load.32 [@strlen]
+gp = a2
+call strlen
+t9 = v0
+v1 = load.32 [sp + 0x24]
+a2 = load.32 [sp + 0x18]
+a0 = v1 + v0
+v0 = load.32 [@malloc]
+gp = a2
+a0 = a0 + 3
+call malloc
+t9 = v0
+a3 = load.32 [sp + 0x40]
+a2 = load.32 [sp + 0x18]
+store.32 [sp + 0x24] = v0
+gp = a2
+store.32 [a3 + 0x68] = v0
+if (v0 == 0) goto $+0x7e
+  v0 = load.32 [@strlen]
+  a0 = load.32 [sp + 0x20]
+  call strlen
+  t9 = v0
+  a0 = s1
+  a2 = load.32 [sp + 0x18]
+  store.32 [sp + 0x28] = v0
+  v0 = load.32 [@strlen]
+  gp = a2
+  call strlen
+  t9 = v0
+  v1 = load.32 [sp + 0x28]
+  a2 = load.32 [sp + 0x18]
+  a3 = load.32 [sp + 0x20]
+  a1 = v1 + v0
+  v0 = &page
+  gp = a2
+  a2 = &page
+  s0 = load.32 [@snprintf]
+  a1 = a1 + 3
+  v0 = &": "
+  a0 = load.32 [sp + 0x24]
+  a2 = &"%s%s%s"
+  store.32 [sp + 0x14] = s1
+  store.32 [sp + 0x10] = v0
+  call snprintf
+  t9 = s0
+s0, s1, ra = load.32 [sp + 0x34]; sp = sp + 0x40
+return
+v0 = a1 + 5
+if (v0 == 0) goto $+0x2c
+  v0 = 0
+  store.32 [a3 + 0x64] = a1
+  store.32 [a3] = v0
+  if (s1 == 0) goto $-0xe
+  a1 = a1 + 4
+  if (a1 != 0) goto $-0x94
+  s0, s1, ra = load.32 [sp + 0x34]; sp = sp + 0x40
+  return
+v0 = load.32 [s0 + -0x7FD4]
+store.32 [sp + 0x44] = a1
+store.32 [sp + 0x40] = a3
+call v0
+t9 = v0
+v0 = 0
+a3 = load.32 [sp + 0x40]
+a2 = load.32 [sp + 0x18]
+a1 = load.32 [sp + 0x44]
+gp = a2
+store.32 [a3 + 0x68] = v0
+goto $-0xb8
+store.32 [a3 + 0x64] = a1
+if (s1 != 0) goto $-0xb6
+goto $-0x36
+v0 = 4
+v0 = -v0
+store.32 [a3 + 0x64] = v0
 goto $-0x3e

@@ -45,10 +45,11 @@ lines changed only a value:
 
 `v` shows the same diff as IL statements, which read alike on each
 architecture. Each statement is indented two spaces for each jump that
-it is in: a forward jump indents the lines it steps over, and a backward
-jump indents the body of its loop. Where jumps cross, as when a compiler
-moves an error path after the return, the indent shows no structure of
-the source:
+it is in. A forward jump indents the lines it steps over, up to the first
+line that another path also comes into. Thus an error path that the
+compiler moves after the return, and that jumps back into the middle,
+indents only the lines before that point. A backward jump indents the
+body of its loop, where the target of the jump can run again:
 
 ![The diff of one function, as IL](./images/tui-diff-il.png)
 

@@ -11,6 +11,8 @@
 //! them. An instruction the IL does not name shows as the decoder prints
 //! it.
 
+mod depth;
+
 use std::collections::{HashMap, HashSet};
 
 use compact_str::CompactString;
@@ -155,57 +157,19 @@ pub fn il_line_addresses(arch: &dyn Arch, insns: &[Insn]) -> Vec<u64> {
 /// How deep in the jumps of its function each line of
 /// [`il_statements_in`] sits, so that a view can indent the line.
 ///
-/// A jump forward, on a condition or not, puts the lines it steps over one
-/// level deeper, as the body of an `if` is. A jump back puts the lines from
-/// its target up to it one level deeper, as the body of a loop is. Jumps
+/// A jump forward puts the lines it steps over one level deeper, as the
+/// body of an `if` is, up to the first line that another path comes into.
+/// A jump back puts the lines from its target up to it one level deeper, as
+/// the body of a loop is, where the target leads to the jump again. Jumps
 /// that cross, as to the cases of a `switch`, add their levels too, but
 /// then the depth shows no structure of the source. A jump through a
 /// register, or out of the function, adds no level.
 pub fn il_line_depths(arch: &dyn Arch, insns: &[Insn]) -> Vec<usize> {
-    nesting_depths(insns, |insn| arch.delay_slots(insn))
+    depth::nesting_depths(insns, |insn| arch.delay_slots(insn))
         .into_iter()
         .zip(folds(arch, insns))
         .filter(|(_, fold)| *fold != Fold::Hidden)
         .map(|(depth, _)| depth)
-        .collect()
-}
-
-/// The depth of each instruction of `insns`, as [`il_line_depths`] gives
-/// it.
-///
-/// A branch and its delay slots move as one: a jump forward steps over
-/// what comes after the last slot, and a jump back stops before the branch.
-fn nesting_depths(insns: &[Insn], delay_slots: impl Fn(&Insn) -> usize) -> Vec<usize> {
-    let index_of = |target: u64| insns.binary_search_by_key(&target, |insn| insn.address).ok();
-    // How many spans start at each instruction, and how many end before it.
-    let mut starts = vec![0_usize; insns.len()];
-    let mut ends = vec![0_usize; insns.len() + 1];
-    for (index, insn) in insns.iter().enumerate() {
-        let (InsnKind::Branch { target: Some(target) } | InsnKind::Jump { target: Some(target) }) =
-            insn.kind
-        else {
-            continue;
-        };
-        let Some(target) = index_of(target) else { continue };
-        let span = match target > index {
-            true => index + delay_slots(insn) + 1..target,
-            false => target..index,
-        };
-        if span.is_empty() {
-            continue;
-        }
-        starts[span.start] += 1;
-        ends[span.end] += 1;
-    }
-    starts
-        .iter()
-        .zip(&ends)
-        .scan(0, |depth, (started, ended)| {
-            // Each span ends after it starts, so the depth never drops
-            // below zero.
-            *depth = *depth + started - ended;
-            Some(*depth)
-        })
         .collect()
 }
 
@@ -2217,102 +2181,6 @@ mod tests {
         );
         assert_eq!(operand_texts(&[x(0)], &[""]), Some(vec![String::new()]), "nothing to read");
         assert_eq!(operand_texts(&[x(0)], &[]), None, "the names do not match the operands");
-    }
-
-    /// An instruction at `0x1000 + 4 * index`, of `kind`.
-    fn flow(index: u64, kind: InsnKind) -> Insn {
-        Insn::new(0x1000 + 4 * index, &[0; 4], kind, hereticus_il::arch::Opcode::None)
-    }
-
-    /// A branch from instruction `from` to instruction `to`.
-    fn branch(from: u64, to: u64) -> Insn {
-        flow(from, InsnKind::Branch { target: Some(0x1000 + 4 * to) })
-    }
-
-    fn straight(index: u64) -> Insn {
-        flow(index, InsnKind::Normal)
-    }
-
-    #[test]
-    fn the_body_of_an_if_sits_one_level_deeper() {
-        let insns = [branch(0, 3), straight(1), straight(2), straight(3)];
-        assert_eq!(nesting_depths(&insns, |_| 0), [0, 1, 1, 0]);
-    }
-
-    #[test]
-    fn the_two_arms_of_an_if_and_else_sit_at_one_level() {
-        let insns = [
-            branch(0, 3),
-            straight(1),
-            flow(2, InsnKind::Jump { target: Some(0x1000 + 4 * 5) }),
-            straight(3),
-            straight(4),
-            straight(5),
-        ];
-        assert_eq!(nesting_depths(&insns, |_| 0), [0, 1, 1, 1, 1, 0]);
-    }
-
-    #[test]
-    fn the_body_of_a_loop_sits_one_level_deeper() {
-        let insns = [straight(0), straight(1), straight(2), branch(3, 1), straight(4)];
-        assert_eq!(nesting_depths(&insns, |_| 0), [0, 1, 1, 0, 0]);
-    }
-
-    #[test]
-    fn a_loop_in_an_if_sits_two_levels_deeper() {
-        let insns = [branch(0, 4), straight(1), straight(2), branch(3, 1), straight(4)];
-        assert_eq!(nesting_depths(&insns, |_| 0), [0, 2, 2, 1, 0]);
-    }
-
-    #[test]
-    fn a_delay_slot_sits_with_its_branch() {
-        let insns = [branch(0, 3), straight(1), straight(2), straight(3)];
-        let slots = |insn: &Insn| usize::from(matches!(insn.kind, InsnKind::Branch { .. }));
-        assert_eq!(nesting_depths(&insns, slots), [0, 0, 1, 0]);
-    }
-
-    #[test]
-    fn a_jump_with_no_target_in_the_function_adds_no_level() {
-        let insns = [
-            flow(0, InsnKind::Jump { target: None }),
-            flow(1, InsnKind::Branch { target: Some(0x8000) }),
-            branch(2, 2),
-            branch(3, 4),
-            straight(4),
-        ];
-        assert_eq!(nesting_depths(&insns, |_| 0), [0; 5]);
-        assert!(nesting_depths(&[], |_| 0).is_empty());
-    }
-
-    #[test]
-    fn the_depth_of_an_instruction_counts_the_spans_around_it() {
-        // Each instruction branches, if at all, to an index below 24, which
-        // can be past the end of the function.
-        bolero::check!().with_type::<(Vec<Option<u8>>, bool)>().for_each(|(targets, slot)| {
-            let slots = usize::from(*slot);
-            let insns: Vec<Insn> = (0..)
-                .zip(targets)
-                .map(|(index, target)| match target {
-                    Some(to) => branch(index, u64::from(to % 24)),
-                    None => straight(index),
-                })
-                .collect();
-            let spans: Vec<core::ops::Range<usize>> = targets
-                .iter()
-                .enumerate()
-                .filter_map(|(from, target)| {
-                    let to = usize::from((*target)? % 24);
-                    (to < targets.len())
-                        .then(|| if to > from { from + slots + 1..to } else { to..from })
-                })
-                .collect();
-            let model: Vec<usize> = (0..insns.len())
-                .map(|index| spans.iter().filter(|span| span.contains(&index)).count())
-                .collect();
-            let branches_have_slots =
-                |insn: &Insn| if matches!(insn.kind, InsnKind::Branch { .. }) { slots } else { 0 };
-            assert_eq!(nesting_depths(&insns, branches_have_slots), model);
-        });
     }
 
     /// Each IL line of `code` on `arch`, after its depth.

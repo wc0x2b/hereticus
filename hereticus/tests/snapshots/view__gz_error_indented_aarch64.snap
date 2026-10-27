@@ -14,53 +14,53 @@ if (x0 == 0) goto $+0x14
   w1 = load.32 [x19 + 0x74]
   flags = compare(w1, 4)
   if (w1 != 4) goto $+0xb8
-      store.64 [x19 + 0x78] = xzr
-    flags = compare(w20, 0)
-    flags = ne ? compare(w20, -5) : nzcv(4)
-    if (flags.NotEqual) goto $+0x84
-      store.32 [x19 + 0x74] = w20
-      if (x21 == 0) goto $+0x90
-          x22 = load.64 [x19 + 0x20]
-          x0 = x22
-          call strlen
-          x20 = x0
-          x0 = x21
-          call strlen
-          x0 = x20 + x0
-          x0 = x0 + 3
-          call malloc
-          store.64 [x19 + 0x78] = x0
-          x20 = x0
-          if (x0 == 0) goto $+0x78
-            x0 = x22
-            call strlen
-            x19 = x0
-            x0 = x21
-            call strlen
-            x1 = x19 + x0
-            x5 = x21
-            x3 = x22
-            x0 = x20
-            x1 = x1 + 3
-            x19, x20 = load.64 [sp + 0x10]
-            x4 = &page
-            x21, x22 = load.64 [sp + 0x20]
-            x4 = &": "
-            x29, x30 = load.64 [sp]; sp = sp + 0x30
-            x2 = &page
-            x2 = &"%s%s%s"
-            goto snprintf
-          store.32 [x19] = wzr
-          flags = compare(x21, 0)
-          store.32 [x19 + 0x74] = w20
-          flags = ne ? compare(w20, -4) : nzcv(4)
-        if (flags.NotEqual) goto $-0x88
-        x19, x20 = load.64 [sp + 0x10]
-        x21, x22 = load.64 [sp + 0x20]
-        x29, x30 = load.64 [sp]; sp = sp + 0x30
-        return
-      call free
-    goto $-0xb8
-  w0 = 3
-  store.32 [x19 + 0x74] = w0
+store.64 [x19 + 0x78] = xzr
+flags = compare(w20, 0)
+flags = ne ? compare(w20, -5) : nzcv(4)
+if (flags.NotEqual) goto $+0x84
+  store.32 [x19 + 0x74] = w20
+  if (x21 == 0) goto $+0x90
+  x22 = load.64 [x19 + 0x20]
+  x0 = x22
+  call strlen
+  x20 = x0
+  x0 = x21
+  call strlen
+  x0 = x20 + x0
+  x0 = x0 + 3
+  call malloc
+  store.64 [x19 + 0x78] = x0
+  x20 = x0
+  if (x0 == 0) goto $+0x78
+    x0 = x22
+    call strlen
+    x19 = x0
+    x0 = x21
+    call strlen
+    x1 = x19 + x0
+    x5 = x21
+    x3 = x22
+    x0 = x20
+    x1 = x1 + 3
+    x19, x20 = load.64 [sp + 0x10]
+    x4 = &page
+    x21, x22 = load.64 [sp + 0x20]
+    x4 = &": "
+    x29, x30 = load.64 [sp]; sp = sp + 0x30
+    x2 = &page
+    x2 = &"%s%s%s"
+    goto snprintf
+store.32 [x19] = wzr
+flags = compare(x21, 0)
+store.32 [x19 + 0x74] = w20
+flags = ne ? compare(w20, -4) : nzcv(4)
+if (flags.NotEqual) goto $-0x88
+x19, x20 = load.64 [sp + 0x10]
+x21, x22 = load.64 [sp + 0x20]
+x29, x30 = load.64 [sp]; sp = sp + 0x30
+return
+call free
+goto $-0xb8
+w0 = 3
+store.32 [x19 + 0x74] = w0
 goto $-0x20
