@@ -20,13 +20,13 @@ serde = ["dep:serde", "hereticus-memory/serde"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
-hereticus-arch = { path = "../hereticus-arch", version = "0.4.1" }
-hereticus-recovery = { path = "../hereticus-recovery", version = "0.4.1" }
-hereticus-callees = { path = "../hereticus-callees", version = "0.4.1" }
-hereticus-image = { path = "../hereticus-image", version = "0.4.1" }
-hereticus-il = { path = "../hereticus-il", version = "0.4.1" }
-hereticus-memory = { path = "../hereticus-memory", version = "0.4.1" }
-hereticus-view = { path = "../hereticus-view", version = "0.4.1" }
+hereticus-arch = { path = "../hereticus-arch", version = "0.5.0" }
+hereticus-recovery = { path = "../hereticus-recovery", version = "0.5.0" }
+hereticus-callees = { path = "../hereticus-callees", version = "0.5.0" }
+hereticus-image = { path = "../hereticus-image", version = "0.5.0" }
+hereticus-il = { path = "../hereticus-il", version = "0.5.0" }
+hereticus-memory = { path = "../hereticus-memory", version = "0.5.0" }
+hereticus-view = { path = "../hereticus-view", version = "0.5.0" }
 smallvec = "1"
 rayon = "1.12.0"
 

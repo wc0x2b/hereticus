@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-### Added
+## [0.5.0](https://github.com/wc0x2b/hereticus/compare/v0.4.1...v0.5.0) - 2026-10-27### Added
 
 - `--only` lists only the changed pairs that have each feature it names,
   as `added-call`, `removed-call`, `added-branch` or `early-exit`. Each
