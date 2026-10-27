@@ -41,10 +41,10 @@ The diff shows the two bodies side by side, with the address of each
 instruction. Red lines were removed, green lines were added, and yellow
 lines changed only a value. At the left of each address, a line goes from
 each jump, marked `<`, to its target, marked `>`. The line of a jump that
-a change added or removed takes the color of the change. Up to four lines
-can pass one row. Where more jumps pass, the jumps of a change are drawn
-first and then the shortest, so a long jump across the whole function is
-the one left out:
+a change added or removed takes the color of the change. Four lines can
+pass one row, or as many as the jumps of a change need, up to eight.
+Where more jumps pass, the jumps of a change are drawn first and then the
+shortest, so a long jump across the whole function is the one left out:
 
 ![The diff of one function, as assembly](./images/tui-diff.png)
 
@@ -54,7 +54,14 @@ it is in. A forward jump indents the lines it steps over, up to the first
 line that another path also comes into. Thus an error path that the
 compiler moves after the return, and that jumps back into the middle,
 indents only the lines before that point. A backward jump indents the
-body of its loop, where the target of the jump can run again:
+body of its loop, where the target of the jump can run again.
+
+The IL view shows no line for padding that does nothing, as `nop`. A
+statement that only names other registers is the same line, where the
+registers hold values of one width and each one keeps one new name. A
+gray line is in a block of at least three statements that the other side
+holds in another place, with no branch, call or return in it: the
+compiler moved the code:
 
 ![The diff of one function, as IL](./images/tui-diff-il.png)
 
