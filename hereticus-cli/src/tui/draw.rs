@@ -276,7 +276,7 @@ impl App<'_> {
             Layout::SideBySide => {
                 let rows = side_by_side(&opened.lines, places);
                 let gutter = |column: usize, row: usize| {
-                    opened.gutters.get(column).map(|gutter| gutter.row(row)).unwrap_or_default()
+                    opened.gutters.get(column).map_or(&[][..], |gutter| gutter.row(row))
                 };
                 let (left, right): (Vec<Line<'_>>, Vec<Line<'_>>) = rows
                     .iter()
@@ -305,9 +305,8 @@ impl App<'_> {
             }
             Layout::Unified => {
                 let sides = unified(&opened.lines, places);
-                let gutter = |row: usize| {
-                    opened.gutters.first().map(|gutter| gutter.row(row)).unwrap_or_default()
-                };
+                let gutter =
+                    |row: usize| opened.gutters.first().map_or(&[][..], |gutter| gutter.row(row));
                 let lines: Vec<Line<'_>> = sides
                     .iter()
                     .enumerate()
@@ -464,19 +463,10 @@ pub(super) fn address_width(addresses: impl Iterator<Item = u64>) -> usize {
     (u64::BITS - widest.leading_zeros()).div_ceil(4).max(1) as usize
 }
 
-/// The most levels a line of a diff is indented by. A function whose
-/// jumps cross, as to the cases of a `switch`, can sit many levels deep,
-/// and a deeper indent pushes the code out of the pane.
-const MOST_INDENT_LEVELS: usize = 8;
-
 /// A line of a diff: the lines of the jumps that pass it, the address of
 /// its instruction in gray, then the line with the sign and the color of a
 /// patch, indented two spaces for each level deep it sits.
-pub(super) fn half_line(
-    half: Half<'_>,
-    width: usize,
-    gutter: [flows::Cell; flows::WIDTH],
-) -> Line<'static> {
+pub(super) fn half_line(half: Half<'_>, width: usize, gutter: &[flows::Cell]) -> Line<'static> {
     let (sign, text, color) = match half.side {
         // A jump goes on past a row that shows no line of its side.
         Side::Empty if gutter.iter().all(|cell| cell.glyph == flows::Glyph::Blank) => {
@@ -493,7 +483,7 @@ pub(super) fn half_line(
         None => " ".repeat(width + 1),
     };
     let style = color.map_or_else(Style::new, |color| Style::new().fg(color));
-    let indent = "  ".repeat(half.depth().min(MOST_INDENT_LEVELS));
+    let indent = half.indent();
     let mut spans = gutter_spans(gutter);
     spans.extend([
         Span::styled(address, Style::new().fg(GRAY_FG)),
@@ -503,17 +493,18 @@ pub(super) fn half_line(
 }
 
 /// The cells of the gutter, a span for each run of one color.
-fn gutter_spans(gutter: [flows::Cell; flows::WIDTH]) -> Vec<Span<'static>> {
+fn gutter_spans(gutter: &[flows::Cell]) -> Vec<Span<'static>> {
     let color = |tint| match tint {
         flows::Tint::Same => GRAY_FG,
         flows::Tint::Removed => REMOVED,
         flows::Tint::Added => ADDED,
         flows::Tint::Changed => EDITED,
     };
+    let Some(first) = gutter.first() else { return Vec::new() };
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
-    let mut tint = gutter[0].tint;
-    for cell in gutter {
+    let mut tint = first.tint;
+    for &cell in gutter {
         if cell.tint != tint && cell.glyph != flows::Glyph::Blank {
             spans.push(Span::styled(core::mem::take(&mut run), Style::new().fg(color(tint))));
             tint = cell.tint;
@@ -738,17 +729,21 @@ mod tests {
         let text = |depth| {
             let place = hereticus::matching::LinePlace { address: 0x10, depth, jump: None };
             let half = Half::shown(Side::Same("x = 1"), [None, Some(place)]);
-            let line = half_line(half, 2, Default::default());
+            let line = half_line(half, 2, &[]);
             line.spans.last().expect("the text").content.to_string()
         };
         assert_eq!(text(0), "  x = 1");
         assert_eq!(text(2), "      x = 1");
-        assert_eq!(text(MOST_INDENT_LEVELS + 5), text(MOST_INDENT_LEVELS), "the indent stops");
+        assert_eq!(
+            text(super::super::rows::MOST_INDENT_LEVELS + 5),
+            text(super::super::rows::MOST_INDENT_LEVELS),
+            "the indent stops"
+        );
         let empty = Half::shown(Side::Empty, [None, None]);
-        assert!(half_line(empty, 2, Default::default()).spans.is_empty(), "shows nothing");
-        let mut passing = [flows::Cell::default(); flows::WIDTH];
+        assert!(half_line(empty, 2, &[]).spans.is_empty(), "shows nothing");
+        let mut passing = [flows::Cell::default(); flows::FEWEST_LANES + 1];
         passing[0].glyph = flows::Glyph::Vertical;
-        let line = half_line(empty, 2, passing);
+        let line = half_line(empty, 2, &passing);
         let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text, "│     ", "a jump goes on past an empty half");
     }

@@ -31,7 +31,9 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use serde::{Deserialize, Serialize};
 
-use rows::{Places, change_starts, side_by_side, unified};
+pub use flows::{Cell, Glyph, Gutter, Tint};
+pub use rows::{Half, Places, Side, unified};
+use rows::{change_starts, side_by_side};
 
 use crate::project::{Project, Source};
 use crate::{
@@ -1517,8 +1519,7 @@ mod tests {
                     assert_eq!(opened.gutters.len(), 2, "{arch}: a gutter for each side");
                     let rows = side_by_side(&opened.lines, &opened.places).len();
                     jumps_drawn |= opened.gutters.iter().any(|gutter| {
-                        (0..rows)
-                            .any(|row| gutter.row(row)[flows::LANES].glyph == flows::Glyph::Source)
+                        (0..rows).any(|row| gutter.head(row).glyph == flows::Glyph::Source)
                     });
                 }
                 press(&mut app, &[KeyCode::Char('v')]);

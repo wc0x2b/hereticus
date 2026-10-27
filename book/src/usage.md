@@ -90,7 +90,10 @@ A place is a hint and not a pair: over the backports,
 
 `--diff <FUNCTION>` shows the diff of one function, and `--diff-all` shows
 the diff of each changed function. `--view il` shows each instruction as
-an IL statement that reads the same on each architecture. A stripped
+an IL statement that reads the same on each architecture, indented by the
+jumps it is in. At the left, a line goes from each jump, marked `<`, to
+its target, marked `>`, as in the terminal interface. A jump that a
+change added or removed takes the color of the change. A stripped
 function has the name that the report gives it, as `sub_7630`. See
 [The Diff of One Function](./examples.md#the-diff-of-one-function).
 

@@ -3,21 +3,24 @@
 //!
 //! Each jump takes a lane: a column of the gutter that it holds from its
 //! line to its target. An outer jump takes a lane left of the jumps inside
-//! it, so a loop in a loop reads from the outside in. Where more jumps pass
-//! a row than there are lanes, the jumps of a change and then the shortest
-//! are drawn, as the code must stay in sight.
+//! it, so a loop in a loop reads from the outside in.
+//!
+//! A gutter has [`FEWEST_LANES`] lanes, or as many as the jumps of a change
+//! need to all pass one row, up to [`MOST_LANES`]: a large fix, as of
+//! CVE-2026-28825 in `smbfs`, adds more branches than four lanes hold.
+//! Where more jumps pass a row than there are lanes, the jumps of a change
+//! and then the shortest are drawn, as the code must stay in sight.
 //!
 //! A jump takes the color of its line, so a jump that a change adds or
 //! removes stands out from the jumps both sides hold.
 
 use super::rows::{Half, Side};
 
-/// How many jumps can pass one row.
-pub const LANES: usize = 4;
+/// How many jumps can pass one row of any gutter.
+pub const FEWEST_LANES: usize = 4;
 
-/// The columns of the gutter: one for each lane, then one for the head of
-/// the arrow.
-pub const WIDTH: usize = LANES + 1;
+/// How many jumps can pass one row at most, where a change has many.
+pub const MOST_LANES: usize = 8;
 
 /// What one cell of the gutter shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -92,25 +95,45 @@ pub struct Cell {
 /// The gutter of a column of halves, row by row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Gutter {
-    /// [`WIDTH`] cells for each row.
+    /// How many jumps can pass one row.
+    lanes: usize,
+    /// The cells of each row: one for each lane, then one for the head of
+    /// the arrow.
     cells: Vec<Cell>,
+    /// The cells of a row past the last.
+    blank: Vec<Cell>,
 }
 
 impl Gutter {
+    /// How many columns each row takes.
+    pub fn width(&self) -> usize {
+        self.lanes + 1
+    }
+
     /// The cells of row `row`, blank past the last row.
-    pub fn row(&self, row: usize) -> [Cell; WIDTH] {
-        let start = row * WIDTH;
-        self.cells
-            .get(start..start + WIDTH)
-            .and_then(|cells| cells.try_into().ok())
-            .unwrap_or_default()
+    pub fn row(&self, row: usize) -> &[Cell] {
+        let start = row * self.width();
+        self.cells.get(start..start + self.width()).unwrap_or(&self.blank)
+    }
+
+    /// The head of the arrow on row `row`: where a jump leaves or arrives.
+    #[cfg(test)]
+    pub fn head(&self, row: usize) -> Cell {
+        self.row(row)[self.lanes]
     }
 
     /// The gutter of the jumps of `halves`, which are one column of a diff
     /// from its top.
     pub fn of(halves: &[Half<'_>]) -> Self {
-        let mut gutter = Self { cells: vec![Cell::default(); halves.len() * WIDTH] };
-        let mut placed = lanes_of(chosen(jumps_of(halves), halves.len()));
+        let jumps = jumps_of(halves);
+        let lanes = lanes_for_changes(&jumps, halves.len());
+        let width = lanes + 1;
+        let mut gutter = Self {
+            lanes,
+            cells: vec![Cell::default(); halves.len() * width],
+            blank: vec![Cell::default(); width],
+        };
+        let mut placed = lanes_of(chosen(jumps, halves.len(), lanes), lanes);
         // A change draws over the jumps both sides hold.
         placed.sort_by_key(|(jump, _)| jump.tint != Tint::Same);
         for (jump, lane) in placed {
@@ -121,8 +144,9 @@ impl Gutter {
 
     fn draw(&mut self, jump: Jump, lane: usize) {
         let tint = jump.tint;
+        let width = self.width();
         for row in jump.top() + 1..jump.bottom() {
-            let cell = &mut self.cells[row * WIDTH + lane];
+            let cell = &mut self.cells[row * width + lane];
             let glyph = match cell.glyph {
                 Glyph::Horizontal | Glyph::Cross => Glyph::Cross,
                 _ => Glyph::Vertical,
@@ -130,7 +154,8 @@ impl Gutter {
             *cell = Cell { glyph, tint };
         }
         for (row, corner) in [(jump.top(), Glyph::Top), (jump.bottom(), Glyph::Bottom)] {
-            let cells = &mut self.cells[row * WIDTH..(row + 1) * WIDTH];
+            let lanes = self.lanes;
+            let cells = &mut self.cells[row * width..(row + 1) * width];
             let corner = match cells[lane].glyph {
                 Glyph::Horizontal | Glyph::Cross => match corner {
                     Glyph::Top => Glyph::TopCrossed,
@@ -139,32 +164,43 @@ impl Gutter {
                 _ => corner,
             };
             cells[lane] = Cell { glyph: corner, tint };
-            for cell in &mut cells[lane + 1..LANES] {
+            for cell in &mut cells[lane + 1..lanes] {
                 *cell = Cell { glyph: cell.glyph.crossed(), tint };
             }
             // A line that one jump leaves and another comes to shows the
             // jump it makes.
             let head = if row == jump.from { Glyph::Source } else { Glyph::Target };
-            if cells[LANES].glyph != Glyph::Source {
-                cells[LANES] = Cell { glyph: head, tint };
+            if cells[lanes].glyph != Glyph::Source {
+                cells[lanes] = Cell { glyph: head, tint };
             }
         }
     }
 }
 
+/// How many lanes the jumps of a change among `jumps` need, so that each
+/// is drawn: the most of them that pass one of the `rows`, from
+/// [`FEWEST_LANES`] to [`MOST_LANES`].
+fn lanes_for_changes(jumps: &[Jump], rows: usize) -> usize {
+    let mut load = Load::new(rows);
+    for jump in jumps.iter().filter(|jump| jump.tint != Tint::Same) {
+        load.add(jump.top()..jump.bottom() + 1);
+    }
+    load.most(0..rows).clamp(FEWEST_LANES, MOST_LANES)
+}
+
 /// The jumps of `jumps` to draw, where no row of the `rows` may hold more
-/// than [`LANES`]: first each jump of a change, as the reader looks for
+/// than `lanes`: first each jump of a change, as the reader looks for
 /// those, then the shortest. A short jump shows the shape of the code
 /// around it, and a long one, as from the top of a function to its end,
 /// passes many rows that it says nothing of.
-fn chosen(mut jumps: Vec<Jump>, rows: usize) -> Vec<Jump> {
+fn chosen(mut jumps: Vec<Jump>, rows: usize, lanes: usize) -> Vec<Jump> {
     jumps.sort_by_key(|jump| (jump.tint == Tint::Same, jump.bottom() - jump.top()));
     let mut load = Load::new(rows);
     jumps
         .into_iter()
         .filter(|jump| {
             let span = jump.top()..jump.bottom() + 1;
-            let fits = load.most(span.clone()) < LANES;
+            let fits = load.most(span.clone()) < lanes;
             if fits {
                 load.add(span);
             }
@@ -173,13 +209,13 @@ fn chosen(mut jumps: Vec<Jump>, rows: usize) -> Vec<Jump> {
         .collect()
 }
 
-/// A lane for each of `jumps`, which no row holds more than [`LANES`] of.
+/// A lane for each of `jumps`, which no row holds more than `lanes` of.
 /// The jump that starts first takes the free lane at the left, so an outer
 /// jump sits left of the jumps inside it.
-fn lanes_of(mut jumps: Vec<Jump>) -> Vec<(Jump, usize)> {
+fn lanes_of(mut jumps: Vec<Jump>, lanes: usize) -> Vec<(Jump, usize)> {
     jumps.sort_by_key(|jump| (jump.top(), core::cmp::Reverse(jump.bottom())));
     // The last row each lane holds.
-    let mut held: [Option<usize>; LANES] = [None; LANES];
+    let mut held: Vec<Option<usize>> = vec![None; lanes];
     jumps
         .into_iter()
         .filter_map(|jump| {
@@ -400,11 +436,12 @@ mod tests {
             })
             .collect();
         let gutter = Gutter::of(&halves);
-        let lanes_used = (0..LANES).filter(|&lane| gutter.row(5)[lane].glyph != Glyph::Blank);
-        assert_eq!(lanes_used.count(), LANES);
-        assert_eq!(gutter.row(0)[LANES].glyph, Glyph::Blank, "the longest jump has no lane");
-        assert_eq!(gutter.row(1)[LANES].glyph, Glyph::Blank, "nor the next");
-        assert_eq!(gutter.row(5)[LANES].glyph, Glyph::Source, "the shortest has one");
+        let lanes_used =
+            (0..FEWEST_LANES).filter(|&lane| gutter.row(5)[lane].glyph != Glyph::Blank);
+        assert_eq!(lanes_used.count(), FEWEST_LANES);
+        assert_eq!(gutter.head(0).glyph, Glyph::Blank, "the longest jump has no lane");
+        assert_eq!(gutter.head(1).glyph, Glyph::Blank, "nor the next");
+        assert_eq!(gutter.head(5).glyph, Glyph::Source, "the shortest has one");
     }
 
     /// The fix of CVE-2026-28825 in `ubusd` adds a branch inside jumps that
@@ -414,14 +451,36 @@ mod tests {
         let place = |address, jump| Some(LinePlace { address, depth: 0, jump });
         let mut halves: Vec<Half<'_>> = (0..16)
             .map(|index| {
-                let jump = (index < LANES as u64).then(|| 4 * (15 - index));
+                let jump = (index < FEWEST_LANES as u64).then(|| 4 * (15 - index));
                 Half::shown(Side::Same("x"), [None, place(4 * index, jump)])
             })
             .collect();
         halves[9] = Half::shown(Side::Added("fix"), [None, place(4 * 9, Some(4 * 7))]);
         let gutter = Gutter::of(&halves);
-        assert_eq!(gutter.row(9)[LANES], Cell { glyph: Glyph::Source, tint: Tint::Added });
-        assert_eq!(gutter.row(7)[LANES], Cell { glyph: Glyph::Target, tint: Tint::Added });
+        assert_eq!(gutter.head(9), Cell { glyph: Glyph::Source, tint: Tint::Added });
+        assert_eq!(gutter.head(7), Cell { glyph: Glyph::Target, tint: Tint::Added });
+    }
+
+    /// A fix that adds more branches than four lanes hold widens the
+    /// gutter, so each branch of the change is drawn, up to the most lanes.
+    #[test]
+    fn the_jumps_of_a_change_widen_the_gutter() {
+        let place = |address, jump| Some(LinePlace { address, depth: 0, jump });
+        // Jumps from row `index` to row `19 - index`, all nested.
+        let nested = |count: u64| -> Vec<Half<'static>> {
+            (0..20)
+                .map(|index| {
+                    let jump = (index < count).then(|| 4 * (19 - index));
+                    Half::shown(Side::Added("x"), [None, place(4 * index, jump)])
+                })
+                .collect()
+        };
+        assert_eq!(Gutter::of(&nested(2)).width(), FEWEST_LANES + 1);
+        let six = Gutter::of(&nested(6));
+        assert_eq!(six.width(), 7);
+        assert!((0..6).all(|row| six.head(row).glyph == Glyph::Source), "each is drawn");
+        assert_eq!(Gutter::of(&nested(10)).width(), MOST_LANES + 1);
+        assert_eq!(Gutter::of(&[]).width(), FEWEST_LANES + 1);
     }
 
     #[test]
@@ -466,8 +525,8 @@ mod tests {
         ];
         let gutter = Gutter::of(&halves);
         assert_eq!(gutter.row(0)[0].tint, Tint::Same);
-        assert_eq!(gutter.row(1)[LANES].tint, Tint::Added);
-        assert_eq!(gutter.row(2)[LANES].tint, Tint::Added, "the added jump draws last");
+        assert_eq!(gutter.head(1).tint, Tint::Added);
+        assert_eq!(gutter.head(2).tint, Tint::Added, "the added jump draws last");
     }
 
     /// A unified diff shows a line both sides hold once: its jump on each
@@ -492,22 +551,22 @@ mod tests {
                 .map(|(index, target)| line(4 * index, target.map(|to| 4 * u64::from(to))))
                 .collect();
             let gutter = Gutter::of(&halves);
-            let heads = (0..halves.len())
-                .filter(|&row| gutter.row(row)[LANES].glyph != Glyph::Blank)
-                .count();
+            let heads =
+                (0..halves.len()).filter(|&row| gutter.head(row).glyph != Glyph::Blank).count();
             assert!(heads <= halves.len());
             for row in 0..halves.len() {
                 let cells = gutter.row(row);
                 // A head shows where a lane turns toward the code.
-                let turns = cells[..LANES].iter().any(|cell| {
+                let turns = cells[..cells.len() - 1].iter().any(|cell| {
                     matches!(
                         cell.glyph,
                         Glyph::Top | Glyph::Bottom | Glyph::TopCrossed | Glyph::BottomCrossed
                     )
                 });
-                assert_eq!(turns, cells[LANES].glyph != Glyph::Blank, "row {row}: {cells:?}");
+                assert_eq!(turns, gutter.head(row).glyph != Glyph::Blank, "row {row}: {cells:?}");
             }
-            assert_eq!(gutter.row(halves.len()), [Cell::default(); WIDTH]);
+            assert!(gutter.row(halves.len()).iter().all(|cell| *cell == Cell::default()));
+            assert!((FEWEST_LANES + 1..=MOST_LANES + 1).contains(&gutter.width()));
         });
     }
 }

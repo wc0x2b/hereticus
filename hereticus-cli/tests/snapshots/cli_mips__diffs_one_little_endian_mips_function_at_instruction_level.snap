@@ -1,5 +1,6 @@
 ---
 source: hereticus-cli/tests/cli_mips.rs
+assertion_line: 115
 info:
   program: hereticus
   args:
@@ -19,19 +20,19 @@ success: true
 exit_code: 0
 ----- stdout -----
 sub_80000050
-  bltz a0, $+0x20
-  nop
-  beqz a0, $+0x20
-  nop
-- addiu at, zero, 0x63
-+ addiu at, zero, 0x31
-  sltu at, at, a0
-  jr ra
-  addiu v0, at, 0x1
-  jr ra
-  addiu v0, zero, -0x1
-  jr ra
-  addiu v0, zero, 0x0
+┌───<   bltz a0, $+0x20
+│       nop
+│┌──<   beqz a0, $+0x20
+││      nop
+││    - addiu at, zero, 0x63
+││    + addiu at, zero, 0x31
+││      sltu at, at, a0
+││      jr ra
+││      addiu v0, at, 0x1
+└┼──>   jr ra
+ │      addiu v0, zero, -0x1
+ └──>   jr ra
+        addiu v0, zero, 0x0
 
 ----- stderr -----
 hereticus: a raw image has no exception index, so function boundaries are recovered from the code and are approximate

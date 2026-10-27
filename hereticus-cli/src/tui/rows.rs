@@ -3,6 +3,11 @@
 
 use hereticus::matching::{DiffLine, LinePlace};
 
+/// The most levels a line of a diff is indented by. A function whose
+/// jumps cross, as to the cases of a `switch`, can sit many levels deep,
+/// and a deeper indent pushes the code out of sight.
+pub const MOST_INDENT_LEVELS: usize = 8;
+
 /// What one half of a row shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side<'l> {
@@ -50,6 +55,12 @@ impl<'l> Half<'l> {
     /// How many levels deep the line sits.
     pub fn depth(self) -> usize {
         self.place().map_or(0, |place| place.depth)
+    }
+
+    /// Two spaces for each level deep the line sits, up to
+    /// [`MOST_INDENT_LEVELS`].
+    pub fn indent(self) -> String {
+        "  ".repeat(self.depth().min(MOST_INDENT_LEVELS))
     }
 
     /// Report whether the half shows a change, not a line both sides hold.
