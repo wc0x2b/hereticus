@@ -223,6 +223,11 @@ book-media: build
     vhs book/tapes/demo.tape
     BOOK_MEDIA_UPDATE=1 cargo nextest run --release -p hereticus-cli --test book_media
 
+# Write what the tool prints into each output that the docs and the reports
+# show, where only the lines of the jumps, the indent or the spaces changed.
+docs-output: build
+    DOCS_OUTPUT_UPDATE=1 cargo nextest run --release -p hereticus-cli --test docs_output
+
 lint:
     cargo fmt
     cargo clippy --all-targets -- -D warnings
