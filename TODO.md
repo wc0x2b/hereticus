@@ -274,26 +274,17 @@ the value that each path brings to a block before it ends them.
 
 ## Make the IL diff show less that did not change
 
-Found while measuring the IL diffs of Assemblage and the backports
-(`RESEARCH.md`, "What the IL diff shows of a change"):
+A move between two registers, as `x0 = x19`, is the largest kind of line
+that the IL diffs of Assemblage still show as removed or added, and most
+of those moves were added or dropped (`RESEARCH.md`, "What the IL diff
+shows of a change, again"). A move that only carries a value to the
+register a call reads it from could fold where the value is the same on
+both sides, but this needs the value each register holds, as
+`track_pages` would.
 
-1. Each release puts its heading in place of the blank line after
-   `## [Unreleased]` in `CHANGELOG.md`, so the next heading joins the line
-   after it unless someone puts the blank line back.
-2. `il_key` reads a slot of the frame of A32, AArch64 and MIPS as one
-   kind, so a frame that grew still aligns, but not one of x86, at
-   `[rsp + …]` or `[rbp - …]`.
-3. The diff of the fix of CVE-2021-30883 reads an iPhone kernelcache and
-   takes about 45 seconds, where the outputs of all other reports take 2.
-4. A branch on the carry after an `add`, as `add eax, edx` then `jb`,
-   reads as `flags.UnsignedLess`, where it tests that the sum overflowed.
-5. A shift by a constant that is not 0 sets the zero flag from its
-   result, so `shr rcx, 0x28` then `jne` could read `if (rcx != 0)`.
-6. The fold pairs a statement with one of the same shape that does other
-   work: in the fix of CVE-2026-28825 in `smbfs`, `x9 = x9 + 1` with a new
-   `x8 = x8 + 1` between a load and a store.
-7. A move between two registers, `x0 = x19`, is 17% of the lines that
-   the IL diffs of Assemblage still show as removed or added. The rule
-   that a renaming is one to one keeps most of them out of the fold.
-8. Old worktrees of the repository are left, as `/tmp/hstep1` and
-   `/tmp/nice`, whose folders are gone.
+## Prepare the functions of a large binary faster
+
+Now that the stages that looked through every function for each are
+gone, the preparing of the functions takes most of the comparison of an
+iPhone kernel (`RESEARCH.md`, "What the IL diff shows of a change,
+again").

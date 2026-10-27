@@ -2601,3 +2601,49 @@ one. A block with a branch, a call or a return stays red and green, as a
 fix can move a check before the use it guards. Of the removed and added
 lines, 4.2% of the backports and 2.5% of 300 pairs of Assemblage are in
 such a block.
+
+### What the IL diff shows of a change, again
+
+Measured on 2026-10-27 on 300 pairs of Assemblage and the 240 pairs of
+the backports, after the entry above.
+
+A slot of the stack of x86, at `[rsp + …]` or `[esp + …]`, now aligns as
+one kind, as a slot of the frame of the other architectures does: 1.35%
+fewer statements of the 300 pairs show as added or changed. `[rbp + …]`
+stays, as code built with `-O2` keeps a value of its own in `rbp`; with it
+too, the share was 1.5%.
+
+A rename now folds into the same line only where it reads no value, under
+a name that the other side does not read, that an added or removed
+statement wrote. The fix of CVE-2026-28825 in `smbfs` keeps a new count in
+`x8`, with a load and a store of its own, where the old code kept another
+in `x9`, and `x9 = x9 + 1` folded into `x8 = x8 + 1`. The rule shows 1.3%
+more statements of the 300 pairs as added or changed. To judge each
+register that a statement reads, and not only the renamed ones, showed
+2.5% more, as a value loaded again from the stack after a spill is the
+same value.
+
+A branch on the flags after an add, a subtract or a shift by a constant
+that is not 0 now names more: `carry`, `borrow`, `overflow`, and the
+result of a shift, as the bit tests of A32 and T32, `lsls r3, r2, #26`
+then `bmi`. Of the conditional branches in the changed functions of the
+backports, 486 read otherwise, each of 40 checked against its
+instructions right.
+
+A move between two registers, as `x0 = x19`, is 13.9% of the lines that
+the IL diffs of the 300 pairs show as removed or added. Of these moves,
+80.1% have no move on the other side of their run of removed and added
+lines: the compiler added or dropped a move. So no fold of renamed
+registers can take them, and the 19.9% that could pair are the renames
+that the two rules of the fold are there to keep out.
+
+The comparison of the iPhone kernel of CVE-2021-30883, 114,844 functions
+on each side, took 46 seconds. The stage of identical shape took 20 of
+them: for each function it looked through every function of the other
+side. `unpair_without_context` built the callers and callees of each pair,
+also of the pairs by identical code that it never judges, and of the
+function that copies memory, which thousands call, and
+`pair_by_unique_references` looked through every pair for the pair of
+each of its candidates. With each fixed, the comparison takes 14
+seconds, and the report and the pairs of Assemblage and of the backports
+are the same. The rest is the preparing of the functions, 10 seconds.
