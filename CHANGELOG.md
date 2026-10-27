@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scanned too, with each symbol as the start and the name of a function.
   A symbol of 32-bit Windows drops the decoration of its calling
   convention, as `_send@16` reads as `send`.
+- A test fixture whose control flow is flattened, as an obfuscator does,
+  built by an LLVM pass plugin in `fixtures/obfuscate`. The flattened
+  machine code shares few instructions with the plain code, yet
+  `hereticus` still pairs each function with the one it came from.
 - The IL view indents each statement two spaces for each jump that it is
   in, in the browser and in `--diff`. A forward jump indents the lines it
   steps over, up to the first line that another path also comes into, so

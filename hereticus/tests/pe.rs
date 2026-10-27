@@ -5,7 +5,8 @@
 //! table of the DLL names every function, so it is the answer for the
 //! stripped copy. For x86-64 it also links the firmware fixture as an
 //! executable, as a DLL that imports by ordinal, and as one that loads
-//! `host.dll` on its first call.
+//! `host.dll` on its first call. It also links a copy whose control flow a
+//! pass plugin flattened, as an obfuscator does.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -200,4 +201,46 @@ fn a_thunk_of_the_delay_load_directory_takes_its_import(
         assert_eq!(thunk.code.len(), THUNK_BYTES, "{import}");
         assert_eq!(name_at(&truth, thunk.address), *import);
     }
+}
+
+/// Flattening the control flow of a function, as an obfuscator does,
+/// rewrites its machine code, but `hereticus` still pairs it with the plain
+/// function. Each function the fixture exports or imports keeps its name,
+/// so it pairs by name; the rest pair by shape.
+///
+/// `handle` of the firmware fixture branches and loops, so flattening it
+/// adds a dispatcher. It still pairs, which is the point: an analyst can
+/// read a flattened binary against a plain one.
+#[test]
+fn flattening_changes_the_code_but_the_functions_still_pair() {
+    let plain = read("x86_64-firmware.dll");
+    let flattened = read("x86_64-firmware-flattened.dll");
+
+    // The code changed: `handle` is flattened, so it is far from the plain
+    // one, yet the two still pair.
+    let diff = diff_with(&plain, &flattened, Options::default());
+    assert!(diff.removed.is_empty(), "no function of the plain DLL is lost");
+    assert!(diff.added.is_empty(), "the flattened DLL adds no function");
+    assert_eq!(diff.matched.len(), plain.functions.len());
+    let handle = plain.functions.iter().position(|function| function.name == "handle");
+    let handle = handle.expect("the plain DLL has `handle`");
+    let pair = diff.matched.iter().find(|pair| pair.before == handle).expect("`handle` pairs");
+    assert!(pair.score < 0.75, "flattening `handle` moved its code, score {}", pair.score);
+}
+
+/// Two flattened builds pair as the plain builds do: the planned edits are
+/// found, nothing is lost, and `crypto_verify` is the one new function.
+#[rstest]
+fn the_planned_edits_show_through_flattening(
+    #[values(UseNames::Yes, UseNames::No)] use_names: UseNames,
+) {
+    let before = read("x86_64-firmware-flattened-stripped.dll");
+    let after = read("x86_64-firmware_v2-flattened-stripped.dll");
+    let truth = (read("x86_64-firmware-flattened.dll"), read("x86_64-firmware_v2-flattened.dll"));
+    let diff = diff_with(&before, &after, Options { use_names, ..Default::default() });
+
+    assert!(diff.removed.is_empty(), "no function is lost");
+    let added: Vec<&str> =
+        diff.added.iter().map(|&index| name_at(&truth.1, after.functions[index].address)).collect();
+    assert_eq!(added, ["crypto_verify"], "only the new import is new");
 }
