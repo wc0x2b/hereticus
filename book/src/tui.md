@@ -42,7 +42,9 @@ instruction. Red lines were removed, green lines were added, and yellow
 lines changed only a value. At the left of each address, a line goes from
 each jump, marked `<`, to its target, marked `>`. The line of a jump that
 a change added or removed takes the color of the change. Up to four lines
-can pass one row; a jump that finds no free column is not drawn:
+can pass one row. Where more jumps pass, the jumps of a change are drawn
+first and then the shortest, so a long jump across the whole function is
+the one left out:
 
 ![The diff of one function, as assembly](./images/tui-diff.png)
 

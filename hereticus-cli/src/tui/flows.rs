@@ -2,9 +2,10 @@
 //! of the code, as `radare2` and Binary Ninja draw them.
 //!
 //! Each jump takes a lane: a column of the gutter that it holds from its
-//! line to its target. The longest jumps take the lanes at the left, so a
-//! loop in a loop reads from the outside in. A jump that finds no free lane
-//! is not drawn, as the code must stay in sight.
+//! line to its target. An outer jump takes a lane left of the jumps inside
+//! it, so a loop in a loop reads from the outside in. Where more jumps pass
+//! a row than there are lanes, the jumps of a change and then the shortest
+//! are drawn, as the code must stay in sight.
 //!
 //! A jump takes the color of its line, so a jump that a change adds or
 //! removes stands out from the jumps both sides hold.
@@ -109,19 +110,7 @@ impl Gutter {
     /// from its top.
     pub fn of(halves: &[Half<'_>]) -> Self {
         let mut gutter = Self { cells: vec![Cell::default(); halves.len() * WIDTH] };
-        let mut jumps = jumps_of(halves);
-        // The outermost jump first, so it takes the lane at the left.
-        jumps.sort_by_key(|jump| (jump.top(), core::cmp::Reverse(jump.bottom())));
-        // The last row each lane holds.
-        let mut held: [Option<usize>; LANES] = [None; LANES];
-        let mut placed: Vec<(Jump, usize)> = Vec::with_capacity(jumps.len());
-        for jump in jumps {
-            let free = held.iter().position(|last| last.is_none_or(|last| last < jump.top()));
-            if let Some(lane) = free {
-                held[lane] = Some(jump.bottom());
-                placed.push((jump, lane));
-            }
-        }
+        let mut placed = lanes_of(chosen(jumps_of(halves), halves.len()));
         // A change draws over the jumps both sides hold.
         placed.sort_by_key(|(jump, _)| jump.tint != Tint::Same);
         for (jump, lane) in placed {
@@ -160,6 +149,115 @@ impl Gutter {
                 cells[LANES] = Cell { glyph: head, tint };
             }
         }
+    }
+}
+
+/// The jumps of `jumps` to draw, where no row of the `rows` may hold more
+/// than [`LANES`]: first each jump of a change, as the reader looks for
+/// those, then the shortest. A short jump shows the shape of the code
+/// around it, and a long one, as from the top of a function to its end,
+/// passes many rows that it says nothing of.
+fn chosen(mut jumps: Vec<Jump>, rows: usize) -> Vec<Jump> {
+    jumps.sort_by_key(|jump| (jump.tint == Tint::Same, jump.bottom() - jump.top()));
+    let mut load = Load::new(rows);
+    jumps
+        .into_iter()
+        .filter(|jump| {
+            let span = jump.top()..jump.bottom() + 1;
+            let fits = load.most(span.clone()) < LANES;
+            if fits {
+                load.add(span);
+            }
+            fits
+        })
+        .collect()
+}
+
+/// A lane for each of `jumps`, which no row holds more than [`LANES`] of.
+/// The jump that starts first takes the free lane at the left, so an outer
+/// jump sits left of the jumps inside it.
+fn lanes_of(mut jumps: Vec<Jump>) -> Vec<(Jump, usize)> {
+    jumps.sort_by_key(|jump| (jump.top(), core::cmp::Reverse(jump.bottom())));
+    // The last row each lane holds.
+    let mut held: [Option<usize>; LANES] = [None; LANES];
+    jumps
+        .into_iter()
+        .filter_map(|jump| {
+            let lane = held.iter().position(|last| last.is_none_or(|last| last < jump.top()))?;
+            held[lane] = Some(jump.bottom());
+            Some((jump, lane))
+        })
+        .collect()
+}
+
+/// How many chosen jumps pass each row, in a tree of ranges: an add to a
+/// range of rows, and the most of a range, each take a time that grows as
+/// the log of the count of rows. A function of a kernel shows many thousand
+/// rows.
+struct Load {
+    /// How many leaves the tree has: a power of two, at least one.
+    leaves: usize,
+    /// The most jumps a row under each node holds, from the adds to the
+    /// node and below. Node 1 is the root, and node `n` has `2n` and
+    /// `2n + 1` below it.
+    most: Vec<usize>,
+    /// The jumps added to the whole range of each node.
+    added: Vec<usize>,
+}
+
+impl Load {
+    fn new(rows: usize) -> Self {
+        let leaves = rows.next_power_of_two();
+        Self { leaves, most: vec![0; 2 * leaves], added: vec![0; 2 * leaves] }
+    }
+
+    fn add(&mut self, rows: core::ops::Range<usize>) {
+        self.add_under(1, 0..self.leaves, &rows);
+    }
+
+    fn add_under(
+        &mut self,
+        node: usize,
+        covers: core::ops::Range<usize>,
+        rows: &core::ops::Range<usize>,
+    ) {
+        if covers.end <= rows.start || rows.end <= covers.start {
+            return;
+        }
+        if rows.start <= covers.start && covers.end <= rows.end {
+            self.added[node] += 1;
+            self.most[node] += 1;
+            return;
+        }
+        let middle = covers.start + covers.len() / 2;
+        self.add_under(2 * node, covers.start..middle, rows);
+        self.add_under(2 * node + 1, middle..covers.end, rows);
+        self.most[node] = self.added[node] + self.most[2 * node].max(self.most[2 * node + 1]);
+    }
+
+    fn most(&self, rows: core::ops::Range<usize>) -> usize {
+        self.most_under(1, 0..self.leaves, &rows)
+    }
+
+    fn most_under(
+        &self,
+        node: usize,
+        covers: core::ops::Range<usize>,
+        rows: &core::ops::Range<usize>,
+    ) -> usize {
+        if covers.end <= rows.start || rows.end <= covers.start {
+            return 0;
+        }
+        if rows.start <= covers.start && covers.end <= rows.end {
+            return self.most[node];
+        }
+        let middle = covers.start + covers.len() / 2;
+        let below = self.most_under(2 * node, covers.start..middle, rows).max(self.most_under(
+            2 * node + 1,
+            middle..covers.end,
+            rows,
+        ));
+        self.added[node] + below
     }
 }
 
@@ -294,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn more_jumps_than_lanes_drop_the_innermost() {
+    fn more_jumps_than_lanes_drop_the_longest() {
         let halves: Vec<Half<'_>> = (0..12)
             .map(|index| {
                 let jump = (index < 6).then(|| 4 * (11 - index));
@@ -304,7 +402,58 @@ mod tests {
         let gutter = Gutter::of(&halves);
         let lanes_used = (0..LANES).filter(|&lane| gutter.row(5)[lane].glyph != Glyph::Blank);
         assert_eq!(lanes_used.count(), LANES);
-        assert_eq!(gutter.row(4)[LANES].glyph, Glyph::Blank, "the fifth jump has no lane");
+        assert_eq!(gutter.row(0)[LANES].glyph, Glyph::Blank, "the longest jump has no lane");
+        assert_eq!(gutter.row(1)[LANES].glyph, Glyph::Blank, "nor the next");
+        assert_eq!(gutter.row(5)[LANES].glyph, Glyph::Source, "the shortest has one");
+    }
+
+    /// The fix of CVE-2026-28825 in `ubusd` adds a branch inside jumps that
+    /// pass the whole function: the branch of the change takes a lane.
+    #[test]
+    fn a_jump_of_a_change_takes_a_lane_before_the_rest() {
+        let place = |address, jump| Some(LinePlace { address, depth: 0, jump });
+        let mut halves: Vec<Half<'_>> = (0..16)
+            .map(|index| {
+                let jump = (index < LANES as u64).then(|| 4 * (15 - index));
+                Half::shown(Side::Same("x"), [None, place(4 * index, jump)])
+            })
+            .collect();
+        halves[9] = Half::shown(Side::Added("fix"), [None, place(4 * 9, Some(4 * 7))]);
+        let gutter = Gutter::of(&halves);
+        assert_eq!(gutter.row(9)[LANES], Cell { glyph: Glyph::Source, tint: Tint::Added });
+        assert_eq!(gutter.row(7)[LANES], Cell { glyph: Glyph::Target, tint: Tint::Added });
+    }
+
+    #[test]
+    fn the_load_of_a_range_is_its_most_loaded_row() {
+        let mut load = Load::new(10);
+        load.add(2..5);
+        load.add(4..8);
+        assert_eq!(load.most(0..10), 2);
+        assert_eq!(load.most(0..4), 1);
+        assert_eq!(load.most(5..8), 1);
+        assert_eq!(load.most(8..10), 0);
+        assert_eq!(Load::new(0).most(0..1), 0);
+    }
+
+    #[test]
+    fn any_load_counts_as_each_row_does() {
+        bolero::check!().with_type::<Vec<(u8, u8)>>().for_each(|spans| {
+            let rows = 40;
+            let mut load = Load::new(rows);
+            let mut model = vec![0_usize; rows];
+            for &(start, length) in spans {
+                let start = usize::from(start) % rows;
+                let end = (start + usize::from(length) % 8).min(rows);
+                load.add(start..end);
+                model[start..end].iter_mut().for_each(|count| *count += 1);
+                for query in 0..rows {
+                    let range = query..(query + 5).min(rows);
+                    let most = model[range.clone()].iter().copied().max().unwrap_or(0);
+                    assert_eq!(load.most(range), most);
+                }
+            }
+        });
     }
 
     #[test]
