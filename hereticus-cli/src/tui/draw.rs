@@ -264,15 +264,16 @@ impl App<'_> {
         frame.render_widget(block, area);
         // The scrollbar takes the last column.
         let content = Rect { width: inner.width.saturating_sub(1), ..inner };
-        let addresses = &opened.addresses;
-        let width = address_width(addresses.before.iter().chain(&addresses.after).copied());
+        let places = &opened.places;
+        let width =
+            address_width(places.before.iter().chain(&places.after).map(|place| place.address));
         // Only the rows in sight are drawn: a long function has many
         // thousand, more than a `u16` scroll reaches.
         let shown = usize::from(content.height);
         let total = opened.changes.len();
         match self.layout {
             Layout::SideBySide => {
-                let rows = side_by_side(&opened.lines, addresses);
+                let rows = side_by_side(&opened.lines, places);
                 let (left, right): (Vec<Line<'_>>, Vec<Line<'_>>) = rows
                     .iter()
                     .skip(scroll)
@@ -293,7 +294,7 @@ impl App<'_> {
                 frame.render_widget(Paragraph::new(right), right_area);
             }
             Layout::Unified => {
-                let sides = unified(&opened.lines, addresses);
+                let sides = unified(&opened.lines, places);
                 let lines: Vec<Line<'_>> = sides
                     .iter()
                     .skip(scroll)
@@ -449,8 +450,14 @@ fn address_width(addresses: impl Iterator<Item = u64>) -> usize {
     (u64::BITS - widest.leading_zeros()).div_ceil(4).max(1) as usize
 }
 
+/// The most levels a line of a diff is indented by. A function whose
+/// jumps cross, as to the cases of a `switch`, can sit many levels deep,
+/// and a deeper indent pushes the code out of the pane.
+const MOST_INDENT_LEVELS: usize = 8;
+
 /// A line of a diff: the address of its instruction in gray, then the line
-/// with the sign and the color of a patch.
+/// with the sign and the color of a patch, indented two spaces for each
+/// level deep it sits.
 fn half_line(half: Half<'_>, width: usize) -> Line<'static> {
     let (sign, text, color) = match half.side {
         Side::Empty => return Line::default(),
@@ -464,9 +471,10 @@ fn half_line(half: Half<'_>, width: usize) -> Line<'static> {
         None => " ".repeat(width + 1),
     };
     let style = color.map_or_else(Style::new, |color| Style::new().fg(color));
+    let indent = "  ".repeat(half.depth.min(MOST_INDENT_LEVELS));
     Line::from(vec![
         Span::styled(address, Style::new().fg(GRAY_FG)),
-        Span::styled(format!("{sign} {text}"), style),
+        Span::styled(format!("{sign} {indent}{text}"), style),
     ])
 }
 
@@ -675,5 +683,18 @@ mod tests {
         assert_eq!(spans, [("d", true), ("i", false), ("sp", true), ("atch", false)],);
         assert_eq!(highlighted("main", "").spans.len(), 1, "no filter, one plain span");
         assert_eq!(highlighted("", "x").spans.len(), 0);
+    }
+
+    #[test]
+    fn a_line_of_a_diff_is_indented_by_its_depth() {
+        let text = |depth| {
+            let half = Half { side: Side::Same("x = 1"), address: Some(0x10), depth };
+            half_line(half, 2).spans[1].content.to_string()
+        };
+        assert_eq!(text(0), "  x = 1");
+        assert_eq!(text(2), "      x = 1");
+        assert_eq!(text(MOST_INDENT_LEVELS + 5), text(MOST_INDENT_LEVELS), "the indent stops");
+        let empty = Half { side: Side::Empty, address: None, depth: 3 };
+        assert!(half_line(empty, 2).spans.is_empty(), "an empty half shows nothing");
     }
 }

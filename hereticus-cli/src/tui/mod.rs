@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use hereticus::address::Contents;
 use hereticus::matching::{
-    Diff, DiffLine, EditKind, PairedLabels, View, instruction_diff_in, line_addresses,
+    Diff, DiffLine, EditKind, PairedLabels, View, instruction_diff_in, line_places,
 };
 use hereticus::obj::Binary;
 use ratatui::DefaultTerminal;
@@ -30,7 +30,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use serde::{Deserialize, Serialize};
 
-use rows::{Addresses, change_starts, side_by_side, unified};
+use rows::{Places, change_starts, side_by_side, unified};
 
 use crate::project::{Project, Source};
 use crate::{
@@ -180,10 +180,10 @@ struct Labeled {
 #[derive(Debug)]
 struct Opened {
     lines: Vec<DiffLine>,
-    /// The lines of the other view and their addresses, once shown, so `v`
+    /// The lines of the other view and their places, once shown, so `v`
     /// back is at once.
-    other_view: Option<(Vec<DiffLine>, Addresses)>,
-    addresses: Addresses,
+    other_view: Option<(Vec<DiffLine>, Places)>,
+    places: Places,
     /// What a gone or new function is shown against: its closest
     /// candidate.
     against: Option<String>,
@@ -201,12 +201,12 @@ impl Opened {
     /// Lay the rows out again, for another layout or other lines.
     fn relayout(&mut self, layout: Layout) {
         self.changes = match layout {
-            Layout::SideBySide => side_by_side(&self.lines, &self.addresses)
+            Layout::SideBySide => side_by_side(&self.lines, &self.places)
                 .iter()
                 .map(|row| row.left.is_change() || row.right.is_change())
                 .collect(),
             Layout::Unified => {
-                unified(&self.lines, &self.addresses).iter().map(|half| half.is_change()).collect()
+                unified(&self.lines, &self.places).iter().map(|half| half.is_change()).collect()
             }
         };
         self.starts = change_starts(self.changes.iter().copied());
@@ -761,9 +761,9 @@ impl<'a> App<'a> {
             (Entry::New { function, .. }, Some((best, _))) => [(before, best), (after, function)],
             (Entry::New { function, .. }, None) => [(after, function), (after, function)],
         };
-        let addresses = Addresses {
-            before: line_addresses(view, shown[0].0, shown[0].1),
-            after: line_addresses(view, shown[1].0, shown[1].1),
+        let places = Places {
+            before: line_places(view, shown[0].0, shown[0].1),
+            after: line_places(view, shown[1].0, shown[1].1),
         };
         let (lines, against) = match (entry, self.closest(entry)) {
             (Entry::Pair(index), _) => {
@@ -796,7 +796,7 @@ impl<'a> App<'a> {
         let mut opened = Opened {
             lines,
             other_view: None,
-            addresses,
+            places,
             against,
             scroll,
             changes: Vec::new(),
@@ -815,14 +815,14 @@ impl<'a> App<'a> {
             View::Il => View::Assembly,
         };
         let Screen::Pair(opened) = &mut self.screen else { return };
-        if let Some((lines, addresses)) = opened.other_view.take() {
+        if let Some((lines, places)) = opened.other_view.take() {
             let lines = core::mem::replace(&mut opened.lines, lines);
-            let addresses = core::mem::replace(&mut opened.addresses, addresses);
-            opened.other_view = Some((lines, addresses));
+            let places = core::mem::replace(&mut opened.places, places);
+            opened.other_view = Some((lines, places));
             opened.relayout(self.layout);
             return;
         }
-        let shown = (core::mem::take(&mut opened.lines), core::mem::take(&mut opened.addresses));
+        let shown = (core::mem::take(&mut opened.lines), core::mem::take(&mut opened.places));
         let scroll = opened.scroll;
         self.open_at(scroll);
         if let Screen::Pair(opened) = &mut self.screen {
@@ -1441,8 +1441,8 @@ mod tests {
         let mut app = App::new(&diff, &before, &after, start);
         let per_side = |app: &App<'_>| match &app.screen {
             Screen::Pair(opened) => {
-                let addresses = (opened.addresses.before.len(), opened.addresses.after.len());
-                assert_eq!(lines_per_side(&opened.lines), addresses, "{:?}", app.view);
+                let places = (opened.places.before.len(), opened.places.after.len());
+                assert_eq!(lines_per_side(&opened.lines), places, "{:?}", app.view);
                 opened
                     .lines
                     .iter()
@@ -1476,14 +1476,14 @@ mod tests {
         };
         let pair = &diff.matched[index];
         let Screen::Pair(opened) = &app.screen else { panic!("the diff opens") };
-        let rows = side_by_side(&opened.lines, &opened.addresses);
+        let rows = side_by_side(&opened.lines, &opened.places);
         let first = |side: fn(&rows::SideRow<'_>) -> Option<u64>| rows.iter().find_map(side);
         assert_eq!(first(|row| row.left.address), Some(before.functions[pair.before].address));
         assert_eq!(first(|row| row.right.address), Some(after.functions[pair.after].address));
         let count =
             |side: fn(&rows::SideRow<'_>) -> Option<u64>| rows.iter().filter_map(side).count();
-        assert_eq!(count(|row| row.left.address), opened.addresses.before.len());
-        assert_eq!(count(|row| row.right.address), opened.addresses.after.len());
+        assert_eq!(count(|row| row.left.address), opened.places.before.len());
+        assert_eq!(count(|row| row.right.address), opened.places.after.len());
     }
 
     #[test]

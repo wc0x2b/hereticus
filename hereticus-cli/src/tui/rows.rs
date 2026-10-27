@@ -1,7 +1,7 @@
 //! Lay the lines of a diff out in rows, each with the address of the
-//! instruction it shows.
+//! instruction it shows and its depth in the jumps of the function.
 
-use hereticus::matching::DiffLine;
+use hereticus::matching::{DiffLine, LinePlace};
 
 /// What one half of a row shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,15 +16,26 @@ pub enum Side<'l> {
     Changed(&'l str),
 }
 
-/// One half of a row: a line, and the address of its instruction.
+/// One half of a row: a line, the address of its instruction, and how
+/// many levels deep the line sits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Half<'l> {
     pub side: Side<'l>,
     pub address: Option<u64>,
+    pub depth: usize,
 }
 
-impl Half<'_> {
-    const EMPTY: Self = Self { side: Side::Empty, address: None };
+impl<'l> Half<'l> {
+    const EMPTY: Self = Self { side: Side::Empty, address: None, depth: 0 };
+
+    /// The half that shows `side` at `place`.
+    fn at(side: Side<'l>, place: Option<LinePlace>) -> Self {
+        Self {
+            side,
+            address: place.map(|place| place.address),
+            depth: place.map_or(0, |place| place.depth),
+        }
+    }
 
     /// Report whether the half shows a change, not a line both sides hold.
     pub fn is_change(self) -> bool {
@@ -39,15 +50,14 @@ pub struct SideRow<'l> {
     pub right: Half<'l>,
 }
 
-/// The address of each line of the two functions a diff compares, in
-/// order.
+/// Where each line of the two functions a diff compares sits, in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Addresses {
-    pub before: Vec<u64>,
-    pub after: Vec<u64>,
+pub struct Places {
+    pub before: Vec<LinePlace>,
+    pub after: Vec<LinePlace>,
 }
 
-/// Each line of a diff, with the address of its instruction on each side.
+/// Each line of a diff, with where it sits on each side.
 ///
 /// A diff holds one line for each line the view shows of a side, in
 /// order: a line
@@ -55,10 +65,9 @@ pub struct Addresses {
 /// the next of the earlier function, and an added one the next of the later.
 fn locate<'l>(
     lines: &'l [DiffLine],
-    addresses: &Addresses,
-) -> impl Iterator<Item = (&'l DiffLine, Option<u64>, Option<u64>)> {
-    let (mut before, mut after) =
-        (addresses.before.iter().copied(), addresses.after.iter().copied());
+    places: &Places,
+) -> impl Iterator<Item = (&'l DiffLine, Option<LinePlace>, Option<LinePlace>)> {
+    let (mut before, mut after) = (places.before.iter().copied(), places.after.iter().copied());
     lines.iter().map(move |line| match line {
         DiffLine::Same(_) | DiffLine::Changed { .. } => (line, before.next(), after.next()),
         DiffLine::Removed(_) => (line, before.next(), None),
@@ -68,28 +77,26 @@ fn locate<'l>(
 
 /// Lay a diff side by side. A run of removed lines and the run of added
 /// lines next to it share rows, so a rewritten block reads across.
-pub fn side_by_side<'l>(lines: &'l [DiffLine], addresses: &Addresses) -> Vec<SideRow<'l>> {
+pub fn side_by_side<'l>(lines: &'l [DiffLine], places: &Places) -> Vec<SideRow<'l>> {
     let mut rows = Vec::with_capacity(lines.len());
     let mut removed: Vec<Half<'l>> = Vec::new();
     let mut added: Vec<Half<'l>> = Vec::new();
-    for (line, before, after) in locate(lines, addresses) {
+    for (line, before, after) in locate(lines, places) {
         match line {
-            DiffLine::Removed(text) => {
-                removed.push(Half { side: Side::Removed(text), address: before })
-            }
-            DiffLine::Added(text) => added.push(Half { side: Side::Added(text), address: after }),
+            DiffLine::Removed(text) => removed.push(Half::at(Side::Removed(text), before)),
+            DiffLine::Added(text) => added.push(Half::at(Side::Added(text), after)),
             DiffLine::Same(text) => {
                 flush_runs(&mut rows, &mut removed, &mut added);
                 rows.push(SideRow {
-                    left: Half { side: Side::Same(text), address: before },
-                    right: Half { side: Side::Same(text), address: after },
+                    left: Half::at(Side::Same(text), before),
+                    right: Half::at(Side::Same(text), after),
                 });
             }
             DiffLine::Changed { before: old, after: new } => {
                 flush_runs(&mut rows, &mut removed, &mut added);
                 rows.push(SideRow {
-                    left: Half { side: Side::Changed(old), address: before },
-                    right: Half { side: Side::Changed(new), address: after },
+                    left: Half::at(Side::Changed(old), before),
+                    right: Half::at(Side::Changed(new), after),
                 });
             }
         }
@@ -112,20 +119,15 @@ fn flush_runs<'l>(
 
 /// Lay a diff in one column, as a patch reads. A line both sides hold
 /// shows the address of the later function.
-pub fn unified<'l>(lines: &'l [DiffLine], addresses: &Addresses) -> Vec<Half<'l>> {
-    locate(lines, addresses)
+pub fn unified<'l>(lines: &'l [DiffLine], places: &Places) -> Vec<Half<'l>> {
+    locate(lines, places)
         .flat_map(|(line, before, after)| match line {
-            DiffLine::Same(text) => [Half { side: Side::Same(text), address: after }, Half::EMPTY],
-            DiffLine::Removed(text) => {
-                [Half { side: Side::Removed(text), address: before }, Half::EMPTY]
+            DiffLine::Same(text) => [Half::at(Side::Same(text), after), Half::EMPTY],
+            DiffLine::Removed(text) => [Half::at(Side::Removed(text), before), Half::EMPTY],
+            DiffLine::Added(text) => [Half::at(Side::Added(text), after), Half::EMPTY],
+            DiffLine::Changed { before: old, after: new } => {
+                [Half::at(Side::Removed(old), before), Half::at(Side::Added(new), after)]
             }
-            DiffLine::Added(text) => {
-                [Half { side: Side::Added(text), address: after }, Half::EMPTY]
-            }
-            DiffLine::Changed { before: old, after: new } => [
-                Half { side: Side::Removed(old), address: before },
-                Half { side: Side::Added(new), address: after },
-            ],
         })
         .filter(|half| half.side != Side::Empty)
         .collect()
@@ -154,7 +156,15 @@ mod tests {
     }
 
     fn half(side: Side<'_>, address: Option<u64>) -> Half<'_> {
-        Half { side, address }
+        Half { side, address, depth: 0 }
+    }
+
+    /// The places of lines at `before` and `after`, each at no depth.
+    fn places(before: &[u64], after: &[u64]) -> Places {
+        let at = |addresses: &[u64]| {
+            addresses.iter().map(|&address| LinePlace { address, depth: 0 }).collect()
+        };
+        Places { before: at(before), after: at(after) }
     }
 
     #[test]
@@ -168,7 +178,7 @@ mod tests {
             DiffLine::Changed { before: "f".into(), after: "g".into() },
             DiffLine::Added("h".into()),
         ];
-        let addresses = Addresses { before: vec![0, 4, 8, 12, 16], after: vec![0, 4, 8, 12, 16] };
+        let addresses = places(&[0, 4, 8, 12, 16], &[0, 4, 8, 12, 16]);
         let row = |left, right| SideRow { left, right };
         assert_eq!(
             side_by_side(&lines, &addresses),
@@ -187,7 +197,7 @@ mod tests {
     #[test]
     fn a_line_past_the_addresses_has_none() {
         let lines = [same("a"), same("b")];
-        let addresses = Addresses { before: vec![0x10], after: vec![] };
+        let addresses = places(&[0x10], &[]);
         let rows = side_by_side(&lines, &addresses);
         assert_eq!(rows[0].left.address, Some(0x10));
         assert_eq!(rows[1].left.address, None);
@@ -197,7 +207,7 @@ mod tests {
     #[test]
     fn a_unified_diff_puts_a_changed_line_on_two_rows() {
         let lines = [same("a"), DiffLine::Changed { before: "b".into(), after: "c".into() }];
-        let addresses = Addresses { before: vec![0x100, 0x104], after: vec![0x200, 0x204] };
+        let addresses = places(&[0x100, 0x104], &[0x200, 0x204]);
         assert_eq!(
             unified(&lines, &addresses),
             [
@@ -206,6 +216,21 @@ mod tests {
                 half(Side::Added("c"), Some(0x204)),
             ]
         );
+    }
+
+    #[test]
+    fn each_half_keeps_the_depth_of_its_side() {
+        let lines = [same("a"), DiffLine::Changed { before: "b".into(), after: "c".into() }];
+        let place = |address, depth| LinePlace { address, depth };
+        let places = Places {
+            before: vec![place(0x100, 0), place(0x104, 2)],
+            after: vec![place(0x200, 1), place(0x204, 3)],
+        };
+        let depths = |row: &SideRow<'_>| (row.left.depth, row.right.depth);
+        let rows = side_by_side(&lines, &places);
+        assert_eq!(rows.iter().map(depths).collect::<Vec<_>>(), [(0, 1), (2, 3)]);
+        let halves = unified(&lines, &places);
+        assert_eq!(halves.iter().map(|half| half.depth).collect::<Vec<_>>(), [1, 2, 3]);
     }
 
     #[test]

@@ -47,16 +47,33 @@ pub enum View {
     Il,
 }
 
-/// The address of each line `view` shows of the function `index` of
-/// `binary`, in order: the IL view shows some idioms of several
-/// instructions as one line.
-pub fn line_addresses(view: View, binary: &Binary, index: usize) -> Vec<u64> {
+/// Where a line of a view sits in its function.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LinePlace {
+    /// The address of the instruction the line shows.
+    pub address: u64,
+    /// How deep in the jumps of the function the line is, as
+    /// [`hereticus_view::il_line_depths`] gives it. The assembly view keeps
+    /// each line at zero, as the decoder prints it.
+    pub depth: usize,
+}
+
+/// Where each line `view` shows of the function `index` of `binary` sits,
+/// in order: the IL view shows some idioms of several instructions as one
+/// line.
+pub fn line_places(view: View, binary: &Binary, index: usize) -> Vec<LinePlace> {
     let function = &binary.functions[index];
     let arch = binary.isa_of(function).arch();
     let insns = decode_shown(arch, function);
     match view {
-        View::Assembly => insns.iter().map(|insn| insn.address).collect(),
-        View::Il => hereticus_view::il_line_addresses(arch, &insns),
+        View::Assembly => {
+            insns.iter().map(|insn| LinePlace { address: insn.address, depth: 0 }).collect()
+        }
+        View::Il => hereticus_view::il_line_addresses(arch, &insns)
+            .into_iter()
+            .zip(hereticus_view::il_line_depths(arch, &insns))
+            .map(|(address, depth)| LinePlace { address, depth })
+            .collect(),
     }
 }
 
