@@ -6,6 +6,7 @@
 //! again later: see [`crate::project`]. [`App`] holds the state and reads the
 //! keys, apart from the drawing, so a test can drive it with no terminal.
 
+mod columns;
 mod draw;
 mod fuzzy;
 mod rows;
@@ -36,6 +37,7 @@ use crate::{
     Args, DataRegions, Feature, Hidden, Retouched, Sort, has_features, is_interesting,
     is_shown_unmatched, name_of, rank,
 };
+use columns::Widths;
 
 /// How the browser starts.
 #[derive(Clone, Debug)]
@@ -337,6 +339,10 @@ pub struct App<'a> {
     entries: Vec<Labeled>,
     /// The rows the table lists, in order, by their index in `entries`.
     rows: Vec<usize>,
+    /// The width of the cells of each entry, as unmarked.
+    cell_widths: Vec<Widths>,
+    /// The width of the widest cell of each column, over the rows listed.
+    natural: Widths,
     table: TableState,
     screen: Screen,
     overlay: Overlay,
@@ -403,6 +409,8 @@ impl<'a> App<'a> {
             filter: browser.filter,
             entries,
             rows: Vec::new(),
+            cell_widths: Vec::new(),
+            natural: columns::heading_widths(),
             table: TableState::default(),
             screen: Screen::Table,
             overlay: Overlay::None,
@@ -419,6 +427,7 @@ impl<'a> App<'a> {
             .into_iter()
             .filter_map(|mark| Some((app.entry_of(mark.row)?, mark.label)))
             .collect();
+        app.cell_widths = (0..app.entries.len()).map(|index| app.widths_of(index)).collect();
         app.refresh();
         let selected = browser.selected.and_then(|key| app.entry_of(key));
         if let Some(position) =
@@ -430,6 +439,29 @@ impl<'a> App<'a> {
             }
         }
         app
+    }
+
+    /// The width of each cell of the row of `index` in `entries`.
+    fn widths_of(&self, index: usize) -> Widths {
+        self.cells(index).map(|cell| u16::try_from(cell.width()).unwrap_or(u16::MAX))
+    }
+
+    /// The width of the widest cell of each column, over the rows listed.
+    /// The widths of the cells are kept from the start, as building each
+    /// row of a kernel again for each order took longer than a sort; a
+    /// marked row is measured again, as its label widens its name.
+    fn measure(&self) -> Widths {
+        self.rows.iter().fold(columns::heading_widths(), |mut widest, &index| {
+            let widths = if self.marks.contains_key(&index) {
+                self.widths_of(index)
+            } else {
+                self.cell_widths[index]
+            };
+            for (wide, width) in widest.iter_mut().zip(widths) {
+                *wide = (*wide).max(width);
+            }
+            widest
+        })
     }
 
     /// The key a project names the row `index` of `entries` by.
@@ -621,6 +653,7 @@ impl<'a> App<'a> {
         // within the rest.
         rows.sort_by_key(|row| !self.marks.contains_key(row));
         self.rows = rows;
+        self.natural = self.measure();
         let position = kept.and_then(|kept| self.rows.iter().position(|&row| row == kept));
         self.table.select(match (position, self.rows.is_empty()) {
             (_, true) => None,
@@ -1429,6 +1462,23 @@ mod tests {
         app.refresh();
         assert!(!app.rows.is_empty());
         assert!(screen(&mut app, 120, 12).contains("only added-call"));
+    }
+
+    /// A narrow terminal shrinks the kinds touched and how a pair matched
+    /// before the names, and ends each cell cut short in `…`. One narrower
+    /// still drops those two columns.
+    #[test]
+    fn a_narrow_screen_shrinks_the_columns_read_last() {
+        let Some((before, after)) = firmware() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        let narrow = screen(&mut app, 90, 8);
+        assert!(narrow.contains('…'), "{narrow}");
+        assert!(narrow.contains("check_header"), "{narrow}");
+        insta::assert_snapshot!("tui_narrow", narrow);
+        let narrower = screen(&mut app, 60, 8);
+        assert!(!narrower.contains("MATCHED"), "{narrower}");
+        assert!(narrower.contains("check_header"), "{narrower}");
     }
 
     /// The screen of the book that shows a feature in use.

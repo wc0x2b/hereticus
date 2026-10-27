@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gives the features of each pair, and the summary says how many rows
   `--only` hid. A project that an older version saved does not open.
 
+### Changed
+
+- Each column of the table of functions in the browser is as wide as its
+  widest cell among the rows listed, and the names take the width left.
+  Before, the columns had fixed widths, which cut the kinds touched and
+  how a pair matched. In a narrow terminal, the kinds touched and how a
+  pair matched shrink first, and a cell cut short ends in `…`.
+
 ## [0.4.1](https://github.com/wc0x2b/hereticus/compare/v0.4.0...v0.4.1) - 2026-10-25## [0.4.0](https://github.com/wc0x2b/hereticus/compare/v0.3.0...v0.4.0) - 2026-10-24
 ### Added
 
