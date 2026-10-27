@@ -1464,6 +1464,64 @@ mod tests {
         assert!(folded, "a function makes the global pointer");
     }
 
+    /// On each architecture, the IL view indents the lines in the jumps of
+    /// a function and the assembly view does not, and `v` and `l` keep the
+    /// depth of each line.
+    #[test]
+    fn the_il_view_indents_on_each_architecture() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/backports");
+        let read = |variant: &str, arch: &str| {
+            let data =
+                std::fs::read(path.join(format!("lua-{variant}/{arch}-gcc-O2/lib.so"))).ok()?;
+            Some(Binary::parse(&data).expect("a fixture parses"))
+        };
+        let places = |app: &App<'_>| match &app.screen {
+            Screen::Pair(opened) => {
+                let counts = (opened.places.before.len(), opened.places.after.len());
+                assert_eq!(lines_per_side(&opened.lines), counts, "{:?}", app.view);
+                opened.places.clone()
+            }
+            _ => panic!("the diff stays open"),
+        };
+        let depths = |places: &Places| -> Vec<usize> {
+            places.before.iter().chain(&places.after).map(|place| place.depth).collect()
+        };
+        for arch in ["arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64"] {
+            let (Some(before), Some(after)) = (read("before", arch), read("after", arch)) else {
+                return;
+            };
+            let diff = diff_with(&before, &after, Options::default());
+            let start = start_with(Browser { view: View::Il, scope: Scope::All, ..browser() });
+            let mut app = App::new(&diff, &before, &after, start);
+            press(&mut app, &[KeyCode::Enter]);
+            let mut indented = false;
+            for _ in 0..app.rows.len().min(30) {
+                let il = places(&app);
+                indented |= depths(&il).iter().any(|&depth| depth > 0);
+                press(&mut app, &[KeyCode::Char('v')]);
+                assert!(depths(&places(&app)).iter().all(|&depth| depth == 0), "{arch}: asm");
+                press(&mut app, &[KeyCode::Char('v')]);
+                assert_eq!(places(&app), il, "{arch}: the IL again");
+                let side_by_side_depths: Vec<usize> = match &app.screen {
+                    Screen::Pair(opened) => side_by_side(&opened.lines, &opened.places)
+                        .iter()
+                        .flat_map(|row| [row.left, row.right])
+                        .filter(|half| half.address.is_some())
+                        .map(|half| half.depth)
+                        .collect(),
+                    _ => panic!("the diff stays open"),
+                };
+                assert_eq!(
+                    side_by_side_depths.iter().sum::<usize>(),
+                    depths(&il).iter().sum::<usize>(),
+                    "{arch}: each line of each side shows its depth"
+                );
+                press(&mut app, &[KeyCode::Char('n')]);
+            }
+            assert!(indented, "{arch}: a function of Lua has a jump");
+        }
+    }
+
     #[test]
     fn each_line_of_a_diff_names_its_address() {
         let Some((before, after)) = firmware() else { return };

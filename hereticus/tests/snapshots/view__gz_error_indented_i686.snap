@@ -1,0 +1,86 @@
+---
+source: hereticus/tests/view.rs
+expression: indented
+---
+push ebp
+push edi
+push esi
+push ebx
+call __x86.get_pc_thunk.bx
+ebx = ebx + @0x115bb
+esp = esp - 0xc
+esi = load.32 [esp + 0x20]
+ebp = load.32 [esp + 0x24]
+eax = load.32 [esi + 0x54]
+flags = eax & eax
+if ((eax & eax) == 0) goto $+0x13
+  flags = compare([esi + 0x50], -0x4)
+  if ([esi + 0x50] != -0x4) goto $+0xc3
+      store.32 [esi + 0x54] = 0
+    flags = ebp & ebp
+    if ((ebp & ebp) == 0) goto $+0x9c
+      flags = compare(ebp, -0x5)
+      if (ebp == -0x5) goto $+0x93
+        ecx = load.32 [esp + 0x28]
+        store.32 [esi] = 0
+        store.32 [esi + 0x50] = ebp
+        flags = ecx & ecx
+        if ((ecx & ecx) == 0) goto $+0x6f
+          flags = compare(ebp, -0x4)
+          if (ebp == -0x4) goto $+0x6a
+              edi = load.32 [esi + 0x14]
+              esp = esp - 0xc
+              push edi
+              call strlen
+              pop ebp
+              push dword ptr [esp + 0x34]
+              ebp = eax
+              call strlen
+              eax = eax + [ebp + eax + 0x3]
+              store.32 [esp] = eax
+              call malloc
+              esp = esp + 0x10
+              store.32 [esi + 0x54] = eax
+              ebp = eax
+              flags = eax & eax
+              if ((eax & eax) == 0) goto $+0x72
+                esp = esp - 0xc
+                push edi
+                call strlen
+                pop edx
+                push dword ptr [esp + 0x34]
+                esi = eax
+                call strlen
+                pop ecx
+                ecx = ecx + [ebx + 0xffff8021]
+                pop edx
+                eax = eax + [esi + eax + 0x3]
+                edx = edx + [ebx + 0xffff8024]
+                push dword ptr [esp + 0x30]
+                push ecx
+                push edi
+                push edx
+                push eax
+                push ebp
+                call snprintf
+                esp = esp + 0x20
+                esp = esp + 0xc
+                pop ebx
+                pop esi
+                pop edi
+                pop ebp
+                return
+                esi = esi + [esi]
+            eax = load.32 [esp + 0x28]
+            store.32 [esi + 0x50] = ebp
+            flags = eax & eax
+          if ((eax & eax) != 0) goto $-0x80
+        goto $-0x1e
+        esi = esi + [esi]
+      esp = esp - 0xc
+      push eax
+      call free
+      esp = esp + 0x10
+    goto $-0xc9
+  store.32 [esi + 0x50] = -0x4
+goto $-0x3f

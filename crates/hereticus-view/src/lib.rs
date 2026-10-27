@@ -2314,4 +2314,198 @@ mod tests {
             assert_eq!(nesting_depths(&insns, branches_have_slots), model);
         });
     }
+
+    /// Each IL line of `code` on `arch`, after its depth.
+    fn indented(arch: &dyn Arch, code: &[u8]) -> Vec<(usize, String)> {
+        let (insns, _) = decode_all(arch, code, 0x1000);
+        let depths = il_line_depths(arch, &insns);
+        assert_eq!(depths.len(), il_line_addresses(arch, &insns).len(), "a depth for each line");
+        depths.into_iter().zip(il_lines(arch, code, &insns)).collect()
+    }
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("a hex byte"))
+            .collect()
+    }
+
+    fn at_depths<const N: usize>(lines: [(usize, &str); N]) -> Vec<(usize, String)> {
+        lines.into_iter().map(|(depth, text)| (depth, text.to_string())).collect()
+    }
+
+    // Each test below shows a loop in an `if`, as `llvm-mc` assembles it:
+    // the body of the loop sits two levels deep, and the branch back one.
+
+    #[test]
+    fn a_loop_in_an_if_indents_on_aarch64() {
+        // cbz x0, end; loop: add x1, x1, #1; subs x0, x0, #1; b.ne loop;
+        // end: ret
+        let code = hex("800000b421040091000400f1c1ffff54c0035fd6");
+        assert_eq!(
+            indented(&Aarch64, &code),
+            at_depths([
+                (0, "if (x0 == 0) goto $+0x10"),
+                (2, "x1 = x1 + 1"),
+                (2, "x0 = x0 - 1"),
+                (1, "if (flags.NotEqual) goto $-0x8"),
+                (0, "return"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_loop_in_an_if_indents_on_a32() {
+        use hereticus_il::arch::arm32::Arm32;
+        // cmp r0, #0; beq end; loop: add r1, r1, #1; subs r0, r0, #1;
+        // bne loop; end: bx lr
+        let code = hex("000050e30200000a011081e2010050e2fcffff1a1eff2fe1");
+        assert_eq!(
+            indented(&Arm32, &code),
+            at_depths([
+                (0, "flags = compare(r0, 0)"),
+                (0, "if (r0 == 0) goto $+0x10"),
+                (2, "r1 = r1 + 1"),
+                (2, "r0 = r0 - 1"),
+                (1, "if (r0 != 0) goto $-0x8"),
+                (0, "return"),
+            ])
+        );
+    }
+
+    /// The `it` shows as no line, so it takes no depth either.
+    #[test]
+    fn a_loop_in_an_if_indents_on_thumb2_past_an_it() {
+        use hereticus_il::arch::thumb::Thumb2;
+        // cmp r0, #0; beq end; loop: adds r1, #1; subs r0, #1; it eq;
+        // moveq r2, #0; bne loop; end: bx lr
+        let code = hex("002804d00131013808bf0022fad17047");
+        assert_eq!(
+            indented(&Thumb2, &code),
+            at_depths([
+                (0, "flags = compare(r0, 0)"),
+                (0, "if (r0 == 0) goto $+0xc"),
+                (2, "r1 = r1 + 1"),
+                (2, "r0 = r0 - 1"),
+                (2, "if (eq) r2 = 0"),
+                (1, "if (r0 != 0) goto $-0x8"),
+                (0, "return"),
+            ])
+        );
+    }
+
+    /// A delay slot sits at the depth of its branch.
+    #[test]
+    fn a_loop_in_an_if_indents_on_mips32_of_each_byte_order() {
+        use hereticus_il::arch::mips::Mips32;
+        // beqz a0, end; nop; loop: addiu a1, a1, 1; addiu a0, a0, -1;
+        // bnez a0, loop; nop; end: jr ra; nop
+        let big = hex("108000050000000024a500012484ffff1480fffd0000000003e0000800000000");
+        let little = hex("05008010000000000100a524ffff8424fdff8014000000000800e00300000000");
+        let expected = at_depths([
+            (0, "if (a0 == 0) goto $+0x18"),
+            (0, "nop"),
+            (2, "a1 = a1 + 1"),
+            (2, "a0 = a0 + -0x1"),
+            (1, "if (a0 != 0) goto $-0x8"),
+            (1, "nop"),
+            (0, "return"),
+            (0, "nop"),
+        ]);
+        assert_eq!(indented(&Mips32::BIG, &big), expected);
+        assert_eq!(indented(&Mips32::LITTLE, &little), expected);
+    }
+
+    /// A MIPS16e branch has no delay slot, but `jr` has one.
+    #[test]
+    fn a_loop_in_an_if_indents_on_mips16() {
+        use hereticus_il::arch::mips16::Mips16;
+        let halfwords: [u16; 6] = [
+            0x2403, // beqz a0, end
+            0x4d01, // loop: addiu a1, 1
+            0x4cff, // addiu a0, -1
+            0x2cfd, // bnez a0, loop
+            0xe820, // end: jr ra
+            0x6500, // nop
+        ];
+        let expected = at_depths([
+            (0, "if (a0 == 0) goto $+0x8"),
+            (2, "a1 = a1 + 1"),
+            (2, "a0 = a0 + -0x1"),
+            (1, "if (a0 != 0) goto $-0x4"),
+            (0, "return"),
+            (0, "nop"),
+        ]);
+        let big: Vec<u8> = halfwords.iter().flat_map(|half| half.to_be_bytes()).collect();
+        let little: Vec<u8> = halfwords.iter().flat_map(|half| half.to_le_bytes()).collect();
+        assert_eq!(indented(&Mips16::BIG, &big), expected);
+        assert_eq!(indented(&Mips16::LITTLE, &little), expected);
+    }
+
+    #[test]
+    fn a_loop_in_an_if_indents_on_x86_of_each_width() {
+        use hereticus_il::arch::x86::X86;
+        // test rdi, rdi; je end; loop: add rsi, 1; sub rdi, 1; jne loop;
+        // end: ret
+        let wide = hex("4885ff740a4883c6014883ef0175f6c3");
+        let depths = |lines: Vec<(usize, String)>| -> Vec<usize> {
+            lines.into_iter().map(|(depth, _)| depth).collect()
+        };
+        assert_eq!(depths(indented(&X86::BITS64, &wide)), [0, 0, 2, 2, 1, 0]);
+        // The same with eax and ecx.
+        let narrow = hex("85c0740883c10183e80175f8c3");
+        assert_eq!(depths(indented(&X86::BITS32, &narrow)), [0, 0, 2, 2, 1, 0]);
+    }
+
+    /// The instructions that make the global pointer show as one line,
+    /// which takes the depth of the last of them.
+    #[test]
+    fn the_making_of_the_global_pointer_takes_one_depth() {
+        use hereticus_il::arch::mips::Mips32;
+        let words: [u32; 6] = [
+            0x1080_0004, // beqz a0, $+0x14
+            0x0000_0000, // nop
+            0x3c1c_0002, // lui gp, 0x2
+            0x279c_59ec, // addiu gp, gp, 0x59ec
+            0x0399_e021, // addu gp, gp, t9
+            0x03e0_0008, // jr ra
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        let lines = indented(&Mips32::BIG, &code);
+        assert_eq!(lines[2], (1, "gp = _gp".to_string()), "{lines:?}");
+        assert_eq!(lines.len(), 4, "{lines:?}");
+    }
+
+    #[test]
+    fn any_code_takes_a_depth_for_each_line_on_each_architecture() {
+        use hereticus_il::arch::{
+            arm32::Arm32, mips::Mips32, mips16::Mips16, thumb::Thumb2, x86::X86,
+        };
+        bolero::check!().with_type::<Vec<u8>>().for_each(|code| {
+            let arches: [&dyn Arch; 9] = [
+                &Aarch64,
+                &Arm32,
+                &Thumb2,
+                &Mips32::BIG,
+                &Mips32::LITTLE,
+                &Mips16::LITTLE,
+                &Mips16::BIG,
+                &X86::BITS32,
+                &X86::BITS64,
+            ];
+            for arch in arches {
+                let (insns, _) = decode_all(arch, code, 0x1000);
+                let depths = il_line_depths(arch, &insns);
+                assert_eq!(depths.len(), il_line_addresses(arch, &insns).len());
+                // Each jump adds a level at most.
+                let jumps = insns
+                    .iter()
+                    .filter(|insn| {
+                        matches!(insn.kind, InsnKind::Branch { .. } | InsnKind::Jump { .. })
+                    })
+                    .count();
+                assert!(depths.iter().all(|&depth| depth <= jumps), "{depths:?}");
+            }
+        });
+    }
 }

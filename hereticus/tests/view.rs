@@ -3,10 +3,10 @@
 
 use std::path::Path;
 
-use hereticus::matching::{DiffLine, Options, View, diff_with, instruction_diff_in};
+use hereticus::matching::{DiffLine, Options, View, diff_with, instruction_diff_in, line_places};
 use hereticus::obj::Binary;
 use hereticus::recovery::arch::decode_all;
-use hereticus::view::{Context, il_lines_in};
+use hereticus::view::{Context, il_line_addresses, il_line_depths, il_lines_in};
 use rstest::rstest;
 
 /// A library of the backports, built by GCC at -O2 for `arch`.
@@ -53,6 +53,74 @@ fn the_il_of_a_function_is_locked(
     #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16")] arch: &str,
 ) {
     insta::assert_snapshot!(format!("gz_error_{arch}"), gz_error(arch).join("\n"));
+}
+
+/// The IL of `gz_error`, each line indented two spaces for each level
+/// deep it sits, as the TUI shows it.
+fn gz_error_indented(arch: &str) -> String {
+    let binary = library("zlib", "before", arch);
+    let function = binary.functions.iter().find(|f| f.name == "gz_error").expect("gz_error");
+    let isa = binary.isa_of(function).arch();
+    let (insns, _) = decode_all(isa, &function.code, function.address);
+    let depths = il_line_depths(isa, &insns);
+    let lines = gz_error(arch);
+    assert_eq!(depths.len(), lines.len(), "{arch}: a depth for each line");
+    depths
+        .into_iter()
+        .zip(lines)
+        .map(|(depth, line)| format!("{}{line}", "  ".repeat(depth)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The indent of the whole IL of one function, so a change to how deep
+/// any line sits shows in review.
+#[rstest]
+fn the_indented_il_of_a_function_is_locked(
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64")] arch: &str,
+) {
+    let indented = gz_error_indented(arch);
+    assert!(indented.lines().any(|line| line.starts_with("  ")), "{arch}: {indented}");
+    insta::assert_snapshot!(format!("gz_error_indented_{arch}"), indented);
+}
+
+/// Each function of a library takes a depth for each line it shows, and
+/// a library of loops has lines in a loop in an `if`.
+#[rstest]
+fn each_line_of_each_function_takes_a_depth(
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64")] arch: &str,
+) {
+    let binary = library("lua", "before", arch);
+    let mut deepest = 0;
+    for function in &binary.functions {
+        let isa = binary.isa_of(function).arch();
+        let (insns, _) = decode_all(isa, &function.code, function.address);
+        let depths = il_line_depths(isa, &insns);
+        assert_eq!(depths.len(), il_line_addresses(isa, &insns).len(), "{arch}: {}", function.name);
+        assert_eq!(
+            depths.first().copied().unwrap_or(0),
+            0,
+            "{arch}: {} starts at no depth",
+            function.name
+        );
+        deepest = deepest.max(depths.into_iter().max().unwrap_or(0));
+    }
+    assert!(deepest >= 2, "{arch}: the deepest line of Lua sits {deepest} levels deep");
+}
+
+/// The places of the lines of the IL view hold their depths, and those of
+/// the assembly view none.
+#[rstest]
+fn only_the_il_view_indents(
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64")] arch: &str,
+) {
+    let binary = library("zlib", "before", arch);
+    let index = binary.functions.iter().position(|f| f.name == "gz_error").expect("gz_error");
+    let assembly = line_places(View::Assembly, &binary, index);
+    assert!(assembly.iter().all(|place| place.depth == 0), "{arch}");
+    let il = line_places(View::Il, &binary, index);
+    assert!(il.iter().any(|place| place.depth > 0), "{arch}");
+    assert!(il.is_sorted_by(|earlier, later| earlier.address < later.address), "{arch}");
 }
 
 /// The IL view of the Lua fix, as `--view il --diff luaZ_fill` shows it.

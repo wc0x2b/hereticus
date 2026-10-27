@@ -44,7 +44,11 @@ lines changed only a value:
 ![The diff of one function, as assembly](./images/tui-diff.png)
 
 `v` shows the same diff as IL statements, which read alike on each
-architecture:
+architecture. Each statement is indented two spaces for each jump that
+it is in: a forward jump indents the lines it steps over, and a backward
+jump indents the body of its loop. Where jumps cross, as when a compiler
+moves an error path after the return, the indent shows no structure of
+the source:
 
 ![The diff of one function, as IL](./images/tui-diff-il.png)
 
