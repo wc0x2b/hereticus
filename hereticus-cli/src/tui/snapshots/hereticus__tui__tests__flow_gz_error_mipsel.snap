@@ -1,0 +1,97 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+expression: text
+---
+      69ac   gp = _gp
+      69b0   sp = sp + -0x38
+      69b4   store.32 [sp + 0x24] = s0
+      69b8   s0 = a0
+      69bc   store.32 [sp + 0x18] = gp
+      69c0   store.32 [sp + 0x2C] = s2
+      69c4   s2 = a1
+      69c8   store.32 [sp + 0x28] = s1
+      69cc   store.32 [sp + 0x34] = ra
+      69d0   store.32 [sp + 0x30] = s3
+      69d4   a0 = load.32 [a0 + 0x68]
+┌───< 69d8   if (a0 == 0) goto $+0x1c
+│     69dc   s1 = a2
+│     69e0     v1 = load.32 [s0 + 0x64]
+│     69e4     v0 = -0x4
+│     69e8     if (v1 != v0) goto $+0x10c
+│     69ec     t9 = load.32 [@free]
+│     69f0   store.32 [s0 + 0x68] = zero
+└───> 69f4   if (s2 != 0) goto $+0xc8
+      69f8   v0 = -0x5
+┌───< 69fc     if (s1 == 0) goto $+0xa4
+│     6a00     store.32 [s0 + 0x64] = zero
+│     6a04   s3 = load.32 [s0 + 0x18]
+│     6a08   t9 = load.32 [@strlen]
+│     6a0c   call strlen
+│     6a10   a0 = s3
+│     6a14   a0 = s1
+│     6a18   gp = load.32 [sp + 0x18]
+│     6a1c   t9 = load.32 [@strlen]
+│     6a20   call strlen
+│     6a24   s2 = v0
+│     6a28   gp = load.32 [sp + 0x18]
+│     6a2c   a0 = s2 + v0
+│     6a30   t9 = load.32 [@malloc]
+│     6a34   call malloc
+│     6a38   a0 = a0 + 3
+│     6a3c   gp = load.32 [sp + 0x18]
+│     6a40   s2 = v0
+│     6a44   if (v0 == 0) goto $+0xd0
+│     6a48   store.32 [s0 + 0x68] = v0
+│     6a4c     t9 = load.32 [@strlen]
+│     6a50     call strlen
+│     6a54     a0 = s3
+│     6a58     a0 = s1
+│     6a5c     gp = load.32 [sp + 0x18]
+│     6a60     t9 = load.32 [@strlen]
+│     6a64     call strlen
+│     6a68     s0 = v0
+│     6a6c     a3 = s3
+│     6a70     gp = load.32 [sp + 0x18]
+│     6a74     a1 = s0 + v0
+│     6a78     store.32 [sp + 0x14] = s1
+│     6a7c     a0 = s2
+│     6a80     a1 = a1 + 3
+│     6a84     v0 = &page
+│     6a88     a2 = &page
+│     6a8c     t9 = load.32 [@snprintf]
+│     6a90     v0 = &": "
+│     6a94     a2 = &"%s%s%s"
+│     6a98     call snprintf
+│     6a9c     store.32 [sp + 0x10] = v0
+└┬┬─> 6aa0   ra = load.32 [sp + 0x34]
+┌┼┼─> 6aa4   s3 = load.32 [sp + 0x30]
+│││   6aa8   s2 = load.32 [sp + 0x2C]
+│││   6aac   s1 = load.32 [sp + 0x28]
+│││   6ab0   s0 = load.32 [sp + 0x24]
+│││   6ab4   return
+│││   6ab8   sp = sp + 0x38
+│││┌< 6abc   if (s2 == v0) goto $+0x48
+││││  6ac0   nop
+││││  6ac4     store.32 [s0] = zero
+││└┼< 6ac8     if (s1 == 0) goto $-0x28
+││ │  6acc     store.32 [s0 + 0x64] = s2
+││ │  6ad0     v0 = -0x4
+││ │  6ad4     if (s2 != v0) goto $-0xd0
+││ │  6ad8     ra = load.32 [sp + 0x34]
+││ │  6adc     s3 = load.32 [sp + 0x30]
+││ │  6ae0     s2 = load.32 [sp + 0x2C]
+││ │  6ae4     s1 = load.32 [sp + 0x28]
+││ │  6ae8     s0 = load.32 [sp + 0x24]
+││ │  6aec     return
+││ │  6af0     sp = sp + 0x38
+││ │  6af4   call t9
+││ │  6af8   nop
+││ │  6afc   goto $-0x10c
+││ │  6b00   gp = load.32 [sp + 0x18]
+││ └> 6b04   if (s1 != 0) goto $-0x100
+││    6b08   store.32 [s0 + 0x64] = s2
+└┼──< 6b0c   goto $-0x68
+ │    6b10   ra = load.32 [sp + 0x34]
+ │    6b14   v0 = -0x4
+ └──< 6b18   goto $-0x78
+      6b1c   store.32 [s0 + 0x64] = v0

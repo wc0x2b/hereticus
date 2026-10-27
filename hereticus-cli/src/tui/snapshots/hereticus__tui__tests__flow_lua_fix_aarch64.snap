@@ -1,0 +1,30 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+expression: "flow_text(&lines, &places)"
+---
+      23fc0   store.64 [sp - 0x30] = x29, x30
+      23fc4   x29 = sp
+      23fc8 - x2 = sp + 0x28
+      23fc8 + w1 = load.32 [x0 + 0x28]
+      23fcc   store.64 [sp + 0x10] = x19
+      23fd0   x19 = x0
+      23fd4 - x3, x1 = load.64 [x0 + 0x10]
+      23fd4   x0 = load.64 [x0 + 0x20]
+┌───< 23fd8 + if (w1 != 0) goto $+0x40
+│     23fdc +   x3, x1 = load.64 [x19 + 0x10]
+│     23fe0 +   x2 = sp + 0x28
+│     23fe4     call x3
+│┌──< 23fe8     if (x0 == 0) goto $+0x28
+││    23fec       x1 = load.64 [sp + 0x28]
+││┌─< 23ff0       if (x1 == 0) goto $+0x20
+│││   23ff4         x2 = x0 + 1
+│││   23ff8         x1 = x1 - 1
+│││   23ffc         store.64 [x19] = x1, x2
+│││   24000         w0 = load.8 [x0]
+│││┌> 24004   x19 = load.64 [sp + 0x10]
+││││  24008   x29, x30 = load.64 [sp]; sp = sp + 0x30
+││││  2400c   return
+│└┴┼> 24010 + w0 = 1
+│  │  24014 + store.32 [x19 + 0x28] = w0
+└──┼> 24018   w0 = 0
+   └< 2401c   goto $-0x18

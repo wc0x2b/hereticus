@@ -1,0 +1,74 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+expression: text
+---
+      7030   endbr64
+      7034   push r13
+      7036   push r12
+      7038   r12 = rdx
+      703b   push rbp
+      703c   ebp = esi
+      703e   push rbx
+      703f   rbx = rdi
+      7042   rsp = rsp - 8
+      7046   rdi = load.64 [rdi + 0x78]
+      704a   flags = rdi & rdi
+┌───< 704d   if ((rdi & rdi) == 0) goto $+0x14
+│     704f     flags = compare([rbx + 0x74], -0x4)
+│     7053     if ([rbx + 0x74] != -0x4) goto $+0xb5
+│     7059   store.64 [rbx + 0x78] = 0
+└───> 7061   flags = ebp & ebp
+      7063   if ((ebp & ebp) == 0) goto $+0x2d
+      7065     flags = compare(ebp, -0x5)
+┌───< 7068     if (ebp == -0x5) goto $+0x28
+│     706a       store.32 [rbx] = 0
+│     7070       store.32 [rbx + 0x74] = ebp
+│     7073       flags = r12 & r12
+│┌──< 7076       if ((r12 & r12) == 0) goto $+0x7
+││    7078         flags = compare(ebp, -0x4)
+││┌─< 707b         if (ebp != -0x4) goto $+0x1d
+│└┼┬> 707d   rsp = rsp + 8
+│ ││  7081   pop rbx
+│ ││  7082   pop rbp
+│ ││  7083   pop r12
+│ ││  7085   pop r13
+│ ││  7087   return
+│ ││  7088   nop dword ptr [rax + rax]
+└─┼┼> 7090   store.32 [rbx + 0x74] = ebp
+  ││  7093   flags = r12 & r12
+  │└< 7096   if ((r12 & r12) == 0) goto $-0x19
+  └─> 7098   rbp = load.64 [rbx + 0x20]
+      709c   rdi = rbp
+      709f   call strlen
+      70a4   rdi = r12
+      70a7   r13 = rax
+      70aa   call strlen
+      70af   rdi = rdi + [r13 + rax + 0x3]
+      70b4   call malloc
+      70b9   store.64 [rbx + 0x78] = rax
+      70bd   r13 = rax
+      70c0   flags = rax & rax
+┌───< 70c3   if ((rax & rax) == 0) goto $+0x4f
+│     70c5     rdi = rbp
+│     70c8     call strlen
+│     70cd     rdi = r12
+│     70d0     rbx = rax
+│     70d3     call strlen
+│     70d8     rsp = rsp + 8
+│     70dc     r9 = r12
+│     70df     rcx = rbp
+│     70e2     rsi = rsi + [rbx + rax + 0x3]
+│     70e7     rdi = r13
+│     70ea     pop rbx
+│     70eb     eax = 0
+│     70ed     pop rbp
+│     70ee     r8 = &": "
+│     70f5     rdx = &"%s%s%s"
+│     70fc     pop r12
+│     70fe     pop r13
+│     7100     goto snprintf
+│     7105     nop dword ptr [rax]
+│     7108   call free
+│     710d   goto $-0xb4
+└───> 7112   store.32 [rbx + 0x74] = -0x4
+      7119   goto $-0x9c

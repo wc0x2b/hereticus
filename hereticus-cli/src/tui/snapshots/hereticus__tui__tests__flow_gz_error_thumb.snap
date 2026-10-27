@@ -1,0 +1,63 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+expression: text
+---
+      46b4   store.32 [sp - 0x14] = r4, r5, r6, r7, lr; sp = sp - 0x14
+      46b6   r4 = r0
+      46b8   r0 = load.32 [r0 + 0x68]
+      46ba   sp = sp - 0xc
+      46bc   r5 = r1
+      46be   r6 = r2
+┌───< 46c0   if (r0 == 0) goto $+0xc
+│     46c2     r3 = load.32 [r4 + 0x64]
+│     46c4     r3 = r3 + 4
+│     46c6     if (r3 != 0) goto $+0x70
+│     46c8   r3 = 0
+│     46ca   store.32 [r4 + 0x68] = r3
+└───> 46cc   flags = compare(r5, 0)
+      46d0   if (ne) flags = compare(r5, 5)
+┌───< 46d4   if (r5 != 5) goto $+0x4e
+│     46d6     store.32 [r4 + 0x64] = r5
+│┌──< 46d8     if (r6 == 0) goto $+0x46
+││    46da   r7 = load.32 [r4 + 0x18]
+││    46dc   r0 = r7
+││    46de   call strlen
+││    46e2   r5 = r0
+││    46e4   r0 = r6
+││    46e6   call strlen
+││    46ea   r0 = r0 + r5
+││    46ec   r0 = r0 + 3
+││    46ee   call malloc
+││    46f2   r5 = r0
+││    46f4   store.32 [r4 + 0x68] = r0
+││┌─< 46f6   if (r0 == 0) goto $+0x46
+│││   46f8     r0 = r7
+│││   46fa     call strlen
+│││   46fe     r4 = r0
+│││   4700     r0 = r6
+│││   4702     call strlen
+│││   4706     r2 = load.32 [pc + 0x3c]
+│││   4708     r1 = r4 + r0
+│││   470a     r3 = r7
+│││   470c     r2 = &": "
+│││   470e     store.32 [sp] = r2, r6
+│││   4712     r2 = load.32 [pc + 0x34]
+│││   4714     r1 = r1 + 3
+│││   4716     r0 = r5
+│││   4718     r2 = &"%s%s%s"
+│││   471a     call snprintf
+│└┼┬> 471e   sp = sp + 0xc
+│ ││  4720   return
+└─┼┼> 4722   r3 = 0
+  ││  4724   store.32 [r4 + 0x64] = r5
+  ││  4726   flags = compare(r5, 4)
+  ││  472c   if (ne) flags = compare(r6, r3)
+  ││  472e   store.32 [r4] = r3
+  ││  4730   if (r6 != r3) goto $-0x56
+  ││  4732   sp = sp + 0xc
+  ││  4734   return
+  ││  4736   call free
+  ││  473a   goto $-0x72
+  └┼> 473c   r3 = -0x4
+   │  4740   store.32 [r4 + 0x64] = r3
+   └< 4742   goto $-0x24

@@ -39,12 +39,22 @@ rank.
 
 The diff shows the two bodies side by side, with the address of each
 instruction. Red lines were removed, green lines were added, and yellow
-lines changed only a value:
+lines changed only a value. At the left of each address, a line goes from
+each jump, marked `<`, to its target, marked `>`. The line of a jump that
+a change added or removed takes the color of the change. Up to four lines
+can pass one row. Where more jumps pass, the jumps of a change are drawn
+first and then the shortest, so a long jump across the whole function is
+the one left out:
 
 ![The diff of one function, as assembly](./images/tui-diff.png)
 
 `v` shows the same diff as IL statements, which read alike on each
-architecture:
+architecture. Each statement is indented two spaces for each jump that
+it is in. A forward jump indents the lines it steps over, up to the first
+line that another path also comes into. Thus an error path that the
+compiler moves after the return, and that jumps back into the middle,
+indents only the lines before that point. A backward jump indents the
+body of its loop, where the target of the jump can run again:
 
 ![The diff of one function, as IL](./images/tui-diff-il.png)
 

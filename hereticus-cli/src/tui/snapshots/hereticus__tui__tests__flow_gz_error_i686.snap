@@ -1,0 +1,86 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+expression: text
+---
+      6a30   push ebp
+      6a31   push edi
+      6a32   push esi
+      6a33   push ebx
+      6a34   call __x86.get_pc_thunk.bx
+      6a39   ebx = ebx + @0x115bb
+      6a3f   esp = esp - 0xc
+      6a42   esi = load.32 [esp + 0x20]
+      6a46   ebp = load.32 [esp + 0x24]
+      6a4a   eax = load.32 [esi + 0x54]
+      6a4d   flags = eax & eax
+┌───< 6a4f   if ((eax & eax) == 0) goto $+0x13
+│     6a51     flags = compare([esi + 0x50], -0x4)
+│     6a55     if ([esi + 0x50] != -0x4) goto $+0xc3
+│     6a5b   store.32 [esi + 0x54] = 0
+└───> 6a62   flags = ebp & ebp
+      6a64   if ((ebp & ebp) == 0) goto $+0x9c
+      6a6a     flags = compare(ebp, -0x5)
+      6a6d     if (ebp == -0x5) goto $+0x93
+      6a73       ecx = load.32 [esp + 0x28]
+      6a77       store.32 [esi] = 0
+      6a7d       store.32 [esi + 0x50] = ebp
+      6a80       flags = ecx & ecx
+┌───< 6a82       if ((ecx & ecx) == 0) goto $+0x6f
+│     6a84         flags = compare(ebp, -0x4)
+│┌──< 6a87         if (ebp == -0x4) goto $+0x6a
+││    6a89   edi = load.32 [esi + 0x14]
+││    6a8c   esp = esp - 0xc
+││    6a8f   push edi
+││    6a90   call strlen
+││    6a95   pop ebp
+││    6a96   push dword ptr [esp + 0x34]
+││    6a9a   ebp = eax
+││    6a9c   call strlen
+││    6aa1   eax = eax + [ebp + eax + 0x3]
+││    6aa5   store.32 [esp] = eax
+││    6aa8   call malloc
+││    6aad   esp = esp + 0x10
+││    6ab0   store.32 [esi + 0x54] = eax
+││    6ab3   ebp = eax
+││    6ab5   flags = eax & eax
+││    6ab7   if ((eax & eax) == 0) goto $+0x72
+││    6ab9     esp = esp - 0xc
+││    6abc     push edi
+││    6abd     call strlen
+││    6ac2     pop edx
+││    6ac3     push dword ptr [esp + 0x34]
+││    6ac7     esi = eax
+││    6ac9     call strlen
+││    6ace     pop ecx
+││    6acf     ecx = ecx + [ebx + 0xffff8021]
+││    6ad5     pop edx
+││    6ad6     eax = eax + [esi + eax + 0x3]
+││    6ada     edx = edx + [ebx + 0xffff8024]
+││    6ae0     push dword ptr [esp + 0x30]
+││    6ae4     push ecx
+││    6ae5     push edi
+││    6ae6     push edx
+││    6ae7     push eax
+││    6ae8     push ebp
+││    6ae9     call snprintf
+││    6aee     esp = esp + 0x20
+└┴┬┬> 6af1   esp = esp + 0xc
+  ││  6af4   pop ebx
+  ││  6af5   pop esi
+  ││  6af6   pop edi
+  ││  6af7   pop ebp
+  ││  6af8   return
+  ││  6af9   esi = esi + [esi]
+  ││  6b00   eax = load.32 [esp + 0x28]
+  ││  6b04   store.32 [esi + 0x50] = ebp
+  ││  6b07   flags = eax & eax
+  ││  6b09   if ((eax & eax) != 0) goto $-0x80
+  │└< 6b0f   goto $-0x1e
+  │   6b11   esi = esi + [esi]
+  │   6b18   esp = esp - 0xc
+  │   6b1b   push eax
+  │   6b1c   call free
+  │   6b21   esp = esp + 0x10
+  │   6b24   goto $-0xc9
+  │   6b29   store.32 [esi + 0x50] = -0x4
+  └─< 6b30   goto $-0x3f

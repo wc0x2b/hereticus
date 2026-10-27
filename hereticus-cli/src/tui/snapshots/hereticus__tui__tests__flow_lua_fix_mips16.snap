@@ -1,0 +1,33 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+expression: "flow_text(&lines, &places)"
+---
+      1e000   store.32 [sp - 8] = s0, ra; sp = sp - 0x28
+      1e002 - a1 = load.32 [a0 + 0xC]
+      1e002   s0 = a0
+      1e006 - v0 = load.32 [a0 + 0x8]
+      1e008 - a2 = sp + 0x18
+      1e004   a0 = load.32 [a0 + 0x10]
+      1e006 + v0 = load.32 [s0 + 0x14]
+┌───< 1e008 + if (v0 != 0) goto $+0x24
+│     1e00a +   v0 = load.32 [s0 + 0x8]
+│     1e00c +   a2 = sp + 0x18
+│     1e00e +   a1 = load.32 [s0 + 0xC]
+│     1e010     call v0
+│     1e012     t9 = v0
+│┌──< 1e014     if (v0 == 0) goto $+0x14
+││    1e016       v1 = load.32 [sp + 0x18]
+││┌─< 1e018       if (v1 == 0) goto $+0x10
+│││   1e01a         v1 = v1 + -0x1
+│││   1e01c         store.32 [s0] = v1
+│││   1e01e         v1 = v0 + 1
+│││   1e020         store.32 [s0 + 0x4] = v1
+│││   1e022         v0 = load.8 [v0]
+│││┌> 1e024   s0, ra = load.32 [sp + 0x20]; sp = sp + 0x28
+││││  1e026   return
+│└┴┼> 1e028   v0 = 1
+│  │  1e02a + store.32 [s0 + 0x14] = v0
+└──┼> 1e02c + v0 = 1
+   │  1e02e   v0 = -v0
+   └< 1e030   goto $-0xc
+      1e032   nop

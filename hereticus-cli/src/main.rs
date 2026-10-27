@@ -27,6 +27,7 @@ use hereticus::address::Contents;
 use hereticus::matching::{
     Changed, Confidence, Diff, DiffLine, EditKind, EditKinds, Edits, Match, NearMiss, Options,
     PairedLabels, Phase, Progress, UseNames, View, diff_reporting, instruction_diff_in,
+    line_places,
 };
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};
@@ -986,6 +987,8 @@ fn name_of_kind(kind: EditKind) -> &'static str {
 const ADDED_COLOR: Color = Color::FG_GREEN;
 const REMOVED_COLOR: Color = Color::FG_RED;
 const EDITED_COLOR: Color = Color::FG_YELLOW;
+/// The color of the lines of a jump that both sides hold.
+const GUTTER_COLOR: Color = Color::FG_BRIGHT_BLACK;
 
 /// Describe why two functions were paired.
 fn describe_confidence(confidence: Confidence) -> &'static str {
@@ -1304,27 +1307,75 @@ fn print_pair_diff(
     println!("{}", marked(pair_name(pair, before, after), label));
 
     let lines = instruction_diff_in(view, Some(paired), before, pair.before, after, pair.after);
-    for line in &lines {
-        println!("{}", render_diff_line(line, paint));
+    let places = tui::Places {
+        before: line_places(view, before, pair.before),
+        after: line_places(view, after, pair.after),
+    };
+    for row in diff_rows(&lines, &places, paint) {
+        println!("{row}");
     }
 }
 
-/// Draw one diff line with a leading sign, in the color of its kind.
+/// Each row of the diff `lines`, laid out as a patch, with the lines of its
+/// jumps at the left as the TUI draws them: each jump, marked `<`, goes to
+/// its target, marked `>`. The IL view indents each line by its depth in
+/// the jumps of the function. A function that draws no jump shows no
+/// lines at the left.
+fn diff_rows(lines: &[DiffLine], places: &tui::Places, paint: Paint) -> Vec<String> {
+    let halves = tui::unified(lines, places);
+    let gutter = tui::Gutter::of(&halves);
+    let drawn = (0..halves.len())
+        .any(|row| gutter.row(row).iter().any(|cell| cell.glyph != tui::Glyph::Blank));
+    halves
+        .iter()
+        .enumerate()
+        .map(|(row, half)| {
+            let flow = match drawn {
+                true => format!("{} ", render_gutter(gutter.row(row), paint)),
+                false => String::new(),
+            };
+            format!("{flow}{}", render_half(*half, paint))
+        })
+        .collect()
+}
+
+/// Draw the cells of the gutter of one row, each in the color of its jump.
+fn render_gutter(cells: &[tui::Cell], paint: Paint) -> String {
+    cells
+        .iter()
+        .map(|cell| {
+            let color = match cell.tint {
+                tui::Tint::Same => GUTTER_COLOR,
+                tui::Tint::Removed => REMOVED_COLOR,
+                tui::Tint::Added => ADDED_COLOR,
+                tui::Tint::Changed => EDITED_COLOR,
+            };
+            match cell.glyph {
+                tui::Glyph::Blank => " ".to_string(),
+                glyph => paint.pick(color).colorize(glyph.symbol().to_string()).to_string(),
+            }
+        })
+        .collect()
+}
+
+/// Draw one line of a diff with a leading sign, in the color of its kind.
 ///
 /// The signs follow a patch: a space for an unchanged line, `+` added, `-`
-/// removed, `~` for a line kept but retouched. Color repeats the sign so the
-/// line reads on a terminal that drops it and on one that keeps it.
-fn render_diff_line(line: &DiffLine, paint: Paint) -> String {
-    match line {
-        DiffLine::Same(text) => format!("  {text}"),
-        DiffLine::Added(text) => paint.pick(ADDED_COLOR).colorize(format!("+ {text}")).to_string(),
-        DiffLine::Removed(text) => {
-            paint.pick(REMOVED_COLOR).colorize(format!("- {text}")).to_string()
+/// removed, `~` for a line kept but retouched. Color repeats the sign so the line reads on a terminal that
+/// drops it and on one that keeps it.
+fn render_half(half: tui::Half<'_>, paint: Paint) -> String {
+    let indent = half.indent();
+    match half.side {
+        tui::Side::Empty => String::new(),
+        tui::Side::Same(text) => format!("  {indent}{text}"),
+        tui::Side::Added(text) => {
+            paint.pick(ADDED_COLOR).colorize(format!("+ {indent}{text}")).to_string()
         }
-        DiffLine::Changed { before, after } => {
-            let removed = paint.pick(REMOVED_COLOR).colorize(format!("- {before}"));
-            let added = paint.pick(ADDED_COLOR).colorize(format!("+ {after}"));
-            format!("{removed}\n{added}")
+        tui::Side::Removed(text) => {
+            paint.pick(REMOVED_COLOR).colorize(format!("- {indent}{text}")).to_string()
+        }
+        tui::Side::Changed(text) => {
+            paint.pick(EDITED_COLOR).colorize(format!("~ {indent}{text}")).to_string()
         }
     }
 }
@@ -2077,6 +2128,70 @@ mod tests {
     #[test]
     fn auto_gives_no_color_when_standard_output_is_not_a_terminal() {
         assert_eq!(Paint::resolve(When::Auto), Paint::Off);
+    }
+
+    /// The places of lines at `0x10 + 4 * index`, each with its depth and
+    /// the index of the line it jumps to.
+    fn places_of(lines: &[(usize, Option<u64>)]) -> Vec<hereticus::matching::LinePlace> {
+        (0..)
+            .zip(lines)
+            .map(|(index, &(depth, jump))| hereticus::matching::LinePlace {
+                address: 0x10 + 4 * index,
+                depth,
+                jump: jump.map(|to| 0x10 + 4 * to),
+            })
+            .collect()
+    }
+
+    /// `--diff` draws the jumps of a function at the left, as the TUI does,
+    /// and indents the IL by its depth.
+    #[test]
+    fn a_diff_draws_each_jump_from_its_line_to_its_target() {
+        let lines = [
+            DiffLine::Same("if (r0 == 0) goto $+0xc".into()),
+            DiffLine::Same("r1 = 1".into()),
+            DiffLine::Removed("r2 = 2".into()),
+            DiffLine::Added("r2 = 3".into()),
+            DiffLine::Same("return".into()),
+        ];
+        let before = places_of(&[(0, Some(3)), (1, None), (1, None), (0, None)]);
+        let after = places_of(&[(0, Some(3)), (1, None), (1, None), (0, None)]);
+        let places = tui::Places { before, after };
+        assert_eq!(
+            diff_rows(&lines, &places, Paint::Off),
+            [
+                "┌───<   if (r0 == 0) goto $+0xc",
+                "│         r1 = 1",
+                "│     -   r2 = 2",
+                "│     +   r2 = 3",
+                "└───>   return",
+            ]
+        );
+    }
+
+    /// A function with no jump prints as a plain patch.
+    #[test]
+    fn a_diff_with_no_jump_shows_no_lines_at_the_left() {
+        let lines = [DiffLine::Same("r0 = 1".into()), DiffLine::Added("return".into())];
+        let places = tui::Places {
+            before: places_of(&[(0, None)]),
+            after: places_of(&[(0, None), (0, None)]),
+        };
+        assert_eq!(diff_rows(&lines, &places, Paint::Off), ["  r0 = 1", "+ return"]);
+        assert!(diff_rows(&[], &tui::Places::default(), Paint::Off).is_empty());
+    }
+
+    /// The line of an added jump takes the color of an added line.
+    #[test]
+    fn the_line_of_a_changed_jump_takes_the_color_of_the_change() {
+        let lines = [DiffLine::Added("goto $+0x8".into()), DiffLine::Same("return".into())];
+        let places = tui::Places {
+            before: places_of(&[(0, None)]),
+            after: places_of(&[(0, Some(1)), (0, None)]),
+        };
+        let rows = diff_rows(&lines, &places, Paint::On);
+        let green = Paint::On.pick(ADDED_COLOR).colorize("<").to_string();
+        assert!(rows[0].contains(&green), "{rows:?}");
     }
 
     /// An unpainted report must write no escape codes at all.

@@ -4,6 +4,7 @@ All patches/merge requests are welcome!
 
 ```
 just quick-test        # about a minute
+just slow-test         # the slow tests of the OpenWrt kernels, which CI runs too
 just test              # the same, plus the slow and the `truth_*` tests
 just test-research     # the measurements of RESEARCH.md, which no test runs
 just fixtures          # rebuild the ARM32, MIPS, Mach-O and garbled Go corpus
@@ -111,6 +112,14 @@ that the docs show a part of what it prints:
 ...
 <!-- end output -->
 ```
+
+`just quick-test` checks the outputs of the book, of the README and of
+each report whose binaries `just truth` fetched to `~/.cache`. The fix of
+CVE-2021-30883 is in an iPhone kernelcache, and its outputs take 90
+seconds, so only `just test` checks that report. When a change to the
+tool changes only the lines of the jumps at the left, the indent or the
+spaces of an output, `just docs-output` writes the new output into the
+docs. Any other change it names, so that you can choose the part to show.
 
 ## The Book
 

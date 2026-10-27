@@ -1,0 +1,66 @@
+---
+source: hereticus-cli/src/tui/mod.rs
+expression: text
+---
+      65a0   store.64 [sp - 0x30] = x29, x30
+      65a4   x29 = sp
+      65a8   store.64 [sp + 0x10] = x19, x20
+      65ac   x19 = x0
+      65b0   w20 = w1
+      65b4   store.64 [sp + 0x20] = x21, x22
+      65b8   x21 = x2
+      65bc   x0 = load.64 [x0 + 0x78]
+┌───< 65c0   if (x0 == 0) goto $+0x14
+│     65c4     w1 = load.32 [x19 + 0x74]
+│     65c8     flags = compare(w1, 4)
+│     65cc     if (w1 != 4) goto $+0xb8
+│     65d0   store.64 [x19 + 0x78] = xzr
+└───> 65d4   flags = compare(w20, 0)
+      65d8   flags = ne ? compare(w20, -5) : nzcv(4)
+┌───< 65dc   if (flags.NotEqual) goto $+0x84
+│     65e0     store.32 [x19 + 0x74] = w20
+│┌──< 65e4     if (x21 == 0) goto $+0x90
+││┌─> 65e8     x22 = load.64 [x19 + 0x20]
+│││   65ec     x0 = x22
+│││   65f0     call strlen
+│││   65f4     x20 = x0
+│││   65f8     x0 = x21
+│││   65fc     call strlen
+│││   6600     x0 = x20 + x0
+│││   6604     x0 = x0 + 3
+│││   6608     call malloc
+│││   660c     store.64 [x19 + 0x78] = x0
+│││   6610     x20 = x0
+│││┌< 6614     if (x0 == 0) goto $+0x78
+││││  6618       x0 = x22
+││││  661c       call strlen
+││││  6620       x19 = x0
+││││  6624       x0 = x21
+││││  6628       call strlen
+││││  662c       x1 = x19 + x0
+││││  6630       x5 = x21
+││││  6634       x3 = x22
+││││  6638       x0 = x20
+││││  663c       x1 = x1 + 3
+││││  6640       x19, x20 = load.64 [sp + 0x10]
+││││  6644       x4 = &page
+││││  6648       x21, x22 = load.64 [sp + 0x20]
+││││  664c       x4 = &": "
+││││  6650       x29, x30 = load.64 [sp]; sp = sp + 0x30
+││││  6654       x2 = &page
+││││  6658       x2 = &"%s%s%s"
+││││  665c       goto snprintf
+└┼┼┼> 6660   store.32 [x19] = wzr
+ │││  6664   flags = compare(x21, 0)
+ │││  6668   store.32 [x19 + 0x74] = w20
+ │││  666c   flags = ne ? compare(w20, -4) : nzcv(4)
+ │└┼< 6670   if (flags.NotEqual) goto $-0x88
+┌┴─┼> 6674   x19, x20 = load.64 [sp + 0x10]
+│  │  6678   x21, x22 = load.64 [sp + 0x20]
+│  │  667c   x29, x30 = load.64 [sp]; sp = sp + 0x30
+│  │  6680   return
+│  │  6684   call free
+│  │  6688   goto $-0xb8
+│  └> 668c   w0 = 3
+│     6690   store.32 [x19 + 0x74] = w0
+└───< 6694   goto $-0x20

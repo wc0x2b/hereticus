@@ -8,6 +8,7 @@
 
 mod columns;
 mod draw;
+mod flows;
 mod fuzzy;
 mod rows;
 mod theme;
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use hereticus::address::Contents;
 use hereticus::matching::{
-    Diff, DiffLine, EditKind, PairedLabels, View, instruction_diff_in, line_addresses,
+    Diff, DiffLine, EditKind, PairedLabels, View, instruction_diff_in, line_places,
 };
 use hereticus::obj::Binary;
 use ratatui::DefaultTerminal;
@@ -30,7 +31,9 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use serde::{Deserialize, Serialize};
 
-use rows::{Addresses, change_starts, side_by_side, unified};
+pub use flows::{Cell, Glyph, Gutter, Tint};
+pub use rows::{Half, Places, Side, unified};
+use rows::{change_starts, side_by_side};
 
 use crate::project::{Project, Source};
 use crate::{
@@ -180,10 +183,10 @@ struct Labeled {
 #[derive(Debug)]
 struct Opened {
     lines: Vec<DiffLine>,
-    /// The lines of the other view and their addresses, once shown, so `v`
+    /// The lines of the other view and their places, once shown, so `v`
     /// back is at once.
-    other_view: Option<(Vec<DiffLine>, Addresses)>,
-    addresses: Addresses,
+    other_view: Option<(Vec<DiffLine>, Places)>,
+    places: Places,
     /// What a gone or new function is shown against: its closest
     /// candidate.
     against: Option<String>,
@@ -195,18 +198,30 @@ struct Opened {
     changes: Vec<bool>,
     /// Where each run of changes starts, from `changes`.
     starts: Vec<usize>,
+    /// The jumps of each column of the present layout, drawn as lines: the
+    /// left and the right side by side, or the one column unified.
+    gutters: Vec<flows::Gutter>,
 }
 
 impl Opened {
     /// Lay the rows out again, for another layout or other lines.
     fn relayout(&mut self, layout: Layout) {
-        self.changes = match layout {
-            Layout::SideBySide => side_by_side(&self.lines, &self.addresses)
-                .iter()
-                .map(|row| row.left.is_change() || row.right.is_change())
-                .collect(),
+        (self.changes, self.gutters) = match layout {
+            Layout::SideBySide => {
+                let rows = side_by_side(&self.lines, &self.places);
+                let left: Vec<_> = rows.iter().map(|row| row.left).collect();
+                let right: Vec<_> = rows.iter().map(|row| row.right).collect();
+                (
+                    rows.iter().map(|row| row.left.is_change() || row.right.is_change()).collect(),
+                    vec![flows::Gutter::of(&left), flows::Gutter::of(&right)],
+                )
+            }
             Layout::Unified => {
-                unified(&self.lines, &self.addresses).iter().map(|half| half.is_change()).collect()
+                let halves = unified(&self.lines, &self.places);
+                (
+                    halves.iter().map(|half| half.is_change()).collect(),
+                    vec![flows::Gutter::of(&halves)],
+                )
             }
         };
         self.starts = change_starts(self.changes.iter().copied());
@@ -761,9 +776,9 @@ impl<'a> App<'a> {
             (Entry::New { function, .. }, Some((best, _))) => [(before, best), (after, function)],
             (Entry::New { function, .. }, None) => [(after, function), (after, function)],
         };
-        let addresses = Addresses {
-            before: line_addresses(view, shown[0].0, shown[0].1),
-            after: line_addresses(view, shown[1].0, shown[1].1),
+        let places = Places {
+            before: line_places(view, shown[0].0, shown[0].1),
+            after: line_places(view, shown[1].0, shown[1].1),
         };
         let (lines, against) = match (entry, self.closest(entry)) {
             (Entry::Pair(index), _) => {
@@ -796,11 +811,12 @@ impl<'a> App<'a> {
         let mut opened = Opened {
             lines,
             other_view: None,
-            addresses,
+            places,
             against,
             scroll,
             changes: Vec::new(),
             starts: Vec::new(),
+            gutters: Vec::new(),
         };
         opened.relayout(self.layout);
         self.screen = Screen::Pair(Box::new(opened));
@@ -815,14 +831,14 @@ impl<'a> App<'a> {
             View::Il => View::Assembly,
         };
         let Screen::Pair(opened) = &mut self.screen else { return };
-        if let Some((lines, addresses)) = opened.other_view.take() {
+        if let Some((lines, places)) = opened.other_view.take() {
             let lines = core::mem::replace(&mut opened.lines, lines);
-            let addresses = core::mem::replace(&mut opened.addresses, addresses);
-            opened.other_view = Some((lines, addresses));
+            let places = core::mem::replace(&mut opened.places, places);
+            opened.other_view = Some((lines, places));
             opened.relayout(self.layout);
             return;
         }
-        let shown = (core::mem::take(&mut opened.lines), core::mem::take(&mut opened.addresses));
+        let shown = (core::mem::take(&mut opened.lines), core::mem::take(&mut opened.places));
         let scroll = opened.scroll;
         self.open_at(scroll);
         if let Screen::Pair(opened) = &mut self.screen {
@@ -1441,8 +1457,8 @@ mod tests {
         let mut app = App::new(&diff, &before, &after, start);
         let per_side = |app: &App<'_>| match &app.screen {
             Screen::Pair(opened) => {
-                let addresses = (opened.addresses.before.len(), opened.addresses.after.len());
-                assert_eq!(lines_per_side(&opened.lines), addresses, "{:?}", app.view);
+                let places = (opened.places.before.len(), opened.places.after.len());
+                assert_eq!(lines_per_side(&opened.lines), places, "{:?}", app.view);
                 opened
                     .lines
                     .iter()
@@ -1464,6 +1480,73 @@ mod tests {
         assert!(folded, "a function makes the global pointer");
     }
 
+    /// On each architecture, the IL view indents the lines in the jumps of
+    /// a function and the assembly view does not, and `v` and `l` keep the
+    /// depth of each line.
+    #[test]
+    fn the_il_view_indents_on_each_architecture() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/backports");
+        let read = |variant: &str, arch: &str| {
+            let data =
+                std::fs::read(path.join(format!("lua-{variant}/{arch}-gcc-O2/lib.so"))).ok()?;
+            Some(Binary::parse(&data).expect("a fixture parses"))
+        };
+        let places = |app: &App<'_>| match &app.screen {
+            Screen::Pair(opened) => {
+                let counts = (opened.places.before.len(), opened.places.after.len());
+                assert_eq!(lines_per_side(&opened.lines), counts, "{:?}", app.view);
+                opened.places.clone()
+            }
+            _ => panic!("the diff stays open"),
+        };
+        let depths = |places: &Places| -> Vec<usize> {
+            places.before.iter().chain(&places.after).map(|place| place.depth).collect()
+        };
+        for arch in ["arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64"] {
+            let (Some(before), Some(after)) = (read("before", arch), read("after", arch)) else {
+                return;
+            };
+            let diff = diff_with(&before, &after, Options::default());
+            let start = start_with(Browser { view: View::Il, scope: Scope::All, ..browser() });
+            let mut app = App::new(&diff, &before, &after, start);
+            press(&mut app, &[KeyCode::Enter]);
+            let mut indented = false;
+            let mut jumps_drawn = false;
+            for _ in 0..app.rows.len().min(30) {
+                let il = places(&app);
+                indented |= depths(&il).iter().any(|&depth| depth > 0);
+                if let Screen::Pair(opened) = &app.screen {
+                    assert_eq!(opened.gutters.len(), 2, "{arch}: a gutter for each side");
+                    let rows = side_by_side(&opened.lines, &opened.places).len();
+                    jumps_drawn |= opened.gutters.iter().any(|gutter| {
+                        (0..rows).any(|row| gutter.head(row).glyph == flows::Glyph::Source)
+                    });
+                }
+                press(&mut app, &[KeyCode::Char('v')]);
+                assert!(depths(&places(&app)).iter().all(|&depth| depth == 0), "{arch}: asm");
+                press(&mut app, &[KeyCode::Char('v')]);
+                assert_eq!(places(&app), il, "{arch}: the IL again");
+                let side_by_side_depths: Vec<usize> = match &app.screen {
+                    Screen::Pair(opened) => side_by_side(&opened.lines, &opened.places)
+                        .iter()
+                        .flat_map(|row| [row.left, row.right])
+                        .filter(|half| half.address().is_some())
+                        .map(|half| half.depth())
+                        .collect(),
+                    _ => panic!("the diff stays open"),
+                };
+                assert_eq!(
+                    side_by_side_depths.iter().sum::<usize>(),
+                    depths(&il).iter().sum::<usize>(),
+                    "{arch}: each line of each side shows its depth"
+                );
+                press(&mut app, &[KeyCode::Char('n')]);
+            }
+            assert!(indented, "{arch}: a function of Lua has a jump");
+            assert!(jumps_drawn, "{arch}: a jump of Lua is drawn");
+        }
+    }
+
     #[test]
     fn each_line_of_a_diff_names_its_address() {
         let Some((before, after)) = firmware() else { return };
@@ -1476,14 +1559,14 @@ mod tests {
         };
         let pair = &diff.matched[index];
         let Screen::Pair(opened) = &app.screen else { panic!("the diff opens") };
-        let rows = side_by_side(&opened.lines, &opened.addresses);
+        let rows = side_by_side(&opened.lines, &opened.places);
         let first = |side: fn(&rows::SideRow<'_>) -> Option<u64>| rows.iter().find_map(side);
-        assert_eq!(first(|row| row.left.address), Some(before.functions[pair.before].address));
-        assert_eq!(first(|row| row.right.address), Some(after.functions[pair.after].address));
+        assert_eq!(first(|row| row.left.address()), Some(before.functions[pair.before].address));
+        assert_eq!(first(|row| row.right.address()), Some(after.functions[pair.after].address));
         let count =
             |side: fn(&rows::SideRow<'_>) -> Option<u64>| rows.iter().filter_map(side).count();
-        assert_eq!(count(|row| row.left.address), opened.addresses.before.len());
-        assert_eq!(count(|row| row.right.address), opened.addresses.after.len());
+        assert_eq!(count(|row| row.left.address()), opened.places.before.len());
+        assert_eq!(count(|row| row.right.address()), opened.places.after.len());
     }
 
     #[test]
@@ -2161,5 +2244,82 @@ mod tests {
         press(&mut app, &[KeyCode::Char('?')]);
         app.handle_mouse(click(10, app.regions.list.y));
         assert_eq!(app.table.selected(), selected);
+    }
+
+    /// A library of the backports, built by GCC at -O2 for `arch`.
+    fn library(project: &str, variant: &str, arch: &str) -> Binary {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../fixtures/build/backports/{project}-{variant}"))
+            .join(format!("{arch}-gcc-O2/lib.so"));
+        let data = std::fs::read(&path)
+            .unwrap_or_else(|err| panic!("{}: {err}, run `just backports` first", path.display()));
+        Binary::parse(&data).expect("a fixture library parses")
+    }
+
+    /// The text of each row of `lines` in one column, as the TUI draws it:
+    /// the jumps at the left, then the address, the sign and the line.
+    fn flow_text(lines: &[DiffLine], places: &Places) -> String {
+        let halves = unified(lines, places);
+        let gutter = flows::Gutter::of(&halves);
+        let width = draw::address_width(
+            places.before.iter().chain(&places.after).map(|place| place.address),
+        );
+        halves
+            .iter()
+            .enumerate()
+            .map(|(row, half)| {
+                let line = draw::half_line(*half, width, gutter.row(row));
+                let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+                text.trim_end().to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The IL of `gz_error` of zlib with the lines of its jumps, as the TUI
+    /// shows a function alone, so a change to how any jump is drawn shows
+    /// in review. It mirrors `the_il_of_a_function_is_locked` of the
+    /// library.
+    #[test]
+    fn the_flow_of_a_function_is_locked() {
+        for arch in ["arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64"] {
+            let binary = library("zlib", "before", arch);
+            let index =
+                binary.functions.iter().position(|f| f.name == "gz_error").expect("gz_error");
+            let lines = instruction_diff_in(View::Il, None, &binary, index, &binary, index);
+            let shown = line_places(View::Il, &binary, index);
+            let places = Places { before: shown.clone(), after: shown };
+            let text = flow_text(&lines, &places);
+            assert!(text.contains('<') && text.contains('>'), "{arch}: a jump is drawn\n{text}");
+            insta::assert_snapshot!(format!("flow_gz_error_{arch}"), text);
+        }
+    }
+
+    /// The IL diff of the Lua fix with the lines of its jumps, as the TUI
+    /// shows it unified. It mirrors `the_il_diff_of_a_fix_is_locked` of the
+    /// library.
+    #[test]
+    fn the_flow_of_a_fix_is_locked() {
+        for arch in ["arm", "aarch64", "mips16"] {
+            let (before, after) = (library("lua", "before", arch), library("lua", "after", arch));
+            let diff = diff_with(&before, &after, Options::default());
+            let index =
+                before.functions.iter().position(|f| f.name == "luaZ_fill").expect("luaZ_fill");
+            let pair =
+                diff.matched.iter().find(|pair| pair.before == index).expect("luaZ_fill pairs");
+            let lines = instruction_diff_in(
+                View::Il,
+                Some(&diff.paired_labels(&before, &after)),
+                &before,
+                pair.before,
+                &after,
+                pair.after,
+            );
+            let places = Places {
+                before: line_places(View::Il, &before, pair.before),
+                after: line_places(View::Il, &after, pair.after),
+            };
+            insta::assert_snapshot!(format!("flow_lua_fix_{arch}"), flow_text(&lines, &places));
+        }
     }
 }

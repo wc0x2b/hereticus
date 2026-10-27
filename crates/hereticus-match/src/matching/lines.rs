@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use hereticus_arch::Arch;
 
-use hereticus_il::arch::{Insn, is_branch_target};
+use hereticus_il::arch::{Insn, InsnKind, is_branch_target};
 
 use hereticus_image::{Binary, Function, Isa};
 use hereticus_recovery::arch::decode_all;
@@ -47,16 +47,44 @@ pub enum View {
     Il,
 }
 
-/// The address of each line `view` shows of the function `index` of
-/// `binary`, in order: the IL view shows some idioms of several
-/// instructions as one line.
-pub fn line_addresses(view: View, binary: &Binary, index: usize) -> Vec<u64> {
+/// Where a line of a view sits in its function.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LinePlace {
+    /// The address of the instruction the line shows.
+    pub address: u64,
+    /// How deep in the jumps of the function the line is, as
+    /// [`hereticus_view::il_line_depths`] gives it. The assembly view keeps
+    /// each line at zero, as the decoder prints it.
+    pub depth: usize,
+    /// Where the line jumps or branches to, where that is an instruction
+    /// of its function.
+    pub jump: Option<u64>,
+}
+
+/// Where each line `view` shows of the function `index` of `binary` sits,
+/// in order: the IL view shows some idioms of several instructions as one
+/// line.
+pub fn line_places(view: View, binary: &Binary, index: usize) -> Vec<LinePlace> {
     let function = &binary.functions[index];
     let arch = binary.isa_of(function).arch();
     let insns = decode_shown(arch, function);
+    let jump_of = |address: u64| {
+        let at = insns.binary_search_by_key(&address, |insn| insn.address).ok()?;
+        let (InsnKind::Branch { target: Some(target) } | InsnKind::Jump { target: Some(target) }) =
+            insns[at].kind
+        else {
+            return None;
+        };
+        insns.binary_search_by_key(&target, |insn| insn.address).is_ok().then_some(target)
+    };
+    let place = |address, depth| LinePlace { address, depth, jump: jump_of(address) };
     match view {
-        View::Assembly => insns.iter().map(|insn| insn.address).collect(),
-        View::Il => hereticus_view::il_line_addresses(arch, &insns),
+        View::Assembly => insns.iter().map(|insn| place(insn.address, 0)).collect(),
+        View::Il => hereticus_view::il_line_addresses(arch, &insns)
+            .into_iter()
+            .zip(hereticus_view::il_line_depths(arch, &insns))
+            .map(|(address, depth)| place(address, depth))
+            .collect(),
     }
 }
 
