@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0](https://github.com/wc0x2b/hereticus/compare/v0.5.0...v0.6.0) - 2026-10-27
-
 ### Added
 
 - `hereticus` reads stripped Windows PE files for x86-64, 32-bit x86 and
@@ -30,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behind opaque expressions. The machine code shares few instructions with
   the plain code, yet `hereticus` still pairs each function with the one it
   came from.
+
+## [0.6.0](https://github.com/wc0x2b/hereticus/compare/v0.5.0...v0.6.0) - 2026-10-27
+
+### Added
+
 - The IL view indents each statement two spaces for each jump that it is
   in, in the browser and in `--diff`. A forward jump indents the lines it
   steps over, up to the first line that another path also comes into, so
