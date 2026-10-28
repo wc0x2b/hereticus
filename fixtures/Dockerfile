@@ -17,6 +17,9 @@ RUN apt-get update \
         clang-22 \
         lld-22 \
         llvm-22 \
+        llvm-22-dev \
+        cmake \
+        ninja-build \
         libc6-dev \
         libc6-dev-arm64-cross \
         libc6-dev-armel-cross \

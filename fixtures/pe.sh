@@ -32,10 +32,12 @@ declare -A link_machines=([x86_64]=x64 [i686]=x86 [arm64]=arm64)
 # library of `host.dll` for its undefined functions. `ordinals` imports
 # each by an ordinal, with no name.
 compile() {
-    local arch="$1" source="$2" name="$3" imports="$4"
+    local arch="$1" source="$2" name="$3" imports="$4" extra="${5:-}"
     # `-ffreestanding` turns off the unwind tables, which MSVC always
-    # writes, and which give the exception directory.
-    clang --target="${targets[$arch]}" "${common_flags[@]}" \
+    # writes, and which give the exception directory. `extra` passes the
+    # obfuscation plugin, where there is one.
+    # shellcheck disable=SC2086
+    clang --target="${targets[$arch]}" "${common_flags[@]}" $extra \
         -ffreestanding -fasynchronous-unwind-tables -c -O2 "$source" -o "$pe/$name.obj"
     local ordinal=1 symbol
     {
@@ -105,5 +107,45 @@ for source in "$src/firmware.c" "$src/firmware_v2.c"; do
         /delayload:host.dll "$pe/$name-helper.obj"
     rm "$pe/$name-helper.obj"
 done
+
+# An LLVM pass plugin that flattens the control flow of a function, as an
+# obfuscator does, so a test can check that `hereticus` still pairs the
+# functions of a binary a mutation engine rewrote. It needs the LLVM
+# development files and CMake, which the fixture image holds. See
+# `fixtures/obfuscate`.
+plugin=""
+if command -v cmake >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1 \
+    && [ -d /usr/lib/llvm-22/lib/cmake/llvm ]; then
+    plugin_build="$here/build/obfuscate"
+    cmake -G Ninja -DCMAKE_CXX_COMPILER=clang++ \
+        -DLLVM_DIR=/usr/lib/llvm-22/lib/cmake/llvm -B "$plugin_build" \
+        "$here/obfuscate" >/dev/null
+    ninja -C "$plugin_build" >/dev/null
+    plugin="$plugin_build/HereticusObfuscate.so"
+fi
+
+if [ -n "$plugin" ]; then
+    # One copy with its control flow flattened, and one with bogus flow,
+    # as `HERETICUS_OBFUSCATE` selects. Each names the function after the
+    # transform, so a test can read them apart.
+    for pass in flattened bogus opaque; do
+        for source in "$src/firmware.c" "$src/firmware_v2.c"; do
+            name="x86_64-$(basename "$source" .c)-$pass"
+            # `flattened` runs the `flatten` pass; `opaque` the `constants`
+            # pass. The names say the effect, the passes the method.
+            case "$pass" in
+            flattened) select=flatten ;;
+            opaque) select=constants ;;
+            *) select="$pass" ;;
+            esac
+            HERETICUS_OBFUSCATE="$select" \
+                compile x86_64 "$source" "$name" names "-fpass-plugin=$plugin"
+            link x86_64 "$name" "$name.dll" /dll /noentry /export:handle
+        done
+    done
+    echo "fixtures: obfuscated PE DLLs built in $pe"
+else
+    echo "fixtures: no LLVM development files, skipping the obfuscated DLLs" >&2
+fi
 
 echo "fixtures: PE files built in $pe"

@@ -433,7 +433,10 @@ Options:
   of those that load on the first call. On x86-64 and ARM64 its exception
   directory bounds each function that changes the stack. 32-bit x86 has
   no such directory, so there the scan finds every function. The
-  executables of the tests are for x86-64 only.
+  executables of the tests are for x86-64 only. A function an obfuscator
+  rewrote, by flattening its control flow, by adding bogus flow, or by
+  hiding its constants behind opaque expressions, still pairs with the
+  plain one, at a lower score.
 * **Unoptimized against optimized is out of scope.** At `-O2` the compiler
   changes the algorithm, which normalizing cannot bridge. Shipped firmware is
   built optimized.

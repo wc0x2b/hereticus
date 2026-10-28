@@ -5,7 +5,9 @@
 //! table of the DLL names every function, so it is the answer for the
 //! stripped copy. For x86-64 it also links the firmware fixture as an
 //! executable, as a DLL that imports by ordinal, and as one that loads
-//! `host.dll` on its first call.
+//! `host.dll` on its first call. It also links a copy whose control flow a
+//! pass plugin flattened or rewrote with bogus flow or opaque constants,
+//! as an obfuscator does.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -200,4 +202,51 @@ fn a_thunk_of_the_delay_load_directory_takes_its_import(
         assert_eq!(thunk.code.len(), THUNK_BYTES, "{import}");
         assert_eq!(name_at(&truth, thunk.address), *import);
     }
+}
+
+/// Obfuscating a function, as a mutation engine does, rewrites its machine
+/// code, but `hereticus` still pairs it with the plain function. The pass
+/// plugin flattens the control flow of one copy and adds bogus flow to
+/// another. Each function the fixture exports or imports keeps its name, so
+/// it pairs by name; the rest pair by shape.
+///
+/// `handle` of the firmware fixture branches and loops, so the transform
+/// changes it the most. It still pairs, which is the point: an analyst can
+/// read an obfuscated binary against a plain one.
+#[rstest]
+fn obfuscation_changes_the_code_but_the_functions_still_pair(
+    #[values("flattened", "bogus", "opaque")] obfuscation: &str,
+) {
+    let plain = read("x86_64-firmware.dll");
+    let obfuscated = read(&format!("x86_64-firmware-{obfuscation}.dll"));
+
+    let diff = diff_with(&plain, &obfuscated, Options::default());
+    assert!(diff.removed.is_empty(), "{obfuscation}: no function of the plain DLL is lost");
+    assert!(diff.added.is_empty(), "{obfuscation}: the obfuscated DLL adds no function");
+    assert_eq!(diff.matched.len(), plain.functions.len());
+    let handle = plain.functions.iter().position(|function| function.name == "handle");
+    let handle = handle.expect("the plain DLL has `handle`");
+    let pair = diff.matched.iter().find(|pair| pair.before == handle).expect("`handle` pairs");
+    assert!(pair.score < 0.75, "{obfuscation}: `handle` moved, score {}", pair.score);
+}
+
+/// Two obfuscated builds pair as the plain builds do: nothing is lost, and
+/// `crypto_verify` is the one new function.
+#[rstest]
+fn the_planned_edits_show_through_obfuscation(
+    #[values("flattened", "bogus", "opaque")] obfuscation: &str,
+    #[values(UseNames::Yes, UseNames::No)] use_names: UseNames,
+) {
+    let before = read(&format!("x86_64-firmware-{obfuscation}-stripped.dll"));
+    let after = read(&format!("x86_64-firmware_v2-{obfuscation}-stripped.dll"));
+    let truth = (
+        read(&format!("x86_64-firmware-{obfuscation}.dll")),
+        read(&format!("x86_64-firmware_v2-{obfuscation}.dll")),
+    );
+    let diff = diff_with(&before, &after, Options { use_names, ..Default::default() });
+
+    assert!(diff.removed.is_empty(), "{obfuscation}: no function is lost");
+    let added: Vec<&str> =
+        diff.added.iter().map(|&index| name_at(&truth.1, after.functions[index].address)).collect();
+    assert_eq!(added, ["crypto_verify"], "{obfuscation}: only the new import is new");
 }

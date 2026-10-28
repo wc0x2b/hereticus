@@ -104,9 +104,11 @@ clang for both, and the releases built as executables that are not PIC
 (`tests/nopic.rs`). An Intel Mach-O dylib is read too, but a universal
 binary only by its AArch64 slice (`tests/macho.rs`). PE DLLs for x86-64,
 32-bit x86 and ARM64 are read, stripped or not, and x86-64 executables
-(`tests/pe.rs`). Still to do: the x86-64 slice of a universal binary; and
-the published fixes of `real-life-reports/` for x86-64, where most of them
-ship.
+(`tests/pe.rs`), with copies a pass plugin obfuscated, by flattening the
+control flow, adding bogus flow, and hiding constants, as a mutation
+engine does (`fixtures/obfuscate`). Still to do: the x86-64 slice
+of a universal binary; and the published fixes of `real-life-reports/` for
+x86-64, where most of them ship.
 
 ## Read RISC-V
 
