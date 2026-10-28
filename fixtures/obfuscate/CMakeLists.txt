@@ -1,8 +1,8 @@
 # An LLVM pass plugin that obfuscates a function, by flattening its control
-# flow, adding bogus flow or substituting its arithmetic, so a test can check
-# that `hereticus` still pairs the functions of a binary a mutation engine
-# rewrote. Built by `fixtures/pe.sh` where the LLVM development files are
-# there. See `Obfuscate.cpp`.
+# flow, adding bogus flow, hiding its constants, or substituting its
+# arithmetic, so a test can check that `hereticus` still pairs the functions
+# of a binary a mutation engine rewrote. Built by `fixtures/pe.sh` where the
+# LLVM development files are there. See `Obfuscate.cpp`.
 cmake_minimum_required(VERSION 3.20)
 project(hereticus_obfuscate LANGUAGES CXX)
 

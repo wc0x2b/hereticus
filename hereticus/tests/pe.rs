@@ -6,7 +6,8 @@
 //! stripped copy. For x86-64 it also links the firmware fixture as an
 //! executable, as a DLL that imports by ordinal, and as one that loads
 //! `host.dll` on its first call. It also links a copy whose control flow a
-//! pass plugin flattened, as an obfuscator does.
+//! pass plugin flattened or rewrote with bogus flow or opaque constants,
+//! as an obfuscator does.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -214,7 +215,7 @@ fn a_thunk_of_the_delay_load_directory_takes_its_import(
 /// read an obfuscated binary against a plain one.
 #[rstest]
 fn obfuscation_changes_the_code_but_the_functions_still_pair(
-    #[values("flattened", "bogus")] obfuscation: &str,
+    #[values("flattened", "bogus", "opaque")] obfuscation: &str,
 ) {
     let plain = read("x86_64-firmware.dll");
     let obfuscated = read(&format!("x86_64-firmware-{obfuscation}.dll"));
@@ -233,7 +234,7 @@ fn obfuscation_changes_the_code_but_the_functions_still_pair(
 /// `crypto_verify` is the one new function.
 #[rstest]
 fn the_planned_edits_show_through_obfuscation(
-    #[values("flattened", "bogus")] obfuscation: &str,
+    #[values("flattened", "bogus", "opaque")] obfuscation: &str,
     #[values(UseNames::Yes, UseNames::No)] use_names: UseNames,
 ) {
     let before = read(&format!("x86_64-firmware-{obfuscation}-stripped.dll"));

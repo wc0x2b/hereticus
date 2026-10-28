@@ -2,7 +2,7 @@
 //! obfuscators of the game-hacking scene do, so a test can check that
 //! `hereticus` still pairs each function with the one it came from.
 //!
-//! Three passes, from Obfuscator-LLVM:
+//! Four passes, from Obfuscator-LLVM:
 //!
 //! * `substitution` rewrites integer arithmetic. `a + b` becomes
 //!   `a - (-b)`, and `a ^ b` becomes `(a | b) & ~(a & b)`. The x86 and
@@ -19,6 +19,10 @@
 //!   every `x` but which the compiler cannot fold, because `x` is a load
 //!   from a mutable global. The branch that is never taken goes to a clone
 //!   of the body, so the function grows a path that never runs.
+//! * `constants` hides integer constants. It replaces each one in an
+//!   arithmetic or compare instruction with the constant plus the same
+//!   opaque zero, so the back end computes the value in place of holding
+//!   it as an immediate.
 //!
 //! Each pass is deterministic, so a function and its edit mutate the same
 //! way, and a diff of the two mutated binaries shows only the edit. The
@@ -208,6 +212,17 @@ GlobalVariable *opaqueGlobal(Module &module) {
                             ConstantInt::get(i32, 0), "cff.opaque");
 }
 
+// A value equal to zero that the back end must compute: `x * (x + 1)` is
+// even, so its low bit is zero, for every `x`. `builder` inserts it, and it
+// is cast to `type`.
+Value *opaqueZero(IRBuilder<> &builder, GlobalVariable *global, Type *type) {
+  IntegerType *i32 = cast<IntegerType>(global->getValueType());
+  Value *x = builder.CreateLoad(i32, global, "cff.x");
+  Value *product = builder.CreateMul(x, builder.CreateAdd(x, ConstantInt::get(i32, 1)));
+  Value *zero = builder.CreateAnd(product, ConstantInt::get(i32, 1));
+  return builder.CreateZExtOrTrunc(zero, type);
+}
+
 // A clone of `block` in `function`, with each value its own instructions
 // define remapped to the clone.
 BasicBlock *cloneBlock(BasicBlock *block, Function &function) {
@@ -232,15 +247,46 @@ void addBogusFlow(BasicBlock *block, GlobalVariable *global) {
   IRBuilder<>(bogus).CreateBr(body);
 
   // `block` now ends in the split's unconditional branch; replace it with
-  // the opaque choice. `x * (x + 1)` is even, so the low bit is zero and
-  // the real body always runs.
+  // the opaque choice. The predicate is always true, so the real body
+  // always runs, and the clone never does.
   block->getTerminator()->eraseFromParent();
   IRBuilder<> builder(block);
-  Value *x = builder.CreateLoad(i32, global, "cff.x");
-  Value *product = builder.CreateMul(x, builder.CreateAdd(x, ConstantInt::get(i32, 1)));
-  Value *low = builder.CreateAnd(product, ConstantInt::get(i32, 1));
-  Value *even = builder.CreateICmpEQ(low, ConstantInt::get(i32, 0));
-  builder.CreateCondBr(even, body, bogus);
+  Value *zero = opaqueZero(builder, global, i32);
+  Value *alwaysTrue = builder.CreateICmpEQ(zero, ConstantInt::get(i32, 0));
+  builder.CreateCondBr(alwaysTrue, body, bogus);
+}
+
+// Replace each integer constant of an arithmetic or compare instruction
+// with the constant plus an opaque zero, so the back end computes it in
+// place of holding it as an immediate.
+bool opaqueConstants(Function &function) {
+  if (function.isDeclaration())
+    return false;
+  struct Target {
+    Instruction *instruction;
+    unsigned operand;
+    ConstantInt *value;
+  };
+  SmallVector<Target, 32> targets;
+  for (Instruction &instruction : instructions(function)) {
+    if (!isa<BinaryOperator>(instruction) && !isa<ICmpInst>(instruction))
+      continue;
+    for (unsigned operand = 0; operand < instruction.getNumOperands(); ++operand)
+      if (auto *value = dyn_cast<ConstantInt>(instruction.getOperand(operand)))
+        if (value->getType()->getIntegerBitWidth() > 1)
+          targets.push_back({&instruction, operand, value});
+  }
+  if (targets.empty())
+    return false;
+
+  GlobalVariable *global = opaqueGlobal(*function.getParent());
+  for (const Target &target : targets) {
+    IRBuilder<> builder(target.instruction);
+    Value *zero = opaqueZero(builder, global, target.value->getType());
+    Value *computed = builder.CreateAdd(target.value, zero);
+    target.instruction->setOperand(target.operand, computed);
+  }
+  return true;
 }
 
 bool bogusFlow(Function &function) {
@@ -292,6 +338,14 @@ struct Bogus : PassInfoMixin<Bogus> {
   static bool isRequired() { return true; }
 };
 
+struct Constants : PassInfoMixin<Constants> {
+  PreservedAnalyses run(Function &function, FunctionAnalysisManager &) {
+    bool changed = opaqueConstants(function);
+    return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  }
+  static bool isRequired() { return true; }
+};
+
 // Add the passes that `HERETICUS_OBFUSCATE` names to `manager`, or
 // flattening where the variable is unset. Each name is run as it reads.
 void addSelected(FunctionPassManager &manager) {
@@ -310,6 +364,8 @@ void addSelected(FunctionPassManager &manager) {
       manager.addPass(Bogus());
     else if (name == "substitution")
       manager.addPass(Substitution());
+    else if (name == "constants")
+      manager.addPass(Constants());
   }
 }
 
@@ -333,6 +389,10 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
                   }
                   if (name == "bogus") {
                     manager.addPass(Bogus());
+                    return true;
+                  }
+                  if (name == "constants") {
+                    manager.addPass(Constants());
                     return true;
                   }
                   return false;

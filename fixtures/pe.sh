@@ -128,10 +128,17 @@ if [ -n "$plugin" ]; then
     # One copy with its control flow flattened, and one with bogus flow,
     # as `HERETICUS_OBFUSCATE` selects. Each names the function after the
     # transform, so a test can read them apart.
-    for pass in flattened bogus; do
+    for pass in flattened bogus opaque; do
         for source in "$src/firmware.c" "$src/firmware_v2.c"; do
             name="x86_64-$(basename "$source" .c)-$pass"
-            HERETICUS_OBFUSCATE="${pass/flattened/flatten}" \
+            # `flattened` runs the `flatten` pass; `opaque` the `constants`
+            # pass. The names say the effect, the passes the method.
+            case "$pass" in
+            flattened) select=flatten ;;
+            opaque) select=constants ;;
+            *) select="$pass" ;;
+            esac
+            HERETICUS_OBFUSCATE="$select" \
                 compile x86_64 "$source" "$name" names "-fpass-plugin=$plugin"
             link x86_64 "$name" "$name.dll" /dll /noentry /export:handle
         done
