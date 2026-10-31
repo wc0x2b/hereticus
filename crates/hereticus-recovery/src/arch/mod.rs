@@ -9,6 +9,7 @@ pub mod aarch64;
 pub mod arm32;
 pub mod mips;
 pub mod mips16;
+pub mod powerpc;
 pub mod thumb;
 pub mod x86;
 

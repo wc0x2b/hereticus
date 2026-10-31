@@ -13,6 +13,7 @@ use hereticus_arch::Arch;
 use hereticus_il::arch::aarch64::Aarch64;
 use hereticus_il::arch::arm32::Arm32;
 use hereticus_il::arch::mips::Mips32;
+use hereticus_il::arch::powerpc::PowerPc;
 use hereticus_il::arch::thumb::Thumb2;
 use hereticus_il::arch::x86::X86;
 use hereticus_memory::AddressSpace;
@@ -90,6 +91,9 @@ pub enum Isa {
     X86_64,
     /// 32-bit x86.
     X86,
+    /// 32-bit PowerPC, big endian, as routers and automotive controllers
+    /// run it.
+    PowerPc,
 }
 
 impl Isa {
@@ -111,6 +115,7 @@ impl Isa {
             Self::Mips16Be => &hereticus_il::arch::mips16::Mips16::BIG,
             Self::X86_64 => &X86::BITS64,
             Self::X86 => &X86::BITS32,
+            Self::PowerPc => &PowerPc,
         }
     }
 
@@ -126,7 +131,7 @@ impl Isa {
             Self::Mips16 => Some(Self::Mips32),
             Self::Mips32Be => Some(Self::Mips16Be),
             Self::Mips16Be => Some(Self::Mips32Be),
-            Self::Aarch64 | Self::X86_64 | Self::X86 => None,
+            Self::Aarch64 | Self::X86_64 | Self::X86 | Self::PowerPc => None,
         }
     }
 
@@ -141,7 +146,9 @@ impl Isa {
     /// The order of the bytes of a word of data.
     pub fn byte_order(self) -> ByteOrder {
         match self {
-            Self::Mips32Be | Self::Mips16Be | Self::Arm32Be8 | Self::Thumb2Be8 => ByteOrder::Big,
+            Self::Mips32Be | Self::Mips16Be | Self::Arm32Be8 | Self::Thumb2Be8 | Self::PowerPc => {
+                ByteOrder::Big
+            }
             _ => ByteOrder::Little,
         }
     }
@@ -150,7 +157,8 @@ impl Isa {
     ///
     /// `little_endian` decides which decoder, as MIPS ships in both orders,
     /// and ARM in both for its data: a big-endian ARM file is read as BE8,
-    /// as every ARMv6 and later core runs it.
+    /// as every ARMv6 and later core runs it. Only big-endian PowerPC is
+    /// read.
     fn from_object(arch: object::Architecture, little_endian: bool) -> Result<Self, ObjError> {
         match arch {
             object::Architecture::Arm if little_endian => Ok(Self::Arm32),
@@ -160,6 +168,7 @@ impl Isa {
             object::Architecture::Mips => Ok(Self::Mips32Be),
             object::Architecture::X86_64 => Ok(Self::X86_64),
             object::Architecture::I386 => Ok(Self::X86),
+            object::Architecture::PowerPc if !little_endian => Ok(Self::PowerPc),
             _ => Err(ObjError::UnsupportedArch(arch)),
         }
     }
@@ -903,7 +912,7 @@ impl Binary {
         let mut index = scan::find_exception_index(data, base, isa.arch());
         if index.is_empty() {
             let order = match isa {
-                Isa::Mips32Be | Isa::Mips16Be | Isa::Arm32Be8 | Isa::Thumb2Be8 => {
+                Isa::Mips32Be | Isa::Mips16Be | Isa::Arm32Be8 | Isa::Thumb2Be8 | Isa::PowerPc => {
                     unwind::ByteOrder::Big
                 }
                 Isa::Arm32
@@ -1104,7 +1113,7 @@ fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
         (Isa::Mips32Be | Isa::Mips16Be, Encoding::Full) => Isa::Mips32Be,
         (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Compact) => Isa::Thumb2Be8,
         (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Full) => Isa::Arm32Be8,
-        (Isa::Aarch64 | Isa::X86_64 | Isa::X86, _) => isa,
+        (Isa::Aarch64 | Isa::X86_64 | Isa::X86 | Isa::PowerPc, _) => isa,
     }
 }
 
@@ -1230,7 +1239,8 @@ fn lazy_stubs(isa: Isa, code: &[(u64, &[u8])]) -> Vec<mips_stubs::LazyStub> {
         | Isa::Thumb2Be8
         | Isa::Aarch64
         | Isa::X86_64
-        | Isa::X86 => return Vec::new(),
+        | Isa::X86
+        | Isa::PowerPc => return Vec::new(),
     };
     code.iter().flat_map(|&(base, data)| mips_stubs::lazy_stubs(base, data, order)).collect()
 }

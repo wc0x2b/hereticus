@@ -24,6 +24,7 @@ rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = [
 smallvec = "1"
 yaxpeax-arch = "0.3"
 yaxpeax-arm = "0.4"
+yaxpeax-power = "0.1"
 gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
 object = "0.40"
 
