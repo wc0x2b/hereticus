@@ -127,11 +127,14 @@ RISC-V. Add RV32 and RV64 with the compressed (C) extension, which mixes
 2-byte and 4-byte instructions. Addresses are built with `auipc` and
 `addi` pairs.
 
-## Read PowerPC
+## Read the rest of PowerPC
 
-Older routers, automotive controllers and avionics firmware run 32-bit
-PowerPC, big endian. Addresses are built with `lis` and `addi` pairs, and
-calls return through the link register as on ARM.
+32-bit big-endian PowerPC is read, with the backports built by GCC and
+clang (`tests/backports.rs`). Still to do: the signal processing extension
+of the e500 (`evldd` and the like), which `yaxpeax-power` does not decode;
+64-bit PowerPC, with the function descriptors of ELFv1; little-endian
+PowerPC; and the names of the call stubs of GNU `ld` in a stripped file,
+which reach their slot from the `.got2` of each object.
 
 ## Read Xtensa
 

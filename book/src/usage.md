@@ -417,10 +417,14 @@ Options:
 ## Limits
 * **A32 (ARMv5TE and later, soft-float or hard-float, with VFP and NEON)
   and Thumb-2 (Cortex-M too), little endian or BE8, AArch64, MIPS32 and
-  MIPS16e in either byte order, and x86-64 and 32-bit x86.** A library that
+  MIPS16e in either byte order, x86-64 and 32-bit x86, and 32-bit PowerPC,
+  big endian.** A library that
   mixes A32 and Thumb-2, or MIPS32 and MIPS16e, is read function by function
   where its symbols say which set each is in. Stripped or raw, it is read in
-  one set, so its minority reads as nonsense.
+  one set, so its minority reads as nonsense. PowerPC is decoded as any
+  version of the Power ISA defines it, with Book E and AltiVec, but not the
+  signal processing extension of the e500 (`evldd` and the like), whose
+  words stay unread. 64-bit and little-endian PowerPC are not read.
 * **ELF, raw images, and AArch64 Mach-O.** An ELF file that `sstrip` left
   with no section headers, as OpenWrt ships each binary, is read through
   its segments. A Mach-O file is read as macOS

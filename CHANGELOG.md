@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- 32-bit PowerPC, big endian, is read: ELF files stripped or not, files
+  with no section headers, and raw images with `--arch powerpc`. Each call
+  stub that LLD or GNU `ld` writes in `.text` takes the name of its callee,
+  as `memcpy@plt`. The signal processing extension of the e500 (`evldd`
+  and the like) is not decoded, and 64-bit and little-endian PowerPC are
+  not read.
+
 ## [0.6.2](https://github.com/wc0x2b/hereticus/compare/v0.6.1...v0.6.2) - 2026-10-31
 
 ### Added
