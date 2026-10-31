@@ -185,7 +185,7 @@ impl Decoder for PowerPc {
             }
             Opcode::BCLR => format_compact!("b{}lr{link}", test.name()),
             Opcode::BCCTR => format_compact!("b{}ctr{link}", test.name()),
-            _ => format_compact!("{}", inst.compute_alias().opcode()),
+            _ => format_compact!("{}", spelling_of(&inst).opcode),
         }
     }
 
@@ -667,7 +667,6 @@ fn alias_op(alias: AliasOp) -> Option<il::Op> {
     Some(match alias {
         MR | LI | MTLR | MFLR | MTCTR | MFCTR | MTXER | MFXER | MTCR => Op::Move,
         LIS => Op::Address,
-        SUBI | SUBIS => Op::Subtract,
         NOT => Op::Not,
         NOP => Op::System,
         SLWI | SLDI => Op::ShiftLeft,
@@ -741,13 +740,41 @@ fn is_vector(opcode: Opcode) -> bool {
     name.starts_with('v') || name.starts_with("ps_") || name.starts_with("lvs")
 }
 
+/// The name and the operands an instruction reads as: those of the
+/// assembler alias that names its operation, where one does.
+struct Spelling {
+    opcode: OpcodeAlias,
+    operands: Operands,
+}
+
+/// How `inst` reads: see [`Spelling`].
+///
+/// `subi` and `subis` are no operation of their own: they are `addi` and
+/// `addis` of a negative constant, and a linker picks the sign of a
+/// distance, as `addi r2, r2, 0x7fd0` against `subi r2, r2, 0x8000` for the
+/// TOC of one function in two releases. So they read as `addi` and `addis`.
+fn spelling_of(inst: &Instruction) -> Spelling {
+    let alias = inst.compute_alias();
+    match alias.opcode() {
+        OpcodeAlias::Alias(AliasOp::SUBI | AliasOp::SUBIS) => {
+            Spelling { opcode: OpcodeAlias::Hardware(inst.opcode()), operands: operands(inst) }
+        }
+        opcode => Spelling {
+            opcode,
+            operands: (0..alias.operand_count())
+                .filter_map(|index| alias.operand(index as u8).copied())
+                .collect(),
+        },
+    }
+}
+
 /// The operands the IL lifts for `inst`: those its alias prints, as
 /// `li r3, 5` prints two, and the target of a branch.
 ///
 /// A move to or from a special-purpose register keeps the register the
 /// alias leaves out, as `mtlr r0` leaves out `lr`, since it is what the
 /// move writes or reads.
-fn lifted_operands(inst: &Instruction, alias: &yaxpeax_power::InstructionAlias) -> Operands {
+fn lifted_operands(inst: &Instruction, spelling: &Spelling) -> Operands {
     match inst.opcode() {
         opcode if opcode.is_branch() => operands(inst)
             .into_iter()
@@ -761,9 +788,7 @@ fn lifted_operands(inst: &Instruction, alias: &yaxpeax_power::InstructionAlias) 
         Opcode::MTSPR | Opcode::MFSPR | Opcode::MTCRF | Opcode::MTOCRF | Opcode::MFOCRF => {
             operands(inst)
         }
-        _ => (0..alias.operand_count())
-            .filter_map(|index| alias.operand(index as u8).copied())
-            .collect(),
+        _ => spelling.operands.clone(),
     }
 }
 
@@ -879,7 +904,7 @@ fn operand_name(operand: Operand) -> CompactString {
 
 /// The name of each operand that [`lift`] gives `inst`, in its order.
 pub fn names(inst: &Instruction) -> il::Names {
-    lifted_operands(inst, &inst.compute_alias()).into_iter().map(operand_name).collect()
+    lifted_operands(inst, &spelling_of(inst)).into_iter().map(operand_name).collect()
 }
 
 /// The registers `operand` holds a value in: a register, or none.
@@ -1002,12 +1027,12 @@ fn test_of(inst: &Instruction, operands: &[il::Operand], test: BranchTest) -> Op
 
 /// Lift `inst`, read from `word`.
 pub fn lift(inst: &Instruction, word: u32) -> il::Lifted {
-    let alias = inst.compute_alias();
+    let spelling = spelling_of(inst);
     let opcode = inst.opcode();
     let test = BranchTest::of(word);
-    let role = role_of(opcode, alias.opcode());
+    let role = role_of(opcode, spelling.opcode);
     let update = if updates(opcode) { il::Update::Before } else { il::Update::None };
-    let shown = lifted_operands(inst, &alias);
+    let shown = lifted_operands(inst, &spelling);
 
     let (mut reads, mut writes) = implied_registers(inst, test);
     for (index, operand) in shown.iter().copied().enumerate() {
@@ -1034,7 +1059,7 @@ pub fn lift(inst: &Instruction, word: u32) -> il::Lifted {
     let memory = access_of(opcode).map(|(kind, width)| il::MemoryAccess { kind, width });
     let operands: il::Operands = shown.iter().map(|&operand| il_operand(operand, update)).collect();
     il::Lifted {
-        op: op_of(inst, alias.opcode(), test),
+        op: op_of(inst, spelling.opcode, test),
         reads,
         writes,
         memory,
@@ -1137,6 +1162,8 @@ mod tests {
     #[case::add_record(0x7c64_1a15, "add")]
     #[case::srwi(0x5484_f0be, "srwi")]
     #[case::mtlr(0x7c08_03a6, "mtlr")]
+    #[case::subi(0x3863_ffff, "addi")]
+    #[case::subis(0x3c63_ffff, "addis")]
     #[case::unread(0x0000_0000, "(unknown)")]
     fn names_the_operation(#[case] word: u32, #[case] name: &str) {
         assert_eq!(PowerPc::BIG.operation_name(&decode_one(word)), name);
@@ -1287,7 +1314,7 @@ mod tests {
     #[case::mr(0x7c83_2378, Op::Move)]
     #[case::nop(0x6000_0000, Op::System)]
     #[case::not(0x7c63_18f8, Op::Not)]
-    #[case::subi(0x3863_ffff, Op::Subtract)]
+    #[case::subi(0x3863_ffff, Op::Add)]
     #[case::subf(0x7c63_2050, Op::Subtract)]
     #[case::neg(0x7c64_00d0, Op::Negate)]
     #[case::srwi(0x5484_f0be, Op::ShiftRight)]

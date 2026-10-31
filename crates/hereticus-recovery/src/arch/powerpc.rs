@@ -713,6 +713,30 @@ struct Step {
     access: Option<Access>,
 }
 
+/// What each general register holds.
+type Registers = [Option<Held>; 32];
+
+/// What the registers hold where two paths meet: what both paths agree
+/// on, and an address from the program counter where both hold one,
+/// though not the same.
+fn merged(left: &Registers, right: &Registers) -> Registers {
+    let from_counter = |held: &Option<Held>| {
+        matches!(
+            held,
+            Some(
+                Held::FromCounter
+                    | Held::Whole { origin: Origin::Counter, .. }
+                    | Held::Upper { origin: Origin::Counter, .. }
+            )
+        )
+    };
+    core::array::from_fn(|register| match (&left[register], &right[register]) {
+        (left, right) if left == right => *left,
+        (left, right) if from_counter(left) && from_counter(right) => Some(Held::FromCounter),
+        _ => None,
+    })
+}
+
 /// What the general registers hold, one instruction after the next.
 ///
 /// Branches are stepped over, as if the code ran straight down: a compiler
@@ -720,7 +744,7 @@ struct Step {
 #[derive(Clone, Debug)]
 struct Tracker {
     arch: PowerPc,
-    held: [Option<Held>; 32],
+    held: Registers,
     /// The address that `bcl 20, 31` to the next word put in the link
     /// register, where nothing wrote it since.
     link: Option<u64>,
@@ -754,7 +778,15 @@ impl Tracker {
         *self.held.get(usize::from(register))?
     }
 
+    /// Say what general register `register` holds. In 64-bit code `r2`
+    /// holds the TOC by the ABI, whatever writes it, as `ld r2, 24(r1)`
+    /// after a call and the `ori r2, r2, 0` that GCC puts in to end a
+    /// dispatch group.
     fn set(&mut self, register: u8, held: Option<Held>) {
+        let held = match (self.arch.mode(), register, held) {
+            (Mode::Bits64, TOC, None) => Some(Held::FromCounter),
+            (_, _, held) => held,
+        };
         if let Some(slot) = self.held.get_mut(usize::from(register)) {
             *slot = held;
         }
@@ -942,12 +974,6 @@ impl Tracker {
                     })
                 })
                 .map(Held::Loaded);
-            // 64-bit code restores the TOC after a call, as `ld r2, 24(r1)`,
-            // and `r2` holds it throughout.
-            let value = match (self.arch.mode(), register) {
-                (Mode::Bits64, TOC) => Some(Held::FromCounter),
-                _ => value,
-            };
             self.set(register, value);
         }
         step
@@ -1002,9 +1028,34 @@ pub fn track(
     if let Some((_, parts)) = stub_through_table(body) {
         tracked.kinds[parts].fill(ConstantKind::Address);
     }
+    // What the registers hold where a forward branch lands, from each branch
+    // that reaches there, merged.
+    let index_of: std::collections::HashMap<u64, usize> =
+        body.iter().enumerate().map(|(index, insn)| (insn.address, index)).collect();
+    let mut landing: std::collections::HashMap<usize, Registers> = Default::default();
     let mut tracker = Tracker::of(arch);
     for (index, insn) in body.iter().enumerate() {
+        if let Some(reached) = landing.remove(&index) {
+            let falls_in = index.checked_sub(1).is_some_and(|before| {
+                !matches!(body[before].kind, InsnKind::Jump { .. } | InsnKind::Return)
+            });
+            tracker.held = match falls_in {
+                true => merged(&tracker.held, &reached),
+                false => reached,
+            };
+        }
         let step = tracker.step(index, insn, memory);
+        if let InsnKind::Branch { target: Some(target) } | InsnKind::Jump { target: Some(target) } =
+            insn.kind
+            && let Some(&at) = index_of.get(&target)
+            && at > index
+        {
+            let held = tracker.held;
+            landing
+                .entry(at)
+                .and_modify(|reached| *reached = merged(reached, &held))
+                .or_insert(held);
+        }
         uppers[index] = step.upper;
         if step.from_counter {
             tracked.kinds[index] = ConstantKind::Address;
@@ -1126,12 +1177,56 @@ mod tests {
             0x4800_0011, // bl $+0x10
             0xe841_0018, // ld r2, 24(r1)
             0xe862_0020, // ld r3, 0x20(r2)
+            0x6042_0000, // ori r2, r2, 0
+            0xe862_0028, // ld r3, 0x28(r2)
         ]);
         let tracked = track(PowerPc::LITTLE64, &insns, &AddressSpace::none(), None);
         use ConstantKind::{Address, Value};
-        assert_eq!(tracked.kinds, [Address, Address, Address, Address, Value, Value, Address]);
+        assert_eq!(
+            tracked.kinds,
+            [Address, Address, Address, Address, Value, Value, Address, Value, Address]
+        );
         assert_eq!(tracked.joins[1], Some(0x1_9000));
         assert_eq!(tracked.joins[3], Some(0x1_9010));
+    }
+
+    /// An upper half made before a branch reaches the code the branch
+    /// lands on, where the straight code before it wrote the register.
+    #[test]
+    fn an_upper_half_reaches_where_a_branch_lands() {
+        let insns = decode_64(&[
+            0x3c62_fffa, // subis r3, r2, 6
+            0x4182_000c, // beq $+0xc
+            0x4800_0011, // bl $+0x10             ; r3 is its result
+            0x4800_0008, // b $+8
+            0x3863_4890, // addi r3, r3, 0x4890   ; reached by beq alone
+        ]);
+        let kinds = track(PowerPc::LITTLE64, &insns, &AddressSpace::none(), None).kinds;
+        assert_eq!(kinds[4], ConstantKind::Address);
+    }
+
+    #[test]
+    fn where_two_paths_disagree_nothing_is_known() {
+        let insns = decode_64(&[
+            0x3c62_fffa, // subis r3, r2, 6
+            0x4182_0008, // beq $+8
+            0x3860_0010, // li r3, 0x10
+            0x3863_4890, // addi r3, r3, 0x4890   ; r3 is 0x10 or a half
+        ]);
+        let kinds = track(PowerPc::LITTLE64, &insns, &AddressSpace::none(), None).kinds;
+        assert_eq!(kinds[3], ConstantKind::Value);
+    }
+
+    #[test]
+    fn two_toc_offsets_merge_into_one_from_the_toc() {
+        let insns = decode_64(&[
+            0x3c62_fffa, // subis r3, r2, 6
+            0x4182_0008, // beq $+8
+            0x3c62_fff9, // subis r3, r2, 7
+            0x3863_4890, // addi r3, r3, 0x4890
+        ]);
+        let kinds = track(PowerPc::LITTLE64, &insns, &AddressSpace::none(), None).kinds;
+        assert_eq!(kinds[3], ConstantKind::Address);
     }
 
     #[test]

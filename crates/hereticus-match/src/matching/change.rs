@@ -45,17 +45,25 @@ fn differs_only_in_free_choices(before: &Prepared<'_>, after: &Prepared<'_>) -> 
 
     // Padding does nothing, and alignment puts it where it likes: GCC pads
     // a pool of doubles to eight bytes, so one more `nop` came before it.
-    let work = |arch: &dyn Arch,
-                insns: &[Insn],
-                kinds: &[ConstantKind]|
-     -> Vec<(Insn, ConstantKind)> {
-        insns
-            .iter()
-            .zip(kinds)
-            .filter(|(insn, kind)| !arch.is_padding(insn) && **kind != ConstantKind::AddressTail)
-            .map(|(insn, kind)| (insn.clone(), *kind))
-            .collect()
-    };
+    // An idiom does nothing either, as the normalizer reads it.
+    let work =
+        |arch: &dyn Arch, insns: &[Insn], kinds: &[ConstantKind]| -> Vec<(Insn, ConstantKind)> {
+            let mut kept = Vec::with_capacity(insns.len());
+            let mut index = 0;
+            while index < insns.len() {
+                let idiom = arch.idiom_length(&insns[index..]).min(insns.len() - index);
+                if idiom > 0 {
+                    index += idiom;
+                    continue;
+                }
+                let (insn, kind) = (&insns[index], kinds[index]);
+                if !arch.is_padding(insn) && kind != ConstantKind::AddressTail {
+                    kept.push((insn.clone(), kind));
+                }
+                index += 1;
+            }
+            kept
+        };
     let before_work = work(before_arch, &before_insns, &before_kinds);
     let after_work = work(after_arch, &after_insns, &after_kinds);
     if before_work.len() != after_work.len() {

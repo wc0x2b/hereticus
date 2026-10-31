@@ -425,7 +425,7 @@ Disassembly of section .text:
 fn backport_libraries() -> Vec<PathBuf> {
     let root = fixtures_dir().join("backports");
     let mut libraries = Vec::new();
-    const ARCHES: [&str; 13] = [
+    const ARCHES: [&str; 15] = [
         "arm",
         "armv5",
         "armv6",
@@ -439,6 +439,8 @@ fn backport_libraries() -> Vec<PathBuf> {
         "x86_64",
         "i686",
         "powerpc",
+        "powerpc64",
+        "powerpc64le",
     ];
     for project in ["zlib", "lua", "tinyxml2", "smallvec"] {
         for arch in ARCHES {

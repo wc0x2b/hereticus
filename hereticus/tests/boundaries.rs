@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use hereticus::obj::{Binary, Isa};
-use hereticus::recovery::arch::{Recovery as _, StubPlace};
+use hereticus::recovery::arch::StubPlace;
 use object::{Object, ObjectSection};
 
 /// What recovery found, summed over every build.

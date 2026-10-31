@@ -4,9 +4,11 @@
 
 use super::{Arch, Insn, Memory};
 use hereticus_il::arch::Decoder as _;
-use hereticus_il::arch::powerpc::{LINK, PowerPc};
+use hereticus_il::arch::InsnKind;
+use hereticus_il::arch::powerpc::{LINK, Opcode, PowerPc, decoded};
 use hereticus_il::{Op, Operand, Reg};
 use hereticus_memory::{AddressSpace, ConstantKind};
+use hereticus_recovery::arch::Recovery as _;
 use hereticus_recovery::arch::powerpc::track;
 
 impl Arch for PowerPc {
@@ -37,6 +39,24 @@ impl Arch for PowerPc {
             // `addi r1, r1, N`, which frees the frame.
             Op::Add => lifted.writes.contains(Reg::Stack),
             _ => false,
+        }
+    }
+
+    /// A jump over `nop`s to the word after them, which GCC puts in to align
+    /// a loop, as `b $+0x18` and five `nop`s. It does nothing: the code
+    /// runs on where it would run without it.
+    fn idiom_length(&self, body: &[Insn]) -> usize {
+        let Some((jump, rest)) = body.split_first() else { return 0 };
+        let InsnKind::Jump { target: Some(target) } = jump.kind else { return 0 };
+        let padding = rest.iter().take_while(|insn| self.is_padding(insn)).count();
+        let lands =
+            rest.get(padding).map_or(jump.address + 4 * (padding as u64 + 1), |insn| insn.address);
+        match padding > 0
+            && target == lands
+            && decoded(jump).is_some_and(|decoded| decoded.opcode == Opcode::B)
+        {
+            true => 1 + padding,
+            false => 0,
         }
     }
 
@@ -97,6 +117,24 @@ mod tests {
             assert!(PowerPc::LITTLE64.is_frame_management(&one(word)), "{word:#010x}");
         }
         assert!(!PowerPc::LITTLE64.is_frame_management(&one(0xe863_0008)));
+    }
+
+    #[test]
+    fn a_jump_over_nops_is_an_idiom() {
+        let code: Vec<u8> = [0x4800_000c_u32, 0x6000_0000, 0x6000_0000, 0x3860_0001]
+            .iter()
+            .flat_map(|word| word.to_be_bytes())
+            .collect();
+        let (insns, _) = hereticus_recovery::arch::decode_all(&PowerPc::BIG, &code, 0x1000);
+        assert_eq!(PowerPc::BIG.idiom_length(&insns), 3);
+        // A jump past the work after the `nop`s is work.
+        let far: Vec<u8> = [0x4800_0010_u32, 0x6000_0000, 0x6000_0000, 0x3860_0001]
+            .iter()
+            .flat_map(|word| word.to_be_bytes())
+            .collect();
+        let (insns, _) = hereticus_recovery::arch::decode_all(&PowerPc::BIG, &far, 0x1000);
+        assert_eq!(PowerPc::BIG.idiom_length(&insns), 0);
+        assert_eq!(PowerPc::BIG.idiom_length(&insns[1..]), 0, "no jump");
     }
 
     #[test]

@@ -96,11 +96,15 @@ for spec in powerpc:powerpc-linux-gnu powerpcle:powerpcle-linux-gnu \
     powerpc64:powerpc64-linux-gnu powerpc64le:powerpc64le-linux-gnu; do
     tree="${spec%%:*}"
     triple="${spec#*:}"
+    # No C library ships for 32-bit little-endian PowerPC, so its objects
+    # take <stdint.h> from clang alone.
+    hosted=()
+    [ "$tree" = powerpcle ] && hosted=(-ffreestanding)
     for opt in O0 O2; do
         mkdir -p "$build/$tree-$opt"
         for source in "$src"/*.c; do
             name="$(basename "$source" .c)"
-            clang --target="$triple" "${common_flags[@]}" -c "-$opt" -g \
+            clang --target="$triple" "${common_flags[@]}" "${hosted[@]}" -c "-$opt" -g \
                 "$source" -o "$build/$tree-$opt/$name.o"
         done
     done

@@ -1035,9 +1035,10 @@ fn powerpc_stub_callee(name: &str) -> Option<&str> {
 ///
 /// 64-bit big-endian PowerPC names a function by its descriptor in `.opd`:
 /// three doublewords that hold the address of its code, its TOC and its
-/// environment. The symbol gives the size of the code. A linked file holds
-/// the address in the first doubleword, and an object leaves it to a
-/// relocation.
+/// environment. The symbol gives the size of the code. GNU `ld` writes the
+/// address into the first doubleword; LLD leaves it 0 there, and the addend
+/// of a dynamic relocation gives it, as an object leaves it to a relocation
+/// too.
 fn descriptor_entry(
     file: &object::File<'_>,
     symbol: &object::Symbol<'_, '_>,
@@ -1062,12 +1063,20 @@ fn descriptor_entry(
         return Some((section, start.wrapping_add_signed(relocation.addend())));
     }
     let at = usize::try_from(offset).ok()?;
-    let entry = u64::from_be_bytes(opd.data().ok()?.get(at..at + 8)?.try_into().ok()?);
-    let section = file.sections().find(|section| {
-        section.kind() == object::SectionKind::Text
-            && (section.address()..section.address() + section.size()).contains(&entry)
-    })?;
-    Some((section.index(), entry))
+    let stored = u64::from_be_bytes(opd.data().ok()?.get(at..at + 8)?.try_into().ok()?);
+    let relocated = || {
+        file.dynamic_relocations()?
+            .find(|(address, _)| *address == symbol.address())
+            .map(|(_, relocation)| relocation.addend() as u64)
+    };
+    let text_holding = |entry: u64| {
+        file.sections().find(|section| {
+            section.kind() == object::SectionKind::Text
+                && (section.address()..section.address() + section.size()).contains(&entry)
+        })
+    };
+    let entry = Some(stored).filter(|&entry| text_holding(entry).is_some()).or_else(relocated)?;
+    Some((text_holding(entry)?.index(), entry))
 }
 
 /// The `size` bytes of `section` from `address` on.
