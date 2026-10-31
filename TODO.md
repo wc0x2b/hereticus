@@ -129,12 +129,14 @@ RISC-V. Add RV32 and RV64 with the compressed (C) extension, which mixes
 
 ## Read the rest of PowerPC
 
-32-bit big-endian PowerPC is read, with the backports built by GCC and
-clang (`tests/backports.rs`). Still to do: the signal processing extension
-of the e500 (`evldd` and the like), which `yaxpeax-power` does not decode;
-64-bit PowerPC, with the function descriptors of ELFv1; little-endian
-PowerPC; and the names of the call stubs of GNU `ld` in a stripped file,
-which reach their slot from the `.got2` of each object.
+PowerPC is read, 32-bit and 64-bit, in either byte order, with the
+backports built by GCC and clang (`tests/backports.rs`), but 64-bit big
+endian by GCC alone, as LLD does not link ELFv1. Still to do: the signal
+processing extension of the e500 (`evldd` and the like), which
+`yaxpeax-power` does not decode; a library or an executable of 32-bit
+little-endian code, for which no C library ships; and the names of the
+call stubs of GNU `ld` in a stripped 32-bit file, which reach their slot
+from the `.got2` of each object.
 
 ## Read Xtensa
 
