@@ -94,6 +94,13 @@ pub enum Isa {
     /// 32-bit PowerPC, big endian, as routers and automotive controllers
     /// run it.
     PowerPc,
+    /// 32-bit PowerPC, little endian.
+    PowerPcLe,
+    /// 64-bit PowerPC, big endian, with the ELFv1 ABI.
+    PowerPc64,
+    /// 64-bit PowerPC, little endian, with the ELFv2 ABI, as Linux on
+    /// POWER8 and later runs it.
+    PowerPc64Le,
 }
 
 impl Isa {
@@ -115,7 +122,10 @@ impl Isa {
             Self::Mips16Be => &hereticus_il::arch::mips16::Mips16::BIG,
             Self::X86_64 => &X86::BITS64,
             Self::X86 => &X86::BITS32,
-            Self::PowerPc => &PowerPc,
+            Self::PowerPc => &PowerPc::BIG,
+            Self::PowerPcLe => &PowerPc::LITTLE,
+            Self::PowerPc64 => &PowerPc::BIG64,
+            Self::PowerPc64Le => &PowerPc::LITTLE64,
         }
     }
 
@@ -131,14 +141,20 @@ impl Isa {
             Self::Mips16 => Some(Self::Mips32),
             Self::Mips32Be => Some(Self::Mips16Be),
             Self::Mips16Be => Some(Self::Mips32Be),
-            Self::Aarch64 | Self::X86_64 | Self::X86 | Self::PowerPc => None,
+            Self::Aarch64
+            | Self::X86_64
+            | Self::X86
+            | Self::PowerPc
+            | Self::PowerPcLe
+            | Self::PowerPc64
+            | Self::PowerPc64Le => None,
         }
     }
 
     /// The width of an address.
     pub fn address_width(self) -> Width {
         match self {
-            Self::Aarch64 | Self::X86_64 => Width::Bits64,
+            Self::Aarch64 | Self::X86_64 | Self::PowerPc64 | Self::PowerPc64Le => Width::Bits64,
             _ => Width::Bits32,
         }
     }
@@ -146,9 +162,12 @@ impl Isa {
     /// The order of the bytes of a word of data.
     pub fn byte_order(self) -> ByteOrder {
         match self {
-            Self::Mips32Be | Self::Mips16Be | Self::Arm32Be8 | Self::Thumb2Be8 | Self::PowerPc => {
-                ByteOrder::Big
-            }
+            Self::Mips32Be
+            | Self::Mips16Be
+            | Self::Arm32Be8
+            | Self::Thumb2Be8
+            | Self::PowerPc
+            | Self::PowerPc64 => ByteOrder::Big,
             _ => ByteOrder::Little,
         }
     }
@@ -157,8 +176,7 @@ impl Isa {
     ///
     /// `little_endian` decides which decoder, as MIPS ships in both orders,
     /// and ARM in both for its data: a big-endian ARM file is read as BE8,
-    /// as every ARMv6 and later core runs it. Only big-endian PowerPC is
-    /// read.
+    /// as every ARMv6 and later core runs it. PowerPC is read in both.
     fn from_object(arch: object::Architecture, little_endian: bool) -> Result<Self, ObjError> {
         match arch {
             object::Architecture::Arm if little_endian => Ok(Self::Arm32),
@@ -168,7 +186,10 @@ impl Isa {
             object::Architecture::Mips => Ok(Self::Mips32Be),
             object::Architecture::X86_64 => Ok(Self::X86_64),
             object::Architecture::I386 => Ok(Self::X86),
-            object::Architecture::PowerPc if !little_endian => Ok(Self::PowerPc),
+            object::Architecture::PowerPc if little_endian => Ok(Self::PowerPcLe),
+            object::Architecture::PowerPc => Ok(Self::PowerPc),
+            object::Architecture::PowerPc64 if little_endian => Ok(Self::PowerPc64Le),
+            object::Architecture::PowerPc64 => Ok(Self::PowerPc64),
             _ => Err(ObjError::UnsupportedArch(arch)),
         }
     }
@@ -544,11 +565,22 @@ impl Binary {
             }
 
             let own = set_of_symbol(isa, encoding_of(&symbol));
-            let address = own.arch().function_address(symbol.address());
+            let entry = match isa {
+                Isa::PowerPc64 => descriptor_entry(&file, &symbol),
+                _ => None,
+            };
+            let address = match entry {
+                Some((_, entry)) => entry,
+                None => own.arch().function_address(symbol.address()),
+            };
             if own != isa {
                 other_set.insert(address);
             }
-            let Some(code) = symbol_code(&file, &symbol, address, size) else { continue };
+            let code = match entry {
+                Some((section, entry)) => section_code(&file, section, entry, size),
+                None => symbol_code(&file, &symbol, address, size),
+            };
+            let Some(code) = code else { continue };
             let name = stable_name(symbol.name().unwrap_or_default());
             functions.push(Function {
                 name: powerpc_stub_callee(name)
@@ -918,17 +950,9 @@ impl Binary {
         let regions = [(base, data)];
         let mut index = scan::find_exception_index(data, base, isa.arch());
         if index.is_empty() {
-            let order = match isa {
-                Isa::Mips32Be | Isa::Mips16Be | Isa::Arm32Be8 | Isa::Thumb2Be8 | Isa::PowerPc => {
-                    unwind::ByteOrder::Big
-                }
-                Isa::Arm32
-                | Isa::Thumb2
-                | Isa::Aarch64
-                | Isa::Mips32
-                | Isa::Mips16
-                | Isa::X86_64
-                | Isa::X86 => unwind::ByteOrder::Little,
+            let order = match isa.byte_order() {
+                ByteOrder::Big => unwind::ByteOrder::Big,
+                ByteOrder::Little => unwind::ByteOrder::Little,
             };
             let ranges = unwind::find_function_ranges(data, base, order);
             index = scan::index_from_ranges(&ranges, isa.arch());
@@ -1004,6 +1028,59 @@ fn powerpc_stub_callee(name: &str) -> Option<&str> {
     let rest = rest.strip_prefix("got2.").unwrap_or(rest);
     let callee = rest.strip_prefix("plt_pic32.").or_else(|| rest.strip_prefix("plt_call32."))?;
     (is_distance && !callee.is_empty()).then_some(callee)
+}
+
+/// The section and the address of the code that an ELFv1 symbol `symbol`
+/// names, where it names a descriptor.
+///
+/// 64-bit big-endian PowerPC names a function by its descriptor in `.opd`:
+/// three doublewords that hold the address of its code, its TOC and its
+/// environment. The symbol gives the size of the code. A linked file holds
+/// the address in the first doubleword, and an object leaves it to a
+/// relocation.
+fn descriptor_entry(
+    file: &object::File<'_>,
+    symbol: &object::Symbol<'_, '_>,
+) -> Option<(object::SectionIndex, u64)> {
+    let opd = file.section_by_index(symbol.section_index()?).ok()?;
+    if opd.name().ok()? != ".opd" {
+        return None;
+    }
+    let offset = symbol.address().checked_sub(opd.address())?;
+    if file.kind() == ObjectKind::Relocatable {
+        let (_, relocation) = opd.relocations().find(|(at, _)| *at == offset)?;
+        let (section, start) = match relocation.target() {
+            object::RelocationTarget::Section(index) => {
+                (index, file.section_by_index(index).ok()?.address())
+            }
+            object::RelocationTarget::Symbol(index) => {
+                let target = file.symbol_by_index(index).ok()?;
+                (target.section_index()?, target.address())
+            }
+            _ => return None,
+        };
+        return Some((section, start.wrapping_add_signed(relocation.addend())));
+    }
+    let at = usize::try_from(offset).ok()?;
+    let entry = u64::from_be_bytes(opd.data().ok()?.get(at..at + 8)?.try_into().ok()?);
+    let section = file.sections().find(|section| {
+        section.kind() == object::SectionKind::Text
+            && (section.address()..section.address() + section.size()).contains(&entry)
+    })?;
+    Some((section.index(), entry))
+}
+
+/// The `size` bytes of `section` from `address` on.
+fn section_code(
+    file: &object::File<'_>,
+    section: object::SectionIndex,
+    address: u64,
+    size: u64,
+) -> Option<Vec<u8>> {
+    let section = file.section_by_index(section).ok()?;
+    let start = usize::try_from(address.checked_sub(section.address())?).ok()?;
+    let end = start.checked_add(usize::try_from(size).ok()?)?;
+    section.data().ok()?.get(start..end).map(<[u8]>::to_vec)
 }
 
 fn symbol_code(
@@ -1136,7 +1213,16 @@ fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
         (Isa::Mips32Be | Isa::Mips16Be, Encoding::Full) => Isa::Mips32Be,
         (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Compact) => Isa::Thumb2Be8,
         (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Full) => Isa::Arm32Be8,
-        (Isa::Aarch64 | Isa::X86_64 | Isa::X86 | Isa::PowerPc, _) => isa,
+        (
+            Isa::Aarch64
+            | Isa::X86_64
+            | Isa::X86
+            | Isa::PowerPc
+            | Isa::PowerPcLe
+            | Isa::PowerPc64
+            | Isa::PowerPc64Le,
+            _,
+        ) => isa,
     }
 }
 
@@ -1263,7 +1349,10 @@ fn lazy_stubs(isa: Isa, code: &[(u64, &[u8])]) -> Vec<mips_stubs::LazyStub> {
         | Isa::Aarch64
         | Isa::X86_64
         | Isa::X86
-        | Isa::PowerPc => return Vec::new(),
+        | Isa::PowerPc
+        | Isa::PowerPcLe
+        | Isa::PowerPc64
+        | Isa::PowerPc64Le => return Vec::new(),
     };
     code.iter().flat_map(|&(base, data)| mips_stubs::lazy_stubs(base, data, order)).collect()
 }
@@ -1762,7 +1851,7 @@ mod tests {
         assert_eq!(stable_name(""), "");
     }
 
-    const EVERY_ISA: [Isa; 9] = [
+    const EVERY_ISA: [Isa; 13] = [
         Isa::Arm32,
         Isa::Thumb2,
         Isa::Arm32Be8,
@@ -1772,6 +1861,10 @@ mod tests {
         Isa::Mips32Be,
         Isa::Mips16,
         Isa::Mips16Be,
+        Isa::PowerPc,
+        Isa::PowerPcLe,
+        Isa::PowerPc64,
+        Isa::PowerPc64Le,
     ];
 
     #[test]

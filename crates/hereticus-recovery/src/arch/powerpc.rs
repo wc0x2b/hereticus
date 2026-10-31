@@ -1,6 +1,6 @@
-//! The rules that find functions in 32-bit PowerPC code.
+//! The rules that find functions in PowerPC code, 32-bit and 64-bit.
 //!
-//! Every instruction is 4 bytes, and a pointer 4. A function that makes a
+//! Every instruction is 4 bytes, and a pointer 4 or 8. A function that makes a
 //! frame opens with `stwu r1, -N(r1)`, which stores the back chain and
 //! moves the stack pointer in one. A call returns through the link
 //! register, which a function that calls saves first:
@@ -17,6 +17,16 @@
 //! reaches its data from there. GCC adds the distance to the global offset
 //! table with `addis` and `addi`; clang loads it from a word just before
 //! the function, which is data among the code.
+//!
+//! 64-bit code makes its frame with `stdu r1, -N(r1)`, and reaches its data
+//! through the TOC that `r2` holds. An ELFv2 function that reads the TOC
+//! makes it first from `r12`, which holds the address of the function on
+//! entry:
+//!
+//! ```text
+//! addis r2, r12, hi
+//! addi  r2, r2, lo
+//! ```
 
 use super::{Insn, InsnKind, JumpTable, Memory, Recovery};
 use core::ops::Range;
@@ -36,6 +46,28 @@ const VOLATILE: [u8; 11] = [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 /// SVR4 ABI.
 const PIC_BASE: u8 = 30;
 
+/// The register that holds the TOC in 64-bit code.
+const TOC: u8 = 2;
+
+/// The register that holds the address of an ELFv2 function on entry.
+const ENTRY: u8 = 12;
+
+/// The register through which code reaches its table, in `mode`.
+fn table_register(mode: Mode) -> u8 {
+    match mode {
+        Mode::Bits32 => PIC_BASE,
+        Mode::Bits64 => TOC,
+    }
+}
+
+/// The value `mode` holds of `value`: its low 32 bits, or all of it.
+fn in_mode(mode: Mode, value: u64) -> u64 {
+    match mode {
+        Mode::Bits32 => value & 0xffff_ffff,
+        Mode::Bits64 => value,
+    }
+}
+
 /// How far back the parts of a table jump may lie.
 const TABLE_LOOK_BACK: usize = 16;
 
@@ -47,9 +79,10 @@ const MOST_CASES: usize = 4096;
 /// as more cases.
 const MOST_CASE_DISTANCE: u64 = 0x1_0000;
 
-/// The word at the start of `bytes`, where it holds one.
-fn word_at(bytes: &[u8]) -> Option<u32> {
-    Some(u32::from_be_bytes(bytes.get(..INSN_WIDTH)?.try_into().ok()?))
+/// The word at the start of `bytes`, in the byte order of `arch`, where
+/// `bytes` hold one.
+fn word_at(arch: PowerPc, bytes: &[u8]) -> Option<u32> {
+    Some(arch.word(bytes.get(..INSN_WIDTH)?.try_into().ok()?))
 }
 
 /// The operands of `inst`, in the order of the hardware.
@@ -66,15 +99,25 @@ fn read(insn: &Insn) -> Option<(Instruction, Vec<Operand>)> {
 
 impl Recovery for PowerPc {
     /// `stwu r1, -N(r1)`, and `stwux r1, r1, rN` for a frame larger than a
-    /// displacement holds. Only a function that needs no frame lacks one.
+    /// displacement holds; `stdu` and `stdux` in 64-bit code. Only a
+    /// function that needs no frame lacks one.
     fn is_prologue(&self, insn: &Insn) -> bool {
         let Some((inst, operands)) = read(insn) else { return false };
         match (inst.opcode(), operands.as_slice()) {
             (Opcode::STWU, [Operand::Register(stored), Operand::MemoryDisp { base, disp }]) => {
                 stored.num() == STACK && base.num() == STACK && *disp < 0
             }
+            (Opcode::STDU, [Operand::Register(stored), Operand::MemoryDisp { base, disp }]) => {
+                self.mode() == Mode::Bits64
+                    && stored.num() == STACK
+                    && base.num() == STACK
+                    && *disp < 0
+            }
             (Opcode::STWUX, [Operand::Register(stored), Operand::MemoryIndexed { base, .. }]) => {
                 stored.num() == STACK && base.num() == STACK
+            }
+            (Opcode::STDUX, [Operand::Register(stored), Operand::MemoryIndexed { base, .. }]) => {
+                self.mode() == Mode::Bits64 && stored.num() == STACK && base.num() == STACK
             }
             _ => false,
         }
@@ -82,31 +125,77 @@ impl Recovery for PowerPc {
 
     /// `stwu r1, d(r1)` is primary opcode 37 with `r1` in both register
     /// fields, and `stwux r1, r1, rB` opcode 31 with extended opcode 183.
+    /// `stdu` is opcode 62 with 1 in the two lowest bits, and `stdux`
+    /// extended opcode 181.
     fn may_be_prologue(&self, word: &[u8]) -> bool {
         const STWU_R1_R1: u32 = 0x9421_0000;
         const STWUX_R1_R1: u32 = 0x7c21_016e;
-        word_at(word).is_some_and(|word| {
-            word & 0xffff_0000 == STWU_R1_R1 || word & 0xffff_07ff == STWUX_R1_R1
+        const STDU_R1_R1: u32 = 0xf821_0001;
+        const STDUX_R1_R1: u32 = 0x7c21_016a;
+        word_at(*self, word).is_some_and(|word| {
+            word & 0xffff_0000 == STWU_R1_R1
+                || word & 0xffff_07ff == STWUX_R1_R1
+                || word & 0xffff_0003 == STDU_R1_R1
+                || word & 0xffff_07ff == STDUX_R1_R1
         })
     }
 
     /// A function that calls saves the link register, and a compiler can
     /// read it before it makes the frame: clang writes `mflr r0` first.
+    ///
+    /// 64-bit code saves registers below the stack pointer before it moves
+    /// it, as `std r30, -16(r1)`, and an ELFv2 function makes its TOC
+    /// before all of it.
     fn preamble_before_prologue(&self, earlier: &[Insn]) -> usize {
+        /// The most instructions of a 64-bit function before its frame.
+        const MOST_BEFORE: usize = 24;
         let reads_link = |insn: &Insn| {
             read(insn).is_some_and(|(inst, operands)| {
                 inst.opcode() == Opcode::MFSPR
                     && matches!(operands.as_slice(), [_, Operand::SPR(spr)] if spr.num() == SPR_LR)
             })
         };
-        usize::from(earlier.last().is_some_and(reads_link))
+        if self.mode() == Mode::Bits32 {
+            return usize::from(earlier.last().is_some_and(reads_link));
+        }
+        let saves = |insn: &Insn| {
+            lifted(insn).is_some_and(|lifted| {
+                lifted.op == hereticus_il::Op::Store
+                    && lifted.operands.iter().any(|operand| {
+                        matches!(
+                            operand,
+                            hereticus_il::Operand::Memory {
+                                base: Some(hereticus_il::Reg::Stack),
+                                ..
+                            }
+                        )
+                    })
+            })
+        };
+        let before = earlier
+            .iter()
+            .rev()
+            .take(MOST_BEFORE)
+            .take_while(|insn| reads_link(insn) || saves(insn))
+            .count();
+        let entry = earlier.len() - before;
+        match entry.checked_sub(2).map(|at| &earlier[at..entry]) {
+            Some(pair) if is_global_entry(pair) => before + 2,
+            _ => before,
+        }
+    }
+
+    /// The global entry of an ELFv2 function, which makes the TOC from the
+    /// address of the function: only a call runs it.
+    fn is_function_entry(&self, body: &[Insn]) -> bool {
+        self.mode() == Mode::Bits64 && is_global_entry(body)
     }
 
     /// A word of primary opcode 0 is no instruction a function runs. Such a
     /// word after a return is the distance clang keeps before a PIC
     /// function: a positive distance below 64 MiB has its top 6 bits clear.
     fn may_open_function(&self, word: &[u8]) -> bool {
-        word_at(word).is_some_and(|word| word >> 26 != 0)
+        word_at(*self, word).is_some_and(|word| word >> 26 != 0)
     }
 
     /// GNU `as` aligns code with `nop`, and a linker pads with zero words,
@@ -127,7 +216,7 @@ impl Recovery for PowerPc {
     fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
         let mut end = bytes.len() - bytes.len() % INSN_WIDTH;
         while end >= INSN_WIDTH
-            && word_at(&bytes[end - INSN_WIDTH..])
+            && word_at(*self, &bytes[end - INSN_WIDTH..])
                 .is_some_and(|word| word == NOP || word >> 26 == 0)
         {
             end -= INSN_WIDTH;
@@ -136,9 +225,13 @@ impl Recovery for PowerPc {
     }
 
     /// Clang keeps the distance to the global offset table in a word just
-    /// before a PIC function: see the module.
+    /// before a 32-bit PIC function: see the module. 64-bit code keeps its
+    /// data in the TOC.
     fn data_among_code(&self) -> super::DataAmongCode {
-        super::DataAmongCode::LiteralPools
+        match self.mode() {
+            Mode::Bits32 => super::DataAmongCode::LiteralPools,
+            Mode::Bits64 => super::DataAmongCode::Never,
+        }
     }
 
     /// The words that PIC code loads from the program counter, where they
@@ -149,11 +242,11 @@ impl Recovery for PowerPc {
         };
         let span = first.address.saturating_sub(2 * INSN_WIDTH as u64)
             ..last.address + last.bytes_len as u64;
-        let mut tracker = Tracker::default();
+        let mut tracker = Tracker::of(*self);
         let mut words = Vec::new();
         for (index, insn) in insns.iter().enumerate() {
             let step = tracker.step(index, insn, None);
-            if let Some(Access { address, origin: Origin::Counter, kind: AccessKind::Load }) =
+            if let Some(Access { address, origin: Origin::Counter, kind: AccessKind::Load, .. }) =
                 step.access
                 && span.contains(&address)
             {
@@ -187,7 +280,7 @@ impl Recovery for PowerPc {
             return Vec::new();
         }
         let mut bases = vec![None; shapes.len()];
-        let mut tracker = Tracker::default();
+        let mut tracker = Tracker::of(*self);
         let mut next = 0;
         for (index, insn) in insns.iter().enumerate() {
             while let Some(shape) = shapes.get(next).filter(|shape| shape.load <= index) {
@@ -204,7 +297,7 @@ impl Recovery for PowerPc {
         shapes
             .iter()
             .zip(bases)
-            .filter_map(|(shape, base)| read_table(memory, &code, insns, shape, base?))
+            .filter_map(|(shape, base)| read_table(*self, memory, &code, insns, shape, base?))
             .collect()
     }
 
@@ -227,7 +320,7 @@ impl Recovery for PowerPc {
         if jump.kind != (InsnKind::Jump { target: None }) || !moves_to_count(move_count) {
             return None;
         }
-        let mut tracker = Tracker::default();
+        let mut tracker = Tracker::of(*self);
         tracker.step(0, high, None);
         let access = tracker.step(1, load, None).access?;
         (access.kind == AccessKind::Load && access.origin == Origin::Constant)
@@ -244,26 +337,33 @@ impl Recovery for PowerPc {
     /// `mtctr r11` and `bctr`. See [`PowerPc::stub_slot`] and
     /// [`stub_through_table`].
     fn plt_entries(&self, code: &[u8], base: u64) -> Vec<Range<u64>> {
-        /// `mtctr r11`, then `bctr`, which end every stub.
-        const END: [u32; 2] = [0x7d69_03a6, 0x4e80_0420];
+        /// `bctr`, which ends every stub.
+        const BCTR: u32 = 0x4e80_0420;
+        /// The most words of a stub before its `bctr`.
+        const MOST_BEFORE: usize = 7;
         let words: Vec<u32> =
-            code.as_chunks::<INSN_WIDTH>().0.iter().map(|word| u32::from_be_bytes(*word)).collect();
+            code.as_chunks::<INSN_WIDTH>().0.iter().map(|word| self.word(*word)).collect();
         let mut stubs: Vec<Range<u64>> = Vec::new();
-        for (end, _) in words.windows(2).enumerate().filter(|(_, pair)| *pair == END) {
-            // The load of the slot takes one word or two.
-            let start = (1..=2).rev().filter_map(|loads| end.checked_sub(loads)).find(|&start| {
+        for jump in words.iter().enumerate().filter(|(_, word)| **word == BCTR).map(|(at, _)| at) {
+            let end = (jump + 1) * INSN_WIDTH;
+            // The earliest start whose stub ends at this `bctr` and holds
+            // no other jump.
+            let start = (2..=MOST_BEFORE).rev().find_map(|back| {
+                let start = jump.checked_sub(back)?;
                 let at = start * INSN_WIDTH;
-                let stub = &code[at..(end + 2) * INSN_WIDTH];
                 let address = base + at as u64;
-                let (insns, _) = super::decode_all(self, stub, address);
-                stub_through_table(&insns).is_some() || self.stub_slot(stub, address).is_some()
+                let (insns, _) = super::decode_all(self, &code[at..end], address);
+                let jumps = insns.iter().filter(|insn| insn.kind != InsnKind::Normal).count();
+                let is_stub = stub_through_table(&insns).is_some()
+                    || (back == 3 && self.stub_slot(&code[at..end], address).is_some());
+                (jumps == 1 && is_stub).then_some(start)
             });
             if let Some(start) = start {
                 let start = base + (start * INSN_WIDTH) as u64;
                 // GNU `ld` pads each stub to 16 bytes with a `nop`.
-                let padded = end + 2 + usize::from(words.get(end + 2) == Some(&NOP));
+                let pad = usize::from(words.get(jump + 1) == Some(&NOP)) * INSN_WIDTH;
                 if stubs.last().is_none_or(|last| last.end <= start) {
-                    stubs.push(start..base + (padded * INSN_WIDTH) as u64);
+                    stubs.push(start..base + (end + pad) as u64);
                 }
             }
         }
@@ -287,7 +387,7 @@ impl Recovery for PowerPc {
         space: &AddressSpace,
         memory: &Memory<'_>,
     ) -> Vec<u64> {
-        let tracked = track(body, space, Some(memory));
+        let tracked = track(*self, body, space, Some(memory));
         let mut addresses: Vec<u64> = tracked
             .joins
             .iter()
@@ -300,36 +400,58 @@ impl Recovery for PowerPc {
     }
 }
 
-/// The distance from `r30` of the slot the call stub that `insns` opens
-/// with jumps through, and how many of its instructions hold a part of
-/// that distance:
+/// The distance from the table register of the slot the call stub that
+/// `insns` opens with jumps through, and which of its instructions hold a
+/// part of that distance. The table register is `r30` in 32-bit code and
+/// the TOC, `r2`, in 64-bit code:
 ///
 /// ```text
-/// addis r11, r30, hi       lwz   r11, lo(r30)
-/// lwz   r11, lo(r11)       mtctr r11
-/// mtctr r11                bctr
-/// bctr
+/// addis r11, r30, hi       lwz   r11, lo(r30)      std   r2, 24(r1)
+/// lwz   r11, lo(r11)       mtctr r11               addis r12, r2, hi
+/// mtctr r11                bctr                    ld    r12, lo(r12)
+/// bctr                                             mtctr r12
+///                                                  bctr
 /// ```
 ///
-/// The stub runs with the `r30` of its caller, which the stub alone does
+/// A 64-bit stub saves the TOC of its caller first, and an ELFv1 stub
+/// loads the TOC and the environment of its callee after `mtctr`. The stub
+/// runs with the table register of its caller, which the stub alone does
 /// not show.
-pub fn stub_through_table(insns: &[Insn]) -> Option<(u64, usize)> {
+pub fn stub_through_table(insns: &[Insn]) -> Option<(u64, Range<usize>)> {
+    /// The most instructions between `mtctr` and `bctr`.
+    const MOST_AFTER_MOVE: usize = 3;
+    let arch = reader(insns.first()?)?;
+    let base = table_register(arch.mode());
     let operands_of = |insn: &Insn| read(insn).map(|(inst, operands)| (inst.opcode(), operands));
-    let load_from = |insn: &Insn, base: u8| match operands_of(insn)? {
-        (Opcode::LWZ, operands) => match operands.as_slice() {
-            [Operand::Register(dest), Operand::MemoryDisp { base: from, disp }]
-                if from.num() == base =>
+    let load_from = |insn: &Insn, from: u8| {
+        let (opcode, operands) = operands_of(insn)?;
+        let loads = match arch.mode() {
+            Mode::Bits32 => opcode == Opcode::LWZ,
+            Mode::Bits64 => opcode == Opcode::LD,
+        };
+        match operands.as_slice() {
+            [Operand::Register(dest), Operand::MemoryDisp { base, disp }]
+                if loads && base.num() == from =>
             {
                 Some((dest.num(), i64::from(*disp)))
             }
             _ => None,
-        },
-        _ => None,
+        }
     };
-    let high = match operands_of(insns.first()?)? {
+    let saves_toc = arch.mode() == Mode::Bits64
+        && operands_of(insns.first()?).is_some_and(|(opcode, operands)| {
+            opcode == Opcode::STD
+                && matches!(
+                    operands.as_slice(),
+                    [Operand::Register(saved), Operand::MemoryDisp { base, .. }]
+                        if saved.num() == TOC && base.num() == STACK
+                )
+        });
+    let first = usize::from(saves_toc);
+    let high = match operands_of(insns.get(first)?)? {
         (Opcode::ADDIS, operands) => match operands.as_slice() {
-            [Operand::Register(dest), Operand::RegisterOrZero(base), Operand::ImmExts16(high)]
-                if base.num() == PIC_BASE =>
+            [Operand::Register(dest), Operand::RegisterOrZero(from), Operand::ImmExts16(high)]
+                if from.num() == base =>
             {
                 Some((dest.num(), i64::from(*high) << 16))
             }
@@ -337,22 +459,50 @@ pub fn stub_through_table(insns: &[Insn]) -> Option<(u64, usize)> {
         },
         _ => None,
     };
-    let (loads, offset, loaded) = match high {
+    let (parts, offset, loaded) = match high {
         Some((dest, high)) => {
-            let (loaded, low) = load_from(insns.get(1)?, dest)?;
-            (2, high + low, loaded)
+            let (loaded, low) = load_from(insns.get(first + 1)?, dest)?;
+            (first..first + 2, high + low, loaded)
         }
         None => {
-            let (loaded, low) = load_from(insns.first()?, PIC_BASE)?;
-            (1, low, loaded)
+            let (loaded, low) = load_from(insns.get(first)?, base)?;
+            (first..first + 1, low, loaded)
         }
     };
-    let [move_count, jump] = insns.get(loads..loads + 2)? else { return None };
+    let move_count = insns.get(parts.end)?;
     let moved = read(move_count).is_some_and(|(_, operands)| {
         moves_to_count(move_count) && operands.get(1).and_then(general) == Some(loaded)
     });
-    (moved && jump.kind == (InsnKind::Jump { target: None }))
-        .then_some((word(offset as u64), loads))
+    let jumps = insns
+        .iter()
+        .skip(parts.end + 1)
+        .take(MOST_AFTER_MOVE + 1)
+        .take_while(|insn| {
+            insn.kind == InsnKind::Normal || insn.kind == (InsnKind::Jump { target: None })
+        })
+        .any(|insn| insn.kind == (InsnKind::Jump { target: None }));
+    (moved && jumps).then_some((in_mode(arch.mode(), offset as u64), parts))
+}
+
+/// Whether `body` opens with the global entry of an ELFv2 function:
+///
+/// ```text
+/// addis r2, r12, hi
+/// addi  r2, r2, lo
+/// ```
+pub fn is_global_entry(body: &[Insn]) -> bool {
+    let [high, low, ..] = body else { return false };
+    let shape = |insn: &Insn, opcode: Opcode, source: u8| {
+        read(insn).is_some_and(|(inst, operands)| {
+            inst.opcode() == opcode
+                && matches!(
+                    operands.as_slice(),
+                    [Operand::Register(dest), Operand::RegisterOrZero(from), _]
+                        if dest.num() == TOC && from.num() == source
+                )
+        })
+    };
+    shape(high, Opcode::ADDIS, ENTRY) && shape(low, Opcode::ADDI, TOC)
 }
 
 /// Whether `insn` is `mtctr`, which a jump through the count register
@@ -406,7 +556,7 @@ fn last_write(insns: &[Insn], before: usize, register: u8) -> Option<(usize, Ins
     let from = before.saturating_sub(TABLE_LOOK_BACK);
     (from..before).rev().find_map(|at| {
         let insn = &insns[at];
-        let writes = PowerPc.lift(insn).is_some_and(|lifted| lifted.writes.contains(written));
+        let writes = lifted(insn).is_some_and(|lifted| lifted.writes.contains(written));
         writes.then(|| instruction(insn).map(|inst| (at, inst))).flatten()
     })
 }
@@ -474,6 +624,7 @@ fn case_count(insns: &[Insn], index: usize) -> Option<usize> {
 
 /// Read the cases of the table `shape` names, which lies at `table`.
 fn read_table(
+    arch: PowerPc,
     memory: &Memory<'_>,
     code: &Range<u64>,
     insns: &[Insn],
@@ -485,10 +636,15 @@ fn read_table(
     let mut targets = Vec::new();
     let mut word = table;
     for _ in 0..bound.unwrap_or(MOST_CASES) {
-        let Some(value) = memory.bytes(word, INSN_WIDTH).and_then(word_at) else { break };
+        let Some(value) = memory.bytes(word, INSN_WIDTH).and_then(|bytes| word_at(arch, bytes))
+        else {
+            break;
+        };
         let target = match shape.entries {
             Entries::Addresses => u64::from(value),
-            Entries::FromTable => u64::from((table as u32).wrapping_add(value)),
+            Entries::FromTable => {
+                in_mode(arch.mode(), table.wrapping_add_signed(i64::from(value as i32)))
+            }
         };
         let holds_code = target.is_multiple_of(INSN_WIDTH as u64) && code.contains(&target);
         let near = target.abs_diff(jump.address) < MOST_CASE_DISTANCE;
@@ -540,6 +696,7 @@ struct Access {
     address: u64,
     origin: Origin,
     kind: AccessKind,
+    width: Option<hereticus_il::Width>,
 }
 
 /// What one instruction formed, as [`Tracker::step`] tells.
@@ -560,20 +717,31 @@ struct Step {
 ///
 /// Branches are stepped over, as if the code ran straight down: a compiler
 /// forms an address next to where it uses it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Tracker {
+    arch: PowerPc,
     held: [Option<Held>; 32],
     /// The address that `bcl 20, 31` to the next word put in the link
     /// register, where nothing wrote it since.
     link: Option<u64>,
 }
 
-/// A 32-bit value.
-fn word(value: u64) -> u64 {
-    value & 0xffff_ffff
-}
-
 impl Tracker {
+    /// A tracker of `arch` code that knows nothing yet, but that 64-bit
+    /// code holds the TOC in `r2` throughout.
+    fn of(arch: PowerPc) -> Self {
+        let mut held = [None; 32];
+        if arch.mode() == Mode::Bits64 {
+            held[usize::from(TOC)] = Some(Held::FromCounter);
+        }
+        Self { arch, held, link: None }
+    }
+
+    /// `value`, in the width of an address.
+    fn word(&self, value: u64) -> u64 {
+        in_mode(self.arch.mode(), value)
+    }
+
     /// The value general register `register` holds whole, where known.
     fn whole(&self, register: u8) -> Option<u64> {
         match self.held.get(usize::from(register))? {
@@ -596,10 +764,10 @@ impl Tracker {
     fn offset_from(&self, base: u8, offset: i64) -> Option<(u64, Origin, Option<usize>)> {
         match self.get(base)? {
             Held::Upper { value, from, origin } => {
-                Some((word(value.wrapping_add_signed(offset)), origin, Some(from)))
+                Some((self.word(value.wrapping_add_signed(offset)), origin, Some(from)))
             }
             Held::Whole { value, origin: Origin::Counter } => {
-                Some((word(value.wrapping_add_signed(offset)), Origin::Counter, None))
+                Some((self.word(value.wrapping_add_signed(offset)), Origin::Counter, None))
             }
             _ => None,
         }
@@ -626,7 +794,13 @@ impl Tracker {
                 Opcode::ADDIS,
                 [Operand::Register(dest), Operand::RegisterOrZero(source), Operand::ImmExts16(imm)],
             ) => {
-                let high = word((i64::from(*imm) << 16) as u64);
+                // ELFv2 makes the TOC from `r12`, which holds the address of
+                // this instruction on entry.
+                if dest.num() == TOC && source.num() == ENTRY {
+                    let entry = Held::Whole { value: insn.address, origin: Origin::Counter };
+                    self.set(ENTRY, Some(entry));
+                }
+                let high = self.word((i64::from(*imm) << 16) as u64);
                 match (source.num(), self.get(source.num())) {
                     (0, _) => {
                         Some(Held::Upper { value: high, from: index, origin: Origin::Constant })
@@ -636,7 +810,11 @@ impl Tracker {
                         Some(Held::Whole { value, origin } | Held::Upper { value, origin, .. }),
                     ) => {
                         step.from_counter = origin == Origin::Counter;
-                        Some(Held::Upper { value: word(value + high), from: index, origin })
+                        Some(Held::Upper {
+                            value: self.word(value.wrapping_add(high)),
+                            from: index,
+                            origin,
+                        })
                     }
                     (_, Some(Held::FromCounter)) => {
                         step.from_counter = true;
@@ -697,9 +875,10 @@ impl Tracker {
                     | (
                         Some(Held::Loaded(distance)),
                         Some(Held::Whole { value, origin: Origin::Counter }),
-                    ) => {
-                        Some(Held::Whole { value: word(value + distance), origin: Origin::Counter })
-                    }
+                    ) => Some(Held::Whole {
+                        value: self.word(value.wrapping_add(distance)),
+                        origin: Origin::Counter,
+                    }),
                     (Some(Held::Whole { origin: Origin::Counter, .. } | Held::FromCounter), _)
                     | (_, Some(Held::Whole { origin: Origin::Counter, .. } | Held::FromCounter)) => {
                         Some(Held::FromCounter)
@@ -727,16 +906,16 @@ impl Tracker {
             _ => None,
         });
         if let Some((base, disp)) = access
-            && let Some(kind) = access_kind(insn)
+            && let Some((kind, width)) = access_kind(insn)
         {
             step.from_counter = matches!(self.get(base), Some(Held::FromCounter));
             if let Some((address, origin, from)) = self.offset_from(base, disp.into()) {
                 step.join = Some((address, origin, from));
                 step.from_counter |= origin == Origin::Counter;
-                step.access = Some(Access { address, origin, kind });
+                step.access = Some(Access { address, origin, kind, width });
             }
         }
-        let lifted = PowerPc.lift(insn);
+        let lifted = lifted(insn);
         let loaded = step
             .access
             .filter(|access| access.kind == AccessKind::Load && access.origin == Origin::Counter);
@@ -751,21 +930,40 @@ impl Tracker {
                 _ => continue,
             };
             let value = loaded
-                .and_then(|access| memory?.bytes(access.address, INSN_WIDTH).and_then(word_at))
-                .map(|value| Held::Loaded(value.into()));
+                .and_then(|access| {
+                    let width = match access.width {
+                        Some(hereticus_il::Width::Bits64) => 8,
+                        _ => INSN_WIDTH,
+                    };
+                    let bytes = memory?.bytes(access.address, width)?;
+                    Some(match width {
+                        INSN_WIDTH => u64::from(word_at(self.arch, bytes)?),
+                        _ => self.arch.read_pointer(bytes),
+                    })
+                })
+                .map(Held::Loaded);
+            // 64-bit code restores the TOC after a call, as `ld r2, 24(r1)`,
+            // and `r2` holds it throughout.
+            let value = match (self.arch.mode(), register) {
+                (Mode::Bits64, TOC) => Some(Held::FromCounter),
+                _ => value,
+            };
             self.set(register, value);
         }
         step
     }
 }
 
-/// Whether `insn` loads or stores, where it touches memory.
-fn access_kind(insn: &Insn) -> Option<AccessKind> {
-    match PowerPc.lift(insn)?.memory?.kind {
-        hereticus_il::AccessKind::Load => Some(AccessKind::Load),
-        hereticus_il::AccessKind::Store => Some(AccessKind::Store),
-        hereticus_il::AccessKind::LoadStore => None,
-    }
+/// Whether `insn` loads or stores, and how wide a value it moves, where
+/// it touches memory.
+fn access_kind(insn: &Insn) -> Option<(AccessKind, Option<hereticus_il::Width>)> {
+    let memory = lifted(insn)?.memory?;
+    let kind = match memory.kind {
+        hereticus_il::AccessKind::Load => AccessKind::Load,
+        hereticus_il::AccessKind::Store => AccessKind::Store,
+        hereticus_il::AccessKind::LoadStore => return None,
+    };
+    Some((kind, memory.width))
 }
 
 /// What [`track`] found in a body.
@@ -789,17 +987,22 @@ pub struct Tracked {
 /// number of a division is. Any offset from the program counter is an
 /// address, as is the `addis` and `addi` that reach the global offset table
 /// from it. `memory`, where given, gives the word clang loads to reach it.
-pub fn track(body: &[Insn], space: &AddressSpace, memory: Option<&Memory<'_>>) -> Tracked {
+pub fn track(
+    arch: PowerPc,
+    body: &[Insn],
+    space: &AddressSpace,
+    memory: Option<&Memory<'_>>,
+) -> Tracked {
     let mut tracked = Tracked {
         kinds: vec![ConstantKind::Value; body.len()],
         joins: vec![None; body.len()],
         formed: vec![None; body.len()],
     };
     let mut uppers = vec![None; body.len()];
-    if let Some((_, loads)) = stub_through_table(body) {
-        tracked.kinds[..loads].fill(ConstantKind::Address);
+    if let Some((_, parts)) = stub_through_table(body) {
+        tracked.kinds[parts].fill(ConstantKind::Address);
     }
-    let mut tracker = Tracker::default();
+    let mut tracker = Tracker::of(arch);
     for (index, insn) in body.iter().enumerate() {
         let step = tracker.step(index, insn, memory);
         uppers[index] = step.upper;
@@ -830,11 +1033,11 @@ mod tests {
     }
 
     fn decode_one(word: u32) -> Insn {
-        PowerPc.decode(&word.to_be_bytes(), 0, 0x1000).expect("4 bytes always decode")
+        PowerPc::BIG.decode(&word.to_be_bytes(), 0, 0x1000).expect("4 bytes always decode")
     }
 
     fn decode_at(words: &[u32], address: u64) -> Vec<Insn> {
-        super::super::decode_all(&PowerPc, &code(words), address).0
+        super::super::decode_all(&PowerPc::BIG, &code(words), address).0
     }
 
     #[rstest]
@@ -845,9 +1048,9 @@ mod tests {
     #[case::stw(0x9001_0014, false)]
     #[case::mflr(0x7c08_02a6, false)]
     fn the_frame_allocation_opens_a_function(#[case] word: u32, #[case] opens: bool) {
-        assert_eq!(PowerPc.is_prologue(&decode_one(word)), opens);
+        assert_eq!(PowerPc::BIG.is_prologue(&decode_one(word)), opens);
         if opens {
-            assert!(PowerPc.may_be_prologue(&word.to_be_bytes()));
+            assert!(PowerPc::BIG.may_be_prologue(&word.to_be_bytes()));
         }
     }
 
@@ -855,8 +1058,8 @@ mod tests {
     #[test]
     fn the_bits_of_a_prologue_admit_every_prologue() {
         bolero::check!().with_type::<u32>().for_each(|&word| {
-            if PowerPc.is_prologue(&decode_one(word)) {
-                assert!(PowerPc.may_be_prologue(&word.to_be_bytes()), "{word:#010x}");
+            if PowerPc::BIG.is_prologue(&decode_one(word)) {
+                assert!(PowerPc::BIG.may_be_prologue(&word.to_be_bytes()), "{word:#010x}");
             }
         });
     }
@@ -867,16 +1070,94 @@ mod tests {
     #[case::mflr(0x7c08_02a6, true)]
     #[case::li(0x3860_0000, true)]
     fn a_word_of_opcode_0_opens_no_function(#[case] word: u32, #[case] opens: bool) {
-        assert_eq!(PowerPc.may_open_function(&word.to_be_bytes()), opens);
-        assert!(!PowerPc.may_open_function(&word.to_be_bytes()[..3]), "a partial word");
+        assert_eq!(PowerPc::BIG.may_open_function(&word.to_be_bytes()), opens);
+        assert!(!PowerPc::BIG.may_open_function(&word.to_be_bytes()[..3]), "a partial word");
+    }
+
+    fn decode_64(words: &[u32]) -> Vec<Insn> {
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        super::super::decode_all(&PowerPc::LITTLE64, &bytes, 0x1000).0
+    }
+
+    #[rstest]
+    #[case::stdu(0xf821_ffd1, true)]
+    #[case::stdu_up(0xf821_0031, false)]
+    #[case::std(0xf821_ffd0, false)]
+    #[case::stdux(0x7c21_016a, true)]
+    #[case::stwu(0x9421_fff0, true)]
+    fn the_64_bit_frame_allocation_opens_a_function(#[case] word: u32, #[case] opens: bool) {
+        let insns = decode_64(&[word]);
+        assert_eq!(PowerPc::LITTLE64.is_prologue(&insns[0]), opens, "{word:#010x}");
+        if opens {
+            assert!(PowerPc::LITTLE64.may_be_prologue(&word.to_le_bytes()));
+        }
+        // 32-bit code has no `stdu`.
+        if word >> 26 == 62 {
+            assert!(!PowerPc::BIG.is_prologue(&decode_one(word)));
+        }
+    }
+
+    #[test]
+    fn the_global_entry_and_the_saves_open_a_64_bit_function() {
+        let insns = decode_64(&[
+            0x4e80_0020, // blr                 ; the function before
+            0x3c4c_0002, // addis r2, r12, 2
+            0x3842_8000, // addi r2, r2, -0x8000
+            0x7c08_02a6, // mflr r0
+            0xfbc1_fff0, // std r30, -16(r1)
+            0xf821_ffd1, // stdu r1, -48(r1)
+        ]);
+        assert!(PowerPc::LITTLE64.is_function_entry(&insns[1..]));
+        assert!(!PowerPc::LITTLE64.is_function_entry(&insns[2..]));
+        assert!(!PowerPc::LITTLE.is_function_entry(&insns[1..]), "32-bit has no TOC");
+        assert_eq!(PowerPc::LITTLE64.preamble_before_prologue(&insns[..5]), 4);
+        assert_eq!(PowerPc::LITTLE64.preamble_before_prologue(&insns[3..5]), 2);
+    }
+
+    /// The TOC that the global entry makes from `r12` is known, and an
+    /// offset from `r2` is an address however it was made.
+    #[test]
+    fn an_offset_from_the_toc_is_an_address() {
+        let insns = decode_64(&[
+            0x3c4c_0002, // addis r2, r12, 2
+            0x3842_8000, // addi r2, r2, -0x8000
+            0x3c82_0000, // addis r4, r2, 0
+            0xe884_0010, // ld r4, 0x10(r4)
+            0x4800_0011, // bl $+0x10
+            0xe841_0018, // ld r2, 24(r1)
+            0xe862_0020, // ld r3, 0x20(r2)
+        ]);
+        let tracked = track(PowerPc::LITTLE64, &insns, &AddressSpace::none(), None);
+        use ConstantKind::{Address, Value};
+        assert_eq!(tracked.kinds, [Address, Address, Address, Address, Value, Value, Address]);
+        assert_eq!(tracked.joins[1], Some(0x1_9000));
+        assert_eq!(tracked.joins[3], Some(0x1_9010));
+    }
+
+    #[test]
+    fn a_64_bit_stub_saves_the_toc_of_its_caller() {
+        let insns = decode_64(&[
+            0xf841_0018, // std r2, 24(r1)
+            0x3d82_0001, // addis r12, r2, 1
+            0xe98c_8018, // ld r12, -0x7fe8(r12)
+            0x7d89_03a6, // mtctr r12
+            0x4e80_0420, // bctr
+        ]);
+        assert_eq!(stub_through_table(&insns), Some((0x8018, 1..3)));
+        let bytes: Vec<u8> =
+            [0x4e80_0020u32, 0xf841_0018, 0x3d82_0001, 0xe98c_8018, 0x7d89_03a6, 0x4e80_0420]
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect();
+        assert_eq!(PowerPc::LITTLE64.plt_entries(&bytes, 0x1000), vec![0x1004..0x1018]);
     }
 
     #[test]
     fn mflr_before_the_frame_belongs_to_the_function() {
         let earlier = decode_at(&[0x3860_0000, 0x7c08_02a6], 0x1000);
-        assert_eq!(PowerPc.preamble_before_prologue(&earlier), 1);
+        assert_eq!(PowerPc::BIG.preamble_before_prologue(&earlier), 1);
         let earlier = decode_at(&[0x7c08_02a6, 0x3860_0000], 0x1000);
-        assert_eq!(PowerPc.preamble_before_prologue(&earlier), 0);
+        assert_eq!(PowerPc::BIG.preamble_before_prologue(&earlier), 0);
     }
 
     #[rstest]
@@ -886,12 +1167,12 @@ mod tests {
     #[case::all(&[NOP, 0], 0)]
     #[case::distance_before_the_next(&[0x4e80_0020, 0x0002_05f4], 4)]
     fn padding_is_nops_zeros_and_words_of_opcode_0(#[case] words: &[u32], #[case] kept: usize) {
-        assert_eq!(PowerPc.trim_padding(&code(words)).len(), kept);
+        assert_eq!(PowerPc::BIG.trim_padding(&code(words)).len(), kept);
     }
 
     #[test]
     fn a_partial_word_at_the_end_is_dropped() {
-        assert_eq!(PowerPc.trim_padding(&[0x4e, 0x80, 0x00, 0x20, 0x60]).len(), 4);
+        assert_eq!(PowerPc::BIG.trim_padding(&[0x4e, 0x80, 0x00, 0x20, 0x60]).len(), 4);
     }
 
     /// GCC's table of distances from the table, guarded by `cmplwi`.
@@ -915,7 +1196,7 @@ mod tests {
         let table = code(&[0xffff_f024, 0xffff_f028, 0xffff_f024, 0x1234_5678]);
         let regions = [(0x1000, text.as_slice()), (0x2000, table.as_slice())];
         let memory = Memory::new(&regions);
-        let tables = PowerPc.jump_tables(&memory, 0x1000..0x102c, &insns);
+        let tables = PowerPc::BIG.jump_tables(&memory, 0x1000..0x102c, &insns);
         assert_eq!(
             tables,
             [JumpTable {
@@ -936,7 +1217,9 @@ mod tests {
         let insns = decode_at(&words, 0x1000);
         let text = code(&words);
         let regions = [(0x1000, text.as_slice())];
-        assert!(PowerPc.jump_tables(&Memory::new(&regions), 0x1000..0x100c, &insns).is_empty());
+        assert!(
+            PowerPc::BIG.jump_tables(&Memory::new(&regions), 0x1000..0x100c, &insns).is_empty()
+        );
     }
 
     #[test]
@@ -947,26 +1230,29 @@ mod tests {
             0x7d69_03a6, // mtctr r11
             0x4e80_0420, // bctr
         ]);
-        assert_eq!(PowerPc.stub_slot(&stub, 0x1000), Some(0x1001_8010));
-        assert_eq!(PowerPc.stub_slot(&stub[..12], 0x1000), None);
+        assert_eq!(PowerPc::BIG.stub_slot(&stub, 0x1000), Some(0x1001_8010));
+        assert_eq!(PowerPc::BIG.stub_slot(&stub[..12], 0x1000), None);
     }
 
     #[rstest]
-    #[case::far(&[0x3d7e_0001, 0x816b_0078, 0x7d69_03a6, 0x4e80_0420], Some((0x1_0078, 2)))]
-    #[case::near(&[0x817e_fff8, 0x7d69_03a6, 0x4e80_0420], Some((0xffff_fff8, 1)))]
+    #[case::far(&[0x3d7e_0001, 0x816b_0078, 0x7d69_03a6, 0x4e80_0420], Some((0x1_0078, 0..2)))]
+    #[case::near(&[0x817e_fff8, 0x7d69_03a6, 0x4e80_0420], Some((0xffff_fff8, 0..1)))]
     #[case::other_base(&[0x3d7f_0001, 0x816b_0078, 0x7d69_03a6, 0x4e80_0420], None)]
     #[case::other_register(&[0x817e_fff8, 0x7d89_03a6, 0x4e80_0420], None)]
     #[case::no_jump(&[0x817e_fff8, 0x7d69_03a6, 0x4e80_0020], None)]
     fn reads_the_distance_a_pic_stub_reaches_its_slot_from(
         #[case] words: &[u32],
-        #[case] expected: Option<(u64, usize)>,
+        #[case] expected: Option<(u64, Range<usize>)>,
     ) {
         let insns = decode_at(words, 0x1000);
         assert_eq!(stub_through_table(&insns), expected);
-        assert_eq!(PowerPc.stub_table_offset(&code(words)), expected.map(|(offset, _)| offset));
-        if let Some((_, loads)) = expected {
-            let kinds = track(&insns, &AddressSpace::none(), None).kinds;
-            assert!(kinds[..loads].iter().all(|&kind| kind == ConstantKind::Address));
+        assert_eq!(
+            PowerPc::BIG.stub_table_offset(&code(words)),
+            expected.as_ref().map(|(offset, _)| *offset)
+        );
+        if let Some((_, parts)) = expected {
+            let kinds = track(PowerPc::BIG, &insns, &AddressSpace::none(), None).kinds;
+            assert!(kinds[parts].iter().all(|&kind| kind == ConstantKind::Address));
         }
     }
 
@@ -990,9 +1276,9 @@ mod tests {
             0x7d69_03a6, // mtctr r11
             0x4e80_0420, // bctr
         ];
-        assert_eq!(PowerPc.stub_place(), super::super::StubPlace::AmongCode);
+        assert_eq!(PowerPc::BIG.stub_place(), super::super::StubPlace::AmongCode);
         assert_eq!(
-            PowerPc.plt_entries(&code(&words), 0x1000),
+            PowerPc::BIG.plt_entries(&code(&words), 0x1000),
             [0x1004..0x1014, 0x1014..0x1024, 0x1024..0x1034]
         );
     }
@@ -1009,7 +1295,7 @@ mod tests {
             0x1000,
         );
         let space = AddressSpace::from_ranges(core::iter::once(0x1000_0000..0x1001_0000));
-        let tracked = track(&body, &space, None);
+        let tracked = track(PowerPc::BIG, &body, &space, None);
         use ConstantKind::{Address, Value};
         assert_eq!(tracked.kinds, [Address, Address, Value, Value]);
         assert_eq!(tracked.joins, [None, Some(0x1000_0040), None, None]);
@@ -1026,7 +1312,7 @@ mod tests {
             0x1000,
         );
         let space = AddressSpace::from_ranges(core::iter::once(0x1000_0000..0x1002_0000));
-        assert_eq!(track(&body, &space, None).joins, [None, Some(0x1000_fff0)]);
+        assert_eq!(track(PowerPc::BIG, &body, &space, None).joins, [None, Some(0x1000_fff0)]);
     }
 
     /// GCC PIC: the program counter, then the distance to the table.
@@ -1043,7 +1329,7 @@ mod tests {
             ],
             0x1000,
         );
-        let tracked = track(&body, &AddressSpace::none(), None);
+        let tracked = track(PowerPc::BIG, &body, &AddressSpace::none(), None);
         use ConstantKind::{Address, Value};
         assert_eq!(tracked.kinds, [Value, Value, Address, Address, Address, Value]);
         assert_eq!(tracked.joins[3], Some(0x1_1014));
@@ -1064,11 +1350,11 @@ mod tests {
             0x807e_0008, // lwz r3, 8(r30)
         ];
         let insns = decode_at(&words, 0x1000);
-        assert_eq!(PowerPc.literal_pool_words(&insns[1..]), [0x1000]);
+        assert_eq!(PowerPc::BIG.literal_pool_words(&insns[1..]), [0x1000]);
         let text = code(&words);
         let regions = [(0x1000, text.as_slice())];
         let memory = Memory::new(&regions);
-        let tracked = track(&insns, &AddressSpace::none(), Some(&memory));
+        let tracked = track(PowerPc::BIG, &insns, &AddressSpace::none(), Some(&memory));
         assert_eq!(tracked.kinds[7], ConstantKind::Address);
         assert_eq!(tracked.joins[7], Some(0x1_1018));
     }
@@ -1084,15 +1370,15 @@ mod tests {
             0x1000,
         );
         let space = AddressSpace::from_ranges(core::iter::once(0x1000_0000..0x1001_0000));
-        assert_eq!(track(&body, &space, None).joins, [None, None, None]);
+        assert_eq!(track(PowerPc::BIG, &body, &space, None).joins, [None, None, None]);
     }
 
     #[test]
     fn padding_is_a_nop_or_a_zero_word() {
-        assert!(PowerPc.is_padding(&decode_one(NOP)));
-        assert!(PowerPc.is_padding(&decode_one(0)));
-        assert!(PowerPc.is_trap_fill(&decode_one(0)));
-        assert!(!PowerPc.is_trap_fill(&decode_one(NOP)));
-        assert!(!PowerPc.is_padding(&decode_one(0x3860_0000)));
+        assert!(PowerPc::BIG.is_padding(&decode_one(NOP)));
+        assert!(PowerPc::BIG.is_padding(&decode_one(0)));
+        assert!(PowerPc::BIG.is_trap_fill(&decode_one(0)));
+        assert!(!PowerPc::BIG.is_trap_fill(&decode_one(NOP)));
+        assert!(!PowerPc::BIG.is_padding(&decode_one(0x3860_0000)));
     }
 }

@@ -255,6 +255,12 @@ pub enum ArchName {
     X86,
     /// 32-bit PowerPC, big endian.
     Powerpc,
+    /// 32-bit PowerPC, little endian.
+    PowerpcLe,
+    /// 64-bit PowerPC, big endian, with the ELFv1 ABI.
+    Powerpc64,
+    /// 64-bit PowerPC, little endian, with the ELFv2 ABI.
+    Powerpc64Le,
 }
 
 impl From<ArchName> for Isa {
@@ -272,6 +278,9 @@ impl From<ArchName> for Isa {
             ArchName::X86_64 => Self::X86_64,
             ArchName::X86 => Self::X86,
             ArchName::Powerpc => Self::PowerPc,
+            ArchName::PowerpcLe => Self::PowerPcLe,
+            ArchName::Powerpc64 => Self::PowerPc64,
+            ArchName::Powerpc64Le => Self::PowerPc64Le,
         }
     }
 }

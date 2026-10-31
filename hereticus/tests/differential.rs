@@ -315,7 +315,9 @@ fn decoder_agrees_with_objdump() {
                     canonical_mips_mnemonic
                 }
                 Isa::X86_64 | Isa::X86 => canonical_x86_mnemonic,
-                Isa::PowerPc => canonical_powerpc_mnemonic,
+                Isa::PowerPc | Isa::PowerPcLe | Isa::PowerPc64 | Isa::PowerPc64Le => {
+                    canonical_powerpc_mnemonic
+                }
             };
 
             for (ours, theirs) in decoded.iter().zip(&expected).take(shared) {
@@ -481,7 +483,9 @@ fn objdump_file(
         // For PowerPC, `llvm-objdump` puts a space, not a tab, after most
         // names, as `lwz 3, 0(3)`.
         let (mnemonic, operands) = match mnemonic.split_once(' ') {
-            Some((name, rest)) if triple == "powerpc" && operands.is_empty() => (name, rest),
+            Some((name, rest)) if triple.starts_with("powerpc") && operands.is_empty() => {
+                (name, rest)
+            }
             _ => (mnemonic, operands),
         };
         lines.insert(address, (mnemonic.to_string(), operands.to_string()));
@@ -547,10 +551,12 @@ fn number(token: &str) -> Option<i128> {
 ///   `mov w1, #2`.
 fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
     let mips = matches!(isa, Isa::Mips32 | Isa::Mips32Be | Isa::Mips16 | Isa::Mips16Be);
-    let powerpc = isa == Isa::PowerPc;
+    let powerpc = matches!(isa, Isa::PowerPc | Isa::PowerPcLe | Isa::PowerPc64 | Isa::PowerPc64Le);
     let (mnemonic, operands) = match isa {
         Isa::X86_64 | Isa::X86 => x86_spelling(mnemonic, operands),
-        Isa::PowerPc => powerpc_spelling(mnemonic, operands),
+        Isa::PowerPc | Isa::PowerPcLe | Isa::PowerPc64 | Isa::PowerPc64Le => {
+            powerpc_spelling(mnemonic, operands)
+        }
         _ => (mnemonic.to_string(), operands.to_string()),
     };
     let mnemonic = mnemonic.as_str();

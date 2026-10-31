@@ -148,7 +148,7 @@ mod tests {
     use hereticus_recovery::arch::decode_all;
 
     /// Every architecture, by name.
-    const ARCHES: [(&str, &dyn Arch); 10] = [
+    const ARCHES: [(&str, &dyn Arch); 13] = [
         ("A64", &Aarch64),
         ("A32", &Arm32),
         ("T32", &Thumb2),
@@ -158,7 +158,10 @@ mod tests {
         ("MIPS16el", &Mips16::LITTLE),
         ("x86-64", &X86::BITS64),
         ("x86", &X86::BITS32),
-        ("PowerPC", &PowerPc),
+        ("PowerPC", &PowerPc::BIG),
+        ("PowerPCle", &PowerPc::LITTLE),
+        ("PowerPC64", &PowerPc::BIG64),
+        ("PowerPC64le", &PowerPc::LITTLE64),
     ];
 
     /// The names stay in step with the operands: a lift with names lifts

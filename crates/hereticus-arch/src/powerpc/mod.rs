@@ -1,4 +1,4 @@
-//! The rules the matching reads in 32-bit PowerPC code, as which
+//! The rules the matching reads in PowerPC code, as which
 //! instructions keep the frame and which constants are addresses. The rules
 //! that find functions are in [`hereticus_recovery::arch::powerpc`].
 
@@ -48,7 +48,7 @@ impl Arch for PowerPc {
         body: &[Insn],
         space: &AddressSpace,
     ) -> Vec<ConstantKind> {
-        track(body, space, None).kinds
+        track(*self, body, space, None).kinds
     }
 
     fn formed_addresses(
@@ -58,7 +58,7 @@ impl Arch for PowerPc {
         space: &AddressSpace,
         memory: &Memory<'_>,
     ) -> Vec<Option<u64>> {
-        track(body, space, Some(memory)).formed
+        track(*self, body, space, Some(memory)).formed
     }
 }
 
@@ -68,7 +68,7 @@ mod tests {
     use rstest::rstest;
 
     fn one(word: u32) -> Insn {
-        PowerPc.decode(&word.to_be_bytes(), 0, 0x1000).expect("4 bytes always decode")
+        PowerPc::BIG.decode(&word.to_be_bytes(), 0, 0x1000).expect("4 bytes always decode")
     }
 
     #[rstest]
@@ -86,12 +86,22 @@ mod tests {
     #[case::mtctr(0x7c69_03a6, false)]
     #[case::li(0x3860_0005, false)]
     fn frame_management_keeps_the_stack(#[case] word: u32, #[case] frame: bool) {
-        assert_eq!(PowerPc.is_frame_management(&one(word)), frame);
+        assert_eq!(PowerPc::BIG.is_frame_management(&one(word)), frame);
+    }
+
+    #[test]
+    fn the_64_bit_frame_is_kept_as_the_32_bit_one() {
+        let one =
+            |word: u32| PowerPc::LITTLE64.decode(&word.to_le_bytes(), 0, 0x1000).expect("decodes");
+        for word in [0xf821_ffd1, 0xfbc1_fff0, 0xebc1_fff0, 0xf801_0010, 0x3821_0030] {
+            assert!(PowerPc::LITTLE64.is_frame_management(&one(word)), "{word:#010x}");
+        }
+        assert!(!PowerPc::LITTLE64.is_frame_management(&one(0xe863_0008)));
     }
 
     #[test]
     fn the_frame_register_is_the_stack() {
-        assert!(PowerPc.is_frame_register(Reg::Stack));
-        assert!(!PowerPc.is_frame_register(Reg::General(31)));
+        assert!(PowerPc::BIG.is_frame_register(Reg::Stack));
+        assert!(!PowerPc::BIG.is_frame_register(Reg::General(31)));
     }
 }

@@ -62,7 +62,7 @@ impl Links {
             hereticus_recovery::dynamic::Dynamic::find_in_raw(base, data, pointer_width, order);
         let slots = dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default();
         let table = dynamic.and_then(|dynamic| match isa {
-            Isa::PowerPc => dynamic.powerpc_global_offset_table(),
+            Isa::PowerPc | Isa::PowerPcLe => dynamic.powerpc_global_offset_table(),
             _ => dynamic.global_offset_table(),
         });
         Self { memory: vec![(base, data.to_vec())], slots, table, ..Self::default() }
@@ -460,7 +460,8 @@ fn address_relocations(
     use object::Architecture;
     use object::elf::{R_386_32, R_386_RELATIVE, R_AARCH64_ABS64, R_AARCH64_RELATIVE};
     use object::elf::{R_ARM_ABS32, R_ARM_RELATIVE, R_MIPS_32, R_MIPS_REL32};
-    use object::elf::{R_PPC_ADDR32, R_PPC_RELATIVE, R_X86_64_64, R_X86_64_RELATIVE};
+    use object::elf::{R_PPC_ADDR32, R_PPC_RELATIVE, R_PPC64_ADDR64, R_PPC64_RELATIVE};
+    use object::elf::{R_X86_64_64, R_X86_64_RELATIVE};
     match architecture {
         Architecture::Aarch64 => Some([R_AARCH64_ABS64, R_AARCH64_RELATIVE]),
         Architecture::Arm => Some([R_ARM_ABS32, R_ARM_RELATIVE]),
@@ -468,6 +469,7 @@ fn address_relocations(
         Architecture::X86_64 => Some([R_X86_64_64, R_X86_64_RELATIVE]),
         Architecture::I386 => Some([R_386_32, R_386_RELATIVE]),
         Architecture::PowerPc => Some([R_PPC_ADDR32, R_PPC_RELATIVE]),
+        Architecture::PowerPc64 => Some([R_PPC64_ADDR64, R_PPC64_RELATIVE]),
         _ => None,
     }
 }
