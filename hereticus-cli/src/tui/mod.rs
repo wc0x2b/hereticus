@@ -29,15 +29,15 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
-use serde::{Deserialize, Serialize};
 
 pub use flows::{Cell, Glyph, Gutter, Tint};
 pub use rows::{Half, Places, Side, unified};
 use rows::{change_starts, side_by_side};
 
+pub use crate::project::{Browser, Key, Layout, Mark, Order, Scope};
 use crate::project::{Project, Source};
 use crate::{
-    Args, DataRegions, Feature, Hidden, Retouched, Sort, has_features, is_interesting,
+    Args, DataRegions, Feature, Hidden, Retouched, Sort, file_name, has_features, is_interesting,
     is_shown_unmatched, name_of, rank,
 };
 use columns::{Column, Widths};
@@ -45,13 +45,30 @@ use columns::{Column, Widths};
 /// How the browser starts.
 #[derive(Clone, Debug)]
 pub struct Start {
-    /// The names of the two files, as the title shows them.
-    pub files: [String; 2],
-    /// How the two binaries were read, for a project to save.
+    /// How the two binaries were read, for a project to save. The title
+    /// shows the path of each one, as the command line gave it.
     pub source: Source,
     /// The project the browser opened, where it opened one.
     pub project: Option<PathBuf>,
     pub saved: Saved,
+}
+
+/// The browser as the flags of the command line start it.
+pub fn browser_from_args(args: &Args) -> Browser {
+    Browser {
+        sort: args.sort,
+        order: Order::Descending,
+        touched: None,
+        only: args.only.clone(),
+        scope: if args.all { Scope::All } else { Scope::Changed },
+        hidden: crate::hidden_from_args(args),
+        near_miss_floor: args.near_miss,
+        view: args.view.into(),
+        layout: Layout::SideBySide,
+        filter: String::new(),
+        selected: None,
+        opened: None,
+    }
 }
 
 /// What a project keeps of the browser.
@@ -59,93 +76,6 @@ pub struct Start {
 pub struct Saved {
     pub browser: Browser,
     pub marks: Vec<Mark>,
-}
-
-/// What the browser shows: each thing that a key changes, so a project
-/// opens as the reader left it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Browser {
-    pub sort: Sort,
-    pub order: Order,
-    /// Lists only the pairs whose edit touched this kind of code.
-    pub touched: Option<EditKind>,
-    /// Lists only the pairs that have each of these features.
-    pub only: Vec<Feature>,
-    pub scope: Scope,
-    pub hidden: Hidden,
-    /// The lowest score at which a function gone or new names its closest
-    /// candidate, as `--near-miss` sets.
-    pub near_miss_floor: f64,
-    pub view: View,
-    pub layout: Layout,
-    /// See [`App::filter`].
-    pub filter: String,
-    pub selected: Option<Key>,
-    /// The first row of the diff of the selected row, where it is open.
-    pub opened: Option<usize>,
-}
-
-impl Browser {
-    /// The browser as the flags of the command line start it.
-    pub fn from_args(args: &Args) -> Self {
-        Self {
-            sort: args.sort,
-            order: Order::Descending,
-            touched: None,
-            only: args.only.clone(),
-            scope: if args.all { Scope::All } else { Scope::Changed },
-            hidden: Hidden::from_args(args),
-            near_miss_floor: args.near_miss,
-            view: args.view.into(),
-            layout: Layout::SideBySide,
-            filter: String::new(),
-            selected: None,
-            opened: None,
-        }
-    }
-}
-
-/// A row of the table, by what it stands for, as a project names it.
-///
-/// A pair goes by its two functions, not by its place in the list of pairs,
-/// so a reader of the file can follow it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Key {
-    Pair { before: usize, after: usize },
-    Gone { function: usize },
-    New { function: usize },
-}
-
-/// A function the reader marked, with the label the reader gave it.
-///
-/// Marked rows list first, whatever the order, the scope or the kind
-/// touched. The label shows beside the name, and the filter matches it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Mark {
-    pub row: Key,
-    /// May be empty: a mark needs no name.
-    pub label: String,
-}
-
-/// Which pairs the table lists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Scope {
-    /// The pairs that changed, less the quiet changes [`Hidden`] holds back.
-    Changed,
-    /// Every pair, as `--all` lists.
-    All,
-}
-
-/// How the diff of a pair is laid out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Layout {
-    /// The earlier function on the left, the later one on the right.
-    SideBySide,
-    /// One column, as a patch reads.
-    Unified,
 }
 
 /// What the keys act on.
@@ -232,16 +162,6 @@ impl Opened {
         self.starts = change_starts(self.changes.iter().copied());
         self.scroll = self.scroll.min(self.changes.len().saturating_sub(1));
     }
-}
-
-/// Which way the sort runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Order {
-    /// As `--sort` names it: the most first, or the strongest match.
-    Descending,
-    /// The other way.
-    Ascending,
 }
 
 /// The kinds of code `t` steps through, as the `TOUCHED` column names
@@ -336,7 +256,6 @@ pub struct App<'a> {
     paired: PairedLabels,
     before: &'a Binary,
     after: &'a Binary,
-    files: [String; 2],
     source: Source,
     /// Where the project was opened from or last saved to.
     project: Option<PathBuf>,
@@ -418,7 +337,6 @@ impl<'a> App<'a> {
             paired: diff.paired_labels(before, after),
             before,
             after,
-            files: start.files,
             source: start.source,
             project: start.project,
             sort: browser.sort,
@@ -551,7 +469,8 @@ impl<'a> App<'a> {
         match &self.project {
             Some(path) => path.display().to_string(),
             None => {
-                let [before, after] = &self.files;
+                let [before, after] =
+                    self.source.inputs.each_ref().map(|input| file_name(&input.path));
                 format!("{before}-{after}.{PROJECT_EXTENSION}")
             }
         }
@@ -1211,11 +1130,12 @@ mod tests {
     fn source() -> Source {
         let input = |name: &str| crate::project::Input {
             path: PathBuf::from(name),
+            anchor: crate::project::Anchor::Relative,
             sha256: String::new(),
             functions: String::new(),
         };
         Source {
-            inputs: [input("/firmware.o"), input("/firmware_v2.o")],
+            inputs: [input("firmware.o"), input("firmware_v2.o")],
             raw: None,
             threshold: 0.65,
             names: crate::project::Names::Use,
@@ -1223,12 +1143,7 @@ mod tests {
     }
 
     fn start_with(browser: Browser) -> Start {
-        Start {
-            files: ["firmware.o".to_string(), "firmware_v2.o".to_string()],
-            source: source(),
-            project: None,
-            saved: Saved { browser, marks: Vec::new() },
-        }
+        Start { source: source(), project: None, saved: Saved { browser, marks: Vec::new() } }
     }
 
     fn start() -> Start {
@@ -1592,7 +1507,7 @@ mod tests {
                 let Entry::Pair(index) = app.entries[row].entry else {
                     panic!("only pairs have a feature");
                 };
-                assert!(feature.holds(&diff.matched[index]), "{feature:?}");
+                assert!(crate::has_feature(&diff.matched[index], feature), "{feature:?}");
             }
         }
         press(&mut app, &[KeyCode::Char('f')]);
@@ -2133,7 +2048,13 @@ mod tests {
         assert_eq!(app.notice, None, "a key clears the notice");
 
         let project = Project::read(&path).expect("the project reads back");
-        assert_eq!(project.source, source());
+        // The project is in another directory, so the paths read back go
+        // through it to the same files.
+        let mut wanted = source();
+        for input in &mut wanted.inputs {
+            input.path = std::path::absolute(&input.path).expect("a path");
+        }
+        assert_eq!(project.source, wanted);
         let json = |diff: &Diff| serde_json::to_string(diff).expect("a diff serializes");
         assert_eq!(json(&project.diff), json(&diff), "the result reads back as it was");
         let saved = Saved { browser: project.browser, marks: project.marks };

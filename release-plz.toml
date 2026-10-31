@@ -35,6 +35,7 @@ changelog_include = [
     "hereticus-image",
     "hereticus-match",
     "hereticus-memory",
+    "hereticus-project",
     "hereticus-recovery",
     "hereticus-unpack",
     "hereticus-view",

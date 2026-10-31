@@ -126,6 +126,27 @@ pub fn fit(line: Line<'static>, width: u16) -> Line<'static> {
     Line { spans, ..line }
 }
 
+/// `text`, cut at its start to `width` columns of the terminal, with `…` as
+/// its first character where it was cut. The end of a path names the file,
+/// so a path keeps its end.
+pub fn fit_start(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let Some(room) = width.checked_sub(1) else {
+        return String::new();
+    };
+    // See `fit` for why each step measures all that is kept.
+    let mut kept_from = text.len();
+    for (index, _) in text.char_indices().rev() {
+        if text[index..].width() > room {
+            break;
+        }
+        kept_from = index;
+    }
+    format!("…{}", &text[kept_from..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +234,33 @@ mod tests {
         bolero::check!().with_type::<(String, u8)>().for_each(|(text, width)| {
             let cut = fit(Line::from(text.clone()), u16::from(*width));
             assert!(cut.width() <= usize::from(*width), "{text:?} in {width}");
+        });
+    }
+
+    #[test]
+    fn a_path_cut_short_keeps_its_end() {
+        let path = "/home/reader/firmware/before.bin";
+        assert_eq!(fit_start(path, 40), path);
+        assert_eq!(fit_start(path, path.len()), path);
+        assert_eq!(fit_start(path, 12), "…/before.bin");
+        assert_eq!(fit_start(path, 1), "…");
+        assert_eq!(fit_start(path, 0), "");
+        assert_eq!(fit_start("", 0), "");
+    }
+
+    #[test]
+    fn a_path_is_not_cut_inside_a_wide_character() {
+        assert_eq!(fit_start("名前名前", 4), "…前");
+    }
+
+    #[test]
+    fn any_path_fits_its_width_and_keeps_its_end() {
+        bolero::check!().with_type::<(String, u8)>().for_each(|(text, width)| {
+            let width = usize::from(*width);
+            let cut = fit_start(text, width);
+            assert!(cut.width() <= width, "{text:?} in {width}");
+            let kept = cut.strip_prefix('…').unwrap_or(&cut);
+            assert!(text.ends_with(kept), "{text:?} in {width}: {cut:?}");
         });
     }
 }

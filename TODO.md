@@ -74,6 +74,16 @@ image, Lua built by GCC for ARMv5TE joins the first words of `.rodata` to
 of where its code ends. A run of words that no branch reaches and that
 decodes as no code a compiler emits could end it.
 
+## Find the base of an AArch64 image faster
+
+`rank_bases` found the right base of each of 30 raw OpenWrt 23.05.5 ARM
+kernels, but AArch64 takes much longer than ARM32 or MIPS. A 12 MB
+AArch64 kernel takes 3.4 s and a 30 MB one 13.4 s, where a 22 MB ARM32
+kernel takes 1.5 s and a 22 MB MIPS kernel 1.2 s. A 184 MB Raspberry Pi
+disk image takes 19 s as AArch64 and 6 s as ARM32. Measure which step
+costs the time, as the screen of each anchor, the page votes or the
+evidence of each finalist, before a change.
+
 ## Read BE32
 
 ARM big endian of BE8 is read, as `ld --be8` links it and every core
