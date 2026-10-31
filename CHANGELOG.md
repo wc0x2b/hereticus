@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The crate `hereticus-project` holds the project file and the state of the
+  browser that it keeps, so a change to the layout of a project is a change
+  to a public API.
+
 ### Changed
 
 - The title of `--tui` gives the path of each binary as the command line

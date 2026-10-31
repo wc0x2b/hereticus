@@ -1,0 +1,29 @@
+[package]
+name = "hereticus-project"
+description = "Save a hereticus comparison as a project, and open it again"
+readme = "../../README.md"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[lib]
+bench = false
+
+[features]
+clap = ["dep:clap"]
+
+[dependencies]
+hereticus = { path = "../../hereticus", version = "0.6.1", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+bolero = { version = "0.13", features = ["arbitrary"] }

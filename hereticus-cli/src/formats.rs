@@ -163,7 +163,7 @@ fn json_pair(pair: &Match, before: &Binary, after: &Binary, mark: Option<&str>) 
         .collect();
     let features: Vec<String> = Feature::ALL
         .into_iter()
-        .filter(|feature| feature.holds(pair))
+        .filter(|&feature| crate::has_feature(pair, feature))
         .map(|feature| json_string(feature.name()))
         .collect();
     format!(

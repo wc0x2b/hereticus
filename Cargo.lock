@@ -1084,13 +1084,13 @@ dependencies = [
  "clap",
  "console",
  "hereticus",
+ "hereticus-project",
  "indicatif",
  "insta",
  "insta-cmd",
  "libc",
  "mimalloc",
  "ratatui",
- "serde",
  "serde_json",
  "sha2",
  "tabled",
@@ -1148,6 +1148,18 @@ version = "0.6.1"
 dependencies = [
  "bolero",
  "serde",
+]
+
+[[package]]
+name = "hereticus-project"
+version = "0.6.1"
+dependencies = [
+ "bolero",
+ "clap",
+ "hereticus",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -31,10 +31,10 @@ use hereticus::matching::{
 };
 use hereticus::obj::{Binary, Isa};
 use hereticus::raw::{check_base, suggest_base};
+use hereticus_project::{ArchName, DataRegions, Feature, Hidden, PartName, Retouched, Sort};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use marks::{MARK_SIGN, Marks, Side, marked};
-use project::{Project, Source};
-use serde::{Deserialize, Serialize};
+use project::Project;
 use tabled::settings::object::{Columns, Rows};
 use tabled::settings::style::HorizontalLine;
 use tabled::settings::{Alignment, Color, Style};
@@ -257,16 +257,6 @@ enum When {
     Never,
 }
 
-/// The parts `--unpack` takes out of a firmware image.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum PartName {
-    /// The decompressor that runs first.
-    Stub,
-    /// The kernel, decompressed.
-    Kernel,
-}
-
 /// Take the asked part out of a firmware image, with where it loads if the
 /// container says.
 fn unpack_part(
@@ -284,54 +274,6 @@ fn unpack_part(
         PartName::Kernel => unpacked.kernel,
     };
     Ok((found.bytes, found.load))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum ArchName {
-    /// ARM32, little endian, A32 instructions.
-    Arm32,
-    /// ARM32, little endian, Thumb-2 instructions, as Cortex-M firmware is.
-    Thumb2,
-    /// ARM32, big endian (BE8: data big endian, instructions little
-    /// endian), A32 instructions.
-    Arm32Be8,
-    /// ARM32, big endian (BE8), Thumb-2 instructions.
-    Thumb2Be8,
-    /// ARMv8-A, 64-bit, little endian.
-    Aarch64,
-    /// MIPS32, little endian.
-    Mips32,
-    /// MIPS32, big endian, as most shipped firmware is.
-    Mips32Be,
-    /// MIPS16e, little endian.
-    Mips16,
-    /// MIPS16e, big endian.
-    Mips16Be,
-    /// x86-64.
-    #[value(name = "x86-64")]
-    #[serde(rename = "x86-64")]
-    X86_64,
-    /// 32-bit x86.
-    X86,
-}
-
-impl From<ArchName> for Isa {
-    fn from(name: ArchName) -> Self {
-        match name {
-            ArchName::Arm32 => Self::Arm32,
-            ArchName::Thumb2 => Self::Thumb2,
-            ArchName::Arm32Be8 => Self::Arm32Be8,
-            ArchName::Thumb2Be8 => Self::Thumb2Be8,
-            ArchName::Aarch64 => Self::Aarch64,
-            ArchName::Mips32 => Self::Mips32,
-            ArchName::Mips32Be => Self::Mips32Be,
-            ArchName::Mips16 => Self::Mips16,
-            ArchName::Mips16Be => Self::Mips16Be,
-            ArchName::X86_64 => Self::X86_64,
-            ArchName::X86 => Self::X86,
-        }
-    }
 }
 
 /// Where `--base` says a raw image loads.
@@ -388,145 +330,50 @@ impl From<ViewName> for View {
     }
 }
 
-/// How to order the changed functions in the report.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum Sort {
-    /// Strongest match first, then closest score.
-    Confidence,
-    /// Most instructions added first, with a check before an early exit
-    /// as five more, after the functions that turned a call into its
-    /// bounded form. The default.
-    Added,
-    /// Most instructions removed first.
-    Removed,
-    /// Most instructions rewritten first.
-    Modified,
-    /// Most instructions added first, where an addition that few other
-    /// functions share weighs more. A fix adds its own code, while another
-    /// compiler or flag adds the same code to many functions.
-    Rare,
-}
-
-impl Sort {
-    /// The measure of a pair this order ranks by, if any.
-    ///
-    /// `Confidence` ranks by no measure, so it returns nothing and the report
-    /// keeps the order the library gave it.
-    fn key_of(self, pair: &Match) -> Option<f64> {
-        match self {
-            Self::Confidence => None,
-            Self::Added => Some(pair.edits.added as f64 + early_exit_weight(pair)),
-            Self::Removed => Some(pair.edits.removed as f64),
-            Self::Modified => Some(pair.edits.edited as f64),
-            Self::Rare => Some(pair.rarity),
-        }
-    }
-
-    /// The order after this one, to step through them all with one key.
-    fn next(self) -> Self {
-        match self {
-            Self::Added => Self::Removed,
-            Self::Removed => Self::Modified,
-            Self::Modified => Self::Rare,
-            Self::Rare => Self::Confidence,
-            Self::Confidence => Self::Added,
-        }
-    }
-
-    /// The name `--sort` takes for this order.
-    fn name(self) -> &'static str {
-        match self {
-            Self::Confidence => "confidence",
-            Self::Added => "added",
-            Self::Removed => "removed",
-            Self::Modified => "modified",
-            Self::Rare => "rare",
-        }
-    }
-}
-
-/// A thing a changed pair can do, which `--only` and the `f` key of the
-/// browser list the pairs by.
-///
-/// Each one is read from the lifted instructions of the two bodies, as
-/// aligned: see [`EditKinds`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum Feature {
-    /// Adds a call, or puts a call in the place of another instruction.
-    AddedCall,
-    /// Removes a call, or puts another instruction in its place.
-    RemovedCall,
-    /// Adds a conditional branch, or puts one in the place of another
-    /// instruction.
-    AddedBranch,
-    /// Removes a conditional branch, or puts another instruction in its
-    /// place.
-    RemovedBranch,
-    /// Keeps a call in place that now reaches another function.
-    OtherCallee,
-    /// Turns a call into its bounded form, as `strcmp` into `strncmp`.
-    BoundedCall,
-    /// Adds a check that leaves the function early.
-    EarlyExit,
-    /// Changes a text that the function points at.
-    Text,
-    /// Changes a constant, with the instructions around it the same.
-    Constant,
-}
-
-impl Feature {
-    /// Every feature, in the order the `f` key steps through them.
-    const ALL: [Self; 9] = [
-        Self::AddedCall,
-        Self::RemovedCall,
-        Self::AddedBranch,
-        Self::RemovedBranch,
-        Self::OtherCallee,
-        Self::BoundedCall,
-        Self::EarlyExit,
-        Self::Text,
-        Self::Constant,
-    ];
-
-    /// Report whether `pair` has this feature.
-    fn holds(self, pair: &Match) -> bool {
-        let kinds = pair.kinds;
-        let count = match self {
-            Self::AddedCall => kinds.calls_added,
-            Self::RemovedCall => kinds.calls_removed,
-            Self::AddedBranch => kinds.branches_added,
-            Self::RemovedBranch => kinds.branches_removed,
-            Self::OtherCallee => kinds.callees,
-            Self::BoundedCall => pair.bounded_calls,
-            Self::EarlyExit => pair.early_exits,
-            Self::Text => kinds.texts,
-            Self::Constant => kinds.constants,
-        };
-        count > 0
-    }
-
-    /// The name `--only` takes for this feature.
-    fn name(self) -> &'static str {
-        match self {
-            Self::AddedCall => "added-call",
-            Self::RemovedCall => "removed-call",
-            Self::AddedBranch => "added-branch",
-            Self::RemovedBranch => "removed-branch",
-            Self::OtherCallee => "other-callee",
-            Self::BoundedCall => "bounded-call",
-            Self::EarlyExit => "early-exit",
-            Self::Text => "text",
-            Self::Constant => "constant",
-        }
-    }
-}
-
 /// Report whether `pair` has every feature of `only`. An empty list asks
 /// for none, so every pair has it.
 fn has_features(pair: &Match, only: &[Feature]) -> bool {
-    only.iter().all(|feature| feature.holds(pair))
+    only.iter().all(|&feature| has_feature(pair, feature))
+}
+
+/// Report whether `pair` has `feature`.
+fn has_feature(pair: &Match, feature: Feature) -> bool {
+    let kinds = pair.kinds;
+    let count = match feature {
+        Feature::AddedCall => kinds.calls_added,
+        Feature::RemovedCall => kinds.calls_removed,
+        Feature::AddedBranch => kinds.branches_added,
+        Feature::RemovedBranch => kinds.branches_removed,
+        Feature::OtherCallee => kinds.callees,
+        Feature::BoundedCall => pair.bounded_calls,
+        Feature::EarlyExit => pair.early_exits,
+        Feature::Text => kinds.texts,
+        Feature::Constant => kinds.constants,
+    };
+    count > 0
+}
+
+/// The measure of a pair that `sort` ranks by, if any.
+///
+/// `Confidence` ranks by no measure, so it returns nothing and the report
+/// keeps the order the library gave it.
+fn sort_key(sort: Sort, pair: &Match) -> Option<f64> {
+    match sort {
+        Sort::Confidence => None,
+        Sort::Added => Some(pair.edits.added as f64 + early_exit_weight(pair)),
+        Sort::Removed => Some(pair.edits.removed as f64),
+        Sort::Modified => Some(pair.edits.edited as f64),
+        Sort::Rare => Some(pair.rarity),
+    }
+}
+
+/// The quiet changes that the flags hide. `--all` asks for every function,
+/// so it lists every quiet change too.
+fn hidden_from_args(args: &Args) -> Hidden {
+    Hidden {
+        retouched: Retouched::from(args.show_retouched || args.all),
+        data: DataRegions::from(args.show_data || args.all),
+    }
 }
 
 /// Reject a threshold outside the range a similarity score can take.
@@ -641,7 +488,7 @@ fn run(args: &Args) -> Result<bool, String> {
         return Ok(false);
     }
     let opened = args.open.as_deref().map(Project::read).transpose()?;
-    let replayed = opened.as_ref().map(|project| project.source.replay(args));
+    let replayed = opened.as_ref().map(|project| project::replay(&project.source, args));
     let args = replayed.as_ref().unwrap_or(args);
     let before_path = args.before.as_deref().ok_or("needs an earlier binary to compare")?;
     let after_path = args.after.as_deref().ok_or("needs a later binary to compare with")?;
@@ -693,8 +540,8 @@ fn run(args: &Args) -> Result<bool, String> {
                 project::Input::new(before_path, before_hash, &before),
                 project::Input::new(after_path, after_hash, &after),
             ];
-            let saved = tui::Saved { browser: tui::Browser::from_args(args), marks: Vec::new() };
-            Some((Source::new(args, inputs), saved))
+            let saved = tui::Saved { browser: tui::browser_from_args(args), marks: Vec::new() };
+            Some((project::source_of(args, inputs), saved))
         }
         None => None,
     };
@@ -1047,7 +894,7 @@ impl<'a> Listing<'a> {
     fn from_args(args: &'a Args, marks: &'a Marks) -> Self {
         Self {
             show_all: args.all,
-            hidden: Hidden::from_args(args),
+            hidden: hidden_from_args(args),
             sort: args.sort,
             only: &args.only,
             marks,
@@ -1104,51 +951,6 @@ fn unmatched_word(word: &'static str, contents: Contents) -> String {
 /// a perfect match differs in shape even if the counts round to nothing.
 fn is_retouched(pair: &Match) -> bool {
     pair.edits.total() == 0 && pair.kinds.callees == 0 && pair.kinds.texts == 0 && pair.score >= 1.0
-}
-
-/// Which quiet changes to list.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Hidden {
-    retouched: Retouched,
-    data: DataRegions,
-}
-
-impl Hidden {
-    /// `--all` asks for every function, so it lists every quiet change too.
-    fn from_args(args: &Args) -> Self {
-        Self {
-            retouched: Retouched::from(args.show_retouched || args.all),
-            data: DataRegions::from(args.show_data || args.all),
-        }
-    }
-}
-
-/// Whether to list pairs that look like data.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum DataRegions {
-    Show,
-    Hide,
-}
-
-impl From<bool> for DataRegions {
-    fn from(show: bool) -> Self {
-        if show { Self::Show } else { Self::Hide }
-    }
-}
-
-/// Whether to list pairs that only differ in a constant.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum Retouched {
-    Show,
-    Hide,
-}
-
-impl From<bool> for Retouched {
-    fn from(show: bool) -> Self {
-        if show { Self::Show } else { Self::Hide }
-    }
 }
 
 /// Whether the report is colored.
@@ -1402,8 +1204,8 @@ fn sort_shown(shown: &mut [&Match], sort: Sort) {
 
 /// Which of two pairs a count order puts first: see [`sort_shown`].
 fn rank(a: &Match, b: &Match, sort: Sort) -> core::cmp::Ordering {
-    let a_key = sort.key_of(a).unwrap_or(0.0);
-    let b_key = sort.key_of(b).unwrap_or(0.0);
+    let a_key = sort_key(sort, a).unwrap_or(0.0);
+    let b_key = sort_key(sort, b).unwrap_or(0.0);
     is_rescheduled(a)
         .cmp(&is_rescheduled(b))
         .then_with(|| match sort {
@@ -1892,10 +1694,12 @@ mod tests {
         for feature in Feature::ALL {
             let pair = doing(feature);
             for other in Feature::ALL {
-                assert_eq!(other.holds(&pair), other == feature, "{other:?} of {feature:?}");
+                assert_eq!(has_feature(&pair, other), other == feature, "{other:?} of {feature:?}");
             }
         }
-        assert!(!Feature::ALL.iter().any(|feature| feature.holds(&edited_pair(Changed::Yes))));
+        assert!(
+            !Feature::ALL.iter().any(|&feature| has_feature(&edited_pair(Changed::Yes), feature))
+        );
     }
 
     /// `--only` takes the name each feature gives itself.

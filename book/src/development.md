@@ -70,9 +70,9 @@ changes with its load.
 
 ## Crates
 
-The `hereticus` crate re-exports the crates below. To use only one part,
-depend on that crate. Each crate in the table needs only the crates in its
-row.
+The `hereticus` crate re-exports each crate below but `hereticus-project`.
+To use only one part, depend on that crate. Each crate in the table needs
+only the crates in its row.
 
 | Crate                | Does                                      | Needs                                            |
 |----------------------|-------------------------------------------|--------------------------------------------------|
@@ -85,6 +85,7 @@ row.
 | `hereticus-callees`  | Find the callee of each call              | arch, il, image, memory, recovery                |
 | `hereticus-view`     | Show code as instructions or as IL        | arch, callees, il, image, memory, recovery       |
 | `hereticus-match`    | Compare the functions of two binaries     | arch, callees, il, image, memory, recovery, view |
+| `hereticus-project`  | Save a comparison as a project file       | hereticus                                        |
 
 ## Numbers in the Docs
 

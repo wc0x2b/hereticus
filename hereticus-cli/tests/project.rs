@@ -80,7 +80,7 @@ impl Scratch {
 
     /// The path of a copy from the directory of the project, as a project
     /// names it.
-    fn from_project(&self, index: usize) -> PathBuf {
+    fn path_in_project(&self, index: usize) -> PathBuf {
         self.binary(index).strip_prefix(&self.directory).expect("a copy in the directory").into()
     }
 
@@ -102,7 +102,7 @@ impl Scratch {
         let options = Options { use_names: self.names, ..Options::default() };
         let input = |index: usize, binary: &Binary| {
             json!({
-                "path": self.from_project(index),
+                "path": self.path_in_project(index),
                 "sha256": hex(&Sha256::digest(&bytes[index])),
                 "functions": functions_hash(binary),
             })
