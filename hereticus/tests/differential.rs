@@ -110,6 +110,11 @@ fn canonical_powerpc_mnemonic(mnemonic: &str) -> String {
         "subf" | "subf." | "subfc" | "subfc." => return mnemonic.replacen("subf", "sub", 1),
         "clrrwi" | "extlwi" => "rlwinm",
         "clrrwi." | "srwi." => "rlwinm.",
+        "srdi" | "rotldi" => "rldicl",
+        "srdi." => "rldicl.",
+        "clrrdi" => "rldicr",
+        "vmr" => "vor",
+        name if name.starts_with("isel") => "isel",
         other => other,
     };
     powerpc_spelling(name, "").0
@@ -301,6 +306,16 @@ fn decoder_agrees_with_objdump() {
             // Compare the overlap, which is the part both call code. Deciding
             // where a function truly ends belongs to function recovery.
             let (decoded, _error) = decode_all(arch, &function.code, function.address);
+            // `llvm-objdump` prints a run of zero words as `...`, as after
+            // a 64-bit PowerPC function, and leaves them out.
+            let listed: std::collections::BTreeSet<u64> =
+                expected.iter().map(|insn| insn.address).collect();
+            let decoded: Vec<_> = decoded
+                .into_iter()
+                .filter(|insn| {
+                    listed.contains(&insn.address) || insn.bytes().iter().any(|&byte| byte != 0)
+                })
+                .collect();
             let where_ = format!("{}: {}", object_path.display(), function.name);
             let shared = decoded.len().min(expected.len());
             assert!(shared > 0, "{where_}: nothing to compare");
@@ -851,9 +866,15 @@ fn powerpc_register(word: &str) -> Option<u32> {
 ///   plus 0 for less, 1 for greater, 2 for equal and 3 for overflow.
 /// * `subi` and `subis` for `addi` and `addis` of the negated constant.
 /// * `subf rD, rA, rB` for `sub rD, rB, rA`, and `subfc` for `subc`.
-/// * `clrrwi`, `extlwi` and `srwi.` for the `rlwinm` they are.
+/// * `clrrwi`, `extlwi` and `srwi.` for the `rlwinm` they are, and
+///   `srdi`, `rotldi` and `clrrdi` for `rldicl` and `rldicr`.
+/// * `iselgt rD, rA, rB` for `isel rD, rA, rB, 1`, the bit of `cr0` it
+///   names.
+/// * `0(0)` for an offset from no base, which this decoder prints as `0`.
+/// * `vmr vD, vA` for `vor vD, vA, vA`.
 fn powerpc_spelling(mnemonic: &str, operands: &str) -> (String, String) {
     let mnemonic = mnemonic.trim();
+    let operands = &operands.replace("(0)", "");
     let list: Vec<&str> =
         operands.split(',').map(str::trim).filter(|operand| !operand.is_empty()).collect();
     let (stem, hint) = match mnemonic.strip_suffix(['+', '-']) {
@@ -919,6 +940,25 @@ fn powerpc_spelling(mnemonic: &str, operands: &str) -> (String, String) {
         ("srwi.", [dest, source, bits]) => {
             let bits = shift(bits);
             ("rlwinm.".to_string(), format!("{dest}, {source}, {}, {bits}, 31", 32 - bits))
+        }
+        ("srdi" | "srdi.", [dest, source, bits]) => {
+            let record = mnemonic.strip_prefix("srdi").unwrap_or_default();
+            let bits = shift(bits);
+            (format!("rldicl{record}"), format!("{dest}, {source}, {}, {bits}", 64 - bits))
+        }
+        ("vmr", [dest, source]) => ("vor".to_string(), format!("{dest}, {source}, {source}")),
+        ("rotldi", [dest, source, bits]) => {
+            ("rldicl".to_string(), format!("{dest}, {source}, {}, 0", shift(bits)))
+        }
+        ("clrrdi", [dest, source, bits]) => {
+            ("rldicr".to_string(), format!("{dest}, {source}, 0, {}", 63 - shift(bits)))
+        }
+        (name, [dest, left, right]) if name.starts_with("isel") && name.len() > 4 => {
+            let bit = ["lt", "gt", "eq", "un"].iter().position(|test| name[4..] == **test);
+            match bit {
+                Some(bit) => ("isel".to_string(), format!("{dest}, {left}, {right}, {bit}")),
+                None => (mnemonic.to_string(), operands.to_string()),
+            }
         }
         ("extlwi", [dest, source, length, start]) => (
             "rlwinm".to_string(),

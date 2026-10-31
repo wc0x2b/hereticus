@@ -223,7 +223,7 @@ fn no_image_gets_a_wrong_base() {
     }
     assert_eq!(
         found,
-        Found { images: 56, right: 42, none: 14, wrong: 0 },
+        Found { images: 60, right: 46, none: 14, wrong: 0 },
         "the misses: {misses:#?}"
     );
     // Only the stubs, which are position-independent code, get no base.
