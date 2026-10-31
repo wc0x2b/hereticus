@@ -190,6 +190,7 @@ fn parse_raw(build: Build, variant: &str) -> Binary {
         "aarch64" => Isa::Aarch64,
         "x86_64" => Isa::X86_64,
         "i686" => Isa::X86,
+        "powerpc" => Isa::PowerPc,
         "mips" => Isa::Mips32Be,
         "mips16" => Isa::Mips16,
         _ => Isa::Mips32,
@@ -320,7 +321,7 @@ fn with_symbols_the_fix_is_named_exactly(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values(
         "arm", "armv5", "armv6", "armhf", "thumb", "mixed", "aarch64", "mips", "mipsel", "x86_64",
-        "i686"
+        "i686", "powerpc"
     )]
     arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
@@ -366,7 +367,8 @@ fn check_with_symbols(build: Build) {
 fn stripped_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values(
-        "arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686"
+        "arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686",
+        "powerpc"
     )]
     arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
@@ -418,7 +420,7 @@ fn sstrip(mut elf: Vec<u8>) -> Vec<u8> {
 #[rstest]
 fn sstripped_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686", "mips16")]
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686", "mips16", "powerpc")]
     arch: &'static str,
     #[values("O2", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
@@ -440,7 +442,8 @@ fn sstripped_the_fix_is_covered_and_nothing_else(
 fn as_a_raw_image_the_fix_is_covered_and_nothing_else(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2)] project: Project,
     #[values(
-        "arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686"
+        "arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686",
+        "powerpc"
     )]
     arch: &'static str,
     #[values("O1", "O2", "O3", "Os", "gcc-O2", "gcc-Os")] level: &'static str,
@@ -545,14 +548,15 @@ fn a_mixed_library_reads_each_function_in_its_own_set(
 fn a_build_compared_with_itself_reports_nothing(
     #[values(Project::Zlib, Project::Lua, Project::Tinyxml2, Project::Smallvec)] project: Project,
     #[values(
-        "arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686"
+        "arm", "armv5", "armv6", "armhf", "thumb", "aarch64", "mips", "mipsel", "x86_64", "i686",
+        "powerpc"
     )]
     arch: &'static str,
     #[values("before", "after")] variant: &str,
 ) {
     // The Rust harness is built for soft-float ARMv7 and later, not
     // ARMv5TE, ARMv6 or the hard-float ABI.
-    if project == Project::Smallvec && matches!(arch, "armv5" | "armv6" | "armhf") {
+    if project == Project::Smallvec && matches!(arch, "armv5" | "armv6" | "armhf" | "powerpc") {
         return;
     }
     let build = build(project, arch, "O2");
