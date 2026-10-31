@@ -32,6 +32,10 @@ const NOP: u32 = 0x6000_0000;
 /// `r3` to `r12`.
 const VOLATILE: [u8; 11] = [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
+/// The register that holds the global offset table in PIC code, by the
+/// SVR4 ABI.
+const PIC_BASE: u8 = 30;
+
 /// How far back the parts of a table jump may lie.
 const TABLE_LOOK_BACK: usize = 16;
 
@@ -98,6 +102,13 @@ impl Recovery for PowerPc {
         usize::from(earlier.last().is_some_and(reads_link))
     }
 
+    /// A word of primary opcode 0 is no instruction a function runs. Such a
+    /// word after a return is the distance clang keeps before a PIC
+    /// function: a positive distance below 64 MiB has its top 6 bits clear.
+    fn may_open_function(&self, word: &[u8]) -> bool {
+        word_at(word).is_some_and(|word| word >> 26 != 0)
+    }
+
     /// GNU `as` aligns code with `nop`, and a linker pads with zero words,
     /// which are no instruction.
     fn is_padding(&self, insn: &Insn) -> bool {
@@ -109,11 +120,16 @@ impl Recovery for PowerPc {
         word_of(insn) == Some(0)
     }
 
-    /// Only whole words at the end are removed, and only the two a linker
-    /// pads with.
+    /// Only whole words at the end are removed: `nop`, and the words of
+    /// primary opcode 0, which no function runs. Those are zero fill, and
+    /// the distance clang keeps before the next function, where nothing
+    /// says where this one ends.
     fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
         let mut end = bytes.len() - bytes.len() % INSN_WIDTH;
-        while end >= INSN_WIDTH && matches!(word_at(&bytes[end - INSN_WIDTH..]), Some(NOP | 0)) {
+        while end >= INSN_WIDTH
+            && word_at(&bytes[end - INSN_WIDTH..])
+                .is_some_and(|word| word == NOP || word >> 26 == 0)
+        {
             end -= INSN_WIDTH;
         }
         &bytes[..end]
@@ -218,6 +234,48 @@ impl Recovery for PowerPc {
             .then_some(access.address)
     }
 
+    /// LLD and GNU `ld` write a call stub for each library a PowerPC object
+    /// calls, among the code.
+    fn stub_place(&self) -> super::StubPlace {
+        super::StubPlace::AmongCode
+    }
+
+    /// Each call stub in `code`, by its shape: the load of the slot, then
+    /// `mtctr r11` and `bctr`. See [`PowerPc::stub_slot`] and
+    /// [`stub_through_table`].
+    fn plt_entries(&self, code: &[u8], base: u64) -> Vec<Range<u64>> {
+        /// `mtctr r11`, then `bctr`, which end every stub.
+        const END: [u32; 2] = [0x7d69_03a6, 0x4e80_0420];
+        let words: Vec<u32> =
+            code.as_chunks::<INSN_WIDTH>().0.iter().map(|word| u32::from_be_bytes(*word)).collect();
+        let mut stubs: Vec<Range<u64>> = Vec::new();
+        for (end, _) in words.windows(2).enumerate().filter(|(_, pair)| *pair == END) {
+            // The load of the slot takes one word or two.
+            let start = (1..=2).rev().filter_map(|loads| end.checked_sub(loads)).find(|&start| {
+                let at = start * INSN_WIDTH;
+                let stub = &code[at..(end + 2) * INSN_WIDTH];
+                let address = base + at as u64;
+                let (insns, _) = super::decode_all(self, stub, address);
+                stub_through_table(&insns).is_some() || self.stub_slot(stub, address).is_some()
+            });
+            if let Some(start) = start {
+                let start = base + (start * INSN_WIDTH) as u64;
+                if stubs.last().is_none_or(|last| last.end <= start) {
+                    stubs.push(start..base + ((end + 2) * INSN_WIDTH) as u64);
+                }
+            }
+        }
+        stubs
+    }
+
+    /// The call stub LLD writes for PIC code, which reaches its slot from
+    /// the table that `r30` of the caller holds: see [`stub_through_table`].
+    fn stub_table_offset(&self, code: &[u8]) -> Option<u64> {
+        let length = code.len().min(4 * INSN_WIDTH) / INSN_WIDTH * INSN_WIDTH;
+        let (insns, _) = super::decode_all(self, &code[..length], 0);
+        stub_through_table(&insns).map(|(offset, _)| offset)
+    }
+
     /// The addresses a function forms whole, from two halves or from the
     /// program counter.
     fn data_addresses(
@@ -238,6 +296,61 @@ impl Recovery for PowerPc {
         addresses.dedup();
         addresses
     }
+}
+
+/// The distance from `r30` of the slot the call stub that `insns` opens
+/// with jumps through, and how many of its instructions hold a part of
+/// that distance:
+///
+/// ```text
+/// addis r11, r30, hi       lwz   r11, lo(r30)
+/// lwz   r11, lo(r11)       mtctr r11
+/// mtctr r11                bctr
+/// bctr
+/// ```
+///
+/// The stub runs with the `r30` of its caller, which the stub alone does
+/// not show.
+pub fn stub_through_table(insns: &[Insn]) -> Option<(u64, usize)> {
+    let operands_of = |insn: &Insn| read(insn).map(|(inst, operands)| (inst.opcode(), operands));
+    let load_from = |insn: &Insn, base: u8| match operands_of(insn)? {
+        (Opcode::LWZ, operands) => match operands.as_slice() {
+            [Operand::Register(dest), Operand::MemoryDisp { base: from, disp }]
+                if from.num() == base =>
+            {
+                Some((dest.num(), i64::from(*disp)))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let high = match operands_of(insns.first()?)? {
+        (Opcode::ADDIS, operands) => match operands.as_slice() {
+            [Operand::Register(dest), Operand::RegisterOrZero(base), Operand::ImmExts16(high)]
+                if base.num() == PIC_BASE =>
+            {
+                Some((dest.num(), i64::from(*high) << 16))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let (loads, offset, loaded) = match high {
+        Some((dest, high)) => {
+            let (loaded, low) = load_from(insns.get(1)?, dest)?;
+            (2, high + low, loaded)
+        }
+        None => {
+            let (loaded, low) = load_from(insns.first()?, PIC_BASE)?;
+            (1, low, loaded)
+        }
+    };
+    let [move_count, jump] = insns.get(loads..loads + 2)? else { return None };
+    let moved = read(move_count).is_some_and(|(_, operands)| {
+        moves_to_count(move_count) && operands.get(1).and_then(general) == Some(loaded)
+    });
+    (moved && jump.kind == (InsnKind::Jump { target: None }))
+        .then_some((word(offset as u64), loads))
 }
 
 /// Whether `insn` is `mtctr`, which a jump through the count register
@@ -667,6 +780,9 @@ pub struct Tracked {
 pub fn track(body: &[Insn], space: &AddressSpace, memory: Option<&Memory<'_>>) -> Tracked {
     let mut tracked =
         Tracked { kinds: vec![ConstantKind::Value; body.len()], joins: vec![None; body.len()] };
+    if let Some((_, loads)) = stub_through_table(body) {
+        tracked.kinds[..loads].fill(ConstantKind::Address);
+    }
     let mut tracker = Tracker::default();
     for (index, insn) in body.iter().enumerate() {
         let step = tracker.step(index, insn, memory);
@@ -726,6 +842,16 @@ mod tests {
         });
     }
 
+    #[rstest]
+    #[case::distance(0x0002_05f4, false)]
+    #[case::zero(0, false)]
+    #[case::mflr(0x7c08_02a6, true)]
+    #[case::li(0x3860_0000, true)]
+    fn a_word_of_opcode_0_opens_no_function(#[case] word: u32, #[case] opens: bool) {
+        assert_eq!(PowerPc.may_open_function(&word.to_be_bytes()), opens);
+        assert!(!PowerPc.may_open_function(&word.to_be_bytes()[..3]), "a partial word");
+    }
+
     #[test]
     fn mflr_before_the_frame_belongs_to_the_function() {
         let earlier = decode_at(&[0x3860_0000, 0x7c08_02a6], 0x1000);
@@ -739,7 +865,8 @@ mod tests {
     #[case::zeros(&[0x4e80_0020, 0, 0], 4)]
     #[case::none(&[0x3860_0000, 0x4e80_0020], 8)]
     #[case::all(&[NOP, 0], 0)]
-    fn padding_is_nops_and_zeros(#[case] words: &[u32], #[case] kept: usize) {
+    #[case::distance_before_the_next(&[0x4e80_0020, 0x0002_05f4], 4)]
+    fn padding_is_nops_zeros_and_words_of_opcode_0(#[case] words: &[u32], #[case] kept: usize) {
         assert_eq!(PowerPc.trim_padding(&code(words)).len(), kept);
     }
 
@@ -803,6 +930,51 @@ mod tests {
         ]);
         assert_eq!(PowerPc.stub_slot(&stub, 0x1000), Some(0x1001_8010));
         assert_eq!(PowerPc.stub_slot(&stub[..12], 0x1000), None);
+    }
+
+    #[rstest]
+    #[case::far(&[0x3d7e_0001, 0x816b_0078, 0x7d69_03a6, 0x4e80_0420], Some((0x1_0078, 2)))]
+    #[case::near(&[0x817e_fff8, 0x7d69_03a6, 0x4e80_0420], Some((0xffff_fff8, 1)))]
+    #[case::other_base(&[0x3d7f_0001, 0x816b_0078, 0x7d69_03a6, 0x4e80_0420], None)]
+    #[case::other_register(&[0x817e_fff8, 0x7d89_03a6, 0x4e80_0420], None)]
+    #[case::no_jump(&[0x817e_fff8, 0x7d69_03a6, 0x4e80_0020], None)]
+    fn reads_the_distance_a_pic_stub_reaches_its_slot_from(
+        #[case] words: &[u32],
+        #[case] expected: Option<(u64, usize)>,
+    ) {
+        let insns = decode_at(words, 0x1000);
+        assert_eq!(stub_through_table(&insns), expected);
+        assert_eq!(PowerPc.stub_table_offset(&code(words)), expected.map(|(offset, _)| offset));
+        if let Some((_, loads)) = expected {
+            let kinds = track(&insns, &AddressSpace::none(), None).kinds;
+            assert!(kinds[..loads].iter().all(|&kind| kind == ConstantKind::Address));
+        }
+    }
+
+    #[test]
+    fn finds_each_call_stub_among_the_code() {
+        let words = [
+            0x4e80_0020, // blr
+            0x3d7e_0001, // addis r11, r30, 1
+            0x816b_0078, // lwz r11, 0x78(r11)
+            0x7d69_03a6, // mtctr r11
+            0x4e80_0420, // bctr
+            0x817e_fff8, // lwz r11, -8(r30)
+            0x7d69_03a6, // mtctr r11
+            0x4e80_0420, // bctr
+            0x3d60_1002, // lis r11, 0x1002
+            0x816b_8010, // lwz r11, -0x7ff0(r11)
+            0x7d69_03a6, // mtctr r11
+            0x4e80_0420, // bctr
+            0x8129_0000, // lwz r9, 0(r9)        ; a jump through a pointer
+            0x7d69_03a6, // mtctr r11
+            0x4e80_0420, // bctr
+        ];
+        assert_eq!(PowerPc.stub_place(), super::super::StubPlace::AmongCode);
+        assert_eq!(
+            PowerPc.plt_entries(&code(&words), 0x1000),
+            [0x1004..0x1014, 0x1014..0x1020, 0x1020..0x1030]
+        );
     }
 
     #[test]

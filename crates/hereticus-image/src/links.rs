@@ -104,8 +104,12 @@ impl Links {
             .filter(|&address| address != 0)
             .collect();
         let relocated = relocated_addresses(file, &memory);
-        let table = hereticus_recovery::dynamic::Dynamic::of(file)
-            .and_then(|dynamic| dynamic.global_offset_table());
+        let table = hereticus_recovery::dynamic::Dynamic::of(file).and_then(|dynamic| {
+            match file.architecture() {
+                object::Architecture::PowerPc => dynamic.powerpc_global_offset_table(),
+                _ => dynamic.global_offset_table(),
+            }
+        });
         let stub_names = match file.format() {
             object::BinaryFormat::Pe => StubNames::Import,
             _ => StubNames::Plt,

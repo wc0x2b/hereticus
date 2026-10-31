@@ -1,13 +1,14 @@
 ---
 source: hereticus/tests/openwrt.rs
+assertion_line: 653
 expression: kernel_digest(&comparison)
 ---
-functions 23392 -> 24434
-matched 21713
-{No: 7260, Reordered: 472, Data: 16, InDetail: 3128, Unreadable: 6, Yes: 10831}
-gone 1679
+functions 23384 -> 24429
+matched 21708
+{No: 7255, Reordered: 472, Data: 16, InDetail: 3128, Unreadable: 6, Yes: 10831}
+gone 1676
 new 2721
-fingerprint 0xd96020797a1dfd69
+fingerprint 0x3e1ff08837614d04
 
 strongest changes:
 0xc030b6f8 -> 0xc030bb40 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }

@@ -174,6 +174,12 @@ pub trait Recovery: Decoder {
         None
     }
 
+    /// Where a linker writes the stubs that call another library. Defaults
+    /// to [`StubPlace::Plt`].
+    fn stub_place(&self) -> StubPlace {
+        StubPlace::Plt
+    }
+
     /// The size of each entry of the PLT, where every entry has one, or
     /// `None`. Defaults to `None`.
     fn plt_entry_size(&self) -> Option<u64> {
@@ -365,6 +371,16 @@ pub struct VectorTable {
     pub words: core::ops::Range<u64>,
     /// The start of each handler the table names.
     pub handlers: Vec<u64>,
+}
+
+/// Where a linker writes the stubs that call another library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StubPlace {
+    /// In the PLT, a section of their own, as on ARM and x86.
+    Plt,
+    /// Among the code, as LLD and GNU `ld` write the call stubs of PowerPC
+    /// in `.text`.
+    AmongCode,
 }
 
 /// How a jump through a table of cases looks among other jumps.

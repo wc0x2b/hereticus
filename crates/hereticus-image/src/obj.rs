@@ -549,8 +549,10 @@ impl Binary {
                 other_set.insert(address);
             }
             let Some(code) = symbol_code(&file, &symbol, address, size) else { continue };
+            let name = stable_name(symbol.name().unwrap_or_default());
             functions.push(Function {
-                name: stable_name(symbol.name().unwrap_or_default()).to_string(),
+                name: powerpc_stub_callee(name)
+                    .map_or_else(|| name.to_string(), |callee| format!("{callee}@plt")),
                 address,
                 code,
             });
@@ -792,15 +794,20 @@ impl Binary {
             true => unwind::ByteOrder::Little,
             false => unwind::ByteOrder::Big,
         };
+        // The stubs of a PLT are found by their shape, as in a raw image.
         let index: Vec<scan::IndexEntry> = executable
             .iter()
             .flat_map(|&(base, data)| {
-                let index = scan::find_exception_index(data, base, arch);
-                if !index.is_empty() {
-                    return index;
+                let mut index = scan::find_exception_index(data, base, arch);
+                if index.is_empty() {
+                    let ranges = unwind::find_function_ranges(data, base, order);
+                    index = scan::index_from_ranges(&ranges, arch);
                 }
-                let ranges = unwind::find_function_ranges(data, base, order);
-                scan::index_from_ranges(&ranges, arch)
+                let listed: BTreeSet<u64> = index.iter().map(|entry| entry.address).collect();
+                let plt = scan::raw_plt_index(data, base, arch);
+                index.extend(plt.into_iter().filter(|entry| !listed.contains(&entry.address)));
+                index.sort_by_key(|entry| entry.address);
+                index
             })
             .collect();
         let exports = dynamic.as_ref().map(|dynamic| dynamic.exports()).unwrap_or_default();
@@ -981,6 +988,22 @@ pub fn stable_name(name: &str) -> &str {
         }
         _ => name,
     }
+}
+
+/// The callee of a PowerPC call stub, by the name of its symbol.
+///
+/// LLD and GNU `ld` write a stub for each call from PowerPC code to another
+/// library, in `.text`, and name it by the distance of the PIC register from
+/// its table, then the callee: `00000000.plt_pic32.memcpy` for LLD,
+/// `00008000.got2.plt_pic32.memcpy` for GNU `ld`, and `plt_call32` in
+/// place of `plt_pic32` for code that is not PIC. Each object that calls
+/// gets a stub of its own, so a name repeats.
+fn powerpc_stub_callee(name: &str) -> Option<&str> {
+    let (distance, rest) = name.split_once('.')?;
+    let is_distance = distance.len() == 8 && distance.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let rest = rest.strip_prefix("got2.").unwrap_or(rest);
+    let callee = rest.strip_prefix("plt_pic32.").or_else(|| rest.strip_prefix("plt_call32."))?;
+    (is_distance && !callee.is_empty()).then_some(callee)
 }
 
 fn symbol_code(
@@ -1449,6 +1472,18 @@ mod tests {
         assert_eq!(undecorated_c_name("_a@b"), "a@b", "no size after the `@`");
         assert_eq!(undecorated_c_name("_@4"), "@4", "no name before the size");
         assert_eq!(undecorated_c_name("_"), "");
+    }
+
+    #[test]
+    fn a_powerpc_call_stub_is_named_by_its_callee() {
+        assert_eq!(powerpc_stub_callee("00000000.plt_pic32.memcpy"), Some("memcpy"));
+        assert_eq!(powerpc_stub_callee("00008000.got2.plt_pic32.inflate"), Some("inflate"));
+        assert_eq!(powerpc_stub_callee("00000000.plt_call32.puts"), Some("puts"));
+        assert_eq!(powerpc_stub_callee("0000.plt_pic32.memcpy"), None, "8 hex digits");
+        assert_eq!(powerpc_stub_callee("zzzzzzzz.plt_pic32.memcpy"), None);
+        assert_eq!(powerpc_stub_callee("00000000.plt_pic32."), None, "no callee");
+        assert_eq!(powerpc_stub_callee("memcpy"), None);
+        assert_eq!(powerpc_stub_callee("deflate.constprop.0"), None);
     }
 
     #[test]

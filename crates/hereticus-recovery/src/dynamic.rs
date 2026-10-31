@@ -126,6 +126,15 @@ impl<'data> Dynamic<'data> {
         self.value(DT_PLTGOT)
     }
 
+    /// The address that 32-bit PowerPC PIC code holds in `r30`, as
+    /// `DT_PPC_GOT` gives it. `DT_PLTGOT` there gives the table of the
+    /// PLT, which the call stubs reach from `r30`.
+    pub fn powerpc_global_offset_table(&self) -> Option<u64> {
+        /// `DT_PPC_GOT`, the first tag of the processor range.
+        const DT_PPC_GOT: u64 = 0x7000_0000;
+        self.value(DT_PPC_GOT)
+    }
+
     /// The value of the first entry with `tag`.
     pub fn value(&self, tag: u64) -> Option<u64> {
         self.entries.iter().find_map(|&(entry_tag, value)| (entry_tag == tag).then_some(value))
