@@ -260,8 +260,10 @@ impl Recovery for PowerPc {
             });
             if let Some(start) = start {
                 let start = base + (start * INSN_WIDTH) as u64;
+                // GNU `ld` pads each stub to 16 bytes with a `nop`.
+                let padded = end + 2 + usize::from(words.get(end + 2) == Some(&NOP));
                 if stubs.last().is_none_or(|last| last.end <= start) {
-                    stubs.push(start..base + ((end + 2) * INSN_WIDTH) as u64);
+                    stubs.push(start..base + (padded * INSN_WIDTH) as u64);
                 }
             }
         }
@@ -979,6 +981,7 @@ mod tests {
             0x817e_fff8, // lwz r11, -8(r30)
             0x7d69_03a6, // mtctr r11
             0x4e80_0420, // bctr
+            NOP,         // nop, which pads the stub of GNU `ld`
             0x3d60_1002, // lis r11, 0x1002
             0x816b_8010, // lwz r11, -0x7ff0(r11)
             0x7d69_03a6, // mtctr r11
@@ -990,7 +993,7 @@ mod tests {
         assert_eq!(PowerPc.stub_place(), super::super::StubPlace::AmongCode);
         assert_eq!(
             PowerPc.plt_entries(&code(&words), 0x1000),
-            [0x1004..0x1014, 0x1014..0x1020, 0x1020..0x1030]
+            [0x1004..0x1014, 0x1014..0x1024, 0x1024..0x1034]
         );
     }
 
