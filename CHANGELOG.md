@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/wc0x2b/hereticus/compare/v0.6.1...v0.6.2) - 2026-10-31
+
 ### Added
 
 - The crate `hereticus-project` holds the project file and the state of the
