@@ -33,8 +33,8 @@ through stubs that the cache builder has bound or removed.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 73658<!-- from boundaries.rs: exact --> of
-73721<!-- from boundaries.rs: functions --> exact, 9<!-- from boundaries.rs: missed -->
+stripped releases: 87466<!-- from boundaries.rs: exact --> of
+87529<!-- from boundaries.rs: functions --> exact, 9<!-- from boundaries.rs: missed -->
 starts missed and 3<!-- from boundaries.rs: invented --> invented,
 over ARM, Thumb-2, AArch64, MIPS, x86 and PowerPC, with the PLT, the lazy
 binding stubs of MIPS and the call stubs of PowerPC left out (`RESEARCH.md`, "Function recovery, again"). 8 of

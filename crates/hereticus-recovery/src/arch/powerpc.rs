@@ -42,6 +42,9 @@ const NOP: u32 = 0x6000_0000;
 /// a loop of 64-bit code with.
 const GROUP_NOP: u32 = 0x6042_0000;
 
+/// `trap`, which LLD fills the gaps between 64-bit functions with.
+const TRAP: u32 = 0x7fe0_0008;
+
 /// The volatile general registers, which a call does not keep: `r0` and
 /// `r3` to `r12`.
 const VOLATILE: [u8; 11] = [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
@@ -203,27 +206,36 @@ impl Recovery for PowerPc {
     }
 
     /// GNU `as` aligns code with `nop`, and with `ori r2, r2, 0` in a
-    /// 64-bit loop, and a linker pads with zero words, which are no
-    /// instruction.
+    /// 64-bit loop. GNU `ld` pads with zero words, which are no
+    /// instruction, and LLD 64-bit code with `trap`. In 32-bit code `trap`
+    /// is work: a deleted destructor is one `trap`.
     fn is_padding(&self, insn: &Insn) -> bool {
-        matches!(word_of(insn), Some(NOP | GROUP_NOP | 0))
+        matches!(
+            (self.mode(), word_of(insn)),
+            (_, Some(NOP | GROUP_NOP | 0)) | (Mode::Bits64, Some(TRAP))
+        )
     }
 
-    /// A zero word is no instruction, so it traps where it runs.
+    /// A zero word is no instruction, so it traps where it runs, as the
+    /// `trap` that LLD fills 64-bit code with does.
     fn is_trap_fill(&self, insn: &Insn) -> bool {
-        word_of(insn) == Some(0)
+        matches!((self.mode(), word_of(insn)), (_, Some(0)) | (Mode::Bits64, Some(TRAP)))
     }
 
-    /// Only whole words at the end are removed: `nop`, and the words of
-    /// primary opcode 0, which no function runs. Those are zero fill, and
-    /// the distance clang keeps before the next function, where nothing
-    /// says where this one ends.
+    /// Only whole words at the end are removed: `nop`, `ori r2, r2, 0`, the
+    /// `trap` that LLD fills 64-bit code with,
+    /// and in 32-bit code the words of primary opcode 0, which no function
+    /// runs. Those are zero fill, and the distance clang keeps before the
+    /// next function, where nothing says where this one ends. GCC puts a
+    /// traceback table of such words after each 64-bit function, and its
+    /// symbol counts it, so there they stay.
     fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
+        let pads = |word: u32| match self.mode() {
+            Mode::Bits32 => matches!(word, NOP | GROUP_NOP) || word >> 26 == 0,
+            Mode::Bits64 => matches!(word, NOP | GROUP_NOP | TRAP),
+        };
         let mut end = bytes.len() - bytes.len() % INSN_WIDTH;
-        while end >= INSN_WIDTH
-            && word_at(*self, &bytes[end - INSN_WIDTH..])
-                .is_some_and(|word| word == NOP || word >> 26 == 0)
-        {
+        while end >= INSN_WIDTH && word_at(*self, &bytes[end - INSN_WIDTH..]).is_some_and(pads) {
             end -= INSN_WIDTH;
         }
         &bytes[..end]
@@ -342,14 +354,24 @@ impl Recovery for PowerPc {
     /// `mtctr r11` and `bctr`. See [`PowerPc::stub_slot`] and
     /// [`stub_through_table`].
     fn plt_entries(&self, code: &[u8], base: u64) -> Vec<Range<u64>> {
-        /// `bctr`, which ends every stub.
+        /// `bctr`, which ends a stub, or a `b` after `bcctr` on a condition,
+        /// which ends an ELFv1 stub of GNU `ld`.
         const BCTR: u32 = 0x4e80_0420;
+        let ends = |at: usize, words: &[u32]| {
+            words[at] == BCTR
+                || (words[at] >> 26 == 18
+                    && at > 0
+                    && words[at - 1] & 0xfc00_ffff == 0x4c00_0420
+                    && words[at - 1] != BCTR)
+        };
         /// The most words of a stub before its `bctr`.
         const MOST_BEFORE: usize = 7;
+        /// The most words of padding after a stub.
+        const MOST_PADDING: usize = 8;
         let words: Vec<u32> =
             code.as_chunks::<INSN_WIDTH>().0.iter().map(|word| self.word(*word)).collect();
         let mut stubs: Vec<Range<u64>> = Vec::new();
-        for jump in words.iter().enumerate().filter(|(_, word)| **word == BCTR).map(|(at, _)| at) {
+        for jump in (0..words.len()).filter(|&at| ends(at, &words)) {
             let end = (jump + 1) * INSN_WIDTH;
             // The earliest start whose stub ends at this `bctr` and holds
             // no other jump.
@@ -358,15 +380,22 @@ impl Recovery for PowerPc {
                 let at = start * INSN_WIDTH;
                 let address = base + at as u64;
                 let (insns, _) = super::decode_all(self, &code[at..end], address);
-                let jumps = insns.iter().filter(|insn| insn.kind != InsnKind::Normal).count();
+                let jumps =
+                    insns.iter().filter(|insn| matches!(insn.kind, InsnKind::Jump { .. })).count();
                 let is_stub = stub_through_table(&insns).is_some()
                     || (back == 3 && self.stub_slot(&code[at..end], address).is_some());
                 (jumps == 1 && is_stub).then_some(start)
             });
             if let Some(start) = start {
                 let start = base + (start * INSN_WIDTH) as u64;
-                // GNU `ld` pads each stub to 16 bytes with a `nop`.
-                let pad = usize::from(words.get(jump + 1) == Some(&NOP)) * INSN_WIDTH;
+                // GNU `ld` pads each stub to 16 bytes with a `nop` in 32-bit
+                // code, and to 32 bytes with zero words in 64-bit code.
+                let pad = words[jump + 1..]
+                    .iter()
+                    .take(MOST_PADDING)
+                    .take_while(|word| matches!(**word, NOP | GROUP_NOP | 0))
+                    .count()
+                    * INSN_WIDTH;
                 if stubs.last().is_none_or(|last| last.end <= start) {
                     stubs.push(start..base + (end + pad) as u64);
                 }
@@ -480,14 +509,19 @@ pub fn stub_through_table(insns: &[Insn]) -> Option<(u64, Range<usize>)> {
     let moved = read(move_count).is_some_and(|(_, operands)| {
         moves_to_count(move_count) && operands.get(1).and_then(general) == Some(loaded)
     });
+    // GNU `ld` checks the TOC of an ELFv1 callee and jumps on to the lazy
+    // resolver where it is 0: `bnectr`, then `b`.
     let jumps = insns
         .iter()
         .skip(parts.end + 1)
-        .take(MOST_AFTER_MOVE + 1)
+        .take(MOST_AFTER_MOVE + 2)
         .take_while(|insn| {
-            insn.kind == InsnKind::Normal || insn.kind == (InsnKind::Jump { target: None })
+            matches!(
+                insn.kind,
+                InsnKind::Normal | InsnKind::Branch { target: None } | InsnKind::Jump { .. }
+            )
         })
-        .any(|insn| insn.kind == (InsnKind::Jump { target: None }));
+        .any(|insn| matches!(insn.kind, InsnKind::Jump { .. }));
     (moved && jumps).then_some((in_mode(arch.mode(), offset as u64), parts))
 }
 
@@ -1509,6 +1543,10 @@ mod tests {
         assert!(PowerPc::BIG.is_padding(&decode_one(NOP)));
         assert!(PowerPc::BIG.is_padding(&decode_one(0)));
         assert!(PowerPc::BIG.is_padding(&decode_one(GROUP_NOP)));
+        assert!(!PowerPc::BIG.is_padding(&decode_one(TRAP)), "32-bit work");
+        let trap = PowerPc::BIG64.decode(&TRAP.to_be_bytes(), 0, 0x1000).expect("decodes");
+        assert!(PowerPc::BIG64.is_padding(&trap));
+        assert!(PowerPc::BIG64.is_trap_fill(&trap));
         assert!(PowerPc::BIG.is_trap_fill(&decode_one(0)));
         assert!(!PowerPc::BIG.is_trap_fill(&decode_one(NOP)));
         assert!(!PowerPc::BIG.is_padding(&decode_one(0x3860_0000)));

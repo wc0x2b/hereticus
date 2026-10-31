@@ -64,8 +64,7 @@ fn recovery_of(build: &Path) -> Recovery {
     // PowerPC that LLD writes in `.glink`, are code no symbol names, so the
     // stubs the scan finds there are no error, and are left out. So are the
     // PowerPC call stubs of GNU `ld` among the code, which have no symbol
-    // or one of no size, and its lazy resolver, from `__glink` to the end
-    // of `.text`.
+    // or one of no size, and its lazy resolver at the end of `.text`.
     let library = std::fs::read(build.join("lib.so")).expect("the build exists");
     let file = object::File::parse(library.as_slice()).expect("the build parses");
     let plt: Vec<core::ops::Range<u64>> = file
@@ -96,10 +95,15 @@ fn recovery_of(build: &Path) -> Recovery {
 }
 
 /// The lazy resolver that GNU `ld` writes at the end of the `.text` of a
-/// PowerPC library, from its symbol `__glink` on.
+/// PowerPC library, from its symbol `__glink` on, or `__glink_PLTresolve`
+/// in 64-bit code.
 fn glink(file: &object::File<'_>) -> Option<core::ops::Range<u64>> {
     use object::ObjectSymbol;
-    let start = file.symbols().find(|symbol| symbol.name() == Ok("__glink"))?.address();
+    let start = file
+        .symbols()
+        .filter(|symbol| matches!(symbol.name(), Ok("__glink" | "__glink_PLTresolve")))
+        .map(|symbol| symbol.address())
+        .min()?;
     let text = file.section_by_name(".text")?;
     Some(start..text.address() + text.size())
 }
@@ -133,7 +137,7 @@ fn stripped_functions_are_recovered() {
         });
     assert_eq!(
         total,
-        Recovery { functions: 73721, exact: 73658, invented: 3, missed: 9 },
+        Recovery { functions: 87529, exact: 87466, invented: 3, missed: 9 },
         "over {} builds",
         builds.len()
     );
