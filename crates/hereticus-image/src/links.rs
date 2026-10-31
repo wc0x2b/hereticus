@@ -61,10 +61,14 @@ impl Links {
         let dynamic =
             hereticus_recovery::dynamic::Dynamic::find_in_raw(base, data, pointer_width, order);
         let slots = dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default();
-        let table = dynamic.and_then(|dynamic| match isa {
-            Isa::PowerPc | Isa::PowerPcLe => dynamic.powerpc_global_offset_table(),
-            _ => dynamic.global_offset_table(),
-        });
+        let table = match isa {
+            Isa::PowerPc64 | Isa::PowerPc64Le => powerpc64_toc(isa, &[(base, data)], None)
+                .or_else(|| dynamic.as_ref()?.powerpc64_descriptor_toc()),
+            Isa::PowerPc | Isa::PowerPcLe => {
+                dynamic.and_then(|dynamic| dynamic.powerpc_global_offset_table())
+            }
+            _ => dynamic.and_then(|dynamic| dynamic.global_offset_table()),
+        };
         Self { memory: vec![(base, data.to_vec())], slots, table, ..Self::default() }
     }
 
@@ -107,12 +111,20 @@ impl Links {
             .filter(|&address| address != 0)
             .collect();
         let relocated = relocated_addresses(file, &memory);
-        let table = hereticus_recovery::dynamic::Dynamic::of(file).and_then(|dynamic| {
-            match file.architecture() {
-                object::Architecture::PowerPc => dynamic.powerpc_global_offset_table(),
-                _ => dynamic.global_offset_table(),
+        let dynamic = hereticus_recovery::dynamic::Dynamic::of(file);
+        let table = match Isa::of_file(file) {
+            Some(isa @ (Isa::PowerPc64 | Isa::PowerPc64Le)) => {
+                let regions: Vec<(u64, &[u8])> =
+                    memory.iter().map(|(start, data)| (*start, data.as_slice())).collect();
+                let got = file.section_by_name(".got").map(|got| got.address());
+                powerpc64_toc(isa, &regions, got)
+                    .or_else(|| dynamic.as_ref()?.powerpc64_descriptor_toc())
             }
-        });
+            Some(Isa::PowerPc | Isa::PowerPcLe) => {
+                dynamic.and_then(|dynamic| dynamic.powerpc_global_offset_table())
+            }
+            _ => dynamic.and_then(|dynamic| dynamic.global_offset_table()),
+        };
         let stub_names = match file.format() {
             object::BinaryFormat::Pe => StubNames::Import,
             _ => StubNames::Plt,
@@ -444,6 +456,25 @@ fn relocated_addresses(file: &object::File<'_>, memory: &[(u64, Vec<u8>)]) -> BT
             Some((address, base.wrapping_add(addend)))
         })
         .collect()
+}
+
+/// The TOC of 64-bit PowerPC code, which its call stubs reach their slots
+/// from: where the first ELFv2 global entry in `regions` of little-endian
+/// code makes it, or else
+/// 0x8000 past `got`, the start of `.got`, as GNU `ld` and LLD put it. An
+/// ELFv1 function makes no TOC of its own, so only `.got`, or a descriptor
+/// the dynamic segment names, gives it there.
+fn powerpc64_toc(isa: Isa, regions: &[(u64, &[u8])], got: Option<u64>) -> Option<u64> {
+    /// How far past the start of `.got` the TOC lies.
+    const TOC_BIAS: u64 = 0x8000;
+    let global_entry = || match isa {
+        Isa::PowerPc64Le => regions.iter().find_map(|&(base, data)| {
+            let arch = hereticus_il::arch::powerpc::PowerPc::LITTLE64;
+            hereticus_recovery::arch::powerpc::toc_from_global_entry(arch, data, base)
+        }),
+        _ => None,
+    };
+    global_entry().or_else(|| got.map(|got| got + TOC_BIAS))
 }
 
 /// The absolute and the relative relocation of `architecture`, the two that

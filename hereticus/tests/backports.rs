@@ -313,6 +313,12 @@ fn check_regions(build: Build, reading: Reading, regions: &[Region]) {
     );
 }
 
+/// Whether `build` is built: GCC alone builds MIPS16e, and 64-bit
+/// big-endian PowerPC, whose ELFv1 ABI LLD does not link.
+fn is_built(build: Build) -> bool {
+    build.level.starts_with("gcc") || !matches!(build.arch, "mips16" | "powerpc64")
+}
+
 fn build(project: Project, arch: &'static str, level: &'static str) -> Build {
     Build { project, arch, level }
 }
@@ -353,6 +359,9 @@ fn with_symbols_the_rust_fix_is_named_exactly(
 }
 
 fn check_with_symbols(build: Build) {
+    if !is_built(build) {
+        return;
+    }
     let project = build.project;
     let before = parse(build, "before", "lib.so");
     let after = parse(build, "after", "lib.so");
@@ -411,6 +420,9 @@ fn stripped_the_rust_fix_is_covered_and_nothing_else(
 }
 
 fn check_stripped(build: Build) {
+    if !is_built(build) {
+        return;
+    }
     let before = parse(build, "before", "lib-stripped.so");
     let after = parse(build, "after", "lib-stripped.so");
     let diff =
@@ -461,11 +473,10 @@ fn sstripped_the_fix_is_covered_and_nothing_else(
     arch: &'static str,
     #[values("O2", "gcc-O2", "gcc-Os")] level: &'static str,
 ) {
-    // GCC alone builds MIPS16e.
-    if arch == "mips16" && !level.starts_with("gcc") {
+    let build = build(project, arch, level);
+    if !is_built(build) {
         return;
     }
-    let build = build(project, arch, level);
     let before = parse_sstripped(build, "before");
     let after = parse_sstripped(build, "after");
     let diff =
@@ -509,6 +520,9 @@ fn as_a_raw_image_the_rust_fix_is_covered_and_nothing_else(
 }
 
 fn check_raw(build: Build) {
+    if !is_built(build) {
+        return;
+    }
     let before = parse_raw(build, "before");
     let after = parse_raw(build, "after");
     let diff =
@@ -620,7 +634,9 @@ fn a_build_compared_with_itself_reports_nothing(
     {
         return;
     }
-    let build = build(project, arch, "O2");
+    // GCC alone builds 64-bit big-endian PowerPC: see `is_built`.
+    let level = if arch == "powerpc64" { "gcc-O2" } else { "O2" };
+    let build = build(project, arch, level);
     for binary in [
         parse(build, variant, "lib.so"),
         parse(build, variant, "lib-stripped.so"),

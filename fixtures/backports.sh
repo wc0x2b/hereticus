@@ -40,7 +40,8 @@ common_flags=(-fPIC -fno-stack-protector -w)
 # name:triple, one per architecture the tool reads. `mixed` builds every
 # other source as Thumb-2 and the rest as A32, as much ARM user space mixes
 # them. `mips16` is built by GCC alone: clang's MIPS16 back end is not
-# complete. BACKPORTS_TARGETS, a list of these names, builds only those.
+# complete. So is `powerpc64`, big endian with the ELFv1 ABI, which LLD
+# does not link: the TOC its descriptors give is not the one its stubs use. BACKPORTS_TARGETS, a list of these names, builds only those.
 all_targets=(arm:arm-linux-gnueabi thumb:arm-linux-gnueabi mixed:arm-linux-gnueabi
     armv5:arm-linux-gnueabi armv6:arm-linux-gnueabi armhf:arm-linux-gnueabihf
     aarch64:aarch64-linux-gnu mips:mips-linux-gnu mipsel:mipsel-linux-gnu
@@ -126,6 +127,7 @@ build() {
         [ "$arch" = i686 ] && flags+=("${i686_flags[@]}")
         local clang_levels=("${levels[@]}")
         [ "$arch" = mips16 ] && clang_levels=()
+        [ "$arch" = powerpc64 ] && clang_levels=()
 
         for level in "${clang_levels[@]}"; do
             local dest="$out/$name-$variant/$arch-$level"

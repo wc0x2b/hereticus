@@ -38,6 +38,10 @@ use yaxpeax_power::{Instruction, Operand};
 /// `nop`, which is `ori r0, r0, 0`.
 const NOP: u32 = 0x6000_0000;
 
+/// `ori r2, r2, 0`, the `nop` that ends a dispatch group, which GCC pads
+/// a loop of 64-bit code with.
+const GROUP_NOP: u32 = 0x6042_0000;
+
 /// The volatile general registers, which a call does not keep: `r0` and
 /// `r3` to `r12`.
 const VOLATILE: [u8; 11] = [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
@@ -198,10 +202,11 @@ impl Recovery for PowerPc {
         word_at(*self, word).is_some_and(|word| word >> 26 != 0)
     }
 
-    /// GNU `as` aligns code with `nop`, and a linker pads with zero words,
-    /// which are no instruction.
+    /// GNU `as` aligns code with `nop`, and with `ori r2, r2, 0` in a
+    /// 64-bit loop, and a linker pads with zero words, which are no
+    /// instruction.
     fn is_padding(&self, insn: &Insn) -> bool {
-        matches!(word_of(insn), Some(NOP | 0))
+        matches!(word_of(insn), Some(NOP | GROUP_NOP | 0))
     }
 
     /// A zero word is no instruction, so it traps where it runs.
@@ -373,7 +378,9 @@ impl Recovery for PowerPc {
     /// The call stub LLD writes for PIC code, which reaches its slot from
     /// the table that `r30` of the caller holds: see [`stub_through_table`].
     fn stub_table_offset(&self, code: &[u8]) -> Option<u64> {
-        let length = code.len().min(4 * INSN_WIDTH) / INSN_WIDTH * INSN_WIDTH;
+        /// The most words of a stub, as an ELFv1 stub of 64-bit code takes.
+        const MOST_WORDS: usize = 8;
+        let length = code.len().min(MOST_WORDS * INSN_WIDTH) / INSN_WIDTH * INSN_WIDTH;
         let (insns, _) = super::decode_all(self, &code[..length], 0);
         stub_through_table(&insns).map(|(offset, _)| offset)
     }
@@ -503,6 +510,25 @@ pub fn is_global_entry(body: &[Insn]) -> bool {
         })
     };
     shape(high, Opcode::ADDIS, ENTRY) && shape(low, Opcode::ADDI, TOC)
+}
+
+/// The TOC that 64-bit code in `code`, loaded at `base`, reaches its data
+/// through, as the first ELFv2 global entry in it makes it: see
+/// [`is_global_entry`]. A module has one TOC, unless it is too large for
+/// one, which no library of the tests is.
+pub fn toc_from_global_entry(arch: PowerPc, code: &[u8], base: u64) -> Option<u64> {
+    let words: Vec<u32> =
+        code.as_chunks::<INSN_WIDTH>().0.iter().map(|word| arch.word(*word)).collect();
+    words.windows(2).enumerate().find_map(|(at, pair)| {
+        // `addis r2, r12, hi`, then `addi r2, r2, lo`.
+        let [high, low] = *pair else { return None };
+        (high >> 16 == 0x3c4c && low >> 16 == 0x3842).then(|| {
+            let address = base + (at * INSN_WIDTH) as u64;
+            let high = i64::from(high as u16 as i16) << 16;
+            let low = i64::from(low as u16 as i16);
+            address.wrapping_add_signed(high + low)
+        })
+    })
 }
 
 /// Whether `insn` is `mtctr`, which a jump through the count register
@@ -1230,6 +1256,16 @@ mod tests {
     }
 
     #[test]
+    fn the_first_global_entry_gives_the_toc() {
+        let bytes: Vec<u8> = [0x4e80_0020_u32, 0x3c4c_0002, 0x3842_2d28, 0x7c08_02a6]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        assert_eq!(toc_from_global_entry(PowerPc::LITTLE64, &bytes, 0x2_1c9c), Some(0x4_49c8));
+        assert_eq!(toc_from_global_entry(PowerPc::LITTLE64, &bytes[..8], 0x2_1c9c), None);
+    }
+
+    #[test]
     fn a_64_bit_stub_saves_the_toc_of_its_caller() {
         let insns = decode_64(&[
             0xf841_0018, // std r2, 24(r1)
@@ -1472,6 +1508,7 @@ mod tests {
     fn padding_is_a_nop_or_a_zero_word() {
         assert!(PowerPc::BIG.is_padding(&decode_one(NOP)));
         assert!(PowerPc::BIG.is_padding(&decode_one(0)));
+        assert!(PowerPc::BIG.is_padding(&decode_one(GROUP_NOP)));
         assert!(PowerPc::BIG.is_trap_fill(&decode_one(0)));
         assert!(!PowerPc::BIG.is_trap_fill(&decode_one(NOP)));
         assert!(!PowerPc::BIG.is_padding(&decode_one(0x3860_0000)));

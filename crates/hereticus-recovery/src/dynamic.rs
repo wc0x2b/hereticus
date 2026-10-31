@@ -135,6 +135,16 @@ impl<'data> Dynamic<'data> {
         self.value(DT_PPC_GOT)
     }
 
+    /// The TOC of ELFv1 64-bit PowerPC code, from the second doubleword of
+    /// the descriptor that an exported function names, as GNU `ld` writes
+    /// it.
+    pub fn powerpc64_descriptor_toc(&self) -> Option<u64> {
+        let field = self.field_width();
+        self.exports()
+            .iter()
+            .find_map(|export| self.word(export.address + 8, field).filter(|&toc| toc != 0))
+    }
+
     /// The value of the first entry with `tag`.
     pub fn value(&self, tag: u64) -> Option<u64> {
         self.entries.iter().find_map(|&(entry_tag, value)| (entry_tag == tag).then_some(value))
