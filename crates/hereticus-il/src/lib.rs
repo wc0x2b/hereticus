@@ -8,7 +8,8 @@
 //! tests `a0 < a1` as `cmp a0, a1` with `b.lt` does. A lifter turns one
 //! instruction into a [`Lifted`], and [`find_guards`] turns a compare and
 //! the branch that reads it into one [`Guard`], whatever the spelling.
-//! AArch64, A32, Thumb-2 and MIPS32 each have a lifter: see `Arch::lift`.
+//! AArch64, A32, Thumb-2, MIPS32, x86 and PowerPC each have a lifter: see
+//! `Arch::lift`.
 //!
 //! A lifted instruction also names its operation, as an [`Op`], and its
 //! operands, as [`Operand`]s, so that spellings of one operation read
@@ -350,6 +351,18 @@ impl Cond {
         }
     }
 
+    /// This condition on unsigned values: a signed order becomes the same
+    /// order without sign, and any other condition stays.
+    pub fn unsigned(self) -> Self {
+        match self {
+            Self::SignedGreaterOrEqual => Self::UnsignedGreaterOrEqual,
+            Self::SignedLess => Self::UnsignedLess,
+            Self::SignedGreater => Self::UnsignedGreater,
+            Self::SignedLessOrEqual => Self::UnsignedLessOrEqual,
+            _ => self,
+        }
+    }
+
     /// The family of this condition: see [`CondFamily`].
     pub fn family(self) -> CondFamily {
         match self {
@@ -392,6 +405,16 @@ pub enum Comparison {
         /// The first value.
         left: Value,
         /// The mask.
+        right: Value,
+    },
+    /// The order of `left` and `right` as unsigned values, as the PowerPC
+    /// `cmplw` writes it. The flags of PowerPC hold only the order, and a
+    /// branch on less or greater reads them the same after a signed and an
+    /// unsigned compare, so only the compare says which order it was.
+    Unsigned {
+        /// The value compared.
+        left: Value,
+        /// What `left` is compared against.
         right: Value,
     },
 }
@@ -1063,6 +1086,9 @@ fn branch_on_flags(after: &[Option<Lifted>]) -> Option<(usize, Cond)> {
 fn guard_of(comparison: Comparison, cond: Cond, width: Width) -> Option<Guard> {
     match comparison {
         Comparison::Subtract { left, right } => Some(Guard { cond, left, right, width }),
+        Comparison::Unsigned { left, right } => {
+            Some(Guard { cond: cond.unsigned(), left, right, width })
+        }
         Comparison::And { left, right } => {
             let cond = match cond {
                 Cond::Equal => Cond::BitsClear,
@@ -1121,6 +1147,38 @@ mod tests {
 
     fn guard(cond: Cond, right: u64, width: Width) -> Guard {
         Guard { cond, left: Value::Reg(Reg::General(8)), right: Value::Const(right), width }
+    }
+
+    /// PowerPC branches on less or greater the same after `cmpw` and
+    /// `cmplw`, so the compare says which order the guard tests.
+    #[test]
+    fn an_unsigned_compare_makes_an_unsigned_guard() {
+        let (left, right) = (Value::Reg(Reg::General(3)), Value::Const(4));
+        let unsigned = Some(Lifted {
+            test: Some(Test::Compare {
+                comparison: Comparison::Unsigned { left, right },
+                width: Width::Bits32,
+            }),
+            ..Lifted::default()
+        });
+        let cases = [
+            (Cond::SignedLess, Cond::UnsignedLess),
+            (Cond::SignedGreaterOrEqual, Cond::UnsignedGreaterOrEqual),
+            (Cond::SignedGreater, Cond::UnsignedGreater),
+            (Cond::SignedLessOrEqual, Cond::UnsignedLessOrEqual),
+            (Cond::Equal, Cond::Equal),
+            (Cond::NotEqual, Cond::NotEqual),
+        ];
+        for (read, tested) in cases {
+            assert_eq!(guards(&[unsigned.clone(), branch(read)]), [(Some(0), 1, tested)]);
+        }
+    }
+
+    #[test]
+    fn a_condition_without_sign_is_its_own_unsigned_form() {
+        for cond in [Cond::Equal, Cond::UnsignedLess, Cond::BitsSet, Cond::Always] {
+            assert_eq!(cond.unsigned(), cond);
+        }
     }
 
     #[test]

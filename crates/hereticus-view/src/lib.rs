@@ -833,6 +833,9 @@ enum ResultOf {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CompareKind {
     Subtract,
+    /// An order of unsigned values, as the PowerPC `cmplw` writes it: see
+    /// [`Comparison::Unsigned`].
+    Unsigned,
     Add,
     And,
     /// The flags of the result of an operation, as `subs x0, x0, #1` or
@@ -1055,6 +1058,10 @@ fn condition_text(cond: Cond, compared: Option<&Compared>) -> String {
         (CompareKind::Subtract, Cond::Negative) => format!("{left} - {right} < 0"),
         (CompareKind::Subtract, Cond::NotNegative) => format!("{left} - {right} >= 0"),
         (CompareKind::Subtract, cond) => match relation(cond) {
+            Some(operator) => format!("{left} {operator} {right}"),
+            None => format!("flags.{cond:?}"),
+        },
+        (CompareKind::Unsigned, cond) => match relation(cond.unsigned()) {
             Some(operator) => format!("{left} {operator} {right}"),
             None => format!("flags.{cond:?}"),
         },
@@ -1506,6 +1513,7 @@ fn statement(
             Some(Test::Compare { comparison, .. }) => {
                 let kind = match comparison {
                     Comparison::Subtract { .. } => CompareKind::Subtract,
+                    Comparison::Unsigned { .. } => CompareKind::Unsigned,
                     Comparison::Add { .. } => CompareKind::Add,
                     Comparison::And { .. } => CompareKind::And,
                 };
@@ -1513,7 +1521,9 @@ fn statement(
                 let [.., left, right] = operands.as_slice() else { return None };
                 let text = match comparison {
                     Comparison::And { .. } => format!("flags = {left} & {right}"),
-                    Comparison::Subtract { .. } | Comparison::Add { .. } => {
+                    Comparison::Subtract { .. }
+                    | Comparison::Unsigned { .. }
+                    | Comparison::Add { .. } => {
                         format!("flags = compare({left}, {right})")
                     }
                 };
