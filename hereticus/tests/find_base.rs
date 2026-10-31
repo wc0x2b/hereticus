@@ -111,6 +111,8 @@ fn programs() -> Option<Vec<Image>> {
         ("mips32", Isa::Mips32),
         ("mips32-be", Isa::Mips32Be),
         ("powerpc", Isa::PowerPc),
+        ("powerpc64", Isa::PowerPc64),
+        ("powerpc64-le", Isa::PowerPc64Le),
     ];
     let mut images = Vec::new();
     for (name, isa) in targets {
