@@ -77,7 +77,18 @@ fn gz_error_indented(arch: &str) -> String {
 /// any line sits shows in review.
 #[rstest]
 fn the_indented_il_of_a_function_is_locked(
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64", "powerpc")]
+    #[values(
+        "arm",
+        "thumb",
+        "aarch64",
+        "mips",
+        "mipsel",
+        "mips16",
+        "i686",
+        "x86_64",
+        "powerpc",
+        "powerpc64le"
+    )]
     arch: &str,
 ) {
     let indented = gz_error_indented(arch);
@@ -89,7 +100,18 @@ fn the_indented_il_of_a_function_is_locked(
 /// a library of loops has lines in a loop in an `if`.
 #[rstest]
 fn each_line_of_each_function_takes_a_depth(
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64", "powerpc")]
+    #[values(
+        "arm",
+        "thumb",
+        "aarch64",
+        "mips",
+        "mipsel",
+        "mips16",
+        "i686",
+        "x86_64",
+        "powerpc",
+        "powerpc64le"
+    )]
     arch: &str,
 ) {
     let binary = library("lua", "before", arch);
@@ -114,7 +136,18 @@ fn each_line_of_each_function_takes_a_depth(
 /// the assembly view none.
 #[rstest]
 fn only_the_il_view_indents(
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64", "powerpc")]
+    #[values(
+        "arm",
+        "thumb",
+        "aarch64",
+        "mips",
+        "mipsel",
+        "mips16",
+        "i686",
+        "x86_64",
+        "powerpc",
+        "powerpc64le"
+    )]
     arch: &str,
 ) {
     let binary = library("zlib", "before", arch);
