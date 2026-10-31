@@ -548,6 +548,8 @@ struct Step {
     join: Option<(u64, Origin, Option<usize>)>,
     /// Whether a constant of it is a distance from the program counter.
     from_counter: bool,
+    /// The upper half it made, as `lis` and `addis` do.
+    upper: Option<u64>,
     /// The access it made at a known address.
     access: Option<Access>,
 }
@@ -640,6 +642,11 @@ impl Tracker {
                     }
                     _ => None,
                 }
+                .inspect(|held| {
+                    if let Held::Upper { value, .. } = held {
+                        step.upper = Some(*value);
+                    }
+                })
                 .map(|held| (dest.num(), Some(held)))
             }
             (
@@ -767,6 +774,9 @@ pub struct Tracked {
     /// For each instruction, the address it forms whole, where it forms
     /// one: the join of two halves, or an offset from the program counter.
     pub joins: Vec<Option<u64>>,
+    /// [`Tracked::joins`], and the upper half of each join at the `lis` or
+    /// `addis` that made it, as the page of an `adrp` is.
+    pub formed: Vec<Option<u64>>,
 }
 
 /// The constants of `body` that are parts of an address inside `space`,
@@ -778,14 +788,19 @@ pub struct Tracked {
 /// address, as is the `addis` and `addi` that reach the global offset table
 /// from it. `memory`, where given, gives the word clang loads to reach it.
 pub fn track(body: &[Insn], space: &AddressSpace, memory: Option<&Memory<'_>>) -> Tracked {
-    let mut tracked =
-        Tracked { kinds: vec![ConstantKind::Value; body.len()], joins: vec![None; body.len()] };
+    let mut tracked = Tracked {
+        kinds: vec![ConstantKind::Value; body.len()],
+        joins: vec![None; body.len()],
+        formed: vec![None; body.len()],
+    };
+    let mut uppers = vec![None; body.len()];
     if let Some((_, loads)) = stub_through_table(body) {
         tracked.kinds[..loads].fill(ConstantKind::Address);
     }
     let mut tracker = Tracker::default();
     for (index, insn) in body.iter().enumerate() {
         let step = tracker.step(index, insn, memory);
+        uppers[index] = step.upper;
         if step.from_counter {
             tracked.kinds[index] = ConstantKind::Address;
         }
@@ -793,8 +808,10 @@ pub fn track(body: &[Insn], space: &AddressSpace, memory: Option<&Memory<'_>>) -
         if origin == Origin::Counter || space.contains_formed(address) {
             tracked.kinds[index] = ConstantKind::Address;
             tracked.joins[index] = Some(address);
+            tracked.formed[index] = Some(address);
             if let Some(from) = from {
                 tracked.kinds[from] = ConstantKind::Address;
+                tracked.formed[from] = uppers[from];
             }
         }
     }
@@ -993,6 +1010,7 @@ mod tests {
         use ConstantKind::{Address, Value};
         assert_eq!(tracked.kinds, [Address, Address, Value, Value]);
         assert_eq!(tracked.joins, [None, Some(0x1000_0040), None, None]);
+        assert_eq!(tracked.formed, [Some(0x1000_0000), Some(0x1000_0040), None, None]);
     }
 
     #[test]

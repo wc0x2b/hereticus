@@ -58,7 +58,7 @@ impl Arch for PowerPc {
         space: &AddressSpace,
         memory: &Memory<'_>,
     ) -> Vec<Option<u64>> {
-        track(body, space, Some(memory)).joins
+        track(body, space, Some(memory)).formed
     }
 }
 
