@@ -186,9 +186,9 @@ the next. These cases cause it:
   %lo(text)`, point at text from a base just below the opcode. The
   column `EVIDENCE` shows `halves` there, and the row counts for nothing.
 
-Over 54<!-- from find_base.rs: images --> images of seven
+Over 56<!-- from find_base.rs: images --> images of eight
 architectures with a known base, `hereticus` gives the right base for
-40<!-- from find_base.rs: right -->, no base for the other
+42<!-- from find_base.rs: right -->, no base for the other
 14<!-- from find_base.rs: none -->, all position-independent stubs, and
 a wrong base for 0<!-- from find_base.rs: wrong -->. rbasefind, which
 tries each base on a page, gives a base for every image, the stubs too. `RESEARCH.md`, entry 20, compares the two.
