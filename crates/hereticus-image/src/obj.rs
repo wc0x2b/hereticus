@@ -954,7 +954,7 @@ impl Binary {
                 .collect(),
             None => BTreeSet::new(),
         };
-        let links = Links::of_raw_image(base, data, isa.arch().pointer_width(), isa.byte_order());
+        let links = Links::of_raw_image(base, data, isa);
         let functions: Vec<Function> = scan::recover_from_regions(&regions, &index, isa.arch())
             .into_iter()
             .map(unnamed)

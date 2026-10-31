@@ -7,7 +7,7 @@ use object::{
     Object, ObjectKind, ObjectSection, ObjectSegment, ObjectSymbol, ObjectSymbolTable, SectionKind,
 };
 
-use crate::obj::stable_name;
+use crate::obj::{Isa, stable_name};
 use hereticus_arch::Arch;
 use hereticus_il::arch::InsnKind;
 use hereticus_recovery::dynamic::slot_names;
@@ -49,19 +49,22 @@ enum StubNames {
 }
 
 impl Links {
-    /// Links for a raw image: its bytes, and the names of the slots the
-    /// relocations of its dynamic segment write, where the image holds one,
-    /// as an image of a whole shared library does. `pointer_width` and
-    /// `order` are those of its words.
-    pub fn of_raw_image(base: u64, data: &[u8], pointer_width: usize, order: ByteOrder) -> Self {
-        let order = match order {
+    /// Links for a raw image of `isa` code: its bytes, and the names of the
+    /// slots the relocations of its dynamic segment write, where the image
+    /// holds one, as an image of a whole shared library does.
+    pub fn of_raw_image(base: u64, data: &[u8], isa: Isa) -> Self {
+        let order = match isa.byte_order() {
             ByteOrder::Little => object::Endianness::Little,
             ByteOrder::Big => object::Endianness::Big,
         };
+        let pointer_width = isa.arch().pointer_width();
         let dynamic =
             hereticus_recovery::dynamic::Dynamic::find_in_raw(base, data, pointer_width, order);
         let slots = dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default();
-        let table = dynamic.and_then(|dynamic| dynamic.global_offset_table());
+        let table = dynamic.and_then(|dynamic| match isa {
+            Isa::PowerPc => dynamic.powerpc_global_offset_table(),
+            _ => dynamic.global_offset_table(),
+        });
         Self { memory: vec![(base, data.to_vec())], slots, table, ..Self::default() }
     }
 
