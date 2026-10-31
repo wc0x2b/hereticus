@@ -24,6 +24,7 @@ use crate::{
     DataRegions, Retouched, describe, describe_confidence, describe_kinds, name_of, name_of_kind,
     name_of_view, unmatched_word,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// The blank columns between two columns of the table of functions.
 const COLUMN_GAP: u16 = 2;
@@ -35,6 +36,9 @@ const SELECTED_SIGN: &str = "▶ ";
 const TABLE_HINTS: &str = "⏎ open  s/S sort  t touched  f feature  / filter  m mark  w save";
 const FILTER_HINTS: &str = "⏎ keep  esc clear";
 const PAIR_HINTS: &str = "]/[ change  v asm/il  l layout  n/p next/prev  m mark  esc back";
+
+/// Parts the path of the earlier binary from that of the later one.
+const PATH_ARROW: &str = " → ";
 
 impl App<'_> {
     pub(super) fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -113,11 +117,15 @@ impl App<'_> {
             *region = Rect { x: x.saturating_add(1), width, height: 1, ..tabs }.intersection(tabs);
             x = x.saturating_add(width + 3);
         }
-        let [before, after] = &self.files;
+        // The paths take the room the tabs leave, past one blank column.
+        let room = usize::from(tabs.right().saturating_sub(x.saturating_add(1)));
+        let [before, after] =
+            self.source.inputs.each_ref().map(|input| input.path.display().to_string());
+        let [before, after] = fit_paths([&before, &after], room);
         let files = Line::from(vec![
-            Span::styled(before.as_str(), Style::new().fg(GRAY_FG)),
-            Span::styled(" → ", Style::new().fg(GRAY)),
-            Span::styled(after.as_str(), Style::new().fg(GRAY_FG)),
+            Span::styled(before, Style::new().fg(GRAY_FG)),
+            Span::styled(PATH_ARROW, Style::new().fg(GRAY)),
+            Span::styled(after, Style::new().fg(GRAY_FG)),
             Span::raw(" "),
         ])
         .right_aligned();
@@ -678,6 +686,15 @@ fn draw_quit(frame: &mut Frame<'_>, changes: Changes) {
     frame.render_widget(question, area);
 }
 
+/// The paths of the two binaries, cut at their starts so that both, the
+/// arrow between them and a blank column after them fit in `room` columns.
+/// A short path stays whole, and a long one takes the rest of the room.
+fn fit_paths([before, after]: [&str; 2], room: usize) -> [String; 2] {
+    let room = room.saturating_sub(PATH_ARROW.width() + 1);
+    let after_room = after.width().min(room - before.width().min(room / 2));
+    [columns::fit_start(before, room - after_room), columns::fit_start(after, after_room)]
+}
+
 /// A box of at most `width` by `height` in the middle of `area`.
 fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
     let [area] = Split::vertical([Constraint::Max(height)]).flex(Flex::Center).areas(area);
@@ -688,6 +705,41 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_paths_that_fit_stay_whole() {
+        let paths = ["/a/before.bin", "/a/after.bin"];
+        assert_eq!(fit_paths(paths, 80), paths.map(String::from));
+        let exact = paths[0].len() + PATH_ARROW.width() + paths[1].len() + 1;
+        assert_eq!(fit_paths(paths, exact), paths.map(String::from));
+    }
+
+    #[test]
+    fn a_short_path_stays_whole_and_the_long_one_takes_the_rest() {
+        let [before, after] = fit_paths(["/b.o", "/home/reader/firmware/after.bin"], 20);
+        assert_eq!(before, "/b.o");
+        assert_eq!(after, "…e/after.bin");
+        let [before, after] = fit_paths(["/home/reader/firmware/before.bin", "/a.o"], 20);
+        assert_eq!(before, "…/before.bin");
+        assert_eq!(after, "/a.o");
+    }
+
+    #[test]
+    fn two_long_paths_share_the_room() {
+        let [before, after] =
+            fit_paths(["/home/reader/old/before.bin", "/home/reader/new/after.bin"], 24);
+        assert_eq!([before.as_str(), after.as_str()], ["…efore.bin", "…after.bin"]);
+    }
+
+    #[test]
+    fn any_two_paths_fit_their_room() {
+        bolero::check!().with_type::<(String, String, u8)>().for_each(|(before, after, room)| {
+            let room = usize::from(*room);
+            let [cut_before, cut_after] = fit_paths([before, after], room);
+            let used = cut_before.width() + PATH_ARROW.width() + cut_after.width() + 1;
+            assert!(used <= room.max(PATH_ARROW.width() + 1), "{before:?} {after:?} in {room}");
+        });
+    }
 
     #[test]
     fn the_list_moves_as_little_as_keeps_the_selection_in_sight() {

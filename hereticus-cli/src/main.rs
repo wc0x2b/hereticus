@@ -690,8 +690,8 @@ fn run(args: &Args) -> Result<bool, String> {
         None if args.tui || args.save.is_some() => {
             let [before_hash, after_hash] = hashes.expect("a project hashes both files");
             let inputs = [
-                project::Input::new(before_path, before_hash, &before)?,
-                project::Input::new(after_path, after_hash, &after)?,
+                project::Input::new(before_path, before_hash, &before),
+                project::Input::new(after_path, after_hash, &after),
             ];
             let saved = tui::Saved { browser: tui::Browser::from_args(args), marks: Vec::new() };
             Some((Source::new(args, inputs), saved))
@@ -715,12 +715,8 @@ fn run(args: &Args) -> Result<bool, String> {
     }
     if args.tui {
         let (source, saved) = state.expect("the browser has a project to save");
-        let start = tui::Start {
-            files: [file_name(before_path), file_name(after_path)],
-            source,
-            project: args.save.clone().or_else(|| args.open.clone()),
-            saved,
-        };
+        let start =
+            tui::Start { source, project: args.save.clone().or_else(|| args.open.clone()), saved };
         return tui::run(&diff, &before, &after, start).map(|()| false);
     }
     if args.diff_all {
@@ -756,8 +752,8 @@ fn run(args: &Args) -> Result<bool, String> {
     Ok(diff.changed().count() > 0 || !diff.removed.is_empty() || !diff.added.is_empty())
 }
 
-/// The name of the file at `path`, as a title shows it.
-fn file_name(path: &Path) -> String {
+/// The name of the file at `path`, as a project to save is named for it.
+pub fn file_name(path: &Path) -> String {
     path.file_name()
         .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
 }

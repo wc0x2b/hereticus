@@ -78,6 +78,12 @@ impl Scratch {
         self.binaries[index].clone()
     }
 
+    /// The path of a copy from the directory of the project, as a project
+    /// names it.
+    fn from_project(&self, index: usize) -> PathBuf {
+        self.binary(index).strip_prefix(&self.directory).expect("a copy in the directory").into()
+    }
+
     fn binaries(&self) -> [Binary; 2] {
         [0, 1].map(|index| {
             let bytes = std::fs::read(self.binary(index)).expect("a copy reads");
@@ -96,13 +102,13 @@ impl Scratch {
         let options = Options { use_names: self.names, ..Options::default() };
         let input = |index: usize, binary: &Binary| {
             json!({
-                "path": self.binary(index),
+                "path": self.from_project(index),
                 "sha256": hex(&Sha256::digest(&bytes[index])),
                 "functions": functions_hash(binary),
             })
         };
         json!({
-            "layout": 2,
+            "layout": 3,
             "hereticus": "0.0.0",
             "source": {
                 "inputs": [input(0, &before), input(1, &after)],
@@ -344,12 +350,12 @@ fn a_result_that_does_not_fit_the_binaries_stops_the_project() {
 fn a_newer_layout_stops_the_project() {
     let Some(scratch) = Scratch::new("layout") else { return };
     let mut project = scratch.project_json();
-    project["layout"] = json!(3);
+    project["layout"] = json!(4);
     project["hereticus"] = json!("9.0.0");
     scratch.write_project(&project);
 
     let error = stderr(&scratch.open(&[]));
-    assert!(error.contains("hereticus 9.0.0 saved it in layout 3"), "{error}");
+    assert!(error.contains("hereticus 9.0.0 saved it in layout 4"), "{error}");
 }
 
 #[test]
@@ -389,11 +395,13 @@ fn the_browser_of_a_project_needs_a_terminal() {
 fn a_saved_project_holds_what_a_project_by_hand_holds() {
     let Some(scratch) = Scratch::new("save") else { return };
     let saved = scratch.directory.join("saved.json");
+    // The binaries by their paths from the directory of the project, as the
+    // project names them.
     let saving = hereticus()
+        .current_dir(&scratch.directory)
         .arg("--save")
         .arg(&saved)
-        .arg(scratch.binary(0))
-        .arg(scratch.binary(1))
+        .args(["before/firmware.o", "after/firmware_v2.o"])
         .output()
         .expect("the tool runs");
     let (_, fresh) = scratch.both(&[]);
@@ -411,6 +419,65 @@ fn a_saved_project_holds_what_a_project_by_hand_holds() {
     assert_eq!(project["hereticus"], env!("CARGO_PKG_VERSION"));
 
     let opened = hereticus().arg("--open").arg(&saved).output().expect("the tool runs");
+    assert_eq!(stdout(&opened), stdout(&fresh));
+}
+
+#[test]
+fn a_saved_project_names_each_binary_from_its_own_directory() {
+    let Some(scratch) = Scratch::new("from-project") else { return };
+    let projects = scratch.directory.join("projects");
+    std::fs::create_dir(&projects).expect("a directory");
+    let output = hereticus()
+        .current_dir(&scratch.directory)
+        .args(["--save", "projects/p.json", "before/firmware.o"])
+        .arg(scratch.binary(1))
+        .output()
+        .expect("the tool runs");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    let saved = projects.join("p.json");
+    let project: Value =
+        serde_json::from_slice(&std::fs::read(&saved).expect("a project")).expect("JSON");
+    let inputs = &project["source"]["inputs"];
+    assert_eq!(inputs[0]["path"], "../before/firmware.o", "a relative path");
+    assert_eq!(inputs[1]["path"], json!(scratch.binary(1)), "an absolute path stays");
+
+    // The project opens from any directory, as the paths start at its own.
+    let opened = hereticus().arg("--open").arg(&saved).output().expect("the tool runs");
+    assert_eq!(opened.status.code(), Some(0), "{}", stderr(&opened));
+}
+
+#[test]
+fn a_project_moved_with_its_binaries_opens() {
+    let Some(scratch) = Scratch::new("moved-together") else { return };
+    scratch.write_project(&scratch.project_json());
+    let (_, fresh) = scratch.both(&[]);
+    let moved = scratch.directory.with_extension("moved");
+    std::fs::rename(&scratch.directory, &moved).expect("a move");
+
+    let opened = hereticus()
+        .arg("--open")
+        .arg(moved.join("firmware.hereticus.json"))
+        .output()
+        .expect("the tool runs");
+    std::fs::rename(&moved, &scratch.directory).expect("a move back");
+    assert_eq!(opened.status.code(), fresh.status.code(), "{}", stderr(&opened));
+    assert_eq!(stdout(&opened), stdout(&fresh));
+}
+
+#[test]
+fn a_layout_2_project_with_absolute_paths_opens() {
+    let Some(scratch) = Scratch::new("layout-2") else { return };
+    let mut project = scratch.project_json();
+    project["layout"] = json!(2);
+    for (index, input) in
+        project["source"]["inputs"].as_array_mut().expect("two inputs").iter_mut().enumerate()
+    {
+        input["path"] = json!(scratch.binary(index));
+    }
+    scratch.write_project(&project);
+    let (opened, fresh) = scratch.both(&[]);
+    assert_eq!(opened.status.code(), fresh.status.code(), "{}", stderr(&opened));
     assert_eq!(stdout(&opened), stdout(&fresh));
 }
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The title of `--tui` gives the path of each binary as the command line
+  gave it, not only its file name. Where the terminal is too narrow, each
+  path loses its start first.
+- A project keeps the path of each binary from the directory of the
+  project, so a project and its binaries can move together. A path given
+  from the root stays absolute. The project layout is now 3, and a project
+  of layout 2 still opens.
+
 ## [0.6.1](https://github.com/wc0x2b/hereticus/compare/v0.6.0...v0.6.1) - 2026-10-28
 
 ### Added

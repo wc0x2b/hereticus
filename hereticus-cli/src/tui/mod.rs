@@ -37,7 +37,7 @@ use rows::{change_starts, side_by_side};
 
 use crate::project::{Project, Source};
 use crate::{
-    Args, DataRegions, Feature, Hidden, Retouched, Sort, has_features, is_interesting,
+    Args, DataRegions, Feature, Hidden, Retouched, Sort, file_name, has_features, is_interesting,
     is_shown_unmatched, name_of, rank,
 };
 use columns::{Column, Widths};
@@ -45,9 +45,8 @@ use columns::{Column, Widths};
 /// How the browser starts.
 #[derive(Clone, Debug)]
 pub struct Start {
-    /// The names of the two files, as the title shows them.
-    pub files: [String; 2],
-    /// How the two binaries were read, for a project to save.
+    /// How the two binaries were read, for a project to save. The title
+    /// shows the path of each one, as the command line gave it.
     pub source: Source,
     /// The project the browser opened, where it opened one.
     pub project: Option<PathBuf>,
@@ -336,7 +335,6 @@ pub struct App<'a> {
     paired: PairedLabels,
     before: &'a Binary,
     after: &'a Binary,
-    files: [String; 2],
     source: Source,
     /// Where the project was opened from or last saved to.
     project: Option<PathBuf>,
@@ -418,7 +416,6 @@ impl<'a> App<'a> {
             paired: diff.paired_labels(before, after),
             before,
             after,
-            files: start.files,
             source: start.source,
             project: start.project,
             sort: browser.sort,
@@ -551,7 +548,8 @@ impl<'a> App<'a> {
         match &self.project {
             Some(path) => path.display().to_string(),
             None => {
-                let [before, after] = &self.files;
+                let [before, after] =
+                    self.source.inputs.each_ref().map(|input| file_name(&input.path));
                 format!("{before}-{after}.{PROJECT_EXTENSION}")
             }
         }
@@ -1211,11 +1209,12 @@ mod tests {
     fn source() -> Source {
         let input = |name: &str| crate::project::Input {
             path: PathBuf::from(name),
+            anchor: crate::project::Anchor::Relative,
             sha256: String::new(),
             functions: String::new(),
         };
         Source {
-            inputs: [input("/firmware.o"), input("/firmware_v2.o")],
+            inputs: [input("firmware.o"), input("firmware_v2.o")],
             raw: None,
             threshold: 0.65,
             names: crate::project::Names::Use,
@@ -1223,12 +1222,7 @@ mod tests {
     }
 
     fn start_with(browser: Browser) -> Start {
-        Start {
-            files: ["firmware.o".to_string(), "firmware_v2.o".to_string()],
-            source: source(),
-            project: None,
-            saved: Saved { browser, marks: Vec::new() },
-        }
+        Start { source: source(), project: None, saved: Saved { browser, marks: Vec::new() } }
     }
 
     fn start() -> Start {
@@ -2133,7 +2127,13 @@ mod tests {
         assert_eq!(app.notice, None, "a key clears the notice");
 
         let project = Project::read(&path).expect("the project reads back");
-        assert_eq!(project.source, source());
+        // The project is in another directory, so the paths read back go
+        // through it to the same files.
+        let mut wanted = source();
+        for input in &mut wanted.inputs {
+            input.path = std::path::absolute(&input.path).expect("a path");
+        }
+        assert_eq!(project.source, wanted);
         let json = |diff: &Diff| serde_json::to_string(diff).expect("a diff serializes");
         assert_eq!(json(&project.diff), json(&diff), "the result reads back as it was");
         let saved = Saved { browser: project.browser, marks: project.marks };

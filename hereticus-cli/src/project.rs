@@ -3,11 +3,13 @@
 //! The match is the slow part of a run: minutes on a kernel. A project holds
 //! its result, how to read the two binaries again, the state of the browser
 //! and the functions a reader marked, so the reader can stop and go on later.
-//! The binaries stay where they are. A project names each one with a hash of
-//! its bytes, and opens only when both are as they were.
+//! The binaries stay where they are. A project names each one by its path
+//! from the directory of the project, or by the absolute path the command
+//! line gave, with a hash of its bytes, and opens only when both are as they
+//! were.
 
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use hereticus::matching::Diff;
 use hereticus::obj::Binary;
@@ -18,8 +20,13 @@ use crate::tui::{Browser, Mark};
 use crate::{ArchName, Args, Base, PartName};
 
 /// The layout of the file. A change that an older `hereticus` cannot read
-/// must increment it.
-const LAYOUT: u32 = 2;
+/// must increment it. Layout 3 names each binary from the directory of the
+/// project, where layout 2 named it by its absolute path.
+const LAYOUT: u32 = 3;
+
+/// The oldest layout that this version reads. The absolute paths of layout 2
+/// read as they are.
+const OLDEST_LAYOUT: u32 = 2;
 
 /// A saved comparison.
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,7 +62,22 @@ impl<'a> Project<'a> {
         let cannot = |error: &dyn core::fmt::Display| {
             format!("cannot save the project to {}: {error}", path.display())
         };
-        let mut text = serde_json::to_vec_pretty(self).map_err(|error| cannot(&error))?;
+        let directory = directory_of(path);
+        let mut source = self.source.clone();
+        for input in &mut source.inputs {
+            if input.anchor == Anchor::Relative {
+                input.path = path_from(directory, &input.path)?;
+            }
+        }
+        let on_disk = Project {
+            layout: self.layout,
+            hereticus: self.hereticus.clone(),
+            source,
+            browser: self.browser.clone(),
+            marks: self.marks.clone(),
+            diff: Cow::Borrowed(&self.diff),
+        };
+        let mut text = serde_json::to_vec_pretty(&on_disk).map_err(|error| cannot(&error))?;
         text.push(b'\n');
         let mut partial = path.as_os_str().to_owned();
         partial.push(".partial");
@@ -76,12 +98,19 @@ impl Project<'static> {
             format!("cannot open the project {}: {error}", path.display())
         };
         let text = std::fs::read(path).map_err(|error| cannot(&error))?;
-        let project: Self = serde_json::from_slice(&text).map_err(|error| cannot(&error))?;
-        if project.layout != LAYOUT {
+        let mut project: Self = serde_json::from_slice(&text).map_err(|error| cannot(&error))?;
+        if !(OLDEST_LAYOUT..=LAYOUT).contains(&project.layout) {
             return Err(cannot(&format!(
-                "hereticus {} saved it in layout {}, and this version reads only layout {LAYOUT}",
+                "hereticus {} saved it in layout {}, and this version reads only layouts \
+                 {OLDEST_LAYOUT} to {LAYOUT}",
                 project.hereticus, project.layout
             )));
+        }
+        // An absolute path stays as it is.
+        let directory = directory_of(path);
+        for input in &mut project.source.inputs {
+            input.anchor = Anchor::of(&input.path);
+            input.path = lexical(&directory.join(&input.path));
         }
         Ok(project)
     }
@@ -155,11 +184,31 @@ pub struct Raw {
     pub unpack: Option<PartName>,
 }
 
+/// Where the path of a binary starts. A path that the reader gave from the
+/// root stays so, and any other path goes from the directory of the project,
+/// so that the project and its binaries can move together.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Anchor {
+    #[default]
+    Relative,
+    Absolute,
+}
+
+impl Anchor {
+    fn of(path: &Path) -> Self {
+        if path.is_absolute() { Self::Absolute } else { Self::Relative }
+    }
+}
+
 /// One binary of the comparison.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Input {
-    /// Absolute, so the project opens from any directory.
+    /// The path as the command line gave it, and from the directory of the
+    /// project in the file.
     pub path: PathBuf,
+    /// Not in the file: the path in the file tells it.
+    #[serde(skip)]
+    pub anchor: Anchor,
     /// The SHA-256 of the file, in hex.
     pub sha256: String,
     /// The SHA-256 of the address and the size of each function found, in
@@ -172,10 +221,13 @@ pub struct Input {
 impl Input {
     /// Describe the binary at `path`, from the hash of its file, as
     /// [`sha256_hex`] gives it, and the functions found in it.
-    pub fn new(path: &Path, sha256: String, binary: &Binary) -> Result<Self, String> {
-        let path = std::path::absolute(path)
-            .map_err(|error| format!("cannot find where {} is: {error}", path.display()))?;
-        Ok(Self { path, sha256, functions: functions_hash(binary) })
+    pub fn new(path: &Path, sha256: String, binary: &Binary) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            anchor: Anchor::of(path),
+            sha256,
+            functions: functions_hash(binary),
+        }
     }
 
     /// Make sure that the file has the hash it had when the project read it.
@@ -243,6 +295,47 @@ impl Source {
     }
 }
 
+/// The directory that holds the project at `path`, as a path from the
+/// present directory: empty for a project in it.
+fn directory_of(path: &Path) -> &Path {
+    path.parent().unwrap_or(Path::new(""))
+}
+
+/// The path from `directory` to `file`, where each is absolute or a path
+/// from the present directory.
+fn path_from(directory: &Path, file: &Path) -> Result<PathBuf, String> {
+    let full = |path: &Path| {
+        // `absolute` takes no empty path.
+        let path = if path.as_os_str().is_empty() { Path::new(".") } else { path };
+        std::path::absolute(path)
+            .map(|path| lexical(&path))
+            .map_err(|error| format!("cannot find where {} is: {error}", path.display()))
+    };
+    let (directory, file) = (full(directory)?, full(file)?);
+    let shared = directory.components().zip(file.components()).take_while(|(a, b)| a == b).count();
+    let up = directory.components().skip(shared).map(|_| Component::ParentDir);
+    Ok(up.chain(file.components().skip(shared)).collect())
+}
+
+/// `path` with each `.` taken out and each `..` joined to the directory
+/// before it. A symbolic link is not read, so this can name another file
+/// than the operating system would, as the shell does for `cd`.
+fn lexical(path: &Path) -> PathBuf {
+    let mut kept = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir if matches!(kept.last(), Some(Component::Normal(_))) => {
+                kept.pop();
+            }
+            // The root is its own parent.
+            Component::ParentDir if matches!(kept.last(), Some(Component::RootDir)) => {}
+            other => kept.push(other),
+        }
+    }
+    kept.into_iter().collect()
+}
+
 /// The SHA-256 of `bytes`, in hex.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
@@ -278,9 +371,43 @@ mod tests {
     fn input(bytes: &[u8]) -> Input {
         Input {
             path: PathBuf::from("/tmp/a.elf"),
+            anchor: Anchor::Absolute,
             sha256: sha256_hex(bytes),
             functions: String::new(),
         }
+    }
+
+    #[test]
+    fn a_path_goes_from_the_directory_of_the_project() {
+        let from = |directory: &str, file: &str| {
+            path_from(Path::new(directory), Path::new(file)).expect("a path")
+        };
+        assert_eq!(from("", "fw/a.bin"), Path::new("fw/a.bin"));
+        assert_eq!(from("projects", "fw/a.bin"), Path::new("../fw/a.bin"));
+        assert_eq!(from("fw", "fw/a.bin"), Path::new("a.bin"));
+        assert_eq!(from("fw/old", "fw/new/./a.bin"), Path::new("../new/a.bin"));
+        assert_eq!(from("a/../b", "b/c.bin"), Path::new("c.bin"));
+        assert_eq!(from("/srv/projects", "/srv/fw/a.bin"), Path::new("../fw/a.bin"));
+    }
+
+    #[test]
+    fn a_path_from_the_project_reads_back_as_the_same_file() {
+        bolero::check!().with_type::<(Vec<u8>, Vec<u8>)>().for_each(|(directory, file)| {
+            // Paths of a few short names, `.` and `..`, from the present
+            // directory.
+            let path = |picks: &[u8]| -> PathBuf {
+                picks
+                    .iter()
+                    .take(6)
+                    .map(|pick| ["a", "b", ".", ".."][usize::from(pick % 4)])
+                    .collect()
+            };
+            let (directory, file) = (path(directory), path(file).join("x.bin"));
+            let stored = path_from(&directory, &file).expect("a path");
+            let read = lexical(&std::path::absolute(directory.join(&stored)).expect("a path"));
+            let wanted = lexical(&std::path::absolute(&file).expect("a path"));
+            assert_eq!(read, wanted, "{directory:?} {file:?} -> {stored:?}");
+        });
     }
 
     #[test]

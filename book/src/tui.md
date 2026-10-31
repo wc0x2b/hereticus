@@ -125,8 +125,13 @@ first, also when a filter would hide them, as `◆ handle [auth bypass]`:
 - `--diff` finds a function by its label too, as
   `--diff "auth bypass"`.
 
-A project is JSON, and names each binary by its full path, with a SHA-256
-hash. The binaries stay where they are.
+A project is JSON, and names each binary by its path, with a SHA-256
+hash. The binaries stay where they are. A path that you give from the root,
+as `/srv/fw/v1.bin`, is kept as it is. Any other path is kept from the
+directory of the project. For example, `hereticus --tui --save
+projects/fw.json fw/v1.bin fw/v2.bin` keeps `../fw/v1.bin` and
+`../fw/v2.bin`. Thus you can move or copy the project and the binaries
+together, and the project opens from any directory.
 
 > [!IMPORTANT]
 > A project does not open when a binary moved or changed, or when this
