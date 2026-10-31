@@ -104,7 +104,15 @@ fn canonical_mips_mnemonic(mnemonic: &str) -> String {
 /// branch keeps whether it branches where its bit is set, `bt`, or clear,
 /// `bf`.
 fn canonical_powerpc_mnemonic(mnemonic: &str) -> String {
-    powerpc_spelling(mnemonic, "").0
+    let name = match mnemonic {
+        "subi" => "addi",
+        "subis" => "addis",
+        "subf" | "subf." | "subfc" | "subfc." => return mnemonic.replacen("subf", "sub", 1),
+        "clrrwi" | "extlwi" => "rlwinm",
+        "clrrwi." | "srwi." => "rlwinm.",
+        other => other,
+    };
+    powerpc_spelling(name, "").0
 }
 
 /// Map the spellings that mean the same encoding onto one name.

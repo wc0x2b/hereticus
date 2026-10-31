@@ -110,6 +110,7 @@ fn programs() -> Option<Vec<Image>> {
         ("arm32", Isa::Arm32),
         ("mips32", Isa::Mips32),
         ("mips32-be", Isa::Mips32Be),
+        ("powerpc", Isa::PowerPc),
     ];
     let mut images = Vec::new();
     for (name, isa) in targets {
@@ -220,7 +221,7 @@ fn no_image_gets_a_wrong_base() {
     }
     assert_eq!(
         found,
-        Found { images: 54, right: 40, none: 14, wrong: 0 },
+        Found { images: 56, right: 42, none: 14, wrong: 0 },
         "the misses: {misses:#?}"
     );
     // Only the stubs, which are position-independent code, get no base.
