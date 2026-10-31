@@ -939,21 +939,31 @@ impl Cascade<'_> {
     /// another function. Measured on `ubusd` of OpenWrt 24.10.3 and 24.10.4
     /// for MIPS16e, the stages of identical code paired 7 stubs by their
     /// number and left the stubs of the same imports as new.
+    ///
+    /// LLD writes a stub of an import for each PowerPC object that calls
+    /// it, so an import can have several. Where both sides have as many,
+    /// they pair in the order of their addresses; any other count pairs
+    /// none. Measured on zlib built by clang for PowerPC, the stages of
+    /// identical code paired the stubs of `inflate_table` and `adler32`.
     pub(super) fn pair_stubs_by_import(&mut self) {
-        fn by_import<'a>(side: &[Prepared<'a>]) -> HashMap<&'a str, Option<usize>> {
-            let mut found: HashMap<&'a str, Option<usize>> = HashMap::new();
+        fn by_import<'a>(side: &[Prepared<'a>]) -> HashMap<&'a str, Vec<usize>> {
+            let mut found: HashMap<&'a str, Vec<usize>> = HashMap::new();
             for (index, prepared) in side.iter().enumerate() {
                 if let Some(import) = prepared.stub_of {
-                    // An import with two stubs pairs neither.
-                    found.entry(import).and_modify(|only| *only = None).or_insert(Some(index));
+                    found.entry(import).or_default().push(index);
                 }
+            }
+            for stubs in found.values_mut() {
+                stubs.sort_by_key(|&index| side[index].function.address);
             }
             found
         }
         let (left, right) = (by_import(&self.left), by_import(&self.right));
         let mut pairs: Vec<(usize, usize)> = left
             .iter()
-            .filter_map(|(import, &before)| Some((before?, (*right.get(import)?)?)))
+            .filter_map(|(import, before)| Some((before, right.get(import)?)))
+            .filter(|(before, after)| before.len() == after.len())
+            .flat_map(|(before, after)| before.iter().copied().zip(after.iter().copied()))
             .collect();
         pairs.sort_unstable();
         for (before, after) in pairs {
