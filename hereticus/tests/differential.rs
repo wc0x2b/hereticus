@@ -99,6 +99,14 @@ fn canonical_mips_mnemonic(mnemonic: &str) -> String {
     .to_string()
 }
 
+/// Reduce a PowerPC mnemonic to the spelling of `llvm-objdump`: see
+/// [`powerpc_spelling`]. Only the name is compared here, so a conditional
+/// branch keeps whether it branches where its bit is set, `bt`, or clear,
+/// `bf`.
+fn canonical_powerpc_mnemonic(mnemonic: &str) -> String {
+    powerpc_spelling(mnemonic, "").0
+}
+
 /// Map the spellings that mean the same encoding onto one name.
 fn fold_alias(mnemonic: &str) -> &str {
     match mnemonic {
@@ -299,6 +307,7 @@ fn decoder_agrees_with_objdump() {
                     canonical_mips_mnemonic
                 }
                 Isa::X86_64 | Isa::X86 => canonical_x86_mnemonic,
+                Isa::PowerPc => canonical_powerpc_mnemonic,
             };
 
             for (ours, theirs) in decoded.iter().zip(&expected).take(shared) {
@@ -406,7 +415,7 @@ Disassembly of section .text:
 fn backport_libraries() -> Vec<PathBuf> {
     let root = fixtures_dir().join("backports");
     let mut libraries = Vec::new();
-    const ARCHES: [&str; 12] = [
+    const ARCHES: [&str; 13] = [
         "arm",
         "armv5",
         "armv6",
@@ -419,6 +428,7 @@ fn backport_libraries() -> Vec<PathBuf> {
         "mipsel",
         "x86_64",
         "i686",
+        "powerpc",
     ];
     for project in ["zlib", "lua", "tinyxml2", "smallvec"] {
         for arch in ARCHES {
@@ -460,6 +470,12 @@ fn objdump_file(
         let mut fields = rest.split('\t').map(str::trim).filter(|field| !field.is_empty());
         let Some(mnemonic) = fields.next() else { continue };
         let operands = fields.next().unwrap_or_default();
+        // For PowerPC, `llvm-objdump` puts a space, not a tab, after most
+        // names, as `lwz 3, 0(3)`.
+        let (mnemonic, operands) = match mnemonic.split_once(' ') {
+            Some((name, rest)) if triple == "powerpc" && operands.is_empty() => (name, rest),
+            _ => (mnemonic, operands),
+        };
         lines.insert(address, (mnemonic.to_string(), operands.to_string()));
     }
     Some(lines)
@@ -523,8 +539,10 @@ fn number(token: &str) -> Option<i128> {
 ///   `mov w1, #2`.
 fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
     let mips = matches!(isa, Isa::Mips32 | Isa::Mips32Be | Isa::Mips16 | Isa::Mips16Be);
+    let powerpc = isa == Isa::PowerPc;
     let (mnemonic, operands) = match isa {
         Isa::X86_64 | Isa::X86 => x86_spelling(mnemonic, operands),
+        Isa::PowerPc => powerpc_spelling(mnemonic, operands),
         _ => (mnemonic.to_string(), operands.to_string()),
     };
     let mnemonic = mnemonic.as_str();
@@ -571,6 +589,10 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
             }
             if word == "s8" {
                 return "fp".to_string();
+            }
+        } else if powerpc {
+            if let Some(number) = powerpc_register(word) {
+                return number.to_string();
             }
         } else {
             match word {
@@ -645,7 +667,7 @@ fn folded(isa: Isa, address: u64, mnemonic: &str, operands: &str) -> String {
             mnemonic = "or".to_string();
             list.push("zero".to_string());
         }
-    } else {
+    } else if !powerpc {
         for (from, to) in [("cc", "lo"), ("cs", "hs")] {
             if mnemonic.len() > 4
                 && let Some(stem) = mnemonic.strip_suffix(from)
@@ -793,6 +815,101 @@ fn x86_spelling(mnemonic: &str, operands: &str) -> (String, String) {
         (mnemonic, operands) = x87_spelling(&mnemonic, &operands);
     }
     (mnemonic, operands.trim().to_string())
+}
+
+/// The number of a PowerPC register as this decoder names it, `r3`,
+/// `fr1`, `vr2`, `cr7` or `crb30`, which `llvm-objdump` prints alone.
+fn powerpc_register(word: &str) -> Option<u32> {
+    ["crb", "cr", "fr", "vr", "r"]
+        .iter()
+        .find_map(|prefix| word.strip_prefix(prefix))
+        .filter(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|number| number.parse().ok())
+}
+
+/// The PowerPC spellings in which `llvm-objdump` and this decoder differ,
+/// as the one that `llvm-objdump` prints:
+///
+/// * A branch on one bit of the condition register: `beq cr7, L` is
+///   `bt 30, L`, and `bnelr` is `bclr 4, 2`. The bit is 4 times the field
+///   plus 0 for less, 1 for greater, 2 for equal and 3 for overflow.
+/// * `subi` and `subis` for `addi` and `addis` of the negated constant.
+/// * `subf rD, rA, rB` for `sub rD, rB, rA`, and `subfc` for `subc`.
+/// * `clrrwi`, `extlwi` and `srwi.` for the `rlwinm` they are.
+fn powerpc_spelling(mnemonic: &str, operands: &str) -> (String, String) {
+    let mnemonic = mnemonic.trim();
+    let list: Vec<&str> =
+        operands.split(',').map(str::trim).filter(|operand| !operand.is_empty()).collect();
+    let (stem, hint) = match mnemonic.strip_suffix(['+', '-']) {
+        Some(stem) => (stem, &mnemonic[stem.len()..]),
+        None => (mnemonic, ""),
+    };
+    let tests: [(&str, u32, bool); 8] = [
+        ("lt", 0, true),
+        ("gt", 1, true),
+        ("eq", 2, true),
+        ("so", 3, true),
+        ("ge", 0, false),
+        ("le", 1, false),
+        ("ne", 2, false),
+        ("ns", 3, false),
+    ];
+    for (test, bit, set) in tests {
+        let Some(rest) = stem.strip_prefix('b').and_then(|rest| rest.strip_prefix(test)) else {
+            continue;
+        };
+        let field = list
+            .first()
+            .and_then(|first| first.strip_prefix("cr"))
+            .and_then(|n| n.parse::<u32>().ok());
+        let (field, others) = match field {
+            Some(field) => (field, &list[1..]),
+            None => (0, &list[..]),
+        };
+        let bit = (4 * field + bit).to_string();
+        return match rest {
+            "" => {
+                let name = if set { "bt" } else { "bf" };
+                let mut out = vec![bit];
+                out.extend(others.iter().map(|other| other.to_string()));
+                (format!("{name}{hint}"), out.join(", "))
+            }
+            "lr" => {
+                let bo = if set { "12" } else { "4" };
+                (format!("bclr{hint}"), format!("{bo}, {bit}"))
+            }
+            _ => break,
+        };
+    }
+    let negated = |value: &str| match value.strip_prefix('-') {
+        Some(positive) => positive.to_string(),
+        None => format!("-{value}"),
+    };
+    let shift = |value: &str| number(value).unwrap_or_default();
+    match (mnemonic, list.as_slice()) {
+        ("subi", [dest, source, value]) => {
+            ("addi".to_string(), format!("{dest}, {source}, {}", negated(value)))
+        }
+        ("subis", [dest, source, value]) => {
+            ("addis".to_string(), format!("{dest}, {source}, {}", negated(value)))
+        }
+        ("subf" | "subf." | "subfc" | "subfc.", [dest, subtracted, from]) => {
+            (mnemonic.replacen("subf", "sub", 1), format!("{dest}, {from}, {subtracted}"))
+        }
+        ("clrrwi" | "clrrwi.", [dest, source, bits]) => {
+            let record = mnemonic.strip_prefix("clrrwi").unwrap_or_default();
+            (format!("rlwinm{record}"), format!("{dest}, {source}, 0, 0, {}", 31 - shift(bits)))
+        }
+        ("srwi.", [dest, source, bits]) => {
+            let bits = shift(bits);
+            ("rlwinm.".to_string(), format!("{dest}, {source}, {}, {bits}, 31", 32 - bits))
+        }
+        ("extlwi", [dest, source, length, start]) => (
+            "rlwinm".to_string(),
+            format!("{dest}, {source}, {}, 0, {}", shift(start), shift(length) - 1),
+        ),
+        _ => (mnemonic.to_string(), operands.to_string()),
+    }
 }
 
 /// The 16-bit registers of x86.

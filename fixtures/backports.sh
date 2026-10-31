@@ -44,7 +44,8 @@ common_flags=(-fPIC -fno-stack-protector -w)
 all_targets=(arm:arm-linux-gnueabi thumb:arm-linux-gnueabi mixed:arm-linux-gnueabi
     armv5:arm-linux-gnueabi armv6:arm-linux-gnueabi armhf:arm-linux-gnueabihf
     aarch64:aarch64-linux-gnu mips:mips-linux-gnu mipsel:mipsel-linux-gnu
-    mips16:mipsel-linux-gnu x86_64:x86_64-linux-gnu i686:i686-linux-gnu)
+    mips16:mipsel-linux-gnu x86_64:x86_64-linux-gnu i686:i686-linux-gnu
+    powerpc:powerpc-linux-gnu)
 targets=()
 for target in "${all_targets[@]}"; do
     if [ -z "${BACKPORTS_TARGETS:-}" ] || [[ " $BACKPORTS_TARGETS " == *" ${target%%:*} "* ]]; then
