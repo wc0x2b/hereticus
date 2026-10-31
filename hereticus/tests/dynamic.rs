@@ -21,7 +21,7 @@ fn library(arch: &str, level: &str) -> Vec<u8> {
 /// GNU ld writes only a GNU hash table, and lld writes both kinds.
 #[rstest]
 fn the_exports_are_the_functions_of_the_dynamic_symbol_table(
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16")] arch: &str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "powerpc")] arch: &str,
     #[values("O2", "gcc-O2")] level: &str,
 ) {
     if arch == "mips16" && level == "O2" {
@@ -48,7 +48,7 @@ fn the_exports_are_the_functions_of_the_dynamic_symbol_table(
 /// or exports.
 #[rstest]
 fn the_slots_are_named_for_dynamic_symbols(
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel")] arch: &str,
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "powerpc")] arch: &str,
 ) {
     let data = library(arch, "gcc-O2");
     let file = object::File::parse(data.as_slice()).expect("a fixture library parses");
@@ -69,6 +69,7 @@ fn the_slots_are_named_for_dynamic_symbols(
 #[rstest]
 #[case::x86_64("x86_64", "aarch64")]
 #[case::x86("i686", "arm")]
+#[case::powerpc("powerpc", "arm")]
 fn the_vtables_read_the_same_on_x86_as_on_arm(#[case] arch: &str, #[case] same_width: &str) {
     let tables = |arch: &str| -> Vec<Vec<String>> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
