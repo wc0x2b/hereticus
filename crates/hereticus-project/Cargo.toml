@@ -19,7 +19,7 @@ bench = false
 clap = ["dep:clap"]
 
 [dependencies]
-hereticus = { path = "../../hereticus", version = "0.6.1", features = ["serde"] }
+hereticus = { path = "../../hereticus", version = "0.6.2", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
