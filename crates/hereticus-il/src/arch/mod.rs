@@ -210,8 +210,8 @@ pub enum Opcode {
     Mips16(mips::Decoded, mips::ByteOrder),
     /// x86, in the mode it was read in.
     X86(x86::Decoded, x86::Mode),
-    /// 32-bit PowerPC.
-    PowerPc(powerpc::Decoded),
+    /// PowerPC, by the decoder that read it.
+    PowerPc(powerpc::Decoded, powerpc::PowerPc),
 }
 
 /// The decoder that read `insn`, by its opcode, where one did.
@@ -242,7 +242,9 @@ pub fn reader_of(insn: &Insn) -> Option<&'static dyn Decoder> {
             x86::Mode::Bits32 => &x86::X86::BITS32,
             x86::Mode::Bits64 => &x86::X86::BITS64,
         },
-        Opcode::PowerPc(_) | Opcode::Unread(Set::PowerPc) => &powerpc::PowerPc,
+        Opcode::PowerPc(_, reader) | Opcode::Unread(Set::PowerPc(reader)) => {
+            powerpc::PowerPc::of(reader.order(), reader.mode())
+        }
     })
 }
 
@@ -288,8 +290,8 @@ pub enum InstructionSet {
     Mips16(mips::ByteOrder),
     /// x86, in the mode it is read in.
     X86(x86::Mode),
-    /// 32-bit PowerPC.
-    PowerPc,
+    /// PowerPC, in the byte order and the mode it is read in.
+    PowerPc(powerpc::PowerPc),
 }
 
 impl Insn {
@@ -323,10 +325,9 @@ impl Insn {
                 .read(self.bytes(), 0, self.address, Printing::Text)
                 .ok()
                 .map(|read| read.1),
-            Opcode::PowerPc(_) | Opcode::Unread(Set::PowerPc) => powerpc::PowerPc
-                .read(self.bytes(), 0, self.address, Printing::Text)
-                .ok()
-                .map(|read| read.1),
+            Opcode::PowerPc(_, reader) | Opcode::Unread(Set::PowerPc(reader)) => {
+                reader.read(self.bytes(), 0, self.address, Printing::Text).ok().map(|read| read.1)
+            }
         };
         // An instruction made by hand has no decoder to print it.
         let printed =
@@ -582,7 +583,7 @@ mod tests {
     type Read = fn(&[u8], Printing) -> Option<(Insn, String)>;
 
     /// Every decoder, by the instruction set it reads.
-    const DECODERS: [(&str, Read); 10] = [
+    const DECODERS: [(&str, Read); 13] = [
         ("A64", |code, printing| aarch64::Aarch64.read(code, 0, 0x1000, printing).ok()),
         ("A32", |code, printing| arm32::Arm32.read(code, 0, 0x1000, printing).ok()),
         ("T32", |code, printing| thumb::Thumb2.read(code, 0, 0x1000, printing).ok()),
@@ -592,7 +593,16 @@ mod tests {
         ("MIPS16el", |code, printing| mips16::Mips16::LITTLE.read(code, 0, 0x1000, printing).ok()),
         ("x86-64", |code, printing| x86::X86::BITS64.read(code, 0, 0x1000, printing).ok()),
         ("x86", |code, printing| x86::X86::BITS32.read(code, 0, 0x1000, printing).ok()),
-        ("PowerPC", |code, printing| powerpc::PowerPc.read(code, 0, 0x1000, printing).ok()),
+        ("PowerPC", |code, printing| powerpc::PowerPc::BIG.read(code, 0, 0x1000, printing).ok()),
+        ("PowerPCle", |code, printing| {
+            powerpc::PowerPc::LITTLE.read(code, 0, 0x1000, printing).ok()
+        }),
+        ("PowerPC64", |code, printing| {
+            powerpc::PowerPc::BIG64.read(code, 0, 0x1000, printing).ok()
+        }),
+        ("PowerPC64le", |code, printing| {
+            powerpc::PowerPc::LITTLE64.read(code, 0, 0x1000, printing).ok()
+        }),
     ];
 
     /// Printing changes nothing a decoder reads, and `Display` prints from

@@ -1,5 +1,6 @@
-//! The decoder and the lifter of 32-bit PowerPC, which read one word at a
-//! time and know nothing of the binary around it. The rules that find
+//! The decoder and the lifter of PowerPC, 32-bit and 64-bit, in either
+//! byte order, which read one word at a time and know nothing of the binary
+//! around it. The rules that find
 //! functions in PowerPC code are in `hereticus-recovery`, and the rules the
 //! matching reads in `hereticus-arch`.
 //!
@@ -7,7 +8,8 @@
 //! it: the PowerPC of the 603 and the 750, the Book E words of the e500 and
 //! the 440, as `isel` and `wrteei`, and AltiVec. No version of it reads the
 //! signal processing extension of the e500, as `evldd`, so such a word stays
-//! unread. Only big-endian code is read, as 32-bit PowerPC firmware ships.
+//! unread. 32-bit firmware ships big endian, and 64-bit Linux little endian
+//! since POWER8; both orders are read in both modes.
 //!
 //! The IL keeps the link register, the count register and the fixed-point
 //! exception register, which holds the carry, after the 32 general
@@ -27,9 +29,6 @@ pub use yaxpeax_power::Opcode;
 /// Every PowerPC instruction is 4 bytes wide.
 pub const INSN_WIDTH: usize = 4;
 
-/// A pointer of 32-bit PowerPC is 4 bytes.
-const POINTER_WIDTH: usize = 4;
-
 /// The text of a word the decoder cannot read.
 const UNKNOWN_TEXT: &str = "(unknown)";
 
@@ -45,7 +44,8 @@ pub const CARRY: il::Reg = il::Reg::General(34);
 /// The general register that holds the stack pointer.
 pub const STACK: u8 = 1;
 
-/// Every general register of 32-bit PowerPC is 32 bits wide.
+/// The width of a compare that does not set the L bit, which `cmpw` and
+/// `cmplw` are in both modes.
 const WIDTH: il::Width = il::Width::Bits32;
 
 /// The number of the special-purpose register [`CARRY`] names.
@@ -57,9 +57,68 @@ pub const SPR_LR: u16 = 8;
 /// The number of the special-purpose register [`COUNT`] names.
 pub const SPR_CTR: u16 = 9;
 
-/// 32-bit PowerPC, big endian.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PowerPc;
+/// How wide an address and a general register of PowerPC are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Mode {
+    /// 32 bits, as the 603, the 750 and the e500 run.
+    Bits32,
+    /// 64 bits, as POWER and the e5500 run.
+    Bits64,
+}
+
+/// PowerPC, in one byte order and one mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PowerPc {
+    order: ByteOrder,
+    mode: Mode,
+}
+
+pub use super::ByteOrder;
+
+impl PowerPc {
+    /// 32-bit, big endian, as most PowerPC firmware is.
+    pub const BIG: Self = Self { order: ByteOrder::Big, mode: Mode::Bits32 };
+    /// 32-bit, little endian.
+    pub const LITTLE: Self = Self { order: ByteOrder::Little, mode: Mode::Bits32 };
+    /// 64-bit, big endian, with the ELFv1 ABI as Linux built it before
+    /// POWER8.
+    pub const BIG64: Self = Self { order: ByteOrder::Big, mode: Mode::Bits64 };
+    /// 64-bit, little endian, with the ELFv2 ABI, as Linux runs on POWER8
+    /// and later.
+    pub const LITTLE64: Self = Self { order: ByteOrder::Little, mode: Mode::Bits64 };
+
+    /// The decoder of `order` and `mode`, which lives as long as the
+    /// program, as [`crate::arch::reader_of`] needs.
+    pub fn of(order: ByteOrder, mode: Mode) -> &'static Self {
+        match (order, mode) {
+            (ByteOrder::Big, Mode::Bits32) => &Self::BIG,
+            (ByteOrder::Little, Mode::Bits32) => &Self::LITTLE,
+            (ByteOrder::Big, Mode::Bits64) => &Self::BIG64,
+            (ByteOrder::Little, Mode::Bits64) => &Self::LITTLE64,
+        }
+    }
+
+    /// The byte order this decoder reads.
+    pub fn order(self) -> ByteOrder {
+        self.order
+    }
+
+    /// The width of an address and a general register.
+    pub fn mode(self) -> Mode {
+        self.mode
+    }
+
+    /// The word `bytes` hold, in this byte order.
+    pub fn word(self, bytes: [u8; INSN_WIDTH]) -> u32 {
+        self.order.read_word(bytes)
+    }
+
+    /// The decoder of every word some version of the Power ISA defines:
+    /// see the module.
+    fn decoder(self) -> InstDecoder {
+        InstDecoder::for_cpu(IsaVersion::All).with_be(self.order == ByteOrder::Big)
+    }
+}
 
 /// What [`Insn::opcode`] holds for PowerPC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,12 +126,6 @@ pub struct Decoded {
     /// The operation the decoder read. It leaves out the record and the
     /// overflow bits, so `add.` and `addo` are [`Opcode::ADD`].
     pub opcode: Opcode,
-}
-
-/// The decoder of every word some version of the Power ISA defines: see
-/// the module.
-fn decoder() -> InstDecoder {
-    InstDecoder::for_cpu(IsaVersion::All)
 }
 
 impl PowerPc {
@@ -90,9 +143,9 @@ impl PowerPc {
             .and_then(|rest| rest.get(..INSN_WIDTH))
             .ok_or(DecodeError::Truncated)?;
         let insn_address = address + offset as u64;
-        let word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let word = self.word([bytes[0], bytes[1], bytes[2], bytes[3]]);
 
-        let Ok(inst) = decoder().decode(&mut U8Reader::new(bytes)) else {
+        let Ok(inst) = self.decoder().decode(&mut U8Reader::new(bytes)) else {
             // Every instruction is 4 bytes, so stepping over an unreadable
             // one keeps the rest aligned. Its word goes in the text, so
             // that an edit to it still shows.
@@ -100,14 +153,14 @@ impl PowerPc {
                 insn_address,
                 bytes,
                 InsnKind::Unknown,
-                crate::arch::Opcode::Unread(InstructionSet::PowerPc),
+                crate::arch::Opcode::Unread(InstructionSet::PowerPc(self)),
             );
             return Ok((insn, printing.text(|| format!("{UNKNOWN_TEXT} {word:#010x}"))));
         };
 
-        let kind = classify(&inst, word, insn_address);
+        let kind = classify(&inst, word, insn_address, self.mode);
         let text = printing.text(|| print(&inst, word));
-        let opcode = crate::arch::Opcode::PowerPc(Decoded { opcode: inst.opcode() });
+        let opcode = crate::arch::Opcode::PowerPc(Decoded { opcode: inst.opcode() }, self);
         Ok((Insn::new(insn_address, bytes, kind, opcode), text))
     }
 }
@@ -141,7 +194,12 @@ impl Decoder for PowerPc {
     }
 
     fn triple(&self) -> &'static str {
-        "powerpc"
+        match (self.order, self.mode) {
+            (ByteOrder::Big, Mode::Bits32) => "powerpc",
+            (ByteOrder::Little, Mode::Bits32) => "powerpcle",
+            (ByteOrder::Big, Mode::Bits64) => "powerpc64",
+            (ByteOrder::Little, Mode::Bits64) => "powerpc64le",
+        }
     }
 
     fn instruction_width(&self) -> usize {
@@ -149,19 +207,27 @@ impl Decoder for PowerPc {
     }
 
     fn pointer_width(&self) -> usize {
-        POINTER_WIDTH
+        match self.mode {
+            Mode::Bits32 => 4,
+            Mode::Bits64 => 8,
+        }
     }
 
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
-        u64::from(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        let width = self.pointer_width();
+        let word = bytes[..width].iter().map(|&byte| u64::from(byte));
+        match self.order {
+            ByteOrder::Big => word.fold(0, |value, byte| value << 8 | byte),
+            ByteOrder::Little => word.rev().fold(0, |value, byte| value << 8 | byte),
+        }
     }
 
     fn data_order(&self) -> crate::arch::ByteOrder {
-        crate::arch::ByteOrder::Big
+        self.order
     }
 
     fn lift(&self, insn: &Insn) -> Option<il::Lifted> {
-        Some(lift(&instruction(insn)?, word_of(insn)?))
+        lifted(insn)
     }
 
     fn lift_named(&self, insn: &Insn) -> Option<il::Named> {
@@ -173,7 +239,17 @@ impl Decoder for PowerPc {
 /// What [`PowerPc`] read for `insn`, where it read PowerPC.
 pub fn decoded(insn: &Insn) -> Option<Decoded> {
     match insn.opcode {
-        crate::arch::Opcode::PowerPc(decoded) => Some(decoded),
+        crate::arch::Opcode::PowerPc(decoded, _) => Some(decoded),
+        _ => None,
+    }
+}
+
+/// The decoder that read `insn`, where it read PowerPC or found no
+/// instruction there.
+pub fn reader(insn: &Insn) -> Option<PowerPc> {
+    match insn.opcode {
+        crate::arch::Opcode::PowerPc(_, reader)
+        | crate::arch::Opcode::Unread(InstructionSet::PowerPc(reader)) => Some(reader),
         _ => None,
     }
 }
@@ -181,12 +257,18 @@ pub fn decoded(insn: &Insn) -> Option<Decoded> {
 /// `insn` decoded again, where it is a PowerPC instruction.
 pub fn instruction(insn: &Insn) -> Option<Instruction> {
     decoded(insn)?;
-    decoder().decode(&mut U8Reader::new(insn.bytes())).ok()
+    reader(insn)?.decoder().decode(&mut U8Reader::new(insn.bytes())).ok()
 }
 
-/// The word of `insn`, where it is 4 bytes.
+/// The word of `insn`, in the byte order that read it, where it is a word
+/// that PowerPC read.
 pub fn word_of(insn: &Insn) -> Option<u32> {
-    Some(u32::from_be_bytes(insn.bytes().try_into().ok()?))
+    Some(reader(insn)?.word(insn.bytes().try_into().ok()?))
+}
+
+/// `insn` lifted, where it is a PowerPC instruction.
+pub fn lifted(insn: &Insn) -> Option<il::Lifted> {
+    Some(lift(&instruction(insn)?, word_of(insn)?))
 }
 
 /// The text of `inst`, which was read from `word`, as `yaxpeax-power`
@@ -226,12 +308,15 @@ fn distance(inst: &Instruction) -> Option<i64> {
 }
 
 /// Where a branch at `address` goes, where its word holds the target.
-fn target_of(inst: &Instruction, address: u64) -> Option<u64> {
+fn target_of(inst: &Instruction, address: u64, mode: Mode) -> Option<u64> {
     operands(inst).iter().find_map(|operand| match *operand {
         Operand::BranchOffset16(distance) => address.checked_add_signed(distance.into()),
         Operand::BranchOffset(distance) => address.checked_add_signed(distance.into()),
         // An absolute target is sign-extended to the width of the address.
-        Operand::BranchAbs(target) => Some(u64::from(target as u32)),
+        Operand::BranchAbs(target) => Some(match mode {
+            Mode::Bits32 => u64::from(target as u32),
+            Mode::Bits64 => target as i64 as u64,
+        }),
         _ => None,
     })
 }
@@ -364,8 +449,8 @@ fn bit_name(bit: u8, when: BitValue) -> &'static str {
 }
 
 /// How `inst`, read from `word` at `address`, moves control.
-pub(crate) fn classify(inst: &Instruction, word: u32, address: u64) -> InsnKind {
-    let target = target_of(inst, address);
+pub(crate) fn classify(inst: &Instruction, word: u32, address: u64, mode: Mode) -> InsnKind {
+    let target = target_of(inst, address, mode);
     let test = BranchTest::of(word);
     match (inst.opcode(), inst.lk(), test) {
         (Opcode::B | Opcode::BA, _, _) => InsnKind::Jump { target },
@@ -978,11 +1063,11 @@ mod tests {
     use rstest::rstest;
 
     fn decode_one(word: u32) -> Insn {
-        PowerPc.decode(&word.to_be_bytes(), 0, 0x1000).expect("4 bytes always decode")
+        PowerPc::BIG.decode(&word.to_be_bytes(), 0, 0x1000).expect("4 bytes always decode")
     }
 
     fn lift_one(word: u32) -> il::Lifted {
-        PowerPc.lift(&decode_one(word)).expect("the word must lift")
+        PowerPc::BIG.lift(&decode_one(word)).expect("the word must lift")
     }
 
     fn regs(regs: &[Reg]) -> RegSet {
@@ -1006,7 +1091,7 @@ mod tests {
     #[case::unread(0x0000_0000, "(unknown) 0x00000000")]
     fn prints_as_a_reader_expects(#[case] word: u32, #[case] text: &str) {
         let (_, printed) =
-            PowerPc.read(&word.to_be_bytes(), 0, 0x1000, Printing::Text).expect("must read");
+            PowerPc::BIG.read(&word.to_be_bytes(), 0, 0x1000, Printing::Text).expect("must read");
         assert_eq!(printed, text);
     }
 
@@ -1054,7 +1139,7 @@ mod tests {
     #[case::mtlr(0x7c08_03a6, "mtlr")]
     #[case::unread(0x0000_0000, "(unknown)")]
     fn names_the_operation(#[case] word: u32, #[case] name: &str) {
-        assert_eq!(PowerPc.operation_name(&decode_one(word)), name);
+        assert_eq!(PowerPc::BIG.operation_name(&decode_one(word)), name);
     }
 
     #[test]
@@ -1282,23 +1367,79 @@ mod tests {
 
     #[test]
     fn the_names_name_each_operand_in_order() {
-        let named = PowerPc.lift_named(&decode_one(0x9421_fff0)).expect("must lift");
+        let named = PowerPc::BIG.lift_named(&decode_one(0x9421_fff0)).expect("must lift");
         assert_eq!(named.names.as_slice(), ["r1", "[r1 - 0x10]"]);
-        let named = PowerPc.lift_named(&decode_one(0x7c64_282e)).expect("must lift");
+        let named = PowerPc::BIG.lift_named(&decode_one(0x7c64_282e)).expect("must lift");
         assert_eq!(named.names.as_slice(), ["r3", "[r4 + r5]"]);
-        let named = PowerPc.lift_named(&decode_one(0x7c08_03a6)).expect("must lift");
+        let named = PowerPc::BIG.lift_named(&decode_one(0x7c08_03a6)).expect("must lift");
         assert_eq!(named.names.as_slice(), ["lr", "r0"]);
     }
 
     #[test]
     fn a_truncated_word_does_not_decode() {
-        assert_eq!(PowerPc.decode(&[0x38, 0x60, 0x00], 0, 0), Err(DecodeError::Truncated));
-        assert_eq!(PowerPc.decode(&[0x38, 0x60, 0x00, 0x05], 4, 0), Err(DecodeError::Truncated));
+        assert_eq!(PowerPc::BIG.decode(&[0x38, 0x60, 0x00], 0, 0), Err(DecodeError::Truncated));
+        assert_eq!(
+            PowerPc::BIG.decode(&[0x38, 0x60, 0x00, 0x05], 4, 0),
+            Err(DecodeError::Truncated)
+        );
     }
 
     #[test]
-    fn a_pointer_is_a_big_endian_word() {
-        assert_eq!(PowerPc.read_pointer(&[0x10, 0x00, 0x20, 0x30]), 0x1000_2030);
+    fn a_pointer_is_a_word_or_a_doubleword_in_the_byte_order() {
+        let bytes = [0x10, 0x00, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70];
+        assert_eq!(PowerPc::BIG.read_pointer(&bytes), 0x1000_2030);
+        assert_eq!(PowerPc::LITTLE.read_pointer(&bytes), 0x3020_0010);
+        assert_eq!(PowerPc::BIG64.read_pointer(&bytes), 0x1000_2030_4050_6070);
+        assert_eq!(PowerPc::LITTLE64.read_pointer(&bytes), 0x7060_5040_3020_0010);
+        assert_eq!(PowerPc::BIG.pointer_width(), 4);
+        assert_eq!(PowerPc::LITTLE64.pointer_width(), 8);
+    }
+
+    #[rstest]
+    #[case(PowerPc::BIG, "powerpc")]
+    #[case(PowerPc::LITTLE, "powerpcle")]
+    #[case(PowerPc::BIG64, "powerpc64")]
+    #[case(PowerPc::LITTLE64, "powerpc64le")]
+    fn each_decoder_names_its_triple(#[case] decoder: PowerPc, #[case] triple: &str) {
+        assert_eq!(decoder.triple(), triple);
+        assert_eq!(PowerPc::of(decoder.order(), decoder.mode()), &decoder);
+    }
+
+    /// One instruction reads the same in either byte order, from bytes in
+    /// that order, and lifts the same.
+    #[test]
+    fn little_endian_reads_the_word_from_its_bytes_reversed() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            let big = PowerPc::BIG.decode(&word.to_be_bytes(), 0, 0x1000).expect("decodes");
+            let little = PowerPc::LITTLE.decode(&word.to_le_bytes(), 0, 0x1000).expect("decodes");
+            assert_eq!(big.to_string(), little.to_string(), "{word:#010x}");
+            assert_eq!(big.kind, little.kind);
+            assert_eq!(PowerPc::BIG.lift(&big), PowerPc::LITTLE.lift(&little));
+            assert_eq!(word_of(&little), Some(word));
+        });
+    }
+
+    #[test]
+    fn a_64_bit_absolute_target_extends_its_sign() {
+        let word: u32 = 0x4bff_fff2; // ba -0x10
+        let insn = PowerPc::BIG64.decode(&word.to_be_bytes(), 0, 0x1000).expect("decodes");
+        assert_eq!(insn.kind, InsnKind::Jump { target: Some(0xffff_ffff_ffff_fff0) });
+        let insn = PowerPc::BIG.decode(&word.to_be_bytes(), 0, 0x1000).expect("decodes");
+        assert_eq!(insn.kind, InsnKind::Jump { target: Some(0xffff_fff0) });
+    }
+
+    #[rstest]
+    #[case::stdu(0xf821_ffd1, Op::Store, Some(Width::Bits64))]
+    #[case::ld(0xe862_8000, Op::Load, Some(Width::Bits64))]
+    #[case::lwax(0x7d49_52aa, Op::Load, Some(Width::Bits32))]
+    fn a_64_bit_access_names_its_width(
+        #[case] word: u32,
+        #[case] op: Op,
+        #[case] width: Option<Width>,
+    ) {
+        let insn = PowerPc::BIG64.decode(&word.to_be_bytes(), 0, 0x1000).expect("decodes");
+        let lifted = PowerPc::BIG64.lift(&insn).expect("lifts");
+        assert_eq!((lifted.op, lifted.memory.and_then(|access| access.width)), (op, width));
     }
 
     /// Every word decodes to one instruction of 4 bytes, and lifts with a
@@ -1308,11 +1449,11 @@ mod tests {
         bolero::check!().with_type::<u32>().for_each(|&word| {
             let insn = decode_one(word);
             assert_eq!(insn.bytes_len, INSN_WIDTH);
-            let _ = PowerPc.operation_name(&insn);
+            let _ = PowerPc::BIG.operation_name(&insn);
             let _ = insn.to_string();
-            if let Some(named) = PowerPc.lift_named(&insn) {
+            if let Some(named) = PowerPc::BIG.lift_named(&insn) {
                 assert_eq!(named.names.len(), named.lifted.operands.len());
-                assert_eq!(Some(named.lifted), PowerPc.lift(&insn));
+                assert_eq!(Some(named.lifted), PowerPc::BIG.lift(&insn));
             }
         });
     }
