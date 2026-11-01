@@ -60,8 +60,12 @@ The IL view shows no line for padding that does nothing, as `nop`. A
 statement that only names other registers is the same line, where the
 registers hold values of one width and each one keeps one new name. A
 gray line is in a block of at least three statements that the other side
-holds in another place, with no branch, call or return in it: the
-compiler moved the code:
+holds in another place: the compiler moved the code. A block with a
+branch, a call or a return in it is gray only where a jump or a return
+comes before it on each side, and it ends with one. Then no code falls
+into it or out of it, and its place does not change what runs. A fix can
+move a check before the use it guards, or a call of `free` after the
+last use, and such a move stays red and green:
 
 ![The diff of one function, as IL](./images/tui-diff-il.png)
 

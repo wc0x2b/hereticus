@@ -2715,3 +2715,53 @@ that the other side keeps in another register or in a slot of the stack:
 two are one value, so each path of the function must be followed. A move
 next to such a load is 1,210 of the 90,844 moves that still show. The
 fold is not in the tool, as it takes away 0.5% of the lines.
+
+### The kinds of lines that the IL diff shows as removed or added
+
+Measured on 2026-11-01 on the same 300 pairs of Assemblage as the entry
+above, with their 700,045 lines that the IL diffs show as removed or
+added, and 48,001 changed lines.
+
+| Kind of line | Lines | Share |
+|---|---|---|
+| Load | 106,890 | 15.3% |
+| Other operation, as `rax = rax + rdx` | 104,852 | 15.0% |
+| Move of a register | 92,861 | 13.3% |
+| Store | 79,887 | 11.4% |
+| Call | 60,160 | 8.6% |
+| Compare | 57,836 | 8.3% |
+| Branch | 56,843 | 8.1% |
+| Move of a constant | 35,917 | 5.1% |
+| Address, as `rsi = &"usage"` | 35,536 | 5.1% |
+| Jump | 22,615 | 3.2% |
+| Other | 21,244 | 3.0% |
+| Push or pop | 16,298 | 2.3% |
+| Stack pointer | 4,386 | 0.6% |
+| `endbr64` | 3,038 | 0.4% |
+| Return | 1,682 | 0.2% |
+
+No kind is most of the lines. But 161,141 of the lines (23.0%) have the
+same text on the other side of their function, where the diff did not
+pair them. Only 19,926 (2.8%) of these were gray, in a block of code that
+moved. The rule of a moved block was the cause: a block of at least three
+lines with no branch, call or return in it. Other rules, with each branch
+target left out of the text:
+
+| Rule of a moved block | Gray lines | Share |
+|---|---|---|
+| At least 3 lines, no branch, call or return | 19,940 | 2.8% |
+| At least 3 lines, calls too | 34,790 | 5.0% |
+| At least 3 lines, all but branches | 41,148 | 5.9% |
+| At least 3 lines, anything | 57,382 | 8.2% |
+| At least 6 lines, anything | 32,940 | 4.7% |
+| At least 3 lines, anything where no code falls into or out of the block | 24,778 | 3.5% |
+
+A fix can move a call of `free` after the last use, so a rule that lets
+any call in can show a fix in gray. The last rule lets a branch, a call
+or a return in only where a jump or a return comes before the block on
+each side, and the block ends with one. Then the place of the block
+changes the layout of the code, and not the order in which the code
+runs. The IL diff now uses it: 24% more of the lines are gray. Where a
+conditional branch also came before the block, as the end of a path, 3.8%
+of the lines were gray, but code falls into the block where the branch is
+not taken.
