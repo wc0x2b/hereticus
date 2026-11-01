@@ -299,12 +299,13 @@ the value that each path brings to a block before it ends them.
 
 ## Make the IL diff show less that did not change
 
-A move that one side holds alone, as `x0 = x19`, holds the same value as
-the other side at the next line that reads its register in few cases:
-most such moves feed a line that changed too (`RESEARCH.md`, "Moves that
-carry a value the other side already holds"). Before more work here, rank
-the other kinds of lines that the IL diffs show as removed or added, to
-find a larger part that did not change.
+Many of the lines that the IL diffs show as removed or added have the
+same text on the other side of their function, but few of them are near
+that line (`RESEARCH.md`, "The kinds of lines that the IL diff shows as
+removed or added"), so a fold of lines that moved a short way takes
+little. What is left is mostly code that the compiler put in other
+registers or other places of the stack, which only the values on all
+paths of the function can tell apart from a change.
 
 ## Prepare the functions of a large binary faster
 

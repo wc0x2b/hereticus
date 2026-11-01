@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The IL diff shows more blocks of code that moved in gray. A block with
+  a branch, a call or a return in it is gray where a jump or a return
+  comes before it on each side, and it ends with one, so that its place
+  changes only the layout of the code. In a block that moved, a jump
+  matches a jump of the other side at any distance from its target, as
+  the alignment of the diff already reads them.
+
 ## [0.7.0](https://github.com/wc0x2b/hereticus/compare/v0.6.1...v0.7.0) - 2026-11-01
 
 ### Added
