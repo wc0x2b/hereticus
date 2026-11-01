@@ -2669,3 +2669,49 @@ function that copies memory, which thousands call, and
 each of its candidates. With each fixed, the comparison takes 14
 seconds, and the report and the pairs of Assemblage and of the backports
 are the same. The rest is the preparing of the functions, 10 seconds.
+
+### Moves that carry a value the other side already holds
+
+Measured on 2026-11-01 on 300 pairs of Assemblage, one of each 29 of
+`cases.json`, on each pair of changed functions. The IL diffs of these
+pairs show 700,045 lines as removed or added. Of these, 92,878 (13.3%)
+are moves into a register, from a register or of a constant.
+
+A test followed the value of each register down the diff, on each side.
+A line that both sides hold makes one value on both sides from the same
+values. A line that one side holds alone makes a value of its own, and a
+move copies the value of its source. A value that goes through a register
+narrower than the architecture, as `eax` of x86-64, is cut, and only a
+cut of the same value equals it. A call that both sides hold leaves the
+same values on both sides. At the target of a branch, the values of that
+side start again, as the values of the other paths are not known. A move
+that one side holds alone folds where the next line that reads its
+register, or that moves control, is a line that both sides hold, and the
+register holds the same value on both sides there.
+
+That folds 3,445 lines, 0.49% of those removed and added. Most of the
+folds checked were one move that both sides hold in other places, as
+`r8 = rbx` before a line on one side and after it on the other. To follow
+a value from a store into a slot of the stack to a load of the same slot
+folds 12 lines more, also where the code passes the address of its frame
+to a call, which can then write the slot.
+
+On 100 of the pairs, where each move that one side holds alone ends:
+
+| Where the move ends | Moves | Share |
+|---|---|---|
+| A line that one side holds alone reads or writes the register, or moves control | 34,748 | 70.9% |
+| A line that both sides hold, with another value on each side | 11,318 | 23.1% |
+| A line that both sides hold, with the same value on both sides | 1,462 | 3.0% |
+| The target of a branch | 1,130 | 2.3% |
+| A line that both sides hold, where only one side reads the register | 338 | 0.7% |
+| All | 48,996 | 100% |
+
+So most of these moves feed a line that changed too, and are part of the
+change. Many of the moves where the value differs give a call a value
+that the other side keeps in another register or in a slot of the stack:
+`rdi = r12` against `rdi = load.64 [rsp + 0x8]` before a call of
+`_M_dispose`. Only the code on all paths into the call can tell that the
+two are one value, so each path of the function must be followed. A move
+next to such a load is 1,210 of the 90,844 moves that still show. The
+fold is not in the tool, as it takes away 0.5% of the lines.
