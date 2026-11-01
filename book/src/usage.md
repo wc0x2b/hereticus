@@ -186,9 +186,9 @@ the next. These cases cause it:
   %lo(text)`, point at text from a base just below the opcode. The
   column `EVIDENCE` shows `halves` there, and the row counts for nothing.
 
-Over 54<!-- from find_base.rs: images --> images of seven
+Over 60<!-- from find_base.rs: images --> images of ten
 architectures with a known base, `hereticus` gives the right base for
-40<!-- from find_base.rs: right -->, no base for the other
+46<!-- from find_base.rs: right -->, no base for the other
 14<!-- from find_base.rs: none -->, all position-independent stubs, and
 a wrong base for 0<!-- from find_base.rs: wrong -->. rbasefind, which
 tries each base on a page, gives a base for every image, the stubs too. `RESEARCH.md`, entry 20, compares the two.
@@ -404,7 +404,7 @@ Options:
       --raw                    Read the inputs as raw code with no container format
       --base <BASE>            Address a raw image loads at, for example `0x08000000`, or `auto`
       --unpack <UNPACK>        Take one part out of each firmware image before reading it raw [possible values: stub, kernel]
-      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, arm32-be8, thumb2-be8, aarch64, mips32, mips32-be, mips16, mips16-be, x86-64, x86]
+      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, arm32-be8, thumb2-be8, aarch64, mips32, mips32-be, mips16, mips16-be, x86-64, x86, powerpc, powerpc-le, powerpc64, powerpc64-le]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact, markdown, json]
       --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified, rare]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]
@@ -417,10 +417,17 @@ Options:
 ## Limits
 * **A32 (ARMv5TE and later, soft-float or hard-float, with VFP and NEON)
   and Thumb-2 (Cortex-M too), little endian or BE8, AArch64, MIPS32 and
-  MIPS16e in either byte order, and x86-64 and 32-bit x86.** A library that
+  MIPS16e in either byte order, x86-64 and 32-bit x86, and PowerPC, 32-bit
+  and 64-bit in either byte order.** A library that
   mixes A32 and Thumb-2, or MIPS32 and MIPS16e, is read function by function
   where its symbols say which set each is in. Stripped or raw, it is read in
-  one set, so its minority reads as nonsense.
+  one set, so its minority reads as nonsense. PowerPC is decoded as any
+  version of the Power ISA defines it, with Book E and AltiVec, but not the
+  signal processing extension of the e500 (`evldd` and the like), whose
+  words stay unread. 64-bit code is read with the ELFv2 ABI, and big
+  endian with ELFv1 too. The tests build 64-bit big-endian code with GCC
+  alone, as LLD does not link ELFv1, and 32-bit little-endian code as
+  objects alone, as no C library ships for it.
 * **ELF, raw images, and AArch64 Mach-O.** An ELF file that `sstrip` left
   with no section headers, as OpenWrt ships each binary, is read through
   its segments. A Mach-O file is read as macOS

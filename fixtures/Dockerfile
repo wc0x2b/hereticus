@@ -27,6 +27,9 @@ RUN apt-get update \
         libc6-dev-mipsel-cross \
         libc6-dev-mips-cross \
         libc6-dev-i386-cross \
+        libc6-dev-powerpc-cross \
+        libc6-dev-ppc64-cross \
+        libc6-dev-ppc64el-cross \
         libgcc-14-dev \
         libgcc-14-dev-arm64-cross \
         libgcc-14-dev-armel-cross \
@@ -34,6 +37,9 @@ RUN apt-get update \
         libgcc-14-dev-mipsel-cross \
         libgcc-14-dev-mips-cross \
         libgcc-14-dev-i386-cross \
+        libgcc-14-dev-powerpc-cross \
+        libgcc-14-dev-ppc64-cross \
+        libgcc-14-dev-ppc64el-cross \
         libstdc++-14-dev \
         libstdc++-14-dev-arm64-cross \
         libstdc++-14-dev-armel-cross \
@@ -41,6 +47,9 @@ RUN apt-get update \
         libstdc++-14-dev-mipsel-cross \
         libstdc++-14-dev-mips-cross \
         libstdc++-14-dev-i386-cross \
+        libstdc++-14-dev-powerpc-cross \
+        libstdc++-14-dev-ppc64-cross \
+        libstdc++-14-dev-ppc64el-cross \
         patch \
         gcc-14-aarch64-linux-gnu \
         g++-14-aarch64-linux-gnu \
@@ -56,6 +65,12 @@ RUN apt-get update \
         g++-14 \
         gcc-14-i686-linux-gnu \
         g++-14-i686-linux-gnu \
+        gcc-14-powerpc-linux-gnu \
+        g++-14-powerpc-linux-gnu \
+        gcc-14-powerpc64-linux-gnu \
+        g++-14-powerpc64-linux-gnu \
+        gcc-14-powerpc64le-linux-gnu \
+        g++-14-powerpc64le-linux-gnu \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/lib/llvm-22/bin:${PATH}"

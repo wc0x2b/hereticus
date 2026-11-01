@@ -33,11 +33,11 @@ through stubs that the cache builder has bound or removed.
 ## Recover the last functions of a stripped library
 
 `tests/boundaries.rs` locks how well the scan recovers the functions of the
-stripped releases: 64488<!-- from boundaries.rs: exact --> of
-64551<!-- from boundaries.rs: functions --> exact, 9<!-- from boundaries.rs: missed -->
+stripped releases: 87466<!-- from boundaries.rs: exact --> of
+87529<!-- from boundaries.rs: functions --> exact, 9<!-- from boundaries.rs: missed -->
 starts missed and 3<!-- from boundaries.rs: invented --> invented,
-over ARM, Thumb-2, AArch64, MIPS and x86, with the PLT and the lazy binding
-stubs of MIPS left out (`RESEARCH.md`, "Function recovery, again"). 8 of
+over ARM, Thumb-2, AArch64, MIPS, x86 and PowerPC, with the PLT, the lazy
+binding stubs of MIPS and the call stubs of PowerPC left out (`RESEARCH.md`, "Function recovery, again"). 8 of
 the 9 missed follow a call that never returns, to a function of the
 library, and open with no frame: `auxsetnode` of Lua 5.3 by clang for
 ARM and Thumb-2, which a pointer reaches, and `luaV_shiftl` by GCC for
@@ -127,11 +127,23 @@ RISC-V. Add RV32 and RV64 with the compressed (C) extension, which mixes
 2-byte and 4-byte instructions. Addresses are built with `auipc` and
 `addi` pairs.
 
-## Read PowerPC
+## Read the rest of PowerPC
 
-Older routers, automotive controllers and avionics firmware run 32-bit
-PowerPC, big endian. Addresses are built with `lis` and `addi` pairs, and
-calls return through the link register as on ARM.
+PowerPC is read, 32-bit and 64-bit, in either byte order, with the
+backports built by GCC and clang (`tests/backports.rs`), but 64-bit big
+endian by GCC alone, as LLD does not link ELFv1. Still to do:
+
+- Decode the signal processing extension of the e500 (`evldd` and the
+  like). `yaxpeax-power` does not decode it, so those words stay unread.
+- Test 32-bit little-endian code in a library or an executable. No C
+  library ships for it, so the tests read clang objects alone.
+- Name the call stubs of GNU `ld` in a stripped 32-bit file. Each stub
+  reaches its slot from the `.got2` of its own object, which no one
+  address of the file gives.
+- Keep a 64-bit function that is one `trap`. LLD fills the gaps between
+  64-bit functions with `trap`, so the scan reads such a function as
+  padding. In 32-bit code, where a deleted destructor is one `trap`, it
+  is kept.
 
 ## Read Xtensa
 

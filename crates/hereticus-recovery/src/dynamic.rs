@@ -126,6 +126,25 @@ impl<'data> Dynamic<'data> {
         self.value(DT_PLTGOT)
     }
 
+    /// The address that 32-bit PowerPC PIC code holds in `r30`, as
+    /// `DT_PPC_GOT` gives it. `DT_PLTGOT` there gives the table of the
+    /// PLT, which the call stubs reach from `r30`.
+    pub fn powerpc_global_offset_table(&self) -> Option<u64> {
+        /// `DT_PPC_GOT`, the first tag of the processor range.
+        const DT_PPC_GOT: u64 = 0x7000_0000;
+        self.value(DT_PPC_GOT)
+    }
+
+    /// The TOC of ELFv1 64-bit PowerPC code, from the second doubleword of
+    /// the descriptor that an exported function names, as GNU `ld` writes
+    /// it.
+    pub fn powerpc64_descriptor_toc(&self) -> Option<u64> {
+        let field = self.field_width();
+        self.exports()
+            .iter()
+            .find_map(|export| self.word(export.address + 8, field).filter(|&toc| toc != 0))
+    }
+
     /// The value of the first entry with `tag`.
     pub fn value(&self, tag: u64) -> Option<u64> {
         self.entries.iter().find_map(|&(entry_tag, value)| (entry_tag == tag).then_some(value))

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compile the fixture C sources to ARM32 and MIPS32 ELF objects at several
-# optimization levels. Run by `just fixtures`.
+# Compile the fixture C sources to ARM32, MIPS32 and PowerPC ELF objects at
+# several optimization levels. Run by `just fixtures`.
 #
 # The corpus is generated, not committed, so it stays readable as C source and
 # regenerates on demand. Tests skip themselves if clang cannot target ARM.
@@ -87,6 +87,27 @@ for source in "$src"/*.c; do
     clang --target="$mipsbe_target" "${common_flags[@]}" \
         -fno-pic -mno-abicalls -c -O2 -g \
         "$source" -o "$build/mipsbe-nopic-O2/$name.o"
+done
+
+# PowerPC: 32-bit big endian, as routers and automotive controllers run
+# it, 32-bit little endian, and 64-bit in both orders, ELFv1 big endian and
+# ELFv2 little endian.
+for spec in powerpc:powerpc-linux-gnu powerpcle:powerpcle-linux-gnu \
+    powerpc64:powerpc64-linux-gnu powerpc64le:powerpc64le-linux-gnu; do
+    tree="${spec%%:*}"
+    triple="${spec#*:}"
+    # No C library ships for 32-bit little-endian PowerPC, so its objects
+    # take <stdint.h> from clang alone.
+    hosted=()
+    [ "$tree" = powerpcle ] && hosted=(-ffreestanding)
+    for opt in O0 O2; do
+        mkdir -p "$build/$tree-$opt"
+        for source in "$src"/*.c; do
+            name="$(basename "$source" .c)"
+            clang --target="$triple" "${common_flags[@]}" "${hosted[@]}" -c "-$opt" -g \
+                "$source" -o "$build/$tree-$opt/$name.o"
+        done
+    done
 done
 
 # Stripped copies, for the tests that check recovery without symbols. The
@@ -191,7 +212,9 @@ moved_base="0x12340000"
 mkdir -p "$build/base"
 for spec in x86-64:gcc-14 x86:i686-linux-gnu-gcc-14 aarch64:aarch64-linux-gnu-gcc-14 \
     thumb2:arm-linux-gnueabihf-gcc-14 arm32:arm-linux-gnueabi-gcc-14 \
-    mips32:mipsel-linux-gnu-gcc-14 mips32-be:mips-linux-gnu-gcc-14; do
+    mips32:mipsel-linux-gnu-gcc-14 mips32-be:mips-linux-gnu-gcc-14 \
+    powerpc:powerpc-linux-gnu-gcc-14 powerpc64:powerpc64-linux-gnu-gcc-14 \
+    powerpc64-le:powerpc64le-linux-gnu-gcc-14; do
     arch="${spec%%:*}"
     compiler="${spec#*:}"
     if ! command -v "$compiler" >/dev/null 2>&1; then

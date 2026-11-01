@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use hereticus::obj::{Binary, Isa};
+use hereticus::recovery::arch::StubPlace;
 use object::{Object, ObjectSection};
 
 /// What recovery found, summed over every build.
@@ -59,20 +60,27 @@ fn recovery_of(build: &Path) -> Recovery {
         let data = std::fs::read(build.join(file)).expect("the build exists");
         Binary::parse(&data).expect("the build parses")
     };
-    // The PLT, and the lazy binding stubs of MIPS, are code no symbol
-    // names, so the stubs the scan finds there are no error, and are left
-    // out.
+    // The PLT, the lazy binding stubs of MIPS, and the lazy resolver of
+    // PowerPC that LLD writes in `.glink`, are code no symbol names, so the
+    // stubs the scan finds there are no error, and are left out. So are the
+    // PowerPC call stubs of GNU `ld` among the code, which have no symbol
+    // or one of no size, and its lazy resolver at the end of `.text`.
     let library = std::fs::read(build.join("lib.so")).expect("the build exists");
     let file = object::File::parse(library.as_slice()).expect("the build parses");
     let plt: Vec<core::ops::Range<u64>> = file
         .sections()
         .filter(|section| {
-            section.name().is_ok_and(|name| name.starts_with(".plt") || name == ".MIPS.stubs")
+            section.name().is_ok_and(|name| {
+                name.starts_with(".plt") || name == ".MIPS.stubs" || name == ".glink"
+            })
         })
         .map(|section| section.address()..section.address() + section.size())
+        .chain(stubs_among_code(&file, read("lib.so").isa))
+        .chain(glink(&file))
         .collect();
     let outside_plt = |&(start, _): &(u64, u64)| !plt.iter().any(|range| range.contains(&start));
     let (truth, found) = (spans(&read("lib.so")), spans(&read("lib-stripped.so")));
+    let truth: BTreeSet<(u64, u64)> = truth.into_iter().filter(outside_plt).collect();
     let found: BTreeSet<(u64, u64)> = found.into_iter().filter(outside_plt).collect();
     let starts = |spans: &BTreeSet<(u64, u64)>| -> BTreeSet<u64> {
         spans.iter().map(|&(start, _)| start).collect()
@@ -84,6 +92,34 @@ fn recovery_of(build: &Path) -> Recovery {
         invented: found_starts.difference(&true_starts).count(),
         missed: true_starts.difference(&found_starts).count(),
     }
+}
+
+/// The lazy resolver that GNU `ld` writes at the end of the `.text` of a
+/// PowerPC library, from its symbol `__glink` on, or `__glink_PLTresolve`
+/// in 64-bit code.
+fn glink(file: &object::File<'_>) -> Option<core::ops::Range<u64>> {
+    use object::ObjectSymbol;
+    let start = file
+        .symbols()
+        .filter(|symbol| matches!(symbol.name(), Ok("__glink" | "__glink_PLTresolve")))
+        .map(|symbol| symbol.address())
+        .min()?;
+    let text = file.section_by_name(".text")?;
+    Some(start..text.address() + text.size())
+}
+
+/// The call stubs that `isa` keeps among the code of `file`, where it
+/// keeps them there.
+fn stubs_among_code(file: &object::File<'_>, isa: Isa) -> Vec<core::ops::Range<u64>> {
+    let arch = isa.arch();
+    if arch.stub_place() != StubPlace::AmongCode {
+        return Vec::new();
+    }
+    file.sections()
+        .filter(|section| section.kind() == object::SectionKind::Text)
+        .filter_map(|section| Some((section.address(), section.data().ok()?)))
+        .flat_map(|(base, code)| arch.plt_entries(code, base))
+        .collect()
 }
 
 #[test]
@@ -101,7 +137,7 @@ fn stripped_functions_are_recovered() {
         });
     assert_eq!(
         total,
-        Recovery { functions: 64551, exact: 64488, invented: 3, missed: 9 },
+        Recovery { functions: 87529, exact: 87466, invented: 3, missed: 9 },
         "over {} builds",
         builds.len()
     );

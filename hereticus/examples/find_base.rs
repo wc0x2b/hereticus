@@ -14,6 +14,10 @@ fn main() {
         Some("mips32-be") => Isa::Mips32Be,
         Some("x86") => Isa::X86,
         Some("x86-64") => Isa::X86_64,
+        Some("powerpc") => Isa::PowerPc,
+        Some("powerpc-le") => Isa::PowerPcLe,
+        Some("powerpc64") => Isa::PowerPc64,
+        Some("powerpc64-le") => Isa::PowerPc64Le,
         other => panic!("unknown arch {other:?}"),
     };
     for path in args {

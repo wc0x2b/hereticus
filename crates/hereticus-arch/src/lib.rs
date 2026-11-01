@@ -26,6 +26,7 @@ mod aarch64;
 mod arm32;
 mod mips;
 mod mips16;
+mod powerpc;
 mod thumb;
 mod x86;
 
@@ -141,12 +142,13 @@ mod tests {
     use hereticus_il::arch::arm32::Arm32;
     use hereticus_il::arch::mips::Mips32;
     use hereticus_il::arch::mips16::Mips16;
+    use hereticus_il::arch::powerpc::PowerPc;
     use hereticus_il::arch::thumb::Thumb2;
     use hereticus_il::arch::x86::X86;
     use hereticus_recovery::arch::decode_all;
 
     /// Every architecture, by name.
-    const ARCHES: [(&str, &dyn Arch); 9] = [
+    const ARCHES: [(&str, &dyn Arch); 13] = [
         ("A64", &Aarch64),
         ("A32", &Arm32),
         ("T32", &Thumb2),
@@ -156,6 +158,10 @@ mod tests {
         ("MIPS16el", &Mips16::LITTLE),
         ("x86-64", &X86::BITS64),
         ("x86", &X86::BITS32),
+        ("PowerPC", &PowerPc::BIG),
+        ("PowerPCle", &PowerPc::LITTLE),
+        ("PowerPC64", &PowerPc::BIG64),
+        ("PowerPC64le", &PowerPc::LITTLE64),
     ];
 
     /// The names stay in step with the operands: a lift with names lifts

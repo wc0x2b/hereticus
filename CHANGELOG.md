@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- PowerPC is read, 32-bit and 64-bit, in either byte order: ELF files
+  stripped or not, files with no section headers, and raw images with
+  `--arch powerpc`, `powerpc-le`, `powerpc64` or `powerpc64-le`. 64-bit
+  code is read with the ELFv2 ABI and, big endian, with ELFv1, whose
+  symbols name a descriptor in `.opd`. Each call stub that LLD or GNU `ld`
+  writes in `.text` takes the name of its callee, as `memcpy@plt`. The
+  signal processing extension of the e500 (`evldd` and the like) is not
+  decoded.
+
 ## [0.6.2](https://github.com/wc0x2b/hereticus/compare/v0.6.1...v0.6.2) - 2026-10-31
 
 ### Added

@@ -277,7 +277,7 @@ fn be8_releases_pair() {
         [
             Tally { right: 4464, wrong: 6, gone: 72, new: 93 },
             Tally { right: 4464, wrong: 6, gone: 72, new: 93 },
-            Tally { right: 4448, wrong: 6, gone: 196, new: 239 },
+            Tally { right: 4448, wrong: 6, gone: 193, new: 239 },
             Tally { right: 4446, wrong: 7, gone: 146, new: 158 },
         ],
         "big then little, stripped then raw"

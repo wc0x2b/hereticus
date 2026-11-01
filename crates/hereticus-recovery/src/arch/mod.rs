@@ -9,6 +9,7 @@ pub mod aarch64;
 pub mod arm32;
 pub mod mips;
 pub mod mips16;
+pub mod powerpc;
 pub mod thumb;
 pub mod x86;
 
@@ -171,6 +172,12 @@ pub trait Recovery: Decoder {
     /// offset table directly.
     fn stub_slot(&self, _code: &[u8], _address: u64) -> Option<u64> {
         None
+    }
+
+    /// Where a linker writes the stubs that call another library. Defaults
+    /// to [`StubPlace::Plt`].
+    fn stub_place(&self) -> StubPlace {
+        StubPlace::Plt
     }
 
     /// The size of each entry of the PLT, where every entry has one, or
@@ -364,6 +371,16 @@ pub struct VectorTable {
     pub words: core::ops::Range<u64>,
     /// The start of each handler the table names.
     pub handlers: Vec<u64>,
+}
+
+/// Where a linker writes the stubs that call another library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StubPlace {
+    /// In the PLT, a section of their own, as on ARM and x86.
+    Plt,
+    /// Among the code, as LLD and GNU `ld` write the call stubs of PowerPC
+    /// in `.text`.
+    AmongCode,
 }
 
 /// How a jump through a table of cases looks among other jumps.

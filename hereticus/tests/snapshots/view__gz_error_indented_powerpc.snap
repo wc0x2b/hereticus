@@ -1,0 +1,91 @@
+---
+source: hereticus/tests/view.rs
+expression: indented
+---
+store.32 [r1 - 0x20] = r1
+r0 = lr
+bcl 20, 31, $+0x4
+store.32 [r1 + 0x1c] = r31
+r31 = r3
+r3 = load.32 [r3 + 0x68]
+store.32 [r1 + 0x18] = r30
+r30 = lr
+flags = compare(r3, 0)
+r30 = @0x3738c
+store.32 [r1 + 0x10] = r28
+store.32 [r1 + 0x14] = r29
+store.32 [r1 + 0x24] = r0
+r30 = @0x37e4c
+r29 = r4
+r28 = r5
+if (r3 == 0) goto $+0x18
+  r9 = load.32 [r31 + 0x64]
+  flags = compare(r9, -0x4)
+  if (r9 != -0x4) goto $+0x104
+r9 = 0
+store.32 [r31 + 0x68] = r9
+flags = compare(r29, 0)
+if (r29 == 0) goto $+0x54
+  flags = compare(r29, -0x5)
+  if (r29 == -0x5) goto $+0x4c
+    flags = compare(r28, 0)
+    r9 = 0
+    store.32 [r31 + 0x64] = r29
+    store.32 [r31] = r9
+    if (r28 == 0) goto $+0xb8
+      flags = compare(r29, -0x4)
+      if (r29 != -0x4) goto $+0x3c
+        r0 = load.32 [r1 + 0x24]
+        r28 = load.32 [r1 + 0x10]
+        r29 = load.32 [r1 + 0x14]
+        r30 = load.32 [r1 + 0x18]
+        r31 = load.32 [r1 + 0x1c]
+        lr = r0
+        r1 = r1 + 0x20
+        return
+flags = compare(r28, 0)
+store.32 [r31 + 0x64] = r29
+if (r28 == 0) goto $+0x78
+store.32 [r1 + 0xc] = r27
+r27 = load.32 [r31 + 0x18]
+r3 = r27
+call $+0xb028
+r29 = r3
+r3 = r28
+call $+0xb01c
+r3 = r29 + r3
+r3 = r3 + 3
+call $+0xadb0
+flags = compare(r3, 0)
+store.32 [r31 + 0x68] = r3
+r29 = r3
+if (r3 == 0) goto $+0x68
+  r3 = r27
+  call $+0xaff8
+  r31 = r3
+  r3 = r28
+  call $+0xafec
+  r7 = load.32 [r30 - 0x7ff8]
+  r5 = load.32 [r30 - 0x7ff4]
+  r6 = r27
+  r8 = r28
+  r4 = r31 + r3
+  r3 = r29
+  r4 = r4 + 3
+  crclr crb6
+  call $+0xac78
+  r27 = load.32 [r1 + 0xc]
+r0 = load.32 [r1 + 0x24]
+r28 = load.32 [r1 + 0x10]
+r29 = load.32 [r1 + 0x14]
+r30 = load.32 [r1 + 0x18]
+r31 = load.32 [r1 + 0x1c]
+lr = r0
+r1 = r1 + 0x20
+return
+call $+0xb0d0
+goto $-0x104
+r9 = -0x4
+r27 = load.32 [r1 + 0xc]
+store.32 [r31 + 0x64] = r9
+goto $-0x34

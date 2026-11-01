@@ -265,13 +265,22 @@ fn pe_index(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<IndexEntry> {
 
 /// The entries of each `.plt` of `file` whose stubs [`Recovery::plt_entries`]
 /// finds, each listed alone: the first entry, the stubs, and the end of
-/// the section.
+/// the section. Where the stubs lie among the code, each code section is
+/// read as [`raw_plt_index`] reads an image.
 ///
 /// No symbol and no unwind entry names a stub, and a jump through a slot
 /// is no return, so without this the scan lists the whole PLT of an ARM
 /// library as one function. The end closes the last stub, so the index
 /// says nothing of the code past it.
 fn plt_index(file: &object::File<'_>, arch: &dyn Recovery) -> Vec<IndexEntry> {
+    if arch.stub_place() == crate::arch::StubPlace::AmongCode {
+        return file
+            .sections()
+            .filter(|section| section.kind() == SectionKind::Text)
+            .filter_map(|section| Some((section.address(), section.data().ok()?)))
+            .flat_map(|(base, code)| raw_plt_index(code, base, arch))
+            .collect();
+    }
     file.sections()
         .filter(|section| section.name() == Ok(".plt") && section.kind() == SectionKind::Text)
         .filter_map(|section| Some((section.address(), section.data().ok()?)))
@@ -1081,6 +1090,17 @@ fn build_functions(
         // A guess that holds only padding is the gap between two functions.
         if *source == Source::AfterReturn
             && past_padding(&[(*address, bytes)], *address, arch).is_none()
+        {
+            continue;
+        }
+        // So is a guess of a word or two that can open no function: data
+        // between two functions, as the distance clang keeps before a
+        // PowerPC PIC function, which the end of an unwind range before it
+        // otherwise starts as a function of its own.
+        let width = arch.instruction_width();
+        if *source != Source::Symbol
+            && bytes.len() <= 2 * WORD_WIDTH as usize
+            && bytes.chunks(width).all(|word| !arch.may_open_function(word))
         {
             continue;
         }

@@ -621,7 +621,8 @@ struct Test {
 impl Test {
     fn of_comparison(comparison: Comparison) -> Self {
         match comparison {
-            Comparison::Subtract { left, right } => {
+            // The sign of the order stays with the branch that reads it.
+            Comparison::Subtract { left, right } | Comparison::Unsigned { left, right } => {
                 Self { operation: TestKind::Compare, left, right }
             }
             Comparison::And { left, right } => Self { operation: TestKind::BitTest, left, right },

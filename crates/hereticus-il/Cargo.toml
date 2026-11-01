@@ -22,6 +22,7 @@ rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = [
 smallvec = "1"
 yaxpeax-arch = "0.3"
 yaxpeax-arm = "0.4"
+yaxpeax-power = "0.1"
 
 [dev-dependencies]
 # One test body runs as a plain property test on stable, and under a
