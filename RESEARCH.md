@@ -664,9 +664,31 @@ and `class_slot_holders` in `matching/cascade.rs`;
   It compares whole programs by the sequence of library calls they make
   when they run. It needs to run the program, and it answers whether two
   programs are one, not which function is which.
-- fnprint, <https://docs.rs/fnprint-core>: Rust, MIT. It runs each
-  x86-64 function in a small emulator on random inputs and hashes what
-  it does. Like BARRACUDA, it needs an emulator for each architecture.
+- fnprint 0.6.1, <https://github.com/1rhino2/fnprint> (commit
+  `135079f`): Rust, MIT, with Unicorn built from C source. It runs each
+  x86-64 or aarch64 function in an emulator on junk inputs, stubs each
+  call, records the reads, writes, calls, branches and the return value,
+  and compares MinHash signatures of that record. A 1:1 assignment with
+  a call-graph term pairs the functions, as entry 1 does. Its README
+  gives 87% to 98% of functions named right across levels and across
+  the two architectures, on zlib 1.3.1 and Lua 5.4.6.
+
+  On the stripped backport pairs it can read (aarch64 and x86-64, O2 of
+  clang and of gcc, 14 pairs), `fnprint match` reported the function of
+  the fix in none. `hereticus` reports it in each. Junk inputs do not
+  get past the first check of a function: in zlib, `inflate` returns
+  after 27 instructions, 1% of its code, and the record is the same
+  before and after CVE-2022-37434. On the x86-64 clang pairs it also
+  reported 7, 5 and 28 functions that the fix does not touch (zlib,
+  Lua, tinyxml2), such as `gz_error`, whose instructions are the same
+  in both builds. In
+  name mode it compares only the exported functions: 99 of zlib, where
+  `hereticus` pairs 171. A pair took 0.2 s to 2.2 s, and `hereticus`
+  took 0.04 s on zlib.
+
+  So a fix behind a check of the state, which is the usual fix, does
+  not change its print. Only the call-graph term would apply here, and
+  entry 1 already does that.
 - Benkraouda, Diwan and Wang, *You Can't Judge a Binary by Its Header:
   Data-Code Separation for Non-Standard ARM Binaries Using Pseudo
   Labels* (Loadstar).
