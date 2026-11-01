@@ -12,7 +12,7 @@ use hereticus_recovery::arch::decode_all;
 use hereticus_view::PairedLabels;
 
 use super::align::{Step, align, lines_from_alignment};
-use super::change::{Difference, FrameSlots, difference};
+use super::change::{AddressRegisters, Difference, FrameSlots, difference};
 
 /// One line of an instruction-level diff between two matched functions.
 ///
@@ -545,9 +545,14 @@ impl IlRun<'_> {
         let (before_text, after_text) = (&before_statement.text, &after_statement.text);
         let difference =
             match (self.before.insn_of(before_statement), self.after.insn_of(after_statement)) {
-                (Some(left), Some(right)) => {
-                    difference(self.before.arch, left, self.after.arch, right, FrameSlots::Move)
-                }
+                (Some(left), Some(right)) => difference(
+                    self.before.arch,
+                    left,
+                    self.after.arch,
+                    right,
+                    FrameSlots::Move,
+                    AddressRegisters::Rename,
+                ),
                 _ => Difference::Shape,
             };
         if difference == Difference::FreeChoices
@@ -705,9 +710,10 @@ pub(super) fn il_key(line: &str) -> String {
     // stack frame moves when the frame grows, which the compiler decides:
     // the matcher reads every frame slot as one kind too. The size of the
     // frame stays, as `sp = sp - 0x40`, since a stack buffer can grow. On
-    // x86 only the stack pointer marks a slot: code built with `-O2` keeps
-    // a value of its own in `rbp` or `ebp`, so `[rbp + 0x10]` can be a
-    // field of a struct.
+    // x86 the stack pointer marks a slot, and `rbp` or `ebp` only below
+    // it: code built with `-O2` keeps a value of its own there, so
+    // `[rbp + 0x10]` can be a field of a struct, but code that keeps a
+    // frame pointer there keeps its slots below it.
     let mut key = words.join(" ");
     for marker in [
         "@0x",
@@ -717,6 +723,8 @@ pub(super) fn il_key(line: &str) -> String {
         "[sp - 0x",
         "[rsp + 0x",
         "[esp + 0x",
+        "[rbp - 0x",
+        "[ebp - 0x",
         "[x29 + 0x",
         "[x29 - 0x",
         "[fp + 0x",

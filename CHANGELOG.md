@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes only the layout of the code. In a block that moved, a jump
   matches a jump of the other side at any distance from its target, as
   the alignment of the diff already reads them.
+- The IL diff shows a statement that reads or writes memory through a
+  renamed register as the same line, as `rax = load.64 [r14]` against
+  `rax = load.64 [r13]`, where the renaming is one to one as for the
+  other registers. The matching does not change.
+- On x86, the IL diff reads an access through `rbp` or `ebp` as an access
+  through any other register, as the IL view already did, but an access
+  below `rbp` or `ebp` as a slot of the frame. Another offset above `rbp`
+  now shows as a changed line, as it can be another field of a struct.
 
 ### Fixed
 

@@ -2774,3 +2774,61 @@ most 16 apart for 19,634 (2.8%). So a line that a compiler moved over a
 few other lines is rare, and most of the lines with the same text on the
 other side are far from it, where a common line, as `rdi = rbx`, is
 there by chance.
+
+### A renamed register of an address
+
+Measured on 2026-11-01 on the same 300 pairs of Assemblage, and on the
+282 pairs of builds of the backports. Of the pairs of statements that
+the fold of an IL diff aligns in a run of removed and added lines:
+
+| What the fold did | Pairs |
+|---|---|
+| The same line | 75,166 |
+| A changed line | 48,001 |
+| No fold: the two instructions differ | 27,997 |
+| No fold: it reads a value that a new statement wrote | 12,203 |
+| No fold: it renames a register that the lines around the run keep | 9,273 |
+| No fold: the renaming is not one to one | 1,431 |
+
+Many pairs of the first kind of no fold differ only in the register that
+an access reads its address through: `rax = load.64 [r14]` against
+`rax = load.64 [r13]`. The comparison of two instructions took such a
+register as no free choice, as the matcher does: an address may move,
+but not the register it is read through. For the matcher that is right,
+as it checks no renaming. The fold of the IL diff takes a renamed
+register only where the renaming is one to one over the run, and the
+registers of an address are in that check, so for the fold such a
+register is now a free choice too. x86 writes `[r13]` and `[rbp]` with an
+offset of 0, which is now no offset. A slot of the frame stays apart from
+an access through another register.
+
+| Set | Removed and added before | After | Change |
+|---|---|---|---|
+| Assemblage, 300 pairs | 700,045 | 679,871 | −2.9% |
+| Backports, 282 pairs | 58,690 | 53,636 | −8.6% |
+
+The rule of the moved blocks in the entry above took the gray lines of
+the backports from 3,000 (5.1%) to 3,416 (5.8%).
+
+The comparison of two instructions also read `rbp` and `ebp` as the base
+of a slot of the frame, where the IL view reads only the stack pointer so
+on x86. The fold now reads `rbp` and `ebp` as the base of a slot only
+below them, where code that keeps a frame pointer there keeps its slots,
+and the IL view collapses the offsets below them too. Then `rdi =
+load.64 [rbp + 0x10]` against `rdi = load.64 [rbx + 0x10]` is the same
+line, but `[rbp + 0x10]` against `[rbp + 0x18]` is a changed line, as two
+offsets above `rbp` can be two fields of a struct. To read every offset
+from `rbp` as a field showed 4,874 changed lines through `[rbp - …]` in
+place of 211, which were slots that moved where the frame grew.
+
+| Set | Removed and added | Changed |
+|---|---|---|
+| Assemblage, before | 679,871 | 48,001 |
+| Assemblage, after | 673,081 | 48,527 |
+| Backports, before | 53,636 | 645 |
+| Backports, after | 53,374 | 648 |
+
+Of the 48,527 changed lines of Assemblage, 16,241 only name another build
+directory in a path, as `&"/tmp/deephistory-473fca52b4de/projects/..."`:
+the builds of Assemblage each ran in a directory of their own. The rest
+change a constant, a text, an offset of a field, or the size of a frame.

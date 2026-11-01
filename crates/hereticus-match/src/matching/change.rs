@@ -228,6 +228,19 @@ pub(super) enum FrameSlots {
     Stay,
 }
 
+/// Whether the registers that an access reads its address through are a
+/// free choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AddressRegisters {
+    /// They are, as the other registers are. The IL diff takes a renamed
+    /// register only where the renaming is one to one over its run, which
+    /// holds the registers of the addresses too.
+    Rename,
+    /// They are not: an address may move, but not the register it is read
+    /// through.
+    Keep,
+}
+
 /// How `before` differs from `after`, read from their lifts.
 ///
 /// What no lift reads differs in shape unless its bytes agree.
@@ -237,6 +250,7 @@ pub(super) fn difference(
     after_arch: &dyn Arch,
     after: &Insn,
     frame_slots: FrameSlots,
+    address_registers: AddressRegisters,
 ) -> Difference {
     if before_arch.operation_name(before) != after_arch.operation_name(after) {
         return Difference::Shape;
@@ -249,21 +263,44 @@ pub(super) fn difference(
             Difference::Shape
         };
     };
-    let without_frame_offsets = |arch: &dyn Arch, operands: &[il::Operand]| -> Vec<il::Operand> {
+    // On x86, the IL view reads the stack pointer as the base of a slot,
+    // and `rbp` only where it reads below it: code built with `-O2` keeps a
+    // value of its own in `rbp`, but code that keeps a frame pointer there
+    // keeps its slots below it.
+    let marks_slot = |arch: &dyn Arch, base: il::Reg, offset: Option<i64>| {
+        let x86 = ["x86_64", "i386", "i686"].iter().any(|name| arch.triple().starts_with(name));
+        arch.is_frame_register(base)
+            && (address_registers == AddressRegisters::Keep
+                || !x86
+                || base == il::Reg::Stack
+                || offset.is_some_and(|offset| offset < 0))
+    };
+    let comparable = |arch: &dyn Arch, operands: &[il::Operand]| -> Vec<il::Operand> {
         operands
             .iter()
             .map(|operand| match *operand {
-                il::Operand::Memory { base: Some(base), index, update, .. }
-                    if frame_slots == FrameSlots::Move && arch.is_frame_register(base) =>
+                il::Operand::Memory { base: Some(base), offset, index, update }
+                    if frame_slots == FrameSlots::Move && marks_slot(arch, base, offset) =>
                 {
                     il::Operand::Memory { base: Some(base), offset: None, index, update }
+                }
+                il::Operand::Memory { base, offset, index, update }
+                    if address_registers == AddressRegisters::Rename =>
+                {
+                    il::Operand::Memory {
+                        base: base.map(any_general),
+                        // x86 encodes `[r13]` and `[rbp]` with an offset of 0.
+                        offset: offset.filter(|&offset| offset != 0),
+                        index: index.map(|(reg, shift)| (any_general(reg), shift)),
+                        update,
+                    }
                 }
                 other => other,
             })
             .collect()
     };
-    let before_operands = without_frame_offsets(before_arch, &before_lift.operands);
-    let after_operands = without_frame_offsets(after_arch, &after_lift.operands);
+    let before_operands = comparable(before_arch, &before_lift.operands);
+    let after_operands = comparable(after_arch, &after_lift.operands);
     let (before_operands, after_operands) = (&before_operands[..], &after_operands[..]);
     // The distance to a literal pool says only where the pool sits.
     let free = match (pool_reference(before_operands), pool_reference(after_operands)) {
@@ -283,6 +320,14 @@ pub(super) fn difference(
         Difference::Values
     } else {
         Difference::Shape
+    }
+}
+
+/// `reg`, or one name for every general register.
+fn any_general(reg: il::Reg) -> il::Reg {
+    match reg {
+        il::Reg::General(_) => il::Reg::General(0),
+        other => other,
     }
 }
 

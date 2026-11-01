@@ -992,6 +992,7 @@ fn an_il_shape_collapses_numbers_but_not_names() {
     assert_eq!(il_key("rdi = load.64 [rsp + 0x8]"), "rdi = load.64 [rsp + ]");
     assert_eq!(il_key("store.32 [esp + 0x1c] = eax"), "store.32 [esp + ] = eax");
     assert_eq!(il_key("rax = load.64 [rbp + 0x18]"), "rax = load.64 [rbp + 0x18]", "a field");
+    assert_eq!(il_key("rax = load.64 [rbp - 0x18]"), "rax = load.64 [rbp - ]", "a slot");
     assert_eq!(il_key("x1 = &\"usage\""), "x1 = &\"usage\"");
     assert_eq!(il_key("x1 = &\"DEVPATH\"[3]"), "x1 = &@", "a pointer into a text moves");
     assert_eq!(il_key("x1 = load.64 [\"a\\\"b\"[1]]"), "x1 = load.64 [@]", "past an escaped quote");
@@ -2800,7 +2801,14 @@ fn an_adjacent_remove_and_add_fold_by_shape() {
 fn two_instructions_differ_in_choices_values_or_shape() {
     let insn = |word: u32| decode_all(&Arm32, &word.to_le_bytes(), 0).0.remove(0);
     let difference = |left: u32, right: u32| {
-        difference(&Arm32, &insn(left), &Arm32, &insn(right), FrameSlots::Move)
+        difference(
+            &Arm32,
+            &insn(left),
+            &Arm32,
+            &insn(right),
+            FrameSlots::Move,
+            AddressRegisters::Keep,
+        )
     };
     const MOV_R1_0X25: u32 = 0xe3a0_1025;
     const LDR_R0_R1_8: u32 = 0xe591_0008;
@@ -2815,11 +2823,76 @@ fn two_instructions_differ_in_choices_values_or_shape() {
     assert_eq!(difference(0xe58d_4000, 0xe58d_4004), Difference::FreeChoices);
     let (store, store_farther) = (insn(0xe58d_4000), insn(0xe58d_4004));
     assert_eq!(
-        super::change::difference(&Arm32, &store, &Arm32, &store_farther, FrameSlots::Stay),
+        super::change::difference(
+            &Arm32,
+            &store,
+            &Arm32,
+            &store_farther,
+            FrameSlots::Stay,
+            AddressRegisters::Keep
+        ),
         Difference::Values
     );
     // `ldr r0, [pc, 8]` against `ldr r0, [pc, 0x10]`: the pool moved.
     assert_eq!(difference(0xe59f_0008, 0xe59f_0010), Difference::FreeChoices);
+}
+
+/// Where the IL diff checks that each renamed register is renamed one to
+/// one, the register that an access reads its address through is a free
+/// choice too, and x86 writes `[r13]` with an offset of 0.
+#[test]
+fn an_address_through_another_register_can_be_a_free_choice() {
+    use hereticus_il::arch::x86::X86;
+    let arm = |word: u32| decode_all(&Arm32, &word.to_le_bytes(), 0).0.remove(0);
+    let renamed =
+        |left: &hereticus_il::arch::Insn, right: &hereticus_il::arch::Insn, arch: &dyn Arch| {
+            difference(arch, left, arch, right, FrameSlots::Move, AddressRegisters::Rename)
+        };
+    // `ldr r0, [r1, 8]` against `ldr r0, [r2, 8]` and `ldr r0, [r2, 0xc]`.
+    let (load, other_base) = (arm(0xe591_0008), arm(0xe592_0008));
+    assert_eq!(renamed(&load, &other_base, &Arm32), Difference::FreeChoices);
+    assert_eq!(renamed(&load, &arm(0xe592_000c), &Arm32), Difference::Values);
+    // `ldr r0, [sp, 8]`: a slot of the frame is no other register.
+    assert_eq!(renamed(&load, &arm(0xe59d_0008), &Arm32), Difference::Shape);
+    // mov rax, [r14] against mov rax, [r13 + 0].
+    let x86 = |code: &[u8]| decode_all(&X86::BITS64, code, 0).0.remove(0);
+    let through_r14 = x86(&[0x49, 0x8b, 0x06]);
+    let through_r13 = x86(&[0x49, 0x8b, 0x45, 0x00]);
+    assert_eq!(renamed(&through_r14, &through_r13, &X86::BITS64), Difference::FreeChoices);
+    // mov rax, [rbp + 0x10] against mov rax, [rbx + 0x10]: on x86, `rbp`
+    // holds a value as any other register does above it, but the stack
+    // pointer marks a slot: mov rax, [rsp + 0x10].
+    let through_rbp = x86(&[0x48, 0x8b, 0x45, 0x10]);
+    let through_rbx = x86(&[0x48, 0x8b, 0x43, 0x10]);
+    assert_eq!(renamed(&through_rbp, &through_rbx, &X86::BITS64), Difference::FreeChoices);
+    let through_rsp = x86(&[0x48, 0x8b, 0x44, 0x24, 0x10]);
+    assert_eq!(renamed(&through_rsp, &through_rbx, &X86::BITS64), Difference::Shape);
+    // mov rax, [rbp - 0x10] against mov rax, [rbp - 0x18]: below `rbp` is
+    // a slot, which moves where the frame grows.
+    let below_rbp = x86(&[0x48, 0x8b, 0x45, 0xf0]);
+    assert_eq!(
+        renamed(&below_rbp, &x86(&[0x48, 0x8b, 0x45, 0xe8]), &X86::BITS64),
+        Difference::FreeChoices
+    );
+    assert_eq!(
+        renamed(&below_rbp, &x86(&[0x48, 0x8b, 0x43, 0xf0]), &X86::BITS64),
+        Difference::Shape
+    );
+}
+
+/// A load through a renamed register is the same line in the IL diff. With
+/// another offset too, it differs in two ways and shows as removed and
+/// added.
+#[test]
+fn a_load_through_a_renamed_register_folds() {
+    const LDR_X0_X1_8: u32 = 0xf940_0420;
+    const LDR_X0_X2_8: u32 = 0xf940_0440;
+    const LDR_X0_X2_16: u32 = 0xf940_0840;
+    let one_pair = [Step::Left, Step::Right];
+    let folded = fold_il(&[LDR_X0_X1_8], &[LDR_X0_X2_8], &one_pair);
+    assert!(matches!(folded[..], [DiffLine::Same(_)]), "{folded:?}");
+    let folded = fold_il(&[LDR_X0_X1_8], &[LDR_X0_X2_16], &one_pair);
+    assert!(matches!(folded[..], [DiffLine::Removed(_), DiffLine::Added(_)]), "{folded:?}");
 }
 
 /// A matched function is not a near miss, so the report stays short.
