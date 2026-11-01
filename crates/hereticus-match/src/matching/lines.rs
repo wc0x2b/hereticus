@@ -710,9 +710,10 @@ pub(super) fn il_key(line: &str) -> String {
     // stack frame moves when the frame grows, which the compiler decides:
     // the matcher reads every frame slot as one kind too. The size of the
     // frame stays, as `sp = sp - 0x40`, since a stack buffer can grow. On
-    // x86 only the stack pointer marks a slot: code built with `-O2` keeps
-    // a value of its own in `rbp` or `ebp`, so `[rbp + 0x10]` can be a
-    // field of a struct.
+    // x86 the stack pointer marks a slot, and `rbp` or `ebp` only below
+    // it: code built with `-O2` keeps a value of its own there, so
+    // `[rbp + 0x10]` can be a field of a struct, but code that keeps a
+    // frame pointer there keeps its slots below it.
     let mut key = words.join(" ");
     for marker in [
         "@0x",
@@ -722,6 +723,8 @@ pub(super) fn il_key(line: &str) -> String {
         "[sp - 0x",
         "[rsp + 0x",
         "[esp + 0x",
+        "[rbp - 0x",
+        "[ebp - 0x",
         "[x29 + 0x",
         "[x29 - 0x",
         "[fp + 0x",

@@ -2809,3 +2809,26 @@ an access through another register.
 
 The rule of the moved blocks in the entry above took the gray lines of
 the backports from 3,000 (5.1%) to 3,416 (5.8%).
+
+The comparison of two instructions also read `rbp` and `ebp` as the base
+of a slot of the frame, where the IL view reads only the stack pointer so
+on x86. The fold now reads `rbp` and `ebp` as the base of a slot only
+below them, where code that keeps a frame pointer there keeps its slots,
+and the IL view collapses the offsets below them too. Then `rdi =
+load.64 [rbp + 0x10]` against `rdi = load.64 [rbx + 0x10]` is the same
+line, but `[rbp + 0x10]` against `[rbp + 0x18]` is a changed line, as two
+offsets above `rbp` can be two fields of a struct. To read every offset
+from `rbp` as a field showed 4,874 changed lines through `[rbp - …]` in
+place of 211, which were slots that moved where the frame grew.
+
+| Set | Removed and added | Changed |
+|---|---|---|
+| Assemblage, before | 679,871 | 48,001 |
+| Assemblage, after | 673,081 | 48,527 |
+| Backports, before | 53,636 | 645 |
+| Backports, after | 53,374 | 648 |
+
+Of the 48,527 changed lines of Assemblage, 16,241 only name another build
+directory in a path, as `&"/tmp/deephistory-473fca52b4de/projects/..."`:
+the builds of Assemblage each ran in a directory of their own. The rest
+change a constant, a text, an offset of a field, or the size of a frame.

@@ -263,12 +263,24 @@ pub(super) fn difference(
             Difference::Shape
         };
     };
+    // On x86, the IL view reads the stack pointer as the base of a slot,
+    // and `rbp` only where it reads below it: code built with `-O2` keeps a
+    // value of its own in `rbp`, but code that keeps a frame pointer there
+    // keeps its slots below it.
+    let marks_slot = |arch: &dyn Arch, base: il::Reg, offset: Option<i64>| {
+        let x86 = ["x86_64", "i386", "i686"].iter().any(|name| arch.triple().starts_with(name));
+        arch.is_frame_register(base)
+            && (address_registers == AddressRegisters::Keep
+                || !x86
+                || base == il::Reg::Stack
+                || offset.is_some_and(|offset| offset < 0))
+    };
     let comparable = |arch: &dyn Arch, operands: &[il::Operand]| -> Vec<il::Operand> {
         operands
             .iter()
             .map(|operand| match *operand {
-                il::Operand::Memory { base: Some(base), index, update, .. }
-                    if frame_slots == FrameSlots::Move && arch.is_frame_register(base) =>
+                il::Operand::Memory { base: Some(base), offset, index, update }
+                    if frame_slots == FrameSlots::Move && marks_slot(arch, base, offset) =>
                 {
                     il::Operand::Memory { base: Some(base), offset: None, index, update }
                 }

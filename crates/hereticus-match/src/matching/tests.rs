@@ -992,6 +992,7 @@ fn an_il_shape_collapses_numbers_but_not_names() {
     assert_eq!(il_key("rdi = load.64 [rsp + 0x8]"), "rdi = load.64 [rsp + ]");
     assert_eq!(il_key("store.32 [esp + 0x1c] = eax"), "store.32 [esp + ] = eax");
     assert_eq!(il_key("rax = load.64 [rbp + 0x18]"), "rax = load.64 [rbp + 0x18]", "a field");
+    assert_eq!(il_key("rax = load.64 [rbp - 0x18]"), "rax = load.64 [rbp - ]", "a slot");
     assert_eq!(il_key("x1 = &\"usage\""), "x1 = &\"usage\"");
     assert_eq!(il_key("x1 = &\"DEVPATH\"[3]"), "x1 = &@", "a pointer into a text moves");
     assert_eq!(il_key("x1 = load.64 [\"a\\\"b\"[1]]"), "x1 = load.64 [@]", "past an escaped quote");
@@ -2858,6 +2859,25 @@ fn an_address_through_another_register_can_be_a_free_choice() {
     let through_r14 = x86(&[0x49, 0x8b, 0x06]);
     let through_r13 = x86(&[0x49, 0x8b, 0x45, 0x00]);
     assert_eq!(renamed(&through_r14, &through_r13, &X86::BITS64), Difference::FreeChoices);
+    // mov rax, [rbp + 0x10] against mov rax, [rbx + 0x10]: on x86, `rbp`
+    // holds a value as any other register does above it, but the stack
+    // pointer marks a slot: mov rax, [rsp + 0x10].
+    let through_rbp = x86(&[0x48, 0x8b, 0x45, 0x10]);
+    let through_rbx = x86(&[0x48, 0x8b, 0x43, 0x10]);
+    assert_eq!(renamed(&through_rbp, &through_rbx, &X86::BITS64), Difference::FreeChoices);
+    let through_rsp = x86(&[0x48, 0x8b, 0x44, 0x24, 0x10]);
+    assert_eq!(renamed(&through_rsp, &through_rbx, &X86::BITS64), Difference::Shape);
+    // mov rax, [rbp - 0x10] against mov rax, [rbp - 0x18]: below `rbp` is
+    // a slot, which moves where the frame grows.
+    let below_rbp = x86(&[0x48, 0x8b, 0x45, 0xf0]);
+    assert_eq!(
+        renamed(&below_rbp, &x86(&[0x48, 0x8b, 0x45, 0xe8]), &X86::BITS64),
+        Difference::FreeChoices
+    );
+    assert_eq!(
+        renamed(&below_rbp, &x86(&[0x48, 0x8b, 0x43, 0xf0]), &X86::BITS64),
+        Difference::Shape
+    );
 }
 
 /// A load through a renamed register is the same line in the IL diff. With
