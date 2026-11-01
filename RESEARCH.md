@@ -2765,3 +2765,12 @@ runs. The IL diff now uses it: 24% more of the lines are gray. Where a
 conditional branch also came before the block, as the end of a path, 3.8%
 of the lines were gray, but code falls into the block where the branch is
 not taken.
+
+With the new rule, the removed lines and the added lines that hold one
+text and are not gray were paired, each with the nearest one. Few of the
+pairs are near: the two lines of a pair are at most 3 lines apart in the
+diff for 3,948 lines (0.6%), at most 8 apart for 12,450 (1.8%), and at
+most 16 apart for 19,634 (2.8%). So a line that a compiler moved over a
+few other lines is rare, and most of the lines with the same text on the
+other side are far from it, where a common line, as `rdi = rbx`, is
+there by chance.
