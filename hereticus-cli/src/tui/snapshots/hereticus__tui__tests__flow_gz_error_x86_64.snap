@@ -42,7 +42,7 @@ expression: text
       70a4   rdi = r12
       70a7   r13 = rax
       70aa   call strlen
-      70af   rdi = rdi + [r13 + rax + 0x3]
+      70af   rdi = &[r13 + rax + 0x3]
       70b4   call malloc
       70b9   store.64 [rbx + 0x78] = rax
       70bd   r13 = rax
@@ -56,7 +56,7 @@ expression: text
 │     70d8     rsp = rsp + 8
 │     70dc     r9 = r12
 │     70df     rcx = rbp
-│     70e2     rsi = rsi + [rbx + rax + 0x3]
+│     70e2     rsi = &[rbx + rax + 0x3]
 │     70e7     rdi = r13
 │     70ea     pop rbx
 │     70eb     eax = 0

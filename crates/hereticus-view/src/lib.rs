@@ -1428,8 +1428,15 @@ fn statement(
             ([dest, source], None) => format!("{dest} = &{source}"),
             _ => return None,
         },
-        Op::Add => match (operands.first(), &address) {
-            (Some(dest), Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
+        Op::Add => match (operands.as_slice(), &address) {
+            ([dest, ..], Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
+            // The x86 `lea` adds the parts of its memory operand and reads
+            // no memory.
+            ([dest, formed], None)
+                if matches!(canonical.operands.get(1), Some(Operand::Memory { .. })) =>
+            {
+                format!("{dest} = &{formed}")
+            }
             _ => binary("+")?,
         },
         Op::Subtract => binary("-")?,
@@ -2561,6 +2568,15 @@ mod tests {
         let code = hex(code);
         let (insns, _) = decode_all(&X86::BITS64, &code, 0x1000);
         il_lines(&X86::BITS64, &code, &insns)
+    }
+
+    /// A `lea` reads no memory: it puts the address of its operand in the
+    /// register, as `&` does.
+    #[test]
+    fn a_lea_names_the_address_it_forms() {
+        // lea rdi, [rdx + 0x7f]; lea rax, [rsp + 0xa0]; lea rdx, [r13 + 4*r13]
+        let shown = x86_lines("488d7a7f488d8424a00000004b8d54ad00");
+        assert_eq!(shown, ["rdi = &[rdx + 0x7f]", "rax = &[rsp + 0xa0]", "rdx = &[r13 + 4*r13]"]);
     }
 
     /// An operation that sets the flags from its result replaces the

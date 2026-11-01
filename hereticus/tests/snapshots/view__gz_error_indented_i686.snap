@@ -36,7 +36,7 @@ pop ebp
 push dword ptr [esp + 0x34]
 ebp = eax
 call strlen
-eax = eax + [ebp + eax + 0x3]
+eax = &[ebp + eax + 0x3]
 store.32 [esp] = eax
 call malloc
 esp = esp + 0x10
@@ -52,10 +52,10 @@ if ((eax & eax) == 0) goto $+0x72
   esi = eax
   call strlen
   pop ecx
-  ecx = ecx + [ebx + 0xffff8021]
+  ecx = &[ebx + 0xffff8021]
   pop edx
-  eax = eax + [esi + eax + 0x3]
-  edx = edx + [ebx + 0xffff8024]
+  eax = &[esi + eax + 0x3]
+  edx = &[ebx + 0xffff8024]
   push dword ptr [esp + 0x30]
   push ecx
   push edi
@@ -70,13 +70,13 @@ pop esi
 pop edi
 pop ebp
 return
-esi = esi + [esi]
+esi = &[esi]
 eax = load.32 [esp + 0x28]
 store.32 [esi + 0x50] = ebp
 flags = eax & eax
 if ((eax & eax) != 0) goto $-0x80
 goto $-0x1e
-esi = esi + [esi]
+esi = &[esi]
 esp = esp - 0xc
 push eax
 call free

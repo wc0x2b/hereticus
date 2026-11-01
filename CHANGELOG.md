@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matches a jump of the other side at any distance from its target, as
   the alignment of the diff already reads them.
 
+### Fixed
+
+- The IL view showed an x86 `lea` as an add of memory to its destination:
+  `lea rdi, [rdx + 0x7f]` read as `rdi = rdi + [rdx + 0x7f]`. It now reads
+  as the address that it forms, `rdi = &[rdx + 0x7f]`.
+
 ## [0.7.0](https://github.com/wc0x2b/hereticus/compare/v0.6.1...v0.7.0) - 2026-11-01
 
 ### Added
