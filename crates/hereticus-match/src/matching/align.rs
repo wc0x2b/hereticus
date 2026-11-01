@@ -6,7 +6,7 @@ use hereticus_arch::Arch;
 
 use hereticus_il::arch::Insn;
 
-use super::change::{Difference, FrameSlots, difference};
+use super::change::{AddressRegisters, Difference, FrameSlots, difference};
 use super::lines::DiffLine;
 use super::score::LEAST_ANCHORED_SHARE;
 
@@ -512,9 +512,16 @@ pub(super) fn lines_from_alignment(
             }
             Step::Right => {
                 let added = &after_insns[j];
-                let difference = removed
-                    .take()
-                    .map(|left| difference(before_arch, left, after_arch, added, FrameSlots::Stay));
+                let difference = removed.take().map(|left| {
+                    difference(
+                        before_arch,
+                        left,
+                        after_arch,
+                        added,
+                        FrameSlots::Stay,
+                        AddressRegisters::Keep,
+                    )
+                });
                 let line = match (difference, lines.pop()) {
                     (Some(Difference::FreeChoices), Some(DiffLine::Removed(_))) => {
                         DiffLine::Same(added.to_string())

@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes only the layout of the code. In a block that moved, a jump
   matches a jump of the other side at any distance from its target, as
   the alignment of the diff already reads them.
+- The IL diff shows a statement that reads or writes memory through a
+  renamed register as the same line, as `rax = load.64 [r14]` against
+  `rax = load.64 [r13]`, where the renaming is one to one as for the
+  other registers. The matching does not change.
 
 ## [0.7.0](https://github.com/wc0x2b/hereticus/compare/v0.6.1...v0.7.0) - 2026-11-01
 

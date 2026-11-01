@@ -2774,3 +2774,38 @@ most 16 apart for 19,634 (2.8%). So a line that a compiler moved over a
 few other lines is rare, and most of the lines with the same text on the
 other side are far from it, where a common line, as `rdi = rbx`, is
 there by chance.
+
+### A renamed register of an address
+
+Measured on 2026-11-01 on the same 300 pairs of Assemblage, and on the
+282 pairs of builds of the backports. Of the pairs of statements that
+the fold of an IL diff aligns in a run of removed and added lines:
+
+| What the fold did | Pairs |
+|---|---|
+| The same line | 75,166 |
+| A changed line | 48,001 |
+| No fold: the two instructions differ | 27,997 |
+| No fold: it reads a value that a new statement wrote | 12,203 |
+| No fold: it renames a register that the lines around the run keep | 9,273 |
+| No fold: the renaming is not one to one | 1,431 |
+
+Many pairs of the first kind of no fold differ only in the register that
+an access reads its address through: `rax = load.64 [r14]` against
+`rax = load.64 [r13]`. The comparison of two instructions took such a
+register as no free choice, as the matcher does: an address may move,
+but not the register it is read through. For the matcher that is right,
+as it checks no renaming. The fold of the IL diff takes a renamed
+register only where the renaming is one to one over the run, and the
+registers of an address are in that check, so for the fold such a
+register is now a free choice too. x86 writes `[r13]` and `[rbp]` with an
+offset of 0, which is now no offset. A slot of the frame stays apart from
+an access through another register.
+
+| Set | Removed and added before | After | Change |
+|---|---|---|---|
+| Assemblage, 300 pairs | 700,045 | 679,871 | −2.9% |
+| Backports, 282 pairs | 58,690 | 53,636 | −8.6% |
+
+The rule of the moved blocks in the entry above took the gray lines of
+the backports from 3,000 (5.1%) to 3,416 (5.8%).

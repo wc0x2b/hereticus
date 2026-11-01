@@ -12,7 +12,7 @@ use hereticus_recovery::arch::decode_all;
 use hereticus_view::PairedLabels;
 
 use super::align::{Step, align, lines_from_alignment};
-use super::change::{Difference, FrameSlots, difference};
+use super::change::{AddressRegisters, Difference, FrameSlots, difference};
 
 /// One line of an instruction-level diff between two matched functions.
 ///
@@ -545,9 +545,14 @@ impl IlRun<'_> {
         let (before_text, after_text) = (&before_statement.text, &after_statement.text);
         let difference =
             match (self.before.insn_of(before_statement), self.after.insn_of(after_statement)) {
-                (Some(left), Some(right)) => {
-                    difference(self.before.arch, left, self.after.arch, right, FrameSlots::Move)
-                }
+                (Some(left), Some(right)) => difference(
+                    self.before.arch,
+                    left,
+                    self.after.arch,
+                    right,
+                    FrameSlots::Move,
+                    AddressRegisters::Rename,
+                ),
                 _ => Difference::Shape,
             };
         if difference == Difference::FreeChoices
