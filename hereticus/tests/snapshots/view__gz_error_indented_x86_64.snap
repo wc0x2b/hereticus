@@ -42,7 +42,7 @@ call strlen
 rdi = r12
 r13 = rax
 call strlen
-rdi = rdi + [r13 + rax + 0x3]
+rdi = &[r13 + rax + 0x3]
 call malloc
 store.64 [rbx + 0x78] = rax
 r13 = rax
@@ -56,7 +56,7 @@ if ((rax & rax) == 0) goto $+0x4f
   rsp = rsp + 8
   r9 = r12
   rcx = rbp
-  rsi = rsi + [rbx + rax + 0x3]
+  rsi = &[rbx + rax + 0x3]
   rdi = r13
   pop rbx
   eax = 0
