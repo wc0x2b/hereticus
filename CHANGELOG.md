@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/wc0x2b/hereticus/compare/v0.7.0...v0.7.1) - 2026-11-01
+
 ### Changed
 
 - The IL diff shows more blocks of code that moved in gray. A block with
