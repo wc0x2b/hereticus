@@ -149,6 +149,18 @@ impl Links {
         self.slot_name(slot)
     }
 
+    /// The address that a relocation stores in the slot of the PLT stub at
+    /// `address`, where the relocation names no symbol.
+    ///
+    /// A loader fills such a slot with an address of the binary itself, so
+    /// the stub calls the function there. A linker writes no such stub for a
+    /// function that it can call directly, but a binary whose symbols were
+    /// removed after the link has them.
+    pub fn stub_target(&self, arch: &dyn Arch, address: u64) -> Option<u64> {
+        let slot = self.stub_slot(arch, self.bytes_at(address)?, address)?;
+        self.relocated.get(&slot).copied()
+    }
+
     /// The symbol a relocation at the call at `address` names.
     pub fn site_name(&self, address: u64) -> Option<&str> {
         self.sites.get(&address).map(String::as_str)
@@ -181,6 +193,12 @@ impl Links {
     fn stub_slot(&self, arch: &dyn Arch, code: &[u8], address: u64) -> Option<u64> {
         arch.stub_slot(code, address)
             .or_else(|| Some(self.table?.wrapping_add(arch.stub_table_offset(code)?)))
+    }
+
+    /// These links, with `relocated` as the address that a relocation
+    /// stores at each word, for a test to build.
+    pub fn with_relocated(self, relocated: BTreeMap<u64, u64>) -> Self {
+        Self { relocated, ..self }
     }
 
     /// These links, with `sites` as the symbol each relocation at a call or
