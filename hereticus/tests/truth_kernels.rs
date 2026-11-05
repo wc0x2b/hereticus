@@ -29,64 +29,19 @@ use std::path::{Path, PathBuf};
 use hereticus::callee::{Callee, callees};
 use hereticus::matching::{Diff, Match, Options, UseNames, diff_with, similarity};
 use hereticus::norm::{NormInsn, normalize_body_in};
-use hereticus::obj::{Binary, Isa};
+use hereticus::obj::Binary;
 use hereticus::recovery::arch::decode_all;
 
+#[path = "common/boards.rs"]
+mod boards;
 #[path = "common/dwarf.rs"]
 mod dwarf;
 #[path = "common/symbols.rs"]
 mod symbols;
+use boards::{BOARDS, Board};
 use dwarf::{FileMoves, source_files};
 use rayon::prelude::*;
 use symbols::{Symbol, debug_symbols};
-
-/// A board of `tests/openwrt.rs`: the name its files carry, the target whose
-/// kernel it runs, how its code reads, and where its kernel is linked.
-struct Board {
-    name: &'static str,
-    target: &'static str,
-    isa: Isa,
-    kernel_base: u64,
-}
-
-const BOARDS: &[Board] = &[
-    Board {
-        name: "arm-ex6100v2",
-        target: "ipq40xx-generic",
-        isa: Isa::Arm32,
-        kernel_base: 0xc020_8000,
-    },
-    Board {
-        name: "mipsbe-eap245v3",
-        target: "ath79-generic",
-        isa: Isa::Mips32Be,
-        kernel_base: 0x8006_0000,
-    },
-    Board {
-        name: "mipsel-r6220",
-        target: "ramips-mt7621",
-        isa: Isa::Mips32,
-        kernel_base: 0x8000_1000,
-    },
-    Board {
-        name: "arm-a385dbap",
-        target: "mvebu-cortexa9",
-        isa: Isa::Arm32,
-        kernel_base: 0xc000_8000,
-    },
-    Board {
-        name: "mipsbe-vr200",
-        target: "lantiq-xrx200",
-        isa: Isa::Mips32Be,
-        kernel_base: 0x8000_2000,
-    },
-    Board {
-        name: "mipsel-mt300nv2",
-        target: "ramips-mt76x8",
-        isa: Isa::Mips32,
-        kernel_base: 0x8000_0000,
-    },
-];
 
 /// The releases `tests/openwrt.rs` compares, and on how many of [`BOARDS`]:
 /// the point release on all, the two kernel upgrades on the first three.
