@@ -3002,4 +3002,9 @@ labels of a `switch`, which the guards do not tell from a table of
 functions. On the
 upgrade from 21.02.7 to 22.03.2, the plain rule of `truth_kernel_rivals.rs`
 calls 2450 pairs of `hereticus` wrong, 4.5%, and 534 of radiff2, 25.8% of
-the 2071 that it can judge.
+the 2071 that it can judge. Ghidra made 10722 pairs there, 481 of them wrong, 4.6%. On
+the upgrade from 22.03.5 to 23.05.5, `hereticus` made 59637 right pairs
+and 1783 wrong, 2.9%, and Ghidra 26022 right and 498 wrong, 1.9%. Of the
+functions that `hereticus` pairs wrong there, Ghidra pairs 108 right.
+Two runs of Ghidra on the point release gave 116 and 114 wrong pairs, so
+its pairs of a large kernel are not the same on each run.

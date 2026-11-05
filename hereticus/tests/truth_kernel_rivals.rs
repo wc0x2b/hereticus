@@ -1,10 +1,11 @@
 //! Check the pairs of radiff2, Ghidra and this tool on the raw OpenWrt
-//! kernels of the point release against the symbols of their builds, and
-//! lock the counts.
+//! kernels of a point release and of two kernel upgrades against the
+//! symbols of their builds, and lock the counts.
 //!
 //! `just rivals-kernel-pairs` runs `fixtures/rivals_kernel_pairs.sh`, which
-//! gives the kernels of 22.03.2 and 22.03.5 of each board to radiff2 and to
-//! Ghidra Version Tracking, and writes every pair of functions each makes.
+//! gives the kernels of two releases of each board to radiff2 and to Ghidra
+//! Version Tracking, as [`RELEASES`] lists them, and writes every pair of
+//! functions each makes.
 //! This test pairs the same kernels with this tool, as `tests/openwrt.rs`
 //! does.
 //!
@@ -18,8 +19,9 @@
 //!   come from source files that correspond, as [`FileMoves`] says;
 //! * every other judged pair is **wrong**.
 //!
-//! A point release keeps the same kernel, so few functions are renamed, and
-//! the rule calls a renamed function wrong for each tool alike. A pair that
+//! A point release keeps the same kernel, so few functions are renamed. An
+//! upgrade renames many, and the rule calls a renamed function wrong for each
+//! tool alike. A pair that
 //! starts inside a function, as where a tool splits one, is not judged.
 //!
 //! The inputs are about 800 MB, and Ghidra takes about an hour, so
@@ -47,10 +49,44 @@ use dwarf::{FileMoves, source_files};
 use rayon::prelude::*;
 use symbols::{Symbol, debug_symbols};
 
-/// The point release whose kernels each tool compares, as
-/// `fixtures/rivals_kernel_pairs.sh` names them.
-const OLDER: &str = "22.03.2";
-const NEWER: &str = "22.03.5";
+/// The releases whose kernels each tool compares, as `just
+/// rivals-kernel-pairs` gives them to `fixtures/rivals_kernel_pairs.sh`, and
+/// on how many of [`BOARDS`]: the point release on all, and the two kernel
+/// upgrades on the first three, as `tests/truth_kernels.rs` reads them.
+const RELEASES: &[(&str, &str, usize)] =
+    &[("22.03.2", "22.03.5", 6), ("21.02.7", "22.03.2", 3), ("22.03.5", "23.05.5", 3)];
+
+/// The kernels of one board in two releases.
+#[derive(Clone, Copy)]
+struct Kernels {
+    board: &'static Board,
+    older: &'static str,
+    newer: &'static str,
+}
+
+impl Kernels {
+    fn all() -> Vec<Kernels> {
+        RELEASES
+            .iter()
+            .flat_map(|&(older, newer, boards)| {
+                BOARDS[..boards].iter().map(move |board| Kernels { board, older, newer })
+            })
+            .collect()
+    }
+
+    fn releases(self) -> String {
+        format!("{}/{}", self.older, self.newer)
+    }
+
+    /// The folder `fixtures/rivals_kernel_pairs.sh` writes the pairs of
+    /// `tool` to.
+    fn folder(self, tool: Tool) -> String {
+        match (self.older, self.newer) {
+            ("22.03.2", "22.03.5") => format!("{}-kernels", tool.name()),
+            (older, newer) => format!("{}-kernels-{older}-{newer}", tool.name()),
+        }
+    }
+}
 
 /// A tool whose pairs this test judges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -134,8 +170,9 @@ struct Answer {
 }
 
 impl Answer {
-    fn of(board: &Board) -> Self {
-        let releases = [OLDER, NEWER];
+    fn of(kernels: Kernels) -> Self {
+        let releases = [kernels.older, kernels.newer];
+        let board = kernels.board;
         Self {
             symbols: releases.map(|release| debug_symbols(&debug_file(release, board))),
             sources: releases.map(|release| source_files(&debug_file(release, board))),
@@ -186,8 +223,9 @@ fn judge(answer: &Answer, moves: &FileMoves, before: u64, after: u64) -> Verdict
 }
 
 /// The starts of each pair of this tool, run as `tests/openwrt.rs` runs it.
-fn hereticus_pairs(board: &Board) -> Vec<(u64, u64)> {
-    let kernels = [OLDER, NEWER].map(|release| {
+fn hereticus_pairs(kernels: Kernels) -> Vec<(u64, u64)> {
+    let board = kernels.board;
+    let kernels = [kernels.older, kernels.newer].map(|release| {
         let path = fixtures().join(format!("build/openwrt/{}-kernel-{release}.bin", board.name));
         let data = std::fs::read(&path)
             .unwrap_or_else(|err| panic!("{}: {err}; run `just firmware`", path.display()));
@@ -207,11 +245,11 @@ fn hereticus_pairs(board: &Board) -> Vec<(u64, u64)> {
 }
 
 /// The pairs that `fixtures/rivals_kernel_pairs.sh` wrote for `tool`.
-fn rival_pairs(tool: Tool, board: &Board) -> Vec<(u64, u64)> {
+fn rival_pairs(tool: Tool, kernels: Kernels) -> Vec<(u64, u64)> {
     let path = fixtures()
         .join("build/rivals")
-        .join(format!("{}-kernels", tool.name()))
-        .join(format!("{}.json", board.name));
+        .join(kernels.folder(tool))
+        .join(format!("{}.json", kernels.board.name));
     let text = std::fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!("{}: {err}, run `just rivals-kernel-pairs` first", path.display())
     });
@@ -228,10 +266,10 @@ fn rival_pairs(tool: Tool, board: &Board) -> Vec<(u64, u64)> {
         .collect()
 }
 
-fn pairs_of(tool: Tool, board: &Board) -> Vec<(u64, u64)> {
+fn pairs_of(tool: Tool, kernels: Kernels) -> Vec<(u64, u64)> {
     match tool {
-        Tool::Hereticus => hereticus_pairs(board),
-        Tool::Radare2 | Tool::Ghidra => rival_pairs(tool, board),
+        Tool::Hereticus => hereticus_pairs(kernels),
+        Tool::Radare2 | Tool::Ghidra => rival_pairs(tool, kernels),
     }
 }
 
@@ -256,8 +294,9 @@ impl core::ops::AddAssign for Crossed {
 
 /// The tally of each tool on `board`, and what Ghidra does with the
 /// functions that this tool pairs wrong.
-fn measure(board: &Board) -> (BTreeMap<Tool, Tally>, Crossed) {
-    let answer = Answer::of(board);
+fn measure(kernels: &Kernels) -> (BTreeMap<Tool, Tally>, Crossed) {
+    let kernels = *kernels;
+    let answer = Answer::of(kernels);
     let moves = FileMoves::new(&answer.symbols, &answer.sources);
     // A Thumb entry can carry bit 0, which is no part of where the code
     // lies.
@@ -266,7 +305,7 @@ fn measure(board: &Board) -> (BTreeMap<Tool, Tally>, Crossed) {
     };
     let verdicts: BTreeMap<Tool, Vec<Judged>> = Tool::ALL
         .into_iter()
-        .map(|tool| (tool, pairs_of(tool, board).into_iter().map(judged).collect()))
+        .map(|tool| (tool, pairs_of(tool, kernels).into_iter().map(judged).collect()))
         .collect();
     let tallies = verdicts
         .iter()
@@ -300,7 +339,7 @@ fn percent(part: usize, whole: usize) -> f64 {
 fn row(out: &mut String, label: &str, tally: Tally) {
     writeln!(
         out,
-        "{label:28} {:>7} {:>7} {:>7} {:>6} {:>7.2}%",
+        "{label:40} {:>7} {:>7} {:>7} {:>6} {:>7.2}%",
         tally.pairs,
         tally.judged(),
         tally.right,
@@ -312,45 +351,49 @@ fn row(out: &mut String, label: &str, tally: Tally) {
 
 #[test]
 fn the_kernel_pairs_of_each_tool_checked_against_the_symbols_are_locked() {
+    let cases = Kernels::all();
     let (tallies, crossed): (Vec<BTreeMap<Tool, Tally>>, Vec<Crossed>) =
-        BOARDS.par_iter().map(measure).unzip();
+        cases.par_iter().map(measure).unzip();
 
     let heading = |label: &str| {
         format!(
-            "{label:28} {:>7} {:>7} {:>7} {:>6} {:>8}\n",
+            "{label:40} {:>7} {:>7} {:>7} {:>6} {:>8}\n",
             "pairs", "judged", "right", "wrong", "wrong%"
         )
     };
     let mut out = heading("kernel");
-    let mut all: BTreeMap<Tool, Tally> = BTreeMap::new();
-    for (board, tallies) in BOARDS.iter().zip(&tallies) {
+    let mut by_releases: BTreeMap<(String, Tool), Tally> = BTreeMap::new();
+    for (kernels, tallies) in cases.iter().zip(&tallies) {
         for (&tool, &tally) in tallies {
-            row(&mut out, &format!("{} {}", board.name, tool.name()), tally);
-            *all.entry(tool).or_default() += tally;
+            let label = format!("{} {} {}", kernels.board.name, kernels.releases(), tool.name());
+            row(&mut out, &label, tally);
+            *by_releases.entry((kernels.releases(), tool)).or_default() += tally;
         }
     }
     out += "\n";
-    out += &heading("tool");
-    for (tool, tally) in &all {
-        row(&mut out, &format!("all {}", tool.name()), *tally);
+    out += &heading("releases");
+    for ((releases, tool), tally) in &by_releases {
+        row(&mut out, &format!("{releases} {}", tool.name()), *tally);
     }
 
     // Where Ghidra makes fewer wrong pairs, these say whether it pairs the
     // same functions right, or leaves them.
     writeln!(
         out,
-        "\n{:28} {:>12} {:>12} {:>15}",
+        "\n{:40} {:>12} {:>12} {:>15}",
         "hereticus-wrong", "ghidra-right", "ghidra-wrong", "ghidra-unpaired"
     )
     .unwrap();
-    let mut all_crossed = Crossed::default();
-    for (board, &one) in BOARDS.iter().zip(&crossed) {
-        all_crossed += one;
-        writeln!(out, "{:28} {:>12} {:>12} {:>15}", board.name, one.right, one.wrong, one.unpaired)
+    let mut by_releases: BTreeMap<String, Crossed> = BTreeMap::new();
+    for (kernels, &one) in cases.iter().zip(&crossed) {
+        *by_releases.entry(kernels.releases()).or_default() += one;
+        let label = format!("{} {}", kernels.board.name, kernels.releases());
+        writeln!(out, "{label:40} {:>12} {:>12} {:>15}", one.right, one.wrong, one.unpaired)
             .unwrap();
     }
-    let Crossed { right, wrong, unpaired } = all_crossed;
-    writeln!(out, "{:28} {right:>12} {wrong:>12} {unpaired:>15}", "all").unwrap();
+    for (releases, Crossed { right, wrong, unpaired }) in by_releases {
+        writeln!(out, "{releases:40} {right:>12} {wrong:>12} {unpaired:>15}").unwrap();
+    }
     insta::assert_snapshot!(out);
 }
 

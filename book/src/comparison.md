@@ -198,23 +198,40 @@ instructions, which `hereticus` lists first. On zlib and smallvec,
 A kernel holds about twenty thousand functions, and a fix has no known
 place in it, so the tests check the pairs of each tool, not the row of a
 fix. Each tool compares the raw kernels of OpenWrt 22.03.2 and 22.03.5 for
-the six boards of `tests/openwrt.rs`, two of them ARM and four MIPS. The
-symbols of each build say which function starts where. A pair is
-**judged** where a symbol starts at each of its two starts, and it is
-**right** where the two symbols have the same name and come from source
-files that correspond. All other judged pairs are wrong.
+the six boards of `tests/openwrt.rs`, two of them ARM and four MIPS: a
+point release, which keeps the kernel. It also compares the two kernel
+upgrades, 21.02.7 to 22.03.2 and 22.03.5 to 23.05.5, on the first three
+boards, where the kernel changes series. The symbols of each build say
+which function starts where. A pair is **judged** where a symbol starts at
+each of its two starts, and it is **right** where the two symbols have the
+same name and come from source files that correspond. All other judged
+pairs are wrong.
 
-| Tool | Pairs | Judged | Right | Wrong | Share wrong |
-|------|-------|--------|-------|-------|-------|
-| hereticus | 134021<!-- from truth_kernel_rivals: all hereticus / pairs --> | 132165<!-- from truth_kernel_rivals: all hereticus / judged --> | 131896<!-- from truth_kernel_rivals: all hereticus / right --> | 269<!-- from truth_kernel_rivals: all hereticus / wrong --> | 0.20%<!-- from truth_kernel_rivals: all hereticus / wrong% --> |
-| radiff2 | 17792<!-- from truth_kernel_rivals: all radare2 / pairs --> | 14138<!-- from truth_kernel_rivals: all radare2 / judged --> | 13582<!-- from truth_kernel_rivals: all radare2 / right --> | 556<!-- from truth_kernel_rivals: all radare2 / wrong --> | 3.93%<!-- from truth_kernel_rivals: all radare2 / wrong% --> |
-| Ghidra | 93202<!-- from truth_kernel_rivals: all ghidra / pairs --> | 91119<!-- from truth_kernel_rivals: all ghidra / judged --> | 91003<!-- from truth_kernel_rivals: all ghidra / right --> | 116<!-- from truth_kernel_rivals: all ghidra / wrong --> | 0.13%<!-- from truth_kernel_rivals: all ghidra / wrong% --> |
+| Releases | Tool | Pairs | Judged | Right | Wrong | Share wrong |
+|----------|------|-------|--------|-------|-------|-------------|
+| 22.03.2/22.03.5 | hereticus | 134021<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / pairs --> | 132165<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / judged --> | 131896<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / right --> | 269<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / wrong --> | 0<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / wrong% --> |
+| 22.03.2/22.03.5 | radiff2 | 17792<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / pairs --> | 14138<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / judged --> | 13582<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / right --> | 556<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / wrong --> | 3.93%<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / wrong% --> |
+| 22.03.2/22.03.5 | Ghidra | 93204<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / pairs --> | 91121<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / judged --> | 91007<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / right --> | 114<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / wrong --> | 0<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / wrong% --> |
+| 21.02.7/22.03.2 | hereticus | 55179<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / pairs --> | 54486<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / judged --> | 52036<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / right --> | 2450<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / wrong --> | 4.50%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / wrong% --> |
+| 21.02.7/22.03.2 | radiff2 | 11003<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / pairs --> | 2071<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / judged --> | 1537<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / right --> | 534<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / wrong --> | 25.78%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / wrong% --> |
+| 21.02.7/22.03.2 | Ghidra | 10722<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / pairs --> | 10384<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / judged --> | 9903<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / right --> | 481<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / wrong --> | 4.63%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / wrong% --> |
+| 22.03.5/23.05.5 | hereticus | 62119<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / pairs --> | 61420<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / judged --> | 59637<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / right --> | 1783<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / wrong --> | 2.90%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / wrong% --> |
+| 22.03.5/23.05.5 | radiff2 | 10013<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / pairs --> | 3846<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / judged --> | 3234<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / right --> | 612<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / wrong --> | 15.91%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / wrong% --> |
+| 22.03.5/23.05.5 | Ghidra | 27141<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / pairs --> | 26520<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / judged --> | 26022<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / right --> | 498<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / wrong --> | 1.88%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / wrong% --> |
 
-`hereticus` makes the most right pairs. Ghidra makes fewer pairs, and a
-smaller part of them is wrong. A point release keeps the same kernel, so
-the rule calls a function that a release renamed wrong for each tool.
-`tests/truth_kernels.rs` judges the pairs of `hereticus` with more care,
-and it finds such renamed functions.
+`hereticus` makes the most right pairs on each pair of releases. Ghidra
+makes fewer pairs, and on the point release and on the upgrade to
+23.05.5, a smaller part of them is wrong: on that upgrade,
+1.88%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / wrong% --> of the pairs of Ghidra and
+2.90%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / wrong% --> of those of `hereticus`. On the
+upgrade from 21.02.7, the parts are
+4.63%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / wrong% --> and
+4.50%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / wrong% -->. The rule
+calls a function that a release renamed wrong for each tool, and an
+upgrade renames many. `tests/truth_kernels.rs` judges the pairs of
+`hereticus` with more care, and it finds such renamed functions. Ghidra
+does not pair a large kernel the same way on each run: two runs of the
+point release gave a few other counts. The snapshot locks one run.
 
 radiff2 cannot read a raw image at its load address, so the test gives it
 each kernel in an ELF file with one segment at that address. With `-A` or
@@ -228,14 +245,19 @@ Tracking pairs the functions.
 
 The tests above find these weak points of `hereticus`:
 
-- **More wrong pairs in a kernel.** `hereticus` makes
-  269<!-- from truth_kernel_rivals: all hereticus / wrong --> wrong pairs in the kernels, and Ghidra
-  116<!-- from truth_kernel_rivals: all ghidra / wrong -->. Of the functions that `hereticus` pairs wrong, Ghidra
-  pairs 14<!-- from truth_kernel_rivals: all / ghidra-right --> right and
-  32<!-- from truth_kernel_rivals: all / ghidra-wrong --> wrong, and leaves
-  223<!-- from truth_kernel_rivals: all / ghidra-unpaired --> with no judged pair. Of those that Ghidra pairs
+- **More wrong pairs in a kernel of a point release.** `hereticus` makes
+  269<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / wrong --> wrong pairs in the kernels, and Ghidra
+  114<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / wrong -->. Of the functions that `hereticus` pairs wrong, Ghidra
+  pairs 14<!-- from truth_kernel_rivals: 22.03.2/22.03.5 / ghidra-right --> right and
+  32<!-- from truth_kernel_rivals: 22.03.2/22.03.5 / ghidra-wrong --> wrong, and leaves
+  223<!-- from truth_kernel_rivals: 22.03.2/22.03.5 / ghidra-unpaired --> with no judged pair. Of those that Ghidra pairs
   right, `tcp_v4_get_syncookie` is one: on each MIPS board, `hereticus`
-  pairs it with `tcp_v4_early_demux`. Of those that Ghidra leaves, many
+  pairs it with `tcp_v4_early_demux`. In 22.03.2, nothing calls
+  `tcp_v4_early_demux`, and it starts right after a branch back into
+  `tcp_v4_get_syncookie`, so the scan makes one function of the two. On
+  the point release, most of the pairs that Ghidra has right and
+  `hereticus` wrong come from such joined functions. On the upgrade to 23.05.5, Ghidra pairs
+  108<!-- from truth_kernel_rivals: 22.03.5/23.05.5 / ghidra-right --> of the functions that `hereticus` pairs wrong right. Of those that Ghidra leaves, many
   are small functions whose code is almost the same, as
   `memory_high_show` and `swap_high_show`, or the `show` functions of the
   regulator class. `hereticus` pairs such a function with one of them,

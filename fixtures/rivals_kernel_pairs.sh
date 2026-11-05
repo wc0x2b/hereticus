@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Give the raw OpenWrt kernels of each point release to another diff tool,
-# and write every pair of functions it makes. Run by `just rivals-kernel-pairs`,
+# Give the raw OpenWrt kernels of two releases to another diff tool, and
+# write every pair of functions it makes. Run by `just rivals-kernel-pairs`,
 # in the image of fixtures/rivals/Dockerfile.
 #
-# Usage: rivals_kernel_pairs.sh radare2|ghidra
+# Usage: rivals_kernel_pairs.sh radare2|ghidra [OLDER NEWER]
 #
-# For each board of BOARDS below, the tool compares the kernel of 22.03.2
-# with the kernel of 22.03.5. This writes
-# build/rivals/<tool>-kernels/<board>.json:
+# For each board of BOARDS below that has a kernel of both releases, the tool
+# compares the kernel of OLDER with the kernel of NEWER, 22.03.2 and 22.03.5
+# by default. This writes build/rivals/<tool>-kernels/<board>.json for the
+# default releases, and else
+# build/rivals/<tool>-kernels-<older>-<newer>/<board>.json:
 #
 #   {"seconds": 812.4, "pairs": [[2147483648, 2147483648], ...]}
 #
@@ -18,15 +20,16 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-tool="${1:?usage: rivals_kernel_pairs.sh radare2|ghidra}"
+tool="${1:?usage: rivals_kernel_pairs.sh radare2|ghidra [OLDER NEWER]}"
+older="${2:-22.03.2}"
+newer="${3:-22.03.5}"
 firmware="$here/build/openwrt"
 out="$here/build/rivals/$tool-kernels"
-older=22.03.2
-newer=22.03.5
+[ "$older/$newer" = 22.03.2/22.03.5 ] || out="$out-$older-$newer"
 
 # The boards of hereticus/tests/truth_kernels.rs: the name its files carry,
 # the architecture, and where its kernel is linked.
-BOARDS="
+ALL_BOARDS="
 arm-ex6100v2 arm 0xc0208000
 mipsbe-eap245v3 mipsbe 0x80060000
 mipsel-r6220 mips 0x80001000
@@ -34,6 +37,12 @@ arm-a385dbap arm 0xc0008000
 mipsbe-vr200 mipsbe 0x80002000
 mipsel-mt300nv2 mips 0x80000000
 "
+# The boards with a kernel of both releases.
+BOARDS="$(echo "$ALL_BOARDS" | while read -r board arch base; do
+    [ -n "$board" ] || continue
+    [ -f "$firmware/$board-kernel-$older.bin" ] && [ -f "$firmware/$board-kernel-$newer.bin" ] \
+        && echo "$board $arch $base"
+done)"
 
 case "$tool" in
     radare2) version="$(radiff2 -v | head -n 1)" ;;
