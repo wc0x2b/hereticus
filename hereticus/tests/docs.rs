@@ -199,12 +199,14 @@ fn words_of(line: &str) -> Vec<(usize, usize)> {
 }
 
 /// The byte ranges of the values at the end of a table row: the numbers
-/// after its name, with the `|` that splits a table into groups skipped.
+/// after its name, and each `-` that stands for no value, with the `|` that
+/// splits a table into groups skipped.
 fn values_of(line: &str) -> Vec<(usize, usize)> {
     let words = words_of(line);
     let is_value = |&(start, end): &(usize, usize)| {
         let word = line[start..end].trim_end_matches('%');
-        word == "|" || word.parse::<f64>().is_ok()
+        // A `-` stands for no value, as a rank where a tool found nothing.
+        word == "|" || word == "-" || word.parse::<f64>().is_ok()
     };
     let first_value = words.iter().rposition(|word| !is_value(word)).map_or(0, |at| at + 1);
     words[first_value..].iter().copied().filter(|&(start, end)| &line[start..end] != "|").collect()
@@ -376,6 +378,14 @@ fn each_value_of_the_locked_tables_has_its_own_heading() {
             );
         }
     }
+}
+
+#[test]
+fn a_dash_is_a_value_of_the_row_not_a_part_of_its_name() {
+    let table = "build      rank:a rank:b\nzlib-O2         -      3\nlua-O2          4      -\n";
+    assert_eq!(table_cell(table, "zlib-O2", "rank:b"), Ok("3".to_owned()));
+    assert_eq!(table_cell(table, "lua-O2", "rank:a"), Ok("4".to_owned()));
+    assert_eq!(table_cell(table, "lua-O2", "rank:b"), Ok("-".to_owned()));
 }
 
 #[test]

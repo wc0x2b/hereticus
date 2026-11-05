@@ -586,12 +586,12 @@ pub fn table(contender: Contender, contests: &[Contest]) -> String {
             format!(" {:>22} {:>22}", format!("{column}:hereticus"), format!("{column}:{other}"))
         })
         .concat();
-    let mut builds = format!("\n{:24}{columns}\n", "build");
+    let mut builds = format!("\n{:32}{columns}\n", "build");
     for contest in contests {
         let (ours, theirs) = (contest.hereticus, contest.rival);
         writeln!(
             builds,
-            "{:24} {:>22} {:>22} {:>22} {:>22} {:>22} {:>22}",
+            "{:32} {:>22} {:>22} {:>22} {:>22} {:>22} {:>22}",
             contest.build.name(),
             rank_text(ours.rank),
             rank_text(theirs.rank),
@@ -612,11 +612,11 @@ pub fn table(contender: Contender, contests: &[Contest]) -> String {
 /// the other tool ran alone, in `fixtures/rivals.sh`.
 pub fn times(contender: Contender, contests: &[Contest]) -> String {
     let other = contender.directory();
-    let mut table = format!("{:24} {:>12} {:>12}\n", "build", "hereticus s", format!("{other} s"));
+    let mut table = format!("{:32} {:>12} {:>12}\n", "build", "hereticus s", format!("{other} s"));
     for contest in contests {
         writeln!(
             table,
-            "{:24} {:>12.3} {:>12.3}",
+            "{:32} {:>12.3} {:>12.3}",
             contest.build.name(),
             contest.hereticus_seconds,
             contest.rival_seconds
@@ -625,6 +625,6 @@ pub fn times(contender: Contender, contests: &[Contest]) -> String {
     }
     let ours: f64 = contests.iter().map(|contest| contest.hereticus_seconds).sum();
     let theirs: f64 = contests.iter().map(|contest| contest.rival_seconds).sum();
-    writeln!(table, "{:24} {ours:>12.3} {theirs:>12.3}", "all").unwrap();
+    writeln!(table, "{:32} {ours:>12.3} {theirs:>12.3}", "all").unwrap();
     table
 }
