@@ -30,17 +30,19 @@ firmware:
 rivals_image := "hereticus-rivals"
 
 # Give the stripped backports to radiff2, so a test can check the comparison
-# against what radiff2 reports on the same pairs.
+# against what radiff2 reports on the same pairs: with its default and its
+# deepest analysis, and on copies with no symbols.
 rivals: backports
     docker build --quiet --target radare2 --tag {{rivals_image}}-radare2 fixtures/rivals
     docker run --rm \
         --user "$(id -u):$(id -g)" \
         --volume "{{justfile_directory()}}:/work" \
         --workdir /work \
-        {{rivals_image}}-radare2 ./fixtures/rivals.sh radare2
+        {{rivals_image}}-radare2 sh -c \
+            'for setup in default deeper unnamed; do ./fixtures/rivals.sh radare2 "$setup" || exit; done'
 
 # The same with Ghidra Version Tracking. The image is about 2 GB and a first
-# run takes about ten minutes, so only `test` runs it.
+# run of the three setups takes about half an hour, so only `test` runs it.
 rivals-ghidra: backports
     docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
     docker run --rm \
@@ -48,7 +50,8 @@ rivals-ghidra: backports
         --env HOME=/tmp \
         --volume "{{justfile_directory()}}:/work" \
         --workdir /work \
-        {{rivals_image}}-ghidra ./fixtures/rivals.sh ghidra
+        {{rivals_image}}-ghidra sh -c \
+            'for setup in default deeper unnamed; do ./fixtures/rivals.sh ghidra "$setup" || exit; done'
 
 # Let Ghidra find the functions of one raw kernel, with its default and its
 # aggressive analysis, so a test can count how many it finds.

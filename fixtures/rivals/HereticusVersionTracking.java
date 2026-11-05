@@ -1,9 +1,11 @@
 // Run Ghidra Auto Version Tracking on two programs, and write the functions
-// it finds changed, gone and new as JSON. Run by `fixtures/rivals.sh`.
+// it finds changed, gone and new as JSON, and every pair it accepts. Run by
+// `fixtures/rivals.sh` and `fixtures/rivals_kernel_pairs.sh`.
 //
 // The current program is the destination, the newer side. The first argument
-// names the source program in the same project, and the second the JSON file
-// to write.
+// names the source program in the same project, the second the JSON file to
+// write, and the third the setup: `default` runs Auto Version Tracking alone,
+// and `deeper` then runs the correlators that it leaves out.
 //
 // Auto Version Tracking pairs the functions, but does not say which pairs
 // changed. `FindChangedFunctionsScript`, which ships with Ghidra, calls a
@@ -16,6 +18,7 @@
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -23,19 +26,25 @@ import java.util.Map;
 import java.util.Set;
 
 import ghidra.app.script.GhidraScript;
+import ghidra.feature.vt.api.BSimProgramCorrelatorFactory;
+import ghidra.feature.vt.api.correlator.program.CombinedFunctionAndDataReferenceProgramCorrelatorFactory;
+import ghidra.feature.vt.api.correlator.program.ExactMatchMnemonicsProgramCorrelatorFactory;
 import ghidra.feature.vt.api.db.VTSessionDB;
 import ghidra.feature.vt.api.main.VTAssociation;
 import ghidra.feature.vt.api.main.VTAssociationStatus;
 import ghidra.feature.vt.api.main.VTAssociationType;
 import ghidra.feature.vt.api.main.VTMatch;
 import ghidra.feature.vt.api.main.VTMatchSet;
+import ghidra.feature.vt.api.main.VTProgramCorrelatorFactory;
 import ghidra.feature.vt.api.main.VTSession;
+import ghidra.feature.vt.api.util.VTAssociationStatusException;
 import ghidra.feature.vt.api.util.VTOptions;
 import ghidra.feature.vt.gui.actions.AutoVersionTrackingTask;
 import ghidra.feature.vt.gui.util.VTOptionDefines;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.options.ToolOptions;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.util.task.TaskLauncher;
@@ -47,6 +56,24 @@ public class HereticusVersionTracking extends GhidraScript {
 		"Exact Function Bytes Match",
 		"Exact Function Instructions Match",
 		"Duplicate Function Instructions Match");
+
+	/**
+	 * The correlators of the Version Tracking window that Auto Version
+	 * Tracking does not run. BSim reads the decompiled code, and it uses the
+	 * accepted pairs as seeds, so it runs first.
+	 */
+	private static final List<VTProgramCorrelatorFactory> DEEPER = List.of(
+		new BSimProgramCorrelatorFactory(),
+		new ExactMatchMnemonicsProgramCorrelatorFactory(),
+		new CombinedFunctionAndDataReferenceProgramCorrelatorFactory());
+
+	/** Which correlators run. */
+	private enum Setup {
+		/** Auto Version Tracking, as `AutoVersionTrackingScript` runs it. */
+		DEFAULT,
+		/** Auto Version Tracking, and then each correlator of `DEEPER`. */
+		DEEPER;
+	}
 
 	/** What one accepted function pair holds. */
 	private static final class Pair {
@@ -64,9 +91,10 @@ public class HereticusVersionTracking extends GhidraScript {
 	@Override
 	public void run() throws Exception {
 		String[] args = getScriptArgs();
-		if (args.length != 2) {
-			throw new IllegalArgumentException("usage: SOURCE_PROGRAM OUTPUT_JSON");
+		if (args.length != 3) {
+			throw new IllegalArgumentException("usage: SOURCE_PROGRAM OUTPUT_JSON default|deeper");
 		}
+		Setup setup = Setup.valueOf(args[2].toUpperCase());
 		Program destination = currentProgram;
 		DomainFile sourceFile = state.getProject().getProjectData().getFile("/" + args[0]);
 		if (sourceFile == null) {
@@ -82,6 +110,9 @@ public class HereticusVersionTracking extends GhidraScript {
 			AutoVersionTrackingTask task = new AutoVersionTrackingTask(session, options());
 			TaskLauncher.launch(task);
 			println(task.getStatusMsg());
+			if (setup == Setup.DEEPER) {
+				correlateDeeper(session);
+			}
 			write(args[1], source, destination, pairs(session));
 		}
 		finally {
@@ -112,6 +143,60 @@ public class HereticusVersionTracking extends GhidraScript {
 		options.setInt(VTOptionDefines.MIN_VOTES_OPTION, 2);
 		options.setInt(VTOptionDefines.MAX_CONFLICTS_OPTION, 0);
 		return options;
+	}
+
+	/**
+	 * Run each correlator of `DEEPER`, and accept its matches the best score
+	 * first, as a person does in the Version Tracking window. A match is
+	 * accepted only when neither of its functions is in an accepted pair.
+	 */
+	private void correlateDeeper(VTSession session) throws Exception {
+		Program source = session.getSourceProgram();
+		Program destination = session.getDestinationProgram();
+		AddressSetView sourceSet = source.getMemory().getLoadedAndInitializedAddressSet();
+		AddressSetView destinationSet =
+			destination.getMemory().getLoadedAndInitializedAddressSet();
+		for (VTProgramCorrelatorFactory factory : DEEPER) {
+			int transaction = session.startTransaction(factory.getName());
+			try {
+				VTMatchSet set = factory.createCorrelator(source, sourceSet, destination,
+					destinationSet, factory.createDefaultOptions()).correlate(session, monitor);
+				accept(session, set);
+			}
+			finally {
+				session.endTransaction(transaction, true);
+			}
+		}
+	}
+
+	private static void accept(VTSession session, VTMatchSet set) {
+		Set<Address> sources = new HashSet<>();
+		Set<Address> destinations = new HashSet<>();
+		for (VTAssociation pair : pairs(session).keySet()) {
+			sources.add(pair.getSourceAddress());
+			destinations.add(pair.getDestinationAddress());
+		}
+		List<VTMatch> matches = new ArrayList<>(set.getMatches());
+		matches.sort(Comparator
+				.comparingDouble((VTMatch match) -> match.getSimilarityScore().getScore())
+				.reversed());
+		for (VTMatch match : matches) {
+			VTAssociation association = match.getAssociation();
+			if (association.getType() != VTAssociationType.FUNCTION ||
+				sources.contains(association.getSourceAddress()) ||
+				destinations.contains(association.getDestinationAddress())) {
+				continue;
+			}
+			try {
+				association.setAccepted();
+			}
+			catch (VTAssociationStatusException blocked) {
+				// A related association is accepted already.
+				continue;
+			}
+			sources.add(association.getSourceAddress());
+			destinations.add(association.getDestinationAddress());
+		}
 	}
 
 	/** Each accepted pair of functions with code, with what its matches say. */
@@ -188,6 +273,13 @@ public class HereticusVersionTracking extends GhidraScript {
 			out.println(join(source, paired));
 			out.println("], \"new\": [");
 			out.println(join(destination, pairedDestinations));
+			out.println("], \"pairs\": [");
+			separator = "";
+			for (Pair pair : pairs.values()) {
+				out.printf("%s[%d, %d]%n", separator, fileAddress(source, pair.source),
+					fileAddress(destination, pair.destination));
+				separator = ", ";
+			}
 			out.println("]}");
 		}
 	}
