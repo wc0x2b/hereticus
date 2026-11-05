@@ -53,6 +53,127 @@ the other tool or on an earlier row, and show no more rows that the fix did
 not touch. If a change makes `hereticus` worse than the other tool on one
 build, the test fails.
 
+## Deeper Settings
+
+The table above runs each other tool with its default settings. The tests
+also run each one with its deepest analysis: radiff2 as `radiff2 -AA -C`,
+which runs `aaaa`, and Ghidra with three more correlators after Auto Version
+Tracking. These are BSim Function Matching, Exact Function Mnemonics and
+Combined Function and Data Reference, the correlators of the Version
+Tracking window that Auto Version Tracking does not run. Of the matches that
+they make, the test accepts the best match of each function that is not in
+a pair yet, as a person does in that window. `hereticus` runs with no options,
+as before.
+
+| Tool | Fixes found | Fix on row 1 | Rows | Rows the fix did not touch |
+|------|-------------|--------------|------|----------------------------|
+| hereticus | 35<!-- from rivals_radare2_deeper: hereticus / found --> | 20<!-- from rivals_radare2_deeper: hereticus / first --> | 85<!-- from rivals_radare2_deeper: hereticus / rows --> | 0<!-- from rivals_radare2_deeper: hereticus / extras --> |
+| radiff2 `-AA` | 31<!-- from rivals_radare2_deeper: radare2-deeper / found --> | 7<!-- from rivals_radare2_deeper: radare2-deeper / first --> | 4049<!-- from rivals_radare2_deeper: radare2-deeper / rows --> | 3923<!-- from rivals_radare2_deeper: radare2-deeper / extras --> |
+| Ghidra, more correlators | 33<!-- from truth_ghidra_deeper: ghidra-deeper / found --> | 17<!-- from truth_ghidra_deeper: ghidra-deeper / first --> | 613<!-- from truth_ghidra_deeper: ghidra-deeper / rows --> | 528<!-- from truth_ghidra_deeper: ghidra-deeper / extras --> |
+
+With `-AA`, radiff2 finds more fixes, but it shows more rows that the fix
+did not touch, and it shows fewer fixes on row 1. With more correlators,
+Ghidra pairs more functions, so fewer rows show a function as gone and
+new. On five builds of Lua, Ghidra shows the fix one or two rows earlier
+than `hereticus` does: on row
+3<!-- from truth_ghidra_deeper: lua-arm-O2 / rank:ghidra-deeper --> for ARM at `-O2`, where
+`hereticus` shows it on row
+4<!-- from truth_ghidra_deeper: lua-arm-O2 / rank:hereticus -->. The fix edits `luaZ_fill`
+and `luaZ_init`, and `luaZ_read` changes with it. A reference correlator
+gives the pair of `luaZ_read` a score of 1, so Ghidra lists it last.
+`hereticus` lists `luaZ_read` before `luaZ_init`, as more of its code
+changed. The test of this setup thus checks only the fixes found and the
+rows that the fix did not touch.
+
+## Libraries With No Names
+
+A shared library keeps a symbol for each function that it exports, with
+the name and the start of the function. `fixtures/rivals/unname.py` writes
+a copy of each stripped library with no symbol that the library defines,
+as for a library or a program that exports nothing. A relocation that
+stored the address of such a symbol stores the same address with no
+symbol, as a linker writes it for a symbol that it does not export. All
+three tools read these copies with their default settings.
+
+| Tool | Fixes found | Fix on row 1 | Rows | Rows the fix did not touch |
+|------|-------------|--------------|------|----------------------------|
+| hereticus | 35<!-- from rivals_radare2_unnamed: hereticus / found --> | 20<!-- from rivals_radare2_unnamed: hereticus / first --> | 85<!-- from rivals_radare2_unnamed: hereticus / rows --> | 0<!-- from rivals_radare2_unnamed: hereticus / extras --> |
+| radiff2 | 0<!-- from rivals_radare2_unnamed: radare2-unnamed / found --> | 0<!-- from rivals_radare2_unnamed: radare2-unnamed / first --> | 17<!-- from rivals_radare2_unnamed: radare2-unnamed / rows --> | 12<!-- from rivals_radare2_unnamed: radare2-unnamed / extras --> |
+| Ghidra | 29<!-- from truth_ghidra_unnamed: ghidra-unnamed / found --> | 12<!-- from truth_ghidra_unnamed: ghidra-unnamed / first --> | 1381<!-- from truth_ghidra_unnamed: ghidra-unnamed / rows --> | 1258<!-- from truth_ghidra_unnamed: ghidra-unnamed / extras --> |
+
+`hereticus` gives the same result as with the names. With no symbols,
+`radiff2 -C` lists the function at the entry point, or one or two other
+functions of a pair, or none, although the analysis of `aaa` finds many
+more. Ghidra finds fewer fixes
+than with the names, as the Exact Symbol Name correlator pairs no
+function, and it shows more rows that the fix did not touch: on the
+tinyxml2 build for AArch64 at `-O2`, it shows
+144<!-- from truth_ghidra_unnamed: tinyxml2-aarch64-O2 / rows:ghidra-unnamed --> rows, and
+`hereticus` shows
+1<!-- from truth_ghidra_unnamed: tinyxml2-aarch64-O2 / rows:hereticus -->.
+
+This test found an error in `hereticus`: with no symbols, it read the
+code of an ARM library as A32 code, also where the code was Thumb-2. It
+now reads bit 0 of the addresses of functions that the relocations store.
+
+## Pairs in Raw Kernels
+
+A kernel holds about twenty thousand functions, and a fix has no known
+place in it, so the tests check the pairs of each tool, not the row of a
+fix. Each tool compares the raw kernels of OpenWrt 22.03.2 and 22.03.5 for
+the six boards of `tests/openwrt.rs`, two of them ARM and four MIPS. The
+symbols of each build say which function starts where. A pair is
+**judged** where a symbol starts at each of its two starts, and it is
+**right** where the two symbols have the same name and come from source
+files that correspond. All other judged pairs are wrong.
+
+| Tool | Pairs | Judged | Right | Wrong | Share wrong |
+|------|-------|--------|-------|-------|-------|
+| hereticus | 134021<!-- from truth_kernel_rivals: all hereticus / pairs --> | 132165<!-- from truth_kernel_rivals: all hereticus / judged --> | 131896<!-- from truth_kernel_rivals: all hereticus / right --> | 269<!-- from truth_kernel_rivals: all hereticus / wrong --> | 0.20%<!-- from truth_kernel_rivals: all hereticus / wrong% --> |
+| radiff2 | 17792<!-- from truth_kernel_rivals: all radare2 / pairs --> | 14138<!-- from truth_kernel_rivals: all radare2 / judged --> | 13582<!-- from truth_kernel_rivals: all radare2 / right --> | 556<!-- from truth_kernel_rivals: all radare2 / wrong --> | 3.93%<!-- from truth_kernel_rivals: all radare2 / wrong% --> |
+| Ghidra | 93202<!-- from truth_kernel_rivals: all ghidra / pairs --> | 91119<!-- from truth_kernel_rivals: all ghidra / judged --> | 91003<!-- from truth_kernel_rivals: all ghidra / right --> | 116<!-- from truth_kernel_rivals: all ghidra / wrong --> | 0.13%<!-- from truth_kernel_rivals: all ghidra / wrong% --> |
+
+`hereticus` makes the most right pairs. Ghidra makes fewer pairs, and a
+smaller part of them is wrong. A point release keeps the same kernel, so
+the rule calls a function that a release renamed wrong for each tool.
+`tests/truth_kernels.rs` judges the pairs of `hereticus` with more care,
+and it finds such renamed functions.
+
+radiff2 cannot read a raw image at its load address, so the test gives it
+each kernel in an ELF file with one segment at that address. With `-A` or
+`-AA`, radiff2 reads such a kernel as one function, and shows two rows. So
+the test runs it as `radiff2 -A -e anal.hasnext=true -C`, which reads on
+after the end of each function. Ghidra reads each raw kernel as in
+[Functions in a Raw Kernel](#functions-in-a-raw-kernel), and Auto Version
+Tracking pairs the functions.
+
+## Where `hereticus` Does Worse
+
+The tests above find these weak points of `hereticus`:
+
+- **More wrong pairs in a kernel.** `hereticus` makes
+  269<!-- from truth_kernel_rivals: all hereticus / wrong --> wrong pairs in the kernels, and Ghidra
+  116<!-- from truth_kernel_rivals: all ghidra / wrong -->. Of the functions that `hereticus` pairs wrong, Ghidra
+  pairs 14<!-- from truth_kernel_rivals: all / ghidra-right --> right and
+  32<!-- from truth_kernel_rivals: all / ghidra-wrong --> wrong, and leaves
+  223<!-- from truth_kernel_rivals: all / ghidra-unpaired --> with no judged pair. Of those that Ghidra pairs
+  right, `tcp_v4_get_syncookie` is one: on each MIPS board, `hereticus`
+  pairs it with `tcp_v4_early_demux`. Of those that Ghidra leaves, many
+  are small functions whose code is almost the same, as
+  `memory_high_show` and `swap_high_show`, or the `show` functions of the
+  regulator class. `hereticus` pairs such a function with one of them,
+  and Ghidra with none. Others are functions of `io_uring` that a backport
+  in 22.03.5 renamed or moved. Where `hereticus` shows a wrong pair, a
+  reader of Ghidra sees one function gone and one new.
+- **A lower rank for some fixes.** With more correlators, Ghidra shows the
+  fix of Lua earlier on five builds, as
+  [Deeper Settings](#deeper-settings) says.
+- **Stripped ARM code with no exports.** Before the tests read libraries
+  with no names, `hereticus` read such Thumb-2 code as A32 code, as
+  [Libraries With No Names](#libraries-with-no-names) says. This is
+  fixed. Other kinds of binary that the tests do not read can have errors
+  of the same kind.
+
 ## Time
 
 `just rival-times` shows how long each tool takes on each pair. On these
@@ -128,21 +249,21 @@ and AArch64, and finds almost every function there.
 
 ## How Accurate These Numbers Are
 
-The numbers are correct for these pairs and these settings. They do not
+The entry "The other tools in more setups, and on kernels" of
+[`RESEARCH.md`](https://github.com/wc0x2b/hereticus/blob/master/RESEARCH.md)
+records how these comparisons were made, and what they found. The
+numbers are correct for these pairs and these settings. They do not
 show that one tool is better than another in general. Know these limits:
 
 - **The pairs are small and few.** Each pair is a small library with one
   small fix. A large binary, or a release with many changes, can give a
   different result.
-- **No kernel pair is compared.** A raw kernel of a few megabytes takes
-  radiff2 and Ghidra many minutes for each pair, so the tests do not
-  compare the reports on the OpenWrt kernels. `tests/truth_kernels.rs`
-  checks only `hereticus` on them. The section above compares only where
-  the functions of one kernel start.
-- **The other tools run with their default settings.** Other options, or
-  a person who reads the results, can make radiff2 or Ghidra do better.
-  For example, Ghidra can run more correlators, and radiff2 can analyse
-  more deeply.
+- **The kernels are of one point release.** Ghidra takes about a quarter
+  of an hour for each pair of kernels, so the tests compare only the six
+  pairs of 22.03.2 and 22.03.5. A kernel upgrade changes much more code.
+- **The other tools run with few settings.** The tests run each with its
+  default settings and with its deepest analysis. Other options, or a
+  person who reads the results, can make radiff2 or Ghidra do better.
 - **The rules that score the other tools are ours.** Ghidra does not mark
   a pair as changed, so the tests use the rule of its own script. radiff2
   gives no clear label for a change, so the tests count a row below a
@@ -153,20 +274,22 @@ show that one tool is better than another in general. Know these limits:
   rank changes, so this score is not its aim.
 - **`hereticus` was developed with these pairs.** Its tests use the same
   backports, so its rules can fit these pairs better than other binaries.
-- **The libraries are not fully stripped.** A shared library keeps the
-  names of the functions it exports, and all three tools can read them.
-  Without names, the results can be different.
+- **The libraries with no names are made from libraries with names.**
+  `unname.py` removes the symbols of a library after the link. A program
+  built to export nothing can have other code, as the compiler can inline
+  or remove a function that no other file can call.
 - **Times depend on the machine.** The other tools ran alone, and
   `hereticus` ran while other tests ran.
 
 ## Run the Tests
 
 ```
-just rivals         # run radiff2 on the pairs
-just quick-test     # compare with radiff2, in rivals_radare2.rs
-just rivals-ghidra  # run Ghidra on the pairs
-just test           # compare with Ghidra too, in truth_ghidra.rs
+just rivals         # run radiff2 on the pairs, in each setup
+just quick-test     # compare with radiff2, in rivals_radare2*.rs
+just rivals-ghidra  # run Ghidra on the pairs, in each setup
+just test           # compare with Ghidra too, in truth_ghidra*.rs
 just rivals-kernel  # let Ghidra find the functions of one raw kernel
+just rivals-kernel-pairs  # let radiff2 and Ghidra pair the raw kernels
 just rivals-go      # let Ghidra find the functions of the garbled Go builds
 just rival-times    # show how long each tool takes
 ```
