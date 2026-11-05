@@ -152,15 +152,19 @@ EOF
 # Three boards at once. A kernel needs more than the default heap of 2 GB.
 export GHIDRA_MAXMEM=16G
 pids=()
+failed=0
 while read -r board arch base; do
     [ -n "$board" ] || continue
     compare "$board" "$arch" "$base" &
     pids+=("$!")
     if [ "${#pids[@]}" -eq 3 ]; then
-        for pid in "${pids[@]}"; do wait "$pid"; done
+        for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
         pids=()
     fi
 done <<<"$BOARDS"
-for pid in "${pids[@]}"; do wait "$pid"; done
+for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+# A failed comparison printed its log. Without the stamp, the next run
+# compares again.
+[ "$failed" -eq 0 ] || exit 1
 echo "$version" | head -n 1 >"$out/VERSION"
 echo "$inputs_hash" >"$stamp"

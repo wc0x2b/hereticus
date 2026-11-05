@@ -1,0 +1,37 @@
+---
+source: hereticus-cli/tests/rivals_radare2_crossed.rs
+expression: "rivals::table(RADIFF2, &contests)"
+---
+tool             builds found first   rows extras
+hereticus            28    28     7   7199   7116
+radare2-crossed      28    16     0   5227   5185
+
+build                                    rank:hereticus   rank:radare2-crossed         rows:hereticus   rows:radare2-crossed       extras:hereticus extras:radare2-crossed
+zlib-arm-O2-to-gcc-O2                                 1                     48                    140                    122                    139                    121
+zlib-arm-Os-to-O3                                     1                     35                    112                    109                    111                    108
+zlib-aarch64-O2-to-gcc-O2                             2                     21                    134                    119                    133                    118
+zlib-aarch64-Os-to-O3                                 1                     55                    121                    118                    120                    117
+zlib-mips-O2-to-gcc-O2                                1                     77                    132                    123                    131                    122
+zlib-mips-Os-to-O3                                    1                     43                    118                    104                    117                    103
+zlib-x86_64-O2-to-gcc-O2                              1                     10                    142                    115                    141                    114
+zlib-x86_64-Os-to-O3                                  1                     28                    120                    113                    119                    112
+lua-arm-O2-to-gcc-O2                                348                      -                    501                    206                    496                    204
+lua-arm-Os-to-O3                                    253                      -                    371                    196                    366                    194
+lua-aarch64-O2-to-gcc-O2                            362                      -                    495                    196                    490                    194
+lua-aarch64-Os-to-O3                                249                      -                    384                    201                    379                    199
+lua-mips-O2-to-gcc-O2                               391                      -                    520                    242                    514                    241
+lua-mips-Os-to-O3                                   268                      -                    498                    164                    493                    163
+lua-x86_64-O2-to-gcc-O2                             338                      -                    516                    198                    511                    196
+lua-x86_64-Os-to-O3                                 149                      -                    390                    203                    384                    201
+tinyxml2-arm-O2-to-gcc-O2                            13                     99                    297                    339                    296                    338
+tinyxml2-arm-Os-to-O3                                 4                    198                    211                    319                    210                    317
+tinyxml2-aarch64-O2-to-gcc-O2                        14                     90                    301                    351                    300                    350
+tinyxml2-aarch64-Os-to-O3                             2                    190                    215                    317                    214                    316
+tinyxml2-mips-O2-to-gcc-O2                           24                    108                    233                    322                    232                    321
+tinyxml2-mips-Os-to-O3                                6                    137                    212                    237                    211                    236
+tinyxml2-x86_64-O2-to-gcc-O2                         31                     82                    366                    335                    365                    333
+tinyxml2-x86_64-Os-to-O3                              4                    194                    272                    323                    271                    322
+smallvec-arm-Os-to-O3                                13                      -                     93                     39                     87                     36
+smallvec-aarch64-Os-to-O3                            20                      -                     95                     46                     89                     43
+smallvec-mips-Os-to-O3                                6                      -                    106                     45                    100                     42
+smallvec-x86_64-Os-to-O3                             13                      -                    104                     25                     97                     24

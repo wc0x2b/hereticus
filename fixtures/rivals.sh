@@ -3,7 +3,7 @@
 # reports. Run by `just rivals` and `just rivals-ghidra`, in the image of
 # fixtures/rivals/Dockerfile.
 #
-# Usage: rivals.sh radare2|ghidra [default|deeper|unnamed]
+# Usage: rivals.sh radare2|ghidra [default|deeper|unnamed|crossed]
 #
 # The setup says how the tool runs, and on what:
 #
@@ -12,6 +12,8 @@
 #            correlators that Auto Version Tracking leaves out
 #   unnamed  its default analysis, on a copy of lib-stripped.so with no
 #            symbol that the library defines, as rivals/unname.py writes
+#   crossed  its default analysis, on the builds of rivals/crossed-builds.txt,
+#            whose two sides are built by other compilers or at other levels
 #
 # For each build of fixtures/rivals/builds.txt this writes
 # build/rivals/<tool>[-<setup>]/<project>-<arch>-<level>.json, which holds the
@@ -28,34 +30,57 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-tool="${1:?usage: rivals.sh radare2|ghidra [default|deeper|unnamed]}"
+tool="${1:?usage: rivals.sh radare2|ghidra [default|deeper|unnamed|crossed]}"
 setup="${2:-default}"
 backports="$here/build/backports"
 unnamed="$here/build/rivals/unnamed"
 builds="$here/rivals/builds.txt"
+[ "$setup" = crossed ] && builds="$here/rivals/crossed-builds.txt"
 case "$setup" in
     default) out="$here/build/rivals/$tool" ;;
-    deeper | unnamed) out="$here/build/rivals/$tool-$setup" ;;
+    deeper | unnamed | crossed) out="$here/build/rivals/$tool-$setup" ;;
     *) echo "rivals: unknown setup $setup" >&2; exit 2 ;;
 esac
 
+# Each build of builds.txt, one a line: its name, its project and arch, and
+# the level of each side. A line with no fourth field builds both sides at
+# one level.
+each_build() {
+    grep -v '^#' "$builds" | while read -r project arch level after; do
+        [ -n "$project" ] || continue
+        if [ -n "$after" ]; then
+            echo "$project-$arch-$level-to-$after $project $arch $level $after"
+        else
+            echo "$project-$arch-$level $project $arch $level $level"
+        fi
+    done
+}
+
+# The stripped library of one side of a build.
+stripped() {
+    local project="$1" arch="$2" before="$3" after="$4" variant="$5"
+    local level="$before"
+    [ "$variant" = after ] && level="$after"
+    echo "$backports/$project-$variant/$arch-$level/lib-stripped.so"
+}
+
 # The library of one side of a build, as the setup gives it to the tool.
 library() {
-    local name="$1" project="$2" arch="$3" level="$4" variant="$5"
+    local name="$1" variant="$6"
     case "$setup" in
         unnamed) echo "$unnamed/$name/$variant.so" ;;
-        *) echo "$backports/$project-$variant/$arch-$level/lib-stripped.so" ;;
+        *) stripped "${@:2}" ;;
     esac
 }
 
 # The unnamed copies take less than a second, so each run writes them again.
 # A move puts each one in place whole, as another run can read it.
-grep -v '^#' "$builds" | while read -r project arch level; do
-    mkdir -p "$unnamed/$project-$arch-$level"
+each_build | while read -r name project arch before after; do
+    mkdir -p "$unnamed/$name"
     for variant in before after; do
-        copy="$unnamed/$project-$arch-$level/$variant.so"
+        copy="$unnamed/$name/$variant.so"
         python3 "$here/rivals/unname.py" \
-            "$backports/$project-$variant/$arch-$level/lib-stripped.so" "$copy.$$"
+            "$(stripped "$project" "$arch" "$before" "$after" "$variant")" "$copy.$$"
         mv "$copy.$$" "$copy"
     done
 done
@@ -74,9 +99,9 @@ inputs_hash="$(
         cat "$here/rivals.sh" "$builds" "$here/rivals/Dockerfile" \
             "$here/rivals/HereticusVersionTracking.java" "$here/rivals/rows.py"
         echo "$version $setup"
-        grep -v '^#' "$builds" | while read -r project arch level; do
+        each_build | while read -r name project arch before after; do
             for variant in before after; do
-                cat "$(library "$project-$arch-$level" "$project" "$arch" "$level" "$variant")"
+                cat "$(library "$name" "$project" "$arch" "$before" "$after" "$variant")"
             done
         done
     } | sha256sum | cut -d' ' -f1
@@ -125,14 +150,13 @@ run_ghidra() {
     [ -f "$report" ] || { cat "$work/ghidra-vt.log" >&2; return 1; }
 }
 
-grep -v '^#' "$builds" | while read -r project arch level; do
-    name="$project-$arch-$level"
+each_build | while read -r name project arch before after; do
     echo "rivals: $tool $setup $name"
     rm -f "$work/report.json"
     start="$(date +%s.%N)"
     "run_$tool" \
-        "$(library "$name" "$project" "$arch" "$level" before)" \
-        "$(library "$name" "$project" "$arch" "$level" after)" \
+        "$(library "$name" "$project" "$arch" "$before" "$after" before)" \
+        "$(library "$name" "$project" "$arch" "$before" "$after" after)" \
         "$work/report.json"
     end="$(date +%s.%N)"
     python3 "$here/rivals/rows.py" "$tool" "$work/report.json" "$out/$name.json" \

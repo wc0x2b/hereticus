@@ -18,14 +18,14 @@
 
 mod rivals;
 
-use rivals::{Contender, Ranks, Rival, Setup};
+use rivals::{Contender, Extras, Ranks, Rival, Setup};
 
 const GHIDRA: Contender = Contender { rival: Rival::Ghidra, setup: Setup::Default };
 
 #[test]
 fn hereticus_does_no_worse_than_ghidra() {
     let contests = rivals::contests(GHIDRA);
-    let losses = rivals::losses(&contests, Ranks::Checked);
+    let losses = rivals::losses(&contests, Ranks::Checked, Extras::Checked);
     assert!(losses.is_empty(), "hereticus does worse than Ghidra:\n{}", losses.join("\n"));
 }
 

@@ -20,14 +20,14 @@
 
 mod rivals;
 
-use rivals::{Contender, Ranks, Rival, Setup};
+use rivals::{Contender, Extras, Ranks, Rival, Setup};
 
 const GHIDRA: Contender = Contender { rival: Rival::Ghidra, setup: Setup::Deeper };
 
 #[test]
 fn hereticus_finds_as_much_as_deeper_ghidra_with_fewer_extras() {
     let contests = rivals::contests(GHIDRA);
-    let losses = rivals::losses(&contests, Ranks::Locked);
+    let losses = rivals::losses(&contests, Ranks::Locked, Extras::Checked);
     assert!(
         losses.is_empty(),
         "hereticus does worse than Ghidra with more correlators:\n{}",

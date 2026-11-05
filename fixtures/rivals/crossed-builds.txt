@@ -1,0 +1,33 @@
+# The backport builds that fixtures/rivals.sh gives each tool in its crossed
+# setup: project, arch, the level before the fix and the level after it, as
+# the directories of fixtures/build/backports name them. Each side is built
+# by another compiler, or at another optimization, as a vendor's next release
+# can be.
+zlib arm O2 gcc-O2
+zlib arm Os O3
+zlib aarch64 O2 gcc-O2
+zlib aarch64 Os O3
+zlib mips O2 gcc-O2
+zlib mips Os O3
+zlib x86_64 O2 gcc-O2
+zlib x86_64 Os O3
+lua arm O2 gcc-O2
+lua arm Os O3
+lua aarch64 O2 gcc-O2
+lua aarch64 Os O3
+lua mips O2 gcc-O2
+lua mips Os O3
+lua x86_64 O2 gcc-O2
+lua x86_64 Os O3
+tinyxml2 arm O2 gcc-O2
+tinyxml2 arm Os O3
+tinyxml2 aarch64 O2 gcc-O2
+tinyxml2 aarch64 Os O3
+tinyxml2 mips O2 gcc-O2
+tinyxml2 mips Os O3
+tinyxml2 x86_64 O2 gcc-O2
+tinyxml2 x86_64 Os O3
+smallvec arm Os O3
+smallvec aarch64 Os O3
+smallvec mips Os O3
+smallvec x86_64 Os O3

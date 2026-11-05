@@ -31,8 +31,12 @@ SHN_UNDEF = 0
 # The tags of .dynamic whose value is an offset in .dynstr.
 STRING_TAGS = {1, 14, 15, 29}  # DT_NEEDED, DT_SONAME, DT_RPATH, DT_RUNPATH
 
-EM_ARM = 40
+EM_386 = 3
 EM_MIPS = 8
+EM_PPC = 20
+EM_PPC64 = 21
+EM_ARM = 40
+EM_X86_64 = 62
 EM_AARCH64 = 183
 
 # For each machine of the backports: its relative relocation, the relocations
@@ -41,6 +45,10 @@ RELOCATIONS = {
     EM_ARM: (23, {2}, {21, 22}),  # R_ARM_RELATIVE; ABS32; GLOB_DAT, JUMP_SLOT
     EM_AARCH64: (1027, {257}, {1025, 1026}),  # R_AARCH64_RELATIVE; ABS64; ...
     EM_MIPS: (3, {2, 3}, set()),  # R_MIPS_REL32 with no symbol; 32, REL32
+    EM_X86_64: (8, {1}, {6, 7}),  # R_X86_64_RELATIVE; 64; GLOB_DAT, JUMP_SLOT
+    EM_386: (8, {1}, {6, 7}),  # R_386_RELATIVE; 32; GLOB_DAT, JMP_SLOT
+    EM_PPC: (22, {1}, {20, 21}),  # R_PPC_RELATIVE; ADDR32; GLOB_DAT, JMP_SLOT
+    EM_PPC64: (22, {38}, {20, 21}),  # R_PPC64_RELATIVE; ADDR64; GLOB_DAT, JMP_SLOT
 }
 
 
@@ -163,8 +171,10 @@ def make_relative(elf, out, dynsym, values):
         for at, address, symbol, kind, addend in elf.relocations(section):
             if symbol not in values or kind not in with_addend | alone:
                 continue
-            word = elf.file_offset(address)
             if addend is None:
+                # Only an implicit addend lives in the word, which an
+                # explicit one can leave in .bss, as on PowerPC.
+                word = elf.file_offset(address)
                 stored, = elf.unpack("Q" if elf.wide else "I", word)
                 target = values[symbol] + (stored if kind in with_addend else 0)
                 out[word:word + width] = pack_word(elf, target)
