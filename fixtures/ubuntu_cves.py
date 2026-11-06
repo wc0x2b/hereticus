@@ -20,6 +20,8 @@ version, the functions its patches touched, and the SHA-256 of each file,
 because `tests/truth_ubuntu.rs` locks the counts they give. A plain run
 fetches exactly those and stops at a changed file. `--refresh` asks
 Launchpad for the security releases published since, and pins them anew.
+`--refix` reads the functions that the patches of the pinned cases touch
+again, as `touched_functions` reads them now.
 """
 
 import hashlib
@@ -187,6 +189,39 @@ def patches(source: str, version: str) -> dict[str, str]:
 HUNK = re.compile(r"^@@ [^@]* @@ ?(.*)$")
 NAME = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 NOT_FUNCTIONS = {"if", "for", "while", "switch", "return", "sizeof", "defined"}
+# A macro that defines a function takes its name alone, as
+# `SSH_PACKET_CALLBACK(ssh_packet_kexinit)` of libssh and
+# `DECLAREwriteFunc(putContig8bitTile)` of libtiff do. Its own name begins
+# with two capitals.
+DEFINING_MACRO = re.compile(r"^(?:static\s+)?([A-Z]{2}[A-Za-z0-9_]*)\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)")
+# zlib declares a prototype as `local void compress_block OF((...))`, with
+# the name of the function before `OF`.
+OLD_PROTOTYPE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s+OF\s*\(\(")
+TYPES = {"void", "int", "char", "long", "short", "unsigned", "signed", "float", "double"}
+
+
+def header_function(header: str) -> str | None:
+    """The function that a hunk header names, or None.
+
+    >>> header_function("static SSH_PACKET_CALLBACK(ssh_packet_client_dh_init){")
+    'ssh_packet_client_dh_init'
+    >>> header_function("local void compress_block OF((deflate_state *s,")
+    'compress_block'
+    >>> header_function("static int deflate_stored(deflate_state *s, int flush)")
+    'deflate_stored'
+    >>> header_function("int xmlFoo(void)")
+    'xmlFoo'
+    >>> header_function("if (x)") is None
+    True
+    """
+    defined = DEFINING_MACRO.match(header.strip())
+    if defined and defined.group(2) not in TYPES:
+        return defined.group(2)
+    prototype = OLD_PROTOTYPE.search(header)
+    if prototype:
+        return prototype.group(1)
+    found = [name for name in NAME.findall(header)[:1] if name not in NOT_FUNCTIONS]
+    return found[0] if found else None
 
 
 def touched_functions(patch: str) -> set[str]:
@@ -202,8 +237,9 @@ def touched_functions(patch: str) -> set[str]:
             continue
         hunk = HUNK.match(line)
         if hunk:
-            found = NAME.findall(hunk.group(1))
-            names.update(name for name in found[:1] if name not in NOT_FUNCTIONS)
+            name = header_function(hunk.group(1))
+            if name:
+                names.add(name)
     return names
 
 
@@ -252,7 +288,28 @@ def fetch_pinned() -> list[dict]:
     return cases
 
 
+def refix() -> None:
+    """Find the functions that the patches of each pinned case touch anew,
+    from the cached sources, and pin them."""
+    sources = {binary: source for binary, source, _ in LIBRARIES}
+    pinned = json.loads(PINNED.read_text())
+    for case in pinned:
+        source = sources[case["library"]]
+        old_patches = patches(source, case["before"])
+        new_patches = patches(source, case["after"])
+        fixes = set()
+        for name, text in new_patches.items():
+            if old_patches.get(name) != text:
+                fixes |= touched_functions(text)
+        case["fixes"] = sorted(fixes)
+    PINNED.write_text(json.dumps(pinned, indent=1) + "\n")
+    print(f"{len(pinned)} cases pinned anew in {PINNED}", file=sys.stderr)
+
+
 def main() -> None:
+    if "--refix" in sys.argv[1:]:
+        refix()
+        return
     if "--refresh" not in sys.argv[1:]:
         cases = fetch_pinned()
         CACHE.mkdir(parents=True, exist_ok=True)

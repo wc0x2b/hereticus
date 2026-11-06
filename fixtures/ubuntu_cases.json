@@ -30,9 +30,9 @@
    "CVE-2022-23852_prevent-integer-overflow-in-XML_GetBuffer.patch"
   ],
   "fixes": [
-   "START_TEST",
    "XML_GetBuffer",
-   "make_suite"
+   "make_suite",
+   "test_get_buffer_2"
   ]
  },
  {
@@ -101,9 +101,9 @@
    "CVE-2022-43680-2.patch"
   ],
   "fixes": [
-   "START_TEST",
    "make_suite",
-   "parserCreate"
+   "parserCreate",
+   "test_alloc_long_notation"
   ]
  },
  {
@@ -296,7 +296,8 @@
    "srunner_create",
    "srunner_run_all",
    "storeAttributeValue",
-   "storeEntityValue"
+   "storeEntityValue",
+   "test_alloc_parse_xdecl"
   ]
  },
  {
@@ -438,7 +439,8 @@
    "reportProcessingInstruction",
    "setContext",
    "storeAtts",
-   "storeEntityValue"
+   "storeEntityValue",
+   "test_nested_entity_suspend_2"
   ]
  },
  {
@@ -517,6 +519,8 @@
    "parserInit",
    "resolveSystemId",
    "storeAtts",
+   "test_attributes",
+   "test_skipped_external_entity",
    "tmain",
    "unicode_byte_type"
   ]
@@ -552,9 +556,9 @@
    "CVE-2022-23852_prevent-integer-overflow-in-XML_GetBuffer.patch"
   ],
   "fixes": [
-   "START_TEST",
    "XML_GetBuffer",
-   "make_suite"
+   "make_suite",
+   "test_get_buffer_2"
   ]
  },
  {
@@ -623,9 +627,9 @@
    "CVE-2022-43680-2.patch"
   ],
   "fixes": [
-   "START_TEST",
    "make_suite",
-   "parserCreate"
+   "parserCreate",
+   "test_alloc_long_notation"
   ]
  },
  {
@@ -818,7 +822,8 @@
    "srunner_create",
    "srunner_run_all",
    "storeAttributeValue",
-   "storeEntityValue"
+   "storeEntityValue",
+   "test_alloc_parse_xdecl"
   ]
  },
  {
@@ -960,7 +965,8 @@
    "reportProcessingInstruction",
    "setContext",
    "storeAtts",
-   "storeEntityValue"
+   "storeEntityValue",
+   "test_nested_entity_suspend_2"
   ]
  },
  {
@@ -1039,6 +1045,8 @@
    "parserInit",
    "resolveSystemId",
    "storeAtts",
+   "test_attributes",
+   "test_skipped_external_entity",
    "tmain",
    "unicode_byte_type"
   ]
@@ -1075,8 +1083,8 @@
    "CVE-2018-25032-2.patch"
   ],
   "fixes": [
-   "OF",
    "_tr_flush_block",
+   "_tr_send_bits",
    "_tr_tally",
    "compress_block",
    "deflateCopy",
@@ -1121,8 +1129,8 @@
    "CVE-2018-25032-2.patch"
   ],
   "fixes": [
-   "OF",
    "_tr_flush_block",
+   "_tr_send_bits",
    "_tr_tally",
    "compress_block",
    "deflateCopy",
@@ -2300,13 +2308,13 @@
    "CVE-2022-0924.patch"
   ],
   "fixes": [
-   "DECLAREwriteFunc",
    "TIFFFetchNormalTag",
    "_TIFFVSetField",
    "createCroppedImage",
    "createImageSection",
    "extractImageSection",
    "invertImage",
+   "writeBufferToSeparateStrips",
    "writeImageSections"
   ]
  },
@@ -2997,13 +3005,13 @@
    "CVE-2022-0924.patch"
   ],
   "fixes": [
-   "DECLAREwriteFunc",
    "TIFFFetchNormalTag",
    "_TIFFVSetField",
    "createCroppedImage",
    "createImageSection",
    "extractImageSection",
    "invertImage",
+   "writeBufferToSeparateStrips",
    "writeImageSections"
   ]
  },
@@ -4402,14 +4410,14 @@
    "CVE-2025-5917.patch"
   ],
   "fixes": [
-   "DEFINE_TEST",
    "_warc_skip",
    "archive_read_format_rar_seek_data",
    "build_ustar_entry_name",
    "copy_from_lzss_window",
    "expand",
    "parse_filter",
-   "read_filter"
+   "read_filter",
+   "test_read_format_warc"
   ]
  },
  {
@@ -4454,7 +4462,8 @@
    "file_open",
    "file_skip",
    "file_skip_lseek",
-   "parse_filter"
+   "parse_filter",
+   "test_option_s"
   ]
  },
  {
@@ -4752,14 +4761,14 @@
    "CVE-2025-5917.patch"
   ],
   "fixes": [
-   "DEFINE_TEST",
    "_warc_skip",
    "archive_read_format_rar_seek_data",
    "build_ustar_entry_name",
    "copy_from_lzss_window",
    "expand",
    "parse_filter",
-   "read_filter"
+   "read_filter",
+   "test_read_format_warc"
   ]
  },
  {
@@ -4804,7 +4813,8 @@
    "file_open",
    "file_skip",
    "file_skip_lseek",
-   "parse_filter"
+   "parse_filter",
+   "test_option_s"
   ]
  },
  {
@@ -7797,6 +7807,8 @@
    "ssh_kex_select_methods",
    "ssh_make_sessionid",
    "ssh_packet_incoming_filter",
+   "ssh_packet_kexinit",
+   "ssh_packet_newkeys",
    "ssh_send_kex",
    "ssh_send_rekex",
    "ssh_set_client_kex",
@@ -7841,6 +7853,9 @@
    "SSH_PACKET_CALLBACK",
    "server_set_kex",
    "ssh_kex_select_methods",
+   "ssh_packet_ext_info",
+   "ssh_packet_kexinit",
+   "ssh_packet_newkeys",
    "ssh_packet_process",
    "ssh_packet_send",
    "ssh_packet_socket_callback",
@@ -7978,6 +7993,8 @@
    "chacha20_set_encrypt_key",
    "channel_default_bufferize",
    "channel_from_msg",
+   "channel_rcv_data",
+   "channel_rcv_eof",
    "channel_write_common",
    "cipher_free",
    "cipher_init",
@@ -8269,6 +8286,7 @@
   ],
   "fixes": [
    "SSH_PACKET_CALLBACK",
+   "channel_rcv_data",
    "evp_cipher_aead_decrypt",
    "evp_cipher_aead_encrypt",
    "gettimeofday",
@@ -8389,6 +8407,8 @@
    "ssh_kex_select_methods",
    "ssh_make_sessionid",
    "ssh_packet_incoming_filter",
+   "ssh_packet_kexinit",
+   "ssh_packet_newkeys",
    "ssh_send_kex",
    "ssh_send_rekex",
    "ssh_set_client_kex",
@@ -8433,6 +8453,9 @@
    "SSH_PACKET_CALLBACK",
    "server_set_kex",
    "ssh_kex_select_methods",
+   "ssh_packet_ext_info",
+   "ssh_packet_kexinit",
+   "ssh_packet_newkeys",
    "ssh_packet_process",
    "ssh_packet_send",
    "ssh_packet_socket_callback",
@@ -8570,6 +8593,8 @@
    "chacha20_set_encrypt_key",
    "channel_default_bufferize",
    "channel_from_msg",
+   "channel_rcv_data",
+   "channel_rcv_eof",
    "channel_write_common",
    "cipher_free",
    "cipher_init",
@@ -8861,6 +8886,7 @@
   ],
   "fixes": [
    "SSH_PACKET_CALLBACK",
+   "channel_rcv_data",
    "evp_cipher_aead_decrypt",
    "evp_cipher_aead_encrypt",
    "gettimeofday",

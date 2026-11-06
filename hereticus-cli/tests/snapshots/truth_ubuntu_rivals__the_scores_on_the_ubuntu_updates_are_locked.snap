@@ -27,7 +27,7 @@ libpng16-16 ghidra             9     8     3      7     557
 libsqlite3-0 hereticus         8     8     5      8     177
 libsqlite3-0 radare2           8     3     0      0    5874
 libsqlite3-0 ghidra            8     7     2      6    4584
-libssh-4 hereticus            16    16    11     15     575
+libssh-4 hereticus            16    16    13     15     575
 libssh-4 radare2              16    12     4      6    7052
 libssh-4 ghidra               16    16    13     14    3185
 libtiff5 hereticus            21    21    20     21     295
@@ -44,13 +44,13 @@ zlib1g radare2                 2     2     1      2      90
 zlib1g ghidra                  2     2     1      2      60
 
 tool                       cases found first  top10    rows
-all hereticus                176   176   151    175    5972
+all hereticus                176   176   153    175    5972
 all radare2                  176   114    34     59   80450
 all ghidra                   176   173   103    150   50932
 
 rival                      hereticus-earlier rival-earlier
 radare2                                  142             1
-ghidra                                    73            15
+ghidra                                    73            13
 
 found by none: 0
 
@@ -64,9 +64,7 @@ libtiff5-arm64-4.3.0-6ubuntu0.7-4.3.0-6ubuntu0.8                              2 
 libarchive13-armhf-3.6.0-1ubuntu1.1-3.6.0-1ubuntu1.2                          2             22              1
 libsqlite3-0-arm64-3.37.2-2ubuntu0.1-3.37.2-2ubuntu0.3                        2              -              1
 libcurl4-armhf-7.81.0-1ubuntu1.27-7.81.0-1ubuntu1.29                          2            301              1
-libssh-4-arm64-0.9.6-2build1-0.9.6-2ubuntu0.22.04.1                           2              -              1
 libssh-4-arm64-0.9.6-2ubuntu0.22.04.3-0.9.6-2ubuntu0.22.04.4                  2              5              1
 libssh-4-arm64-0.9.6-2ubuntu0.22.04.4-0.9.6-2ubuntu0.22.04.5                 30              -              1
-libssh-4-armhf-0.9.6-2build1-0.9.6-2ubuntu0.22.04.1                           2              -              1
 libssh-4-armhf-0.9.6-2ubuntu0.22.04.3-0.9.6-2ubuntu0.22.04.4                  2             14              1
 libgnutls30-armhf-3.7.3-4ubuntu1.8-3.7.3-4ubuntu1.9                           2             42              1

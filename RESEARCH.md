@@ -3068,3 +3068,14 @@ patches touched, `hereticus` shows the fix on row 1 in 151 updates in
 place of 122, Ghidra in 103 in place of 90, and radiff2 in 34 in place of
 30. Ghidra shows the fix earlier than `hereticus` in 15 updates in place
 of 27, and `hereticus` earlier than Ghidra in 73; radiff2 is earlier in 1.
+
+**Macros in the hunk headers.** `fixtures/ubuntu_cves.py` took the first
+name before a parenthesis in the header of each hunk for the function the
+hunk edits. A macro that defines a function then stood in its place:
+`SSH_PACKET_CALLBACK(ssh_packet_kexinit)` of libssh gave
+`SSH_PACKET_CALLBACK`, `DECLAREwriteFunc(...)` of libtiff gave
+`DECLAREwriteFunc`, and zlib's `compress_block OF((...))` gave `OF`. The
+name inside such a macro, or before `OF`, is now taken, and `--refix`
+pinned the functions anew from the cached patches: 26 of 218 updates
+changed. `hereticus` then shows the fix on row 1 in 153 updates, and
+Ghidra earlier than `hereticus` in 13.
