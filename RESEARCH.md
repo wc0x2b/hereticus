@@ -3007,7 +3007,24 @@ pairs it made 2213 more right pairs and 18 fewer wrong. It split
 `tcp_v4_early_demux` from `tcp_v4_get_syncookie`. It also cut four more
 data regions of the MIPS kernels into pieces, which the report hides, and
 on the raw images of the releases it paired 28 more functions of expat
-and left one or two more of zlib and Lua gone or new. On the
+and left one or two more of zlib and Lua gone or new. The same guards on
+the addresses that code forms, as a `lui` and an `addiu` do, found 208
+more real starts and 130 that are not real on the MT300N v2 kernel, and
+over the twelve kernel pairs 2167 more right pairs and 26 more wrong, so
+they were not kept. The ARM kernels did not change: an unwind index lies
+in each, and with an index the scan reads no table of functions. There,
+`phy_probe` joins `genphy_read_abilities`, which ends in a literal pool,
+and only `movw` and `movt` form its address. GNU `ld` merges neighbouring
+entries with the same short description, so one entry covered
+`genphy_read_abilities`, `phy_probe` and `genphy_c37_read_status`. The
+addresses that code forms, inside the range of an entry with a
+description, and where the start follows a return or a jump past a
+literal pool, were kept: over the twelve kernel pairs they made 2842 more
+right pairs and 15 more wrong: 18 more on the upgrades of the ARM board,
+and 3 fewer on the point release of the two ARM boards. The share of
+wrong pairs stayed at 0.67%. The same addresses
+anywhere in a raw image with an index left 27 more functions gone on the
+raw image of a BE8 release, and one to four more of zlib, Lua and expat. On the
 upgrade from 21.02.7 to 22.03.2, the plain rule of `truth_kernel_rivals.rs`
 calls 2450 pairs of `hereticus` wrong, 4.5%, and 534 of radiff2, 25.8% of
 the 2071 that it can judge. Ghidra made 10722 pairs there, 481 of them wrong, 4.6%. On

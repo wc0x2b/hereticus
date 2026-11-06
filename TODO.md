@@ -164,7 +164,7 @@ renamed function, a twin and two static functions of one name each count
 apart, and code that the debug file does not describe is left out. Over
 the kernels, 0.67%<!-- from truth_kernels: all / wrong% --> of the pairs are
 wrong, and at most 0.89%<!-- from truth_kernels: all / at most --> where the
-540<!-- from truth_kernels: all / unproven --> pairs only the source file calls
+552<!-- from truth_kernels: all / unproven --> pairs only the source file calls
 renamed are wrong too. Across a kernel upgrade it is
 1.01%<!-- from truth_kernels: 22.03.5/23.05.5 / wrong% --> to
 1.69%<!-- from truth_kernels: 21.02.7/22.03.2 / wrong% -->.
@@ -176,17 +176,17 @@ where both sides sit in one file, or in a file with few other pairs. A
 score floor, a floor on the ratio of the sizes, a move to a closer free
 function, or a cut-off on the score that chance gives (entry 18) costs
 more right pairs than it saves. The pairs by callers and by references
-are wrong 8.40%<!-- from truth_kernels: SameCallers / wrong% --> and
-3.82%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
+are wrong 8.33%<!-- from truth_kernels: SameCallers / wrong% --> and
+3.91%<!-- from truth_kernels: SameReferences / wrong% --> of the time; the pairs by references out of place split too evenly
 on their context to undo.
 
-Over the upgrades, 6079<!-- from truth_kernels: upgrades / pairs --> pairs of
+Over the upgrades, 6043<!-- from truth_kernels: upgrades / pairs --> pairs of
 functions stay free on both sides, though they share a name and a source
 file: about four times the wrong pairs. Of these,
-873<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
+909<!-- from truth_kernels: upgrades / close --> score 0.7 or more, and most of
 those sit out of place, where the context check undoes them rightly or a
 rival scores within 0.03;
-407<!-- from truth_kernels: upgrades / identical --> have the same
+415<!-- from truth_kernels: upgrades / identical --> have the same
 instructions, mostly small twins that no caller tells apart. See `RESEARCH.md`,
 "The kernel upgrades, checked again".
 

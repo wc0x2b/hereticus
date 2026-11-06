@@ -551,6 +551,7 @@ pub fn recover_in_memory(
     if !exception_index.is_empty() {
         let mut blind = cannot_unwind_ranges(exception_index);
         let described = described_ranges(exception_index);
+        let merged = mergeable_ranges(exception_index);
         for region in &decoded {
             let (base, code) = (&region.base, region.code);
             // Code before the first entry of a region is listed by nothing,
@@ -574,7 +575,29 @@ pub fn recover_in_memory(
             // template function short, and its caller then read as changed.
             let taken = taken_addresses(arch, regions, contents, &linked.pointers, region, memory);
             let local = slot_call_targets(arch, region, memory);
-            for address in call_targets(arch, region).into_iter().chain(taken).chain(local) {
+            // A linker merges neighbouring entries with the same short
+            // description, so one entry can cover several functions. In the
+            // ARM kernel of OpenWrt 22.03.5 for the EX6100 v2, one covers
+            // `genphy_read_abilities` and `phy_probe`, which nothing calls,
+            // and which only `movw` and `movt` name. In a raw image the
+            // addresses that code forms reach data too, so only one that
+            // follows the end of a function counts.
+            let formed = match contents {
+                Regions::CodeAndData => {
+                    let end = region.base + region.code.len() as u64;
+                    let in_code = AddressSpace::of_raw_image(region.base, end - region.base);
+                    let pool = data_words(arch, memory, region.base..end, &region.insns);
+                    arch.data_addresses(region.code, &region.insns, &in_code, memory)
+                        .into_iter()
+                        .filter(|address| merged.iter().any(|range| range.contains(address)))
+                        .filter(|&address| follows_an_end(arch, &region.insns, &pool, address))
+                        .filter(|&address| !lies_inside_a_body(&region.insns, address))
+                        .collect()
+                }
+                Regions::CodeOnly => Vec::new(),
+            };
+            let found = call_targets(arch, region).into_iter().chain(taken).chain(local);
+            for address in found.chain(formed) {
                 if !described.iter().any(|range| range.start < address && range.contains(&address))
                 {
                     starts.insert((address, Source::CallTarget));
@@ -630,7 +653,7 @@ pub fn recover_in_memory(
             let named = function_tables(arch, regions, region.base..end, &known)
                 .into_iter()
                 .filter(|address| address % width == 0 && !known.contains(address))
-                .filter(|&address| follows_an_end(arch, &region.insns, address))
+                .filter(|&address| follows_an_end(arch, &region.insns, &BTreeSet::new(), address))
                 .filter(|&address| !lies_inside_a_body(&region.insns, address));
             starts.extend(named.map(|address| (address, Source::CallTarget)));
         }
@@ -1019,13 +1042,15 @@ fn tagged_functions(
 }
 
 /// Whether the instruction at `address` follows a return or a jump, past
-/// its delay slots and past padding.
-fn follows_an_end(arch: &dyn Recovery, insns: &[Insn], address: u64) -> bool {
+/// its delay slots, and past padding and the words of `pool`.
+fn follows_an_end(arch: &dyn Recovery, insns: &[Insn], pool: &BTreeSet<u64>, address: u64) -> bool {
     let Ok(index) = insns.binary_search_by_key(&address, |insn| insn.address) else {
         return false;
     };
     let mut before = index;
-    while before > 0 && arch.is_padding(&insns[before - 1]) {
+    while before > 0
+        && (arch.is_padding(&insns[before - 1]) || pool.contains(&insns[before - 1].address))
+    {
         before -= 1;
     }
     (1..=2).any(|back| {
@@ -1381,6 +1406,23 @@ fn described_ranges(index: &[IndexEntry]) -> Vec<core::ops::Range<u64>> {
         .iter()
         .enumerate()
         .filter(|(_, entry)| entry.unwinding == Unwinding::Listed)
+        .filter_map(|(position, entry)| {
+            let end = sorted.get(position + 1)?.address;
+            (end > entry.address).then_some(entry.address..end)
+        })
+        .collect()
+}
+
+/// The address ranges that entries with a description cover, from each such
+/// entry to the next: one function each, but where a linker merged the
+/// entries of neighbours with the same description.
+fn mergeable_ranges(index: &[IndexEntry]) -> Vec<core::ops::Range<u64>> {
+    let mut sorted = index.to_vec();
+    sorted.sort_by_key(|entry| entry.address);
+    sorted
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.unwinding == Unwinding::Described)
         .filter_map(|(position, entry)| {
             let end = sorted.get(position + 1)?.address;
             (end > entry.address).then_some(entry.address..end)
@@ -2524,6 +2566,43 @@ mod tests {
         bytes.push(0);
         let regions = [(0x100, bytes.as_slice())];
         assert!(!points_at_text(&Memory::new(&regions), 0x100));
+    }
+
+    /// An entry with a description covers the code to the next entry, as a
+    /// linker can merge the entries of neighbours; the other kinds do not
+    /// count.
+    #[test]
+    fn the_ranges_of_described_entries_run_to_the_next_entry() {
+        let entry = |address, unwinding| IndexEntry { address, unwinding };
+        let index = [
+            entry(0x3000, Unwinding::Described),
+            entry(0x1000, Unwinding::Described),
+            entry(0x2000, Unwinding::CannotUnwind),
+            entry(0x4000, Unwinding::Listed),
+            entry(0x5000, Unwinding::Described),
+        ];
+        assert_eq!(mergeable_ranges(&index), [0x1000..0x2000, 0x3000..0x4000]);
+        assert!(mergeable_ranges(&[]).is_empty());
+    }
+
+    /// A start follows a return or a jump, past padding and a literal pool.
+    #[test]
+    fn a_start_follows_an_end_past_a_pool() {
+        let arch = &hereticus_il::arch::arm32::Arm32;
+        let insn =
+            |address, kind| Insn::new(address, &[0; 4], kind, hereticus_il::arch::Opcode::None);
+        let body = [
+            insn(0x1000, InsnKind::Normal),
+            insn(0x1004, InsnKind::Return),
+            insn(0x1008, InsnKind::Normal),
+            insn(0x100c, InsnKind::Normal),
+        ];
+        let pool = BTreeSet::from([0x1008]);
+        assert!(follows_an_end(arch, &body, &pool, 0x100c));
+        assert!(!follows_an_end(arch, &body, &BTreeSet::new(), 0x100c));
+        assert!(follows_an_end(arch, &body, &BTreeSet::new(), 0x1008));
+        assert!(!follows_an_end(arch, &body, &pool, 0x1004));
+        assert!(!follows_an_end(arch, &body, &pool, 0x2000));
     }
 
     /// A run of words into the code is a table of functions where at

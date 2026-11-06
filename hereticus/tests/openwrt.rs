@@ -468,7 +468,7 @@ fn kernel_digest(comparison: &Comparison) -> String {
 fn slow_the_arm_kernel_report_is_locked() {
     check_kernel(
         EX6100V2,
-        15689,
+        16017,
         [
             BaseFit::Plausible { pointers: 65274, examined: 1_804_835 },
             BaseFit::Plausible { pointers: 65514, examined: 1_813_763 },
@@ -512,7 +512,7 @@ fn slow_the_little_endian_mips_kernel_report_is_locked() {
 fn slow_the_armada_kernel_report_is_locked() {
     check_kernel(
         A385DBAP,
-        17596,
+        17969,
         [
             BaseFit::Plausible { pointers: 76052, examined: 2_107_105 },
             BaseFit::Plausible { pointers: 76384, examined: 2_116_947 },
