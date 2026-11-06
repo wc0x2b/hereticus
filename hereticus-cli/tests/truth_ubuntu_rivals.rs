@@ -192,16 +192,20 @@ fn changed_fixes(case: &Case, symbols: &[Vec<Symbol>; 2]) -> BTreeSet<String> {
         for symbol in symbols[side].iter().filter(|symbol| function_name(&symbol.2) == fix) {
             named.entry(symbol.2.as_str()).or_default().push(symbol);
         }
-        named.into_iter().filter(|(_, all)| all.len() == 1).map(|(name, all)| (name, all[0])).collect()
+        named
+            .into_iter()
+            .filter(|(_, all)| all.len() == 1)
+            .map(|(name, all)| (name, all[0]))
+            .collect()
     };
     case.fixes
         .iter()
         .filter(|&fix| {
             let [before, after] = [0, 1].map(|side| unique(side, fix));
             before.iter().any(|(name, symbol)| {
-                after.get(name).is_some_and(|other| {
-                    body(&binaries[0], symbol) != body(&binaries[1], other)
-                })
+                after
+                    .get(name)
+                    .is_some_and(|other| body(&binaries[0], symbol) != body(&binaries[1], other))
             })
         })
         .cloned()
@@ -243,9 +247,7 @@ impl Answer {
 fn score(rows: &[Row], answer: &Answer, fixes: &BTreeSet<String>, order: Order) -> Score {
     let fix: Vec<bool> = rows
         .iter()
-        .map(|row| {
-            answer.holds_fix(0, row.before, fixes) || answer.holds_fix(1, row.after, fixes)
-        })
+        .map(|row| answer.holds_fix(0, row.before, fixes) || answer.holds_fix(1, row.after, fixes))
         .collect();
     let scores: Vec<Option<f64>> = rows.iter().map(|row| row.score).collect();
     let rank = reading_order(&scores, &fix, order)
@@ -347,7 +349,10 @@ fn the_scores_on_the_ubuntu_updates_are_locked() {
             *ours_earlier.entry(tool).or_default() += usize::from(worse);
             *earlier.entry(tool).or_default() += usize::from(better);
             if better && behind.last().is_none_or(|(name, _)| *name != case.name) {
-                behind.push((case.name.clone(), scores.iter().map(|(_, score)| score.rank).collect()));
+                behind.push((
+                    case.name.clone(),
+                    scores.iter().map(|(_, score)| score.rank).collect(),
+                ));
             }
         }
         for (tool, score) in scores {
@@ -367,8 +372,7 @@ fn the_scores_on_the_ubuntu_updates_are_locked() {
         row(&mut out, &format!("all {}", tool.name()), *tally);
     }
     // How often each tool shows the fix on an earlier row than the other.
-    writeln!(out, "\n{:26} {:>17} {:>13}", "rival", "hereticus-earlier", "rival-earlier")
-        .unwrap();
+    writeln!(out, "\n{:26} {:>17} {:>13}", "rival", "hereticus-earlier", "rival-earlier").unwrap();
     for (tool, &ours) in &ours_earlier {
         let theirs = earlier.get(tool).copied().unwrap_or(0);
         writeln!(out, "{:26} {ours:>17} {theirs:>13}", tool.name()).unwrap();
