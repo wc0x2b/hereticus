@@ -2999,7 +2999,15 @@ function and no branch crosses it both ways. On the MT300N v2 kernel of
 22.03.2, that found 801 more real starts of 20988, and 3940 more that are
 not real, against 464 before, so it was not kept. Most such runs are the
 labels of a `switch`, which the guards do not tell from a table of
-functions. On the
+functions. A narrower rule was kept: a run names new starts only where at
+least half of its distinct targets start a function already, and each new
+start follows a return or a jump. On the same kernel it found 257 more
+real starts and no more that are not real, and over the twelve kernel
+pairs it made 2213 more right pairs and 18 fewer wrong. It split
+`tcp_v4_early_demux` from `tcp_v4_get_syncookie`. It also cut four more
+data regions of the MIPS kernels into pieces, which the report hides, and
+on the raw images of the releases it paired 28 more functions of expat
+and left one or two more of zlib and Lua gone or new. On the
 upgrade from 21.02.7 to 22.03.2, the plain rule of `truth_kernel_rivals.rs`
 calls 2450 pairs of `hereticus` wrong, 4.5%, and 534 of radiff2, 25.8% of
 the 2071 that it can judge. Ghidra made 10722 pairs there, 481 of them wrong, 4.6%. On

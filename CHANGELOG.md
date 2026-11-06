@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In a raw image of MIPS32 or A32 code, a function that only a table of
+  pointers names now starts a function of its own, where at least half of
+  the targets of the table start a function already and the new start
+  follows the end of a function. Before, such a function joined the one
+  before it, as `tcp_v4_early_demux` joined `tcp_v4_get_syncookie` in the
+  MIPS kernels of OpenWrt 22.03.2.
+
 - A call to a PLT stub whose slot a relocation fills with the address of a
   function of the same binary, with no symbol, now counts as a call to that
   function. Before, such a stub stood for its callee, and stubs that moved

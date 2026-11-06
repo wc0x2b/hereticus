@@ -612,6 +612,30 @@ pub fn recover_in_memory(
         starts.insert((region.base, Source::AfterReturn));
     }
 
+    // Where a pointer to code has no tag, as on MIPS32 and A32, a run of
+    // words that point into the code is a table of functions where most of
+    // its targets already start one: a `switch` keeps a run of labels too,
+    // which start none. In the MIPS kernels of OpenWrt 22.03.2,
+    // `tcp_v4_early_demux` starts right after a branch back into
+    // `tcp_v4_get_syncookie`, nothing calls it, and only `tcp_protocol`
+    // points at it, with two handlers whose starts follow returns.
+    if contents == Regions::CodeAndData && arch.tagged_function(1).is_none() {
+        let known: BTreeSet<u64> = starts.iter().map(|&(address, _)| address).collect();
+        for region in &decoded {
+            let end = region.base + region.code.len() as u64;
+            let width = arch.instruction_width() as u64;
+            // In a raw image, the region holds the data too, so a run of
+            // pointers to texts reads as one into the code. A start of a
+            // function follows the end of the one before it.
+            let named = function_tables(arch, regions, region.base..end, &known)
+                .into_iter()
+                .filter(|address| address % width == 0 && !known.contains(address))
+                .filter(|&address| follows_an_end(arch, &region.insns, address))
+                .filter(|&address| !lies_inside_a_body(&region.insns, address));
+            starts.extend(named.map(|address| (address, Source::CallTarget)));
+        }
+    }
+
     let starts =
         outside_pool_spans(within_exports(starts, &linked.exported), arch, &decoded, memory);
     build_functions(&starts, regions, arch)
@@ -992,6 +1016,62 @@ fn tagged_functions(
         })
         .filter_map(|((word, _), _)| arch.tagged_function(arch.read_pointer(word)))
         .collect()
+}
+
+/// Whether the instruction at `address` follows a return or a jump, past
+/// its delay slots and past padding.
+fn follows_an_end(arch: &dyn Recovery, insns: &[Insn], address: u64) -> bool {
+    let Ok(index) = insns.binary_search_by_key(&address, |insn| insn.address) else {
+        return false;
+    };
+    let mut before = index;
+    while before > 0 && arch.is_padding(&insns[before - 1]) {
+        before -= 1;
+    }
+    (1..=2).any(|back| {
+        before.checked_sub(back).is_some_and(|at| {
+            matches!(insns[at].kind, InsnKind::Return | InsnKind::Jump { .. })
+                && at + 1 + arch.delay_slots(&insns[at]) == before
+        })
+    })
+}
+
+/// The addresses in `code` that a table of functions in `regions` names: a
+/// run of two or more aligned words that each point into `code`, at least
+/// half of whose distinct targets are in `known`.
+fn function_tables(
+    arch: &dyn Recovery,
+    regions: &[(u64, &[u8])],
+    code: core::ops::Range<u64>,
+    known: &BTreeSet<u64>,
+) -> Vec<u64> {
+    let width = arch.pointer_width();
+    let mut found = BTreeSet::new();
+    for &(start, bytes) in regions {
+        let skip = (start.next_multiple_of(width as u64) - start) as usize;
+        let words = bytes.get(skip..).unwrap_or_default().chunks_exact(width);
+        let mut run: BTreeSet<u64> = BTreeSet::new();
+        let mut length = 0;
+        let mut end_run = |run: &mut BTreeSet<u64>, length: &mut usize| {
+            let named = run.iter().filter(|target| known.contains(target)).count();
+            if *length >= 2 && named * 2 >= run.len() {
+                found.extend(run.iter().copied());
+            }
+            run.clear();
+            *length = 0;
+        };
+        for word in words {
+            let value = arch.read_pointer(word);
+            if code.contains(&value) {
+                run.insert(value);
+                length += 1;
+            } else {
+                end_run(&mut run, &mut length);
+            }
+        }
+        end_run(&mut run, &mut length);
+    }
+    found.into_iter().collect()
 }
 
 /// Whether local branches cross `address` both ways, as they cross a label
@@ -2444,6 +2524,31 @@ mod tests {
         bytes.push(0);
         let regions = [(0x100, bytes.as_slice())];
         assert!(!points_at_text(&Memory::new(&regions), 0x100));
+    }
+
+    /// A run of words into the code is a table of functions where at
+    /// least half of its targets already start one, and a run of labels
+    /// is not.
+    #[test]
+    fn a_table_of_functions_names_its_targets_where_most_start_one() {
+        let arch = &hereticus_il::arch::mips::Mips32::LITTLE;
+        let words = |values: &[u32]| -> Vec<u8> {
+            values.iter().flat_map(|value| value.to_le_bytes()).collect()
+        };
+        let code = 0x1000..0x2000;
+        let known = BTreeSet::from([0x1100, 0x1200]);
+        // Two of three targets start a function: 0x1300 is one too.
+        let table = words(&[0, 0x1100, 0x1300, 0x1200, 0]);
+        let found = function_tables(arch, &[(0x4000, &table[..])], code.clone(), &known);
+        assert_eq!(found, [0x1100, 0x1200, 0x1300]);
+        // One of three targets starts a function: labels of a `switch`.
+        let labels = words(&[0x1100, 0x1304, 0x1308]);
+        let found = function_tables(arch, &[(0x4000, &labels[..])], code.clone(), &known);
+        assert!(found.is_empty());
+        // One word alone is no table, and a word outside the code ends a run.
+        let alone = words(&[0x1300, 0x9000, 0x1100]);
+        let found = function_tables(arch, &[(0x4000, &alone[..])], code, &known);
+        assert!(found.is_empty());
     }
 
     #[test]

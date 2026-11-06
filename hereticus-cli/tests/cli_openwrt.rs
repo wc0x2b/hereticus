@@ -131,7 +131,7 @@ fn a_changed_stub_sets_the_exit_status() {
 }
 
 /// The tables and zero fill after a MIPS kernel's code are hidden as data,
-/// and `--show-data` lists every one of them.
+/// and `--show-data` lists every one of them, as changed, gone or new.
 #[test]
 fn slow_hides_the_data_regions_of_a_mips_kernel() {
     let file =
@@ -148,10 +148,12 @@ fn slow_hides_the_data_regions_of_a_mips_kernel() {
 
     let hidden = run(&[]);
     assert!(!hidden.contains("changed data"), "no data row by default");
-    assert!(hidden.contains("5 data regions changed, hidden. Use --show-data to list them."));
+    assert!(hidden.contains("9 data regions changed, hidden. Use --show-data to list them."));
 
     let shown = run(&["--show-data"]);
-    assert_eq!(shown.matches("changed data").count(), 5, "every hidden region is listed");
+    let listed =
+        ["changed data", ": gone data", ": new data"].map(|word| shown.matches(word).count());
+    assert_eq!(listed, [7, 1, 1], "every hidden region is listed");
     assert!(!shown.contains("data regions changed, hidden"));
 }
 
@@ -208,12 +210,12 @@ fn slow_hides_the_data_regions_that_go_or_come() {
 
     let hidden = run(&[]);
     assert!(!hidden.contains("gone data") && !hidden.contains("new data"));
-    assert!(hidden.contains("6 data regions changed, hidden. Use --show-data to list them."));
+    assert!(hidden.contains("9 data regions changed, hidden. Use --show-data to list them."));
 
     let shown = run(&["--show-data"]);
     let listed =
         ["changed data", ": gone data", ": new data"].map(|word| shown.matches(word).count());
-    assert_eq!(listed, [5, 1, 0], "changed, gone and new data regions");
+    assert_eq!(listed, [5, 1, 3], "changed, gone and new data regions");
 }
 
 /// `--functions` on a raw stub lists what the scan recovered, and marks the
