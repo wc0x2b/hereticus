@@ -141,8 +141,11 @@ struct Score {
 
 fn score(report: &Report, address: u64, order: Order) -> Score {
     // A MIPS16e or a Thumb function starts at an address with bit 0 set.
-    let fix: Vec<bool> =
-        report.rows.iter().map(|row| row.before.is_some_and(|at| at & !1 == address & !1)).collect();
+    let fix: Vec<bool> = report
+        .rows
+        .iter()
+        .map(|row| row.before.is_some_and(|at| at & !1 == address & !1))
+        .collect();
     let scores: Vec<Option<f64>> = report.rows.iter().map(|row| row.score).collect();
     let rank = reading_order(&scores, &fix, order).into_iter().position(|at| fix[at]);
     Score { rank: rank.map(|place| place + 1), rows: report.rows.len() }

@@ -64,7 +64,8 @@ pub struct Answer {
 impl Answer {
     pub fn of(arch: &str) -> Self {
         let tables = [table(OLDER, arch), table(NEWER, arch)];
-        let names = tables.each_ref().map(|table| table.values().map(|(_, name)| name.clone()).collect());
+        let names =
+            tables.each_ref().map(|table| table.values().map(|(_, name)| name.clone()).collect());
         Self { tables, names }
     }
 
