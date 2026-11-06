@@ -3052,3 +3052,13 @@ and with `-A` alone 1. radiff2 reads no kext, and writes a blank line for
 one. Ghidra shows the fix earlier than `hereticus` in ubusd, uhttpd and
 odhcpd for AArch64 or A32, by one to three rows, and radiff2 in dropbear
 for AArch64 and for MIPS32 little-endian, on row 1 against row 2.
+
+**The Ubuntu updates where Ghidra ranks the fix higher.** Of the 74 rows
+that `hereticus` shows above the fix in these 27 updates, the IL view
+shows no changed line in 4, so a rule that moved such rows down would
+change little. The others are real changes. In libcurl for arm64 to
+7.81.0-1ubuntu1.3, row 1 is `Curl_http`, which gained 344 normalized
+instructions and lost 307, and row 2 is `Curl_cookie_add.isra.0` of the
+fix. The patches of that update name 11 functions, and not `Curl_http`.
+Whether their hunks change it, so that the answer misses a function of
+the fix, is not checked yet.
