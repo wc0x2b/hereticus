@@ -71,17 +71,17 @@ that the fix did not touch.
 
 | Tool | Fixes found | Fix on row 1 | Fix in the first 10 rows | Rows |
 |------|-------------|--------------|--------------------------|------|
-| hereticus | 176<!-- from truth_ubuntu_rivals: all hereticus / found --> | 122<!-- from truth_ubuntu_rivals: all hereticus / first --> | 175<!-- from truth_ubuntu_rivals: all hereticus / top10 --> | 5972<!-- from truth_ubuntu_rivals: all hereticus / rows --> |
-| radiff2 | 105<!-- from truth_ubuntu_rivals: all radare2 / found --> | 30<!-- from truth_ubuntu_rivals: all radare2 / first --> | 50<!-- from truth_ubuntu_rivals: all radare2 / top10 --> | 80450<!-- from truth_ubuntu_rivals: all radare2 / rows --> |
-| Ghidra | 173<!-- from truth_ubuntu_rivals: all ghidra / found --> | 90<!-- from truth_ubuntu_rivals: all ghidra / first --> | 146<!-- from truth_ubuntu_rivals: all ghidra / top10 --> | 50932<!-- from truth_ubuntu_rivals: all ghidra / rows --> |
+| hereticus | 176<!-- from truth_ubuntu_rivals: all hereticus / found --> | 151<!-- from truth_ubuntu_rivals: all hereticus / first --> | 175<!-- from truth_ubuntu_rivals: all hereticus / top10 --> | 5972<!-- from truth_ubuntu_rivals: all hereticus / rows --> |
+| radiff2 | 114<!-- from truth_ubuntu_rivals: all radare2 / found --> | 34<!-- from truth_ubuntu_rivals: all radare2 / first --> | 59<!-- from truth_ubuntu_rivals: all radare2 / top10 --> | 80450<!-- from truth_ubuntu_rivals: all radare2 / rows --> |
+| Ghidra | 173<!-- from truth_ubuntu_rivals: all ghidra / found --> | 103<!-- from truth_ubuntu_rivals: all ghidra / first --> | 150<!-- from truth_ubuntu_rivals: all ghidra / top10 --> | 50932<!-- from truth_ubuntu_rivals: all ghidra / rows --> |
 
 The order of the rows is where the tools differ most. `hereticus` shows
 the fix earlier than Ghidra in
-84<!-- from truth_ubuntu_rivals: ghidra / hereticus-earlier --> updates, and Ghidra shows it
+73<!-- from truth_ubuntu_rivals: ghidra / hereticus-earlier --> updates, and Ghidra shows it
 earlier than `hereticus` in
-27<!-- from truth_ubuntu_rivals: ghidra / rival-earlier -->. Against radiff2, the counts are
-146<!-- from truth_ubuntu_rivals: radare2 / hereticus-earlier --> and
-5<!-- from truth_ubuntu_rivals: radare2 / rival-earlier -->.
+15<!-- from truth_ubuntu_rivals: ghidra / rival-earlier -->. Against radiff2, the counts are
+142<!-- from truth_ubuntu_rivals: radare2 / hereticus-earlier --> and
+1<!-- from truth_ubuntu_rivals: radare2 / rival-earlier -->.
 [Where `hereticus` Does Worse](#where-hereticus-does-worse) says why.
 
 ## Published Fixes
@@ -286,7 +286,7 @@ The tests above find these weak points of `hereticus`:
   in 22.03.5 renamed or moved. Where `hereticus` shows a wrong pair, a
   reader of Ghidra sees one function gone and one new.
 - **A lower rank for some fixes.** In
-  27<!-- from truth_ubuntu_rivals: ghidra / rival-earlier --> of the Ubuntu updates, Ghidra shows the fix
+  15<!-- from truth_ubuntu_rivals: ghidra / rival-earlier --> of the Ubuntu updates, Ghidra shows the fix
   earlier than `hereticus`. `hereticus` puts the function that gained the
   most instructions first, and Ghidra the function that it scores least
   alike. A fix of one instruction thus sinks below functions with larger

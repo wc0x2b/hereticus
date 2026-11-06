@@ -3060,5 +3060,11 @@ change little. The others are real changes. In libcurl for arm64 to
 7.81.0-1ubuntu1.3, row 1 is `Curl_http`, which gained 344 normalized
 instructions and lost 307, and row 2 is `Curl_cookie_add.isra.0` of the
 fix. The patches of that update name 11 functions, and not `Curl_http`.
-Whether their hunks change it, so that the answer misses a function of
-the fix, is not checked yet.
+They do: the patch of CVE-2022-32205 edits `Curl_http_cookies`, which
+the compiler inlined into `Curl_http` and kept no symbol of. The scorer
+counted a copy that the compiler inlined only of a fixed function that
+also kept a symbol of its own. Counting a copy of any function that the
+patches touched, `hereticus` shows the fix on row 1 in 151 updates in
+place of 122, Ghidra in 103 in place of 90, and radiff2 in 34 in place of
+30. Ghidra shows the fix earlier than `hereticus` in 15 updates in place
+of 27, and `hereticus` earlier than Ghidra in 73; radiff2 is earlier in 1.

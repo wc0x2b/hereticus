@@ -220,15 +220,21 @@ struct Score {
 }
 
 /// What the debug files of one case say: the symbols of each side, and the
-/// inlined copies of the functions the patches touched.
+/// inlined copies of functions; and the functions the patches touched.
 struct Answer {
     symbols: [Vec<Symbol>; 2],
     copies: [Vec<Symbol>; 2],
+    /// A function that the compiler inlined into every caller keeps no
+    /// symbol of its own, so its code can change only in its callers, as
+    /// `Curl_http_cookies` of libcurl does inside `Curl_http`. A copy of any
+    /// function the patches touched thus counts.
+    touched: BTreeSet<String>,
 }
 
 impl Answer {
     /// Whether the function that `address` lies in on `side` is a function
-    /// of the fix, or holds an inlined copy of one.
+    /// of the fix, or holds an inlined copy of a function the patches
+    /// touched.
     fn holds_fix(&self, side: usize, address: Option<u64>, fixes: &BTreeSet<String>) -> bool {
         let Some(address) = address.map(|address| address & !1) else { return false };
         let containing = self.symbols[side]
@@ -238,7 +244,9 @@ impl Answer {
         containing.into_iter().any(|symbol| {
             fixes.contains(function_name(&symbol.2))
                 || self.copies[side].iter().any(|copy| {
-                    copy.0 < symbol.1 && symbol.0 < copy.1 && fixes.contains(function_name(&copy.2))
+                    copy.0 < symbol.1
+                        && symbol.0 < copy.1
+                        && self.touched.contains(function_name(&copy.2))
                 })
         })
     }
@@ -325,7 +333,7 @@ fn the_scores_on_the_ubuntu_updates_are_locked() {
             continue;
         }
         let copies = case.files.each_ref().map(|[_, debug]| inlined::inlined_copies(debug));
-        let answer = Answer { symbols, copies };
+        let answer = Answer { symbols, copies, touched: case.fixes.clone() };
         let scores: Vec<(Tool, Score)> = Tool::ALL
             .into_iter()
             .map(|tool| {
@@ -404,7 +412,11 @@ fn a_row_names_the_symbols_its_address_lies_in() {
 #[test]
 fn the_rank_is_the_first_row_of_a_fix_as_read() {
     let side = vec![(0x100, 0x110, "fix".to_owned()), (0x200, 0x210, "other".to_owned())];
-    let symbols = Answer { symbols: [side.clone(), side.clone()], copies: [vec![], vec![]] };
+    let symbols = Answer {
+        symbols: [side.clone(), side.clone()],
+        copies: [vec![], vec![]],
+        touched: BTreeSet::new(),
+    };
     let fixes = BTreeSet::from(["fix".to_owned()]);
     let rows = [
         Row { before: Some(0x200), after: Some(0x200), score: Some(0.5) },
@@ -418,6 +430,10 @@ fn the_rank_is_the_first_row_of_a_fix_as_read() {
 
     // A function that holds an inlined copy of the fix shows it too.
     let copies = vec![(0x204, 0x208, "fix.part.0".to_owned())];
-    let inlined = Answer { symbols: [side.clone(), side], copies: [copies.clone(), copies] };
+    let inlined = Answer {
+        symbols: [side.clone(), side],
+        copies: [copies.clone(), copies],
+        touched: fixes.clone(),
+    };
     assert_eq!(score(&rows, &inlined, &fixes, Order::AsListed).rank, Some(1));
 }
