@@ -3092,3 +3092,18 @@ as `TIFFReadDirEntryArrayWithLimit`. A line between two functions counts
 for the one before it, so the list can be too generous there. Then 177
 updates count, `hereticus` finds each fix and shows 156 on row 1, and
 Ghidra shows the fix earlier than `hereticus` in 10.
+
+**The last updates where Ghidra ranks the fix higher.** In 8 of the 10,
+row 1 of `hereticus` is a large change that the patches did not make; in
+zlib for armhf, the IL view shows no changed line in it, and libssh for
+arm64 to 0.9.6-2ubuntu0.22.04.5 is the fix of one instruction above. An
+example of the 8: in libtiff for arm64 to 4.3.0-6ubuntu0.8, `TIFFFetchNormalTag`
+gained 316 normalized instructions and lost 370 at a score of 0.98. The
+fix grew `TIFFReadDirEntryArrayWithLimit` by a check of the size of the
+file, and the compiler then inlined the readers that call it in other
+ways in their callers. Ghidra lists the function that it scores least
+alike first, and there that is the fix. Sorting by the instructions added
+times one less the score, by that times its square root, or by the
+instructions added plus 100 times one less the score, made the sum of
+the ranks of `truth_ubuntu.rs` 366, 350 and 552 in place of 348, and put
+2, 3 and 6 fewer fixes on row 1, so the sort stays as it is.
