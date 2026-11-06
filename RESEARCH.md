@@ -3008,3 +3008,14 @@ and 1783 wrong, 2.9%, and Ghidra 26022 right and 498 wrong, 1.9%. Of the
 functions that `hereticus` pairs wrong there, Ghidra pairs 108 right.
 Two runs of Ghidra on the point release gave 116 and 114 wrong pairs, so
 its pairs of a large kernel are not the same on each run.
+
+**Garbled Go.** On the two garbled releases of shfmt for seven builds,
+`hereticus` made 25361 right pairs and 12 wrong, Ghidra 15547 right and 1
+wrong, and radiff2, with `anal.hasnext`, 3814 right and none wrong. The
+wrong pairs of `hereticus` join near twins, as `unix.mmap` and
+`unix.mremap`, `os.genericWriteTo` and `os.genericReadFrom`, and two
+`deferwrap` closures of `fmt.(*pp).handleMethods`; Ghidra leaves 11 of
+the 12 unpaired. Four starts of Ghidra at once failed at random: each
+saves the JDK it finds in a file of its settings, and a start that read
+the file half written stopped to ask for the JDK. One save before the
+starts fixed it.

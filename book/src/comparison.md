@@ -362,8 +362,22 @@ the answer.
 The same test compares shfmt 3.11.0 with 3.12.0, both garbled, as two
 releases of one piece of malware. `garble` names each function anew in
 each release, so the pairs come from the code alone, and `garble reverse`
-gives back the names that judge them. The few wrong pairs join twins with
-the same code, as `unix.mmap` and `unix.mremap`.
+gives back the names that judge them. radiff2 and Ghidra pair the same
+builds, and the same names judge each of their pairs. A pair is unproven
+where `garble reverse` names one of its functions in one release only.
+
+| Tool | Pairs | Right | Unproven | Wrong |
+|------|-------|-------|----------|-------|
+| hereticus | 25401<!-- from truth_go_rivals: all hereticus / pairs --> | 25361<!-- from truth_go_rivals: all hereticus / right --> | 28<!-- from truth_go_rivals: all hereticus / unproven --> | 12<!-- from truth_go_rivals: all hereticus / wrong --> |
+| radiff2 | 3815<!-- from truth_go_rivals: all radare2 / pairs --> | 3814<!-- from truth_go_rivals: all radare2 / right --> | 1<!-- from truth_go_rivals: all radare2 / unproven --> | 0<!-- from truth_go_rivals: all radare2 / wrong --> |
+| Ghidra | 15561<!-- from truth_go_rivals: all ghidra / pairs --> | 15547<!-- from truth_go_rivals: all ghidra / right --> | 13<!-- from truth_go_rivals: all ghidra / unproven --> | 1<!-- from truth_go_rivals: all ghidra / wrong --> |
+
+`hereticus` makes the most right pairs, and Ghidra the fewest wrong ones.
+The wrong pairs of `hereticus` join functions with almost the same code,
+as `unix.mmap` and `unix.mremap`, or two `deferwrap` closures of one
+method, and Ghidra leaves most of them unpaired. radiff2 reads
+these builds as it reads a raw kernel: with `-A` alone it shows one row,
+so the test runs it with `anal.hasnext=true`.
 
 Ghidra loads the little-endian MIPS build as 64-bit MIPS32r6, which the ELF
 header does not say, and so finds the fewest there. On a build that
