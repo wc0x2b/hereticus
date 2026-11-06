@@ -107,6 +107,21 @@ rivals-go-pairs: fixtures
         {{rivals_image}}-ghidra sh -c \
             './fixtures/rivals_go_pairs.sh radare2 && ./fixtures/rivals_go_pairs.sh ghidra'
 
+# Give the binaries of the published fixes to radiff2 and Ghidra, so a test
+# can compare where each tool shows the fixed function. Ghidra takes about
+# half an hour, so only `test` runs it.
+rivals-cves:
+    python3 fixtures/cve_binaries.py
+    docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --env HOME=/tmp \
+        --volume "{{justfile_directory()}}:/work" \
+        --volume "$HOME/.cache:/cache:ro" \
+        --workdir /work \
+        {{rivals_image}}-ghidra sh -c \
+            './fixtures/rivals_cves.sh radare2 && ./fixtures/rivals_cves.sh ghidra'
+
 # Let Ghidra find the functions of each garbled Go fixture, so a test can
 # count how many it finds.
 rivals-go: fixtures
@@ -193,7 +208,7 @@ truth_tests := "binary(/^truth_/)"
 
 # Fetch and pin what the `truth_*` tests read. The Apple binaries need the
 # `ipsw` tool; `fixtures/cve_binaries.py` names the commands.
-truth: firmware rivals-ghidra rivals-kernel rivals-kernel-pairs rivals-ubuntu rivals-go rivals-go-pairs
+truth: firmware rivals-ghidra rivals-kernel rivals-kernel-pairs rivals-ubuntu rivals-cves rivals-go rivals-go-pairs
     python3 fixtures/openwrt_debug.py
     python3 fixtures/cve_binaries.py
     python3 fixtures/ubuntu_cves.py
