@@ -24,6 +24,7 @@ Launchpad for the security releases published since, and pins them anew.
 again, as `touched_functions` reads them now.
 """
 
+import bisect
 import hashlib
 import io
 import json
@@ -224,14 +225,118 @@ def header_function(header: str) -> str | None:
     return found[0] if found else None
 
 
-def touched_functions(patch: str) -> set[str]:
-    """The functions the hunks of a C patch sit in, by their headers, and
-    the functions a hunk starts, by its added lines."""
+# The header of a hunk in a type names no function, as `struct X {` does.
+TYPE_HEADER = re.compile(r"^\s*(typedef|struct|union|enum)\b")
+# The start lines of a hunk: `@@ -866,6 +866,21 @@`.
+HUNK_LINES = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+FunctionStarts = dict[str, list[tuple[int, str]]]
+
+
+def function_starts(debug: Path) -> FunctionStarts:
+    """The first line of each function of a debug file, by its source file,
+    from the `DW_TAG_subprogram` entries that name their file and line."""
+    out = subprocess.run(
+        ["llvm-dwarfdump", "--debug-info", str(debug)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    starts: dict[str, set[tuple[int, str]]] = {}
+    tag, attributes = None, {}
+
+    def flush() -> None:
+        if tag == "DW_TAG_subprogram" and {"name", "file", "line"} <= attributes.keys():
+            if attributes["line"] > 0:
+                # libxml2 calls a function by an alias of its own, and GCC
+                # names a part or a copy by a suffix after a dot: the source
+                # names the function without either.
+                name = attributes["name"].split(".")[0].removesuffix("__internal_alias")
+                starts.setdefault(attributes["file"], set()).add((attributes["line"], name))
+
+    for line in out.splitlines():
+        entry = re.match(r"0x[0-9a-f]+:\s+(DW_TAG_\w+)", line)
+        if entry:
+            flush()
+            tag, attributes = entry.group(1), {}
+            continue
+        attribute = re.search(r"DW_AT_(name|decl_file|decl_line)\s+\((.*)\)\s*$", line)
+        if attribute:
+            key, value = attribute.groups()
+            value = value.strip('"')
+            if key == "decl_line":
+                attributes["line"] = int(value)
+            else:
+                attributes["name" if key == "name" else "file"] = value
+    flush()
+    return {file: sorted(lines) for file, lines in starts.items()}
+
+
+def function_at(starts: FunctionStarts, path: str, line: int) -> str | None:
+    """The function whose first line is the last at or before `line` in the
+    source file whose path ends with `path`.
+
+    >>> starts = {"/build/x/lib/a.c": [(10, "f"), (40, "g")], "./lib/a.c": [(70, "h")]}
+    >>> function_at(starts, "lib/a.c", 45)
+    'g'
+    >>> function_at(starts, "lib/a.c", 70)
+    'h'
+    >>> function_at(starts, "lib/a.c", 5) is None
+    True
+    >>> function_at(starts, "lib/b.c", 45) is None
+    True
+    """
+    lines = sorted(
+        {
+            entry
+            for file, entries in starts.items()
+            if file == path or file.endswith("/" + path)
+            for entry in entries
+        }
+    )
+    at = bisect.bisect_right([first for first, _ in lines], line) - 1
+    return lines[at][1] if at >= 0 else None
+
+
+def touched_functions(
+    patch: str, starts: tuple[FunctionStarts, FunctionStarts] | None = None
+) -> set[str]:
+    """The functions the hunks of a C patch sit in, by their headers.
+
+    A header can name no function: diff cuts a long one short, as
+    `static enum TIFFReadDirEntryErr TIFFRead` of libtiff, and a hunk at the
+    top of a function has none. Given the first line of each function of
+    the debug files before and after, as `function_starts` reads them, the
+    lines such a hunk removes and adds then name their functions. A header
+    in a type, as `struct X {`, names none.
+
+    >>> patch = "\\n".join([
+    ...     "+++ b/lib/a.c",
+    ...     "@@ -11,2 +11,3 @@ static enum Err Read",
+    ...     " context",
+    ...     "+added",
+    ...     "@@ -50,1 +51,1 @@ struct S {",
+    ...     "-int x;",
+    ...     "@@ -60,1 +61,1 @@ int g(void)",
+    ...     "-old",
+    ... ])
+    >>> starts = {"/build/lib/a.c": [(10, "read_entry"), (40, "f")]}
+    >>> sorted(touched_functions(patch, (starts, starts)))
+    ['g', 'read_entry']
+    >>> sorted(touched_functions(patch))
+    ['g']
+    """
     names = set()
     current_file_is_c = False
+    path = ""
+    old_line = new_line = 0
+    by_lines = False
     for line in patch.splitlines():
         if line.startswith("+++ "):
             current_file_is_c = bool(re.search(r"\.(c|h|cc|cpp)\b", line))
+            # `b/lib/x.c` or `tiff-4.3.0/libtiff/x.c`: the path in the source.
+            path = line[4:].split("\t")[0].strip().split("/", 1)[-1]
+            by_lines = False
             continue
         if not current_file_is_c:
             continue
@@ -240,6 +345,25 @@ def touched_functions(patch: str) -> set[str]:
             name = header_function(hunk.group(1))
             if name:
                 names.add(name)
+            numbers = HUNK_LINES.match(line)
+            old_line, new_line = (int(numbers.group(1)), int(numbers.group(2))) if numbers else (0, 0)
+            by_lines = (
+                starts is not None and name is None and not TYPE_HEADER.match(hunk.group(1))
+            )
+            continue
+        if line.startswith("-") and not line.startswith("---"):
+            if by_lines:
+                found = function_at(starts[0], path, old_line)
+                names.update([found] if found else [])
+            old_line += 1
+        elif line.startswith("+"):
+            if by_lines:
+                found = function_at(starts[1], path, new_line)
+                names.update([found] if found else [])
+            new_line += 1
+        elif line.startswith(" "):
+            old_line += 1
+            new_line += 1
     return names
 
 
@@ -297,10 +421,11 @@ def refix() -> None:
         source = sources[case["library"]]
         old_patches = patches(source, case["before"])
         new_patches = patches(source, case["after"])
+        starts = tuple(function_starts(CACHE / case["files"][side][1]["path"]) for side in (0, 1))
         fixes = set()
         for name, text in new_patches.items():
             if old_patches.get(name) != text:
-                fixes |= touched_functions(text)
+                fixes |= touched_functions(text, starts)
         case["fixes"] = sorted(fixes)
     PINNED.write_text(json.dumps(pinned, indent=1) + "\n")
     print(f"{len(pinned)} cases pinned anew in {PINNED}", file=sys.stderr)
@@ -345,6 +470,9 @@ def discover() -> None:
                 pair = [library(binary, version, arch, so) for version in (before, after)]
                 if None in pair:
                     continue
+                starts = tuple(function_starts(side[1]) for side in pair)
+                for text in added.values():
+                    fixes |= touched_functions(text, starts)
                 cases.append(
                     {
                         "library": binary,

@@ -3079,3 +3079,16 @@ name inside such a macro, or before `OF`, is now taken, and `--refix`
 pinned the functions anew from the cached patches: 26 of 218 updates
 changed. `hereticus` then shows the fix on row 1 in 153 updates, and
 Ghidra earlier than `hereticus` in 13.
+
+**Hunks whose header names no function.** Of the 1951 hunks of C files
+in the patches of the Ubuntu updates, 349 have a header that names no
+function. Many are types, as `struct XML_ParserStruct {`. Others are cut
+short, as `static enum TIFFReadDirEntryErr TIFFRead` of libtiff, or have
+no header, as a hunk at the top of a function. `ubuntu_cves.py` now reads
+the first line of each function from the DWARF of the two debug files,
+and names the function that each removed or added line of such a hunk
+lies in, but for the hunks of a type. 46 updates gained 226 functions,
+as `TIFFReadDirEntryArrayWithLimit`. A line between two functions counts
+for the one before it, so the list can be too generous there. Then 177
+updates count, `hereticus` finds each fix and shows 156 on row 1, and
+Ghidra shows the fix earlier than `hereticus` in 10.
