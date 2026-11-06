@@ -3019,3 +3019,11 @@ the 12 unpaired. Four starts of Ghidra at once failed at random: each
 saves the JDK it finds in a file of its settings, and a start that read
 the file half written stopped to ask for the JDK. One save before the
 starts fixed it.
+
+**Published fixes.** On the 38 fixes of `real-life-reports/` but the
+kernelcache, `hereticus` found each fix, 21 on row 1 and 37 in the first
+10 rows; Ghidra 23, 6 and 22; radiff2 with `anal.hasnext` 10, 4 and 4,
+and with `-A` alone 1. radiff2 reads no kext, and writes a blank line for
+one. Ghidra shows the fix earlier than `hereticus` in ubusd, uhttpd and
+odhcpd for AArch64 or A32, by one to three rows, and radiff2 in dropbear
+for AArch64 and for MIPS32 little-endian, on row 1 against row 2.

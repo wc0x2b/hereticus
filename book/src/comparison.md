@@ -84,6 +84,33 @@ earlier than `hereticus` in
 5<!-- from truth_ubuntu_rivals: radare2 / rival-earlier -->.
 [Where `hereticus` Does Worse](#where-hereticus-does-worse) says why.
 
+## Published Fixes
+
+The [Real-Life Examples](./real-life-examples.md) are fixes that vendors
+shipped: daemons of OpenWrt for AArch64, A32, MIPS32 and MIPS16e, and
+drivers of iOS. A test gives the binaries before and after each fix to all
+three tools, but the kernelcache of iOS, which Ghidra reads for hours. A
+report shows the fix at the first row whose function of the earlier
+binary starts where the function that the fix edits starts. radiff2 runs
+with `anal.hasnext=true`, as for a raw kernel: with `-A` alone, it finds
+one fixed function of the stripped executables.
+
+| Tool | Fixes found | Fix on row 1 | Fix in the first 10 rows | Rows |
+|------|-------------|--------------|--------------------------|------|
+| hereticus | 38<!-- from truth_cves_rivals: all hereticus / found --> | 21<!-- from truth_cves_rivals: all hereticus / first --> | 37<!-- from truth_cves_rivals: all hereticus / top10 --> | 1405<!-- from truth_cves_rivals: all hereticus / rows --> |
+| radiff2 | 10<!-- from truth_cves_rivals: all radare2 / found --> | 4<!-- from truth_cves_rivals: all radare2 / first --> | 4<!-- from truth_cves_rivals: all radare2 / top10 --> | 6720<!-- from truth_cves_rivals: all radare2 / rows --> |
+| Ghidra | 23<!-- from truth_cves_rivals: all ghidra / found --> | 6<!-- from truth_cves_rivals: all ghidra / first --> | 22<!-- from truth_cves_rivals: all ghidra / top10 --> | 4184<!-- from truth_cves_rivals: all ghidra / rows --> |
+
+radiff2 reads no kext of iOS, and finds few functions of a stripped
+executable. Ghidra misses the fix in each kext of iOS, and the fix of
+CVE-2026-30874 in procd on each architecture but AArch64. Each other tool
+shows a few fixes earlier than `hereticus` does: radiff2 shows the fix of
+CVE-2025-14282 in dropbear for AArch64 on row
+1<!-- from truth_cves_rivals: CVE-2025-14282 dropbear AArch64 / rank:radare2 -->, where `hereticus` shows it on row
+2<!-- from truth_cves_rivals: CVE-2025-14282 dropbear AArch64 / rank:hereticus -->, and Ghidra the fix of CVE-2025-62526 in ubusd for
+AArch64 on row 2<!-- from truth_cves_rivals: CVE-2025-62526 ubusd AArch64 / rank:ghidra -->, where `hereticus` shows it on row
+5<!-- from truth_cves_rivals: CVE-2025-62526 ubusd AArch64 / rank:hereticus -->.
+
 ## Deeper Settings
 
 The table above runs each other tool with its default settings. The tests
