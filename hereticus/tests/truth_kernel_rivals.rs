@@ -72,6 +72,9 @@ impl Tool {
     }
 }
 
+/// The starts of a pair, before and after, and what the rule says of it.
+type Judged = ((u64, u64), Verdict);
+
 /// What the rule says of one pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Verdict {
@@ -261,7 +264,7 @@ fn measure(board: &Board) -> (BTreeMap<Tool, Tally>, Crossed) {
     let judged = |(before, after): (u64, u64)| {
         ((before, after), judge(&answer, &moves, before & !1, after & !1))
     };
-    let verdicts: BTreeMap<Tool, Vec<((u64, u64), Verdict)>> = Tool::ALL
+    let verdicts: BTreeMap<Tool, Vec<Judged>> = Tool::ALL
         .into_iter()
         .map(|tool| (tool, pairs_of(tool, board).into_iter().map(judged).collect()))
         .collect();

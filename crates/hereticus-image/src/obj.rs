@@ -1301,9 +1301,7 @@ fn code_pointers_encoded(file: &object::File<'_>) -> (usize, usize) {
         .collect();
     crate::links::stored_addresses(file)
         .filter(|&address| code.iter().any(|range| range.contains(&(address & !1))))
-        .fold((0, 0), |(compact, all), address| {
-            (compact + usize::from(address & 1 == 1), all + 1)
-        })
+        .fold((0, 0), |(compact, all), address| (compact + usize::from(address & 1 == 1), all + 1))
 }
 
 /// The function the scan found, with no name yet.
