@@ -11,11 +11,15 @@
 //! answer is written beside each build.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use hereticus::matching::{Options, UseNames, diff_with};
 use hereticus::obj::Binary;
 use object::{Object, ObjectSection};
+
+#[path = "common/garbled.rs"]
+mod garbled;
+use garbled::{Answer, NEWER, OLDER, Verdict, file, read, table};
 
 /// The magic number of the function table of Go 1.20 and later.
 const PCLNTAB_MAGIC: u32 = 0xffff_fff1;
@@ -31,40 +35,6 @@ struct Recovery {
     invented: usize,
     /// Starts of the table not found.
     missed: usize,
-}
-
-fn build(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build/go").join(name)
-}
-
-fn read(name: &str) -> Option<Vec<u8>> {
-    std::fs::read(build(name)).ok()
-}
-
-/// The release that the recovery and Ghidra counts read.
-const NEWER: &str = "3.12.0";
-/// The release before it, which the pairs compare with.
-const OLDER: &str = "3.11.0";
-
-/// The file of `release` built for `arch`, with `extension`.
-fn file(release: &str, arch: &str, extension: &str) -> String {
-    format!("shfmt-{release}-{arch}.{extension}")
-}
-
-/// Each function of the table of `release` for `arch`, by its start: its
-/// end and its name.
-fn table(release: &str, arch: &str) -> BTreeMap<u64, (u64, String)> {
-    let text = std::fs::read_to_string(build(&file(release, arch, "truth")))
-        .expect("`just fixtures` writes the truth beside each build");
-    text.lines()
-        .map(|line| {
-            // A name can hold spaces, as a generic type does.
-            let mut fields = line.splitn(3, ' ');
-            let mut hex = || u64::from_str_radix(fields.next().expect("a field"), 16).unwrap();
-            let (start, end) = (hex(), hex());
-            (start, (end, fields.next().expect("a name").to_owned()))
-        })
-        .collect()
 }
 
 /// Each function of the table of the newer release, by its start, to its
@@ -238,38 +208,18 @@ fn pairs_of(arch: &str) -> Pairs {
         Binary::parse(&data).expect("the build parses")
     };
     let (before, after) = (read_release(OLDER), read_release(NEWER));
-    let (old_table, new_table) = (table(OLDER, arch), table(NEWER, arch));
-    // The name of the function of `table` that holds `address`.
-    let name_at = |table: &BTreeMap<u64, (u64, String)>, address: u64| {
-        table
-            .range(..=address)
-            .next_back()
-            .filter(|(_, (end, _))| address < *end)
-            .map(|(_, (_, name))| name.clone())
-    };
+    let answer = Answer::of(arch);
     let diff =
         diff_with(&before, &after, Options { use_names: UseNames::No, ..Default::default() });
-    let names = |table: &BTreeMap<u64, (u64, String)>| -> std::collections::BTreeSet<String> {
-        table.values().map(|(_, name)| name.clone()).collect()
-    };
-    let (old_names, new_names) = (names(&old_table), names(&new_table));
     let mut pairs =
         Pairs { right: 0, unproven: 0, wrong: 0, gone: diff.removed.len(), new: diff.added.len() };
     for pair in &diff.matched {
-        let names = (
-            name_at(&old_table, before.functions[pair.before].address),
-            name_at(&new_table, after.functions[pair.after].address),
-        );
-        match names {
-            (Some(left), Some(right)) if left == right => pairs.right += 1,
-            (Some(left), Some(right))
-                if !new_names.contains(&left) || !old_names.contains(&right) =>
-            {
-                pairs.unproven += 1
-            }
-            (Some(_), Some(_)) => pairs.wrong += 1,
-            // Code that the table lists for no function has no answer.
-            _ => {}
+        let starts = (before.functions[pair.before].address, after.functions[pair.after].address);
+        match answer.judge(starts.0, starts.1) {
+            Verdict::Right => pairs.right += 1,
+            Verdict::Unproven => pairs.unproven += 1,
+            Verdict::Wrong => pairs.wrong += 1,
+            Verdict::Unknown => {}
         }
     }
     pairs
