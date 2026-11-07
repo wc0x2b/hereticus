@@ -250,9 +250,9 @@ left, many are byte-identical twins (see "Tell twins apart
 that no instruction separates"). Every fix that changed the code shows
 on a changed row.
 
-The CLI on the MIPS kernel of the VR200 takes 12 seconds built for musl,
-the target `.cargo/config.toml` picks; "Make the matching faster" below
-says where the time goes.
+The CLI on the MIPS kernel of the VR200 takes 2.3 seconds built for musl,
+the target `.cargo/config.toml` picks (`RESEARCH.md`, "Reading a raw image
+in parallel").
 
 ## Make the matching faster
 
@@ -309,7 +309,10 @@ paths of the function can tell apart from a change.
 
 ## Prepare the functions of a large binary faster
 
-Now that the stages that looked through every function for each are
-gone, the preparing of the functions takes most of the comparison of an
-iPhone kernel (`RESEARCH.md`, "What the IL diff shows of a change,
-again").
+The functions of each binary are now prepared and hashed on every core,
+and the pairs of identical shape assessed so, which took the comparison
+of two iPhone kernels from 13.8 s to 3.4 s (`RESEARCH.md`, "Preparing
+the functions in parallel"). Of what is left, preparing takes 1.4 s, and
+the interning in it runs on one thread to keep the numbering the same in
+every run; the stage of identical shape takes 0.45 s, the search for
+pairs by unique references 0.5 s, and the realignment by context 0.3 s.

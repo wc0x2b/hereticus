@@ -459,7 +459,7 @@ pub(super) fn unique_reference_holders<'a>(
     side: &'a [Prepared<'_>],
     rows: &'a [Vec<RowText<'a>>],
     classes: &'a [Vec<VirtualSlot<'a>>],
-    paired: &dyn Fn(usize) -> Option<usize>,
+    paired: &(dyn Fn(usize) -> Option<usize> + Sync),
 ) -> HashMap<UniqueReference<'a>, usize> {
     let mut holders: HashMap<UniqueReference<'a>, Option<usize>> = HashMap::new();
     for (index, prepared) in side.iter().enumerate() {
@@ -706,6 +706,16 @@ pub(super) fn similarity_of_symbols<T: Ord>(left: &[T], right: &[T]) -> f64 {
     // |A ∪ B| = |A| + |B| − |A ∩ B| for multisets, so the union needs no walk.
     let combined = left.len() + right.len() - shared;
     if combined == 0 { 0.0 } else { shared as f64 / combined as f64 }
+}
+
+/// The highest [`similarity_of_symbols`] that two lists of these lengths
+/// can give: all of the shorter list shared, over the longer.
+///
+/// Division rounds the same way for both, so the bound holds for the
+/// floating-point values too.
+pub(super) fn similarity_bound(left: usize, right: usize) -> f64 {
+    let (shorter, longer) = (left.min(right), left.max(right));
+    if longer == 0 { 1.0 } else { shorter as f64 / longer as f64 }
 }
 
 /// Similarity of two normalized bodies, from 0.0 to 1.0.

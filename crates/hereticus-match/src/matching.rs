@@ -18,9 +18,12 @@
 //! closest candidate of a function left unpaired, `align` aligns two bodies,
 //! and `lines` shows the diff of a pair.
 
+use core::hash::BuildHasherDefault;
 use std::collections::HashMap;
 
 use hereticus_memory::{AddressSpace, Contents};
+use rayon::prelude::*;
+use smallvec::SmallVec;
 
 use crate::norm::{
     FlowShape, NormInsn, OperandShape, constant_signature, flow_features,
@@ -603,28 +606,71 @@ type Symbol = u32;
 /// Numbering them once turns the comparison into counting over small integers.
 /// Both binaries share one interner, so a symbol means the same thing on either
 /// side.
+///
+/// The numbering runs on one thread, in order, so that each symbol is the
+/// same in every run. Hashing an instruction took most of that time, so
+/// the caller hashes each with [`hash_of`] beforehand, on every core.
 #[derive(Default)]
 struct Interner {
-    symbols: HashMap<NormInsn, Symbol>,
+    /// The symbols of each hash: more than one only where two instructions
+    /// share a hash.
+    by_hash: HashMap<u64, SmallVec<[Symbol; 1]>, BuildHasherDefault<HashIsKey>>,
+    /// Each instruction numbered, at its symbol.
+    insns: Vec<NormInsn>,
 }
 
 impl Interner {
     /// The symbol for an instruction, assigning one when it is new.
+    #[cfg(test)]
     fn intern(&mut self, insn: &NormInsn) -> Symbol {
-        let next = self.symbols.len() as Symbol;
-        match self.symbols.get(insn) {
-            Some(&symbol) => symbol,
-            None => {
-                self.symbols.insert(insn.clone(), next);
-                next
-            }
+        self.intern_hashed(hash_of(insn), insn)
+    }
+
+    /// [`Self::intern`], for an instruction whose [`hash_of`] is `hash`.
+    fn intern_hashed(&mut self, hash: u64, insn: &NormInsn) -> Symbol {
+        let symbols = self.by_hash.entry(hash).or_default();
+        if let Some(&symbol) = symbols.iter().find(|&&symbol| self.insns[symbol as usize] == *insn)
+        {
+            return symbol;
         }
+        let next = self.insns.len() as Symbol;
+        symbols.push(next);
+        self.insns.push(insn.clone());
+        next
     }
 
     /// How many distinct instructions have been numbered.
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.symbols.len()
+        self.insns.len()
+    }
+}
+
+/// The hash by which [`Interner`] finds an instruction.
+fn hash_of(insn: &NormInsn) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    insn.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// A hasher for a key that is a hash already: it gives the key back.
+#[derive(Default)]
+struct HashIsKey(u64);
+
+impl core::hash::Hasher for HashIsKey {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
+        }
+    }
+
+    fn write_u64(&mut self, key: u64) {
+        self.0 = key;
     }
 }
 
@@ -806,9 +852,12 @@ fn prepare<'a>(
             .map(|(index, function)| (function.name.as_str(), index))
             .collect(),
     };
-    binary
+    // The work of each function is its own, so it runs in parallel; only
+    // the interning shares state, and runs after, in the order of the
+    // functions, so each symbol is the same as in a run on one thread.
+    let (mut prepared, hashes): (Vec<Prepared<'a>>, Vec<Vec<u64>>) = binary
         .functions
-        .iter()
+        .par_iter()
         .map(|function| {
             progress.advance(1);
             let isa = binary.isa_of(function);
@@ -866,9 +915,6 @@ fn prepare<'a>(
                 found.iter().filter(|&&(_, sure)| sure).map(|&(text, _)| text).collect();
 
             let constants: Vec<u64> = constant_signature(&body).into_iter().collect();
-            let ordered: Vec<Symbol> = body.iter().map(|insn| interner.intern(insn)).collect();
-            let mut symbols = ordered.clone();
-            symbols.sort_unstable();
 
             // Only a stub is named `free@plt`: by its slot, or on MIPS by
             // the symbol its lazy binding stub resolves.
@@ -876,10 +922,11 @@ fn prepare<'a>(
                 .links
                 .stub_callee(arch, function.address)
                 .or_else(|| function.name.strip_suffix("@plt"));
-            Prepared {
+            let hashes = body.iter().map(hash_of).collect();
+            let prepared = Prepared {
                 function,
-                symbols,
-                ordered,
+                symbols: Vec::new(),
+                ordered: Vec::new(),
                 isa,
                 addresses: &binary.addresses,
                 contents,
@@ -893,9 +940,21 @@ fn prepare<'a>(
                 body,
                 sources: sources.iter().map(|&source| source as u32).collect(),
                 stub_of,
-            }
+            };
+            (prepared, hashes)
         })
-        .collect()
+        .unzip();
+    for (function, hashes) in prepared.iter_mut().zip(hashes) {
+        function.ordered = function
+            .body
+            .iter()
+            .zip(hashes)
+            .map(|(insn, hash)| interner.intern_hashed(hash, insn))
+            .collect();
+        function.symbols = function.ordered.clone();
+        function.symbols.sort_unstable();
+    }
+    prepared
 }
 
 /// The steps of a comparison, in the order they run.
@@ -999,6 +1058,17 @@ pub fn diff_reporting(
     let right = prepare(after, options.use_names, &mut interner, progress);
     progress.finish();
 
+    // Each reads one binary alone, and on a kernel each takes a while.
+    let ((left_tables, right_tables), ((left_rows, right_rows), (left_classes, right_classes))) =
+        rayon::join(
+            || rayon::join(|| before.function_tables(), || after.function_tables()),
+            || {
+                rayon::join(
+                    || rayon::join(|| before.row_texts(), || after.row_texts()),
+                    || rayon::join(|| before.virtual_slots(), || after.virtual_slots()),
+                )
+            },
+        );
     let mut cascade = Cascade {
         left,
         right,
@@ -1006,12 +1076,12 @@ pub fn diff_reporting(
         right_free: vec![true; after.functions.len()],
         matched: Vec::new(),
         options,
-        left_tables: before.function_tables(),
-        right_tables: after.function_tables(),
-        left_rows: before.row_texts(),
-        right_rows: after.row_texts(),
-        left_classes: before.virtual_slots(),
-        right_classes: after.virtual_slots(),
+        left_tables,
+        right_tables,
+        left_rows,
+        right_rows,
+        left_classes,
+        right_classes,
     };
 
     cascade.pair_stubs_by_import();

@@ -505,6 +505,11 @@ fn compares_firmware_at_the_base_it_shows() {
     assert_eq!(String::from_utf8_lossy(&auto.stdout), String::from_utf8_lossy(&given.stdout));
     let said = String::from_utf8_lossy(&auto.stderr);
     assert!(said.contains(&format!("{FIRMWARE} loads at 0x8000000")), "{said}");
+    // The two images are read at once, and their notes still come in order.
+    let before = said.find(&format!("{FIRMWARE} loads at")).expect("a note on the earlier image");
+    let after =
+        said.find(&format!("{FIRMWARE_FIXED} loads at")).expect("a note on the later image");
+    assert!(before < after, "{said}");
 }
 
 /// `--base auto` stops where no base stands out, as a missing base does.

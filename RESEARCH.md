@@ -3141,3 +3141,80 @@ across the upgrade, as `msi_get_domain_info` with `io_wq_get_task` and
 `truth_kernel_rivals.rs` counts 1692 wrong pairs on that board with the
 fix and 1747 without, as it calls a renamed function wrong, and the fix
 pairs more of those right. No trait sets the new wrong pairs apart.
+
+### Preparing the functions in parallel
+
+The comparison of the two iPhone kernels of CVE-2021-30883, 114,844
+functions each, took 13.8 s on a machine of 16 threads, and preparing the
+functions of each side took 5.0 s of it, one function after another,
+because they share the interner of their normalized instructions. The
+work of each function is its own, so it now runs on every core, and the
+interning runs after it, in the order of the functions, so each symbol is
+the one a run on one thread gives. Preparing took 0.75 s for each side,
+and the comparison 5.4 s, with the same report, byte for byte. The stage
+of identical shape now takes the most, 1.8 s: its largest group holds
+7,852 functions of one shape, and each looks through the others of its
+group. Numbering what each function refers to once, in place of building
+the list of its callees for each two twins, took 0.1 s off it.
+
+The stage did not spend its time in that look, though: counting the free
+functions of each group of one body, in place of looking through it, kept
+every pair and took only 0.15 s off. It spent it on the pairs it takes:
+two functions of one shape in a kernel still differ in their addresses,
+so each of the 100,000 pairs counts its edits. The stage reads only which
+functions are free, so it now finds its pairs first and then assesses
+them all at once on every core. The comparison took 4.0 s, with the same
+report, byte for byte. The count by groups was not kept.
+
+### Reading a raw image in parallel
+
+The comparison of the raw MIPS kernels of the VR200, from OpenWrt 22.03.2
+and 22.03.5, took 4.5 s, and 2.7 s of it went before the first function
+was prepared, on one core. Samples of the stack, taken with `eu-stack`,
+put a third of that in the stack check of Go, which the MIPS kernel does
+not hold: for each word of the image, the check lifted the first
+instruction to read its operands, and only then read the opcodes. With
+the opcodes first, for MIPS and ARM32, the comparison took 3.5 s. Of
+what was left, the check of the base took about as long as the scan, and
+the CLI ran both, for each image, one after the other. Neither reads
+what the other finds, so the CLI now reads the two images at once and
+checks each base beside its scan, and prints the notes of each image in
+the order of the images. The comparison took 2.3 s, with the same report
+and the same warnings, byte for byte.
+
+The raw ARM kernels of the EX6100v2, from the same releases, took 6.6 s,
+5.0 s of it before the first function was prepared. Four of five samples
+there were in the lift of ARM32. The search for the words that a pool
+holds lifted every instruction to follow the registers that an `adr`
+set, though no register holds such an address almost everywhere, and
+lifted each load a second time. The search for tables of `add pc, pc,
+rX, lsl #2` lifted each instruction before it read the opcode, and the
+check for the range extension thunk of LLD lifted the first two
+instructions of every place a function can start, whatever the others
+were. With the opcodes read first, and one lift for each instruction,
+the comparison took 2.5 s, with the same report, byte for byte.
+
+Of what was left, the stage of scores took 0.70 s, and most of it scored
+each free function of one side against each of the other. The score is
+the share of the two multisets of instructions that both hold, so it
+can be no more than the size of the smaller over the size of the larger.
+A pair whose sizes alone hold it below both bars of the stage now gets
+no score, and the stage took 0.51 s, with the same report, byte for
+byte. No other stage of the comparison then took more than 0.11 s.
+
+On the iPhone kernels the stage of scores took 1.45 s, and the search for
+pairs by unique references 0.55 s of it, in two calls. Each round of it
+found the holders of each reference on one side and then the other, and
+scored every two functions that alone share one, though most of them are
+pairs by identical code, shape or name, which nothing breaks. The two
+sides are now read at once, and those pairs get no score. The stage took
+1.19 s, and the comparison 3.85 s, with the same report, byte for byte.
+
+Preparing still took 1.8 s of it, and `callgrind`, on one thread, put
+nine tenths of the work of `prepare` on its own thread in the interning,
+and most of that in SipHash over each normalized instruction. The
+interning must number the instructions in order, so it stays on one
+thread, but each instruction is now hashed beforehand, on every core,
+and the interner finds it by that hash. Reading the tables, the rows and
+the classes of the two binaries at once took 0.1 s more off. The
+comparison took 3.38 s, with the same report, byte for byte.

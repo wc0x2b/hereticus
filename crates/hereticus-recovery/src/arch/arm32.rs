@@ -417,6 +417,9 @@ fn read_branch_table(memory: &Memory<'_>, code: &Range<u64>, jump: &Insn) -> Opt
 
     let is_jump =
         matches!(jump.kind, InsnKind::Jump { target: None } | InsnKind::Branch { target: None });
+    if core_opcode(jump) != Some(Opcode::ADD) || !is_jump {
+        return None;
+    }
     // `add pc, pc, rX, lsl #2`.
     let shape = lifted(jump).is_some_and(|lifted| {
         matches!(
@@ -428,7 +431,7 @@ fn read_branch_table(memory: &Memory<'_>, code: &Range<u64>, jump: &Insn) -> Opt
             ]
         )
     });
-    if core_opcode(jump) != Some(Opcode::ADD) || !is_jump || !shape {
+    if !shape {
         return None;
     }
 
@@ -655,6 +658,11 @@ pub fn is_go_stack_check(body: &[Insn]) -> bool {
     /// The offset of the stack bound in a goroutine.
     const STACK_GUARD: i64 = 8;
     let [load, compare, ..] = body else { return false };
+    // The opcodes are cheap to read, and rule out almost every word before
+    // the lift reads the operands.
+    if !is_plain(load, Opcode::LDR) || core_opcode(compare) != Some(Opcode::CMP) {
+        return false;
+    }
     let operands = |insn: &Insn| lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
     let bound = match operands(load).as_slice() {
         [
@@ -668,10 +676,7 @@ pub fn is_go_stack_check(body: &[Insn]) -> bool {
         ] => *bound,
         _ => return false,
     };
-    is_plain(load, Opcode::LDR)
-        && core_opcode(compare) == Some(Opcode::CMP)
-        && operands(compare).as_slice()
-            == [il::Operand::Reg(il::Reg::Stack), il::Operand::Reg(bound)]
+    operands(compare).as_slice() == [il::Operand::Reg(il::Reg::Stack), il::Operand::Reg(bound)]
 }
 
 /// Whether `body` opens with LLD's range extension thunk, a function by
@@ -700,13 +705,14 @@ fn long_thunk_halves(body: &[Insn]) -> Option<(u64, u64)> {
     let shape = is_plain(movw, Opcode::MOV)
         && is_plain(movt, Opcode::MOVT)
         && is_plain(add, Opcode::ADD)
-        && matches!(operands(add).as_slice(), [IP, PC_OPERAND] | [IP, IP, PC_OPERAND])
         && is_plain(bx, Opcode::BX)
+        && matches!(operands(add).as_slice(), [IP, PC_OPERAND] | [IP, IP, PC_OPERAND])
         && operands(bx).as_slice() == [IP];
-    match (shape, operands(movw).as_slice(), operands(movt).as_slice()) {
-        (true, [IP, il::Operand::Const(low)], [IP, il::Operand::Const(high)]) => {
-            Some((*low, *high))
-        }
+    if !shape {
+        return None;
+    }
+    match (operands(movw).as_slice(), operands(movt).as_slice()) {
+        ([IP, il::Operand::Const(low)], [IP, il::Operand::Const(high)]) => Some((*low, *high)),
         _ => None,
     }
 }
@@ -755,8 +761,21 @@ pub fn pool_loads(insns: &[Insn], pc: PcModel) -> Vec<(u64, u64)> {
     // SQLite's `fts3auxBestIndexMethod` does.
     let mut held: Vec<(il::Reg, u64)> = Vec::new();
     for insn in insns {
-        let operands = lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
-        let adr = match (core_opcode(insn), operands.as_slice()) {
+        let is_load = matches!(
+            decoded(insn),
+            Some(
+                Decoded::Core { opcode: Opcode::LDR | Opcode::LDRD, .. }
+                    | Decoded::Vfp { vfp: Vfp::Load, .. }
+            )
+        );
+        // Most instructions neither form nor load an address, and where no
+        // register holds one, they change nothing here: skip their lift.
+        if held.is_empty() && !is_load && core_opcode(insn) != Some(Opcode::ADR) {
+            continue;
+        }
+        let lifted = lifted(insn);
+        let operands = lifted.as_ref().map(|lifted| lifted.operands.as_slice()).unwrap_or_default();
+        let adr = match (core_opcode(insn), operands) {
             (Some(Opcode::ADR), [il::Operand::Reg(register), .., il::Operand::Const(distance)]) => {
                 Some((*register, pc.of_literal_load(insn.address).wrapping_add(*distance)))
             }
@@ -779,14 +798,7 @@ pub fn pool_loads(insns: &[Insn], pc: PcModel) -> Vec<(u64, u64)> {
         if let Some(adr) = adr {
             held.push(adr);
         }
-        let is_load = matches!(
-            decoded(insn),
-            Some(
-                Decoded::Core { opcode: Opcode::LDR | Opcode::LDRD, .. }
-                    | Decoded::Vfp { vfp: Vfp::Load, .. }
-            )
-        );
-        let Some(lifted) = is_load.then(|| lifted(insn)).flatten() else { continue };
+        let Some(lifted) = lifted.filter(|_| is_load) else { continue };
         // `ldr` and a `vldr` of a single read one word, and `ldrd` and a
         // `vldr` of a double two.
         let count = match decoded(insn) {
