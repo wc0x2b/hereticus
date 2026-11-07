@@ -19,7 +19,7 @@ use super::score::{
     LOWEST_CONTEXT_SIMILARITY, LOWEST_LAYOUT_SIMILARITY, LOWEST_MOVED_SIMILARITY,
     LOWEST_UNEVEN_GAP_SIMILARITY, LOWEST_UNIQUE_REFERENCE_SIMILARITY, MOST_HOLDERS_OF_AN_EDGE,
     MOST_PLACE_CELLS, MOST_UNIQUE_REFERENCE_ROUNDS, MOVED_SIMILARITY_MARGIN, Place,
-    REFERENCE_WEIGHT, RIVAL_MARGIN, ReferenceKey, SHIFTED_GAP_MARGIN, common_keys,
+    REFERENCE_WEIGHT, RIVAL_MARGIN, ReferenceKey, SHIFTED_GAP_MARGIN, TextCount, common_keys,
     constant_agreement, group_by_shape_and_references, is_judged_by_context, keep_best_candidates,
     lacks_context, long_texts, reference_agreement, saturated, short_texts_changed,
     similarity_bound, similarity_of_symbols, sorted_only_in, sorted_shared, texts_that_differ,
@@ -1486,11 +1486,16 @@ impl Cascade<'_> {
                 continue;
             }
             let (left, right) = (&self.left[pair.before], &self.right[pair.after]);
-            let differ = texts_that_differ(&long_texts(&left.texts), &long_texts(&right.texts))
-                + short_texts_changed(
-                    (&left.texts, &left.sure_texts),
-                    (&right.texts, &right.sure_texts),
-                );
+            let count = match pair.changed {
+                Changed::Yes => TextCount::AddedOrReplaced,
+                _ => TextCount::Replaced,
+            };
+            let differ =
+                texts_that_differ(&long_texts(&left.texts), &long_texts(&right.texts), count)
+                    + short_texts_changed(
+                        (&left.texts, &left.sure_texts),
+                        (&right.texts, &right.sure_texts),
+                    );
             if differ > 0 {
                 // A pair whose code differs keeps that verdict.
                 if pair.changed != Changed::Yes {
