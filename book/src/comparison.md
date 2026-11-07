@@ -71,7 +71,7 @@ that the fix did not touch.
 
 | Tool | Fixes found | Fix on row 1 | Fix in the first 10 rows | Rows |
 |------|-------------|--------------|--------------------------|------|
-| hereticus | 177<!-- from truth_ubuntu_rivals: all hereticus / found --> | 156<!-- from truth_ubuntu_rivals: all hereticus / first --> | 175<!-- from truth_ubuntu_rivals: all hereticus / top10 --> | 6160<!-- from truth_ubuntu_rivals: all hereticus / rows --> |
+| hereticus | 177<!-- from truth_ubuntu_rivals: all hereticus / found --> | 156<!-- from truth_ubuntu_rivals: all hereticus / first --> | 175<!-- from truth_ubuntu_rivals: all hereticus / top10 --> | 5946<!-- from truth_ubuntu_rivals: all hereticus / rows --> |
 | radiff2 | 114<!-- from truth_ubuntu_rivals: all radare2 / found --> | 36<!-- from truth_ubuntu_rivals: all radare2 / first --> | 61<!-- from truth_ubuntu_rivals: all radare2 / top10 --> | 81203<!-- from truth_ubuntu_rivals: all radare2 / rows --> |
 | Ghidra | 174<!-- from truth_ubuntu_rivals: all ghidra / found --> | 103<!-- from truth_ubuntu_rivals: all ghidra / first --> | 150<!-- from truth_ubuntu_rivals: all ghidra / top10 --> | 51381<!-- from truth_ubuntu_rivals: all ghidra / rows --> |
 
@@ -97,7 +97,7 @@ one fixed function of the stripped executables.
 
 | Tool | Fixes found | Fix on row 1 | Fix in the first 10 rows | Rows |
 |------|-------------|--------------|--------------------------|------|
-| hereticus | 38<!-- from truth_cves_rivals: all hereticus / found --> | 21<!-- from truth_cves_rivals: all hereticus / first --> | 37<!-- from truth_cves_rivals: all hereticus / top10 --> | 1405<!-- from truth_cves_rivals: all hereticus / rows --> |
+| hereticus | 38<!-- from truth_cves_rivals: all hereticus / found --> | 21<!-- from truth_cves_rivals: all hereticus / first --> | 37<!-- from truth_cves_rivals: all hereticus / top10 --> | 1402<!-- from truth_cves_rivals: all hereticus / rows --> |
 | radiff2 | 10<!-- from truth_cves_rivals: all radare2 / found --> | 4<!-- from truth_cves_rivals: all radare2 / first --> | 4<!-- from truth_cves_rivals: all radare2 / top10 --> | 6720<!-- from truth_cves_rivals: all radare2 / rows --> |
 | Ghidra | 23<!-- from truth_cves_rivals: all ghidra / found --> | 6<!-- from truth_cves_rivals: all ghidra / first --> | 22<!-- from truth_cves_rivals: all ghidra / top10 --> | 4184<!-- from truth_cves_rivals: all ghidra / rows --> |
 
@@ -295,7 +295,7 @@ The tests above find these weak points of `hereticus`:
   `ssh_make_sessionid`, and the compiler laid out the stack frames of
   other functions anew.
   `hereticus` shows the fix on row
-  30<!-- from truth_ubuntu_rivals: libssh-4-arm64-0.9.6-2ubuntu0.22.04.4-0.9.6-2ubuntu0.22.04.5 / rank:hereticus -->, and Ghidra on row
+  29<!-- from truth_ubuntu_rivals: libssh-4-arm64-0.9.6-2ubuntu0.22.04.4-0.9.6-2ubuntu0.22.04.5 / rank:hereticus -->, and Ghidra on row
   1<!-- from truth_ubuntu_rivals: libssh-4-arm64-0.9.6-2ubuntu0.22.04.4-0.9.6-2ubuntu0.22.04.5 / rank:ghidra -->. With more correlators, Ghidra also shows the fix
   of Lua earlier on each build by clang at `-O2`, as
   [Deeper Settings](#deeper-settings) says.
@@ -396,7 +396,7 @@ where `garble reverse` names one of its functions in one release only.
 
 | Tool | Pairs | Right | Unproven | Wrong |
 |------|-------|-------|----------|-------|
-| hereticus | 25401<!-- from truth_go_rivals: all hereticus / pairs --> | 25361<!-- from truth_go_rivals: all hereticus / right --> | 28<!-- from truth_go_rivals: all hereticus / unproven --> | 12<!-- from truth_go_rivals: all hereticus / wrong --> |
+| hereticus | 25400<!-- from truth_go_rivals: all hereticus / pairs --> | 25360<!-- from truth_go_rivals: all hereticus / right --> | 28<!-- from truth_go_rivals: all hereticus / unproven --> | 12<!-- from truth_go_rivals: all hereticus / wrong --> |
 | radiff2 | 3815<!-- from truth_go_rivals: all radare2 / pairs --> | 3814<!-- from truth_go_rivals: all radare2 / right --> | 1<!-- from truth_go_rivals: all radare2 / unproven --> | 0<!-- from truth_go_rivals: all radare2 / wrong --> |
 | Ghidra | 15561<!-- from truth_go_rivals: all ghidra / pairs --> | 15547<!-- from truth_go_rivals: all ghidra / right --> | 13<!-- from truth_go_rivals: all ghidra / unproven --> | 1<!-- from truth_go_rivals: all ghidra / wrong --> |
 

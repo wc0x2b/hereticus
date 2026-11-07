@@ -3,7 +3,7 @@ source: hereticus-cli/tests/truth_cves.rs
 expression: ranks + &fix_rows
 ---
 fix                                  rank  rows
-CVE-2021-30883 IOMobileFramebuffer      1   333
+CVE-2021-30883 IOMobileFramebuffer      1   332
 CVE-2024-23265 AppleDiskImages2         1    33
 CVE-2025-24257 IOGPUFamily             19   403
 CVE-2026-28825 smbfs                    9   462
@@ -11,7 +11,7 @@ CVE-2025-62526 ubusd AArch64            5     8
 CVE-2025-62526 ubusd A32                4    21
 CVE-2025-62526 ubusd MIPS16e BE         5    17
 CVE-2025-62526 ubusd MIPS16e LE         5    17
-CVE-2025-14282 dropbear AArch64         2    14
+CVE-2025-14282 dropbear AArch64         2    12
 CVE-2025-14282 dropbear A32             1    33
 CVE-2025-14282 dropbear MIPS32 BE       2    22
 CVE-2025-14282 dropbear MIPS32 LE       2    19
@@ -23,7 +23,7 @@ CVE-2026-53921 odhcpd AArch64           5    18
 CVE-2026-53921 odhcpd A32               1    20
 CVE-2026-53921 odhcpd MIPS16e BE        1    21
 CVE-2026-53921 odhcpd MIPS16e LE        1    21
-CVE-2026-35385 dropbear AArch64         1    19
+CVE-2026-35385 dropbear AArch64         1    18
 CVE-2026-35385 dropbear A32             1    21
 CVE-2026-35385 dropbear MIPS32 BE       1    16
 CVE-2026-35385 dropbear MIPS32 LE       1    28
