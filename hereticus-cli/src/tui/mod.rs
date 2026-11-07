@@ -1677,8 +1677,14 @@ mod tests {
         press(&mut app, &[KeyCode::End]);
         let Screen::Pair(opened) = &app.screen else { panic!("the diff stays open") };
         assert!(opened.scroll > usize::from(u16::MAX));
+        // Whether that row is a change depends on the kernels, so the test
+        // asks only that it draws an address.
         let last = screen(&mut app, 200, 60);
-        assert!(last.lines().nth(3).is_some_and(|line| line.contains(['+', '-', '~'])), "{last}");
+        let shows_an_address = |line: &str| {
+            line.split_whitespace()
+                .any(|word| word.len() == 8 && word.chars().all(|c| c.is_ascii_hexdigit()))
+        };
+        assert!(last.lines().nth(3).is_some_and(shows_an_address), "{last}");
 
         // The second change of view takes the lines the first one kept.
         press(&mut app, &[KeyCode::Char('v')]);
