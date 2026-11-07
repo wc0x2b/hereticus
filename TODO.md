@@ -309,9 +309,10 @@ paths of the function can tell apart from a change.
 
 ## Prepare the functions of a large binary faster
 
-The functions of each binary are now prepared on every core, and the
-pairs of identical shape assessed so, which took the comparison of two
-iPhone kernels from 13.8 s to 4.0 s (`RESEARCH.md`, "Preparing the
-functions in parallel"). Most of what is left runs on one core: the
-search for pairs by unique references, the realignment by context and
-the pairing of stubs by import.
+The functions of each binary are now prepared and hashed on every core,
+and the pairs of identical shape assessed so, which took the comparison
+of two iPhone kernels from 13.8 s to 3.4 s (`RESEARCH.md`, "Preparing
+the functions in parallel"). Of what is left, preparing takes 1.4 s, and
+the interning in it runs on one thread to keep the numbering the same in
+every run; the stage of identical shape takes 0.45 s, the search for
+pairs by unique references 0.5 s, and the realignment by context 0.3 s.
