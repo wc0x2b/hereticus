@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The comparison prepares the functions of each binary on every core. The
-  comparison of two iPhone kernels of 50 MB, for CVE-2021-30883, took 5.4 s
-  in place of 13.8 s on a machine of 16 threads, with the same report.
+- The comparison prepares the functions of each binary, and assesses the
+  pairs of identical shape, on every core. The comparison of two iPhone
+  kernels of 50 MB, for CVE-2021-30883, took 4.0 s in place of 13.8 s on a
+  machine of 16 threads, with the same report.
 
 ### Fixed
 

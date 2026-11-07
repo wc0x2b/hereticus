@@ -80,6 +80,14 @@ pub(super) struct Cascade<'a> {
 
 impl Cascade<'_> {
     /// Record a pair and take both functions out of the pool.
+    /// Mark `before` and `after` as paired, and give them back, for a stage
+    /// that assesses its pairs after it has found them all.
+    fn mark_taken(&mut self, before: usize, after: usize) -> (usize, usize) {
+        self.left_free[before] = false;
+        self.right_free[after] = false;
+        (before, after)
+    }
+
     pub(super) fn take_pair(
         &mut self,
         before: usize,
@@ -1658,6 +1666,11 @@ impl Cascade<'_> {
         // through all of them for each took 20 seconds.
         let (left_by_shape, right_by_shape) = (by_shape(&self.left), by_shape(&self.right));
         let ids = referent_ids(&self.left, &self.right);
+        // Each pair is assessed after the loop, all at once on every core: an
+        // iPhone kernel pairs 100,000 functions here, and to count the edits
+        // of each, one after another, took most of the stage. The loop reads
+        // only which functions are free.
+        let mut taken: Vec<(usize, usize)> = Vec::new();
         for index in 0..self.left.len() {
             progress.advance(1);
             // An empty body carries no evidence, so pairing on it would be a
@@ -1723,9 +1736,14 @@ impl Cascade<'_> {
             if let [only] = candidates[..]
                 && !self.has_free_twin_for(index, only, left_twins, &ids)
             {
-                self.take_pair(index, only, Confidence::IdenticalShape, 1.0);
+                taken.push(self.mark_taken(index, only));
             }
         }
+        let assessed: Vec<Match> = taken
+            .par_iter()
+            .map(|&(before, after)| self.assess(before, after, Confidence::IdenticalShape, 1.0))
+            .collect();
+        self.matched.extend(assessed);
         progress.finish();
     }
 

@@ -3156,3 +3156,12 @@ of identical shape now takes the most, 1.8 s: its largest group holds
 7,852 functions of one shape, and each looks through the others of its
 group. Numbering what each function refers to once, in place of building
 the list of its callees for each two twins, took 0.1 s off it.
+
+The stage did not spend its time in that look, though: counting the free
+functions of each group of one body, in place of looking through it, kept
+every pair and took only 0.15 s off. It spent it on the pairs it takes:
+two functions of one shape in a kernel still differ in their addresses,
+so each of the 100,000 pairs counts its edits. The stage reads only which
+functions are free, so it now finds its pairs first and then assesses
+them all at once on every core. The comparison took 4.0 s, with the same
+report, byte for byte. The count by groups was not kept.
