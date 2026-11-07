@@ -1632,10 +1632,54 @@ mod tests {
         Some((read("22.03.2")?, read("22.03.5")?))
     }
 
+    /// Select the pair with the most code, and open its diff.
+    fn open_the_longest(app: &mut App<'_>, before: &Binary, diff: &Diff) {
+        let longest = (0..app.rows.len())
+            .max_by_key(|&at| match app.entries[app.rows[at]].entry {
+                Entry::Pair(index) => before.functions[diff.matched[index].before].code.len(),
+                _ => 0,
+            })
+            .expect("a row");
+        app.table.select(Some(longest));
+        press(app, &[KeyCode::Enter]);
+    }
+
     /// A kernel lists many thousand functions, and one of its regions
-    /// diffs to some 200000 rows. A key must answer at once on both: the
-    /// budgets are ten times what each takes, and a fifth of what each took
-    /// when every frame built every row.
+    /// diffs to some 200000 rows, past what a `u16` holds, and each still
+    /// draws. The test of the time each key takes is apart, as it depends
+    /// on the machine, so that CI runs this one.
+    #[test]
+    fn slow_a_kernel_draws_its_longest_diff() {
+        let Some((before, after)) = kernels() else { return };
+        let diff = diff_with(&before, &after, Options::default());
+        let mut app = App::new(&diff, &before, &after, start());
+        press(&mut app, &[KeyCode::Char('a')]);
+        assert!(app.rows.len() > 20_000, "the kernels list {} rows", app.rows.len());
+
+        open_the_longest(&mut app, &before, &diff);
+        assert!(app.diff_rows() > 100_000, "the diff holds {} rows", app.diff_rows());
+
+        // Whether the last row is a change depends on the kernels, so the
+        // test asks only that it draws an address.
+        press(&mut app, &[KeyCode::End]);
+        let Screen::Pair(opened) = &app.screen else { panic!("the diff stays open") };
+        assert!(opened.scroll > usize::from(u16::MAX));
+        let last = screen(&mut app, 200, 60);
+        let shows_an_address = |line: &str| {
+            line.split_whitespace()
+                .any(|word| word.len() == 8 && word.chars().all(|c| c.is_ascii_hexdigit()))
+        };
+        assert!(last.lines().nth(3).is_some_and(shows_an_address), "{last}");
+
+        press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('v')]);
+        assert!(matches!(app.screen, Screen::Pair(_)), "the diff stays open");
+        assert_eq!(screen(&mut app, 200, 60), last, "two changes of view give the same screen");
+    }
+
+    /// A key must answer at once on the kernels of
+    /// [`slow_a_kernel_draws_its_longest_diff`]: the budgets are ten times
+    /// what each takes, and a fifth of what each took when every frame
+    /// built every row.
     #[test]
     fn slow_a_kernel_stays_responsive() {
         use std::time::{Duration, Instant};
@@ -1643,7 +1687,6 @@ mod tests {
         let diff = diff_with(&before, &after, Options::default());
         let mut app = App::new(&diff, &before, &after, start());
         press(&mut app, &[KeyCode::Char('a')]);
-        assert!(app.rows.len() > 20_000, "the kernels list {} rows", app.rows.len());
 
         // The mean time of a key and the draw after it, a hundred times.
         let per_step = |app: &mut App<'_>, key: KeyCode| {
@@ -1659,32 +1702,11 @@ mod tests {
         let sort = per_step(&mut app, KeyCode::Char('s'));
         assert!(sort < Duration::from_millis(30), "a sort takes {sort:?}");
 
-        let longest = (0..app.rows.len())
-            .max_by_key(|&at| match app.entries[app.rows[at]].entry {
-                Entry::Pair(index) => before.functions[diff.matched[index].before].code.len(),
-                _ => 0,
-            })
-            .expect("a row");
-        app.table.select(Some(longest));
-        press(&mut app, &[KeyCode::Enter]);
-        assert!(app.diff_rows() > 100_000, "the diff holds {} rows", app.diff_rows());
+        open_the_longest(&mut app, &before, &diff);
         let scroll = per_step(&mut app, KeyCode::Down);
         assert!(scroll < Duration::from_millis(35), "a step of the diff takes {scroll:?}");
         let jump = per_step(&mut app, KeyCode::Char(']'));
         assert!(jump < Duration::from_millis(35), "a jump takes {jump:?}");
-
-        // A row past what a `u16` holds still shows.
-        press(&mut app, &[KeyCode::End]);
-        let Screen::Pair(opened) = &app.screen else { panic!("the diff stays open") };
-        assert!(opened.scroll > usize::from(u16::MAX));
-        // Whether that row is a change depends on the kernels, so the test
-        // asks only that it draws an address.
-        let last = screen(&mut app, 200, 60);
-        let shows_an_address = |line: &str| {
-            line.split_whitespace()
-                .any(|word| word.len() == 8 && word.chars().all(|c| c.is_ascii_hexdigit()))
-        };
-        assert!(last.lines().nth(3).is_some_and(shows_an_address), "{last}");
 
         // The second change of view takes the lines the first one kept.
         press(&mut app, &[KeyCode::Char('v')]);
