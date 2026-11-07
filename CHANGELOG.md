@@ -17,7 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once, the check of the base runs beside the scan, and the scan reads the
   opcodes of a word before it lifts the word to look for the stack check
   of Go. The comparison of the raw MIPS kernels of the TP-Link VR200, from
-  OpenWrt 22.03.2 and 22.03.5, took 2.3 s in place of 4.5 s.
+  OpenWrt 22.03.2 and 22.03.5, took 2.3 s in place of 4.5 s. For ARM32,
+  the scan lifts an instruction only where its opcode can form, load or
+  jump through an address. The comparison of the raw ARM kernels of the
+  Netgear EX6100v2, from the same releases, took 2.5 s in place of 6.6 s.
 
 ### Fixed
 

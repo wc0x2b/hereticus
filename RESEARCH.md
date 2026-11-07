@@ -3181,3 +3181,15 @@ what the other finds, so the CLI now reads the two images at once and
 checks each base beside its scan, and prints the notes of each image in
 the order of the images. The comparison took 2.3 s, with the same report
 and the same warnings, byte for byte.
+
+The raw ARM kernels of the EX6100v2, from the same releases, took 6.6 s,
+5.0 s of it before the first function was prepared. Four of five samples
+there were in the lift of ARM32. The search for the words that a pool
+holds lifted every instruction to follow the registers that an `adr`
+set, though no register holds such an address almost everywhere, and
+lifted each load a second time. The search for tables of `add pc, pc,
+rX, lsl #2` lifted each instruction before it read the opcode, and the
+check for the range extension thunk of LLD lifted the first two
+instructions of every place a function can start, whatever the others
+were. With the opcodes read first, and one lift for each instruction,
+the comparison took 2.5 s, with the same report, byte for byte.
