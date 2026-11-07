@@ -101,6 +101,13 @@ compare() {
 
 # Four cases at once. Each Ghidra run is single threaded for the most part.
 export GHIDRA_MAXMEM=8G
+# Each start of Ghidra saves the JDK it found in a file of its settings,
+# and starts at once can each find that file half written, and stop to ask
+# for the JDK. One save first leaves the file whole.
+if [ "$tool" = ghidra ]; then
+    java -cp "$GHIDRA_HOME/support/LaunchSupport.jar" LaunchSupport "$GHIDRA_HOME" \
+        -jdk_home -save >/dev/null
+fi
 pids=()
 failed=0
 while read -r name before after; do

@@ -33,6 +33,11 @@ trap 'rm -rf "$work"' EXIT
 # Ghidra picks the language from the ELF header, as for any file it is
 # given, and runs its default analyzers.
 export GHIDRA_MAXMEM=4G
+# Each start of Ghidra saves the JDK it found in a file of its settings,
+# and starts at once can each find that file half written, and stop to ask
+# for the JDK. One save first leaves the file whole.
+java -cp "$GHIDRA_HOME/support/LaunchSupport.jar" LaunchSupport "$GHIDRA_HOME" \
+    -jdk_home -save >/dev/null
 for bin in "$in"/shfmt-3.12.0-*.bin; do
     name="$(basename "$bin" .bin)"
     (
