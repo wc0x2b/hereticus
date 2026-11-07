@@ -71,8 +71,11 @@ names exactly the functions each fix touched, but for one. Read as a raw
 image, Lua built by GCC for ARMv5TE joins the first words of `.rodata` to
 `luaZ_openspace`, the last function of `.text`, and one build pads
 `.rodata` with a zero word that the other lacks. A raw image says nothing
-of where its code ends. A run of words that no branch reaches and that
-decodes as no code a compiler emits could end it.
+of where its code ends. Cutting each function after the code its own flow
+reaches ended it, but hid changes in the ARM stubs of OpenWrt and showed
+the PowerPC traceback tables as changes (`RESEARCH.md`, "The end of the
+code of a raw image"), so a rule must tell the data of a function, as a
+traceback table, from data that follows the code.
 
 ## Find the base of an AArch64 image faster
 

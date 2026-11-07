@@ -2832,3 +2832,31 @@ Of the 48,527 changed lines of Assemblage, 16,241 only name another build
 directory in a path, as `&"/tmp/deephistory-473fca52b4de/projects/..."`:
 the builds of Assemblage each ran in a directory of their own. The rest
 change a constant, a text, an offset of a field, or the size of a frame.
+
+### The end of the code of a raw image
+
+A raw image holds its data right after its code, so the last function runs
+on into the data: in Lua built by GCC for ARMv5TE, the first word of
+`.rodata` joins `luaZ_openspace`. A test cut each function of a raw image
+after the code that its own flow reaches, with the delay slots of each
+instruction that moves control, and with each literal pool word that such
+code loads, where the cut bytes held no branch, jump, call or return, and
+where the function held no jump through a register. It ended
+`luaZ_openspace` at `.rodata`, and made 12 and 10 more functions of the
+raw BE8 releases exact. But each form it took cost more than that:
+
+- A cut hid real changes: in the decompressor stubs of the ARM kernels of
+  OpenWrt, a changed byte then lay in no function.
+- A split, with the rest as a piece of its own, showed new rows: on 64-bit
+  PowerPC, the traceback table after a `blr` differs between two builds of
+  `StrPair::~StrPair` of tinyxml2, and the function hid it before.
+- The flow depends on where the image loads: a MIPS `j` takes the top bits
+  of its target from its own address, so a base that is no multiple of
+  256 MiB, as 0xbfc00000, reaches other code. Reading each function at its
+  address modulo 64 KiB keeps the flow the same at every base.
+- `delay_slots` answers 1 for every MIPS instruction, so a walk must ask
+  only for one that moves control.
+- The raw images of the releases left 1 to 3 more pieces gone and new,
+  each a part of the tables before `.text` with no symbol.
+
+It was not kept.
