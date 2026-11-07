@@ -9,7 +9,7 @@ amd64 ghidra                   2343   2341        2      0
 386 hereticus                  3723   3717        4      2
 386 radare2                     544    544        0      0
 386 ghidra                     2434   2431        2      1
-arm64 hereticus                3574   3569        4      1
+arm64 hereticus                3573   3568        4      1
 arm64 radare2                  1751   1751        0      0
 arm64 ghidra                   2309   2307        2      0
 arm-7 hereticus                3648   3640        4      4
@@ -26,6 +26,6 @@ mipsle-softfloat radare2         79     79        0      0
 mipsle-softfloat ghidra        1350   1349        1      0
 
 tool                          pairs  right unproven  wrong
-all hereticus                 25401  25361       28     12
+all hereticus                 25400  25360       28     12
 all radare2                    3815   3814        1      0
 all ghidra                    15561  15547       13      1

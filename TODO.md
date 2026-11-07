@@ -245,7 +245,7 @@ OpenWrt 24.10.3 and 24.10.4 for ARMv7 read as unchanged but for
 constants, which checks the reading but ranks no fix.
 
 `tests/truth_ubuntu.rs` locks 218<!-- from truth_ubuntu: all / cases --> Ubuntu
-security updates. Of the 128<!-- from truth_ubuntu: all / wrong --> wrong pairs
+security updates. Of the 129<!-- from truth_ubuntu: all / wrong --> wrong pairs
 left, many are byte-identical twins (see "Tell twins apart
 that no instruction separates"). Every fix that changed the code shows
 on a changed row.
@@ -283,13 +283,11 @@ the matching stages themselves; measure them before anything else.
 `track_pages` of AArch64 reads typed operands decoded from the code
 bytes, which took 10% off libgnutls; keeping the decoded operands in
 every `Insn` took 237 MB in place of 137 MB and no time. MIPS compares
-register names packed into words. `track_pages` still reads `w24` and
-`x24` as two registers, as the text did, though a write of `w24` clears
-`x24` too. Ending the page there is right for the code that it reads
-straight down, but past a jump, the tracker then guesses a page from a
-function far above, and the texts it shows change where the code does
-not (`RESEARCH.md`, "The low half of an A64 register"). It must follow
-the value that each path brings to a block before it ends them.
+register names packed into words. `track_pages` now follows what each
+branch forward brings, and a write of `w24` ends what `x24` held
+(`RESEARCH.md`, "The low half of an A64 register"). A branch back and a
+jump through a table still bring nothing, so the code that only they
+reach still guesses any page that a register took.
 
 ## Rust has the idea of MIR, an in-between IL. Would that help this project?
 

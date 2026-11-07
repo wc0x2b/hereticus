@@ -17,6 +17,7 @@ use super::{Insn, InsnKind, JumpTable, Memory, Recovery};
 use core::ops::Range;
 use hereticus_il::arch::aarch64::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
+use std::collections::HashMap;
 use yaxpeax_arch::{Decoder as _, U8Reader};
 use yaxpeax_arm::armv8::a64::{InstDecoder, Instruction, Opcode, Operand, ShiftStyle, SizeCode};
 
@@ -391,11 +392,29 @@ pub fn track_pages(code: &[u8], body: &[Insn], space: &AddressSpace) -> Pages {
             .find(|&address| space.contains_formed(address))
     };
 
+    let end = body.last().map_or(start, |insn| insn.address);
+    // What each forward branch brings to its target, by the target.
+    let mut arriving: HashMap<u64, Vec<PathState>> = HashMap::new();
     for (index, insn) in body.iter().enumerate() {
         let after_an_end =
             index > 0 && matches!(body[index - 1].kind, InsnKind::Jump { .. } | InsnKind::Return);
-        if after_an_end {
+        let mut paths = arriving.remove(&insn.address).unwrap_or_default();
+        if !after_an_end && !paths.is_empty() {
+            // The path that runs down into the block comes first.
+            paths.insert(0, pages.leave(&held));
+        }
+        if !paths.is_empty() {
+            held = pages.arrive(&paths, &held, after_an_end);
+        } else if after_an_end {
+            // Only a jump through a table, or a branch back, reaches it.
             pages.after_an_end();
+        }
+        if let InsnKind::Branch { target: Some(target) } | InsnKind::Jump { target: Some(target) } =
+            insn.kind
+            && target > insn.address
+            && target <= end
+        {
+            arriving.entry(target).or_default().push(pages.leave(&held));
         }
         // The operands as the decoder read them, from the word itself: the
         // text would have to be split and parsed again for each.
@@ -499,16 +518,8 @@ pub fn track_pages(code: &[u8], body: &[Insn], space: &AddressSpace) -> Pages {
             _ => {}
         }
         // Any other write of the register ends what it held. A write of
-        // the low half, as `mov w24, w0`, clears the high half too, so it
-        // ends it as well in truth; the text this replaced read `w24` and
-        // `x24` as two registers, and that is kept until a measure says
-        // which reads better (TODO.md).
-        let writes_whole = matches!(
-            operands[0],
-            Operand::Register(SizeCode::X, _) | Operand::RegisterOrSP(SizeCode::X, _)
-        );
+        // the low half, as `mov w24, w0`, clears the high half too.
         if let Some(destination) = destination
-            && writes_whole
             && may_write_first(insn)
         {
             held.retain(|(held, _)| *held != destination);
@@ -592,17 +603,27 @@ struct PageRegisters {
 
 impl Default for PageRegisters {
     fn default() -> Self {
-        Self { ever: core::array::from_fn(|_| Vec::new()), now: [None; Tracked::COUNT] }
+        Self { ever: core::array::from_fn(|_| Vec::new()), now: core::array::from_fn(|_| None) }
     }
 }
 
 /// The pages a register may hold.
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum MayHold {
     /// The first so many pages the register ever took.
     AnyOf(usize),
     /// The page it took last, on this path.
     One(u64),
+    /// The pages that the paths into a block bring, the first path first.
+    Several(Vec<u64>),
+}
+
+/// What each register holds where a branch leaves, to give to the code it
+/// reaches.
+#[derive(Clone)]
+struct PathState {
+    held: Vec<(Tracked, u64)>,
+    now: [Option<MayHold>; Tracked::COUNT],
 }
 
 impl PageRegisters {
@@ -611,8 +632,74 @@ impl PageRegisters {
         match &self.now[register.index()] {
             Some(MayHold::AnyOf(count)) => &self.ever[register.index()][..*count],
             Some(MayHold::One(page)) => core::slice::from_ref(page),
+            Some(MayHold::Several(pages)) => pages,
             None => &[],
         }
+    }
+
+    /// What the registers hold now, with `held`, to give to a branch.
+    fn leave(&self, held: &[(Tracked, u64)]) -> PathState {
+        PathState { held: held.to_vec(), now: self.now.clone() }
+    }
+
+    /// Take what the paths into a block bring, the first path first, and
+    /// give the addresses that they hold.
+    ///
+    /// After an end, a branch back or a jump through a table can reach the
+    /// block too, and neither brings what it holds. So a register that no
+    /// path brings a value in keeps what it held above, and may hold any
+    /// page it took, as [`Self::after_an_end`] says.
+    fn arrive(
+        &mut self,
+        paths: &[PathState],
+        above: &[(Tracked, u64)],
+        after_an_end: bool,
+    ) -> Vec<(Tracked, u64)> {
+        let mut held: Vec<(Tracked, u64)> = Vec::new();
+        for path in paths {
+            for entry in &path.held {
+                if !held.contains(entry) {
+                    held.push(*entry);
+                }
+            }
+        }
+        let brought = |register: usize| {
+            paths.iter().any(|path| {
+                path.now[register].is_some()
+                    || path.held.iter().any(|(held, _)| held.index() == register)
+            })
+        };
+        if after_an_end {
+            let kept: Vec<(Tracked, u64)> =
+                above.iter().filter(|(register, _)| !brought(register.index())).copied().collect();
+            held.extend(kept);
+        }
+        for register in 0..Tracked::COUNT {
+            let mut pages: Vec<u64> = Vec::new();
+            for path in paths {
+                let values = match &path.now[register] {
+                    Some(MayHold::AnyOf(count)) => &self.ever[register][..*count],
+                    Some(MayHold::One(page)) => core::slice::from_ref(page),
+                    Some(MayHold::Several(pages)) => pages.as_slice(),
+                    None => &[],
+                };
+                for &page in values {
+                    if !pages.contains(&page) {
+                        pages.push(page);
+                    }
+                }
+            }
+            let taken = self.ever[register].len();
+            self.now[register] = match pages.as_slice() {
+                [] if after_an_end && !brought(register) && taken > 0 => {
+                    Some(MayHold::AnyOf(taken))
+                }
+                [] => None,
+                [page] => Some(MayHold::One(*page)),
+                _ => Some(MayHold::Several(pages)),
+            };
+        }
+        held
     }
 
     /// `register` takes `page` from `adrp`.
@@ -763,6 +850,53 @@ mod tests {
         assert_eq!(pages.values(Tracked(8)), [0x1000, 0x2000]);
         pages.after_an_end();
         assert_eq!(pages.values(Tracked(9)), [0x3000, 0x4000]);
+    }
+
+    /// A write of `w24` ends the page that `x24` held, and code that only a
+    /// branch reaches finds the page that the branch left `x24` with, not
+    /// the first page `x24` ever took.
+    #[test]
+    fn a_branch_brings_the_page_its_path_holds() {
+        let words = [
+            0x9000_0098, // 0x1000 adrp x24, 0x11000
+            0xf940_3708, // 0x1004 ldr x8, [x24, #0x68]
+            0xd65f_03c0, // 0x1008 ret
+            0x9000_0118, // 0x100c adrp x24, 0x21000
+            0xb400_0080, // 0x1010 cbz x0, 0x1020
+            0x2a01_03f8, // 0x1014 mov w24, w1
+            0xf940_3708, // 0x1018 ldr x8, [x24, #0x68]
+            0xd65f_03c0, // 0x101c ret
+            0xf940_3709, // 0x1020 ldr x9, [x24, #0x68]
+            0xd65f_03c0, // 0x1024 ret
+        ];
+        let (insns, _) = decode_all(&Aarch64, &code(&words), 0x1000);
+        let space = AddressSpace::from_ranges(core::iter::once(0x1000..0x30000));
+        let formed = track_pages(&code(&words), &insns, &space).formed;
+        assert_eq!(formed[1], Some(0x11068));
+        assert_eq!(formed[6], None, "the write of w24 ends the page");
+        assert_eq!(formed[8], Some(0x21068), "the branch brings the second page");
+    }
+
+    /// Where no branch brings a register a value, code after an end still
+    /// guesses that it holds a page it took: a branch back, or a jump
+    /// through a table, can reach it.
+    #[test]
+    fn a_register_no_branch_brings_keeps_its_pages_after_an_end() {
+        let words = [
+            0x9000_0098, // 0x1000 adrp x24, 0x11000
+            0xb400_0060, // 0x1004 cbz x0, 0x1010
+            0xd65f_03c0, // 0x1008 ret
+            0xd65f_03c0, // 0x100c ret
+            0xf940_3708, // 0x1010 ldr x8, [x24, #0x68]
+            0xd65f_03c0, // 0x1014 ret
+            0xf940_3709, // 0x1018 ldr x9, [x24, #0x68]
+            0xd65f_03c0, // 0x101c ret
+        ];
+        let (insns, _) = decode_all(&Aarch64, &code(&words), 0x1000);
+        let space = AddressSpace::from_ranges(core::iter::once(0x1000..0x30000));
+        let formed = track_pages(&code(&words), &insns, &space).formed;
+        assert_eq!(formed[4], Some(0x11068), "the branch brings the page");
+        assert_eq!(formed[6], Some(0x11068), "no branch reaches it, so it guesses");
     }
 
     fn code(words: &[u32]) -> Vec<u8> {

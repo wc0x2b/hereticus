@@ -2528,6 +2528,27 @@ ranks of the published fixes moved. So none of these is in. To read the
 low half right, the tracker must know which block a branch reaches, and
 the value each path brings there, not the values of the whole region.
 
+`track_pages` now does that for each branch forward. At a branch it keeps
+what each register holds, and the code that the branch reaches takes the
+values that its paths bring, the path that runs down into it first. A
+write of `w24` then ends what `x24` held. Where no path brings a register
+a value, as where only a branch back or a jump through a table can bring
+one, code after an end still takes any page that the register took, and
+what it held above. Over the nine libgnutls updates, 30 rows that read as
+changed values now read as the same, and none goes the other way. One of
+them is `gnutls_dh_params_export2_pkcs3`, which read `"Discarded
+unexpected %s (%d) packet (exp..."` on one side and `"packet != NULL"`
+on the other, and now reads `"privateValueLength"` on both. Over the 177
+Ubuntu updates that the three tools read, the rows of `hereticus` went
+from 6160 to 5946, with each fix on the same row or an earlier one, and
+over the published fixes from 1405 to 1402. One pair of libssh for arm64
+went from right to wrong: in 0.9.6-2ubuntu0.22.04.1, the fix took most
+of `ssh_client_connection_callback` out into a new `dh_handshake`, and
+the old callback now pairs with `dh_handshake`, at 0.63 in place of
+0.43. On garbled Go for arm64, one start that was invented inside
+`internal/runtime/cgroup.(*lineReader).next` is gone, and with it the
+pair that it made.
+
 ### Functions of the library that never return
 
 8 of the 9 starts that the scan misses in the stripped releases follow a

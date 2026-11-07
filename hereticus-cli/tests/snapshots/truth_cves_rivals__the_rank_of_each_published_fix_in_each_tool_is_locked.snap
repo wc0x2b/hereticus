@@ -3,7 +3,7 @@ source: hereticus-cli/tests/truth_cves_rivals.rs
 expression: "format!(\"{totals}\\n{ranks}\")"
 ---
 tool                 fixes found first  top10    rows
-all hereticus           38    38    21     37    1405
+all hereticus           38    38    21     37    1402
 all radare2             38    10     4      4    6720
 all ghidra              38    23     6     22    4184
 
