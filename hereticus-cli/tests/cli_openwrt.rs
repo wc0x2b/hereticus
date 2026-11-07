@@ -192,6 +192,27 @@ fn slow_warns_about_a_mips_kernel_base_a_page_off() {
     assert!(stderr.contains("but at 18562 at 0x80002000"), "got {stderr}");
 }
 
+/// The two kernels are read at once, and the warning on each still comes
+/// in the order of the kernels.
+#[test]
+fn slow_warns_about_two_kernels_in_order() {
+    let kernels = [
+        "fixtures/build/openwrt/mipsbe-vr200-kernel-22.03.2.bin",
+        "fixtures/build/openwrt/mipsbe-vr200-kernel-22.03.5.bin",
+    ];
+    let output = hereticus()
+        .args(["--progress", "never", "--raw", "--base", "0x80003000", "--arch", "mips32-be"])
+        .args(kernels)
+        .output()
+        .expect("the tool runs");
+
+    let stderr = String::from_utf8(output.stderr).expect("the warning is text");
+    let [before, after] = kernels.map(|kernel| {
+        stderr.find(&format!("{kernel} may not load at")).expect("a warning on each kernel")
+    });
+    assert!(before < after, "got {stderr}");
+}
+
 /// Across a major version, data regions go as well as change. They are
 /// hidden with the changed ones, and `--show-data` lists each.
 #[test]

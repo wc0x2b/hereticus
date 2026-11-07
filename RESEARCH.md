@@ -3165,3 +3165,19 @@ so each of the 100,000 pairs counts its edits. The stage reads only which
 functions are free, so it now finds its pairs first and then assesses
 them all at once on every core. The comparison took 4.0 s, with the same
 report, byte for byte. The count by groups was not kept.
+
+### Reading a raw image in parallel
+
+The comparison of the raw MIPS kernels of the VR200, from OpenWrt 22.03.2
+and 22.03.5, took 4.5 s, and 2.7 s of it went before the first function
+was prepared, on one core. Samples of the stack, taken with `eu-stack`,
+put a third of that in the stack check of Go, which the MIPS kernel does
+not hold: for each word of the image, the check lifted the first
+instruction to read its operands, and only then read the opcodes. With
+the opcodes first, for MIPS and ARM32, the comparison took 3.5 s. Of
+what was left, the check of the base took about as long as the scan, and
+the CLI ran both, for each image, one after the other. Neither reads
+what the other finds, so the CLI now reads the two images at once and
+checks each base beside its scan, and prints the notes of each image in
+the order of the images. The comparison took 2.3 s, with the same report
+and the same warnings, byte for byte.

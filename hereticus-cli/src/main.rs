@@ -503,11 +503,17 @@ fn run(args: &Args) -> Result<bool, String> {
     }
     let (before_bytes, load) = unpack_part(before_file, args.unpack, before_path)?;
     let (after_bytes, _) = unpack_part(after_file, args.unpack, after_path)?;
-    let before = read_binary(args, &before_bytes, load, before_path, BaseCheck::Report)?;
     // Comparing a file with itself is a normal way to inspect one image,
     // and saying the same thing twice about it helps nobody.
     let after_check = if after_path == before_path { BaseCheck::Skip } else { BaseCheck::Report };
-    let after = read_binary(args, &after_bytes, load, after_path, after_check)?;
+    // A large raw image takes seconds to read, and the two do not depend on
+    // each other.
+    let (before, after) = std::thread::scope(|scope| {
+        let after = scope.spawn(|| read_binary(args, &after_bytes, load, after_path, after_check));
+        let before = read_binary(args, &before_bytes, load, before_path, BaseCheck::Report);
+        (before, joined(after))
+    });
+    let (before, after) = (before.report()?, after.report()?);
     warn_if_raw(args);
 
     if before.isa != after.isa {
@@ -625,36 +631,77 @@ fn warn_if_raw(args: &Args) {
 /// Read one binary for `--functions`, unpacked and raw as the arguments say.
 fn read_one(args: &Args, path: &Path) -> Result<Binary, String> {
     let (bytes, load) = unpack_part(read_file(path)?, args.unpack, path)?;
-    let binary = read_binary(args, &bytes, load, path, BaseCheck::Report)?;
+    let binary = read_binary(args, &bytes, load, path, BaseCheck::Report).report()?;
     warn_if_raw(args);
     Ok(binary)
 }
 
+/// A binary as read, and what reading it has to tell the reader.
+struct ReadBinary {
+    notes: Vec<String>,
+    binary: Result<Binary, String>,
+}
+
+impl ReadBinary {
+    fn from(binary: Result<Binary, String>) -> Self {
+        Self { notes: Vec::new(), binary }
+    }
+
+    /// Print the notes, then give the binary.
+    fn report(self) -> Result<Binary, String> {
+        for note in &self.notes {
+            eprintln!("{note}");
+        }
+        self.binary
+    }
+}
+
+/// The result of a thread, or the panic of the thread, raised again here.
+fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
 /// Read `bytes` as a binary, or as a raw image at the base the arguments or
 /// its container, `load`, give.
+///
+/// The notes wait in the result, so that the reads of two binaries at once
+/// print them in the order of the binaries.
 fn read_binary(
     args: &Args,
     bytes: &[u8],
     load: Option<u64>,
     path: &Path,
     check: BaseCheck,
-) -> Result<Binary, String> {
+) -> ReadBinary {
     if !args.raw {
-        return parse(bytes, path);
+        return ReadBinary::from(parse(bytes, path));
     }
     let isa: Isa = args.arch.into();
     let base = match (args.base, load) {
         (Some(Base::Address(base)), _) => base,
         // The base comes from the same evidence that the check reads, so
         // a check has nothing to add.
-        (Some(Base::Auto), _) => return parse_raw(bytes, found_base(bytes, isa, path)?, isa, path),
+        (Some(Base::Auto), _) => {
+            return match found_base(bytes, isa, path) {
+                Ok((base, note)) => {
+                    ReadBinary { notes: vec![note], binary: parse_raw(bytes, base, isa, path) }
+                }
+                Err(error) => ReadBinary::from(Err(error)),
+            };
+        }
         (None, Some(load)) => load,
-        (None, None) => return Err(missing_base(bytes, isa)),
+        (None, None) => return ReadBinary::from(Err(missing_base(bytes, isa))),
     };
-    if check == BaseCheck::Report {
-        check_and_report_base(bytes, base, isa, path);
-    }
-    parse_raw(bytes, base, isa, path)
+    // The check reads the image apart from the scan, and takes about as
+    // long on a raw kernel.
+    std::thread::scope(|scope| {
+        let note = scope.spawn(|| match check {
+            BaseCheck::Report => base_warning(bytes, base, isa, path),
+            BaseCheck::Skip => None,
+        });
+        let binary = parse_raw(bytes, base, isa, path);
+        ReadBinary { notes: joined(note).into_iter().collect(), binary }
+    })
 }
 
 fn read_file(path: &Path) -> Result<Vec<u8>, String> {
@@ -670,9 +717,9 @@ fn parse_raw(data: &[u8], base: u64, isa: Isa, path: &Path) -> Result<Binary, St
         .map_err(|error| format!("cannot read {}: {error}", path.display()))
 }
 
-/// The base that the words of an image show, for `--base auto`, or why
-/// there is none.
-fn found_base(data: &[u8], isa: Isa, path: &Path) -> Result<u64, String> {
+/// The base that the words of an image show, for `--base auto`, and the
+/// note that says so, or why there is none.
+fn found_base(data: &[u8], isa: Isa, path: &Path) -> Result<(u64, String), String> {
     let base = suggest_base(data, isa.arch()).ok_or_else(|| {
         format!(
             "--base auto finds no base that stands out in {}. See what --find-base lists, \
@@ -680,11 +727,11 @@ fn found_base(data: &[u8], isa: Isa, path: &Path) -> Result<u64, String> {
             path.display()
         )
     })?;
-    eprintln!(
+    let note = format!(
         "hereticus: {} loads at {base:#x}, as the words that point into it show",
         path.display()
     );
-    Ok(base)
+    Ok((base, note))
 }
 
 /// Say that `--raw` needs `--base`, and suggest one when the image shows it.
@@ -703,17 +750,16 @@ fn missing_base(data: &[u8], isa: Isa) -> String {
     }
 }
 
-/// Warn when the given load address looks wrong for an image.
+/// The warning to give when the load address looks wrong for an image.
 ///
 /// A wrong base does not stop anything: the code still decodes and every
 /// branch still resolves, because a relative branch moves with the base it is
 /// read at. Only the reported addresses are wrong, and silently so. This is
 /// the one chance to notice.
-fn check_and_report_base(data: &[u8], base: u64, isa: Isa, path: &Path) {
+fn base_warning(data: &[u8], base: u64, isa: Isa, path: &Path) -> Option<String> {
     let fit = check_base(data, base, isa.arch());
-    if fit.is_suspect() {
-        eprintln!("hereticus: {} may not load at {base:#x}: {fit}", path.display());
-    }
+    fit.is_suspect()
+        .then(|| format!("hereticus: {} may not load at {base:#x}: {fit}", path.display()))
 }
 
 /// Name a function, falling back to its address when it has no symbol.

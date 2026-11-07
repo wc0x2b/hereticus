@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pairs of identical shape, on every core. The comparison of two iPhone
   kernels of 50 MB, for CVE-2021-30883, took 4.0 s in place of 13.8 s on a
   machine of 16 threads, with the same report.
+- A raw image is read faster. The two images of a comparison are read at
+  once, the check of the base runs beside the scan, and the scan reads the
+  opcodes of a word before it lifts the word to look for the stack check
+  of Go. The comparison of the raw MIPS kernels of the TP-Link VR200, from
+  OpenWrt 22.03.2 and 22.03.5, took 2.3 s in place of 4.5 s.
 
 ### Fixed
 
