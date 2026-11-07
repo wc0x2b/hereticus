@@ -48,10 +48,10 @@ the limits, every option, and the crates.
 All patches/merge requests are welcome!
 
 ```
-just quick-test     # about a minute
+just quick-test     # about two minutes
 just test           # the same, plus the slow and the `truth_*` tests
 just test-research  # the measurements of RESEARCH.md, which no test runs
-just fixtures       # rebuild the ARM32, MIPS, Mach-O, PE and garbled Go corpus
+just fixtures       # rebuild the ELF, Mach-O, PE and garbled Go corpus
 ```
 
 ## License

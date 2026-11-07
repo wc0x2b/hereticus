@@ -57,9 +57,11 @@ The `TOUCHED` column counts the edits of each kind:
 - `jump`: a jump that is not a call.
 - `mem`: a load or a store.
 - `const`: a constant that changed.
-- `text`: a text that the code points to, and that changed. A text counts
-  when it holds four or more printable bytes after a NUL, because a
-  shorter one can be a pointer or a number by chance.
+- `text`: a text that the code points to, and that changed. A text
+  starts after a NUL or at the start of read-only data, and holds two or
+  more printable bytes. A text of fewer than four bytes counts only where
+  another text follows it, as in the pool that a compiler packs strings
+  into, because alone it can be a pointer or a number by chance.
 - `unread`: bytes that the decoder cannot read.
 
 Plain data instructions are left out, because they are the bulk of any

@@ -50,6 +50,9 @@ The base that you gave looks wrong. The rest of the message tells why:
 - `<count> words look like addresses, but none point into the image at
   this base`: the image holds a table of pointers, and no pointer fits
   this base.
+- `words point at <count> strings and functions at this base, but at
+  <count> at <address>`: the words of the image point at the starts of
+  more texts and functions at another base.
 - `<count> of <count> calls land on a function start at this base, but
   <count> do at <address>`: another base fits the calls better.
 

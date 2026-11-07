@@ -150,6 +150,7 @@ together, and the project opens from any directory.
 |-----|-------------|-------------|
 | `j` / `k` | down / up | down / up |
 | `PgDn` / `PgUp` | a page down / up | a page down / up |
+| `Space` | | a page down |
 | `g` / `G` | first / last | top / bottom |
 | `Enter` | open the diff | |
 | `s` / `S` | next order / reverse the order | |
@@ -161,11 +162,12 @@ together, and the project opens from any directory.
 | `v` | | assembly or IL |
 | `l` | | side by side or one column |
 | `n` / `p` | | next / previous function |
-| `Esc` | | back to the list |
+| `Esc` or `Backspace` | | back to the list |
 | `m` / `M` | mark or unmark / label | mark or unmark / label |
 | `w` | save the project | save the project |
 | `?` | this help | this help |
 | `q` | quit, after a question | quit, after a question |
+| `Ctrl-C` | quit at once | quit at once |
 
 The mouse wheel scrolls, and a click selects a row.
 

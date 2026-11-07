@@ -1,7 +1,7 @@
 fixtures_image := "hereticus-fixtures"
 
-# Compile the ARM32 and MIPS test fixtures, and build the Go fixture with
-# garble. Tests that read them depend on this recipe. The build runs in a container, because the tests compare exact
+# Compile the test fixtures for each architecture, as ELF, Mach-O and PE,
+# and build the Go fixtures with garble. Tests that read them depend on this recipe. The build runs in a container, because the tests compare exact
 # machine code and thus need the same compiler on every machine.
 fixtures:
     docker build --quiet --tag {{fixtures_image}} fixtures
@@ -21,7 +21,7 @@ backports: fixtures
         --workdir /work \
         {{fixtures_image}} ./fixtures/backports.sh
 
-# Download two OpenWrt releases for three boards, and extract the code the
+# Download the OpenWrt releases of six boards, and extract the code the
 # tests compare. Each file is pinned by its SHA-256, and a second run reads the
 # cached downloads instead of the network.
 firmware:
