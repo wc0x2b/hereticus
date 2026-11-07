@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The comparison prepares the functions of each binary on every core. The
+  comparison of two iPhone kernels of 50 MB, for CVE-2021-30883, took 5.4 s
+  in place of 13.8 s on a machine of 16 threads, with the same report.
+
 ### Fixed
 
 - In a raw image of MIPS32 or A32 code, a function that only a table of

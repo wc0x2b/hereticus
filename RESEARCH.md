@@ -3141,3 +3141,18 @@ across the upgrade, as `msi_get_domain_info` with `io_wq_get_task` and
 `truth_kernel_rivals.rs` counts 1692 wrong pairs on that board with the
 fix and 1747 without, as it calls a renamed function wrong, and the fix
 pairs more of those right. No trait sets the new wrong pairs apart.
+
+### Preparing the functions in parallel
+
+The comparison of the two iPhone kernels of CVE-2021-30883, 114,844
+functions each, took 13.8 s on a machine of 16 threads, and preparing the
+functions of each side took 5.0 s of it, one function after another,
+because they share the interner of their normalized instructions. The
+work of each function is its own, so it now runs on every core, and the
+interning runs after it, in the order of the functions, so each symbol is
+the one a run on one thread gives. Preparing took 0.75 s for each side,
+and the comparison 5.4 s, with the same report, byte for byte. The stage
+of identical shape now takes the most, 1.8 s: its largest group holds
+7,852 functions of one shape, and each looks through the others of its
+group. Numbering what each function refers to once, in place of building
+the list of its callees for each two twins, took 0.1 s off it.

@@ -27,7 +27,7 @@ use super::score::{
 };
 use super::{
     Changed, Confidence, Diff, EditKinds, Edits, LOWEST_JOINED_SIMILARITY, Match, Options, Phase,
-    Prepared, Progress, Symbol, UseNames, same_detail,
+    Prepared, Progress, Referents, Symbol, UseNames, same_detail,
 };
 use crate::norm::FlowShape;
 use hereticus_recovery::arch::decode_all;
@@ -1657,6 +1657,7 @@ impl Cascade<'_> {
         // own shape: the iPhone kernel holds 114,844 functions, and to look
         // through all of them for each took 20 seconds.
         let (left_by_shape, right_by_shape) = (by_shape(&self.left), by_shape(&self.right));
+        let ids = referent_ids(&self.left, &self.right);
         for index in 0..self.left.len() {
             progress.advance(1);
             // An empty body carries no evidence, so pairing on it would be a
@@ -1700,19 +1701,19 @@ impl Cascade<'_> {
             // on the other side would decide: expat for ARM points into a
             // table of short strings at an offset that changes each release.
             if candidates.len() > 1 {
-                let referents = self.left[index].referents();
+                let referents = ids.left[index];
                 let shared = left_twins.iter().any(|&other| {
                     other != index
                         && self.left_free[other]
                         && self.left[other].ordered == self.left[index].ordered
-                        && self.left[other].referents() == referents
+                        && ids.left[other] == referents
                 });
                 // A twin whose texts were edited agrees with none, and then
                 // they say nothing.
                 let agreeing: Vec<usize> = candidates
                     .iter()
                     .copied()
-                    .filter(|&other| self.right[other].referents() == referents)
+                    .filter(|&other| ids.right[other] == referents)
                     .collect();
                 if !shared && !agreeing.is_empty() {
                     candidates = agreeing;
@@ -1720,7 +1721,7 @@ impl Cascade<'_> {
             }
 
             if let [only] = candidates[..]
-                && !self.has_free_twin_for(index, only, left_twins)
+                && !self.has_free_twin_for(index, only, left_twins, &ids)
             {
                 self.take_pair(index, only, Confidence::IdenticalShape, 1.0);
             }
@@ -1739,12 +1740,18 @@ impl Cascade<'_> {
     /// and 41 fewer wrong over the OpenWrt kernels, 23 more right and 30
     /// fewer wrong over the backports built two ways, and 28 more right and
     /// 22 fewer wrong over the Ubuntu updates.
-    fn has_free_twin_for(&self, before: usize, after: usize, twins: &[usize]) -> bool {
-        let referents = self.right[after].referents();
+    fn has_free_twin_for(
+        &self,
+        before: usize,
+        after: usize,
+        twins: &[usize],
+        ids: &ReferentIds,
+    ) -> bool {
+        let referents = ids.right[after];
         // The same tests that narrow the candidates of `before`, the other
         // way: a twin of another name, or that refers to other things where
         // `before` agrees with `after`, is no rival.
-        let told_apart_by_referents = self.left[before].referents() == referents;
+        let told_apart_by_referents = ids.left[before] == referents;
         let named_alike = self.options.use_names == UseNames::Yes
             && !self.left[before].function.name.is_empty()
             && self.left[before].function.name == self.right[after].function.name;
@@ -1753,7 +1760,7 @@ impl Cascade<'_> {
                 other != before
                     && self.left_free[other]
                     && self.left[other].ordered == self.left[before].ordered
-                    && !(told_apart_by_referents && self.left[other].referents() != referents)
+                    && !(told_apart_by_referents && ids.left[other] != referents)
             })
     }
 
@@ -2402,6 +2409,28 @@ fn shape_key(ordered: &[Symbol]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     ordered.hash(&mut hasher);
     hasher.finish()
+}
+
+/// What each function of both sides refers to, as a number: two functions
+/// refer to the same things where their numbers are equal.
+///
+/// The shape stage asks this of each two twins of a group, and a kernel
+/// holds groups of hundreds of twins, as stubs that only return; building
+/// the callees anew for each took most of the stage.
+struct ReferentIds {
+    left: Vec<u32>,
+    right: Vec<u32>,
+}
+
+fn referent_ids<'a>(left: &'a [Prepared<'_>], right: &'a [Prepared<'_>]) -> ReferentIds {
+    let mut ids: HashMap<Referents<'a>, u32> = HashMap::new();
+    let mut id_of = |prepared: &'a Prepared<'_>| {
+        let next = u32::try_from(ids.len()).expect("fewer referents than functions");
+        *ids.entry(prepared.referents()).or_insert(next)
+    };
+    let left = left.iter().map(&mut id_of).collect();
+    let right = right.iter().map(&mut id_of).collect();
+    ReferentIds { left, right }
 }
 
 /// The functions of `side` by [`shape_key`], each list in the order of

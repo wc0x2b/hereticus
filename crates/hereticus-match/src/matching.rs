@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 
 use hereticus_memory::{AddressSpace, Contents};
+use rayon::prelude::*;
 
 use crate::norm::{
     FlowShape, NormInsn, OperandShape, constant_signature, flow_features,
@@ -806,9 +807,12 @@ fn prepare<'a>(
             .map(|(index, function)| (function.name.as_str(), index))
             .collect(),
     };
-    binary
+    // The work of each function is its own, so it runs in parallel; only
+    // the interning shares state, and runs after, in the order of the
+    // functions, so each symbol is the same as in a run on one thread.
+    let mut prepared: Vec<Prepared<'a>> = binary
         .functions
-        .iter()
+        .par_iter()
         .map(|function| {
             progress.advance(1);
             let isa = binary.isa_of(function);
@@ -866,9 +870,6 @@ fn prepare<'a>(
                 found.iter().filter(|&&(_, sure)| sure).map(|&(text, _)| text).collect();
 
             let constants: Vec<u64> = constant_signature(&body).into_iter().collect();
-            let ordered: Vec<Symbol> = body.iter().map(|insn| interner.intern(insn)).collect();
-            let mut symbols = ordered.clone();
-            symbols.sort_unstable();
 
             // Only a stub is named `free@plt`: by its slot, or on MIPS by
             // the symbol its lazy binding stub resolves.
@@ -878,8 +879,8 @@ fn prepare<'a>(
                 .or_else(|| function.name.strip_suffix("@plt"));
             Prepared {
                 function,
-                symbols,
-                ordered,
+                symbols: Vec::new(),
+                ordered: Vec::new(),
                 isa,
                 addresses: &binary.addresses,
                 contents,
@@ -895,7 +896,13 @@ fn prepare<'a>(
                 stub_of,
             }
         })
-        .collect()
+        .collect();
+    for function in &mut prepared {
+        function.ordered = function.body.iter().map(|insn| interner.intern(insn)).collect();
+        function.symbols = function.ordered.clone();
+        function.symbols.sort_unstable();
+    }
+    prepared
 }
 
 /// The steps of a comparison, in the order they run.
