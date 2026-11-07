@@ -676,14 +676,20 @@ impl Cascade<'_> {
         let partner: HashMap<usize, usize> =
             self.matched.iter().map(|pair| (pair.before, pair.after)).collect();
         let (left_rows, left_classes) = (&self.left_rows, &self.left_classes);
-        let left_keys = unique_reference_holders(&self.left, left_rows, left_classes, &|callee| {
-            partner.get(&callee).copied()
-        });
         let (right_rows, right_classes) = (&self.right_rows, &self.right_classes);
-        let right_keys =
-            unique_reference_holders(&self.right, right_rows, right_classes, &|callee| {
-                self.right_free.get(callee).is_some_and(|free| !free).then_some(callee)
-            });
+        let right_free = &self.right_free;
+        let (left_keys, right_keys) = rayon::join(
+            || {
+                unique_reference_holders(&self.left, left_rows, left_classes, &|callee| {
+                    partner.get(&callee).copied()
+                })
+            },
+            || {
+                unique_reference_holders(&self.right, right_rows, right_classes, &|callee| {
+                    right_free.get(callee).is_some_and(|free| !free).then_some(callee)
+                })
+            },
+        );
         let mut shared: HashMap<(usize, usize), usize> = HashMap::new();
         for (key, &x) in &left_keys {
             if let Some(&y) = right_keys.get(key) {
@@ -695,8 +701,22 @@ impl Cascade<'_> {
         // (shared references, score, x, y): most shared first, then the
         // best code, then the index, so the order does not depend on the
         // map.
-        let mut candidates: Vec<(usize, f64, usize, usize)> = shared
+        // A pair that no stage breaks is skipped below whatever it scores,
+        // and in a large image it is most of them.
+        let unbroken: HashSet<(usize, usize)> = self
+            .matched
             .iter()
+            .filter(|pair| {
+                matches!(
+                    pair.confidence,
+                    Confidence::IdenticalCode | Confidence::IdenticalShape | Confidence::SameName
+                )
+            })
+            .map(|pair| (pair.before, pair.after))
+            .collect();
+        let mut candidates: Vec<(usize, f64, usize, usize)> = shared
+            .par_iter()
+            .filter(|(pair, _)| !unbroken.contains(pair))
             .map(|(&(x, y), &count)| {
                 (count, similarity_of_symbols(&self.left[x].symbols, &self.right[y].symbols), x, y)
             })

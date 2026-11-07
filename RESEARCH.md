@@ -3201,3 +3201,11 @@ can be no more than the size of the smaller over the size of the larger.
 A pair whose sizes alone hold it below both bars of the stage now gets
 no score, and the stage took 0.51 s, with the same report, byte for
 byte. No other stage of the comparison then took more than 0.11 s.
+
+On the iPhone kernels the stage of scores took 1.45 s, and the search for
+pairs by unique references 0.55 s of it, in two calls. Each round of it
+found the holders of each reference on one side and then the other, and
+scored every two functions that alone share one, though most of them are
+pairs by identical code, shape or name, which nothing breaks. The two
+sides are now read at once, and those pairs get no score. The stage took
+1.19 s, and the comparison 3.85 s, with the same report, byte for byte.

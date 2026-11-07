@@ -459,7 +459,7 @@ pub(super) fn unique_reference_holders<'a>(
     side: &'a [Prepared<'_>],
     rows: &'a [Vec<RowText<'a>>],
     classes: &'a [Vec<VirtualSlot<'a>>],
-    paired: &dyn Fn(usize) -> Option<usize>,
+    paired: &(dyn Fn(usize) -> Option<usize> + Sync),
 ) -> HashMap<UniqueReference<'a>, usize> {
     let mut holders: HashMap<UniqueReference<'a>, Option<usize>> = HashMap::new();
     for (index, prepared) in side.iter().enumerate() {
