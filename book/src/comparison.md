@@ -311,19 +311,6 @@ The tests above find these weak points of `hereticus`:
   release, Ghidra shows the fix of tinyxml2 and of Lua earlier than
   `hereticus` does, and the fix of Lua is far down the report of each
   tool, as [Pairs Built Two Ways](#pairs-built-two-ways) says.
-- **Binaries with no names.** Before the tests read libraries with no
-  names, `hereticus` read such Thumb-2 code as A32 code, and took a PLT
-  stub whose slot holds a relocated address for its callee, as
-  [Libraries With No Names](#libraries-with-no-names) says. Both are
-  fixed. Other kinds of binary that the tests do not read can have errors
-  of the same kind.
-- **Functions joined in a raw kernel.** In 22.03.2, nothing calls
-  `tcp_v4_early_demux`, and it starts right after a branch back into
-  `tcp_v4_get_syncookie`, so the scan made one function of the two, and
-  most of the kernel pairs that Ghidra had right and `hereticus` wrong
-  came from such joined functions. A run of words that point into the code
-  now names the starts of functions, where at least half of its targets
-  start one already and each new start follows the end of a function.
 
 ## Time
 
