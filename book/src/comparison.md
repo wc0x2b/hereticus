@@ -1,7 +1,7 @@
 # Comparison With Other Tools
 
 Tests compare `hereticus` with radiff2 of radare2 6.2.4 and with Ghidra
-12.1.4 Version Tracking. All three tools read the same
+12.2 Version Tracking. All three tools read the same
 64<!-- from rivals_radare2: hereticus / builds --> pairs of stripped libraries. Each pair
 is one release of zlib, Lua, tinyxml2 or smallvec, before and after one
 upstream fix, for ARM, Thumb-2, AArch64, MIPS, x86-64, i686 or PowerPC.
