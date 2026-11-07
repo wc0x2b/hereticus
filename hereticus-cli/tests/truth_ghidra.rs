@@ -18,25 +18,27 @@
 
 mod rivals;
 
-use rivals::Rival;
+use rivals::{Contender, Ranks, Rival, Setup};
+
+const GHIDRA: Contender = Contender { rival: Rival::Ghidra, setup: Setup::Default };
 
 #[test]
 fn hereticus_does_no_worse_than_ghidra() {
-    let contests = rivals::contests(Rival::Ghidra);
-    let losses = rivals::losses(&contests);
+    let contests = rivals::contests(GHIDRA);
+    let losses = rivals::losses(&contests, Ranks::Checked);
     assert!(losses.is_empty(), "hereticus does worse than Ghidra:\n{}", losses.join("\n"));
 }
 
 #[test]
 fn the_scores_against_ghidra_are_locked() {
-    let contests = rivals::contests(Rival::Ghidra);
-    insta::assert_snapshot!(rivals::table(Rival::Ghidra, &contests));
+    let contests = rivals::contests(GHIDRA);
+    insta::assert_snapshot!(rivals::table(GHIDRA, &contests));
 }
 
 #[test]
 fn hereticus_takes_less_time_than_ghidra() {
-    let contests = rivals::contests(Rival::Ghidra);
-    let table = rivals::times(Rival::Ghidra, &contests);
+    let contests = rivals::contests(GHIDRA);
+    let table = rivals::times(GHIDRA, &contests);
     println!("{table}");
     let ours: f64 = contests.iter().map(|contest| contest.hereticus_seconds).sum();
     let theirs: f64 = contests.iter().map(|contest| contest.rival_seconds).sum();

@@ -1,0 +1,44 @@
+---
+source: hereticus-cli/tests/truth_ghidra_deeper.rs
+expression: "rivals::table(GHIDRA, &contests)"
+---
+tool             builds found first   rows extras
+hereticus            35    35    20     85      0
+ghidra-deeper        35    33    17    613    528
+
+build                            rank:hereticus     rank:ghidra-deeper         rows:hereticus     rows:ghidra-deeper       extras:hereticus   extras:ghidra-deeper
+zlib-arm-O2                                   1                      1                      1                      4                      0                      3
+zlib-arm-gcc-O2                               1                      1                      1                      4                      0                      3
+zlib-thumb-O2                                 1                      1                      1                      6                      0                      5
+zlib-thumb-gcc-O2                             1                      1                      1                      7                      0                      6
+zlib-aarch64-O2                               1                      1                      1                      6                      0                      5
+zlib-aarch64-gcc-O2                           1                      1                      1                     13                      0                     12
+zlib-mips-O2                                  1                      -                      1                      1                      0                      1
+zlib-mips-gcc-O2                              1                      1                      1                      2                      0                      1
+zlib-mipsel-O2                                1                      -                      1                      1                      0                      1
+zlib-mipsel-gcc-O2                            1                      1                      1                      2                      0                      1
+lua-arm-O2                                    4                      3                      5                     10                      0                      5
+lua-arm-gcc-O2                                2                      2                      3                      8                      0                      5
+lua-thumb-O2                                  4                      3                      5                     16                      0                     11
+lua-thumb-gcc-O2                              2                      2                      3                     13                      0                     10
+lua-aarch64-O2                                4                      2                      5                     15                      0                     11
+lua-aarch64-gcc-O2                            2                      2                      2                     44                      0                     41
+lua-mips-O2                                   4                      3                      4                      6                      0                      1
+lua-mips-gcc-O2                               2                      2                      2                     10                      0                      8
+lua-mipsel-O2                                 4                      3                      4                      6                      0                      1
+lua-mipsel-gcc-O2                             2                      2                      2                     10                      0                      8
+tinyxml2-arm-O2                               1                      1                      1                     36                      0                     35
+tinyxml2-arm-gcc-O2                           1                      1                      1                     36                      0                     35
+tinyxml2-thumb-O2                             1                      1                      1                     41                      0                     40
+tinyxml2-thumb-gcc-O2                         1                      1                      1                     43                      0                     42
+tinyxml2-aarch64-O2                           1                      1                      1                     36                      0                     35
+tinyxml2-aarch64-gcc-O2                       1                      2                      1                     59                      0                     58
+tinyxml2-mips-O2                              1                      1                      1                     33                      0                     32
+tinyxml2-mips-gcc-O2                          1                      1                      1                     33                      0                     32
+tinyxml2-mipsel-O2                            1                      1                      1                     33                      0                     32
+tinyxml2-mipsel-gcc-O2                        1                      1                      1                     33                      0                     32
+smallvec-arm-O2                               6                      6                      6                      8                      0                      2
+smallvec-thumb-O2                             6                      6                      6                      8                      0                      2
+smallvec-aarch64-O2                           6                      6                      6                      8                      0                      2
+smallvec-mips-O2                              6                      6                      6                     13                      0                      7
+smallvec-mipsel-O2                            6                      6                      6                      9                      0                      3

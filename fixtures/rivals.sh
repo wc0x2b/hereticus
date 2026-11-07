@@ -3,11 +3,19 @@
 # reports. Run by `just rivals` and `just rivals-ghidra`, in the image of
 # fixtures/rivals/Dockerfile.
 #
-# Usage: rivals.sh radare2|ghidra
+# Usage: rivals.sh radare2|ghidra [default|deeper|unnamed]
+#
+# The setup says how the tool runs, and on what:
+#
+#   default  its default analysis, on lib-stripped.so
+#   deeper   its deepest analysis: `radiff2 -AA`, or Ghidra with the
+#            correlators that Auto Version Tracking leaves out
+#   unnamed  its default analysis, on a copy of lib-stripped.so with no
+#            symbol that the library defines, as rivals/unname.py writes
 #
 # For each build of fixtures/rivals/builds.txt this writes
-# build/rivals/<tool>/<project>-<arch>-<level>.json, which holds the rows the
-# tool reports, the lowest score first:
+# build/rivals/<tool>[-<setup>]/<project>-<arch>-<level>.json, which holds the
+# rows the tool reports, the lowest score first:
 #
 #   {"seconds": 0.14, "rows": [{"before": 1234, "after": 1250, "score": 0.82}, ...]}
 #
@@ -15,14 +23,42 @@
 # analysis to the report.
 # A row with no "after" is a function that is gone, and a row with no
 # "before" is a new function. An address is where the file links the
-# function. hereticus-cli/tests/rivals.rs reads these files.
+# function. hereticus-cli/tests/rivals/mod.rs reads these files, and the
+# unnamed copies in build/rivals/unnamed/<project>-<arch>-<level>/.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-tool="${1:?usage: rivals.sh radare2|ghidra}"
+tool="${1:?usage: rivals.sh radare2|ghidra [default|deeper|unnamed]}"
+setup="${2:-default}"
 backports="$here/build/backports"
-out="$here/build/rivals/$tool"
+unnamed="$here/build/rivals/unnamed"
 builds="$here/rivals/builds.txt"
+case "$setup" in
+    default) out="$here/build/rivals/$tool" ;;
+    deeper | unnamed) out="$here/build/rivals/$tool-$setup" ;;
+    *) echo "rivals: unknown setup $setup" >&2; exit 2 ;;
+esac
+
+# The library of one side of a build, as the setup gives it to the tool.
+library() {
+    local name="$1" project="$2" arch="$3" level="$4" variant="$5"
+    case "$setup" in
+        unnamed) echo "$unnamed/$name/$variant.so" ;;
+        *) echo "$backports/$project-$variant/$arch-$level/lib-stripped.so" ;;
+    esac
+}
+
+# The unnamed copies take less than a second, so each run writes them again.
+# A move puts each one in place whole, as another run can read it.
+grep -v '^#' "$builds" | while read -r project arch level; do
+    mkdir -p "$unnamed/$project-$arch-$level"
+    for variant in before after; do
+        copy="$unnamed/$project-$arch-$level/$variant.so"
+        python3 "$here/rivals/unname.py" \
+            "$backports/$project-$variant/$arch-$level/lib-stripped.so" "$copy.$$"
+        mv "$copy.$$" "$copy"
+    done
+done
 
 case "$tool" in
     radare2) version="$(radiff2 -v | head -n 1)" ;;
@@ -37,10 +73,10 @@ inputs_hash="$(
     {
         cat "$here/rivals.sh" "$builds" "$here/rivals/Dockerfile" \
             "$here/rivals/HereticusVersionTracking.java" "$here/rivals/rows.py"
-        echo "$version"
+        echo "$version $setup"
         grep -v '^#' "$builds" | while read -r project arch level; do
             for variant in before after; do
-                cat "$backports/$project-$variant/$arch-$level/lib-stripped.so"
+                cat "$(library "$project-$arch-$level" "$project" "$arch" "$level" "$variant")"
             done
         done
     } | sha256sum | cut -d' ' -f1
@@ -56,17 +92,22 @@ mkdir -p "$out"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# radiff2 with the analysis of `aaa`, as its manual shows for a code diff.
+# radiff2 with the analysis of `aaa`, as its manual shows for a code diff, or
+# with the analysis of `aaaa` for the deeper setup.
 run_radare2() {
     local before="$1" after="$2" report="$3"
-    radiff2 -A -C -j "$before" "$after" 2>/dev/null >"$report"
+    local analysis=-A
+    [ "$setup" = deeper ] && analysis=-AA
+    radiff2 "$analysis" -C -j "$before" "$after" 2>/dev/null >"$report"
 }
 
 # Ghidra analyses each program with its default analyzers, and then Auto
-# Version Tracking pairs them.
+# Version Tracking pairs them. The deeper setup then runs more correlators.
 run_ghidra() {
     local before="$1" after="$2" report="$3"
     local project="$work/ghidra"
+    local correlators=default
+    [ "$setup" = deeper ] && correlators=deeper
     rm -rf "$project"
     mkdir -p "$project"
     cp "$before" "$work/before.so"
@@ -77,7 +118,7 @@ run_ghidra() {
         || { cat "$work/ghidra-import.log" >&2; return 1; }
     "$headless" "$project" rivals -process after.so -noanalysis \
         -scriptPath "$here/rivals" \
-        -postScript HereticusVersionTracking.java before.so "$report" \
+        -postScript HereticusVersionTracking.java before.so "$report" "$correlators" \
         >"$work/ghidra-vt.log" 2>&1 \
         || { cat "$work/ghidra-vt.log" >&2; return 1; }
     # The headless analyzer exits with zero when a script throws.
@@ -86,12 +127,12 @@ run_ghidra() {
 
 grep -v '^#' "$builds" | while read -r project arch level; do
     name="$project-$arch-$level"
-    echo "rivals: $tool $name"
+    echo "rivals: $tool $setup $name"
     rm -f "$work/report.json"
     start="$(date +%s.%N)"
     "run_$tool" \
-        "$backports/$project-before/$arch-$level/lib-stripped.so" \
-        "$backports/$project-after/$arch-$level/lib-stripped.so" \
+        "$(library "$name" "$project" "$arch" "$level" before)" \
+        "$(library "$name" "$project" "$arch" "$level" after)" \
         "$work/report.json"
     end="$(date +%s.%N)"
     python3 "$here/rivals/rows.py" "$tool" "$work/report.json" "$out/$name.json" \

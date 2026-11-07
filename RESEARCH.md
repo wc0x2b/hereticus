@@ -2832,3 +2832,76 @@ Of the 48,527 changed lines of Assemblage, 16,241 only name another build
 directory in a path, as `&"/tmp/deephistory-473fca52b4de/projects/..."`:
 the builds of Assemblage each ran in a directory of their own. The rest
 change a constant, a text, an offset of a field, or the size of a frame.
+
+### The other tools in more setups, and on kernels
+
+The comparison of `book/src/comparison.md` ran radiff2 and Ghidra only
+with their default settings, on libraries that keep the names of their
+exports, and on no kernel pair. Three more comparisons now run, and their
+tests lock the numbers: `rivals_radare2_deeper.rs`,
+`rivals_radare2_unnamed.rs`, `truth_ghidra_deeper.rs`,
+`truth_ghidra_unnamed.rs` and `truth_kernel_rivals.rs`.
+
+On the 35 backport pairs, as the reader finds each fix:
+
+| Tool and setup | Found | Row 1 | Rows | Rows the fix did not touch |
+|---|---|---|---|---|
+| hereticus, with names or not | 35 | 20 | 85 | 0 |
+| radiff2 `-A` | 20 | 9 | 2457 | 2418 |
+| radiff2 `-AA` | 31 | 7 | 4049 | 3923 |
+| radiff2 `-A`, no names | 0 | 0 | 17 | 12 |
+| Ghidra, Auto Version Tracking | 33 | 18 | 759 | 629 |
+| Ghidra, and BSim, mnemonics and combined references | 33 | 17 | 613 | 528 |
+| Ghidra, no names | 29 | 12 | 1381 | 1258 |
+
+With more correlators, Ghidra puts the Lua fix one or two rows before
+`hereticus` on five builds. A reference correlator gives `luaZ_read`,
+which changes with the fix, a score of 1, so Ghidra lists it last, and
+`luaZ_init` of the fix comes up. `hereticus` ranks `luaZ_read` higher, as
+more of its code changed. The test of that setup does not check the rank.
+
+The copies with no names first showed an error of `hereticus`: on the
+seven Thumb-2 pairs, it read the code as A32, as a library has no entry
+point and the vote of the symbols had no symbols. It missed three fixes
+and showed 350 rows that the fix did not touch. The addresses of
+functions that the relocations store keep bit 0: on the Lua build at
+`-O2`, 131 of 131 are odd for Thumb-2 and 131 of 131 even for A32. A vote
+of these addresses fixed all seven. At first `unname.py` left the
+relocations that named a removed symbol pointing at the null symbol, and
+tinyxml2 then had no relocated function address. A linker writes a
+relative relocation for a symbol that it does not export, so `unname.py`
+now does too.
+
+With no names, `radiff2 -C` lists the entry point, or one or two other
+functions of a pair, though `aaa` on the same file finds 92 functions of
+zlib for ARM.
+
+On the raw kernels of 22.03.2 and 22.03.5 for six boards, each pair is
+judged by the symbols that start at its two starts:
+
+| Tool | Pairs | Judged | Right | Wrong |
+|---|---|---|---|---|
+| hereticus | 134021 | 132165 | 131896 | 269 (0.20%) |
+| radiff2 | 17792 | 14138 | 13582 | 556 (3.93%) |
+| Ghidra | 93202 | 91119 | 91003 | 116 (0.13%) |
+
+radiff2 reads a raw image at zero, so each kernel goes to it in an ELF
+file with one segment at its base. With `-A`, `-AA` or
+`anal.in=io.maps.x`, it reads the kernel as one function. Only
+`anal.hasnext=true` splits it: radare2 then finds 20103 functions of the
+MT300N v2 kernel, where `aaa` alone finds 10736 and the symbols name
+20988. radiff2 took 27 s to 107 s for each pair, and Ghidra about 14
+minutes, three at once.
+
+Ghidra makes fewer wrong pairs than `hereticus` on the kernels, but 40,893
+fewer right ones. Of the 269 functions that `hereticus` pairs wrong,
+Ghidra pairs 14 right, 32 wrong, and leaves 223. The 14 include
+`tcp_v4_get_syncookie`, which `hereticus` pairs with `tcp_v4_early_demux`
+on each MIPS board, and `phy_probe`, which it pairs with
+`genphy_read_abilities` on both ARM boards. Of the 223, many are small
+functions with almost the same code, as `memory_high_show` and
+`swap_high_show`, and the `show` functions of the regulator class, where
+`hereticus` takes one and Ghidra none. Others are functions of `io_uring`
+that the backport in 22.03.5 renamed or moved, as `io_uring_add_task_file`
+to `__io_uring_add_tctx_node`, which `truth_kernels.rs` can count as
+renamed. The 14 that Ghidra pairs right are the first errors to look at.

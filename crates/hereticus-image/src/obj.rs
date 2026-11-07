@@ -1236,9 +1236,13 @@ fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
 /// The symbol table says it where there is one, and the dynamic symbol
 /// table where it was stripped, through the dynamic segment where `sstrip`
 /// removed the section headers too. Where neither is left, as in stripped
-/// firmware, a MIPS file says in its header that it holds MIPS16e code,
-/// and on ARM bit 0 of the entry point says which set the code runs in.
-/// The entry of a MIPS16e program is MIPS32 code of the C library.
+/// firmware, a MIPS file says in its header that it holds MIPS16e code.
+/// Else the addresses of code that relocations store say it, as each keeps
+/// bit 0 of the function it points at: a library that exports nothing has
+/// no entry point, but its tables of pointers to functions are relocated.
+/// Where no relocation stores one, bit 0 of the entry point says which set
+/// the code runs in. The entry of a MIPS16e program is MIPS32 code of the C
+/// library.
 fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
     /// The functions `crti` and `crtn` of the C library make, in the full
     /// set whatever set the program is built in. An executable exports
@@ -1272,14 +1276,32 @@ fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
         },
         counted => counted,
     };
+    let most_of = |(compact, all): (usize, usize)| compact * 2 > all;
     let most = match all {
-        0 => holds_mips16(file) || file.entry() & 1 == 1,
-        _ => compact * 2 > all,
+        0 => match code_pointers_encoded(file) {
+            _ if holds_mips16(file) => true,
+            (_, 0) => file.entry() & 1 == 1,
+            pointers => most_of(pointers),
+        },
+        _ => most_of((compact, all)),
     };
     match most {
         true => Encoding::Compact,
         false => Encoding::Full,
     }
+}
+
+/// How many of the addresses of code that the relocations of `file` store
+/// have bit 0 set, and how many there are.
+fn code_pointers_encoded(file: &object::File<'_>) -> (usize, usize) {
+    let code: Vec<core::ops::Range<u64>> = file
+        .sections()
+        .filter(|section| section.kind() == object::SectionKind::Text)
+        .map(|section| section.address()..section.address() + section.size())
+        .collect();
+    crate::links::stored_addresses(file)
+        .filter(|&address| code.iter().any(|range| range.contains(&(address & !1))))
+        .fold((0, 0), |(compact, all), address| (compact + usize::from(address & 1 == 1), all + 1))
 }
 
 /// The function the scan found, with no name yet.

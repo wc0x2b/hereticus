@@ -30,17 +30,19 @@ firmware:
 rivals_image := "hereticus-rivals"
 
 # Give the stripped backports to radiff2, so a test can check the comparison
-# against what radiff2 reports on the same pairs.
+# against what radiff2 reports on the same pairs: with its default and its
+# deepest analysis, and on copies with no symbols.
 rivals: backports
     docker build --quiet --target radare2 --tag {{rivals_image}}-radare2 fixtures/rivals
     docker run --rm \
         --user "$(id -u):$(id -g)" \
         --volume "{{justfile_directory()}}:/work" \
         --workdir /work \
-        {{rivals_image}}-radare2 ./fixtures/rivals.sh radare2
+        {{rivals_image}}-radare2 sh -c \
+            'for setup in default deeper unnamed; do ./fixtures/rivals.sh radare2 "$setup" || exit; done'
 
 # The same with Ghidra Version Tracking. The image is about 2 GB and a first
-# run takes about ten minutes, so only `test` runs it.
+# run of the three setups takes about half an hour, so only `test` runs it.
 rivals-ghidra: backports
     docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
     docker run --rm \
@@ -48,7 +50,8 @@ rivals-ghidra: backports
         --env HOME=/tmp \
         --volume "{{justfile_directory()}}:/work" \
         --workdir /work \
-        {{rivals_image}}-ghidra ./fixtures/rivals.sh ghidra
+        {{rivals_image}}-ghidra sh -c \
+            'for setup in default deeper unnamed; do ./fixtures/rivals.sh ghidra "$setup" || exit; done'
 
 # Let Ghidra find the functions of one raw kernel, with its default and its
 # aggressive analysis, so a test can count how many it finds.
@@ -60,6 +63,19 @@ rivals-kernel: firmware
         --volume "{{justfile_directory()}}:/work" \
         --workdir /work \
         {{rivals_image}}-ghidra ./fixtures/rivals_kernel.sh
+
+# Let radiff2 and Ghidra pair the functions of the raw kernels of the OpenWrt
+# point release, so a test can check their pairs against the symbols. Ghidra
+# takes about an hour, so only `test` runs it.
+rivals-kernel-pairs: firmware
+    docker build --quiet --target ghidra --tag {{rivals_image}}-ghidra fixtures/rivals
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --env HOME=/tmp \
+        --volume "{{justfile_directory()}}:/work" \
+        --workdir /work \
+        {{rivals_image}}-ghidra sh -c \
+            './fixtures/rivals_kernel_pairs.sh radare2 && ./fixtures/rivals_kernel_pairs.sh ghidra'
 
 # Let Ghidra find the functions of each garbled Go fixture, so a test can
 # count how many it finds.
@@ -147,7 +163,7 @@ truth_tests := "binary(/^truth_/)"
 
 # Fetch and pin what the `truth_*` tests read. The Apple binaries need the
 # `ipsw` tool; `fixtures/cve_binaries.py` names the commands.
-truth: firmware rivals-ghidra rivals-kernel rivals-go
+truth: firmware rivals-ghidra rivals-kernel rivals-kernel-pairs rivals-go
     python3 fixtures/openwrt_debug.py
     python3 fixtures/cve_binaries.py
     python3 fixtures/ubuntu_cves.py

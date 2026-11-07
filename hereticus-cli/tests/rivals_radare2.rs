@@ -11,26 +11,28 @@
 
 mod rivals;
 
-use rivals::Rival;
+use rivals::{Contender, Ranks, Rival, Setup};
+
+const RADIFF2: Contender = Contender { rival: Rival::Radare2, setup: Setup::Default };
 
 #[test]
 fn hereticus_does_no_worse_than_radiff2() {
-    let contests = rivals::contests(Rival::Radare2);
-    let losses = rivals::losses(&contests);
+    let contests = rivals::contests(RADIFF2);
+    let losses = rivals::losses(&contests, Ranks::Checked);
     assert!(losses.is_empty(), "hereticus does worse than radiff2:\n{}", losses.join("\n"));
 }
 
 #[test]
 fn the_scores_against_radiff2_are_locked() {
-    let contests = rivals::contests(Rival::Radare2);
-    insta::assert_snapshot!(rivals::table(Rival::Radare2, &contests));
+    let contests = rivals::contests(RADIFF2);
+    insta::assert_snapshot!(rivals::table(RADIFF2, &contests));
 }
 
 #[test]
 fn the_times_against_radiff2_are_shown() {
-    let contests = rivals::contests(Rival::Radare2);
+    let contests = rivals::contests(RADIFF2);
     assert!(contests.iter().all(|contest| contest.rival_seconds > 0.0));
-    println!("{}", rivals::times(Rival::Radare2, &contests));
+    println!("{}", rivals::times(RADIFF2, &contests));
 }
 
 mod reading_order {

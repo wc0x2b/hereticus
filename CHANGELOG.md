@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An ARM library or executable with no symbol table and no exported
+  functions reads as Thumb-2 code where most of the addresses of code that
+  its relocations store have bit 0 set. Before, such a Thumb-2 file read
+  as A32 code unless bit 0 of its entry point was set, and a library has no
+  entry point.
+
 ## [0.7.1](https://github.com/wc0x2b/hereticus/compare/v0.7.0...v0.7.1) - 2026-11-01
 
 ### Changed

@@ -78,21 +78,7 @@ impl Links {
             return Self { sites: call_site_names(file), ..Self::default() };
         }
 
-        // The segments, as the loader maps them, so that the bytes around a
-        // section are there as in a raw image of the same file.
-        let mut memory: Vec<(u64, Vec<u8>)> = file
-            .segments()
-            .filter_map(|segment| Some((segment.address(), segment.data().ok()?.to_vec())))
-            .filter(|(_, data)| !data.is_empty())
-            .collect();
-        if memory.is_empty() {
-            memory = file
-                .sections()
-                .filter(|section| section.address() != 0)
-                .filter_map(|section| Some((section.address(), section.data().ok()?.to_vec())))
-                .filter(|(_, data)| !data.is_empty())
-                .collect();
-        }
+        let mut memory = loaded_memory(file);
 
         let mut slots = slot_names(file);
         let mut stubs = BTreeMap::new();
@@ -413,6 +399,30 @@ impl ByteOrder {
             Self::Big => bytes.iter().fold(0, fold),
         }
     }
+}
+
+/// The bytes of a linked `file`, by address: its segments, as the loader
+/// maps them, so that the bytes around a section are there as in a raw image
+/// of the same file, or else its sections.
+fn loaded_memory(file: &object::File<'_>) -> Vec<(u64, Vec<u8>)> {
+    let memory: Vec<(u64, Vec<u8>)> = file
+        .segments()
+        .filter_map(|segment| Some((segment.address(), segment.data().ok()?.to_vec())))
+        .filter(|(_, data)| !data.is_empty())
+        .collect();
+    if !memory.is_empty() {
+        return memory;
+    }
+    file.sections()
+        .filter(|section| section.address() != 0)
+        .filter_map(|section| Some((section.address(), section.data().ok()?.to_vec())))
+        .filter(|(_, data)| !data.is_empty())
+        .collect()
+}
+
+/// The address each dynamic relocation of a linked `file` stores in a word.
+pub(crate) fn stored_addresses(file: &object::File<'_>) -> impl Iterator<Item = u64> {
+    relocated_addresses(file, &loaded_memory(file)).into_values()
 }
 
 /// The address each dynamic relocation of `file` stores in a word, by the

@@ -6,7 +6,8 @@
 //! tool reports, the lowest score first. This module runs `hereticus` on the
 //! same pairs, as a user runs it, and names each row of each report by the
 //! symbols of the unstripped build: a row names the symbol its function
-//! starts in.
+//! starts in. A [`Setup`] says how the other tool ran, and on which copy of
+//! the libraries.
 //!
 //! Three numbers score one report of one build:
 //!
@@ -58,6 +59,46 @@ impl Rival {
     }
 }
 
+/// How the other tool ran, and on what, as the setups of
+/// `fixtures/rivals.sh` say.
+#[derive(Clone, Copy, Debug)]
+pub enum Setup {
+    /// Its default analysis, on the stripped libraries.
+    Default,
+    /// Its deepest analysis, on the stripped libraries.
+    Deeper,
+    /// Its default analysis, on copies of the stripped libraries with no
+    /// symbol that the library defines. `hereticus` reads the same copies.
+    Unnamed,
+}
+
+impl Setup {
+    /// The part that `fixtures/rivals.sh` adds to the name of the folder of
+    /// the other tool.
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Default => "",
+            Self::Deeper => "-deeper",
+            Self::Unnamed => "-unnamed",
+        }
+    }
+}
+
+/// The other tool and its setup.
+#[derive(Clone, Copy, Debug)]
+pub struct Contender {
+    pub rival: Rival,
+    pub setup: Setup,
+}
+
+impl Contender {
+    /// The folder of `fixtures/build/rivals` with its rows, which also names
+    /// the tool in a table.
+    fn directory(self) -> String {
+        format!("{}{}", self.rival.directory(), self.setup.suffix())
+    }
+}
+
 /// One backport build: the directories of `fixtures/build/backports`.
 #[derive(Clone, Debug)]
 pub struct Build {
@@ -71,18 +112,29 @@ impl Build {
         format!("{}-{}-{}", self.project, self.arch, self.level)
     }
 
-    fn file(&self, variant: Variant, file: &str) -> PathBuf {
+    pub fn file(&self, variant: Variant, file: &str) -> PathBuf {
         fixtures()
             .join("build/backports")
             .join(format!("{}-{}", self.project, variant.directory()))
             .join(format!("{}-{}", self.arch, self.level))
             .join(file)
     }
+
+    /// The library of one side that both tools read in `setup`.
+    pub fn library(&self, variant: Variant, setup: Setup) -> PathBuf {
+        match setup {
+            Setup::Default | Setup::Deeper => self.file(variant, "lib-stripped.so"),
+            Setup::Unnamed => fixtures()
+                .join("build/rivals/unnamed")
+                .join(self.name())
+                .join(format!("{}.so", variant.directory())),
+        }
+    }
 }
 
 /// Which side of the fix a build is.
 #[derive(Clone, Copy, Debug)]
-enum Variant {
+pub enum Variant {
     Before,
     After,
 }
@@ -196,8 +248,10 @@ struct Report {
 }
 
 /// What the other tool reports for `build`.
-fn rival_report(rival: Rival, build: &Build) -> Report {
-    let path = fixtures().join("build/rivals").join(rival.directory()).join(build.name() + ".json");
+fn rival_report(contender: Contender, build: &Build) -> Report {
+    let rival = contender.rival;
+    let path =
+        fixtures().join("build/rivals").join(contender.directory()).join(build.name() + ".json");
     let report = read_json(&path, rival.recipe());
     let seconds = report["seconds"].as_f64().unwrap_or_else(|| {
         panic!("{}: no seconds, run `{}` again", path.display(), rival.recipe())
@@ -215,13 +269,14 @@ fn rival_report(rival: Rival, build: &Build) -> Report {
     Report { rows, seconds }
 }
 
-/// What this tool reports for `build`, run as a user runs it.
-fn hereticus_report(build: &Build) -> Report {
+/// What this tool reports for `build`, run as a user runs it, on the
+/// libraries of `setup`.
+fn hereticus_report(build: &Build, setup: Setup) -> Report {
     let start = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_hereticus"))
         .args(["--progress", "never", "--format", "json"])
-        .arg(build.file(Variant::Before, "lib-stripped.so"))
-        .arg(build.file(Variant::After, "lib-stripped.so"))
+        .arg(build.library(Variant::Before, setup))
+        .arg(build.library(Variant::After, setup))
         .output()
         .expect("the tool runs");
     let seconds = start.elapsed().as_secs_f64();
@@ -373,13 +428,13 @@ pub struct Contest {
 }
 
 /// Score both tools on every build.
-pub fn contests(rival: Rival) -> Vec<Contest> {
+pub fn contests(contender: Contender) -> Vec<Contest> {
     builds()
         .into_iter()
         .map(|build| {
             let symbols = Symbols::of(&build);
-            let ours = hereticus_report(&build);
-            let theirs = rival_report(rival, &build);
+            let ours = hereticus_report(&build, contender.setup);
+            let theirs = rival_report(contender, &build);
             Contest {
                 hereticus: score(&build, &symbols, &ours.rows, Order::AsListed),
                 rival: score(&build, &symbols, &theirs.rows, Order::ByScore),
@@ -391,18 +446,28 @@ pub fn contests(rival: Rival) -> Vec<Contest> {
         .collect()
 }
 
+/// Whether [`losses`] counts a fix that the other tool ranks higher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ranks {
+    /// This tool must rank each fix no lower than the other tool does.
+    Checked,
+    /// The snapshot locks the ranks, and a test does not check them, as
+    /// where the other tool ranks some fixes higher.
+    Locked,
+}
+
 /// Where this tool does worse than the other tool, one line each.
 ///
 /// This tool must report every fix, rank it no lower than the other tool
-/// does, and report no more extras.
-pub fn losses(contests: &[Contest]) -> Vec<String> {
+/// does where `ranks` says so, and report no more extras.
+pub fn losses(contests: &[Contest], ranks: Ranks) -> Vec<String> {
     let mut losses = Vec::new();
     for contest in contests {
         let name = contest.build.name();
         let (ours, theirs) = (contest.hereticus, contest.rival);
         match (ours.rank, theirs.rank) {
             (None, _) => losses.push(format!("{name}: hereticus misses the fix")),
-            (Some(ours), Some(theirs)) if ours > theirs => {
+            (Some(ours), Some(theirs)) if ours > theirs && ranks == Ranks::Checked => {
                 losses.push(format!("{name}: hereticus ranks the fix {ours}, the other {theirs}"))
             }
             _ => {}
@@ -422,10 +487,10 @@ fn rank_text(rank: Option<usize>) -> String {
 }
 
 /// The totals of both tools, and then the scores of each build, as tables.
-pub fn table(rival: Rival, contests: &[Contest]) -> String {
-    let other = rival.directory();
+pub fn table(contender: Contender, contests: &[Contest]) -> String {
+    let other = contender.directory();
     let mut totals = format!(
-        "{:10} {:>6} {:>5} {:>5} {:>6} {:>6}\n",
+        "{:16} {:>6} {:>5} {:>5} {:>6} {:>6}\n",
         "tool", "builds", "found", "first", "rows", "extras"
     );
     let total = |pick: fn(&Contest) -> Score| {
@@ -438,17 +503,17 @@ pub fn table(rival: Rival, contests: &[Contest]) -> String {
     };
     for (tool, pick) in [
         ("hereticus", (|contest: &Contest| contest.hereticus) as fn(&Contest) -> Score),
-        (other, |contest: &Contest| contest.rival),
+        (other.as_str(), |contest: &Contest| contest.rival),
     ] {
         let (found, first, rows, extras) = total(pick);
         let builds = contests.len();
-        writeln!(totals, "{tool:10} {builds:>6} {found:>5} {first:>5} {rows:>6} {extras:>6}")
+        writeln!(totals, "{tool:16} {builds:>6} {found:>5} {first:>5} {rows:>6} {extras:>6}")
             .unwrap();
     }
 
     let columns = ["rank", "rows", "extras"]
         .map(|column| {
-            format!(" {:>16} {:>16}", format!("{column}:hereticus"), format!("{column}:{other}"))
+            format!(" {:>22} {:>22}", format!("{column}:hereticus"), format!("{column}:{other}"))
         })
         .concat();
     let mut builds = format!("\n{:24}{columns}\n", "build");
@@ -456,7 +521,7 @@ pub fn table(rival: Rival, contests: &[Contest]) -> String {
         let (ours, theirs) = (contest.hereticus, contest.rival);
         writeln!(
             builds,
-            "{:24} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
+            "{:24} {:>22} {:>22} {:>22} {:>22} {:>22} {:>22}",
             contest.build.name(),
             rank_text(ours.rank),
             rank_text(theirs.rank),
@@ -475,8 +540,8 @@ pub fn table(rival: Rival, contests: &[Contest]) -> String {
 /// A time depends on the machine and on what else runs on it, so no
 /// snapshot locks it. This tool runs in the test, while other tests run;
 /// the other tool ran alone, in `fixtures/rivals.sh`.
-pub fn times(rival: Rival, contests: &[Contest]) -> String {
-    let other = rival.directory();
+pub fn times(contender: Contender, contests: &[Contest]) -> String {
+    let other = contender.directory();
     let mut table = format!("{:24} {:>12} {:>12}\n", "build", "hereticus s", format!("{other} s"));
     for contest in contests {
         writeln!(
