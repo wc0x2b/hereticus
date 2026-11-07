@@ -3107,3 +3107,37 @@ times one less the score, by that times its square root, or by the
 instructions added plus 100 times one less the score, made the sum of
 the ranks of `truth_ubuntu.rs` 366, 350 and 552 in place of 348, and put
 2, 3 and 6 fewer fixes on row 1, so the sort stays as it is.
+
+**Moved blocks in the rank.** The diff view shows a block that only moved
+in gray, but the rank counts its instructions as removed and added: in
+zlib for armhf to 1:1.2.11.dfsg-2ubuntu9, `inflateBack` counts 43 added
+and 39 removed, where the asm view shows one changed instruction beside
+words of a literal pool, and the IL view none. Ranking by the lines that
+the IL diff adds outside moved blocks made the sum of the ranks of
+`truth_ubuntu.rs` 378 in place of 348, with 7 fewer fixes on row 1, and
+by the smaller of the two counts 347, with as many on row 1. Neither was
+kept.
+
+**The kernel pairs that Ghidra has right and `hereticus` wrong, again.**
+After the two fixes of joined functions, 8 such pairs are left on the
+point release. Two are `sock_init_data`, whose code moved to
+`sock_init_data_uid`; one joins the twins `usb_get_maximum_speed` and
+`usb_get_maximum_ssp_rate`; one swaps the near twins
+`mv88e6xxx_g1_vtu_getnext` and `mv88e6xxx_g1_vtu_stu_get`. The others come
+from two functions that the scan still joins. `r4k_flush_cache_mm` of MIPS
+is named only by a `lui` and an `addiu`, which was measured above. In both
+ARM kernels, `sched_partition_show` follows the tail call of
+`cpuset_migrate_mm_workfn` in one merged unwind entry, and only one word
+of a `cftype` names it. A word alone that points into such an entry, with
+the same guards as an address that code forms, split the two, but it made
+so many other starts on the ARM kernel of 22.03.2 for the EX6100 v2 that
+fewer than 95% of its starts lay on a symbol, so it was not kept.
+
+**The ARM fix on the upgrades.** The 18 more wrong pairs that the
+careful judge of `truth_kernels.rs` counts on the upgrades of the ARM board
+are small functions that the fix splits off and that pair with a look-alike
+across the upgrade, as `msi_get_domain_info` with `io_wq_get_task` and
+`prctl_set_seccomp` with `prctl_get_seccomp`. The plain rule of
+`truth_kernel_rivals.rs` counts 1692 wrong pairs on that board with the
+fix and 1747 without, as it calls a renamed function wrong, and the fix
+pairs more of those right. No trait sets the new wrong pairs apart.
