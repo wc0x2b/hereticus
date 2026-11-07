@@ -407,9 +407,11 @@ records how these comparisons were made, and what they found. The
 numbers are correct for these pairs and these settings. They do not
 show that one tool is better than another in general. Know these limits:
 
-- **The pairs are small and few.** Each pair is a small library with one
-  small fix. A large binary, or a release with many changes, can give a
-  different result.
+- **The sets are samples.** Each backport is a small library with one
+  small fix. The Ubuntu updates are of the C libraries of one release of
+  Ubuntu, and most of the published fixes are in OpenWrt and in iOS.
+  Other binaries, or other compilers and settings, can give a different
+  result.
 - **The upgrades are of three boards.** Ghidra takes about a quarter of an
   hour for each pair of kernels, so the tests compare the upgrades only on
   the first three boards of `tests/openwrt.rs`.

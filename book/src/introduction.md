@@ -20,7 +20,8 @@ function that the update changed. This is patch diffing, and it is slow:
   symbols, and often with no ELF header at all.
 - **Everything moves.** A new release moves each function and each global,
   so a byte diff marks almost all the code as changed.
-- **The usual tools are heavy.** BinDiff and Diaphora need IDA, and Ghidra
+- **The usual tools are heavy.** BinDiff needs each program exported from
+  IDA, Ghidra or Binary Ninja first, Diaphora needs IDA, and Ghidra
   Version Tracking needs a project, a GUI and an analysis of each program.
   None fits in a shell script or a CI job.
 
