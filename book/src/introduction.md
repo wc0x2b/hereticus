@@ -44,14 +44,14 @@ with the commands to do it again.
 
 ### Against Other Tools
 
-On 35<!-- from rivals_radare2: hereticus / builds --> stripped libraries,
+On 64<!-- from rivals_radare2: hereticus / builds --> stripped libraries,
 each built before and after one upstream fix:
 
 | Tool      | Fixes found | Fix on row 1 | Rows the fix did not touch |
 |-----------|-------------|--------------|----------------------------|
-| hereticus | 35<!-- from rivals_radare2: hereticus / found --> | 20<!-- from rivals_radare2: hereticus / first --> | 0<!-- from rivals_radare2: hereticus / extras --> |
-| radiff2   | 20<!-- from rivals_radare2: radare2 / found --> | 9<!-- from rivals_radare2: radare2 / first --> | 2418<!-- from rivals_radare2: radare2 / extras --> |
-| Ghidra    | 33<!-- from truth_ghidra: ghidra / found --> | 18<!-- from truth_ghidra: ghidra / first --> | 629<!-- from truth_ghidra: ghidra / extras --> |
+| hereticus | 64<!-- from rivals_radare2: hereticus / found --> | 38<!-- from rivals_radare2: hereticus / first --> | 3<!-- from rivals_radare2: hereticus / extras --> |
+| radiff2   | 35<!-- from rivals_radare2: radare2 / found --> | 18<!-- from rivals_radare2: radare2 / first --> | 4450<!-- from rivals_radare2: radare2 / extras --> |
+| Ghidra    | 60<!-- from truth_ghidra: ghidra / found --> | 32<!-- from truth_ghidra: ghidra / first --> | 4253<!-- from truth_ghidra: ghidra / extras --> |
 
 This is a narrow test, which `hereticus` was developed with. See
 [Comparison With Other Tools](./comparison.md) for how it scores each

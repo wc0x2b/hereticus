@@ -2,9 +2,10 @@
 
 Tests compare `hereticus` with radiff2 of radare2 6.2.4 and with Ghidra
 12.1.4 Version Tracking. All three tools read the same
-35<!-- from rivals_radare2: hereticus / builds --> pairs of stripped libraries. Each pair
+64<!-- from rivals_radare2: hereticus / builds --> pairs of stripped libraries. Each pair
 is one release of zlib, Lua, tinyxml2 or smallvec, before and after one
-upstream fix, for ARM, Thumb-2, AArch64 or MIPS. The functions that the fix
+upstream fix, for ARM, Thumb-2, AArch64, MIPS, x86-64, i686 or PowerPC.
+The functions that the fix
 edits are known, so each report gets a score.
 
 > [!WARNING]
@@ -14,9 +15,9 @@ edits are known, so each report gets a score.
 
 | Tool      | Fixes found | Fix on row 1 | Rows | Rows the fix did not touch |
 |-----------|-------------|--------------|------|----------------------------|
-| hereticus | 35<!-- from rivals_radare2: hereticus / found --> | 20<!-- from rivals_radare2: hereticus / first --> | 85<!-- from rivals_radare2: hereticus / rows --> | 0<!-- from rivals_radare2: hereticus / extras --> |
-| radiff2   | 20<!-- from rivals_radare2: radare2 / found --> | 9<!-- from rivals_radare2: radare2 / first --> | 2457<!-- from rivals_radare2: radare2 / rows --> | 2418<!-- from rivals_radare2: radare2 / extras --> |
-| Ghidra    | 33<!-- from truth_ghidra: ghidra / found --> | 18<!-- from truth_ghidra: ghidra / first --> | 759<!-- from truth_ghidra: ghidra / rows --> | 629<!-- from truth_ghidra: ghidra / extras --> |
+| hereticus | 64<!-- from rivals_radare2: hereticus / found --> | 38<!-- from rivals_radare2: hereticus / first --> | 145<!-- from rivals_radare2: hereticus / rows --> | 3<!-- from rivals_radare2: hereticus / extras --> |
+| radiff2   | 35<!-- from rivals_radare2: radare2 / found --> | 18<!-- from rivals_radare2: radare2 / first --> | 4522<!-- from rivals_radare2: radare2 / rows --> | 4450<!-- from rivals_radare2: radare2 / extras --> |
+| Ghidra    | 60<!-- from truth_ghidra: ghidra / found --> | 32<!-- from truth_ghidra: ghidra / first --> | 4477<!-- from truth_ghidra: ghidra / rows --> | 4253<!-- from truth_ghidra: ghidra / extras --> |
 
 A tool **finds** a fix when its report shows every function that the fix
 edits. The **row** of a fix is the last row that a reader must read to see
@@ -53,6 +54,36 @@ the other tool or on an earlier row, and show no more rows that the fix did
 not touch. If a change makes `hereticus` worse than the other tool on one
 build, the test fails.
 
+## Real Security Updates
+
+The backports are small, and each has one fix. A test also gives all three
+tools the security updates of C libraries of Ubuntu 22.04, for arm64 and
+armhf, as `fixtures/ubuntu_cases.json` pins them: each pair of a release
+and the next. The patches of each update name the functions that the fix
+edits, and the debug files of Ubuntu name the functions of each library.
+An update counts where the code of a function that its patches edit
+changed, as 176<!-- from truth_ubuntu_rivals: all hereticus / cases --> updates do. A report shows the fix
+at the first row that names such a function, or a function that holds a
+copy of it that the compiler inlined. The tools read the libraries as
+Ubuntu ships them, with the names of the functions they export. A real
+update can change more than its fix, so the table gives no count of rows
+that the fix did not touch.
+
+| Tool | Fixes found | Fix on row 1 | Fix in the first 10 rows | Rows |
+|------|-------------|--------------|--------------------------|------|
+| hereticus | 176<!-- from truth_ubuntu_rivals: all hereticus / found --> | 122<!-- from truth_ubuntu_rivals: all hereticus / first --> | 175<!-- from truth_ubuntu_rivals: all hereticus / top10 --> | 5972<!-- from truth_ubuntu_rivals: all hereticus / rows --> |
+| radiff2 | 105<!-- from truth_ubuntu_rivals: all radare2 / found --> | 30<!-- from truth_ubuntu_rivals: all radare2 / first --> | 50<!-- from truth_ubuntu_rivals: all radare2 / top10 --> | 80450<!-- from truth_ubuntu_rivals: all radare2 / rows --> |
+| Ghidra | 173<!-- from truth_ubuntu_rivals: all ghidra / found --> | 90<!-- from truth_ubuntu_rivals: all ghidra / first --> | 146<!-- from truth_ubuntu_rivals: all ghidra / top10 --> | 50932<!-- from truth_ubuntu_rivals: all ghidra / rows --> |
+
+The order of the rows is where the tools differ most. `hereticus` shows
+the fix earlier than Ghidra in
+84<!-- from truth_ubuntu_rivals: ghidra / hereticus-earlier --> updates, and Ghidra shows it
+earlier than `hereticus` in
+27<!-- from truth_ubuntu_rivals: ghidra / rival-earlier -->. Against radiff2, the counts are
+146<!-- from truth_ubuntu_rivals: radare2 / hereticus-earlier --> and
+5<!-- from truth_ubuntu_rivals: radare2 / rival-earlier -->.
+[Where `hereticus` Does Worse](#where-hereticus-does-worse) says why.
+
 ## Deeper Settings
 
 The table above runs each other tool with its default settings. The tests
@@ -67,23 +98,25 @@ as before.
 
 | Tool | Fixes found | Fix on row 1 | Rows | Rows the fix did not touch |
 |------|-------------|--------------|------|----------------------------|
-| hereticus | 35<!-- from rivals_radare2_deeper: hereticus / found --> | 20<!-- from rivals_radare2_deeper: hereticus / first --> | 85<!-- from rivals_radare2_deeper: hereticus / rows --> | 0<!-- from rivals_radare2_deeper: hereticus / extras --> |
-| radiff2 `-AA` | 31<!-- from rivals_radare2_deeper: radare2-deeper / found --> | 7<!-- from rivals_radare2_deeper: radare2-deeper / first --> | 4049<!-- from rivals_radare2_deeper: radare2-deeper / rows --> | 3923<!-- from rivals_radare2_deeper: radare2-deeper / extras --> |
-| Ghidra, more correlators | 33<!-- from truth_ghidra_deeper: ghidra-deeper / found --> | 17<!-- from truth_ghidra_deeper: ghidra-deeper / first --> | 613<!-- from truth_ghidra_deeper: ghidra-deeper / rows --> | 528<!-- from truth_ghidra_deeper: ghidra-deeper / extras --> |
+| hereticus | 64<!-- from rivals_radare2_deeper: hereticus / found --> | 38<!-- from rivals_radare2_deeper: hereticus / first --> | 145<!-- from rivals_radare2_deeper: hereticus / rows --> | 3<!-- from rivals_radare2_deeper: hereticus / extras --> |
+| radiff2 `-AA` | 58<!-- from rivals_radare2_deeper: radare2-deeper / found --> | 17<!-- from rivals_radare2_deeper: radare2-deeper / first --> | 7532<!-- from rivals_radare2_deeper: radare2-deeper / rows --> | 7313<!-- from rivals_radare2_deeper: radare2-deeper / extras --> |
+| Ghidra, more correlators | 60<!-- from truth_ghidra_deeper: ghidra-deeper / found --> | 33<!-- from truth_ghidra_deeper: ghidra-deeper / first --> | 3044<!-- from truth_ghidra_deeper: ghidra-deeper / rows --> | 2893<!-- from truth_ghidra_deeper: ghidra-deeper / extras --> |
 
 With `-AA`, radiff2 finds more fixes, but it shows more rows that the fix
 did not touch, and it shows fewer fixes on row 1. With more correlators,
 Ghidra pairs more functions, so fewer rows show a function as gone and
-new. On five builds of Lua, Ghidra shows the fix one or two rows earlier
-than `hereticus` does: on row
+new. On each build of Lua that clang made at `-O2`, Ghidra shows the fix
+one or two rows earlier than `hereticus` does: on row
 3<!-- from truth_ghidra_deeper: lua-arm-O2 / rank:ghidra-deeper --> for ARM at `-O2`, where
 `hereticus` shows it on row
 4<!-- from truth_ghidra_deeper: lua-arm-O2 / rank:hereticus -->. The fix edits `luaZ_fill`
 and `luaZ_init`, and `luaZ_read` changes with it. A reference correlator
 gives the pair of `luaZ_read` a score of 1, so Ghidra lists it last.
 `hereticus` lists `luaZ_read` before `luaZ_init`, as more of its code
-changed. The test of this setup thus checks only the fixes found and the
-rows that the fix did not touch.
+changed. radiff2 with `-AA` also shows the fix earlier on Lua for 64-bit
+PowerPC, as it scores `luaZ_init` 0, and so does Ghidra on Lua for 32-bit
+PowerPC with no names. The tests of these setups thus check only the
+fixes found and the rows that the fix did not touch.
 
 ## Libraries With No Names
 
@@ -97,11 +130,16 @@ three tools read these copies with their default settings.
 
 | Tool | Fixes found | Fix on row 1 | Rows | Rows the fix did not touch |
 |------|-------------|--------------|------|----------------------------|
-| hereticus | 35<!-- from rivals_radare2_unnamed: hereticus / found --> | 20<!-- from rivals_radare2_unnamed: hereticus / first --> | 85<!-- from rivals_radare2_unnamed: hereticus / rows --> | 0<!-- from rivals_radare2_unnamed: hereticus / extras --> |
-| radiff2 | 0<!-- from rivals_radare2_unnamed: radare2-unnamed / found --> | 0<!-- from rivals_radare2_unnamed: radare2-unnamed / first --> | 17<!-- from rivals_radare2_unnamed: radare2-unnamed / rows --> | 12<!-- from rivals_radare2_unnamed: radare2-unnamed / extras --> |
-| Ghidra | 29<!-- from truth_ghidra_unnamed: ghidra-unnamed / found --> | 12<!-- from truth_ghidra_unnamed: ghidra-unnamed / first --> | 1381<!-- from truth_ghidra_unnamed: ghidra-unnamed / rows --> | 1258<!-- from truth_ghidra_unnamed: ghidra-unnamed / extras --> |
+| hereticus | 64<!-- from rivals_radare2_unnamed: hereticus / found --> | 38<!-- from rivals_radare2_unnamed: hereticus / first --> | 152<!-- from rivals_radare2_unnamed: hereticus / rows --> | 10<!-- from rivals_radare2_unnamed: hereticus / extras --> |
+| radiff2 | 0<!-- from rivals_radare2_unnamed: radare2-unnamed / found --> | 0<!-- from rivals_radare2_unnamed: radare2-unnamed / first --> | 137<!-- from rivals_radare2_unnamed: radare2-unnamed / rows --> | 130<!-- from rivals_radare2_unnamed: radare2-unnamed / extras --> |
+| Ghidra | 56<!-- from truth_ghidra_unnamed: ghidra-unnamed / found --> | 26<!-- from truth_ghidra_unnamed: ghidra-unnamed / first --> | 5670<!-- from truth_ghidra_unnamed: ghidra-unnamed / rows --> | 5446<!-- from truth_ghidra_unnamed: ghidra-unnamed / extras --> |
 
-`hereticus` gives the same result as with the names. With no symbols,
+`hereticus` finds each fix, and shows as many on row 1 as with the names.
+On tinyxml2 for x86-64, it shows
+6<!-- from rivals_radare2_unnamed: tinyxml2-x86_64-O2 / extras:hereticus --> rows that the fix did not
+touch: PLT stubs, which show as gone and as new. `unname.py` keeps the
+stubs of the functions that the library exported, which a linker does not
+write for a library that exports nothing. With no symbols,
 `radiff2 -C` lists the function at the entry point, or one or two other
 functions of a pair, or none, although the analysis of `aaa` finds many
 more. Ghidra finds fewer fixes
@@ -112,32 +150,88 @@ tinyxml2 build for AArch64 at `-O2`, it shows
 `hereticus` shows
 1<!-- from truth_ghidra_unnamed: tinyxml2-aarch64-O2 / rows:hereticus -->.
 
-This test found an error in `hereticus`: with no symbols, it read the
+This test found two errors in `hereticus`. With no symbols, it read the
 code of an ARM library as A32 code, also where the code was Thumb-2. It
 now reads bit 0 of the addresses of functions that the relocations store.
+And it took a PLT stub with no name for the function that it calls, so
+where the stubs moved, each caller read as changed, and tinyxml2 for x86
+showed dozens of rows that the fix did not touch. A stub whose slot a relocation fills
+with the address of a function now stands for that function.
+
+## Pairs Built Two Ways
+
+A vendor can build the next release with another compiler, or at another
+level of optimization. Then most functions change, not only those of the
+fix. `fixtures/rivals/crossed-builds.txt` lists such pairs of the
+backports: clang at `-O2` before the fix and GCC at `-O2` after it, or
+`-Os` before and `-O3` after. All three tools read them with their default
+settings.
+
+| Tool | Fixes found | Fix on row 1 | Rows | Rows the fix did not touch |
+|------|-------------|--------------|------|----------------------------|
+| hereticus | 28<!-- from rivals_radare2_crossed: hereticus / found --> | 7<!-- from rivals_radare2_crossed: hereticus / first --> | 7199<!-- from rivals_radare2_crossed: hereticus / rows --> | 7116<!-- from rivals_radare2_crossed: hereticus / extras --> |
+| radiff2 | 16<!-- from rivals_radare2_crossed: radare2-crossed / found --> | 0<!-- from rivals_radare2_crossed: radare2-crossed / first --> | 5227<!-- from rivals_radare2_crossed: radare2-crossed / rows --> | 5185<!-- from rivals_radare2_crossed: radare2-crossed / extras --> |
+| Ghidra | 28<!-- from truth_ghidra_crossed: ghidra-crossed / found --> | 9<!-- from truth_ghidra_crossed: ghidra-crossed / first --> | 8416<!-- from truth_ghidra_crossed: ghidra-crossed / rows --> | 8280<!-- from truth_ghidra_crossed: ghidra-crossed / extras --> |
+
+`hereticus` finds every fix, but a reader must read far to see a small
+one. On zlib the fix is on row 1 or 2, and on Lua on row
+149<!-- from rivals_radare2_crossed: lua-x86_64-Os-to-O3 / rank:hereticus --> to
+391<!-- from rivals_radare2_crossed: lua-mips-O2-to-gcc-O2 / rank:hereticus -->. The Lua fix changes a few
+instructions of `luaZ_fill`, and the other compiler changes many
+instructions of almost every function. On the ARM pair of clang and GCC, no
+order that `--sort` gives puts the fix in the first hundred rows. `hereticus` also shows more rows than
+radiff2, as it pairs more functions, and each pair changed.
+
+Ghidra ranks the fixes of these pairs better than `hereticus` does. It
+shows the fix of tinyxml2 on row 1 for each pair, where `hereticus` shows
+it on row 2 to
+31<!-- from truth_ghidra_crossed: tinyxml2-x86_64-O2-to-gcc-O2 / rank:hereticus -->, and the fix of Lua on row
+111<!-- from truth_ghidra_crossed: lua-mips-Os-to-O3 / rank:ghidra-crossed --> to
+231<!-- from truth_ghidra_crossed: lua-x86_64-O2-to-gcc-O2 / rank:ghidra-crossed -->. Where the compiler changes
+every function, the function that is least alike, which Ghidra lists
+first, is more often the fix than the function that gained the most
+instructions, which `hereticus` lists first. On zlib and smallvec,
+`hereticus` shows the fix earlier.
 
 ## Pairs in Raw Kernels
 
 A kernel holds about twenty thousand functions, and a fix has no known
 place in it, so the tests check the pairs of each tool, not the row of a
 fix. Each tool compares the raw kernels of OpenWrt 22.03.2 and 22.03.5 for
-the six boards of `tests/openwrt.rs`, two of them ARM and four MIPS. The
-symbols of each build say which function starts where. A pair is
-**judged** where a symbol starts at each of its two starts, and it is
-**right** where the two symbols have the same name and come from source
-files that correspond. All other judged pairs are wrong.
+the six boards of `tests/openwrt.rs`, two of them ARM and four MIPS: a
+point release, which keeps the kernel. It also compares the two kernel
+upgrades, 21.02.7 to 22.03.2 and 22.03.5 to 23.05.5, on the first three
+boards, where the kernel changes series. The symbols of each build say
+which function starts where. A pair is **judged** where a symbol starts at
+each of its two starts, and it is **right** where the two symbols have the
+same name and come from source files that correspond. All other judged
+pairs are wrong.
 
-| Tool | Pairs | Judged | Right | Wrong | Share wrong |
-|------|-------|--------|-------|-------|-------|
-| hereticus | 134021<!-- from truth_kernel_rivals: all hereticus / pairs --> | 132165<!-- from truth_kernel_rivals: all hereticus / judged --> | 131896<!-- from truth_kernel_rivals: all hereticus / right --> | 269<!-- from truth_kernel_rivals: all hereticus / wrong --> | 0.20%<!-- from truth_kernel_rivals: all hereticus / wrong% --> |
-| radiff2 | 17792<!-- from truth_kernel_rivals: all radare2 / pairs --> | 14138<!-- from truth_kernel_rivals: all radare2 / judged --> | 13582<!-- from truth_kernel_rivals: all radare2 / right --> | 556<!-- from truth_kernel_rivals: all radare2 / wrong --> | 3.93%<!-- from truth_kernel_rivals: all radare2 / wrong% --> |
-| Ghidra | 93202<!-- from truth_kernel_rivals: all ghidra / pairs --> | 91119<!-- from truth_kernel_rivals: all ghidra / judged --> | 91003<!-- from truth_kernel_rivals: all ghidra / right --> | 116<!-- from truth_kernel_rivals: all ghidra / wrong --> | 0.13%<!-- from truth_kernel_rivals: all ghidra / wrong% --> |
+| Releases | Tool | Pairs | Judged | Right | Wrong | Share wrong |
+|----------|------|-------|--------|-------|-------|-------------|
+| 22.03.2/22.03.5 | hereticus | 134021<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / pairs --> | 132165<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / judged --> | 131896<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / right --> | 269<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / wrong --> | 0<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / wrong% --> |
+| 22.03.2/22.03.5 | radiff2 | 17792<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / pairs --> | 14138<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / judged --> | 13582<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / right --> | 556<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / wrong --> | 3.93%<!-- from truth_kernel_rivals: 22.03.2/22.03.5 radare2 / wrong% --> |
+| 22.03.2/22.03.5 | Ghidra | 93204<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / pairs --> | 91121<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / judged --> | 91007<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / right --> | 114<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / wrong --> | 0<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / wrong% --> |
+| 21.02.7/22.03.2 | hereticus | 55179<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / pairs --> | 54486<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / judged --> | 52036<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / right --> | 2450<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / wrong --> | 4.50%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / wrong% --> |
+| 21.02.7/22.03.2 | radiff2 | 11003<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / pairs --> | 2071<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / judged --> | 1537<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / right --> | 534<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / wrong --> | 25.78%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 radare2 / wrong% --> |
+| 21.02.7/22.03.2 | Ghidra | 10722<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / pairs --> | 10384<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / judged --> | 9903<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / right --> | 481<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / wrong --> | 4.63%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / wrong% --> |
+| 22.03.5/23.05.5 | hereticus | 62119<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / pairs --> | 61420<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / judged --> | 59637<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / right --> | 1783<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / wrong --> | 2.90%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / wrong% --> |
+| 22.03.5/23.05.5 | radiff2 | 10013<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / pairs --> | 3846<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / judged --> | 3234<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / right --> | 612<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / wrong --> | 15.91%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 radare2 / wrong% --> |
+| 22.03.5/23.05.5 | Ghidra | 27141<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / pairs --> | 26520<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / judged --> | 26022<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / right --> | 498<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / wrong --> | 1.88%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / wrong% --> |
 
-`hereticus` makes the most right pairs. Ghidra makes fewer pairs, and a
-smaller part of them is wrong. A point release keeps the same kernel, so
-the rule calls a function that a release renamed wrong for each tool.
-`tests/truth_kernels.rs` judges the pairs of `hereticus` with more care,
-and it finds such renamed functions.
+`hereticus` makes the most right pairs on each pair of releases. Ghidra
+makes fewer pairs, and on the point release and on the upgrade to
+23.05.5, a smaller part of them is wrong: on that upgrade,
+1.88%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 ghidra / wrong% --> of the pairs of Ghidra and
+2.90%<!-- from truth_kernel_rivals: 22.03.5/23.05.5 hereticus / wrong% --> of those of `hereticus`. On the
+upgrade from 21.02.7, the parts are
+4.63%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 ghidra / wrong% --> and
+4.50%<!-- from truth_kernel_rivals: 21.02.7/22.03.2 hereticus / wrong% -->. The rule
+calls a function that a release renamed wrong for each tool, and an
+upgrade renames many. `tests/truth_kernels.rs` judges the pairs of
+`hereticus` with more care, and it finds such renamed functions. Ghidra
+does not pair a large kernel the same way on each run: two runs of the
+point release gave a few other counts. The snapshot locks one run.
 
 radiff2 cannot read a raw image at its load address, so the test gives it
 each kernel in an ELF file with one segment at that address. With `-A` or
@@ -151,26 +245,55 @@ Tracking pairs the functions.
 
 The tests above find these weak points of `hereticus`:
 
-- **More wrong pairs in a kernel.** `hereticus` makes
-  269<!-- from truth_kernel_rivals: all hereticus / wrong --> wrong pairs in the kernels, and Ghidra
-  116<!-- from truth_kernel_rivals: all ghidra / wrong -->. Of the functions that `hereticus` pairs wrong, Ghidra
-  pairs 14<!-- from truth_kernel_rivals: all / ghidra-right --> right and
-  32<!-- from truth_kernel_rivals: all / ghidra-wrong --> wrong, and leaves
-  223<!-- from truth_kernel_rivals: all / ghidra-unpaired --> with no judged pair. Of those that Ghidra pairs
+- **More wrong pairs in a kernel of a point release.** `hereticus` makes
+  269<!-- from truth_kernel_rivals: 22.03.2/22.03.5 hereticus / wrong --> wrong pairs in the kernels, and Ghidra
+  114<!-- from truth_kernel_rivals: 22.03.2/22.03.5 ghidra / wrong -->. Of the functions that `hereticus` pairs wrong, Ghidra
+  pairs 14<!-- from truth_kernel_rivals: 22.03.2/22.03.5 / ghidra-right --> right and
+  32<!-- from truth_kernel_rivals: 22.03.2/22.03.5 / ghidra-wrong --> wrong, and leaves
+  223<!-- from truth_kernel_rivals: 22.03.2/22.03.5 / ghidra-unpaired --> with no judged pair. Of those that Ghidra pairs
   right, `tcp_v4_get_syncookie` is one: on each MIPS board, `hereticus`
-  pairs it with `tcp_v4_early_demux`. Of those that Ghidra leaves, many
+  pairs it with `tcp_v4_early_demux`. In 22.03.2, nothing calls
+  `tcp_v4_early_demux`, and it starts right after a branch back into
+  `tcp_v4_get_syncookie`, so the scan makes one function of the two. On
+  the point release, most of the pairs that Ghidra has right and
+  `hereticus` wrong come from such joined functions. On the upgrade to 23.05.5, Ghidra pairs
+  108<!-- from truth_kernel_rivals: 22.03.5/23.05.5 / ghidra-right --> of the functions that `hereticus` pairs wrong right. Of those that Ghidra leaves, many
   are small functions whose code is almost the same, as
   `memory_high_show` and `swap_high_show`, or the `show` functions of the
   regulator class. `hereticus` pairs such a function with one of them,
   and Ghidra with none. Others are functions of `io_uring` that a backport
   in 22.03.5 renamed or moved. Where `hereticus` shows a wrong pair, a
   reader of Ghidra sees one function gone and one new.
-- **A lower rank for some fixes.** With more correlators, Ghidra shows the
-  fix of Lua earlier on five builds, as
+- **A lower rank for some fixes.** In
+  27<!-- from truth_ubuntu_rivals: ghidra / rival-earlier --> of the Ubuntu updates, Ghidra shows the fix
+  earlier than `hereticus`. `hereticus` puts the function that gained the
+  most instructions first, and Ghidra the function that it scores least
+  alike. A fix of one instruction thus sinks below functions with larger
+  changes that the fix did not make. In the update of libssh for arm64 to
+  0.9.6-2ubuntu0.22.04.5, the fix adds one normalized instruction to
+  `ssh_make_sessionid`, and the compiler laid out the stack frames of
+  other functions anew.
+  `hereticus` shows the fix on row
+  30<!-- from truth_ubuntu_rivals: libssh-4-arm64-0.9.6-2ubuntu0.22.04.4-0.9.6-2ubuntu0.22.04.5 / rank:hereticus -->, and Ghidra on row
+  1<!-- from truth_ubuntu_rivals: libssh-4-arm64-0.9.6-2ubuntu0.22.04.4-0.9.6-2ubuntu0.22.04.5 / rank:ghidra -->. With more correlators, Ghidra also shows the fix
+  of Lua earlier on each build by clang at `-O2`, as
   [Deeper Settings](#deeper-settings) says.
-- **Stripped ARM code with no exports.** Before the tests read libraries
-  with no names, `hereticus` read such Thumb-2 code as A32 code, as
-  [Libraries With No Names](#libraries-with-no-names) says. This is
+- **Changes that the IL view hides.** The rank counts the normalized
+  instructions that a function gained, and the IL view folds more of what
+  a rebuild changes. In the update of zlib for armhf to
+  1:1.2.11.dfsg-2ubuntu9, `inflateBack`, which the fix did not edit, gained
+  43 normalized instructions and lost 39, and so came first. The IL view
+  shows no changed line in it. The fix is on row
+  2<!-- from truth_ubuntu_rivals: zlib1g-armhf-1:1.2.11.dfsg-2ubuntu7-1:1.2.11.dfsg-2ubuntu9 / rank:hereticus -->, and radiff2 and Ghidra show it on row
+  1<!-- from truth_ubuntu_rivals: zlib1g-armhf-1:1.2.11.dfsg-2ubuntu7-1:1.2.11.dfsg-2ubuntu9 / rank:ghidra -->.
+- **Pairs built two ways.** Where another compiler built the next
+  release, Ghidra shows the fix of tinyxml2 and of Lua earlier than
+  `hereticus` does, and the fix of Lua is far down the report of each
+  tool, as [Pairs Built Two Ways](#pairs-built-two-ways) says.
+- **Binaries with no names.** Before the tests read libraries with no
+  names, `hereticus` read such Thumb-2 code as A32 code, and took a PLT
+  stub whose slot holds a relocated address for its callee, as
+  [Libraries With No Names](#libraries-with-no-names) says. Both are
   fixed. Other kinds of binary that the tests do not read can have errors
   of the same kind.
 

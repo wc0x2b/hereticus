@@ -108,7 +108,15 @@ fn resolve(arch: &dyn Arch, links: &Links, functions: &[Function], target: CallT
             // itself stands for its callee: each callee has one.
             match links.stub_callee(arch, address) {
                 Some(name) => Callee::Named(name.to_string()),
-                None => function_at(functions, address),
+                None => {
+                    // A slot that a relative relocation fills names the
+                    // function of the binary that the stub calls.
+                    let target = links.stub_target(arch, address);
+                    match target.map(|target| function_at(functions, target & !1)) {
+                        Some(callee @ (Callee::Function(_) | Callee::Named(_))) => callee,
+                        Some(Callee::Unknown) | None => function_at(functions, address),
+                    }
+                }
             }
         }
         CallTarget::Slot(slot) => resolve_slot(arch, links, functions, slot),
@@ -206,6 +214,18 @@ mod tests {
         let stub_name = links.stub_name(&Arm32, &stub);
         assert_eq!(stub_name.as_deref(), Some("_ZN8tinyxml27StrPair5ResetEv@plt"));
         assert_eq!(links.stub_name(&Arm32, &function("", 0x20)), None, "no stub");
+
+        // With no name for the slot, a relocation that stores the address of
+        // a function there makes the stub stand for that function.
+        let stub = links.bytes_at(0x1dd60).unwrap()[..12].to_vec();
+        let unnamed = Links::of_parts(vec![(0x1dd60, stub.clone())], BTreeMap::new());
+        let functions = [function("", 0x20), function("", 0x1dd60)];
+        let relocated = unnamed.clone().with_relocated(BTreeMap::from([(0x3ea34, 0x20)]));
+        let via_stub = resolve(&Arm32, &relocated, &functions, CallTarget::Address(0x1dd60));
+        assert_eq!(via_stub, Callee::Function(0));
+        let elsewhere = unnamed.with_relocated(BTreeMap::from([(0x3ea34, 0x99)]));
+        let via_stub = resolve(&Arm32, &elsewhere, &functions, CallTarget::Address(0x1dd60));
+        assert_eq!(via_stub, Callee::Function(1), "no function at the address: the stub stays");
 
         let in_page = CallTarget::PageOffset { slot: 0x3ea38, offset: 0x11 };
         let functions = [function("", 0x20), function("", 0x30)];

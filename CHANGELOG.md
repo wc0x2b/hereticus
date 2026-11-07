@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A call to a PLT stub whose slot a relocation fills with the address of a
+  function of the same binary, with no symbol, now counts as a call to that
+  function. Before, such a stub stood for its callee, and stubs that moved
+  between two builds made their callers read as changed.
+
 - An ARM library or executable with no symbol table and no exported
   functions reads as Thumb-2 code where most of the addresses of code that
   its relocations store have bit 0 set. Before, such a Thumb-2 file read

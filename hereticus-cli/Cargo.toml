@@ -38,6 +38,8 @@ mimalloc = { version = "0.1.52", default-features = false }
 libc = "0.2"
 
 [dev-dependencies]
+gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
+object = "0.40"
 insta = "1.48"
 insta-cmd = "0.7"
 bolero = { version = "0.13", features = ["arbitrary"] }

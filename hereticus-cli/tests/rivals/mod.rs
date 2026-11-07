@@ -70,6 +70,10 @@ pub enum Setup {
     /// Its default analysis, on copies of the stripped libraries with no
     /// symbol that the library defines. `hereticus` reads the same copies.
     Unnamed,
+    /// Its default analysis, on the builds of
+    /// `fixtures/rivals/crossed-builds.txt`, whose two sides are built by
+    /// other compilers or at other levels.
+    Crossed,
 }
 
 impl Setup {
@@ -80,6 +84,7 @@ impl Setup {
             Self::Default => "",
             Self::Deeper => "-deeper",
             Self::Unnamed => "-unnamed",
+            Self::Crossed => "-crossed",
         }
     }
 }
@@ -104,26 +109,40 @@ impl Contender {
 pub struct Build {
     pub project: String,
     pub arch: String,
+    /// The level of the build before the fix.
     pub level: String,
+    /// The level of the build after the fix, where it is another: another
+    /// compiler or optimization, as a vendor's next release can have.
+    pub after_level: Option<String>,
 }
 
 impl Build {
     pub fn name(&self) -> String {
-        format!("{}-{}-{}", self.project, self.arch, self.level)
+        let name = format!("{}-{}-{}", self.project, self.arch, self.level);
+        match &self.after_level {
+            Some(after) => format!("{name}-to-{after}"),
+            None => name,
+        }
     }
 
     pub fn file(&self, variant: Variant, file: &str) -> PathBuf {
+        let level = match (variant, &self.after_level) {
+            (Variant::After, Some(after)) => after,
+            _ => &self.level,
+        };
         fixtures()
             .join("build/backports")
             .join(format!("{}-{}", self.project, variant.directory()))
-            .join(format!("{}-{}", self.arch, self.level))
+            .join(format!("{}-{level}", self.arch))
             .join(file)
     }
 
     /// The library of one side that both tools read in `setup`.
     pub fn library(&self, variant: Variant, setup: Setup) -> PathBuf {
         match setup {
-            Setup::Default | Setup::Deeper => self.file(variant, "lib-stripped.so"),
+            Setup::Default | Setup::Deeper | Setup::Crossed => {
+                self.file(variant, "lib-stripped.so")
+            }
             Setup::Unnamed => fixtures()
                 .join("build/rivals/unnamed")
                 .join(self.name())
@@ -195,17 +214,34 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures")
 }
 
-/// The builds of `fixtures/rivals/builds.txt`.
-pub fn builds() -> Vec<Build> {
-    include_str!("../../../fixtures/rivals/builds.txt")
-        .lines()
+/// The builds that `setup` reads: those of
+/// `fixtures/rivals/crossed-builds.txt` for [`Setup::Crossed`], and those of
+/// `fixtures/rivals/builds.txt` for the others.
+pub fn builds(setup: Setup) -> Vec<Build> {
+    let list = match setup {
+        Setup::Crossed => include_str!("../../../fixtures/rivals/crossed-builds.txt"),
+        Setup::Default | Setup::Deeper | Setup::Unnamed => {
+            include_str!("../../../fixtures/rivals/builds.txt")
+        }
+    };
+    list.lines()
         .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
         .map(|line| {
             let fields: Vec<&str> = line.split_whitespace().collect();
-            let [project, arch, level] = fields[..] else {
-                panic!("builds.txt: {line:?} is not a project, an arch and a level");
+            let (project, arch, level, after_level) = match fields[..] {
+                [project, arch, level] => (project, arch, level, None),
+                [project, arch, level, after] => (project, arch, level, Some(after.to_owned())),
+                _ => panic!(
+                    "builds.txt: {line:?} is not a project, an arch, a level and maybe the \
+                     level after the fix"
+                ),
             };
-            Build { project: project.to_owned(), arch: arch.to_owned(), level: level.to_owned() }
+            Build {
+                project: project.to_owned(),
+                arch: arch.to_owned(),
+                level: level.to_owned(),
+                after_level,
+            }
         })
         .collect()
 }
@@ -213,12 +249,12 @@ pub fn builds() -> Vec<Build> {
 /// One row of a report: the function before and after, where each side
 /// links it. A gone function has no after, and a new one no before.
 #[derive(Clone, Copy, Debug)]
-struct Row {
-    before: Option<u64>,
-    after: Option<u64>,
+pub struct Row {
+    pub before: Option<u64>,
+    pub after: Option<u64>,
     /// The score the other tool sorts by. This tool's rows have none, as
     /// their place is their rank.
-    score: Option<f64>,
+    pub score: Option<f64>,
 }
 
 /// How a report places its rows.
@@ -242,20 +278,25 @@ fn address(value: &serde_json::Value) -> Option<u64> {
 }
 
 /// What one tool reports for one build, and how long it took.
-struct Report {
-    rows: Vec<Row>,
-    seconds: f64,
+pub struct Report {
+    pub rows: Vec<Row>,
+    pub seconds: f64,
 }
 
 /// What the other tool reports for `build`.
 fn rival_report(contender: Contender, build: &Build) -> Report {
-    let rival = contender.rival;
     let path =
         fixtures().join("build/rivals").join(contender.directory()).join(build.name() + ".json");
-    let report = read_json(&path, rival.recipe());
-    let seconds = report["seconds"].as_f64().unwrap_or_else(|| {
-        panic!("{}: no seconds, run `{}` again", path.display(), rival.recipe())
-    });
+    rows_in(&path, contender.rival.recipe())
+}
+
+/// The rows that `fixtures/rivals.sh`, or a script like it, wrote to `path`.
+/// `recipe` is the command that writes them.
+pub fn rows_in(path: &Path, recipe: &str) -> Report {
+    let report = read_json(path, recipe);
+    let seconds = report["seconds"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("{}: no seconds, run `{recipe}` again", path.display()));
     let rows = report["rows"]
         .as_array()
         .expect("the rows are a list")
@@ -272,18 +313,24 @@ fn rival_report(contender: Contender, build: &Build) -> Report {
 /// What this tool reports for `build`, run as a user runs it, on the
 /// libraries of `setup`.
 fn hereticus_report(build: &Build, setup: Setup) -> Report {
+    hereticus_rows(&build.library(Variant::Before, setup), &build.library(Variant::After, setup))
+}
+
+/// What this tool reports for two files, run as a user runs it.
+pub fn hereticus_rows(before: &Path, after: &Path) -> Report {
     let start = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_hereticus"))
         .args(["--progress", "never", "--format", "json"])
-        .arg(build.library(Variant::Before, setup))
-        .arg(build.library(Variant::After, setup))
+        .arg(before)
+        .arg(after)
         .output()
         .expect("the tool runs");
     let seconds = start.elapsed().as_secs_f64();
     assert!(
         output.status.success(),
-        "{}: {}",
-        build.name(),
+        "{} {}: {}",
+        before.display(),
+        after.display(),
         String::from_utf8_lossy(&output.stderr)
     );
     let report: serde_json::Value =
@@ -295,14 +342,16 @@ fn hereticus_report(build: &Build, setup: Setup) -> Report {
         after: address(&pair["after"]["address"]),
         score: None,
     });
-    let gone = list("gone").into_iter().map(|function| Row {
-        before: address(&function["address"]),
+    // A gone or a new row holds its function, with what else the report
+    // says of it.
+    let gone = list("gone").into_iter().map(|row| Row {
+        before: address(&row["function"]["address"]),
         after: None,
         score: None,
     });
-    let new = list("new").into_iter().map(|function| Row {
+    let new = list("new").into_iter().map(|row| Row {
         before: None,
-        after: address(&function["address"]),
+        after: address(&row["function"]["address"]),
         score: None,
     });
     Report { rows: pairs.chain(gone).chain(new).collect(), seconds }
@@ -429,7 +478,7 @@ pub struct Contest {
 
 /// Score both tools on every build.
 pub fn contests(contender: Contender) -> Vec<Contest> {
-    builds()
+    builds(contender.setup)
         .into_iter()
         .map(|build| {
             let symbols = Symbols::of(&build);
@@ -456,11 +505,23 @@ pub enum Ranks {
     Locked,
 }
 
+/// Whether [`losses`] counts a build where this tool reports more extras.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Extras {
+    /// This tool must report no more extras than the other tool does.
+    Checked,
+    /// The snapshot locks the extras, and a test does not check them, as
+    /// where the copies of a setup give this tool rows that a real build
+    /// would not.
+    Locked,
+}
+
 /// Where this tool does worse than the other tool, one line each.
 ///
 /// This tool must report every fix, rank it no lower than the other tool
-/// does where `ranks` says so, and report no more extras.
-pub fn losses(contests: &[Contest], ranks: Ranks) -> Vec<String> {
+/// does where `ranks` says so, and report no more extras where `extras`
+/// says so.
+pub fn losses(contests: &[Contest], ranks: Ranks, extras: Extras) -> Vec<String> {
     let mut losses = Vec::new();
     for contest in contests {
         let name = contest.build.name();
@@ -472,7 +533,7 @@ pub fn losses(contests: &[Contest], ranks: Ranks) -> Vec<String> {
             }
             _ => {}
         }
-        if ours.extras > theirs.extras {
+        if ours.extras > theirs.extras && extras == Extras::Checked {
             losses.push(format!(
                 "{name}: hereticus reports {} extras, the other {}",
                 ours.extras, theirs.extras
@@ -480,6 +541,15 @@ pub fn losses(contests: &[Contest], ranks: Ranks) -> Vec<String> {
         }
     }
     losses
+}
+
+/// The builds where this tool does not report the fix, one line each.
+pub fn misses(contests: &[Contest]) -> Vec<String> {
+    contests
+        .iter()
+        .filter(|contest| contest.hereticus.rank.is_none())
+        .map(|contest| format!("{}: hereticus misses the fix", contest.build.name()))
+        .collect()
 }
 
 fn rank_text(rank: Option<usize>) -> String {
@@ -516,12 +586,12 @@ pub fn table(contender: Contender, contests: &[Contest]) -> String {
             format!(" {:>22} {:>22}", format!("{column}:hereticus"), format!("{column}:{other}"))
         })
         .concat();
-    let mut builds = format!("\n{:24}{columns}\n", "build");
+    let mut builds = format!("\n{:32}{columns}\n", "build");
     for contest in contests {
         let (ours, theirs) = (contest.hereticus, contest.rival);
         writeln!(
             builds,
-            "{:24} {:>22} {:>22} {:>22} {:>22} {:>22} {:>22}",
+            "{:32} {:>22} {:>22} {:>22} {:>22} {:>22} {:>22}",
             contest.build.name(),
             rank_text(ours.rank),
             rank_text(theirs.rank),
@@ -542,11 +612,11 @@ pub fn table(contender: Contender, contests: &[Contest]) -> String {
 /// the other tool ran alone, in `fixtures/rivals.sh`.
 pub fn times(contender: Contender, contests: &[Contest]) -> String {
     let other = contender.directory();
-    let mut table = format!("{:24} {:>12} {:>12}\n", "build", "hereticus s", format!("{other} s"));
+    let mut table = format!("{:32} {:>12} {:>12}\n", "build", "hereticus s", format!("{other} s"));
     for contest in contests {
         writeln!(
             table,
-            "{:24} {:>12.3} {:>12.3}",
+            "{:32} {:>12.3} {:>12.3}",
             contest.build.name(),
             contest.hereticus_seconds,
             contest.rival_seconds
@@ -555,6 +625,6 @@ pub fn times(contender: Contender, contests: &[Contest]) -> String {
     }
     let ours: f64 = contests.iter().map(|contest| contest.hereticus_seconds).sum();
     let theirs: f64 = contests.iter().map(|contest| contest.rival_seconds).sum();
-    writeln!(table, "{:24} {ours:>12.3} {theirs:>12.3}", "all").unwrap();
+    writeln!(table, "{:32} {ours:>12.3} {theirs:>12.3}", "all").unwrap();
     table
 }

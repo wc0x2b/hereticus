@@ -2905,3 +2905,106 @@ functions with almost the same code, as `memory_high_show` and
 that the backport in 22.03.5 renamed or moved, as `io_uring_add_task_file`
 to `__io_uring_add_tctx_node`, which `truth_kernels.rs` can count as
 renamed. The 14 that Ghidra pairs right are the first errors to look at.
+
+### Hard cases for the comparison
+
+A search for the cases where `hereticus` does worse than radiff2 or
+Ghidra, on 2026-11-05.
+
+**More architectures.** The backports for x86-64, i686, 32-bit PowerPC
+and 64-bit PowerPC, 29 pairs, went into `builds.txt`, for 64 in all. Over
+all 64, `hereticus` found 64 fixes, 38 on row 1, in 145 rows; radiff2 35,
+18 and 4522; Ghidra 60, 32 and 4477; and Ghidra with more correlators 60,
+33 and 3044. With more correlators, Ghidra puts the Lua fix earlier than
+`hereticus` on each of the nine builds of Lua by clang at `-O2`, and
+radiff2 `-AA` on the one for 64-bit PowerPC. On these,
+`hereticus` found all 29 fixes and radiff2 15. Ghidra found 27, and showed
+3718 rows: it missed the zlib fix on both 64-bit PowerPC builds by GCC, and
+showed 375 to 838 rows for Lua on PowerPC. On x86-64, three `extend`
+functions of smallvec show as changed because a text that they refer to
+changed: the source line of a Rust panic, which the fix moved.
+
+**No names on x86.** The copies with no names showed 44 rows that the fix
+did not touch on tinyxml2 for x86-64, and 39 for i686, where the names
+gave 1. `unname.py` turns a `JUMP_SLOT` relocation of an exported function
+into a relative one, so its PLT stub has no name, and `hereticus` took the
+stub for the callee. The stubs moved, and each caller read as changed.
+A stub whose slot holds a relocated address of a function now calls that
+function. This took the extras of the setup from 86 to 10. The rest are
+three `.plt.sec` stubs that show as gone and as new, which a library that
+exports nothing would not have, and the smallvec rows above.
+
+**Pairs built two ways.** On 28 pairs whose sides clang and GCC built, or
+`-Os` and `-O3`, `hereticus` found all fixes and radiff2 16. The fix of
+zlib was on row 1 or 2, of tinyxml2 on row 2 to 31, and of Lua on row 149
+to 391. `luaZ_fill` scores 0.52 between clang and GCC, as any function
+the other compiler rebuilt. No `--sort` order puts it above row 141 on ARM. Ghidra also found all 28, with 9 on row 1 against 7, in
+8416 rows against 7199. It put the fix of tinyxml2 on row 1 of each pair,
+where `hereticus` put it on row 2 to 31, and the fix of Lua on row 111 to
+231. Where the compiler changed every function, the least alike function
+was the fix more often than the one that gained the most instructions.
+`hereticus` was earlier on zlib and smallvec.
+
+**Ubuntu updates.** 176 updates edit a function whose code changed:
+
+| Tool | Found | Row 1 | First 10 rows | Rows |
+|---|---|---|---|---|
+| hereticus | 176 | 122 | 175 | 5972 |
+| radiff2 | 105 | 30 | 50 | 80450 |
+| Ghidra | 173 | 90 | 146 | 50932 |
+
+Ghidra shows the fix earlier than `hereticus` in 27 updates, and
+`hereticus` earlier than Ghidra in 84. The worst is libssh for arm64 to
+0.9.6-2ubuntu0.22.04.5: row 30 against row 1. The fix adds one
+normalized instruction to `ssh_make_sessionid`, at a score of 1.00, and 29
+functions whose stack frames the compiler laid out anew go above it. In
+`ssh_connector_fd_out_cb`, the frame of 0x1040 bytes became a push of the
+frame pair and a frame of 0x1010 bytes, with a stack-clash probe, `str
+xzr, [sp, #0x400]`. The normalizer drops the stores to `sp`, but not the
+`mov x13, #0x1010` that `sub sp, sp, x13` reads, nor the registers that
+the new layout moved, so 14 instructions count as added. A test that
+read `mov x12, #size` and `sub sp, sp, x12` as frame work left the count
+at 14 and the fix on row 30, so the count comes from the registers that
+moved, and the rule was not kept. On
+armhf, zlib to 1:1.2.11.dfsg-2ubuntu9 puts `inflateBack` first with 43
+normalized instructions added and 39 removed, where the IL view shows no
+changed line. The asm diff of it shows many words of a literal pool, but
+the normalizer drops all 16 of them on both sides as stored addresses, so
+the count comes from the instructions. Which of them the IL view folds is
+not yet known. The first scorer had two errors that this work found:
+it took a gone or new row of `hereticus` for no function, and it did not
+strip the suffixes `.lto_priv.N` and `__internal_alias`, so the row of
+`xmlXPathEvalExpr__internal_alias.part.0` did not count as the fix. It
+also counted an update whose fix function kept its code, as liblzma on
+arm64, where radiff2 "found" the fix in a function with the same
+instructions. The answer can still be short: in libxml2 for arm64 to
+2.9.13+dfsg-1ubuntu0.10, Ghidra shows the fix on row 1 and `hereticus` on
+row 7, under `xmlXPathCompileExpr`, `htmlReadDoc` and `xmlReadFd`, which
+gained 50, 25 and 22 instructions. The patch names 34 functions, none of
+these, and under LTO a caller can hold a static helper that the patch
+changed but names only in its body, which the list of fixed functions
+does not hold.
+
+**Kernels.** Of the 14 kernel functions that `hereticus` pairs wrong and
+Ghidra right, 10 come from two functions that the scan joined in one
+kernel: `tcp_v4_get_syncookie` and `tcp_v4_early_demux` on each MIPS board,
+as nothing calls `tcp_v4_early_demux` in 22.03.2, and only the two words
+of `tcp_protocol` point at it. A raw image takes no word of data as the
+start of a function, as the address of a variable also falls in the code
+there. Two more are `sock_init_data`, whose code moved to
+`sock_init_data_uid`, one is a pair of twins, and one a real error. A
+test took each run of two or more words that point into the code of a raw
+image as a table of functions, where the target follows the end of a
+function and no branch crosses it both ways. On the MT300N v2 kernel of
+22.03.2, that found 801 more real starts of 20988, and 3940 more that are
+not real, against 464 before, so it was not kept. Most such runs are the
+labels of a `switch`, which the guards do not tell from a table of
+functions. On the
+upgrade from 21.02.7 to 22.03.2, the plain rule of `truth_kernel_rivals.rs`
+calls 2450 pairs of `hereticus` wrong, 4.5%, and 534 of radiff2, 25.8% of
+the 2071 that it can judge. Ghidra made 10722 pairs there, 481 of them wrong, 4.6%. On
+the upgrade from 22.03.5 to 23.05.5, `hereticus` made 59637 right pairs
+and 1783 wrong, 2.9%, and Ghidra 26022 right and 498 wrong, 1.9%. Of the
+functions that `hereticus` pairs wrong there, Ghidra pairs 108 right.
+Two runs of Ghidra on the point release gave 116 and 114 wrong pairs, so
+its pairs of a large kernel are not the same on each run.

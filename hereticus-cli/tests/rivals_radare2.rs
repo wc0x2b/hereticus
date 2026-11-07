@@ -11,14 +11,14 @@
 
 mod rivals;
 
-use rivals::{Contender, Ranks, Rival, Setup};
+use rivals::{Contender, Extras, Ranks, Rival, Setup};
 
 const RADIFF2: Contender = Contender { rival: Rival::Radare2, setup: Setup::Default };
 
 #[test]
 fn hereticus_does_no_worse_than_radiff2() {
     let contests = rivals::contests(RADIFF2);
-    let losses = rivals::losses(&contests, Ranks::Checked);
+    let losses = rivals::losses(&contests, Ranks::Checked, Extras::Checked);
     assert!(losses.is_empty(), "hereticus does worse than radiff2:\n{}", losses.join("\n"));
 }
 

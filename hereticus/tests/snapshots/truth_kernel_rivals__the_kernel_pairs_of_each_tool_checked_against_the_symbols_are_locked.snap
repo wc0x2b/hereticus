@@ -2,36 +2,68 @@
 source: hereticus/tests/truth_kernel_rivals.rs
 expression: out
 ---
-kernel                         pairs  judged   right  wrong   wrong%
-arm-ex6100v2 hereticus         23123   22875   22831     44    0.19%
-arm-ex6100v2 radare2            1907    1340    1288     52    3.88%
-arm-ex6100v2 ghidra            17896   17794   17776     18    0.10%
-mipsbe-eap245v3 hereticus      20419   20372   20325     47    0.23%
-mipsbe-eap245v3 radare2         3622    3356    3270     86    2.56%
-mipsbe-eap245v3 ghidra         13133   12838   12813     25    0.19%
-mipsel-r6220 hereticus         22642   22190   22149     41    0.18%
-mipsel-r6220 radare2            3334    2736    2614    122    4.46%
-mipsel-r6220 ghidra            14804   14256   14240     16    0.11%
-arm-a385dbap hereticus         25953   25733   25681     52    0.20%
-arm-a385dbap radare2            1482    1314    1290     24    1.83%
-arm-a385dbap ghidra            20194   20099   20077     22    0.11%
-mipsbe-vr200 hereticus         22263   21835   21795     40    0.18%
-mipsbe-vr200 radare2            3803    2057    1872    185    8.99%
-mipsbe-vr200 ghidra            14582   14042   14029     13    0.09%
-mipsel-mt300nv2 hereticus      19621   19160   19115     45    0.23%
-mipsel-mt300nv2 radare2         3644    3335    3248     87    2.61%
-mipsel-mt300nv2 ghidra         12593   12090   12068     22    0.18%
+kernel                                     pairs  judged   right  wrong   wrong%
+arm-ex6100v2 22.03.2/22.03.5 hereticus     23123   22875   22831     44    0.19%
+arm-ex6100v2 22.03.2/22.03.5 radare2        1907    1340    1288     52    3.88%
+arm-ex6100v2 22.03.2/22.03.5 ghidra        17895   17793   17774     19    0.11%
+mipsbe-eap245v3 22.03.2/22.03.5 hereticus   20419   20372   20325     47    0.23%
+mipsbe-eap245v3 22.03.2/22.03.5 radare2     3622    3356    3270     86    2.56%
+mipsbe-eap245v3 22.03.2/22.03.5 ghidra     13134   12839   12815     24    0.19%
+mipsel-r6220 22.03.2/22.03.5 hereticus     22642   22190   22149     41    0.18%
+mipsel-r6220 22.03.2/22.03.5 radare2        3334    2736    2614    122    4.46%
+mipsel-r6220 22.03.2/22.03.5 ghidra        14804   14256   14240     16    0.11%
+arm-a385dbap 22.03.2/22.03.5 hereticus     25953   25733   25681     52    0.20%
+arm-a385dbap 22.03.2/22.03.5 radare2        1482    1314    1290     24    1.83%
+arm-a385dbap 22.03.2/22.03.5 ghidra        20194   20099   20078     21    0.10%
+mipsbe-vr200 22.03.2/22.03.5 hereticus     22263   21835   21795     40    0.18%
+mipsbe-vr200 22.03.2/22.03.5 radare2        3803    2057    1872    185    8.99%
+mipsbe-vr200 22.03.2/22.03.5 ghidra        14584   14044   14032     12    0.09%
+mipsel-mt300nv2 22.03.2/22.03.5 hereticus   19621   19160   19115     45    0.23%
+mipsel-mt300nv2 22.03.2/22.03.5 radare2     3644    3335    3248     87    2.61%
+mipsel-mt300nv2 22.03.2/22.03.5 ghidra     12593   12090   12068     22    0.18%
+arm-ex6100v2 21.02.7/22.03.2 hereticus     19392   19152   18168    984    5.14%
+arm-ex6100v2 21.02.7/22.03.2 radare2        3703     415     310    105   25.30%
+arm-ex6100v2 21.02.7/22.03.2 ghidra         2934    2887    2730    157    5.44%
+mipsbe-eap245v3 21.02.7/22.03.2 hereticus   17184   17143   16459    684    3.99%
+mipsbe-eap245v3 21.02.7/22.03.2 radare2     3451     766     555    211   27.55%
+mipsbe-eap245v3 21.02.7/22.03.2 ghidra      3921    3816    3655    161    4.22%
+mipsel-r6220 21.02.7/22.03.2 hereticus     18603   18191   17409    782    4.30%
+mipsel-r6220 21.02.7/22.03.2 radare2        3849     890     672    218   24.49%
+mipsel-r6220 21.02.7/22.03.2 ghidra         3867    3681    3518    163    4.43%
+arm-ex6100v2 22.03.5/23.05.5 hereticus     21708   21469   20750    719    3.35%
+arm-ex6100v2 22.03.5/23.05.5 radare2        2750     795     668    127   15.97%
+arm-ex6100v2 22.03.5/23.05.5 ghidra        10607   10543   10346    197    1.87%
+mipsbe-eap245v3 22.03.5/23.05.5 hereticus   19163   19119   18609    510    2.67%
+mipsbe-eap245v3 22.03.5/23.05.5 radare2     3741    1433    1179    254   17.73%
+mipsbe-eap245v3 22.03.5/23.05.5 ghidra      7950    7739    7586    153    1.98%
+mipsel-r6220 22.03.5/23.05.5 hereticus     21248   20832   20278    554    2.66%
+mipsel-r6220 22.03.5/23.05.5 radare2        3522    1618    1387    231   14.28%
+mipsel-r6220 22.03.5/23.05.5 ghidra         8584    8238    8090    148    1.80%
 
-tool                           pairs  judged   right  wrong   wrong%
-all hereticus                 134021  132165  131896    269    0.20%
-all radare2                    17792   14138   13582    556    3.93%
-all ghidra                     93202   91119   91003    116    0.13%
+releases                                   pairs  judged   right  wrong   wrong%
+21.02.7/22.03.2 hereticus                  55179   54486   52036   2450    4.50%
+21.02.7/22.03.2 radare2                    11003    2071    1537    534   25.78%
+21.02.7/22.03.2 ghidra                     10722   10384    9903    481    4.63%
+22.03.2/22.03.5 hereticus                 134021  132165  131896    269    0.20%
+22.03.2/22.03.5 radare2                    17792   14138   13582    556    3.93%
+22.03.2/22.03.5 ghidra                     93204   91121   91007    114    0.13%
+22.03.5/23.05.5 hereticus                  62119   61420   59637   1783    2.90%
+22.03.5/23.05.5 radare2                    10013    3846    3234    612   15.91%
+22.03.5/23.05.5 ghidra                     27141   26520   26022    498    1.88%
 
-hereticus-wrong              ghidra-right ghidra-wrong ghidra-unpaired
-arm-ex6100v2                            3            5              36
-mipsbe-eap245v3                         1            5              41
-mipsel-r6220                            1            5              35
-arm-a385dbap                            5            7              40
-mipsbe-vr200                            3            5              32
-mipsel-mt300nv2                         1            5              39
-all                                    14           32             223
+hereticus-wrong                          ghidra-right ghidra-wrong ghidra-unpaired
+arm-ex6100v2 22.03.2/22.03.5                        3            5              36
+mipsbe-eap245v3 22.03.2/22.03.5                     1            5              41
+mipsel-r6220 22.03.2/22.03.5                        1            5              35
+arm-a385dbap 22.03.2/22.03.5                        5            7              40
+mipsbe-vr200 22.03.2/22.03.5                        3            5              32
+mipsel-mt300nv2 22.03.2/22.03.5                     1            5              39
+arm-ex6100v2 21.02.7/22.03.2                       43           39             902
+mipsbe-eap245v3 21.02.7/22.03.2                     3           42             639
+mipsel-r6220 21.02.7/22.03.2                        7           50             725
+arm-ex6100v2 22.03.5/23.05.5                       71           76             572
+mipsbe-eap245v3 22.03.5/23.05.5                    15           60             435
+mipsel-r6220 22.03.5/23.05.5                       22           62             470
+21.02.7/22.03.2                                    53          131            2266
+22.03.2/22.03.5                                    14           32             223
+22.03.5/23.05.5                                   108          198            1477
