@@ -3028,6 +3028,26 @@ fn equal_instructions_share_a_symbol() {
     assert_eq!(interner.len(), 2, "two distinct instructions were seen");
 }
 
+/// Two instructions that share a hash still get a symbol each, and each
+/// finds its own again.
+#[test]
+fn instructions_that_share_a_hash_keep_their_own_symbols() {
+    let mut interner = Interner::default();
+    let decoded = |word: u32| {
+        let insn = Arm32.decode(&word.to_le_bytes(), 0, 0).expect("the word decodes");
+        normalize(&Arm32, &insn)
+    };
+    let (mov, ldr) = (decoded(0xe3a0_0001), decoded(0xe591_0000));
+    const SHARED: u64 = 7;
+
+    let mov_symbol = interner.intern_hashed(SHARED, &mov);
+    let ldr_symbol = interner.intern_hashed(SHARED, &ldr);
+    assert_ne!(mov_symbol, ldr_symbol);
+    assert_eq!(interner.intern_hashed(SHARED, &mov), mov_symbol);
+    assert_eq!(interner.intern_hashed(SHARED, &ldr), ldr_symbol);
+    assert_eq!(interner.len(), 2);
+}
+
 /// Record what a comparison reports, to check the reporting itself.
 ///
 /// Behind a lock because the scoring stages report from several threads.

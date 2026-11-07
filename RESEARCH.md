@@ -3209,3 +3209,12 @@ scored every two functions that alone share one, though most of them are
 pairs by identical code, shape or name, which nothing breaks. The two
 sides are now read at once, and those pairs get no score. The stage took
 1.19 s, and the comparison 3.85 s, with the same report, byte for byte.
+
+Preparing still took 1.8 s of it, and `callgrind`, on one thread, put
+nine tenths of the work of `prepare` on its own thread in the interning,
+and most of that in SipHash over each normalized instruction. The
+interning must number the instructions in order, so it stays on one
+thread, but each instruction is now hashed beforehand, on every core,
+and the interner finds it by that hash. Reading the tables, the rows and
+the classes of the two binaries at once took 0.1 s more off. The
+comparison took 3.38 s, with the same report, byte for byte.
