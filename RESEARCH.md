@@ -3193,3 +3193,11 @@ check for the range extension thunk of LLD lifted the first two
 instructions of every place a function can start, whatever the others
 were. With the opcodes read first, and one lift for each instruction,
 the comparison took 2.5 s, with the same report, byte for byte.
+
+Of what was left, the stage of scores took 0.70 s, and most of it scored
+each free function of one side against each of the other. The score is
+the share of the two multisets of instructions that both hold, so it
+can be no more than the size of the smaller over the size of the larger.
+A pair whose sizes alone hold it below both bars of the stage now gets
+no score, and the stage took 0.51 s, with the same report, byte for
+byte. No other stage of the comparison then took more than 0.11 s.

@@ -22,7 +22,7 @@ use super::score::{
     REFERENCE_WEIGHT, RIVAL_MARGIN, ReferenceKey, SHIFTED_GAP_MARGIN, common_keys,
     constant_agreement, group_by_shape_and_references, is_judged_by_context, keep_best_candidates,
     lacks_context, long_texts, reference_agreement, saturated, short_texts_changed,
-    similarity_of_symbols, sorted_only_in, sorted_shared, texts_that_differ,
+    similarity_bound, similarity_of_symbols, sorted_only_in, sorted_shared, texts_that_differ,
     unique_reference_holders,
 };
 use super::{
@@ -1979,6 +1979,9 @@ impl Cascade<'_> {
         // not depend on the order the rows finished in.
         let threshold = self.options.threshold;
         let (left_calls, right_calls) = self.reference_keys();
+        // A pair below both bars is never kept, so a pair whose sizes alone
+        // hold it below them needs no score.
+        let lowest_bar = threshold.min(FLOW_RESCUE.code);
         let candidates: Vec<(f64, usize, usize)> = (0..self.left.len())
             .into_par_iter()
             .filter(|index| self.left_free[*index])
@@ -1994,6 +1997,9 @@ impl Cascade<'_> {
                         continue;
                     }
                     let (left, right) = (&self.left[index], &self.right[other]);
+                    if similarity_bound(left.symbols.len(), right.symbols.len()) < lowest_bar {
+                        continue;
+                    }
                     let score = similarity_of_symbols(&left.symbols, &right.symbols);
                     let flows_alike = || {
                         score >= FLOW_RESCUE.code

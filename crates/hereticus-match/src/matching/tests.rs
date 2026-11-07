@@ -2977,6 +2977,37 @@ fn scoring_by_symbol_agrees_with_scoring_by_body() {
     }
 }
 
+/// The similarity stage skips a pair whose sizes alone hold it below the
+/// bar, so no pair may score above the bound of its sizes. This checks
+/// every pair of sorted lists of up to five of three symbols.
+#[test]
+fn no_pair_scores_above_the_bound_of_its_sizes() {
+    let mut lists: Vec<Vec<u32>> = vec![Vec::new()];
+    for _ in 0..5 {
+        let longer: Vec<Vec<u32>> = lists
+            .iter()
+            .flat_map(|list| {
+                let from = list.last().copied().unwrap_or(0);
+                (from..3).map(move |symbol| [list.as_slice(), &[symbol]].concat())
+            })
+            .filter(|list| !lists.contains(list))
+            .collect();
+        lists.extend(longer);
+    }
+    assert_eq!(lists.len(), 56, "every multiset of up to five of three symbols");
+
+    for left in &lists {
+        for right in &lists {
+            let score = similarity_of_symbols(left, right);
+            let bound = similarity_bound(left.len(), right.len());
+            assert!(score <= bound, "{left:?} against {right:?}: {score} above {bound}");
+        }
+    }
+    assert_eq!(similarity_bound(0, 0), 1.0);
+    assert_eq!(similarity_bound(3, 0), 0.0);
+    assert_eq!(similarity_bound(2, 4), 0.5);
+}
+
 /// Two equal instructions must get one symbol, and unequal ones must not.
 ///
 /// Equality ignores constants on purpose, so the interner has to as well.

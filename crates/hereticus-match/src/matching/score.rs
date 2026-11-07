@@ -708,6 +708,16 @@ pub(super) fn similarity_of_symbols<T: Ord>(left: &[T], right: &[T]) -> f64 {
     if combined == 0 { 0.0 } else { shared as f64 / combined as f64 }
 }
 
+/// The highest [`similarity_of_symbols`] that two lists of these lengths
+/// can give: all of the shorter list shared, over the longer.
+///
+/// Division rounds the same way for both, so the bound holds for the
+/// floating-point values too.
+pub(super) fn similarity_bound(left: usize, right: usize) -> f64 {
+    let (shorter, longer) = (left.min(right), left.max(right));
+    if longer == 0 { 1.0 } else { shorter as f64 / longer as f64 }
+}
+
 /// Similarity of two normalized bodies, from 0.0 to 1.0.
 ///
 /// This is Jaccard similarity over the multiset of normalized instructions:
