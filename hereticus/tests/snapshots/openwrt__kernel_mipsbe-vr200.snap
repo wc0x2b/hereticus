@@ -2,12 +2,12 @@
 source: hereticus/tests/openwrt.rs
 expression: kernel_digest(&comparison)
 ---
-functions 22405 -> 22511
-matched 22263
-{No: 20096, Reordered: 12, Data: 5, InDetail: 1498, Yes: 652}
+functions 22686 -> 22792
+matched 22544
+{No: 20370, Reordered: 12, Data: 8, InDetail: 1505, Yes: 649}
 gone 142
 new 248
-fingerprint 0xce711dce9d26032e
+fingerprint 0x5938dc8273493969
 
 strongest changes:
 0x8000bb18 -> 0x8000bb38 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }
@@ -44,9 +44,9 @@ strongest changes:
 0x804b6c88 -> 0x804bc360 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }
 0x804ed8b0 -> 0x804f3110 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }
 0x804ee4f4 -> 0x804f3d54 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }
-0x805123fc -> 0x80517eb8 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }
 0x8054b4ac -> 0x80552d64 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }
 0x80879b64 -> 0x80883b64 score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }
 0x800e8f98 -> 0x800e97c4 score=1.000 edits=Edits { added: 2, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 1, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 1, calls_removed: 0, branches_added: 0, branches_removed: 0 }
 0x8061f2c0 -> 0x80626ec0 score=0.998 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 1, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }
 0x805be338 -> 0x805c5e84 score=0.998 edits=Edits { added: 1, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 1, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }
+0x805851dc -> 0x8058cb28 score=0.998 edits=Edits { added: 1, removed: 0, edited: 1 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 1, other: 1, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }

@@ -30,9 +30,9 @@
    "CVE-2022-23852_prevent-integer-overflow-in-XML_GetBuffer.patch"
   ],
   "fixes": [
-   "START_TEST",
    "XML_GetBuffer",
-   "make_suite"
+   "make_suite",
+   "test_get_buffer_2"
   ]
  },
  {
@@ -101,9 +101,9 @@
    "CVE-2022-43680-2.patch"
   ],
   "fixes": [
-   "START_TEST",
    "make_suite",
-   "parserCreate"
+   "parserCreate",
+   "test_alloc_long_notation"
   ]
  },
  {
@@ -296,7 +296,8 @@
    "srunner_create",
    "srunner_run_all",
    "storeAttributeValue",
-   "storeEntityValue"
+   "storeEntityValue",
+   "test_alloc_parse_xdecl"
   ]
  },
  {
@@ -438,7 +439,8 @@
    "reportProcessingInstruction",
    "setContext",
    "storeAtts",
-   "storeEntityValue"
+   "storeEntityValue",
+   "test_nested_entity_suspend_2"
   ]
  },
  {
@@ -517,6 +519,8 @@
    "parserInit",
    "resolveSystemId",
    "storeAtts",
+   "test_attributes",
+   "test_skipped_external_entity",
    "tmain",
    "unicode_byte_type"
   ]
@@ -552,9 +556,9 @@
    "CVE-2022-23852_prevent-integer-overflow-in-XML_GetBuffer.patch"
   ],
   "fixes": [
-   "START_TEST",
    "XML_GetBuffer",
-   "make_suite"
+   "make_suite",
+   "test_get_buffer_2"
   ]
  },
  {
@@ -623,9 +627,9 @@
    "CVE-2022-43680-2.patch"
   ],
   "fixes": [
-   "START_TEST",
    "make_suite",
-   "parserCreate"
+   "parserCreate",
+   "test_alloc_long_notation"
   ]
  },
  {
@@ -818,7 +822,8 @@
    "srunner_create",
    "srunner_run_all",
    "storeAttributeValue",
-   "storeEntityValue"
+   "storeEntityValue",
+   "test_alloc_parse_xdecl"
   ]
  },
  {
@@ -960,7 +965,8 @@
    "reportProcessingInstruction",
    "setContext",
    "storeAtts",
-   "storeEntityValue"
+   "storeEntityValue",
+   "test_nested_entity_suspend_2"
   ]
  },
  {
@@ -1039,6 +1045,8 @@
    "parserInit",
    "resolveSystemId",
    "storeAtts",
+   "test_attributes",
+   "test_skipped_external_entity",
    "tmain",
    "unicode_byte_type"
   ]
@@ -1075,8 +1083,8 @@
    "CVE-2018-25032-2.patch"
   ],
   "fixes": [
-   "OF",
    "_tr_flush_block",
+   "_tr_send_bits",
    "_tr_tally",
    "compress_block",
    "deflateCopy",
@@ -1121,8 +1129,8 @@
    "CVE-2018-25032-2.patch"
   ],
   "fixes": [
-   "OF",
    "_tr_flush_block",
+   "_tr_send_bits",
    "_tr_tally",
    "compress_block",
    "deflateCopy",
@@ -1303,6 +1311,7 @@
    "CVE-2023-29469.patch"
   ],
   "fixes": [
+   "xmlDictComputeFastKey",
    "xmlSchemaFixupComplexType",
    "xmlSchemaResolveElementReferences"
   ]
@@ -1458,6 +1467,8 @@
    "xmlCtxtDumpOneNode",
    "xmlGetParameterEntityFromDtd",
    "xmlSchematronFormatReport",
+   "xmlSchematronGetNode",
+   "xmlSchematronParse",
    "xmlShell"
   ]
  },
@@ -1531,6 +1542,7 @@
    "htmlNewDocNoDtD",
    "xmlAddID",
    "xmlDOMWrapAdoptAttr",
+   "xmlDOMWrapAdoptBranch",
    "xmlDumpAttributeDecl",
    "xmlFreeProp",
    "xmlIsDocNameStartChar",
@@ -1551,14 +1563,17 @@
    "xmlTextReaderIsEmptyElement",
    "xmlTextReaderNext",
    "xmlTextReaderPreserve",
+   "xmlTextReaderRead",
    "xmlTextReaderStartElement",
    "xmlTextReaderStartElementNs",
+   "xmlTextReaderValidateEntity",
    "xmlValidCtxtNormalizeAttributeValue",
    "xmlValidNormalizeAttributeValue",
    "xmlValidateAttributeCallback",
    "xmlValidateAttributeDecl",
    "xmlValidateAttributeIdCallback",
    "xmlValidateOneAttribute",
+   "xmlValidateOneNamespace",
    "xmlValidateRef",
    "xmlconfTestInvalid",
    "xmlconfTestValid"
@@ -1599,6 +1614,7 @@
   ],
   "fixes": [
    "rngTest",
+   "xmlCatalogListXMLResolve",
    "xmlCatalogListXMLResolveURI",
    "xmlExpandCatalog",
    "xmlGetSGMLCatalogEntryType",
@@ -1816,6 +1832,7 @@
    "CVE-2023-29469.patch"
   ],
   "fixes": [
+   "xmlDictComputeFastKey",
    "xmlSchemaFixupComplexType",
    "xmlSchemaResolveElementReferences"
   ]
@@ -1971,6 +1988,8 @@
    "xmlCtxtDumpOneNode",
    "xmlGetParameterEntityFromDtd",
    "xmlSchematronFormatReport",
+   "xmlSchematronGetNode",
+   "xmlSchematronParse",
    "xmlShell"
   ]
  },
@@ -2044,6 +2063,7 @@
    "htmlNewDocNoDtD",
    "xmlAddID",
    "xmlDOMWrapAdoptAttr",
+   "xmlDOMWrapAdoptBranch",
    "xmlDumpAttributeDecl",
    "xmlFreeProp",
    "xmlIsDocNameStartChar",
@@ -2064,14 +2084,17 @@
    "xmlTextReaderIsEmptyElement",
    "xmlTextReaderNext",
    "xmlTextReaderPreserve",
+   "xmlTextReaderRead",
    "xmlTextReaderStartElement",
    "xmlTextReaderStartElementNs",
+   "xmlTextReaderValidateEntity",
    "xmlValidCtxtNormalizeAttributeValue",
    "xmlValidNormalizeAttributeValue",
    "xmlValidateAttributeCallback",
    "xmlValidateAttributeDecl",
    "xmlValidateAttributeIdCallback",
    "xmlValidateOneAttribute",
+   "xmlValidateOneNamespace",
    "xmlValidateRef",
    "xmlconfTestInvalid",
    "xmlconfTestValid"
@@ -2112,6 +2135,7 @@
   ],
   "fixes": [
    "rngTest",
+   "xmlCatalogListXMLResolve",
    "xmlCatalogListXMLResolveURI",
    "xmlExpandCatalog",
    "xmlGetSGMLCatalogEntryType",
@@ -2300,13 +2324,13 @@
    "CVE-2022-0924.patch"
   ],
   "fixes": [
-   "DECLAREwriteFunc",
    "TIFFFetchNormalTag",
    "_TIFFVSetField",
    "createCroppedImage",
    "createImageSection",
    "extractImageSection",
    "invertImage",
+   "writeBufferToSeparateStrips",
    "writeImageSections"
   ]
  },
@@ -2536,6 +2560,7 @@
   "fixes": [
    "DECLAREreadFunc",
    "TIFFCleanup",
+   "countInkNamesString",
    "loadImage",
    "main",
    "processCropSelections",
@@ -2663,6 +2688,7 @@
    "EstimateStripByteCounts",
    "TIFFFetchDirectory",
    "TIFFFetchStripThing",
+   "TIFFReadDirEntryArrayWithLimit",
    "TIFFReadRGBAStripExt",
    "TIFFReadRGBATileExt",
    "allocChoppedUpStripArrays",
@@ -2997,13 +3023,13 @@
    "CVE-2022-0924.patch"
   ],
   "fixes": [
-   "DECLAREwriteFunc",
    "TIFFFetchNormalTag",
    "_TIFFVSetField",
    "createCroppedImage",
    "createImageSection",
    "extractImageSection",
    "invertImage",
+   "writeBufferToSeparateStrips",
    "writeImageSections"
   ]
  },
@@ -3233,6 +3259,7 @@
   "fixes": [
    "DECLAREreadFunc",
    "TIFFCleanup",
+   "countInkNamesString",
    "loadImage",
    "main",
    "processCropSelections",
@@ -3360,6 +3387,7 @@
    "EstimateStripByteCounts",
    "TIFFFetchDirectory",
    "TIFFFetchStripThing",
+   "TIFFReadDirEntryArrayWithLimit",
    "TIFFReadRGBAStripExt",
    "TIFFReadRGBATileExt",
    "allocChoppedUpStripArrays",
@@ -3730,6 +3758,7 @@
    "png_set_eXIf_1",
    "png_set_hIST",
    "png_set_pCAL",
+   "png_set_pHYs",
    "png_set_quantize",
    "png_set_sCAL_s",
    "png_set_sPLT",
@@ -3951,6 +3980,7 @@
    "png_set_eXIf_1",
    "png_set_hIST",
    "png_set_pCAL",
+   "png_set_pHYs",
    "png_set_quantize",
    "png_set_sCAL_s",
    "png_set_sPLT",
@@ -4221,6 +4251,15 @@
    "typos.patch"
   ],
   "fixes": [
+   "bid_get_line",
+   "bid_keyword",
+   "bid_keyword_list",
+   "detect_form",
+   "ensure_in_buff_size",
+   "header_odc",
+   "next_line",
+   "strncat_from_utf8_libarchive2",
+   "uudecode_filter_read",
    "zipx_lzma_alone_init"
   ]
  },
@@ -4402,14 +4441,15 @@
    "CVE-2025-5917.patch"
   ],
   "fixes": [
-   "DEFINE_TEST",
+   "_warc_rdhdr",
    "_warc_skip",
    "archive_read_format_rar_seek_data",
    "build_ustar_entry_name",
    "copy_from_lzss_window",
    "expand",
    "parse_filter",
-   "read_filter"
+   "read_filter",
+   "test_read_format_warc"
   ]
  },
  {
@@ -4454,7 +4494,8 @@
    "file_open",
    "file_skip",
    "file_skip_lseek",
-   "parse_filter"
+   "parse_filter",
+   "test_option_s"
   ]
  },
  {
@@ -4571,6 +4612,15 @@
    "typos.patch"
   ],
   "fixes": [
+   "bid_get_line",
+   "bid_keyword",
+   "bid_keyword_list",
+   "detect_form",
+   "ensure_in_buff_size",
+   "header_odc",
+   "next_line",
+   "strncat_from_utf8_libarchive2",
+   "uudecode_filter_read",
    "zipx_lzma_alone_init"
   ]
  },
@@ -4752,14 +4802,15 @@
    "CVE-2025-5917.patch"
   ],
   "fixes": [
-   "DEFINE_TEST",
+   "_warc_rdhdr",
    "_warc_skip",
    "archive_read_format_rar_seek_data",
    "build_ustar_entry_name",
    "copy_from_lzss_window",
    "expand",
    "parse_filter",
-   "read_filter"
+   "read_filter",
+   "test_read_format_warc"
   ]
  },
  {
@@ -4804,7 +4855,8 @@
    "file_open",
    "file_skip",
    "file_skip_lseek",
-   "parse_filter"
+   "parse_filter",
+   "test_option_s"
   ]
  },
  {
@@ -5421,6 +5473,7 @@
    "Curl_init_userdefined",
    "Curl_ssl_config_matches",
    "Curl_vsetopt",
+   "allocate_conn",
    "create_conn",
    "display_cert_info",
    "display_conn_info",
@@ -5470,11 +5523,13 @@
    "Curl_build_unencoding_stack",
    "Curl_cookie_add",
    "Curl_cookie_getlist",
+   "Curl_fopen",
    "Curl_hsts_save",
    "Curl_http_bodysend",
    "Curl_http_cookies",
    "cookie_output",
    "dup_cookie",
+   "find_encoding",
    "krb5_decode",
    "read_data"
   ]
@@ -5684,6 +5739,7 @@
    "Curl_ssl_config_matches",
    "Curl_strntoupper",
    "Curl_vsetopt",
+   "allocate_conn",
    "check_telnet_options",
    "ftp_disconnect",
    "ftp_setup_connection",
@@ -5735,6 +5791,7 @@
    "ftp_do_more",
    "ftp_done",
    "ftp_parse_url_path",
+   "ftp_state_prepare_transfer",
    "hostmatch",
    "imap_done",
    "imap_perform",
@@ -6202,6 +6259,7 @@
   ],
   "fixes": [
    "ConnectionExists",
+   "Curl_auth_digest_cleanup",
    "Curl_checkheaders",
    "Curl_close",
    "Curl_follow",
@@ -6267,6 +6325,7 @@
    "Curl_output_ntlm",
    "Curl_sasl_continue",
    "Curl_sasl_start",
+   "create_conn_helper_init_proxy",
    "curl_win32_idn_to_ascii",
    "myssh_is_known"
   ]
@@ -6400,6 +6459,7 @@
    "Curl_sasl_continue",
    "Curl_sasl_start",
    "create_conn",
+   "create_conn_helper_init_proxy",
    "curl_win32_idn_to_ascii",
    "duphandle",
    "gtls_connect_step1",
@@ -6508,6 +6568,7 @@
    "Curl_init_userdefined",
    "Curl_ssl_config_matches",
    "Curl_vsetopt",
+   "allocate_conn",
    "create_conn",
    "display_cert_info",
    "display_conn_info",
@@ -6557,11 +6618,13 @@
    "Curl_build_unencoding_stack",
    "Curl_cookie_add",
    "Curl_cookie_getlist",
+   "Curl_fopen",
    "Curl_hsts_save",
    "Curl_http_bodysend",
    "Curl_http_cookies",
    "cookie_output",
    "dup_cookie",
+   "find_encoding",
    "krb5_decode",
    "read_data"
   ]
@@ -6771,6 +6834,7 @@
    "Curl_ssl_config_matches",
    "Curl_strntoupper",
    "Curl_vsetopt",
+   "allocate_conn",
    "check_telnet_options",
    "ftp_disconnect",
    "ftp_setup_connection",
@@ -6822,6 +6886,7 @@
    "ftp_do_more",
    "ftp_done",
    "ftp_parse_url_path",
+   "ftp_state_prepare_transfer",
    "hostmatch",
    "imap_done",
    "imap_perform",
@@ -7289,6 +7354,7 @@
   ],
   "fixes": [
    "ConnectionExists",
+   "Curl_auth_digest_cleanup",
    "Curl_checkheaders",
    "Curl_close",
    "Curl_follow",
@@ -7354,6 +7420,7 @@
    "Curl_output_ntlm",
    "Curl_sasl_continue",
    "Curl_sasl_start",
+   "create_conn_helper_init_proxy",
    "curl_win32_idn_to_ascii",
    "myssh_is_known"
   ]
@@ -7487,6 +7554,7 @@
    "Curl_sasl_continue",
    "Curl_sasl_start",
    "create_conn",
+   "create_conn_helper_init_proxy",
    "curl_win32_idn_to_ascii",
    "duphandle",
    "gtls_connect_step1",
@@ -7789,16 +7857,25 @@
   ],
   "fixes": [
    "SSH_PACKET_CALLBACK",
+   "dh_handshake",
    "kex_select_kex_type",
    "pki_verify_data_signature",
    "server_set_kex",
+   "ssh_client_connection_callback",
    "ssh_client_curve25519_init",
+   "ssh_client_dh_init",
+   "ssh_client_dh_remove_callbacks",
+   "ssh_client_dhgex_remove_callbacks",
+   "ssh_client_ecdh_remove_callbacks",
    "ssh_find_aead_hmac",
    "ssh_kex_select_methods",
    "ssh_make_sessionid",
    "ssh_packet_incoming_filter",
+   "ssh_packet_kexinit",
+   "ssh_packet_newkeys",
    "ssh_send_kex",
    "ssh_send_rekex",
+   "ssh_server_connection_callback",
    "ssh_set_client_kex",
    "torture_rekey_server_recv",
    "torture_run_tests"
@@ -7841,6 +7918,9 @@
    "SSH_PACKET_CALLBACK",
    "server_set_kex",
    "ssh_kex_select_methods",
+   "ssh_packet_ext_info",
+   "ssh_packet_kexinit",
+   "ssh_packet_newkeys",
    "ssh_packet_process",
    "ssh_packet_send",
    "ssh_packet_socket_callback",
@@ -7978,7 +8058,11 @@
    "chacha20_set_encrypt_key",
    "channel_default_bufferize",
    "channel_from_msg",
+   "channel_rcv_data",
+   "channel_rcv_eof",
+   "channel_read_buffer",
    "channel_write_common",
+   "check_public_key",
    "cipher_free",
    "cipher_init",
    "cleanup_pcap",
@@ -7996,10 +8080,13 @@
    "my_fd_data_function",
    "open_tcp_socket",
    "parse_opt",
+   "pki_ecdsa_signature_to_blob",
    "pki_ed25519_public_key_to_blob",
    "pki_ed25519_sign",
    "pki_ed25519_verify",
+   "pki_import_cert_buffer",
    "pki_signature_from_blob",
+   "pki_signature_from_ecdsa_blob",
    "pki_signature_to_blob",
    "privatekey_free",
    "privatekey_from_file",
@@ -8019,31 +8106,44 @@
    "ssh_bind_accept_fd",
    "ssh_bind_config_parse_file",
    "ssh_bind_import_keys",
+   "ssh_bind_options_expand_escape",
+   "ssh_bind_options_parse_config",
    "ssh_buffer_allocate_size",
    "ssh_buffer_pack_va",
    "ssh_buffer_unpack_va",
    "ssh_channel_accept",
+   "ssh_channel_close",
    "ssh_channel_do_free",
+   "ssh_channel_free",
+   "ssh_channel_from_local",
    "ssh_channel_get_exit_status",
    "ssh_channel_new_id",
    "ssh_channel_open_auth_agent",
+   "ssh_channel_open_x11",
    "ssh_channel_poll",
    "ssh_channel_read_nonblocking",
    "ssh_channel_read_timeout",
+   "ssh_channel_request_pty_size",
    "ssh_channel_set_blocking",
    "ssh_channel_write_stderr",
    "ssh_client_select_hostkeys",
+   "ssh_config_get_cmd",
    "ssh_config_get_long",
    "ssh_config_get_str_tok",
+   "ssh_config_get_token",
    "ssh_config_parse_file",
    "ssh_connect_host_nonblocking",
+   "ssh_connector_remove_event",
+   "ssh_dh_init_common",
    "ssh_dirname",
    "ssh_dump_knownhost",
+   "ssh_event_add_fd",
    "ssh_event_remove_poll",
    "ssh_event_remove_session",
    "ssh_free",
    "ssh_gcry_dec2bn",
    "ssh_get_key_params",
+   "ssh_get_knownhost_line",
    "ssh_get_openssh_version",
    "ssh_get_publickey_hash",
    "ssh_gets",
@@ -8057,21 +8157,35 @@
    "ssh_is_server_known",
    "ssh_kdf",
    "ssh_key_cmp",
+   "ssh_known_hosts_get_algorithms_names",
    "ssh_known_hosts_parse_line",
    "ssh_known_hosts_read_entries",
    "ssh_list_new",
    "ssh_list_prepend",
    "ssh_message_auth_reply_pk_ok",
+   "ssh_message_channel_request_open_reply_accept",
+   "ssh_message_channel_request_open_reply_accept_channel",
    "ssh_message_pop_head",
    "ssh_message_queue",
+   "ssh_message_service_reply_success",
    "ssh_mkdirs",
+   "ssh_msg_userauth_build_digest",
+   "ssh_new",
+   "ssh_options_apply",
+   "ssh_options_copy",
    "ssh_options_get_port",
    "ssh_options_getopt",
    "ssh_options_set_algo",
+   "ssh_packet_channel_open_fail",
    "ssh_packet_hmac_verify",
+   "ssh_packet_incoming_filter",
    "ssh_packet_send",
+   "ssh_packet_socket_callback",
+   "ssh_packet_socket_controlflow_callback",
+   "ssh_packet_userauth_gssapi_response",
    "ssh_path_expand_escape",
    "ssh_path_expand_tilde",
+   "ssh_pki_convert_key_to_privatekey",
    "ssh_pki_do_sign_agent",
    "ssh_pki_export_privkey_file",
    "ssh_pki_export_privkey_to_pubkey",
@@ -8082,9 +8196,11 @@
    "ssh_pki_import_privkey_file",
    "ssh_pki_import_signature_blob",
    "ssh_pki_openssh_import",
+   "ssh_pki_openssh_privkey_export",
    "ssh_poll_ctx_free",
    "ssh_publickey_to_file",
    "ssh_server_init_kex",
+   "ssh_session_get_host_port",
    "ssh_string_fill",
    "ssh_string_free_char",
    "ssh_string_get_char",
@@ -8174,6 +8290,7 @@
   "fixes": [
    "crypto_free",
    "local_parse_file",
+   "match_pattern",
    "match_pattern_list",
    "sftp_parse_longname",
    "ssh_agent_state_free",
@@ -8183,6 +8300,7 @@
    "ssh_config_parse_file",
    "ssh_dh_init_common",
    "ssh_get_hexa",
+   "ssh_get_knownhost_line",
    "ssh_known_hosts_read_entries",
    "ssh_newline_vis",
    "ssh_packet_incoming_filter",
@@ -8269,6 +8387,7 @@
   ],
   "fixes": [
    "SSH_PACKET_CALLBACK",
+   "channel_rcv_data",
    "evp_cipher_aead_decrypt",
    "evp_cipher_aead_encrypt",
    "gettimeofday",
@@ -8381,16 +8500,25 @@
   ],
   "fixes": [
    "SSH_PACKET_CALLBACK",
+   "dh_handshake",
    "kex_select_kex_type",
    "pki_verify_data_signature",
    "server_set_kex",
+   "ssh_client_connection_callback",
    "ssh_client_curve25519_init",
+   "ssh_client_dh_init",
+   "ssh_client_dh_remove_callbacks",
+   "ssh_client_dhgex_remove_callbacks",
+   "ssh_client_ecdh_remove_callbacks",
    "ssh_find_aead_hmac",
    "ssh_kex_select_methods",
    "ssh_make_sessionid",
    "ssh_packet_incoming_filter",
+   "ssh_packet_kexinit",
+   "ssh_packet_newkeys",
    "ssh_send_kex",
    "ssh_send_rekex",
+   "ssh_server_connection_callback",
    "ssh_set_client_kex",
    "torture_rekey_server_recv",
    "torture_run_tests"
@@ -8433,6 +8561,9 @@
    "SSH_PACKET_CALLBACK",
    "server_set_kex",
    "ssh_kex_select_methods",
+   "ssh_packet_ext_info",
+   "ssh_packet_kexinit",
+   "ssh_packet_newkeys",
    "ssh_packet_process",
    "ssh_packet_send",
    "ssh_packet_socket_callback",
@@ -8570,7 +8701,11 @@
    "chacha20_set_encrypt_key",
    "channel_default_bufferize",
    "channel_from_msg",
+   "channel_rcv_data",
+   "channel_rcv_eof",
+   "channel_read_buffer",
    "channel_write_common",
+   "check_public_key",
    "cipher_free",
    "cipher_init",
    "cleanup_pcap",
@@ -8588,10 +8723,13 @@
    "my_fd_data_function",
    "open_tcp_socket",
    "parse_opt",
+   "pki_ecdsa_signature_to_blob",
    "pki_ed25519_public_key_to_blob",
    "pki_ed25519_sign",
    "pki_ed25519_verify",
+   "pki_import_cert_buffer",
    "pki_signature_from_blob",
+   "pki_signature_from_ecdsa_blob",
    "pki_signature_to_blob",
    "privatekey_free",
    "privatekey_from_file",
@@ -8611,31 +8749,44 @@
    "ssh_bind_accept_fd",
    "ssh_bind_config_parse_file",
    "ssh_bind_import_keys",
+   "ssh_bind_options_expand_escape",
+   "ssh_bind_options_parse_config",
    "ssh_buffer_allocate_size",
    "ssh_buffer_pack_va",
    "ssh_buffer_unpack_va",
    "ssh_channel_accept",
+   "ssh_channel_close",
    "ssh_channel_do_free",
+   "ssh_channel_free",
+   "ssh_channel_from_local",
    "ssh_channel_get_exit_status",
    "ssh_channel_new_id",
    "ssh_channel_open_auth_agent",
+   "ssh_channel_open_x11",
    "ssh_channel_poll",
    "ssh_channel_read_nonblocking",
    "ssh_channel_read_timeout",
+   "ssh_channel_request_pty_size",
    "ssh_channel_set_blocking",
    "ssh_channel_write_stderr",
    "ssh_client_select_hostkeys",
+   "ssh_config_get_cmd",
    "ssh_config_get_long",
    "ssh_config_get_str_tok",
+   "ssh_config_get_token",
    "ssh_config_parse_file",
    "ssh_connect_host_nonblocking",
+   "ssh_connector_remove_event",
+   "ssh_dh_init_common",
    "ssh_dirname",
    "ssh_dump_knownhost",
+   "ssh_event_add_fd",
    "ssh_event_remove_poll",
    "ssh_event_remove_session",
    "ssh_free",
    "ssh_gcry_dec2bn",
    "ssh_get_key_params",
+   "ssh_get_knownhost_line",
    "ssh_get_openssh_version",
    "ssh_get_publickey_hash",
    "ssh_gets",
@@ -8649,21 +8800,35 @@
    "ssh_is_server_known",
    "ssh_kdf",
    "ssh_key_cmp",
+   "ssh_known_hosts_get_algorithms_names",
    "ssh_known_hosts_parse_line",
    "ssh_known_hosts_read_entries",
    "ssh_list_new",
    "ssh_list_prepend",
    "ssh_message_auth_reply_pk_ok",
+   "ssh_message_channel_request_open_reply_accept",
+   "ssh_message_channel_request_open_reply_accept_channel",
    "ssh_message_pop_head",
    "ssh_message_queue",
+   "ssh_message_service_reply_success",
    "ssh_mkdirs",
+   "ssh_msg_userauth_build_digest",
+   "ssh_new",
+   "ssh_options_apply",
+   "ssh_options_copy",
    "ssh_options_get_port",
    "ssh_options_getopt",
    "ssh_options_set_algo",
+   "ssh_packet_channel_open_fail",
    "ssh_packet_hmac_verify",
+   "ssh_packet_incoming_filter",
    "ssh_packet_send",
+   "ssh_packet_socket_callback",
+   "ssh_packet_socket_controlflow_callback",
+   "ssh_packet_userauth_gssapi_response",
    "ssh_path_expand_escape",
    "ssh_path_expand_tilde",
+   "ssh_pki_convert_key_to_privatekey",
    "ssh_pki_do_sign_agent",
    "ssh_pki_export_privkey_file",
    "ssh_pki_export_privkey_to_pubkey",
@@ -8674,9 +8839,11 @@
    "ssh_pki_import_privkey_file",
    "ssh_pki_import_signature_blob",
    "ssh_pki_openssh_import",
+   "ssh_pki_openssh_privkey_export",
    "ssh_poll_ctx_free",
    "ssh_publickey_to_file",
    "ssh_server_init_kex",
+   "ssh_session_get_host_port",
    "ssh_string_fill",
    "ssh_string_free_char",
    "ssh_string_get_char",
@@ -8766,6 +8933,7 @@
   "fixes": [
    "crypto_free",
    "local_parse_file",
+   "match_pattern",
    "match_pattern_list",
    "sftp_parse_longname",
    "ssh_agent_state_free",
@@ -8775,6 +8943,7 @@
    "ssh_config_parse_file",
    "ssh_dh_init_common",
    "ssh_get_hexa",
+   "ssh_get_knownhost_line",
    "ssh_known_hosts_read_entries",
    "ssh_newline_vis",
    "ssh_packet_incoming_filter",
@@ -8861,6 +9030,7 @@
   ],
   "fixes": [
    "SSH_PACKET_CALLBACK",
+   "channel_rcv_data",
    "evp_cipher_aead_decrypt",
    "evp_cipher_aead_encrypt",
    "gettimeofday",
@@ -9071,12 +9241,17 @@
   ],
   "fixes": [
    "_gnutls_dsa_compute_k",
+   "_gnutls_dsa_compute_k_finish",
    "_gnutls_ecc_curve_to_dsa_q",
+   "_gnutls_ecdsa_compute_k",
+   "_gnutls_ecdsa_compute_k_finish",
    "_gnutls_sort_clist",
    "_wrap_nettle_pk_sign",
    "doit",
    "gnutls_x509_trust_list_verify_crt2",
-   "rnd_nonce_func"
+   "is_zero_limb",
+   "rnd_nonce_func",
+   "sec_zero_p"
   ]
  },
  {
@@ -9115,10 +9290,22 @@
    "_gnutls_name_constraints_node_free",
    "_gnutls_set_strdatum",
    "_gnutls_x509_crt_check_revocation",
+   "_gnutls_x509_name_constraints_clear",
+   "_gnutls_x509_name_constraints_is_empty",
    "_gnutls_x509_name_constraints_merge",
    "email_matches",
+   "extract_name_constraints",
+   "gnutls_x509_ext_export_name_constraints",
+   "gnutls_x509_ext_import_name_constraints",
+   "gnutls_x509_name_constraints_check_crt",
+   "gnutls_x509_name_constraints_deinit",
+   "gnutls_x509_name_constraints_get_excluded",
+   "gnutls_x509_name_constraints_get_permitted",
+   "gnutls_x509_name_constraints_init",
+   "is_nc_empty",
    "name_constraints_add",
-   "name_constraints_intersect_nodes"
+   "name_constraints_intersect_nodes",
+   "name_constraints_node_list_add"
   ]
  },
  {
@@ -9203,17 +9390,37 @@
    "CVE-2025-9820.patch"
   ],
   "fixes": [
+   "_gnutls_x509_name_constraints_is_empty",
    "_gnutls_x509_name_constraints_merge",
+   "compare_dns_names",
+   "compare_emails",
+   "compare_ip_ncs",
+   "compare_name_constraint_nodes",
+   "compare_name_constraint_nodes_qsort",
+   "compare_strings",
+   "dnsname_matches",
+   "email_ends_with",
    "email_matches",
+   "ends_with",
+   "ensure_sorted",
    "extract_name_constraints",
    "gnutls_pkcs11_delete_url",
    "gnutls_pkcs11_token_init",
+   "gnutls_x509_crt_set_name_constraints",
+   "gnutls_x509_name_constraints_add_permitted",
+   "gnutls_x509_name_constraints_init",
+   "is_supported_type",
    "main",
    "name_constraints_add",
+   "name_constraints_intersect_nodes",
    "name_constraints_node_add_copy",
    "name_constraints_node_free",
    "name_constraints_node_list_add",
-   "name_constraints_node_new"
+   "name_constraints_node_list_concat",
+   "name_constraints_node_list_intersect",
+   "name_constraints_node_list_union",
+   "name_constraints_node_new",
+   "validate_name_constraints_node"
   ]
  },
  {
@@ -9284,12 +9491,14 @@
    "_gnutls_x509_cert_verify_peers",
    "_verify_response",
    "check_ocsp_response",
+   "compare_dns_names",
    "compare_strings",
    "extract_name_constraints",
    "get_last_packet",
    "gnutls_certificate_set_flags",
    "gnutls_certificate_set_params_function",
    "gnutls_certificate_verify_peers2",
+   "gnutls_certificate_verify_peers3",
    "gnutls_pkcs11_token_set_pin",
    "gnutls_pkcs12_bag_set_data",
    "gnutls_psk_set_server_params_function",
@@ -9300,12 +9509,14 @@
    "handshake_compare",
    "is_type_printable",
    "merge_handshake_packet",
+   "name_constraints_node_list_intersect",
    "parse_handshake_header",
    "print_key_purpose",
    "print_name",
    "proc_rsa_client_kx",
    "resp_matches_pcert",
    "san_othername_to_virtual",
+   "validate_name_constraints_node",
    "virtual_to_othername_oid"
   ]
  },
@@ -9483,12 +9694,17 @@
   ],
   "fixes": [
    "_gnutls_dsa_compute_k",
+   "_gnutls_dsa_compute_k_finish",
    "_gnutls_ecc_curve_to_dsa_q",
+   "_gnutls_ecdsa_compute_k",
+   "_gnutls_ecdsa_compute_k_finish",
    "_gnutls_sort_clist",
    "_wrap_nettle_pk_sign",
    "doit",
    "gnutls_x509_trust_list_verify_crt2",
-   "rnd_nonce_func"
+   "is_zero_limb",
+   "rnd_nonce_func",
+   "sec_zero_p"
   ]
  },
  {
@@ -9527,10 +9743,22 @@
    "_gnutls_name_constraints_node_free",
    "_gnutls_set_strdatum",
    "_gnutls_x509_crt_check_revocation",
+   "_gnutls_x509_name_constraints_clear",
+   "_gnutls_x509_name_constraints_is_empty",
    "_gnutls_x509_name_constraints_merge",
    "email_matches",
+   "extract_name_constraints",
+   "gnutls_x509_ext_export_name_constraints",
+   "gnutls_x509_ext_import_name_constraints",
+   "gnutls_x509_name_constraints_check_crt",
+   "gnutls_x509_name_constraints_deinit",
+   "gnutls_x509_name_constraints_get_excluded",
+   "gnutls_x509_name_constraints_get_permitted",
+   "gnutls_x509_name_constraints_init",
+   "is_nc_empty",
    "name_constraints_add",
-   "name_constraints_intersect_nodes"
+   "name_constraints_intersect_nodes",
+   "name_constraints_node_list_add"
   ]
  },
  {
@@ -9615,17 +9843,37 @@
    "CVE-2025-9820.patch"
   ],
   "fixes": [
+   "_gnutls_x509_name_constraints_is_empty",
    "_gnutls_x509_name_constraints_merge",
+   "compare_dns_names",
+   "compare_emails",
+   "compare_ip_ncs",
+   "compare_name_constraint_nodes",
+   "compare_name_constraint_nodes_qsort",
+   "compare_strings",
+   "dnsname_matches",
+   "email_ends_with",
    "email_matches",
+   "ends_with",
+   "ensure_sorted",
    "extract_name_constraints",
    "gnutls_pkcs11_delete_url",
    "gnutls_pkcs11_token_init",
+   "gnutls_x509_crt_set_name_constraints",
+   "gnutls_x509_name_constraints_add_permitted",
+   "gnutls_x509_name_constraints_init",
+   "is_supported_type",
    "main",
    "name_constraints_add",
+   "name_constraints_intersect_nodes",
    "name_constraints_node_add_copy",
    "name_constraints_node_free",
    "name_constraints_node_list_add",
-   "name_constraints_node_new"
+   "name_constraints_node_list_concat",
+   "name_constraints_node_list_intersect",
+   "name_constraints_node_list_union",
+   "name_constraints_node_new",
+   "validate_name_constraints_node"
   ]
  },
  {
@@ -9696,12 +9944,14 @@
    "_gnutls_x509_cert_verify_peers",
    "_verify_response",
    "check_ocsp_response",
+   "compare_dns_names",
    "compare_strings",
    "extract_name_constraints",
    "get_last_packet",
    "gnutls_certificate_set_flags",
    "gnutls_certificate_set_params_function",
    "gnutls_certificate_verify_peers2",
+   "gnutls_certificate_verify_peers3",
    "gnutls_pkcs11_token_set_pin",
    "gnutls_pkcs12_bag_set_data",
    "gnutls_psk_set_server_params_function",
@@ -9712,12 +9962,14 @@
    "handshake_compare",
    "is_type_printable",
    "merge_handshake_packet",
+   "name_constraints_node_list_intersect",
    "parse_handshake_header",
    "print_key_purpose",
    "print_name",
    "proc_rsa_client_kx",
    "resp_matches_pcert",
    "san_othername_to_virtual",
+   "validate_name_constraints_node",
    "virtual_to_othername_oid"
   ]
  }

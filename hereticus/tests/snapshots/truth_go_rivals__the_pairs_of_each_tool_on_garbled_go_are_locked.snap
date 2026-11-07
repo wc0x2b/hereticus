@@ -1,0 +1,31 @@
+---
+source: hereticus/tests/truth_go_rivals.rs
+expression: out
+---
+build                         pairs  right unproven  wrong
+amd64 hereticus                3674   3668        4      2
+amd64 radare2                   990    989        1      0
+amd64 ghidra                   2343   2341        2      0
+386 hereticus                  3723   3717        4      2
+386 radare2                     544    544        0      0
+386 ghidra                     2434   2431        2      1
+arm64 hereticus                3574   3569        4      1
+arm64 radare2                  1751   1751        0      0
+arm64 ghidra                   2309   2307        2      0
+arm-7 hereticus                3648   3640        4      4
+arm-7 radare2                   258    258        0      0
+arm-7 ghidra                   2476   2474        2      0
+arm-5 hereticus                3686   3682        4      0
+arm-5 radare2                   114    114        0      0
+arm-5 ghidra                   2451   2449        2      0
+mips-softfloat hereticus       3548   3541        4      3
+mips-softfloat radare2           79     79        0      0
+mips-softfloat ghidra          2198   2196        2      0
+mipsle-softfloat hereticus     3548   3544        4      0
+mipsle-softfloat radare2         79     79        0      0
+mipsle-softfloat ghidra        1350   1349        1      0
+
+tool                          pairs  right unproven  wrong
+all hereticus                 25401  25361       28     12
+all radare2                    3815   3814        1      0
+all ghidra                    15561  15547       13      1

@@ -2999,7 +2999,32 @@ function and no branch crosses it both ways. On the MT300N v2 kernel of
 22.03.2, that found 801 more real starts of 20988, and 3940 more that are
 not real, against 464 before, so it was not kept. Most such runs are the
 labels of a `switch`, which the guards do not tell from a table of
-functions. On the
+functions. A narrower rule was kept: a run names new starts only where at
+least half of its distinct targets start a function already, and each new
+start follows a return or a jump. On the same kernel it found 257 more
+real starts and no more that are not real, and over the twelve kernel
+pairs it made 2213 more right pairs and 18 fewer wrong. It split
+`tcp_v4_early_demux` from `tcp_v4_get_syncookie`. It also cut four more
+data regions of the MIPS kernels into pieces, which the report hides, and
+on the raw images of the releases it paired 28 more functions of expat
+and left one or two more of zlib and Lua gone or new. The same guards on
+the addresses that code forms, as a `lui` and an `addiu` do, found 208
+more real starts and 130 that are not real on the MT300N v2 kernel, and
+over the twelve kernel pairs 2167 more right pairs and 26 more wrong, so
+they were not kept. The ARM kernels did not change: an unwind index lies
+in each, and with an index the scan reads no table of functions. There,
+`phy_probe` joins `genphy_read_abilities`, which ends in a literal pool,
+and only `movw` and `movt` form its address. GNU `ld` merges neighbouring
+entries with the same short description, so one entry covered
+`genphy_read_abilities`, `phy_probe` and `genphy_c37_read_status`. The
+addresses that code forms, inside the range of an entry with a
+description, and where the start follows a return or a jump past a
+literal pool, were kept: over the twelve kernel pairs they made 2842 more
+right pairs and 15 more wrong: 18 more on the upgrades of the ARM board,
+and 3 fewer on the point release of the two ARM boards. The share of
+wrong pairs stayed at 0.67%. The same addresses
+anywhere in a raw image with an index left 27 more functions gone on the
+raw image of a BE8 release, and one to four more of zlib, Lua and expat. On the
 upgrade from 21.02.7 to 22.03.2, the plain rule of `truth_kernel_rivals.rs`
 calls 2450 pairs of `hereticus` wrong, 4.5%, and 534 of radiff2, 25.8% of
 the 2071 that it can judge. Ghidra made 10722 pairs there, 481 of them wrong, 4.6%. On
@@ -3008,3 +3033,111 @@ and 1783 wrong, 2.9%, and Ghidra 26022 right and 498 wrong, 1.9%. Of the
 functions that `hereticus` pairs wrong there, Ghidra pairs 108 right.
 Two runs of Ghidra on the point release gave 116 and 114 wrong pairs, so
 its pairs of a large kernel are not the same on each run.
+
+**Garbled Go.** On the two garbled releases of shfmt for seven builds,
+`hereticus` made 25361 right pairs and 12 wrong, Ghidra 15547 right and 1
+wrong, and radiff2, with `anal.hasnext`, 3814 right and none wrong. The
+wrong pairs of `hereticus` join near twins, as `unix.mmap` and
+`unix.mremap`, `os.genericWriteTo` and `os.genericReadFrom`, and two
+`deferwrap` closures of `fmt.(*pp).handleMethods`; Ghidra leaves 11 of
+the 12 unpaired. Four starts of Ghidra at once failed at random: each
+saves the JDK it finds in a file of its settings, and a start that read
+the file half written stopped to ask for the JDK. One save before the
+starts fixed it.
+
+**Published fixes.** On the 38 fixes of `real-life-reports/` but the
+kernelcache, `hereticus` found each fix, 21 on row 1 and 37 in the first
+10 rows; Ghidra 23, 6 and 22; radiff2 with `anal.hasnext` 10, 4 and 4,
+and with `-A` alone 1. radiff2 reads no kext, and writes a blank line for
+one. Ghidra shows the fix earlier than `hereticus` in ubusd, uhttpd and
+odhcpd for AArch64 or A32, by one to three rows, and radiff2 in dropbear
+for AArch64 and for MIPS32 little-endian, on row 1 against row 2.
+
+**The Ubuntu updates where Ghidra ranks the fix higher.** Of the 74 rows
+that `hereticus` shows above the fix in these 27 updates, the IL view
+shows no changed line in 4, so a rule that moved such rows down would
+change little. The others are real changes. In libcurl for arm64 to
+7.81.0-1ubuntu1.3, row 1 is `Curl_http`, which gained 344 normalized
+instructions and lost 307, and row 2 is `Curl_cookie_add.isra.0` of the
+fix. The patches of that update name 11 functions, and not `Curl_http`.
+They do: the patch of CVE-2022-32205 edits `Curl_http_cookies`, which
+the compiler inlined into `Curl_http` and kept no symbol of. The scorer
+counted a copy that the compiler inlined only of a fixed function that
+also kept a symbol of its own. Counting a copy of any function that the
+patches touched, `hereticus` shows the fix on row 1 in 151 updates in
+place of 122, Ghidra in 103 in place of 90, and radiff2 in 34 in place of
+30. Ghidra shows the fix earlier than `hereticus` in 15 updates in place
+of 27, and `hereticus` earlier than Ghidra in 73; radiff2 is earlier in 1.
+
+**Macros in the hunk headers.** `fixtures/ubuntu_cves.py` took the first
+name before a parenthesis in the header of each hunk for the function the
+hunk edits. A macro that defines a function then stood in its place:
+`SSH_PACKET_CALLBACK(ssh_packet_kexinit)` of libssh gave
+`SSH_PACKET_CALLBACK`, `DECLAREwriteFunc(...)` of libtiff gave
+`DECLAREwriteFunc`, and zlib's `compress_block OF((...))` gave `OF`. The
+name inside such a macro, or before `OF`, is now taken, and `--refix`
+pinned the functions anew from the cached patches: 26 of 218 updates
+changed. `hereticus` then shows the fix on row 1 in 153 updates, and
+Ghidra earlier than `hereticus` in 13.
+
+**Hunks whose header names no function.** Of the 1951 hunks of C files
+in the patches of the Ubuntu updates, 349 have a header that names no
+function. Many are types, as `struct XML_ParserStruct {`. Others are cut
+short, as `static enum TIFFReadDirEntryErr TIFFRead` of libtiff, or have
+no header, as a hunk at the top of a function. `ubuntu_cves.py` now reads
+the first line of each function from the DWARF of the two debug files,
+and names the function that each removed or added line of such a hunk
+lies in, but for the hunks of a type. 46 updates gained 226 functions,
+as `TIFFReadDirEntryArrayWithLimit`. A line between two functions counts
+for the one before it, so the list can be too generous there. Then 177
+updates count, `hereticus` finds each fix and shows 156 on row 1, and
+Ghidra shows the fix earlier than `hereticus` in 10.
+
+**The last updates where Ghidra ranks the fix higher.** In 8 of the 10,
+row 1 of `hereticus` is a large change that the patches did not make; in
+zlib for armhf, the IL view shows no changed line in it, and libssh for
+arm64 to 0.9.6-2ubuntu0.22.04.5 is the fix of one instruction above. An
+example of the 8: in libtiff for arm64 to 4.3.0-6ubuntu0.8, `TIFFFetchNormalTag`
+gained 316 normalized instructions and lost 370 at a score of 0.98. The
+fix grew `TIFFReadDirEntryArrayWithLimit` by a check of the size of the
+file, and the compiler then inlined the readers that call it in other
+ways in their callers. Ghidra lists the function that it scores least
+alike first, and there that is the fix. Sorting by the instructions added
+times one less the score, by that times its square root, or by the
+instructions added plus 100 times one less the score, made the sum of
+the ranks of `truth_ubuntu.rs` 366, 350 and 552 in place of 348, and put
+2, 3 and 6 fewer fixes on row 1, so the sort stays as it is.
+
+**Moved blocks in the rank.** The diff view shows a block that only moved
+in gray, but the rank counts its instructions as removed and added: in
+zlib for armhf to 1:1.2.11.dfsg-2ubuntu9, `inflateBack` counts 43 added
+and 39 removed, where the asm view shows one changed instruction beside
+words of a literal pool, and the IL view none. Ranking by the lines that
+the IL diff adds outside moved blocks made the sum of the ranks of
+`truth_ubuntu.rs` 378 in place of 348, with 7 fewer fixes on row 1, and
+by the smaller of the two counts 347, with as many on row 1. Neither was
+kept.
+
+**The kernel pairs that Ghidra has right and `hereticus` wrong, again.**
+After the two fixes of joined functions, 8 such pairs are left on the
+point release. Two are `sock_init_data`, whose code moved to
+`sock_init_data_uid`; one joins the twins `usb_get_maximum_speed` and
+`usb_get_maximum_ssp_rate`; one swaps the near twins
+`mv88e6xxx_g1_vtu_getnext` and `mv88e6xxx_g1_vtu_stu_get`. The others come
+from two functions that the scan still joins. `r4k_flush_cache_mm` of MIPS
+is named only by a `lui` and an `addiu`, which was measured above. In both
+ARM kernels, `sched_partition_show` follows the tail call of
+`cpuset_migrate_mm_workfn` in one merged unwind entry, and only one word
+of a `cftype` names it. A word alone that points into such an entry, with
+the same guards as an address that code forms, split the two, but it made
+so many other starts on the ARM kernel of 22.03.2 for the EX6100 v2 that
+fewer than 95% of its starts lay on a symbol, so it was not kept.
+
+**The ARM fix on the upgrades.** The 18 more wrong pairs that the
+careful judge of `truth_kernels.rs` counts on the upgrades of the ARM board
+are small functions that the fix splits off and that pair with a look-alike
+across the upgrade, as `msi_get_domain_info` with `io_wq_get_task` and
+`prctl_set_seccomp` with `prctl_get_seccomp`. The plain rule of
+`truth_kernel_rivals.rs` counts 1692 wrong pairs on that board with the
+fix and 1747 without, as it calls a renamed function wrong, and the fix
+pairs more of those right. No trait sets the new wrong pairs apart.

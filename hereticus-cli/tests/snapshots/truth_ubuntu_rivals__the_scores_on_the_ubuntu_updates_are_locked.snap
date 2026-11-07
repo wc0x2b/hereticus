@@ -3,85 +3,65 @@ source: hereticus-cli/tests/truth_ubuntu_rivals.rs
 expression: out
 ---
 library                    cases found first  top10    rows
-libarchive13 hereticus        14    14     7     14     471
-libarchive13 radare2          14     6     0      1    6376
-libarchive13 ghidra           14    14     3      8    6842
-libcurl4 hereticus            43    43    24     43    1041
-libcurl4 radare2              43    14     6      9   14259
-libcurl4 ghidra               43    43    30     34    9995
+libarchive13 hereticus        15    15    10     14     659
+libarchive13 radare2          15     6     0      1    7129
+libarchive13 ghidra           15    15     5      8    7291
+libcurl4 hereticus            43    43    41     43    1041
+libcurl4 radare2              43    21     9     15   14259
+libcurl4 ghidra               43    43    31     34    9995
 libexpat1 hereticus           20    20    20     20     240
 libexpat1 radare2             20    16    11     16     533
-libexpat1 ghidra              20    20     9     19    1831
-libgnutls30 hereticus         16    16    12     16    1749
-libgnutls30 radare2           16    13     2      3   18195
-libgnutls30 ghidra            16    15     9     13   12040
-libksba8 hereticus             4     4     2      4      45
-libksba8 radare2               4     0     0      0     481
+libexpat1 ghidra              20    20    10     19    1831
+libgnutls30 hereticus         16    16    13     16    1749
+libgnutls30 radare2           16    13     5      6   18195
+libgnutls30 ghidra            16    15    11     14   12040
+libksba8 hereticus             4     4     4      4      45
+libksba8 radare2               4     1     0      1     481
 libksba8 ghidra                4     4     3      4     326
 liblzma5 hereticus             1     1     1      1       1
 liblzma5 radare2               1     0     0      0      50
 liblzma5 ghidra                1     1     0      1      18
-libpng16-16 hereticus          9     9     8      9     130
-libpng16-16 radare2            9     6     1      2    1697
-libpng16-16 ghidra             9     8     1      6     557
+libpng16-16 hereticus          9     9     9      9     130
+libpng16-16 radare2            9     7     1      2    1697
+libpng16-16 ghidra             9     8     3      7     557
 libsqlite3-0 hereticus         8     8     5      8     177
 libsqlite3-0 radare2           8     3     0      0    5874
 libsqlite3-0 ghidra            8     7     2      6    4584
-libssh-4 hereticus            16    16    11     15     575
-libssh-4 radare2              16    12     4      5    7052
-libssh-4 ghidra               16    16    12     14    3185
+libssh-4 hereticus            16    16    15     15     575
+libssh-4 radare2              16    12     4      6    7052
+libssh-4 ghidra               16    16    13     14    3185
 libtiff5 hereticus            21    21    20     21     295
 libtiff5 radare2              21    19     3      9    4731
 libtiff5 ghidra               21    21    10     21    4114
-libwebp7 hereticus             4     4     2      4     114
+libwebp7 hereticus             4     4     4      4     114
 libwebp7 radare2               4     0     0      0     203
-libwebp7 ghidra                4     4     0      2     512
-libxml2 hereticus             18    18     9     18    1116
+libwebp7 ghidra                4     4     1      2     512
+libxml2 hereticus             18    18    13     18    1116
 libxml2 radare2               18    14     2      3   20909
-libxml2 ghidra                18    18    10     16    6868
+libxml2 ghidra                18    18    13     18    6868
 zlib1g hereticus               2     2     1      2      18
 zlib1g radare2                 2     2     1      2      90
 zlib1g ghidra                  2     2     1      2      60
 
 tool                       cases found first  top10    rows
-all hereticus                176   176   122    175    5972
-all radare2                  176   105    30     50   80450
-all ghidra                   176   173    90    146   50932
+all hereticus                177   177   156    175    6160
+all radare2                  177   114    36     61   81203
+all ghidra                   177   174   103    150   51381
 
 rival                      hereticus-earlier rival-earlier
-radare2                                  146             5
-ghidra                                    84            27
+radare2                                  141             1
+ghidra                                    74            10
 
 found by none: 0
 
 behind                                                           rank:hereticus   rank:radare2    rank:ghidra
 zlib1g-armhf-1:1.2.11.dfsg-2ubuntu7-1:1.2.11.dfsg-2ubuntu9                    2              1              1
 libxml2-arm64-2.9.13+dfsg-1build1-2.9.13+dfsg-1ubuntu0.1                      5             26              1
+libxml2-arm64-2.9.13+dfsg-1ubuntu0.5-2.9.13+dfsg-1ubuntu0.6                   2              -              1
 libxml2-arm64-2.9.13+dfsg-1ubuntu0.9-2.9.13+dfsg-1ubuntu0.10                  7             16              1
-libxml2-arm64-2.9.13+dfsg-1ubuntu0.10-2.9.13+dfsg-1ubuntu0.11                 5             55              1
-libxml2-armhf-2.9.13+dfsg-1ubuntu0.8-2.9.13+dfsg-1ubuntu0.9                   3              1              4
-libxml2-armhf-2.9.13+dfsg-1ubuntu0.10-2.9.13+dfsg-1ubuntu0.11                 2             90              1
+libxml2-arm64-2.9.13+dfsg-1ubuntu0.10-2.9.13+dfsg-1ubuntu0.11                 2             55              1
 libtiff5-arm64-4.3.0-6ubuntu0.7-4.3.0-6ubuntu0.8                              2             23              1
-libarchive13-armhf-3.6.0-1ubuntu1.1-3.6.0-1ubuntu1.2                          3             22              1
-libarchive13-armhf-3.6.0-1ubuntu1.5-3.6.0-1ubuntu1.6                          5             46              2
+libarchive13-armhf-3.6.0-1ubuntu1.1-3.6.0-1ubuntu1.2                          2             22              1
 libsqlite3-0-arm64-3.37.2-2ubuntu0.1-3.37.2-2ubuntu0.3                        2              -              1
-libcurl4-arm64-7.81.0-1-7.81.0-1ubuntu1.1                                     2              -              1
-libcurl4-arm64-7.81.0-1ubuntu1.1-7.81.0-1ubuntu1.2                            2              6              1
-libcurl4-arm64-7.81.0-1ubuntu1.2-7.81.0-1ubuntu1.3                            2              -              1
-libcurl4-arm64-7.81.0-1ubuntu1.4-7.81.0-1ubuntu1.6                            3              -              2
-libcurl4-arm64-7.81.0-1ubuntu1.7-7.81.0-1ubuntu1.8                            2              9              1
-libcurl4-arm64-7.81.0-1ubuntu1.10-7.81.0-1ubuntu1.11                          3              -              1
-libcurl4-arm64-7.81.0-1ubuntu1.24-7.81.0-1ubuntu1.25                          2              -              1
-libcurl4-arm64-7.81.0-1ubuntu1.25-7.81.0-1ubuntu1.26                          2              -              1
-libcurl4-armhf-7.81.0-1-7.81.0-1ubuntu1.1                                     2              1             44
-libcurl4-armhf-7.81.0-1ubuntu1.1-7.81.0-1ubuntu1.2                            2              -              1
-libcurl4-armhf-7.81.0-1ubuntu1.19-7.81.0-1ubuntu1.20                          2              1             25
-libcurl4-armhf-7.81.0-1ubuntu1.24-7.81.0-1ubuntu1.25                          3              1              1
-libcurl4-armhf-7.81.0-1ubuntu1.27-7.81.0-1ubuntu1.29                          3              -              1
-libksba8-arm64-1.6.0-2ubuntu0.1-1.6.0-2ubuntu0.2                              2              -              1
-libssh-4-arm64-0.9.6-2build1-0.9.6-2ubuntu0.22.04.1                           2              -              1
-libssh-4-arm64-0.9.6-2ubuntu0.22.04.3-0.9.6-2ubuntu0.22.04.4                  2             20              1
+libcurl4-armhf-7.81.0-1ubuntu1.27-7.81.0-1ubuntu1.29                          2            301              1
 libssh-4-arm64-0.9.6-2ubuntu0.22.04.4-0.9.6-2ubuntu0.22.04.5                 30              -              1
-libssh-4-armhf-0.9.6-2build1-0.9.6-2ubuntu0.22.04.1                           2              -              1
-libssh-4-armhf-0.9.6-2ubuntu0.22.04.3-0.9.6-2ubuntu0.22.04.4                  2             35              1
-libgnutls30-armhf-3.7.3-4ubuntu1.8-3.7.3-4ubuntu1.9                           2             42              1

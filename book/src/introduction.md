@@ -61,7 +61,7 @@ tool, and for its limits.
 
 Before a tool can compare functions, it must find them. In one raw OpenWrt
 kernel, with no symbols and no sections, `hereticus` finds
-19277<!-- from truth_function_starts: hereticus / real --> of the
+19534<!-- from truth_function_starts: hereticus / real --> of the
 20988<!-- from truth_function_starts: hereticus / symbols --> real function
 starts, and Ghidra finds
 13210<!-- from truth_function_starts: ghidra default / real -->. The

@@ -551,6 +551,7 @@ pub fn recover_in_memory(
     if !exception_index.is_empty() {
         let mut blind = cannot_unwind_ranges(exception_index);
         let described = described_ranges(exception_index);
+        let merged = mergeable_ranges(exception_index);
         for region in &decoded {
             let (base, code) = (&region.base, region.code);
             // Code before the first entry of a region is listed by nothing,
@@ -574,7 +575,29 @@ pub fn recover_in_memory(
             // template function short, and its caller then read as changed.
             let taken = taken_addresses(arch, regions, contents, &linked.pointers, region, memory);
             let local = slot_call_targets(arch, region, memory);
-            for address in call_targets(arch, region).into_iter().chain(taken).chain(local) {
+            // A linker merges neighbouring entries with the same short
+            // description, so one entry can cover several functions. In the
+            // ARM kernel of OpenWrt 22.03.5 for the EX6100 v2, one covers
+            // `genphy_read_abilities` and `phy_probe`, which nothing calls,
+            // and which only `movw` and `movt` name. In a raw image the
+            // addresses that code forms reach data too, so only one that
+            // follows the end of a function counts.
+            let formed = match contents {
+                Regions::CodeAndData => {
+                    let end = region.base + region.code.len() as u64;
+                    let in_code = AddressSpace::of_raw_image(region.base, end - region.base);
+                    let pool = data_words(arch, memory, region.base..end, &region.insns);
+                    arch.data_addresses(region.code, &region.insns, &in_code, memory)
+                        .into_iter()
+                        .filter(|address| merged.iter().any(|range| range.contains(address)))
+                        .filter(|&address| follows_an_end(arch, &region.insns, &pool, address))
+                        .filter(|&address| !lies_inside_a_body(&region.insns, address))
+                        .collect()
+                }
+                Regions::CodeOnly => Vec::new(),
+            };
+            let found = call_targets(arch, region).into_iter().chain(taken).chain(local);
+            for address in found.chain(formed) {
                 if !described.iter().any(|range| range.start < address && range.contains(&address))
                 {
                     starts.insert((address, Source::CallTarget));
@@ -610,6 +633,30 @@ pub fn recover_in_memory(
         }
         // A region begins with a function unless something says otherwise.
         starts.insert((region.base, Source::AfterReturn));
+    }
+
+    // Where a pointer to code has no tag, as on MIPS32 and A32, a run of
+    // words that point into the code is a table of functions where most of
+    // its targets already start one: a `switch` keeps a run of labels too,
+    // which start none. In the MIPS kernels of OpenWrt 22.03.2,
+    // `tcp_v4_early_demux` starts right after a branch back into
+    // `tcp_v4_get_syncookie`, nothing calls it, and only `tcp_protocol`
+    // points at it, with two handlers whose starts follow returns.
+    if contents == Regions::CodeAndData && arch.tagged_function(1).is_none() {
+        let known: BTreeSet<u64> = starts.iter().map(|&(address, _)| address).collect();
+        for region in &decoded {
+            let end = region.base + region.code.len() as u64;
+            let width = arch.instruction_width() as u64;
+            // In a raw image, the region holds the data too, so a run of
+            // pointers to texts reads as one into the code. A start of a
+            // function follows the end of the one before it.
+            let named = function_tables(arch, regions, region.base..end, &known)
+                .into_iter()
+                .filter(|address| address % width == 0 && !known.contains(address))
+                .filter(|&address| follows_an_end(arch, &region.insns, &BTreeSet::new(), address))
+                .filter(|&address| !lies_inside_a_body(&region.insns, address));
+            starts.extend(named.map(|address| (address, Source::CallTarget)));
+        }
     }
 
     let starts =
@@ -994,6 +1041,64 @@ fn tagged_functions(
         .collect()
 }
 
+/// Whether the instruction at `address` follows a return or a jump, past
+/// its delay slots, and past padding and the words of `pool`.
+fn follows_an_end(arch: &dyn Recovery, insns: &[Insn], pool: &BTreeSet<u64>, address: u64) -> bool {
+    let Ok(index) = insns.binary_search_by_key(&address, |insn| insn.address) else {
+        return false;
+    };
+    let mut before = index;
+    while before > 0
+        && (arch.is_padding(&insns[before - 1]) || pool.contains(&insns[before - 1].address))
+    {
+        before -= 1;
+    }
+    (1..=2).any(|back| {
+        before.checked_sub(back).is_some_and(|at| {
+            matches!(insns[at].kind, InsnKind::Return | InsnKind::Jump { .. })
+                && at + 1 + arch.delay_slots(&insns[at]) == before
+        })
+    })
+}
+
+/// The addresses in `code` that a table of functions in `regions` names: a
+/// run of two or more aligned words that each point into `code`, at least
+/// half of whose distinct targets are in `known`.
+fn function_tables(
+    arch: &dyn Recovery,
+    regions: &[(u64, &[u8])],
+    code: core::ops::Range<u64>,
+    known: &BTreeSet<u64>,
+) -> Vec<u64> {
+    let width = arch.pointer_width();
+    let mut found = BTreeSet::new();
+    for &(start, bytes) in regions {
+        let skip = (start.next_multiple_of(width as u64) - start) as usize;
+        let words = bytes.get(skip..).unwrap_or_default().chunks_exact(width);
+        let mut run: BTreeSet<u64> = BTreeSet::new();
+        let mut length = 0;
+        let mut end_run = |run: &mut BTreeSet<u64>, length: &mut usize| {
+            let named = run.iter().filter(|target| known.contains(target)).count();
+            if *length >= 2 && named * 2 >= run.len() {
+                found.extend(run.iter().copied());
+            }
+            run.clear();
+            *length = 0;
+        };
+        for word in words {
+            let value = arch.read_pointer(word);
+            if code.contains(&value) {
+                run.insert(value);
+                length += 1;
+            } else {
+                end_run(&mut run, &mut length);
+            }
+        }
+        end_run(&mut run, &mut length);
+    }
+    found.into_iter().collect()
+}
+
 /// Whether local branches cross `address` both ways, as they cross a label
 /// inside a loop or between the arms of an `if`.
 ///
@@ -1301,6 +1406,23 @@ fn described_ranges(index: &[IndexEntry]) -> Vec<core::ops::Range<u64>> {
         .iter()
         .enumerate()
         .filter(|(_, entry)| entry.unwinding == Unwinding::Listed)
+        .filter_map(|(position, entry)| {
+            let end = sorted.get(position + 1)?.address;
+            (end > entry.address).then_some(entry.address..end)
+        })
+        .collect()
+}
+
+/// The address ranges that entries with a description cover, from each such
+/// entry to the next: one function each, but where a linker merged the
+/// entries of neighbours with the same description.
+fn mergeable_ranges(index: &[IndexEntry]) -> Vec<core::ops::Range<u64>> {
+    let mut sorted = index.to_vec();
+    sorted.sort_by_key(|entry| entry.address);
+    sorted
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.unwinding == Unwinding::Described)
         .filter_map(|(position, entry)| {
             let end = sorted.get(position + 1)?.address;
             (end > entry.address).then_some(entry.address..end)
@@ -2444,6 +2566,68 @@ mod tests {
         bytes.push(0);
         let regions = [(0x100, bytes.as_slice())];
         assert!(!points_at_text(&Memory::new(&regions), 0x100));
+    }
+
+    /// An entry with a description covers the code to the next entry, as a
+    /// linker can merge the entries of neighbours; the other kinds do not
+    /// count.
+    #[test]
+    fn the_ranges_of_described_entries_run_to_the_next_entry() {
+        let entry = |address, unwinding| IndexEntry { address, unwinding };
+        let index = [
+            entry(0x3000, Unwinding::Described),
+            entry(0x1000, Unwinding::Described),
+            entry(0x2000, Unwinding::CannotUnwind),
+            entry(0x4000, Unwinding::Listed),
+            entry(0x5000, Unwinding::Described),
+        ];
+        assert_eq!(mergeable_ranges(&index), [0x1000..0x2000, 0x3000..0x4000]);
+        assert!(mergeable_ranges(&[]).is_empty());
+    }
+
+    /// A start follows a return or a jump, past padding and a literal pool.
+    #[test]
+    fn a_start_follows_an_end_past_a_pool() {
+        let arch = &hereticus_il::arch::arm32::Arm32;
+        let insn =
+            |address, kind| Insn::new(address, &[0; 4], kind, hereticus_il::arch::Opcode::None);
+        let body = [
+            insn(0x1000, InsnKind::Normal),
+            insn(0x1004, InsnKind::Return),
+            insn(0x1008, InsnKind::Normal),
+            insn(0x100c, InsnKind::Normal),
+        ];
+        let pool = BTreeSet::from([0x1008]);
+        assert!(follows_an_end(arch, &body, &pool, 0x100c));
+        assert!(!follows_an_end(arch, &body, &BTreeSet::new(), 0x100c));
+        assert!(follows_an_end(arch, &body, &BTreeSet::new(), 0x1008));
+        assert!(!follows_an_end(arch, &body, &pool, 0x1004));
+        assert!(!follows_an_end(arch, &body, &pool, 0x2000));
+    }
+
+    /// A run of words into the code is a table of functions where at
+    /// least half of its targets already start one, and a run of labels
+    /// is not.
+    #[test]
+    fn a_table_of_functions_names_its_targets_where_most_start_one() {
+        let arch = &hereticus_il::arch::mips::Mips32::LITTLE;
+        let words = |values: &[u32]| -> Vec<u8> {
+            values.iter().flat_map(|value| value.to_le_bytes()).collect()
+        };
+        let code = 0x1000..0x2000;
+        let known = BTreeSet::from([0x1100, 0x1200]);
+        // Two of three targets start a function: 0x1300 is one too.
+        let table = words(&[0, 0x1100, 0x1300, 0x1200, 0]);
+        let found = function_tables(arch, &[(0x4000, &table[..])], code.clone(), &known);
+        assert_eq!(found, [0x1100, 0x1200, 0x1300]);
+        // One of three targets starts a function: labels of a `switch`.
+        let labels = words(&[0x1100, 0x1304, 0x1308]);
+        let found = function_tables(arch, &[(0x4000, &labels[..])], code.clone(), &known);
+        assert!(found.is_empty());
+        // One word alone is no table, and a word outside the code ends a run.
+        let alone = words(&[0x1300, 0x9000, 0x1100]);
+        let found = function_tables(arch, &[(0x4000, &alone[..])], code, &known);
+        assert!(found.is_empty());
     }
 
     #[test]
