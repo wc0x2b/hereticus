@@ -57,9 +57,11 @@ The `TOUCHED` column counts the edits of each kind:
 - `jump`: a jump that is not a call.
 - `mem`: a load or a store.
 - `const`: a constant that changed.
-- `text`: a text that the code points to, and that changed. A text counts
-  when it holds four or more printable bytes after a NUL, because a
-  shorter one can be a pointer or a number by chance.
+- `text`: a text that the code points to, and that changed. A text
+  starts after a NUL or at the start of read-only data, and holds two or
+  more printable bytes. A text of fewer than four bytes counts only where
+  another text follows it, as in the pool that a compiler packs strings
+  into, because alone it can be a pointer or a number by chance.
 - `unread`: bytes that the decoder cannot read.
 
 Plain data instructions are left out, because they are the bulk of any
@@ -432,8 +434,10 @@ Options:
   with no section headers, as OpenWrt ships each binary, is read through
   its segments. A Mach-O file is read as macOS
   and iOS ship it, arm64 or arm64e, stripped or not, and a universal binary
-  as its AArch64 slice. A kernelcache of iOS 15 and later is read kext by
-  kext. The dyld shared cache and 32-bit Mach-O are not read.
+  as its AArch64 slice. A kernelcache that is a fileset, as those of
+  iOS 17 and later in the tests are, is read kext by kext. An older one,
+  as that of iOS 15 for the A13, is one image with every kext linked in,
+  and is read whole. The dyld shared cache and 32-bit Mach-O are not read.
 * **Windows PE files for x86-64, 32-bit x86 and ARM64.** A DLL or an
   executable is read stripped or not. Stripped, it keeps the names of its
   exports and of its imports, by name or by ordinal, as `host.dll#1`, and

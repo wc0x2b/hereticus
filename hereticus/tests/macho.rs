@@ -200,7 +200,7 @@ fn a_universal_binary_with_no_aarch64_slice_is_refused() {
     assert!(matches!(Binary::parse(&data), Err(ObjError::Parse(_))));
 }
 
-/// A kernelcache of iOS 15 and later is a fileset, read kext by kext.
+/// A kernelcache of iOS 17 and later is a fileset, read kext by kext.
 ///
 /// Apple's kernelcaches are 66 MB each, too large to keep with the tests,
 /// so this runs where `HERETICUS_KERNELCACHE` names the directories

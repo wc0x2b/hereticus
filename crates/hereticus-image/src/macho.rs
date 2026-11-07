@@ -99,7 +99,7 @@ pub(crate) fn functions(file: &MachO<'_>) -> Option<(Vec<Function>, FoundBy)> {
     (!functions.is_empty()).then_some((functions, found_by))
 }
 
-/// The functions of a fileset, as the kernelcache of iOS 15 and later is,
+/// The functions of a fileset, as a kernelcache of iOS 17 and later is,
 /// or `None` where `file` is no fileset.
 ///
 /// A fileset holds each kext as a Mach-O of its own, which an

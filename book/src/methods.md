@@ -137,10 +137,18 @@ uses these sources, the strongest first:
    each function, and `.eh_frame` gives its end too. The exception
    directory of an x86-64 or ARM64 PE file, `.pdata`, gives the start and
    the length of each function that changes the stack. They stay after stripping,
-   because the unwinder needs them at run time.
+   because the unwinder needs them at run time. A Mach-O file keeps
+   `LC_FUNCTION_STARTS`, which lists the start of each function.
 3. **Call targets.** A call goes to the start of a function. A slot of the
    GOT that a call goes through holds the start of one.
-4. **The code after a return, and prologues.** Code after the end of a
+4. **Pointers to code.** A relocation that stores an address in the code
+   names a function, as a table of callbacks does. In a raw image, a run of
+   words that point into the code names functions where at least half of
+   its targets start one already, and each new start follows the end of a
+   function. Inside an ARM unwind entry that a linker merged from those of
+   neighbours, an address that code forms, as `movw` and `movt` do, starts
+   a function where it follows the end of one.
+5. **The code after a return, and prologues.** Code after the end of a
    function usually starts a new one. This source is the weakest, so it
    fills only the gaps that the others leave.
 
@@ -287,7 +295,9 @@ pair. The stages, in the order they run:
 | Stubs in order | The stubs align as two ordered lists, with the calls of the pairs as votes | `same callers` | |
 | Twins by what they reach | One constant, callee or text tells a twin from the others | `identical shape` | Diaphora *Same constants* |
 | Similarity | Their score is the best, and no rival comes near it | `similar` | BinDiff *prime signature matching* |
+| Twins by their callees | A pair of twins reaches what the pairs of its callees do not, as a thunk one off, and the one twin of its shape that reaches the same takes it | `identical shape` | |
 | Tables | They have the same slot in two tables of function pointers, as two vtables | `same slot of a table` | |
+| Uncrossed pairs | Each of two pairs by similarity calls and points at what the partner of the other does, and the two swap | `similar` | |
 | Unique references | Each is the only function of its binary that holds one text, constant or call to an import | `same references` | BinDiff *call graph propagation* |
 | Callers | The calls of the pairs vote that they are one function | `same callers` | BinDiff *call graph expansion* |
 | Context | Their callers, callees and texts agree, and their code is close enough | `same callers`, or `similar` where a pair by similarity moves | |
