@@ -133,17 +133,21 @@ impl Recovery for PowerPc {
     /// `stwu r1, d(r1)` is primary opcode 37 with `r1` in both register
     /// fields, and `stwux r1, r1, rB` opcode 31 with extended opcode 183.
     /// `stdu` is opcode 62 with 1 in the two lowest bits, and `stdux`
-    /// extended opcode 181.
+    /// extended opcode 181. The decoder reads the two indexed forms whatever
+    /// their lowest bit, the record bit, holds, as `0x7c21016f`.
     fn may_be_prologue(&self, word: &[u8]) -> bool {
         const STWU_R1_R1: u32 = 0x9421_0000;
         const STWUX_R1_R1: u32 = 0x7c21_016e;
         const STDU_R1_R1: u32 = 0xf821_0001;
         const STDUX_R1_R1: u32 = 0x7c21_016a;
+        /// The two register fields and the extended opcode, without the
+        /// record bit.
+        const INDEXED: u32 = 0xffff_07fe;
         word_at(*self, word).is_some_and(|word| {
             word & 0xffff_0000 == STWU_R1_R1
-                || word & 0xffff_07ff == STWUX_R1_R1
+                || word & INDEXED == STWUX_R1_R1
                 || word & 0xffff_0003 == STDU_R1_R1
-                || word & 0xffff_07ff == STDUX_R1_R1
+                || word & INDEXED == STDUX_R1_R1
         })
     }
 
@@ -1156,6 +1160,7 @@ mod tests {
     #[case::stwu_up(0x9421_0010, false)]
     #[case::stwu_other_base(0x9423_fff0, false)]
     #[case::stwux(0x7c21_016e, true)]
+    #[case::stwux_with_the_record_bit(0x7c21_016f, true)]
     #[case::stw(0x9001_0014, false)]
     #[case::mflr(0x7c08_02a6, false)]
     fn the_frame_allocation_opens_a_function(#[case] word: u32, #[case] opens: bool) {
