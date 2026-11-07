@@ -421,6 +421,11 @@ pub fn is_go_stack_check(body: &[Insn]) -> bool {
     /// The offset of the stack bound in a goroutine.
     const STACK_GUARD: i64 = 8;
     let [load, compare, ..] = body else { return false };
+    // The opcodes are cheap to read, and rule out almost every word before
+    // the lift reads the operands.
+    if !is(load, Opcode::core_lw) || !is(compare, Opcode::core_sltu) {
+        return false;
+    }
     let bound = match operands_of(load).as_slice() {
         [
             il::Operand::Reg(bound),
@@ -433,12 +438,10 @@ pub fn is_go_stack_check(body: &[Insn]) -> bool {
         ] => *bound,
         _ => return false,
     };
-    is(load, Opcode::core_lw)
-        && is(compare, Opcode::core_sltu)
-        && matches!(
-            operands_of(compare).as_slice(),
-            [_, il::Operand::Reg(left), il::Operand::Reg(STACK)] if *left == bound
-        )
+    matches!(
+        operands_of(compare).as_slice(),
+        [_, il::Operand::Reg(left), il::Operand::Reg(STACK)] if *left == bound
+    )
 }
 
 pub fn is_gp_disp_preamble(body: &[Insn]) -> bool {

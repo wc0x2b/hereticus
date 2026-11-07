@@ -655,6 +655,11 @@ pub fn is_go_stack_check(body: &[Insn]) -> bool {
     /// The offset of the stack bound in a goroutine.
     const STACK_GUARD: i64 = 8;
     let [load, compare, ..] = body else { return false };
+    // The opcodes are cheap to read, and rule out almost every word before
+    // the lift reads the operands.
+    if !is_plain(load, Opcode::LDR) || core_opcode(compare) != Some(Opcode::CMP) {
+        return false;
+    }
     let operands = |insn: &Insn| lifted(insn).map(|lifted| lifted.operands).unwrap_or_default();
     let bound = match operands(load).as_slice() {
         [
@@ -668,10 +673,7 @@ pub fn is_go_stack_check(body: &[Insn]) -> bool {
         ] => *bound,
         _ => return false,
     };
-    is_plain(load, Opcode::LDR)
-        && core_opcode(compare) == Some(Opcode::CMP)
-        && operands(compare).as_slice()
-            == [il::Operand::Reg(il::Reg::Stack), il::Operand::Reg(bound)]
+    operands(compare).as_slice() == [il::Operand::Reg(il::Reg::Stack), il::Operand::Reg(bound)]
 }
 
 /// Whether `body` opens with LLD's range extension thunk, a function by
