@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The comparison prepares the functions of each binary, and assesses the
-  pairs of identical shape, on every core. The comparison of two iPhone
-  kernels of 50 MB, for CVE-2021-30883, took 4.0 s in place of 13.8 s on a
-  machine of 16 threads, with the same report.
+- The comparison prepares the functions of each binary, assesses the pairs
+  of identical shape, and finds the unique references of the two sides, on
+  every core. A pair that no stage breaks gets no second score, and nor
+  does a pair whose sizes alone keep it below the bar. The comparison of
+  two iPhone kernels of 50 MB, for CVE-2021-30883, took 3.9 s in place of
+  13.8 s on a machine of 16 threads, with the same report.
 - A raw image is read faster. The two images of a comparison are read at
   once, the check of the base runs beside the scan, and the scan reads the
   opcodes of a word before it lifts the word to look for the stack check
@@ -47,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its relocations store have bit 0 set. Before, such a Thumb-2 file read
   as A32 code unless bit 0 of its entry point was set, and a library has no
   entry point.
+
+- A raw PowerPC image finds a function that opens with `stwux r1, r1, rB`
+  or `stdux r1, r1, rB` with the record bit set. The quick test of the
+  bits of a prologue refused such a word, though the decoder reads it.
 
 ## [0.7.1](https://github.com/wc0x2b/hereticus/compare/v0.7.0...v0.7.1) - 2026-11-01
 
