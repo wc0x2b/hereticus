@@ -5,13 +5,15 @@
 `real-life-reports/`. Each binary is pinned by its SHA-256, so a snapshot
 always tells of the same bytes.
 
-The `ubusd`, `dropbear`, `uhttpd`, `odhcpd`, `procd`, `jsonfilter` and
-`libblobmsg_json` builds of OpenWrt come
+The `ubusd`, `dropbear`, `uhttpd`, `odhcpd`, `procd`, `jsonfilter`,
+`libblobmsg_json` and `libmbedcrypto` builds of OpenWrt come
 from the root file system of each release, or from the initramfs of its
 kernel where it ships none, and the `ltq-ptm` kernel
 module from its package, which this script downloads. The Apple binaries
 come from an IPSW with the `ipsw` tool, which this script does not run: a
-missing one stops it with the commands that get it.
+missing one stops it with the commands that get it. The MikroTik binaries
+come from a RouterOS `.npk` package, and the Teltonika binaries from a
+RUTOS firmware image, both read with `unsquashfs-backhand`.
 
 The files land in ~/.cache, where `examples/research_bench.rs --cves` reads
 them too.
@@ -22,7 +24,9 @@ import hashlib
 import io
 import re
 import sys
+import subprocess
 import tarfile
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -32,6 +36,26 @@ MIRROR = "https://downloads.openwrt.org/releases"
 
 # The SHA-256 of each binary, by its path under CACHE.
 PINNED = {
+    "hereticus-teltonika/7.24/RUT9M/usr/sbin/modbusgwd":
+        "8ce21e8861f057249db190ec8fd38a1d35560c8ccce98b458b92a995c7976c26",
+    "hereticus-teltonika/7.24.3/RUT9M/usr/sbin/modbusgwd":
+        "c88911f777b7461ff91c255bc9e826a614783c6cdffcea73402fca196c204cff",
+    "hereticus-mikrotik/7.24.1/arm/nova/bin/login":
+        "d58425e8383c2bd32f0840f686d60398fc34b6232212b3891ede5c836e6baf6e",
+    "hereticus-mikrotik/7.24.2/arm/nova/bin/login":
+        "3c8c4bacb9851e08fa70c3c287faa14b1f32efc2ecc005bdd770f3297f7b925d",
+    "hereticus-mikrotik/7.24.1/mipsbe/nova/bin/login":
+        "734e05324d180364b63ac785900a26e9822e0b97b24d738b7da8fa501fd1232a",
+    "hereticus-mikrotik/7.24.2/mipsbe/nova/bin/login":
+        "768ed88c55c1131d787c800c734e4aa7a8e22eba9e2bf293862171ea0ede7421",
+    "hereticus-mikrotik/7.24.1/arm/nova/bin/btest":
+        "5dadbeee4a706c754e96d5585cacae2018588b68304899a7dd27baadc618766c",
+    "hereticus-mikrotik/7.24.2/arm/nova/bin/btest":
+        "5f63ede67cbc9534b546fab8287642ccdfa56622cd3c81a5017aace05c8a3d0d",
+    "hereticus-mikrotik/7.24.1/mipsbe/nova/bin/btest":
+        "fff78c0ea110a80d5b882eeb23e271510258096610acbeb78fbbab88dab8bbf0",
+    "hereticus-mikrotik/7.24.2/mipsbe/nova/bin/btest":
+        "f078f40938602fa22d6f4e2178aea7f9f491008728e85a9eeafc432789644989",
     "hereticus-apple/cve/15.0.1/19A348__iPhone12,1/kernelcache.release.iPhone12,1":
         "2607a165f19cbfedbe315cb96520165de654f3b334cb53ea27891680d2188a64",
     "hereticus-apple/cve/15.0.2/19A404__iPhone12,1/kernelcache.release.iPhone12,1":
@@ -80,6 +104,38 @@ PINNED = {
         "50a3fb3996a73ebf1ed32b8320c411ad5becead2d94128a893b443064fa578fa",
     "hereticus-openwrt-cve/24.10.5/malta-le/usr/sbin/dropbear":
         "c21e21d8fdd80dc67fc46504973021fd0490a776db72a976c3b01eb3e3402726",
+    "hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.6":
+        "80a2b70a96742ff63d17459822566c74688f729e5e7256c69bebbee8085f413e",
+    "hereticus-openwrt-cve/25.12.5/armsr-armv7/usr/lib/libmbedcrypto.so.3.6.6":
+        "7a749617316701c204fa96770a96421c3faa31f861cc97df5b079e4b2fb1cfe0",
+    "hereticus-openwrt-cve/25.12.5/malta-be/usr/lib/libmbedcrypto.so.3.6.6":
+        "33c92598357f4bb185522136b91635f76213ed1c3c4625d1cb61eea518f78f6b",
+    "hereticus-openwrt-cve/25.12.5/malta-le/usr/lib/libmbedcrypto.so.3.6.6":
+        "e97a83e59ec11a1ebdcd5d2d74912f2bd12c8640709ab6f6762afed81ba821c4",
+    "hereticus-openwrt-cve/25.12.6/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.7":
+        "4061f681c64ee61ad049d6b513890f27049b01a36cfe7eaefed0c319f05e2ac9",
+    "hereticus-openwrt-cve/25.12.6/armsr-armv7/usr/lib/libmbedcrypto.so.3.6.7":
+        "dfd6f37e2d63207b197e2daec57f5bca3035ba9f3cdb7ddd59aa5a7c504cf42b",
+    "hereticus-openwrt-cve/25.12.6/malta-be/usr/lib/libmbedcrypto.so.3.6.7":
+        "f1140d044032cda73289902674f93eb37eef8e4669931c00b470a24b14ea65b4",
+    "hereticus-openwrt-cve/25.12.6/malta-le/usr/lib/libmbedcrypto.so.3.6.7":
+        "067437d4cc017464092a50b180fa08508968633640e47791b32eb9793e5ad3fa",
+    "hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/sbin/uhttpd":
+        "122549b5b9e5d736f35e0ef3c7f7c4e39194ab34f4dd746c2cfd7ac29a7690fd",
+    "hereticus-openwrt-cve/25.12.5/armsr-armv7/usr/sbin/uhttpd":
+        "684bbc10184cfebb19956fab17fe576e0ff1b0cf374d56e1368707e246438112",
+    "hereticus-openwrt-cve/25.12.5/malta-be/usr/sbin/uhttpd":
+        "38d5785343bd1ee68f7e23e40de744af84374c98395e8da39081efc5b6fb9ac4",
+    "hereticus-openwrt-cve/25.12.5/malta-le/usr/sbin/uhttpd":
+        "7595673c155060c38222e7da9c437da2a3ea54f9dc03f138dae4dd39723ccf19",
+    "hereticus-openwrt-cve/25.12.6/armsr-armv8/usr/sbin/uhttpd":
+        "dc0f9ab02d0350c861f2ab3951c69fb13ba20e53f56cd59e57c7d880a91d9f83",
+    "hereticus-openwrt-cve/25.12.6/armsr-armv7/usr/sbin/uhttpd":
+        "9b0c51280c16e0c1361512c834e6842229908159a0ba77f5cfef479bcc0c6699",
+    "hereticus-openwrt-cve/25.12.6/malta-be/usr/sbin/uhttpd":
+        "c389072f37adafde90829ad61d385c642a74da3672360f22b526997caced2a2e",
+    "hereticus-openwrt-cve/25.12.6/malta-le/usr/sbin/uhttpd":
+        "2ce9d839d9c999b6b3c4c6dbf7cd1f7a6343a369d6c90dd9252f5542dc400c59",
     "hereticus-openwrt-cve/24.10.7/armsr-armv7/usr/sbin/uhttpd":
         "bd90b99ece8e8d7ec4cb1b7e008c71895096964f43552c9fefea047652dbc341",
     "hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/uhttpd":
@@ -300,6 +356,58 @@ def fetch_kmod(path: str) -> bytes:
     return inner.extractfile(member).read()
 
 
+def fetch_mikrotik(path: str) -> bytes:
+    """Download a MikroTik RouterOS package and take one file out of it.
+
+    A `.npk` is a short header, then a SquashFS image at offset 0x1000.
+    `unsquashfs-backhand`, of the `backhand-cli` crate, reads it at that
+    offset, so there is no C SquashFS tool to install. Run
+    `cargo install backhand-cli` where it is missing.
+    """
+    # hereticus-mikrotik/<version>/<arch>/<path in the package>
+    _, version, arch, *member = path.split("/")
+    url = f"https://download.mikrotik.com/routeros/{version}/routeros-{version}-{arch}.npk"
+    print(f"cve_binaries: downloading {url}", file=sys.stderr)
+    with urllib.request.urlopen(url, timeout=600) as response:
+        npk = response.read()
+    with tempfile.TemporaryDirectory() as work:
+        package = Path(work) / "package.npk"
+        package.write_bytes(npk)
+        wanted = "/" + "/".join(member)
+        subprocess.run(
+            ["unsquashfs-backhand", "-o", "4096", "--path-filter", wanted, "-d", work, str(package)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        return (Path(work) / "/".join(member)).read_bytes()
+
+
+def fetch_teltonika(path: str) -> bytes:
+    """Download a Teltonika RUTOS firmware image and take one file out of it.
+
+    The `_WEBUI.bin` image holds a SquashFS root at offset 0x260000, which
+    `unsquashfs-backhand` reads with `--auto-offset`. Run
+    `cargo install backhand-cli` where it is missing.
+    """
+    # hereticus-teltonika/<version>/<device>/<path in the image>
+    _, version, device, *member = path.split("/")
+    url = f"https://firmware.teltonika-networks.com/{version}/{device}/{device}_R_00.0{version}_WEBUI.bin"
+    print(f"cve_binaries: downloading {url}", file=sys.stderr)
+    with urllib.request.urlopen(url, timeout=600) as response:
+        image = response.read()
+    squashfs = image.index(b"hsqs")
+    with tempfile.TemporaryDirectory() as work:
+        blob = Path(work) / "image.bin"
+        blob.write_bytes(image)
+        subprocess.run(
+            ["unsquashfs-backhand", "-o", str(squashfs), "--path-filter", "/" + "/".join(member),
+             "-d", work, str(blob)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        return (Path(work) / "/".join(member)).read_bytes()
+
+
 def main() -> int:
     missing_apple = []
     for path, expected in PINNED.items():
@@ -310,6 +418,10 @@ def main() -> int:
             data = fetch_kmod(path)
         elif path.startswith("hereticus-openwrt-cve/"):
             data = fetch_from_rootfs(path)
+        elif path.startswith("hereticus-mikrotik/"):
+            data = fetch_mikrotik(path)
+        elif path.startswith("hereticus-teltonika/"):
+            data = fetch_teltonika(path)
         else:
             missing_apple.append(path)
             continue

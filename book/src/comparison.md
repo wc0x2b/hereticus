@@ -87,8 +87,9 @@ earlier than `hereticus` in
 ## Published Fixes
 
 The [Real-Life Examples](./real-life-examples.md) are fixes that vendors
-shipped: daemons of OpenWrt for AArch64, A32, MIPS32 and MIPS16e, and
-drivers of iOS. A test gives the binaries before and after each fix to all
+shipped: daemons and the crypto library of OpenWrt for AArch64, A32,
+MIPS32 and MIPS16e, the `btest` server of MikroTik RouterOS for ARM and
+MIPS32, and drivers of iOS. A test gives the binaries before and after each fix to all
 three tools, but the kernelcache of iOS, which Ghidra reads for hours. A
 report shows the fix at the first row whose function of the earlier
 binary starts where the function that the fix edits starts. radiff2 runs
@@ -97,19 +98,28 @@ one fixed function of the stripped executables.
 
 | Tool | Fixes found | Fix on row 1 | Fix in the first 10 rows | Rows |
 |------|-------------|--------------|--------------------------|------|
-| hereticus | 38<!-- from truth_cves_rivals: all hereticus / found --> | 21<!-- from truth_cves_rivals: all hereticus / first --> | 37<!-- from truth_cves_rivals: all hereticus / top10 --> | 1397<!-- from truth_cves_rivals: all hereticus / rows --> |
-| radiff2 | 10<!-- from truth_cves_rivals: all radare2 / found --> | 4<!-- from truth_cves_rivals: all radare2 / first --> | 4<!-- from truth_cves_rivals: all radare2 / top10 --> | 6720<!-- from truth_cves_rivals: all radare2 / rows --> |
-| Ghidra | 23<!-- from truth_cves_rivals: all ghidra / found --> | 6<!-- from truth_cves_rivals: all ghidra / first --> | 22<!-- from truth_cves_rivals: all ghidra / top10 --> | 4186<!-- from truth_cves_rivals: all ghidra / rows --> |
+| hereticus | 52<!-- from truth_cves_rivals: all hereticus / found --> | 24<!-- from truth_cves_rivals: all hereticus / first --> | 51<!-- from truth_cves_rivals: all hereticus / top10 --> | 1665<!-- from truth_cves_rivals: all hereticus / rows --> |
+| radiff2 | 20<!-- from truth_cves_rivals: all radare2 / found --> | 6<!-- from truth_cves_rivals: all radare2 / first --> | 6<!-- from truth_cves_rivals: all radare2 / top10 --> | 15471<!-- from truth_cves_rivals: all radare2 / rows --> |
+| Ghidra | 35<!-- from truth_cves_rivals: all ghidra / found --> | 7<!-- from truth_cves_rivals: all ghidra / first --> | 34<!-- from truth_cves_rivals: all ghidra / top10 --> | 5353<!-- from truth_cves_rivals: all ghidra / rows --> |
 
 radiff2 reads no kext of iOS, and finds few functions of a stripped
 executable. Ghidra misses the fix in each kext of iOS, and the fix of
-CVE-2026-30874 in procd on each architecture but AArch64. Each other tool
+CVE-2026-30874 in procd on each architecture but AArch64, and that of
+CVE-2026-102338 in uhttpd for MIPS16e. Each other tool
 shows a few fixes earlier than `hereticus` does: radiff2 shows the fix of
 CVE-2025-14282 in dropbear for AArch64 on row
 1<!-- from truth_cves_rivals: CVE-2025-14282 dropbear AArch64 / rank:radare2 -->, where `hereticus` shows it on row
 2<!-- from truth_cves_rivals: CVE-2025-14282 dropbear AArch64 / rank:hereticus -->, and Ghidra the fix of CVE-2025-62526 in ubusd for
 AArch64 on row 2<!-- from truth_cves_rivals: CVE-2025-62526 ubusd AArch64 / rank:ghidra -->, where `hereticus` shows it on row
-5<!-- from truth_cves_rivals: CVE-2025-62526 ubusd AArch64 / rank:hereticus -->.
+5<!-- from truth_cves_rivals: CVE-2025-62526 ubusd AArch64 / rank:hereticus -->. On the update of Mbed
+TLS, Ghidra shows the fix of CVE-2026-35336 in `libmbedcrypto` for
+AArch64 on row 3<!-- from truth_cves_rivals: CVE-2026-35336 libmbedcrypto AArch64 / rank:ghidra -->, where `hereticus` shows it on row
+9<!-- from truth_cves_rivals: CVE-2026-35336 libmbedcrypto AArch64 / rank:hereticus -->, and radiff2 shows the fix of CVE-2026-102338 in uhttpd for
+AArch64 on row 1<!-- from truth_cves_rivals: CVE-2026-102338 uhttpd AArch64 / rank:radare2 -->, where `hereticus` shows it on row
+2<!-- from truth_cves_rivals: CVE-2026-102338 uhttpd AArch64 / rank:hereticus -->. On the `btest` server of RouterOS for ARM, where the fix
+of CVE-2026-67277 is on row 1<!-- from truth_cves_rivals: CVE-2026-67277 RouterOS btest ARM / rank:hereticus --> for `hereticus`, radiff2 shows no
+changed function at all, and Ghidra shows the fix on row
+3<!-- from truth_cves_rivals: CVE-2026-67277 RouterOS btest ARM / rank:ghidra -->.
 
 ## Deeper Settings
 

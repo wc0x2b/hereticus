@@ -24,8 +24,13 @@ found. Lower is better.
 | [CVE-2026-30873](./real-life-examples/cve-2026-30873.md) | jsonfilter, OpenWrt 24.10.5 to 24.10.6 | AArch64 | 1<!-- from truth_cves: CVE-2026-30873 jsonfilter AArch64 / rank --> | 1<!-- from truth_cves: CVE-2026-30873 jsonfilter AArch64 / rows --> |
 | [CVE-2026-30874](./real-life-examples/cve-2026-30874.md) | procd, OpenWrt 24.10.5 to 24.10.6 | AArch64 | 1<!-- from truth_cves: CVE-2026-30874 procd AArch64 / rank --> | 24<!-- from truth_cves: CVE-2026-30874 procd AArch64 / rows --> |
 | [CVE-2026-35385](./real-life-examples/cve-2026-35385.md) | dropbear `scp`, OpenWrt 24.10.7 to 24.10.8 | AArch64 | 1<!-- from truth_cves: CVE-2026-35385 dropbear AArch64 / rank --> | 18<!-- from truth_cves: CVE-2026-35385 dropbear AArch64 / rows --> |
+| [CVE-2026-50584](./real-life-examples/cve-2026-50584.md) | Mbed TLS `libmbedcrypto`, OpenWrt 25.12.5 to 25.12.6 | AArch64 | 3<!-- from truth_cves: CVE-2026-50584 libmbedcrypto AArch64 / rank --> | 33<!-- from truth_cves: CVE-2026-50584 libmbedcrypto AArch64 / rows --> |
 | [CVE-2026-53921](./real-life-examples/cve-2026-53921.md) | odhcpd, OpenWrt 24.10.7 to 24.10.8 | AArch64 | 5<!-- from truth_cves: CVE-2026-53921 odhcpd AArch64 / rank --> | 18<!-- from truth_cves: CVE-2026-53921 odhcpd AArch64 / rows --> |
+| [CVE-2026-67277](./real-life-examples/cve-2026-67277.md) | MikroTik RouterOS `btest`, 7.24.1 to 7.24.2 | ARM | 1<!-- from truth_cves: CVE-2026-67277 RouterOS btest ARM / rank --> | 7<!-- from truth_cves: CVE-2026-67277 RouterOS btest ARM / rows --> |
+| [CVE-2026-86060](./real-life-examples/cve-2026-86060.md) | MikroTik RouterOS `login`, 7.24.1 to 7.24.2 | MIPS32 BE | 1<!-- from truth_cves: CVE-2026-86060 RouterOS login MIPS32 BE / rank --> | 1<!-- from truth_cves: CVE-2026-86060 RouterOS login MIPS32 BE / rows --> |
+| [CVE-2026-18368](./real-life-examples/cve-2026-18368.md) | Teltonika RUTOS `modbusgwd`, 7.24 to 7.24.3 | MIPS32 | 3<!-- from truth_cves: CVE-2026-18368 modbusgwd MIPS32 / rank --> | 10<!-- from truth_cves: CVE-2026-18368 modbusgwd MIPS32 / rows --> |
 | [CVE-2026-55614](./real-life-examples/cve-2026-55614.md) | uhttpd, OpenWrt 24.10.7 to 24.10.8 | AArch64 | 5<!-- from truth_cves: CVE-2026-55614 uhttpd AArch64 / rank --> | 13<!-- from truth_cves: CVE-2026-55614 uhttpd AArch64 / rows --> |
+| [CVE-2026-102338](./real-life-examples/cve-2026-102338.md) | uhttpd, OpenWrt 25.12.5 to 25.12.6 | AArch64 | 2<!-- from truth_cves: CVE-2026-102338 uhttpd AArch64 / rank --> | 20<!-- from truth_cves: CVE-2026-102338 uhttpd AArch64 / rows --> |
 
 Most pages also give the rows of other builds, as A32 and MIPS. The
 OpenWrt binaries are all stripped with `sstrip`. The Apple binaries are
