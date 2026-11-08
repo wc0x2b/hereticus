@@ -168,6 +168,12 @@ const FIXES: &[Fix] = &[
         function: "sub_19c54",
     },
     Fix {
+        name: "CVE-2026-18368 modbusgwd MIPS32",
+        before: "hereticus-teltonika/7.24/RUT9M/usr/sbin/modbusgwd",
+        after: "hereticus-teltonika/7.24.3/RUT9M/usr/sbin/modbusgwd",
+        function: "sub_404494",
+    },
+    Fix {
         name: "CVE-2026-50584 libmbedcrypto AArch64",
         before: "hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.6",
         after: "hereticus-openwrt-cve/25.12.6/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.7",

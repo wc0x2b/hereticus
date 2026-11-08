@@ -27,6 +27,7 @@ CVE-2026-67277 RouterOS btest ARM       1     7
 CVE-2026-67277 RouterOS btest MIPS32 BE    1    11
 CVE-2026-86060 RouterOS login MIPS32 BE    1     1
 CVE-2026-86060 RouterOS login ARM       4    12
+CVE-2026-18368 modbusgwd MIPS32         3    10
 CVE-2026-50584 libmbedcrypto AArch64    3    33
 CVE-2026-50584 libmbedcrypto A32        1    16
 CVE-2026-50584 libmbedcrypto MIPS32 BE    4    21
@@ -84,6 +85,7 @@ CVE-2026-67277 RouterOS btest ARM    changed sub_1dc28 sub_1dc44 0.90 23 11 1
 CVE-2026-67277 RouterOS btest MIPS32 BE changed sub_40ecb8 sub_40ec94 0.95 27 18 1
 CVE-2026-86060 RouterOS login MIPS32 BE changed sub_4090bc sub_4090bc 0.97 4 0 1
 CVE-2026-86060 RouterOS login ARM    changed sub_19c54 sub_19c54 0.98 4 1 0
+CVE-2026-18368 modbusgwd MIPS32      changed sub_404494 sub_40453c 0.84 11 1 0
 CVE-2026-50584 libmbedcrypto AArch64 changed mbedtls_chacha20_update mbedtls_chacha20_update 0.80 29 11 2
 CVE-2026-50584 libmbedcrypto A32     changed mbedtls_chacha20_update mbedtls_chacha20_update 0.83 26 16 6
 CVE-2026-50584 libmbedcrypto MIPS32 BE changed mbedtls_chacha20_update mbedtls_chacha20_update 0.83 23 6 6

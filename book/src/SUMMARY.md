@@ -30,6 +30,7 @@
   - [CVE-2026-53921: odhcpd](./real-life-examples/cve-2026-53921.md)
   - [CVE-2026-67277: MikroTik RouterOS](./real-life-examples/cve-2026-67277.md)
   - [CVE-2026-86060: MikroTik RouterOS login](./real-life-examples/cve-2026-86060.md)
+  - [CVE-2026-18368: Teltonika modbusgwd](./real-life-examples/cve-2026-18368.md)
   - [CVE-2026-55614: uhttpd](./real-life-examples/cve-2026-55614.md)
   - [CVE-2026-102338: uhttpd](./real-life-examples/cve-2026-102338.md)
 - [Malware](./malware.md)

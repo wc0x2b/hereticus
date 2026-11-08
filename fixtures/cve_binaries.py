@@ -12,7 +12,8 @@ kernel where it ships none, and the `ltq-ptm` kernel
 module from its package, which this script downloads. The Apple binaries
 come from an IPSW with the `ipsw` tool, which this script does not run: a
 missing one stops it with the commands that get it. The MikroTik binaries
-come from a RouterOS `.npk` package, read with `unsquashfs-backhand`.
+come from a RouterOS `.npk` package, and the Teltonika binaries from a
+RUTOS firmware image, both read with `unsquashfs-backhand`.
 
 The files land in ~/.cache, where `examples/research_bench.rs --cves` reads
 them too.
@@ -35,6 +36,10 @@ MIRROR = "https://downloads.openwrt.org/releases"
 
 # The SHA-256 of each binary, by its path under CACHE.
 PINNED = {
+    "hereticus-teltonika/7.24/RUT9M/usr/sbin/modbusgwd":
+        "8ce21e8861f057249db190ec8fd38a1d35560c8ccce98b458b92a995c7976c26",
+    "hereticus-teltonika/7.24.3/RUT9M/usr/sbin/modbusgwd":
+        "c88911f777b7461ff91c255bc9e826a614783c6cdffcea73402fca196c204cff",
     "hereticus-mikrotik/7.24.1/arm/nova/bin/login":
         "d58425e8383c2bd32f0840f686d60398fc34b6232212b3891ede5c836e6baf6e",
     "hereticus-mikrotik/7.24.2/arm/nova/bin/login":
@@ -377,6 +382,32 @@ def fetch_mikrotik(path: str) -> bytes:
         return (Path(work) / "/".join(member)).read_bytes()
 
 
+def fetch_teltonika(path: str) -> bytes:
+    """Download a Teltonika RUTOS firmware image and take one file out of it.
+
+    The `_WEBUI.bin` image holds a SquashFS root at offset 0x260000, which
+    `unsquashfs-backhand` reads with `--auto-offset`. Run
+    `cargo install backhand-cli` where it is missing.
+    """
+    # hereticus-teltonika/<version>/<device>/<path in the image>
+    _, version, device, *member = path.split("/")
+    url = f"https://firmware.teltonika-networks.com/{version}/{device}/{device}_R_00.0{version}_WEBUI.bin"
+    print(f"cve_binaries: downloading {url}", file=sys.stderr)
+    with urllib.request.urlopen(url, timeout=600) as response:
+        image = response.read()
+    squashfs = image.index(b"hsqs")
+    with tempfile.TemporaryDirectory() as work:
+        blob = Path(work) / "image.bin"
+        blob.write_bytes(image)
+        subprocess.run(
+            ["unsquashfs-backhand", "-o", str(squashfs), "--path-filter", "/" + "/".join(member),
+             "-d", work, str(blob)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        return (Path(work) / "/".join(member)).read_bytes()
+
+
 def main() -> int:
     missing_apple = []
     for path, expected in PINNED.items():
@@ -389,6 +420,8 @@ def main() -> int:
             data = fetch_from_rootfs(path)
         elif path.startswith("hereticus-mikrotik/"):
             data = fetch_mikrotik(path)
+        elif path.startswith("hereticus-teltonika/"):
+            data = fetch_teltonika(path)
         else:
             missing_apple.append(path)
             continue
