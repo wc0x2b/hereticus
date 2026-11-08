@@ -35,6 +35,14 @@ MIRROR = "https://downloads.openwrt.org/releases"
 
 # The SHA-256 of each binary, by its path under CACHE.
 PINNED = {
+    "hereticus-mikrotik/7.24.1/arm/nova/bin/login":
+        "d58425e8383c2bd32f0840f686d60398fc34b6232212b3891ede5c836e6baf6e",
+    "hereticus-mikrotik/7.24.2/arm/nova/bin/login":
+        "3c8c4bacb9851e08fa70c3c287faa14b1f32efc2ecc005bdd770f3297f7b925d",
+    "hereticus-mikrotik/7.24.1/mipsbe/nova/bin/login":
+        "734e05324d180364b63ac785900a26e9822e0b97b24d738b7da8fa501fd1232a",
+    "hereticus-mikrotik/7.24.2/mipsbe/nova/bin/login":
+        "768ed88c55c1131d787c800c734e4aa7a8e22eba9e2bf293862171ea0ede7421",
     "hereticus-mikrotik/7.24.1/arm/nova/bin/btest":
         "5dadbeee4a706c754e96d5585cacae2018588b68304899a7dd27baadc618766c",
     "hereticus-mikrotik/7.24.2/arm/nova/bin/btest":

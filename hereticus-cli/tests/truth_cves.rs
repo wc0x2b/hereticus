@@ -156,6 +156,18 @@ const FIXES: &[Fix] = &[
         function: "sub_40ecb8",
     },
     Fix {
+        name: "CVE-2026-86060 RouterOS login MIPS32 BE",
+        before: "hereticus-mikrotik/7.24.1/mipsbe/nova/bin/login",
+        after: "hereticus-mikrotik/7.24.2/mipsbe/nova/bin/login",
+        function: "sub_4090bc",
+    },
+    Fix {
+        name: "CVE-2026-86060 RouterOS login ARM",
+        before: "hereticus-mikrotik/7.24.1/arm/nova/bin/login",
+        after: "hereticus-mikrotik/7.24.2/arm/nova/bin/login",
+        function: "sub_19c54",
+    },
+    Fix {
         name: "CVE-2026-50584 libmbedcrypto AArch64",
         before: "hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.6",
         after: "hereticus-openwrt-cve/25.12.6/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.7",
