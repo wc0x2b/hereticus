@@ -23,6 +23,8 @@ CVE-2026-102338 uhttpd AArch64          2    20
 CVE-2026-102338 uhttpd A32              2    17
 CVE-2026-102338 uhttpd MIPS16e BE       2    15
 CVE-2026-102338 uhttpd MIPS16e LE       2    18
+CVE-2026-67277 RouterOS btest ARM       1     7
+CVE-2026-67277 RouterOS btest MIPS32 BE    1    11
 CVE-2026-50584 libmbedcrypto AArch64    3    33
 CVE-2026-50584 libmbedcrypto A32        1    16
 CVE-2026-50584 libmbedcrypto MIPS32 BE    4    21
@@ -76,6 +78,8 @@ CVE-2026-102338 uhttpd AArch64       changed sub_42ec sub_44d4 0.84 90 19 16
 CVE-2026-102338 uhttpd A32           changed sub_421c sub_442c 0.85 75 11 10
 CVE-2026-102338 uhttpd MIPS16e BE    changed sub_4020 sub_4200 0.87 105 33 10
 CVE-2026-102338 uhttpd MIPS16e LE    changed sub_4070 sub_4250 0.87 95 23 6
+CVE-2026-67277 RouterOS btest ARM    changed sub_1dc28 sub_1dc44 0.90 23 11 1
+CVE-2026-67277 RouterOS btest MIPS32 BE changed sub_40ecb8 sub_40ec94 0.95 27 18 1
 CVE-2026-50584 libmbedcrypto AArch64 changed mbedtls_chacha20_update mbedtls_chacha20_update 0.80 29 11 2
 CVE-2026-50584 libmbedcrypto A32     changed mbedtls_chacha20_update mbedtls_chacha20_update 0.83 26 16 6
 CVE-2026-50584 libmbedcrypto MIPS32 BE changed mbedtls_chacha20_update mbedtls_chacha20_update 0.83 23 6 6

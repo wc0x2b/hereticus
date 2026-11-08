@@ -11,7 +11,8 @@ from the root file system of each release, or from the initramfs of its
 kernel where it ships none, and the `ltq-ptm` kernel
 module from its package, which this script downloads. The Apple binaries
 come from an IPSW with the `ipsw` tool, which this script does not run: a
-missing one stops it with the commands that get it.
+missing one stops it with the commands that get it. The MikroTik binaries
+come from a RouterOS `.npk` package, read with `unsquashfs-backhand`.
 
 The files land in ~/.cache, where `examples/research_bench.rs --cves` reads
 them too.
@@ -22,7 +23,9 @@ import hashlib
 import io
 import re
 import sys
+import subprocess
 import tarfile
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -32,6 +35,14 @@ MIRROR = "https://downloads.openwrt.org/releases"
 
 # The SHA-256 of each binary, by its path under CACHE.
 PINNED = {
+    "hereticus-mikrotik/7.24.1/arm/nova/bin/btest":
+        "5dadbeee4a706c754e96d5585cacae2018588b68304899a7dd27baadc618766c",
+    "hereticus-mikrotik/7.24.2/arm/nova/bin/btest":
+        "5f63ede67cbc9534b546fab8287642ccdfa56622cd3c81a5017aace05c8a3d0d",
+    "hereticus-mikrotik/7.24.1/mipsbe/nova/bin/btest":
+        "fff78c0ea110a80d5b882eeb23e271510258096610acbeb78fbbab88dab8bbf0",
+    "hereticus-mikrotik/7.24.2/mipsbe/nova/bin/btest":
+        "f078f40938602fa22d6f4e2178aea7f9f491008728e85a9eeafc432789644989",
     "hereticus-apple/cve/15.0.1/19A348__iPhone12,1/kernelcache.release.iPhone12,1":
         "2607a165f19cbfedbe315cb96520165de654f3b334cb53ea27891680d2188a64",
     "hereticus-apple/cve/15.0.2/19A404__iPhone12,1/kernelcache.release.iPhone12,1":
@@ -332,6 +343,32 @@ def fetch_kmod(path: str) -> bytes:
     return inner.extractfile(member).read()
 
 
+def fetch_mikrotik(path: str) -> bytes:
+    """Download a MikroTik RouterOS package and take one file out of it.
+
+    A `.npk` is a short header, then a SquashFS image at offset 0x1000.
+    `unsquashfs-backhand`, of the `backhand-cli` crate, reads it at that
+    offset, so there is no C SquashFS tool to install. Run
+    `cargo install backhand-cli` where it is missing.
+    """
+    # hereticus-mikrotik/<version>/<arch>/<path in the package>
+    _, version, arch, *member = path.split("/")
+    url = f"https://download.mikrotik.com/routeros/{version}/routeros-{version}-{arch}.npk"
+    print(f"cve_binaries: downloading {url}", file=sys.stderr)
+    with urllib.request.urlopen(url, timeout=600) as response:
+        npk = response.read()
+    with tempfile.TemporaryDirectory() as work:
+        package = Path(work) / "package.npk"
+        package.write_bytes(npk)
+        wanted = "/" + "/".join(member)
+        subprocess.run(
+            ["unsquashfs-backhand", "-o", "4096", "--path-filter", wanted, "-d", work, str(package)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        return (Path(work) / "/".join(member)).read_bytes()
+
+
 def main() -> int:
     missing_apple = []
     for path, expected in PINNED.items():
@@ -342,6 +379,8 @@ def main() -> int:
             data = fetch_kmod(path)
         elif path.startswith("hereticus-openwrt-cve/"):
             data = fetch_from_rootfs(path)
+        elif path.startswith("hereticus-mikrotik/"):
+            data = fetch_mikrotik(path)
         else:
             missing_apple.append(path)
             continue

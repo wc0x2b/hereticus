@@ -144,6 +144,18 @@ const FIXES: &[Fix] = &[
         function: "sub_4070",
     },
     Fix {
+        name: "CVE-2026-67277 RouterOS btest ARM",
+        before: "hereticus-mikrotik/7.24.1/arm/nova/bin/btest",
+        after: "hereticus-mikrotik/7.24.2/arm/nova/bin/btest",
+        function: "sub_1dc28",
+    },
+    Fix {
+        name: "CVE-2026-67277 RouterOS btest MIPS32 BE",
+        before: "hereticus-mikrotik/7.24.1/mipsbe/nova/bin/btest",
+        after: "hereticus-mikrotik/7.24.2/mipsbe/nova/bin/btest",
+        function: "sub_40ecb8",
+    },
+    Fix {
         name: "CVE-2026-50584 libmbedcrypto AArch64",
         before: "hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.6",
         after: "hereticus-openwrt-cve/25.12.6/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.7",

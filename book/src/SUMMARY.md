@@ -28,6 +28,7 @@
   - [CVE-2026-35385: dropbear `scp`](./real-life-examples/cve-2026-35385.md)
   - [CVE-2026-50584: Mbed TLS](./real-life-examples/cve-2026-50584.md)
   - [CVE-2026-53921: odhcpd](./real-life-examples/cve-2026-53921.md)
+  - [CVE-2026-67277: MikroTik RouterOS](./real-life-examples/cve-2026-67277.md)
   - [CVE-2026-55614: uhttpd](./real-life-examples/cve-2026-55614.md)
   - [CVE-2026-102338: uhttpd](./real-life-examples/cve-2026-102338.md)
 - [Malware](./malware.md)

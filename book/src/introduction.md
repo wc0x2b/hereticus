@@ -35,6 +35,7 @@ the report:
 
 | Fix | Binary | Row of the fix | Rows in the report |
 |-----|--------|----------------|--------------------|
+| [CVE-2026-67277](./real-life-examples/cve-2026-67277.md) | MikroTik RouterOS `btest`, actively exploited (CISA KEV) | 1<!-- from truth_cves: CVE-2026-67277 RouterOS btest ARM / rank --> | 7<!-- from truth_cves: CVE-2026-67277 RouterOS btest ARM / rows --> |
 | [CVE-2026-102338](./real-life-examples/cve-2026-102338.md) | uhttpd, OpenWrt 25.12.6, stripped | 2<!-- from truth_cves: CVE-2026-102338 uhttpd AArch64 / rank --> | 20<!-- from truth_cves: CVE-2026-102338 uhttpd AArch64 / rows --> |
 | [CVE-2026-50584](./real-life-examples/cve-2026-50584.md) | Mbed TLS 3.6.7, OpenWrt 25.12.6, 16 CVEs in one update | 3<!-- from truth_cves: CVE-2026-50584 libmbedcrypto AArch64 / rank --> | 33<!-- from truth_cves: CVE-2026-50584 libmbedcrypto AArch64 / rows --> |
 | [CVE-2026-30874](./real-life-examples/cve-2026-30874.md) | procd, OpenWrt, stripped | 1<!-- from truth_cves: CVE-2026-30874 procd AArch64 / rank --> | 24<!-- from truth_cves: CVE-2026-30874 procd AArch64 / rows --> |
