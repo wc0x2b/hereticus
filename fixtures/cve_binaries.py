@@ -5,8 +5,8 @@
 `real-life-reports/`. Each binary is pinned by its SHA-256, so a snapshot
 always tells of the same bytes.
 
-The `ubusd`, `dropbear`, `uhttpd`, `odhcpd`, `procd`, `jsonfilter` and
-`libblobmsg_json` builds of OpenWrt come
+The `ubusd`, `dropbear`, `uhttpd`, `odhcpd`, `procd`, `jsonfilter`,
+`libblobmsg_json` and `libmbedcrypto` builds of OpenWrt come
 from the root file system of each release, or from the initramfs of its
 kernel where it ships none, and the `ltq-ptm` kernel
 module from its package, which this script downloads. The Apple binaries
@@ -80,6 +80,22 @@ PINNED = {
         "50a3fb3996a73ebf1ed32b8320c411ad5becead2d94128a893b443064fa578fa",
     "hereticus-openwrt-cve/24.10.5/malta-le/usr/sbin/dropbear":
         "c21e21d8fdd80dc67fc46504973021fd0490a776db72a976c3b01eb3e3402726",
+    "hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.6":
+        "80a2b70a96742ff63d17459822566c74688f729e5e7256c69bebbee8085f413e",
+    "hereticus-openwrt-cve/25.12.5/armsr-armv7/usr/lib/libmbedcrypto.so.3.6.6":
+        "7a749617316701c204fa96770a96421c3faa31f861cc97df5b079e4b2fb1cfe0",
+    "hereticus-openwrt-cve/25.12.5/malta-be/usr/lib/libmbedcrypto.so.3.6.6":
+        "33c92598357f4bb185522136b91635f76213ed1c3c4625d1cb61eea518f78f6b",
+    "hereticus-openwrt-cve/25.12.5/malta-le/usr/lib/libmbedcrypto.so.3.6.6":
+        "e97a83e59ec11a1ebdcd5d2d74912f2bd12c8640709ab6f6762afed81ba821c4",
+    "hereticus-openwrt-cve/25.12.6/armsr-armv8/usr/lib/libmbedcrypto.so.3.6.7":
+        "4061f681c64ee61ad049d6b513890f27049b01a36cfe7eaefed0c319f05e2ac9",
+    "hereticus-openwrt-cve/25.12.6/armsr-armv7/usr/lib/libmbedcrypto.so.3.6.7":
+        "dfd6f37e2d63207b197e2daec57f5bca3035ba9f3cdb7ddd59aa5a7c504cf42b",
+    "hereticus-openwrt-cve/25.12.6/malta-be/usr/lib/libmbedcrypto.so.3.6.7":
+        "f1140d044032cda73289902674f93eb37eef8e4669931c00b470a24b14ea65b4",
+    "hereticus-openwrt-cve/25.12.6/malta-le/usr/lib/libmbedcrypto.so.3.6.7":
+        "067437d4cc017464092a50b180fa08508968633640e47791b32eb9793e5ad3fa",
     "hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/sbin/uhttpd":
         "122549b5b9e5d736f35e0ef3c7f7c4e39194ab34f4dd746c2cfd7ac29a7690fd",
     "hereticus-openwrt-cve/25.12.5/armsr-armv7/usr/sbin/uhttpd":
