@@ -37,8 +37,8 @@ the report:
 |-----|--------|----------------|--------------------|
 | [CVE-2026-30874](./real-life-examples/cve-2026-30874.md) | procd, OpenWrt, stripped | 1<!-- from truth_cves: CVE-2026-30874 procd AArch64 / rank --> | 24<!-- from truth_cves: CVE-2026-30874 procd AArch64 / rows --> |
 | [CVE-2026-35385](./real-life-examples/cve-2026-35385.md) | dropbear `scp`, OpenWrt, stripped | 1<!-- from truth_cves: CVE-2026-35385 dropbear AArch64 / rank --> | 18<!-- from truth_cves: CVE-2026-35385 dropbear AArch64 / rows --> |
-| [CVE-2024-23265](./real-life-examples/cve-2024-23265.md) | AppleDiskImages2, iOS kernelcache | 1<!-- from truth_cves: CVE-2024-23265 AppleDiskImages2 / rank --> | 33<!-- from truth_cves: CVE-2024-23265 AppleDiskImages2 / rows --> |
-| [CVE-2021-30883](./real-life-examples/cve-2021-30883.md) | AppleCLCD, iOS kernelcache | 1<!-- from truth_cves: CVE-2021-30883 IOMobileFramebuffer / rank --> | 332<!-- from truth_cves: CVE-2021-30883 IOMobileFramebuffer / rows --> |
+| [CVE-2024-23265](./real-life-examples/cve-2024-23265.md) | AppleDiskImages2, iOS kernelcache | 1<!-- from truth_cves: CVE-2024-23265 AppleDiskImages2 / rank --> | 32<!-- from truth_cves: CVE-2024-23265 AppleDiskImages2 / rows --> |
+| [CVE-2021-30883](./real-life-examples/cve-2021-30883.md) | AppleCLCD, iOS kernelcache | 1<!-- from truth_cves: CVE-2021-30883 IOMobileFramebuffer / rank --> | 331<!-- from truth_cves: CVE-2021-30883 IOMobileFramebuffer / rows --> |
 
 See [Real-Life Examples](./real-life-examples.md) for all of them, each
 with the commands to do it again.

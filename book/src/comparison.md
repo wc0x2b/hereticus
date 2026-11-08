@@ -71,7 +71,7 @@ that the fix did not touch.
 
 | Tool | Fixes found | Fix on row 1 | Fix in the first 10 rows | Rows |
 |------|-------------|--------------|--------------------------|------|
-| hereticus | 177<!-- from truth_ubuntu_rivals: all hereticus / found --> | 156<!-- from truth_ubuntu_rivals: all hereticus / first --> | 175<!-- from truth_ubuntu_rivals: all hereticus / top10 --> | 5946<!-- from truth_ubuntu_rivals: all hereticus / rows --> |
+| hereticus | 177<!-- from truth_ubuntu_rivals: all hereticus / found --> | 156<!-- from truth_ubuntu_rivals: all hereticus / first --> | 175<!-- from truth_ubuntu_rivals: all hereticus / top10 --> | 5812<!-- from truth_ubuntu_rivals: all hereticus / rows --> |
 | radiff2 | 114<!-- from truth_ubuntu_rivals: all radare2 / found --> | 36<!-- from truth_ubuntu_rivals: all radare2 / first --> | 61<!-- from truth_ubuntu_rivals: all radare2 / top10 --> | 81203<!-- from truth_ubuntu_rivals: all radare2 / rows --> |
 | Ghidra | 171<!-- from truth_ubuntu_rivals: all ghidra / found --> | 109<!-- from truth_ubuntu_rivals: all ghidra / first --> | 148<!-- from truth_ubuntu_rivals: all ghidra / top10 --> | 39943<!-- from truth_ubuntu_rivals: all ghidra / rows --> |
 
@@ -97,7 +97,7 @@ one fixed function of the stripped executables.
 
 | Tool | Fixes found | Fix on row 1 | Fix in the first 10 rows | Rows |
 |------|-------------|--------------|--------------------------|------|
-| hereticus | 38<!-- from truth_cves_rivals: all hereticus / found --> | 21<!-- from truth_cves_rivals: all hereticus / first --> | 37<!-- from truth_cves_rivals: all hereticus / top10 --> | 1402<!-- from truth_cves_rivals: all hereticus / rows --> |
+| hereticus | 38<!-- from truth_cves_rivals: all hereticus / found --> | 21<!-- from truth_cves_rivals: all hereticus / first --> | 37<!-- from truth_cves_rivals: all hereticus / top10 --> | 1397<!-- from truth_cves_rivals: all hereticus / rows --> |
 | radiff2 | 10<!-- from truth_cves_rivals: all radare2 / found --> | 4<!-- from truth_cves_rivals: all radare2 / first --> | 4<!-- from truth_cves_rivals: all radare2 / top10 --> | 6720<!-- from truth_cves_rivals: all radare2 / rows --> |
 | Ghidra | 23<!-- from truth_cves_rivals: all ghidra / found --> | 6<!-- from truth_cves_rivals: all ghidra / first --> | 22<!-- from truth_cves_rivals: all ghidra / top10 --> | 4186<!-- from truth_cves_rivals: all ghidra / rows --> |
 
