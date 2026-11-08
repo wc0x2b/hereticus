@@ -64,12 +64,33 @@ pub(super) fn short_texts_changed(left: (&[&str], &[&str]), right: (&[&str], &[&
     only(left.1, right.0).min(only(right.1, left.0))
 }
 
-/// How many texts of one sorted list have no equal in the other, counted from
-/// the side with more, so a text changed in place counts once.
+/// How a pair counts the texts that differ: see [`texts_that_differ`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TextCount<'t> {
+    /// Each text that one side holds and the other does not, counted from
+    /// the side with more, for code that changed: a new message is an edit.
+    AddedOrReplaced,
+    /// Only a text that takes the place of another, for code of one shape:
+    /// a text of the other side, or a printable run that a NUL ends there,
+    /// from the `loose` texts of each side.
+    ///
+    /// The same pointer can read as a text on one side and as none on the
+    /// other where the bytes after it moved: Rust packs its strings with no
+    /// NUL between them, so a text is read only where a NUL comes near
+    /// enough. In smallvec for x86-64, three `extend` functions read
+    /// `"capacity overflowassertion failed: ..."` only after the fix
+    /// added one more message to the pack. But in zlib for MIPS read raw,
+    /// `"1.2.12"` follows a word of a table, not a NUL, so only the loose
+    /// texts show that it replaced `"1.2.11"`.
+    Replaced { left_loose: &'t [&'t str], right_loose: &'t [&'t str] },
+}
+
+/// How many texts of one sorted list have no equal in the other, as `count`
+/// says, so a text changed in place counts once.
 ///
 /// A text that differs from one on the other side only by its build
 /// directory counts as equal: see [`differ_only_by_build_path`].
-pub(super) fn texts_that_differ(left: &[&str], right: &[&str]) -> usize {
+pub(super) fn texts_that_differ(left: &[&str], right: &[&str], count: TextCount<'_>) -> usize {
     let (mut shared, mut l, mut r) = (0, 0, 0);
     let (mut left_only, mut right_only) = (Vec::new(), Vec::new());
     while l < left.len() && r < right.len() {
@@ -91,15 +112,27 @@ pub(super) fn texts_that_differ(left: &[&str], right: &[&str]) -> usize {
     }
     left_only.extend_from_slice(&left[l..]);
     right_only.extend_from_slice(&right[r..]);
+    let mut unmatched_left = 0;
     for text in left_only {
-        if let Some(found) =
-            right_only.iter().position(|other| differ_only_by_build_path(text, other))
-        {
-            right_only.swap_remove(found);
-            shared += 1;
+        match right_only.iter().position(|other| differ_only_by_build_path(text, other)) {
+            Some(found) => {
+                right_only.swap_remove(found);
+                shared += 1;
+            }
+            None => unmatched_left += 1,
         }
     }
-    left.len().max(right.len()) - shared
+    match count {
+        TextCount::AddedOrReplaced => left.len().max(right.len()) - shared,
+        TextCount::Replaced { left_loose, right_loose } => {
+            let other = |loose: &[&str], side: &[&str]| {
+                loose.iter().filter(|text| !side.contains(text)).count()
+            };
+            let from_left = unmatched_left.min(right_only.len() + other(right_loose, left));
+            let from_right = right_only.len().min(unmatched_left + other(left_loose, right));
+            from_left.max(from_right)
+        }
+    }
 }
 
 /// Report whether two texts are one path whose build directory alone

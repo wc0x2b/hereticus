@@ -1289,12 +1289,46 @@ fn an_il_statement_with_another_text_is_no_same_line() {
 
 #[test]
 fn texts_differ_by_what_they_do_not_share() {
-    assert_eq!(texts_that_differ(&[], &[]), 0);
-    assert_eq!(texts_that_differ(&["a", "b"], &["a", "b"]), 0);
-    assert_eq!(texts_that_differ(&["a", "b"], &["a", "c"]), 1, "one changed in place");
-    assert_eq!(texts_that_differ(&["a"], &["a", "b"]), 1, "one added");
-    assert_eq!(texts_that_differ(&["a", "a"], &["a"]), 1, "a repeat counts");
-    assert_eq!(texts_that_differ(&["a", "b"], &["c"]), 2);
+    assert_eq!(texts_that_differ(&[], &[], TextCount::AddedOrReplaced), 0);
+    assert_eq!(texts_that_differ(&["a", "b"], &["a", "b"], TextCount::AddedOrReplaced), 0);
+    assert_eq!(
+        texts_that_differ(&["a", "b"], &["a", "c"], TextCount::AddedOrReplaced),
+        1,
+        "one changed in place"
+    );
+    assert_eq!(texts_that_differ(&["a"], &["a", "b"], TextCount::AddedOrReplaced), 1, "one added");
+    assert_eq!(
+        texts_that_differ(&["a", "a"], &["a"], TextCount::AddedOrReplaced),
+        1,
+        "a repeat counts"
+    );
+    assert_eq!(texts_that_differ(&["a", "b"], &["c"], TextCount::AddedOrReplaced), 2);
+}
+
+/// In code of one shape, only a text that takes the place of another
+/// counts: a text read on one side alone is the same pointer, read where a
+/// NUL came near enough.
+#[test]
+fn code_of_one_shape_counts_only_a_text_replaced() {
+    let replaced = |left: &[&str], right: &[&str]| {
+        texts_that_differ(left, right, TextCount::Replaced { left_loose: &[], right_loose: &[] })
+    };
+    assert_eq!(replaced(&[], &["capacity overflow"]), 0, "read on one side alone");
+    assert_eq!(replaced(&["a"], &["a", "b"]), 0);
+    assert_eq!(replaced(&["%s"], &["%.*s"]), 1, "a format changed in place");
+    assert_eq!(replaced(&["a", "b"], &["c"]), 1);
+    assert_eq!(replaced(&["a", "b"], &["c", "d", "e"]), 2);
+    let apple = |root: &str| format!("/AppleInternal/Library/BuildRoots/{root}/x.cpp");
+    let (old, new) = (apple("4~Bq7XzA9kLm2"), apple("7~Cv3YwD1nPo8"));
+    assert_eq!(replaced(&[old.as_str()], &[new.as_str()]), 0, "only the build directory");
+    // A text that only a loose read finds on the other side replaced it.
+    let loose = |left: &[&str], right: &[&str], right_loose: &[&str]| {
+        texts_that_differ(left, right, TextCount::Replaced { left_loose: &[], right_loose })
+    };
+    assert_eq!(loose(&["1.2.11"], &[], &["1.2.12"]), 1, "zlib read raw");
+    assert_eq!(loose(&["1.2.11"], &[], &["1.2.11"]), 0, "the same text, read loose");
+    let left_loose = TextCount::Replaced { left_loose: &["1.2.11"], right_loose: &[] };
+    assert_eq!(texts_that_differ(&[], &["1.2.12"], left_loose), 1, "from the other side");
 }
 
 #[test]
@@ -1306,7 +1340,10 @@ fn a_text_that_differs_only_by_its_build_directory_is_no_change() {
     };
     let (old, new) = (apple("4~Bq7XzA9kLm2"), apple("7~Cv3YwD1nPo8"));
     assert!(differ_only_by_build_path(&old, &new));
-    assert_eq!(texts_that_differ(&[old.as_str(), "x"], &[new.as_str(), "x"]), 0);
+    assert_eq!(
+        texts_that_differ(&[old.as_str(), "x"], &[new.as_str(), "x"], TextCount::AddedOrReplaced),
+        0
+    );
     assert!(differ_only_by_build_path(
         "/build/glibc-SzIz7B/malloc/malloc.c",
         "/build/glibc-Ab1cDe/malloc/malloc.c"
@@ -1322,7 +1359,10 @@ fn a_changed_file_or_message_still_shows() {
     assert!(!differ("bad length %d", "bad size %d"), "no path");
     assert!(!differ("/a/b", "/a/b"), "no difference");
     assert!(!differ("/a/b/c", "/a/b"), "another depth");
-    assert_eq!(texts_that_differ(&["/src/file12.c"], &["/src/file34.c"]), 1);
+    assert_eq!(
+        texts_that_differ(&["/src/file12.c"], &["/src/file34.c"], TextCount::AddedOrReplaced),
+        1
+    );
 }
 
 /// One ARM function at 0x8000 that passes the text at 0x9001 on, with

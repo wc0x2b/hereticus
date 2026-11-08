@@ -3,65 +3,63 @@ source: hereticus-cli/tests/truth_ubuntu_rivals.rs
 expression: out
 ---
 library                    cases found first  top10    rows
-libarchive13 hereticus        15    15    10     14     642
+libarchive13 hereticus        15    15    10     14     622
 libarchive13 radare2          15     6     0      1    7129
-libarchive13 ghidra           15    15     5      8    7291
-libcurl4 hereticus            43    43    41     43     994
+libarchive13 ghidra           15    15     4      8    5075
+libcurl4 hereticus            43    43    41     43     988
 libcurl4 radare2              43    21     9     15   14259
-libcurl4 ghidra               43    43    31     34    9995
-libexpat1 hereticus           20    20    20     20     231
+libcurl4 ghidra               43    43    31     34    6655
+libexpat1 hereticus           20    20    20     20     230
 libexpat1 radare2             20    16    11     16     533
-libexpat1 ghidra              20    20    10     19    1831
-libgnutls30 hereticus         16    16    13     16    1716
+libexpat1 ghidra              20    19    14     18    1201
+libgnutls30 hereticus         16    16    13     16    1670
 libgnutls30 radare2           16    13     5      6   18195
-libgnutls30 ghidra            16    15    11     14   12040
+libgnutls30 ghidra            16    14    11     14   10266
 libksba8 hereticus             4     4     4      4      45
 libksba8 radare2               4     1     0      1     481
-libksba8 ghidra                4     4     3      4     326
+libksba8 ghidra                4     4     3      4     300
 liblzma5 hereticus             1     1     1      1       1
 liblzma5 radare2               1     0     0      0      50
 liblzma5 ghidra                1     1     0      1      18
 libpng16-16 hereticus          9     9     9      9     130
 libpng16-16 radare2            9     7     1      2    1697
-libpng16-16 ghidra             9     8     3      7     557
-libsqlite3-0 hereticus         8     8     5      8     173
+libpng16-16 ghidra             9     8     3      7     530
+libsqlite3-0 hereticus         8     8     5      8     172
 libsqlite3-0 radare2           8     3     0      0    5874
-libsqlite3-0 ghidra            8     7     2      6    4584
-libssh-4 hereticus            16    16    15     15     563
+libsqlite3-0 ghidra            8     6     2      6    3451
+libssh-4 hereticus            16    16    15     15     521
 libssh-4 radare2              16    12     4      6    7052
-libssh-4 ghidra               16    16    13     14    3185
-libtiff5 hereticus            21    21    20     21     288
+libssh-4 ghidra               16    16    12     13    2923
+libtiff5 hereticus            21    21    20     21     281
 libtiff5 radare2              21    19     3      9    4731
-libtiff5 ghidra               21    21    10     21    4114
+libtiff5 ghidra               21    21    16     21    2769
 libwebp7 hereticus             4     4     4      4     114
 libwebp7 radare2               4     0     0      0     203
-libwebp7 ghidra                4     4     1      2     512
-libxml2 hereticus             18    18    13     18    1031
+libwebp7 ghidra                4     4     1      2     398
+libxml2 hereticus             18    18    13     18    1020
 libxml2 radare2               18    14     2      3   20909
-libxml2 ghidra                18    18    13     18    6868
+libxml2 ghidra                18    18    11     18    6301
 zlib1g hereticus               2     2     1      2      18
 zlib1g radare2                 2     2     1      2      90
-zlib1g ghidra                  2     2     1      2      60
+zlib1g ghidra                  2     2     1      2      56
 
 tool                       cases found first  top10    rows
-all hereticus                177   177   156    175    5946
+all hereticus                177   177   156    175    5812
 all radare2                  177   114    36     61   81203
-all ghidra                   177   174   103    150   51381
+all ghidra                   177   171   109    148   39943
 
 rival                      hereticus-earlier rival-earlier
 radare2                                  141             1
-ghidra                                    74            10
+ghidra                                    67             8
 
 found by none: 0
 
 behind                                                           rank:hereticus   rank:radare2    rank:ghidra
 zlib1g-armhf-1:1.2.11.dfsg-2ubuntu7-1:1.2.11.dfsg-2ubuntu9                    2              1              1
 libxml2-arm64-2.9.13+dfsg-1build1-2.9.13+dfsg-1ubuntu0.1                      5             26              1
-libxml2-arm64-2.9.13+dfsg-1ubuntu0.5-2.9.13+dfsg-1ubuntu0.6                   2              -              1
 libxml2-arm64-2.9.13+dfsg-1ubuntu0.9-2.9.13+dfsg-1ubuntu0.10                  7             16              1
 libxml2-arm64-2.9.13+dfsg-1ubuntu0.10-2.9.13+dfsg-1ubuntu0.11                 2             55              1
 libtiff5-arm64-4.3.0-6ubuntu0.7-4.3.0-6ubuntu0.8                              2             23              1
 libarchive13-armhf-3.6.0-1ubuntu1.1-3.6.0-1ubuntu1.2                          2             22              1
 libsqlite3-0-arm64-3.37.2-2ubuntu0.1-3.37.2-2ubuntu0.3                        2              -              1
 libcurl4-armhf-7.81.0-1ubuntu1.27-7.81.0-1ubuntu1.29                          2            301              1
-libssh-4-arm64-0.9.6-2ubuntu0.22.04.4-0.9.6-2ubuntu0.22.04.5                 29              -              1

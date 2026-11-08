@@ -28,13 +28,13 @@ FROM radare2 AS ghidra
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        openjdk-21-jdk-headless \
+        openjdk-25-jdk-headless \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
-ARG GHIDRA_VERSION=12.1.4
-ARG GHIDRA_DATE=20260921
-ARG GHIDRA_SHA256=ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db
+ARG GHIDRA_VERSION=12.2
+ARG GHIDRA_DATE=20261016
+ARG GHIDRA_SHA256=2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67
 RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/ghidra.zip \
         "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip" \
     && echo "${GHIDRA_SHA256}  /tmp/ghidra.zip" | sha256sum --check --quiet \

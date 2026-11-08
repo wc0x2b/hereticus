@@ -4,10 +4,10 @@ expression: kernel_digest(&comparison)
 ---
 functions 20919 -> 21343
 matched 19474
-{No: 7423, Reordered: 564, Data: 8, InDetail: 3042, Yes: 8437}
+{No: 7446, Reordered: 580, Data: 8, InDetail: 3003, Yes: 8437}
 gone 1445
 new 1869
-fingerprint 0x2dfe5c6b3aaa83e5
+fingerprint 0x9a91c4b996a52e3c
 
 strongest changes:
 0x80082a28 -> 0x800814bc score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 1, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 }

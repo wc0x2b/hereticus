@@ -54,6 +54,11 @@ analyse() {
 
 # Both runs at once. A kernel needs more than the default heap of 2 GB.
 export GHIDRA_MAXMEM=16G
+# Each start of Ghidra saves the JDK it found in a file of its settings,
+# and starts at once can each find that file half written, and stop to ask
+# for the JDK. One save first leaves the file whole.
+java -cp "$GHIDRA_HOME/support/LaunchSupport.jar" LaunchSupport "$GHIDRA_HOME" \
+    -jdk_home -save >/dev/null
 analyse default &
 default=$!
 analyse aggressive -preScript HereticusAggressive.java &

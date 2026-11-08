@@ -90,7 +90,7 @@ The analysis log shows what became of each start, as `Of <count> starts
 hereticus found in <program>: <count> made, <count> already a function`, with
 a count for each reason above.
 
-`just ghidra-extension` runs the analyzer in headless Ghidra 12.1.4. On the
+`just ghidra-extension` runs the analyzer in headless Ghidra 12.2. On the
 raw zImage stub of the Netgear EX6100v2, Ghidra finds
 19<!-- from ghidra_extension: arm-stub / off --> functions alone and
 66<!-- from ghidra_extension: arm-stub / on --> with the analyzer. That is

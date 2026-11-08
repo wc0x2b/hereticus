@@ -20,7 +20,7 @@ arm-5 radare2                   114    114        0      0
 arm-5 ghidra                   2451   2449        2      0
 mips-softfloat hereticus       3548   3541        4      3
 mips-softfloat radare2           79     79        0      0
-mips-softfloat ghidra          2198   2196        2      0
+mips-softfloat ghidra          2197   2195        2      0
 mipsle-softfloat hereticus     3548   3544        4      0
 mipsle-softfloat radare2         79     79        0      0
 mipsle-softfloat ghidra        1350   1349        1      0
@@ -28,4 +28,4 @@ mipsle-softfloat ghidra        1350   1349        1      0
 tool                          pairs  right unproven  wrong
 all hereticus                 25400  25360       28     12
 all radare2                    3815   3814        1      0
-all ghidra                    15561  15547       13      1
+all ghidra                    15560  15546       13      1
