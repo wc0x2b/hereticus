@@ -3,9 +3,9 @@ source: hereticus-cli/tests/truth_cves_rivals.rs
 expression: "format!(\"{totals}\\n{ranks}\")"
 ---
 tool                 fixes found first  top10    rows
-all hereticus           38    38    21     37    1397
-all radare2             38    10     4      4    6720
-all ghidra              38    23     6     22    4186
+all hereticus           50    50    22     49    1647
+all radare2             50    19     5      5   15071
+all ghidra              50    33     6     32    5253
 
 fix                                      rank:hereticus   rank:radare2    rank:ghidra
 CVE-2024-23265 AppleDiskImages2                       1              -              -
@@ -23,6 +23,18 @@ CVE-2026-55614 uhttpd AArch64                         5             17          
 CVE-2026-55614 uhttpd A32                             5              -              3
 CVE-2026-55614 uhttpd MIPS16e BE                      5              -              -
 CVE-2026-55614 uhttpd MIPS16e LE                      5              -              -
+CVE-2026-102338 uhttpd AArch64                        2              1              5
+CVE-2026-102338 uhttpd A32                            2              -              6
+CVE-2026-102338 uhttpd MIPS16e BE                     2              -              -
+CVE-2026-102338 uhttpd MIPS16e LE                     2              -              -
+CVE-2026-50584 libmbedcrypto AArch64                  3            104              3
+CVE-2026-50584 libmbedcrypto A32                      1            557              3
+CVE-2026-50584 libmbedcrypto MIPS32 BE                4            164              3
+CVE-2026-50584 libmbedcrypto MIPS32 LE                4            215              3
+CVE-2026-35336 libmbedcrypto AArch64                  9            101              3
+CVE-2026-35336 libmbedcrypto A32                      6            562              3
+CVE-2026-35336 libmbedcrypto MIPS32 BE                8            155              3
+CVE-2026-35336 libmbedcrypto MIPS32 LE                8            208              3
 CVE-2026-53921 odhcpd AArch64                         5              -              3
 CVE-2026-53921 odhcpd A32                             1            110              4
 CVE-2026-53921 odhcpd MIPS16e BE                      1             15              1
