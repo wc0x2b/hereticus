@@ -19,6 +19,10 @@ CVE-2026-55614 uhttpd AArch64           5    13
 CVE-2026-55614 uhttpd A32               5    13
 CVE-2026-55614 uhttpd MIPS16e BE        5    13
 CVE-2026-55614 uhttpd MIPS16e LE        5    14
+CVE-2026-102338 uhttpd AArch64          2    20
+CVE-2026-102338 uhttpd A32              2    17
+CVE-2026-102338 uhttpd MIPS16e BE       2    15
+CVE-2026-102338 uhttpd MIPS16e LE       2    18
 CVE-2026-53921 odhcpd AArch64           5    18
 CVE-2026-53921 odhcpd A32               1    20
 CVE-2026-53921 odhcpd MIPS16e BE        1    21
@@ -60,6 +64,10 @@ CVE-2026-55614 uhttpd AArch64        changed sub_5d78 sub_5dbc 0.96 16 3 3
 CVE-2026-55614 uhttpd A32            changed sub_4218 sub_424c 0.97 12 3 2
 CVE-2026-55614 uhttpd MIPS16e BE     changed sub_3f74 sub_3fa8 0.95 14 17 2
 CVE-2026-55614 uhttpd MIPS16e LE     changed sub_3fc4 sub_3ff8 0.97 14 4 1
+CVE-2026-102338 uhttpd AArch64       changed sub_42ec sub_44d4 0.84 90 19 16
+CVE-2026-102338 uhttpd A32           changed sub_421c sub_442c 0.85 75 11 10
+CVE-2026-102338 uhttpd MIPS16e BE    changed sub_4020 sub_4200 0.87 105 33 10
+CVE-2026-102338 uhttpd MIPS16e LE    changed sub_4070 sub_4250 0.87 95 23 6
 CVE-2026-53921 odhcpd AArch64        changed sub_e12c sub_e338 0.97 21 15 11
 CVE-2026-53921 odhcpd A32            changed sub_c1b8 sub_c354 0.95 65 39 18
 CVE-2026-53921 odhcpd MIPS16e BE     changed dhcpv6_ia_handle_IAs dhcpv6_ia_handle_IAs 0.96 219 191 13

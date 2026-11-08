@@ -80,6 +80,22 @@ PINNED = {
         "50a3fb3996a73ebf1ed32b8320c411ad5becead2d94128a893b443064fa578fa",
     "hereticus-openwrt-cve/24.10.5/malta-le/usr/sbin/dropbear":
         "c21e21d8fdd80dc67fc46504973021fd0490a776db72a976c3b01eb3e3402726",
+    "hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/sbin/uhttpd":
+        "122549b5b9e5d736f35e0ef3c7f7c4e39194ab34f4dd746c2cfd7ac29a7690fd",
+    "hereticus-openwrt-cve/25.12.5/armsr-armv7/usr/sbin/uhttpd":
+        "684bbc10184cfebb19956fab17fe576e0ff1b0cf374d56e1368707e246438112",
+    "hereticus-openwrt-cve/25.12.5/malta-be/usr/sbin/uhttpd":
+        "38d5785343bd1ee68f7e23e40de744af84374c98395e8da39081efc5b6fb9ac4",
+    "hereticus-openwrt-cve/25.12.5/malta-le/usr/sbin/uhttpd":
+        "7595673c155060c38222e7da9c437da2a3ea54f9dc03f138dae4dd39723ccf19",
+    "hereticus-openwrt-cve/25.12.6/armsr-armv8/usr/sbin/uhttpd":
+        "dc0f9ab02d0350c861f2ab3951c69fb13ba20e53f56cd59e57c7d880a91d9f83",
+    "hereticus-openwrt-cve/25.12.6/armsr-armv7/usr/sbin/uhttpd":
+        "9b0c51280c16e0c1361512c834e6842229908159a0ba77f5cfef479bcc0c6699",
+    "hereticus-openwrt-cve/25.12.6/malta-be/usr/sbin/uhttpd":
+        "c389072f37adafde90829ad61d385c642a74da3672360f22b526997caced2a2e",
+    "hereticus-openwrt-cve/25.12.6/malta-le/usr/sbin/uhttpd":
+        "2ce9d839d9c999b6b3c4c6dbf7cd1f7a6343a369d6c90dd9252f5542dc400c59",
     "hereticus-openwrt-cve/24.10.7/armsr-armv7/usr/sbin/uhttpd":
         "bd90b99ece8e8d7ec4cb1b7e008c71895096964f43552c9fefea047652dbc341",
     "hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/uhttpd":

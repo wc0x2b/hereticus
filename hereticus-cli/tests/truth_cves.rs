@@ -120,6 +120,30 @@ const FIXES: &[Fix] = &[
         function: "sub_3fc4",
     },
     Fix {
+        name: "CVE-2026-102338 uhttpd AArch64",
+        before: "hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/25.12.6/armsr-armv8/usr/sbin/uhttpd",
+        function: "sub_42ec",
+    },
+    Fix {
+        name: "CVE-2026-102338 uhttpd A32",
+        before: "hereticus-openwrt-cve/25.12.5/armsr-armv7/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/25.12.6/armsr-armv7/usr/sbin/uhttpd",
+        function: "sub_421c",
+    },
+    Fix {
+        name: "CVE-2026-102338 uhttpd MIPS16e BE",
+        before: "hereticus-openwrt-cve/25.12.5/malta-be/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/25.12.6/malta-be/usr/sbin/uhttpd",
+        function: "sub_4020",
+    },
+    Fix {
+        name: "CVE-2026-102338 uhttpd MIPS16e LE",
+        before: "hereticus-openwrt-cve/25.12.5/malta-le/usr/sbin/uhttpd",
+        after: "hereticus-openwrt-cve/25.12.6/malta-le/usr/sbin/uhttpd",
+        function: "sub_4070",
+    },
+    Fix {
         name: "CVE-2026-53921 odhcpd AArch64",
         before: "hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/odhcpd",
         after: "hereticus-openwrt-cve/24.10.8/armsr-armv8/usr/sbin/odhcpd",

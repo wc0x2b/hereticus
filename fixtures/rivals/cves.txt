@@ -14,6 +14,10 @@ CVE-2025-14282 dropbear AArch64|hereticus-openwrt-cve/24.10.4/armsr-armv8/usr/sb
 CVE-2025-14282 dropbear A32|hereticus-openwrt-cve/24.10.4/armsr-armv7/usr/sbin/dropbear|hereticus-openwrt-cve/24.10.5/armsr-armv7/usr/sbin/dropbear
 CVE-2025-14282 dropbear MIPS32 BE|hereticus-openwrt-cve/24.10.4/malta-be/usr/sbin/dropbear|hereticus-openwrt-cve/24.10.5/malta-be/usr/sbin/dropbear
 CVE-2025-14282 dropbear MIPS32 LE|hereticus-openwrt-cve/24.10.4/malta-le/usr/sbin/dropbear|hereticus-openwrt-cve/24.10.5/malta-le/usr/sbin/dropbear
+CVE-2026-102338 uhttpd AArch64|hereticus-openwrt-cve/25.12.5/armsr-armv8/usr/sbin/uhttpd|hereticus-openwrt-cve/25.12.6/armsr-armv8/usr/sbin/uhttpd
+CVE-2026-102338 uhttpd A32|hereticus-openwrt-cve/25.12.5/armsr-armv7/usr/sbin/uhttpd|hereticus-openwrt-cve/25.12.6/armsr-armv7/usr/sbin/uhttpd
+CVE-2026-102338 uhttpd MIPS16e BE|hereticus-openwrt-cve/25.12.5/malta-be/usr/sbin/uhttpd|hereticus-openwrt-cve/25.12.6/malta-be/usr/sbin/uhttpd
+CVE-2026-102338 uhttpd MIPS16e LE|hereticus-openwrt-cve/25.12.5/malta-le/usr/sbin/uhttpd|hereticus-openwrt-cve/25.12.6/malta-le/usr/sbin/uhttpd
 CVE-2026-55614 uhttpd AArch64|hereticus-openwrt-cve/24.10.7/armsr-armv8/usr/sbin/uhttpd|hereticus-openwrt-cve/24.10.8/armsr-armv8/usr/sbin/uhttpd
 CVE-2026-55614 uhttpd A32|hereticus-openwrt-cve/24.10.7/armsr-armv7/usr/sbin/uhttpd|hereticus-openwrt-cve/24.10.8/armsr-armv7/usr/sbin/uhttpd
 CVE-2026-55614 uhttpd MIPS16e BE|hereticus-openwrt-cve/24.10.7/malta-be/usr/sbin/uhttpd|hereticus-openwrt-cve/24.10.8/malta-be/usr/sbin/uhttpd
