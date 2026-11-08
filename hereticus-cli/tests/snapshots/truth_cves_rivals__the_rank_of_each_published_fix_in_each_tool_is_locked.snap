@@ -3,9 +3,9 @@ source: hereticus-cli/tests/truth_cves_rivals.rs
 expression: "format!(\"{totals}\\n{ranks}\")"
 ---
 tool                 fixes found first  top10    rows
-all hereticus           50    50    22     49    1647
-all radare2             50    19     5      5   15071
-all ghidra              50    33     6     32    5253
+all hereticus           52    52    24     51    1665
+all radare2             52    20     6      6   15471
+all ghidra              52    35     7     34    5353
 
 fix                                      rank:hereticus   rank:radare2    rank:ghidra
 CVE-2024-23265 AppleDiskImages2                       1              -              -
@@ -27,6 +27,8 @@ CVE-2026-102338 uhttpd AArch64                        2              1          
 CVE-2026-102338 uhttpd A32                            2              -              6
 CVE-2026-102338 uhttpd MIPS16e BE                     2              -              -
 CVE-2026-102338 uhttpd MIPS16e LE                     2              -              -
+CVE-2026-67277 RouterOS btest ARM                     1              -              3
+CVE-2026-67277 RouterOS btest MIPS32 BE               1              1              1
 CVE-2026-50584 libmbedcrypto AArch64                  3            104              3
 CVE-2026-50584 libmbedcrypto A32                      1            557              3
 CVE-2026-50584 libmbedcrypto MIPS32 BE                4            164              3
