@@ -1486,9 +1486,10 @@ impl Cascade<'_> {
                 continue;
             }
             let (left, right) = (&self.left[pair.before], &self.right[pair.after]);
+            let loose = (long_texts(&left.loose_texts), long_texts(&right.loose_texts));
             let count = match pair.changed {
                 Changed::Yes => TextCount::AddedOrReplaced,
-                _ => TextCount::Replaced,
+                _ => TextCount::Replaced { left_loose: &loose.0, right_loose: &loose.1 },
             };
             let differ =
                 texts_that_differ(&long_texts(&left.texts), &long_texts(&right.texts), count)

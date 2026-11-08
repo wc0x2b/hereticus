@@ -50,9 +50,9 @@ each built before and after one upstream fix:
 
 | Tool      | Fixes found | Fix on row 1 | Rows the fix did not touch |
 |-----------|-------------|--------------|----------------------------|
-| hereticus | 64<!-- from rivals_radare2: hereticus / found --> | 38<!-- from rivals_radare2: hereticus / first --> | 3<!-- from rivals_radare2: hereticus / extras --> |
+| hereticus | 64<!-- from rivals_radare2: hereticus / found --> | 38<!-- from rivals_radare2: hereticus / first --> | 0<!-- from rivals_radare2: hereticus / extras --> |
 | radiff2   | 35<!-- from rivals_radare2: radare2 / found --> | 18<!-- from rivals_radare2: radare2 / first --> | 4450<!-- from rivals_radare2: radare2 / extras --> |
-| Ghidra    | 60<!-- from truth_ghidra: ghidra / found --> | 32<!-- from truth_ghidra: ghidra / first --> | 4253<!-- from truth_ghidra: ghidra / extras --> |
+| Ghidra    | 60<!-- from truth_ghidra: ghidra / found --> | 32<!-- from truth_ghidra: ghidra / first --> | 3381<!-- from truth_ghidra: ghidra / extras --> |
 
 This is a narrow test, which `hereticus` was developed with. See
 [Comparison With Other Tools](./comparison.md) for how it scores each
@@ -65,7 +65,7 @@ kernel, with no symbols and no sections, `hereticus` finds
 19534<!-- from truth_function_starts: hereticus / real --> of the
 20988<!-- from truth_function_starts: hereticus / symbols --> real function
 starts, and Ghidra finds
-13210<!-- from truth_function_starts: ghidra default / real -->. The
+13213<!-- from truth_function_starts: ghidra default / real -->. The
 [Ghidra extension](./ghidra.md) adds the functions that Ghidra misses.
 
 ### Coding Agents

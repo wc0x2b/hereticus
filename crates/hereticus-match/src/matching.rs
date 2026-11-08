@@ -707,6 +707,10 @@ struct Prepared<'a> {
     call_places: Vec<Option<usize>>,
     /// The texts the function points at, sorted.
     texts: Vec<&'a str>,
+    /// The printable runs that a NUL ends at the other addresses the
+    /// function points at, sorted: texts that start where no rule says a
+    /// text starts. See [`hereticus_image::links::Links::printable_text`].
+    loose_texts: Vec<&'a str>,
     /// Those of [`Self::texts`] sure enough that a change to one is
     /// reported, sorted.
     sure_texts: Vec<&'a str>,
@@ -901,15 +905,17 @@ fn prepare<'a>(
                 .collect();
             let linked_calls = (linked_calls != calls).then_some(linked_calls);
 
-            let mut found: Vec<(&str, bool)> = arch
-                .data_addresses(&function.code, &insns, &binary.addresses, &memory)
-                .into_iter()
-                .filter_map(|address| {
-                    let text = binary.links.text_after_code(arch, address)?;
-                    Some((text, binary.links.is_sure_text(address, text)))
-                })
-                .collect();
+            let addresses = arch.data_addresses(&function.code, &insns, &binary.addresses, &memory);
+            let mut found: Vec<(&str, bool)> = Vec::new();
+            let mut loose_texts: Vec<&str> = Vec::new();
+            for address in addresses {
+                match binary.links.text_after_code(arch, address) {
+                    Some(text) => found.push((text, binary.links.is_sure_text(address, text))),
+                    None => loose_texts.extend(binary.links.printable_text(address)),
+                }
+            }
             found.sort_unstable();
+            loose_texts.sort_unstable();
             let texts: Vec<&str> = found.iter().map(|&(text, _)| text).collect();
             let sure_texts: Vec<&str> =
                 found.iter().filter(|&&(_, sure)| sure).map(|&(text, _)| text).collect();
@@ -934,6 +940,7 @@ fn prepare<'a>(
                 linked_calls,
                 call_places,
                 texts,
+                loose_texts,
                 sure_texts,
                 flow,
                 constants,

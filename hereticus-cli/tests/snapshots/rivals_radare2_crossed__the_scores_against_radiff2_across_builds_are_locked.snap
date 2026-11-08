@@ -3,7 +3,7 @@ source: hereticus-cli/tests/rivals_radare2_crossed.rs
 expression: "rivals::table(RADIFF2, &contests)"
 ---
 tool             builds found first   rows extras
-hereticus            28    28     7   7199   7116
+hereticus            28    28     7   7194   7111
 radare2-crossed      28    16     0   5227   5185
 
 build                                    rank:hereticus   rank:radare2-crossed         rows:hereticus   rows:radare2-crossed       extras:hereticus extras:radare2-crossed
@@ -15,13 +15,13 @@ zlib-mips-O2-to-gcc-O2                                1                     77  
 zlib-mips-Os-to-O3                                    1                     43                    118                    104                    117                    103
 zlib-x86_64-O2-to-gcc-O2                              1                     10                    142                    115                    141                    114
 zlib-x86_64-Os-to-O3                                  1                     28                    120                    113                    119                    112
-lua-arm-O2-to-gcc-O2                                348                      -                    501                    206                    496                    204
+lua-arm-O2-to-gcc-O2                                347                      -                    500                    206                    495                    204
 lua-arm-Os-to-O3                                    253                      -                    371                    196                    366                    194
 lua-aarch64-O2-to-gcc-O2                            362                      -                    495                    196                    490                    194
 lua-aarch64-Os-to-O3                                249                      -                    384                    201                    379                    199
-lua-mips-O2-to-gcc-O2                               391                      -                    520                    242                    514                    241
+lua-mips-O2-to-gcc-O2                               391                      -                    519                    242                    513                    241
 lua-mips-Os-to-O3                                   268                      -                    498                    164                    493                    163
-lua-x86_64-O2-to-gcc-O2                             338                      -                    516                    198                    511                    196
+lua-x86_64-O2-to-gcc-O2                             338                      -                    514                    198                    509                    196
 lua-x86_64-Os-to-O3                                 149                      -                    390                    203                    384                    201
 tinyxml2-arm-O2-to-gcc-O2                            13                     99                    297                    339                    296                    338
 tinyxml2-arm-Os-to-O3                                 4                    198                    211                    319                    210                    317
@@ -34,4 +34,4 @@ tinyxml2-x86_64-Os-to-O3                              4                    194  
 smallvec-arm-Os-to-O3                                13                      -                     93                     39                     87                     36
 smallvec-aarch64-Os-to-O3                            20                      -                     95                     46                     89                     43
 smallvec-mips-Os-to-O3                                6                      -                    106                     45                    100                     42
-smallvec-x86_64-Os-to-O3                             13                      -                    104                     25                     97                     24
+smallvec-x86_64-Os-to-O3                             13                      -                    103                     25                     96                     24

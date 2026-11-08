@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The comparison with other tools runs Ghidra 12.2, which needs Java 25.
 - The comparison prepares and hashes the functions of each binary,
   assesses the pairs of identical shape, and finds the unique references
   of the two sides, on every core. A pair that no stage breaks gets no second score, and nor
@@ -33,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the register ever took, often in a function far above. Over 177 Ubuntu
   updates the report shows 5946 rows in place of 6160, with each fix on
   the same row or an earlier one.
+- A pair whose code has one shape no longer reads as changed values only
+  because a pointer reads as a text on one side and as none on the other.
+  Rust packs its strings with no NUL between them, so a new message can
+  bring a NUL near enough to read a text where none was read before: in
+  the smallvec backport for x86-64, three unchanged `extend` functions
+  read as changed. Where the other side points at printable bytes that a
+  NUL ends but that start after no NUL, as `"1.2.12"` in zlib for MIPS
+  read raw, the text still counts as replaced.
 - In a raw image of MIPS32 or A32 code, a function that only a table of
   pointers names now starts a function of its own, where at least half of
   the targets of the table start a function already and the new start

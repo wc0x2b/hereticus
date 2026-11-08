@@ -295,6 +295,17 @@ impl Links {
         })
     }
 
+    /// Printable ASCII from `address` up to a NUL, wherever it starts.
+    ///
+    /// [`Self::text_at`] takes a text only after a NUL or at the start of
+    /// read-only data, as a raw image may not show where its texts start.
+    /// This says whether a pointer that reads no text there may still point
+    /// at one, as `"1.2.12"` after a word of a table in zlib for MIPS read
+    /// raw.
+    pub fn printable_text(&self, address: u64) -> Option<&str> {
+        self.printable_at(address)
+    }
+
     /// Printable ASCII from `address` up to a NUL.
     fn printable_at(&self, address: u64) -> Option<&str> {
         let rest = self.bytes_at(address)?;

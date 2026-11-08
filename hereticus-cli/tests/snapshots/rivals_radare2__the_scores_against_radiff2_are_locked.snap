@@ -3,7 +3,7 @@ source: hereticus-cli/tests/rivals_radare2.rs
 expression: "rivals::table(RADIFF2, &contests)"
 ---
 tool             builds found first   rows extras
-hereticus            64    64    38    145      3
+hereticus            64    64    38    142      0
 radare2              64    35    18   4522   4450
 
 build                                    rank:hereticus           rank:radare2         rows:hereticus           rows:radare2       extras:hereticus         extras:radare2
@@ -69,5 +69,5 @@ tinyxml2-powerpc-gcc-O2                               1                      1  
 tinyxml2-powerpc64le-O2                               1                      1                      1                    145                      0                    144
 tinyxml2-powerpc64le-gcc-O2                           1                      2                      1                     82                      0                     81
 tinyxml2-powerpc64-gcc-O2                             1                     11                      1                    216                      0                    215
-smallvec-x86_64-O2                                    6                      -                      9                     22                      3                     21
+smallvec-x86_64-O2                                    6                      -                      6                     22                      0                     21
 smallvec-i686-O2                                      6                      -                      6                     22                      0                     21

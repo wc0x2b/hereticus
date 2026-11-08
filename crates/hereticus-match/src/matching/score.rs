@@ -66,19 +66,23 @@ pub(super) fn short_texts_changed(left: (&[&str], &[&str]), right: (&[&str], &[&
 
 /// How a pair counts the texts that differ: see [`texts_that_differ`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TextCount {
+pub(super) enum TextCount<'t> {
     /// Each text that one side holds and the other does not, counted from
     /// the side with more, for code that changed: a new message is an edit.
     AddedOrReplaced,
-    /// Only a text that takes the place of another, for code of one shape.
+    /// Only a text that takes the place of another, for code of one shape:
+    /// a text of the other side, or a printable run that a NUL ends there,
+    /// from the `loose` texts of each side.
     ///
     /// The same pointer can read as a text on one side and as none on the
     /// other where the bytes after it moved: Rust packs its strings with no
     /// NUL between them, so a text is read only where a NUL comes near
     /// enough. In smallvec for x86-64, three `extend` functions read
     /// `"capacity overflowassertion failed: ..."` only after the fix
-    /// added one more message to the pack.
-    Replaced,
+    /// added one more message to the pack. But in zlib for MIPS read raw,
+    /// `"1.2.12"` follows a word of a table, not a NUL, so only the loose
+    /// texts show that it replaced `"1.2.11"`.
+    Replaced { left_loose: &'t [&'t str], right_loose: &'t [&'t str] },
 }
 
 /// How many texts of one sorted list have no equal in the other, as `count`
@@ -86,7 +90,7 @@ pub(super) enum TextCount {
 ///
 /// A text that differs from one on the other side only by its build
 /// directory counts as equal: see [`differ_only_by_build_path`].
-pub(super) fn texts_that_differ(left: &[&str], right: &[&str], count: TextCount) -> usize {
+pub(super) fn texts_that_differ(left: &[&str], right: &[&str], count: TextCount<'_>) -> usize {
     let (mut shared, mut l, mut r) = (0, 0, 0);
     let (mut left_only, mut right_only) = (Vec::new(), Vec::new());
     while l < left.len() && r < right.len() {
@@ -120,7 +124,14 @@ pub(super) fn texts_that_differ(left: &[&str], right: &[&str], count: TextCount)
     }
     match count {
         TextCount::AddedOrReplaced => left.len().max(right.len()) - shared,
-        TextCount::Replaced => unmatched_left.min(right_only.len()),
+        TextCount::Replaced { left_loose, right_loose } => {
+            let other = |loose: &[&str], side: &[&str]| {
+                loose.iter().filter(|text| !side.contains(text)).count()
+            };
+            let from_left = unmatched_left.min(right_only.len() + other(right_loose, left));
+            let from_right = right_only.len().min(unmatched_left + other(left_loose, right));
+            from_left.max(from_right)
+        }
     }
 }
 

@@ -4,9 +4,9 @@ expression: table
 ---
 tool               symbols  found   real not real
 hereticus            20988  19998  19534      464
-ghidra default       20988  13801  13210      591
-ghidra aggressive    20988  14144  13545      599
+ghidra default       20988  13803  13213      591
+ghidra aggressive    20988  14146  13548      599
 
 functions                 count  jal%  word%
-only hereticus finds       6358     5     77
-ghidra default finds      13210    77     44
+only hereticus finds       6352     5     77
+ghidra default finds      13213    77     44

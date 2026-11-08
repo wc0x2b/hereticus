@@ -1310,8 +1310,9 @@ fn texts_differ_by_what_they_do_not_share() {
 /// NUL came near enough.
 #[test]
 fn code_of_one_shape_counts_only_a_text_replaced() {
-    let replaced =
-        |left: &[&str], right: &[&str]| texts_that_differ(left, right, TextCount::Replaced);
+    let replaced = |left: &[&str], right: &[&str]| {
+        texts_that_differ(left, right, TextCount::Replaced { left_loose: &[], right_loose: &[] })
+    };
     assert_eq!(replaced(&[], &["capacity overflow"]), 0, "read on one side alone");
     assert_eq!(replaced(&["a"], &["a", "b"]), 0);
     assert_eq!(replaced(&["%s"], &["%.*s"]), 1, "a format changed in place");
@@ -1320,6 +1321,14 @@ fn code_of_one_shape_counts_only_a_text_replaced() {
     let apple = |root: &str| format!("/AppleInternal/Library/BuildRoots/{root}/x.cpp");
     let (old, new) = (apple("4~Bq7XzA9kLm2"), apple("7~Cv3YwD1nPo8"));
     assert_eq!(replaced(&[old.as_str()], &[new.as_str()]), 0, "only the build directory");
+    // A text that only a loose read finds on the other side replaced it.
+    let loose = |left: &[&str], right: &[&str], right_loose: &[&str]| {
+        texts_that_differ(left, right, TextCount::Replaced { left_loose: &[], right_loose })
+    };
+    assert_eq!(loose(&["1.2.11"], &[], &["1.2.12"]), 1, "zlib read raw");
+    assert_eq!(loose(&["1.2.11"], &[], &["1.2.11"]), 0, "the same text, read loose");
+    let left_loose = TextCount::Replaced { left_loose: &["1.2.11"], right_loose: &[] };
+    assert_eq!(texts_that_differ(&[], &["1.2.12"], left_loose), 1, "from the other side");
 }
 
 #[test]

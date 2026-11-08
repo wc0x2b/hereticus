@@ -14,6 +14,6 @@ arm-7 ghidra                 2557   2509       48   1163
 arm-5 hereticus              3686   3632       54     71
 arm-5 ghidra                 2570   2523       47   1180
 mips-softfloat hereticus     3548   3491       57     88
-mips-softfloat ghidra        2379   2379        0   1200
+mips-softfloat ghidra        2380   2380        0   1199
 mipsle-softfloat hereticus   3549   3491       58     88
 mipsle-softfloat ghidra      1517   1517        0   2062
