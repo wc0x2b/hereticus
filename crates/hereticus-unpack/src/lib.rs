@@ -19,8 +19,12 @@
 
 use std::io::Cursor;
 
+use deku::prelude::*;
+
 /// The magic word of an ARM zImage, at offset 0x24 of it.
 const ZIMAGE_MAGIC: [u8; 4] = 0x016f_2818_u32.to_le_bytes();
+/// The offset of the magic word in a zImage header. Code comes before it.
+const ZIMAGE_MAGIC_OFFSET: usize = 0x24;
 /// The magic of an xz stream.
 const XZ_MAGIC: &[u8] = b"\xfd7zXZ\x00";
 /// The magic of a gzip member, with the method byte of deflate.
@@ -34,6 +38,8 @@ const LZMA_HEADER: &[u8] = b"\x6d\x00\x00\x80\x00";
 const UIMAGE_MAGIC: [u8; 4] = [0x27, 0x05, 0x19, 0x56];
 /// The length of a uImage header.
 const UIMAGE_HEADER: usize = 64;
+/// The magic and class of a 32-bit big-endian ELF file.
+const ELF32_BIG_MAGIC: &[u8] = b"\x7fELF\x01\x02";
 /// The version word a TP-Link v2 header opens with.
 const TPLINK_V2_VERSION: [u8; 4] = [0x02, 0x00, 0x00, 0x00];
 /// The length of a TP-Link v2 header.
@@ -92,6 +98,86 @@ impl core::fmt::Display for UnpackError {
 
 impl std::error::Error for UnpackError {}
 
+/// The fields of a zImage header that tell where the zImage ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "little")]
+struct ZImageHeader {
+    #[deku(pad_bytes_before = "ZIMAGE_MAGIC_OFFSET", assert_eq = "ZIMAGE_MAGIC")]
+    magic: [u8; 4],
+    /// The address the zImage was linked at, 0 where it runs from anywhere.
+    start: u32,
+    /// The address after the zImage. With a start of 0, this is its length.
+    end: u32,
+}
+
+/// The header of a uImage, as U-Boot's `image_header` gives it.
+#[derive(Clone, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "big", magic = b"\x27\x05\x19\x56")]
+struct UImageHeader {
+    header_crc: u32,
+    time: u32,
+    /// The length of the body that follows the header.
+    size: u32,
+    load: u32,
+    entry: u32,
+    data_crc: u32,
+    os: u8,
+    arch: u8,
+    kind: u8,
+    compression: UImageCompression,
+    name: [u8; 32],
+}
+
+/// The compression of a uImage body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(id_type = "u8", ctx = "_: deku::ctx::Endian")]
+enum UImageCompression {
+    #[deku(id = 0)]
+    None,
+    #[deku(id = 1)]
+    Gzip,
+    #[deku(id = 2)]
+    Bzip2,
+    #[deku(id = 3)]
+    Lzma,
+    #[deku(id = 4)]
+    Lzo,
+    #[deku(id = 5)]
+    Lz4,
+    #[deku(id = 6)]
+    Zstd,
+    #[deku(id_pat = "_")]
+    Other(u8),
+}
+
+/// The field of a 32-bit big-endian ELF header that gives where the program
+/// headers start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "big", magic = b"\x7fELF\x01\x02")]
+struct Elf32Header {
+    #[deku(pad_bytes_before = "22")]
+    program_headers: u32,
+}
+
+/// A program header of a 32-bit big-endian ELF file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "big")]
+struct Elf32ProgramHeader {
+    kind: u32,
+    offset: u32,
+    address: u32,
+    physical_address: u32,
+    file_size: u32,
+    memory_size: u32,
+    flags: u32,
+    align: u32,
+}
+
+/// The `T` that `bytes` open with, or `None` where they do not hold one.
+fn parse<'a, T: DekuContainerRead<'a>>(bytes: &'a [u8]) -> Option<T> {
+    T::from_bytes((bytes, 0)).ok().map(|(_, value)| value)
+}
+
 /// Unpack a firmware image.
 ///
 /// See RESEARCH.md, A18.
@@ -104,7 +190,7 @@ pub fn unpack(image: &[u8]) -> Result<Unpacked, UnpackError> {
     if image.starts_with(&UIMAGE_MAGIC) {
         return uimage(image);
     }
-    if image.starts_with(b"\x7fELF\x01\x02") {
+    if image.starts_with(ELF32_BIG_MAGIC) {
         return elf_loader(image);
     }
     if image.starts_with(&TPLINK_V2_VERSION) && image.get(4..12) == Some(b"ver. 1.0") {
@@ -119,11 +205,12 @@ pub fn unpack(image: &[u8]) -> Result<Unpacked, UnpackError> {
 /// Split a zImage, wherever it sits in `image`, into its decompressor and
 /// the kernel it holds. The zImage gives its own length.
 fn zimage(image: &[u8]) -> Result<Unpacked, UnpackError> {
-    let magic = find(image, &ZIMAGE_MAGIC, 0).ok_or(UnpackError::Missing("zImage"))?;
-    let start = magic.checked_sub(0x24).ok_or(UnpackError::Missing("zImage"))?;
-    let end_field = image.get(magic + 8..magic + 12).ok_or(UnpackError::Missing("zImage"))?;
-    let length = u32::from_le_bytes(end_field.try_into().expect("four bytes")) as usize;
-    let zimage = image.get(start..start + length).ok_or(UnpackError::Missing("zImage"))?;
+    let missing = UnpackError::Missing("zImage");
+    let magic = find(image, &ZIMAGE_MAGIC, 0).ok_or(missing.clone())?;
+    let start = magic.checked_sub(ZIMAGE_MAGIC_OFFSET).ok_or(missing.clone())?;
+    let header: ZImageHeader = parse(&image[start..]).ok_or(missing.clone())?;
+    let length = header.end as usize;
+    let zimage = image.get(start..start + length).ok_or(missing)?;
     // The kernel's build picks the compression. OpenWrt picks xz, and most
     // other builds gzip or zstd. The stub holds the code of its own
     // decompressor only, so the first stream of any kind that decodes is
@@ -143,18 +230,13 @@ fn zimage(image: &[u8]) -> Result<Unpacked, UnpackError> {
 /// A uImage holds an LZMA kernel, or, uncompressed, an lzma-loader: a
 /// decompressor with an LZMA kernel inside it.
 fn uimage(image: &[u8]) -> Result<Unpacked, UnpackError> {
-    /// The compression byte of a uImage header that means LZMA.
-    const LZMA: u8 = 3;
-    let word = |offset: usize| -> Option<u32> {
-        Some(u32::from_be_bytes(image.get(offset..offset + 4)?.try_into().ok()?))
-    };
-    let size = word(12).ok_or(UnpackError::Missing("uImage header"))? as usize;
-    let load = word(16).map(u64::from);
+    let header: UImageHeader = parse(image).ok_or(UnpackError::Missing("uImage header"))?;
+    let load = Some(u64::from(header.load));
     let body = image
-        .get(UIMAGE_HEADER..UIMAGE_HEADER + size)
+        .get(UIMAGE_HEADER..UIMAGE_HEADER + header.size as usize)
         .ok_or(UnpackError::Missing("uImage body"))?;
     let (payload, kernel) = first_stream(body, 0, Stream::Lzma)?;
-    if image[31] == LZMA {
+    if header.compression == UImageCompression::Lzma {
         return Ok(Unpacked {
             container: Container::UImageKernel,
             stub: None,
@@ -171,21 +253,16 @@ fn uimage(image: &[u8]) -> Result<Unpacked, UnpackError> {
 /// Split a 32-bit big-endian ELF lzma-loader into its code and the kernel
 /// it holds. The first program header loads both together.
 fn elf_loader(image: &[u8]) -> Result<Unpacked, UnpackError> {
-    let word = |offset: usize| -> Option<u32> {
-        Some(u32::from_be_bytes(image.get(offset..offset + 4)?.try_into().ok()?))
-    };
-    let header = word(28).ok_or(UnpackError::Missing("program header"))? as usize;
     let missing = UnpackError::Missing("program header");
-    let (offset, address, size) = (
-        word(header + 4).ok_or(missing.clone())? as usize,
-        word(header + 8).ok_or(missing.clone())?,
-        word(header + 16).ok_or(missing)? as usize,
-    );
+    let header: Elf32Header = parse(image).ok_or(missing.clone())?;
+    let program: Elf32ProgramHeader =
+        image.get(header.program_headers as usize..).and_then(parse).ok_or(missing)?;
+    let (offset, size) = (program.offset as usize, program.file_size as usize);
     let loaded = image.get(offset..offset + size).ok_or(UnpackError::Missing("loader"))?;
     let (payload, kernel) = first_stream(loaded, 0, Stream::Lzma)?;
     Ok(Unpacked {
         container: Container::ElfLoader,
-        stub: Some(Part { bytes: loaded[..payload].to_vec(), load: Some(address.into()) }),
+        stub: Some(Part { bytes: loaded[..payload].to_vec(), load: Some(program.address.into()) }),
         kernel: Part { bytes: kernel, load: None },
     })
 }
@@ -283,18 +360,13 @@ fn first_stream(data: &[u8], start: usize, kind: Stream) -> Result<(usize, Vec<u
 fn xz_decompress(data: &[u8]) -> Option<Vec<u8>> {
     /// The filter ID of LZMA2 in the xz format.
     const LZMA2: u64 = 0x21;
+    /// The length of the stream header.
+    const STREAM_HEADER: usize = 12;
+    /// The length of the CRC32 that ends a block header.
+    const BLOCK_HEADER_CRC: usize = 4;
 
-    if !data.starts_with(XZ_MAGIC) {
-        return None;
-    }
-    let check_size = match data.get(7)? & 0x0f {
-        0x00 => 0,
-        0x01 => 4,
-        0x04 => 8,
-        0x0a => 32,
-        _ => return None,
-    };
-    let mut at = 12;
+    let stream: XzStreamHeader = parse(data)?;
+    let mut at = STREAM_HEADER;
     let mut out = Vec::new();
     loop {
         let size_byte = *data.get(at)?;
@@ -304,24 +376,14 @@ fn xz_decompress(data: &[u8]) -> Option<Vec<u8>> {
         }
         let header_size = (usize::from(size_byte) + 1) * 4;
         let header = data.get(at..at + header_size)?;
-        let flags = header[1];
-        let mut field = Cursor::new(&header[2..header_size - 4]);
-        if flags & 0x40 != 0 {
-            varint(&mut field)?;
-        }
-        if flags & 0x80 != 0 {
-            varint(&mut field)?;
-        }
+        // The fields end before the padding and the CRC32, so a filter that
+        // runs into either one is refused.
+        let block: XzBlockHeader = parse(&header[1..header_size - BLOCK_HEADER_CRC])?;
         let mut branches = Vec::new();
-        for _ in 0..=(flags & 0x03) {
-            let id = varint(&mut field)?;
-            let size = usize::try_from(varint(&mut field)?).ok()?;
-            let from = usize::try_from(field.position()).ok()?;
-            let properties = field.get_ref().get(from..from + size)?;
-            field.set_position((from + size) as u64);
-            match id {
+        for filter in &block.filters {
+            match filter.id.0 {
                 LZMA2 => {}
-                _ => branches.push(BranchFilter::of(id, properties)?),
+                id => branches.push(BranchFilter::of(id, &filter.properties)?),
             }
         }
 
@@ -337,7 +399,124 @@ fn xz_decompress(data: &[u8]) -> Option<Vec<u8>> {
         out.extend_from_slice(&block);
 
         let compressed = usize::try_from(input.position()).ok()?;
-        at = start + compressed.next_multiple_of(4) + check_size;
+        at = start + compressed.next_multiple_of(4) + stream.check.size();
+    }
+}
+
+/// The header that opens an xz stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(magic = b"\xfd7zXZ\x00")]
+struct XzStreamHeader {
+    #[deku(pad_bytes_before = "1", pad_bits_before = "4")]
+    check: XzCheck,
+    #[deku(endian = "little")]
+    crc: u32,
+}
+
+/// The check that follows each block of an xz stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(id_type = "u8", bits = 4)]
+enum XzCheck {
+    #[deku(id = 0x00)]
+    None,
+    #[deku(id = 0x01)]
+    Crc32,
+    #[deku(id = 0x04)]
+    Crc64,
+    #[deku(id = 0x0a)]
+    Sha256,
+}
+
+impl XzCheck {
+    /// The length of the check, in bytes.
+    fn size(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Crc32 => 4,
+            Self::Crc64 => 8,
+            Self::Sha256 => 32,
+        }
+    }
+}
+
+/// Whether an optional field of an xz block header is there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(id_type = "u8", bits = 1)]
+enum Presence {
+    #[deku(id = 0)]
+    Absent,
+    #[deku(id = 1)]
+    Present,
+}
+
+/// The fields of an xz block header after its size byte, up to its padding.
+#[derive(Clone, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+struct XzBlockHeader {
+    uncompressed_size_field: Presence,
+    compressed_size_field: Presence,
+    #[deku(bits = 4, assert_eq = "0")]
+    reserved: u8,
+    /// The number of filters, less one.
+    #[deku(bits = 2)]
+    last_filter: u8,
+    #[deku(cond = "*compressed_size_field == Presence::Present")]
+    compressed_size: Option<Varint>,
+    #[deku(cond = "*uncompressed_size_field == Presence::Present")]
+    uncompressed_size: Option<Varint>,
+    #[deku(count = "usize::from(*last_filter) + 1")]
+    filters: Vec<XzFilter>,
+}
+
+/// One filter of an xz block header: its ID and its properties.
+#[derive(Clone, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+struct XzFilter {
+    id: Varint,
+    properties_size: Varint,
+    #[deku(count = "properties_size.0")]
+    properties: Vec<u8>,
+}
+
+/// A variable-length integer of the xz format: seven bits a byte, low bits
+/// first, with the top bit set on each byte but the last. It takes at most
+/// nine bytes, so it holds at most 63 bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+struct Varint(
+    #[deku(reader = "read_varint(deku::reader)", writer = "write_varint(*field_0, deku::writer)")]
+    u64,
+);
+
+/// The most bytes a varint of the xz format takes.
+const VARINT_MAX_BYTES: u32 = 9;
+
+fn read_varint<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
+    reader: &mut Reader<R>,
+) -> Result<u64, DekuError> {
+    let mut value = 0u64;
+    for index in 0..VARINT_MAX_BYTES {
+        let byte = u8::from_reader_with_ctx(reader, ())?;
+        value |= u64::from(byte & 0x7f) << (index * 7);
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err(DekuError::Parse("an xz varint is longer than nine bytes".into()))
+}
+
+fn write_varint<W: deku::no_std_io::Write + deku::no_std_io::Seek>(
+    value: u64,
+    writer: &mut Writer<W>,
+) -> Result<(), DekuError> {
+    if value >> (VARINT_MAX_BYTES * 7) != 0 {
+        return Err(DekuError::InvalidParam("an xz varint holds at most 63 bits".into()));
+    }
+    let mut rest = value;
+    loop {
+        let low = (rest & 0x7f) as u8;
+        rest >>= 7;
+        if rest == 0 {
+            return low.to_writer(writer, ());
+        }
+        (low | 0x80).to_writer(writer, ())?;
     }
 }
 
@@ -569,43 +748,46 @@ fn undo_x86(data: &mut [u8], start: u32) {
     }
 }
 
-/// Read one variable-length integer of the xz format.
-fn varint(input: &mut Cursor<&[u8]>) -> Option<u64> {
-    let mut value = 0u64;
-    for shift in (0..63).step_by(7) {
-        let position = usize::try_from(input.position()).ok()?;
-        let byte = *input.get_ref().get(position)?;
-        input.set_position(input.position() + 1);
-        value |= u64::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return Some(value);
-        }
-    }
-    None
-}
-
 /// The bytes of the first member of a tar whose name ends with `suffix`.
 fn tar_member<'a>(tar: &'a [u8], suffix: &str) -> Option<&'a [u8]> {
     /// The length of a tar header, and of each block.
     const BLOCK: usize = 512;
     let mut at = 0;
-    while let Some(header) = tar.get(at..at + BLOCK) {
-        if header.iter().all(|&byte| byte == 0) {
+    while let Some(block) = tar.get(at..at + BLOCK) {
+        if block.iter().all(|&byte| byte == 0) {
             return None;
         }
-        let name_end = header[..100].iter().position(|&byte| byte == 0).unwrap_or(100);
-        let name = core::str::from_utf8(&header[..name_end]).ok()?;
-        let size_field = core::str::from_utf8(&header[124..136]).ok()?;
-        let size =
-            usize::from_str_radix(size_field.trim_matches(|c: char| c == '\0' || c == ' '), 8)
-                .ok()?;
+        let header: TarHeader = parse(block)?;
+        let size = header.size()?;
         let body = at + BLOCK;
-        if name.ends_with(suffix) {
+        if header.name()?.ends_with(suffix) {
             return tar.get(body..body + size);
         }
         at = body + size.next_multiple_of(BLOCK);
     }
     None
+}
+
+/// The fields of a tar header that give a member's name and size.
+#[derive(Clone, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+struct TarHeader {
+    /// The name, ended by a zero byte where it is shorter than the field.
+    name: [u8; 100],
+    /// The size in octal digits, ended by a zero byte or a space.
+    #[deku(pad_bytes_before = "24")]
+    size: [u8; 12],
+}
+
+impl TarHeader {
+    fn name(&self) -> Option<&str> {
+        let end = self.name.iter().position(|&byte| byte == 0).unwrap_or(self.name.len());
+        core::str::from_utf8(&self.name[..end]).ok()
+    }
+
+    fn size(&self) -> Option<usize> {
+        let digits = core::str::from_utf8(&self.size).ok()?;
+        usize::from_str_radix(digits.trim_matches(|c: char| c == '\0' || c == ' '), 8).ok()
+    }
 }
 
 /// The offset of the first `needle` in `haystack` at or after `from`.
@@ -660,12 +842,13 @@ mod tests {
     /// it.
     fn zimage_of(stream: &[u8]) -> Vec<u8> {
         let mut image = vec![0u8; 0x200];
-        image[0x24..0x28].copy_from_slice(&ZIMAGE_MAGIC);
         image[0x100..0x103].copy_from_slice(GZIP_MAGIC);
         image.extend_from_slice(stream);
         image.extend_from_slice(&8192u32.to_le_bytes());
-        let length = image.len() as u32;
-        image[0x2c..0x30].copy_from_slice(&length.to_le_bytes());
+        let end = image.len() as u32;
+        let header = ZImageHeader { magic: ZIMAGE_MAGIC, start: 0, end };
+        let header = header.to_bytes().expect("the header writes");
+        image[..header.len()].copy_from_slice(&header);
         image
     }
 
@@ -709,9 +892,101 @@ mod tests {
 
     #[test]
     fn a_varint_reads_seven_bits_a_byte() {
-        assert_eq!(varint(&mut Cursor::new(&[0x21][..])), Some(0x21));
-        assert_eq!(varint(&mut Cursor::new(&[0x80, 0x01][..])), Some(0x80));
-        assert_eq!(varint(&mut Cursor::new(&[0x80][..])), None, "cut short");
+        assert_eq!(parse(&[0x21]), Some(Varint(0x21)));
+        assert_eq!(parse(&[0x80, 0x01]), Some(Varint(0x80)));
+        assert_eq!(parse::<Varint>(&[0x80]), None, "cut short");
+        assert_eq!(parse::<Varint>(&[0xff; 10]), None, "longer than nine bytes");
+    }
+
+    #[test]
+    fn a_varint_writes_back_the_bytes_it_reads() {
+        bolero::check!().with_type::<u64>().for_each(|&value| {
+            let value = value >> 1;
+            let bytes = Varint(value).to_bytes().expect("a varint writes");
+            assert_eq!(parse(&bytes), Some(Varint(value)));
+        });
+        assert!(Varint(1 << 63).to_bytes().is_err(), "64 bits do not fit");
+    }
+
+    #[test]
+    fn an_xz_stream_header_gives_the_check_of_its_blocks() {
+        let header = |check: u8| [b"\xfd7zXZ\x00".as_slice(), &[0, check], &[0; 4]].concat();
+        assert_eq!(parse::<XzStreamHeader>(&header(0x04)).map(|h| h.check), Some(XzCheck::Crc64));
+        assert_eq!(parse::<XzStreamHeader>(&header(0x02)), None, "a check xz does not define");
+        assert_eq!(parse::<XzStreamHeader>(&header(0x04)[1..]), None, "no magic");
+    }
+
+    #[test]
+    fn an_xz_block_header_reads_its_sizes_and_filters() {
+        // Both sizes, then two filters: ARM from 0x1000, and LZMA2.
+        let bytes = [0xc1, 0x05, 0x80, 0x01, 0x07, 0x04, 0x00, 0x10, 0x00, 0x00, 0x21, 0x01, 0x16];
+        let block: XzBlockHeader = parse(&bytes).expect("the header reads");
+        assert_eq!(block.compressed_size, Some(Varint(5)));
+        assert_eq!(block.uncompressed_size, Some(Varint(0x80)));
+        let ids: Vec<u64> = block.filters.iter().map(|filter| filter.id.0).collect();
+        assert_eq!(ids, [0x07, 0x21]);
+        assert_eq!(block.filters[0].properties, [0x00, 0x10, 0x00, 0x00]);
+        assert_eq!(block.to_bytes().expect("the header writes"), bytes);
+
+        assert_eq!(parse::<XzBlockHeader>(&[0x04, 0x21, 0x01]), None, "a reserved bit is set");
+        assert_eq!(parse::<XzBlockHeader>(&[0x00, 0x21, 0x05, 0x16]), None, "properties cut");
+    }
+
+    #[test]
+    fn a_uimage_header_reads_its_body_size_load_address_and_compression() {
+        let header = UImageHeader {
+            header_crc: 0,
+            time: 0,
+            size: 0x1234,
+            load: 0x8000_0000,
+            entry: 0x8000_0000,
+            data_crc: 0,
+            os: 5,
+            arch: 5,
+            kind: 2,
+            compression: UImageCompression::Lzma,
+            name: [0; 32],
+        };
+        let bytes = header.to_bytes().expect("the header writes");
+        assert_eq!(bytes.len(), UIMAGE_HEADER);
+        assert!(bytes.starts_with(&UIMAGE_MAGIC));
+        assert_eq!(parse(&bytes), Some(header));
+        assert_eq!(parse::<UImageHeader>(&bytes[..UIMAGE_HEADER - 1]), None, "cut short");
+
+        let mut other = bytes;
+        other[31] = 0x42;
+        let compression = parse::<UImageHeader>(&other).map(|h| h.compression);
+        assert_eq!(compression, Some(UImageCompression::Other(0x42)));
+    }
+
+    #[test]
+    fn an_elf_loader_reads_its_first_program_header() {
+        let program = Elf32ProgramHeader {
+            kind: 1,
+            offset: 0x60,
+            address: 0x8006_0000,
+            physical_address: 0x8006_0000,
+            file_size: 4,
+            memory_size: 4,
+            flags: 7,
+            align: 0x10,
+        };
+        let mut image = Elf32Header { program_headers: 0x40 }.to_bytes().expect("ELF header");
+        image.resize(0x40, 0);
+        image.extend(program.to_bytes().expect("the program header writes"));
+        image.extend(b"code");
+        assert_eq!(&image[28..32], &[0, 0, 0, 0x40]);
+        assert_eq!(elf_loader(&image), Err(UnpackError::NoStream("LZMA")));
+
+        image.truncate(0x40 + 20);
+        assert_eq!(elf_loader(&image), Err(UnpackError::Missing("program header")));
+    }
+
+    #[test]
+    fn a_zimage_with_a_header_cut_short_is_missing() {
+        let mut image = vec![0u8; ZIMAGE_MAGIC_OFFSET];
+        image.extend_from_slice(&ZIMAGE_MAGIC);
+        assert_eq!(unpack(&image), Err(UnpackError::Missing("zImage")));
     }
 
     #[test]
