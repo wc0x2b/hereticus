@@ -4,6 +4,8 @@
 //! through, are in `hereticus-recovery`, and the rules the matching reads
 //! in `hereticus-arch`.
 
+pub mod form;
+
 use crate as il;
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing, split_printed};
 use compact_str::CompactString;

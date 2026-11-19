@@ -8,6 +8,7 @@
 
 use super::{AbsoluteCall, CallTarget, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery};
 use hereticus_il as il;
+use hereticus_il::arch::mips::form::{IForm, JForm};
 use hereticus_il::arch::mips::*;
 use hereticus_memory::AddressSpace;
 use rabbitizer::opcodes::Opcode;
@@ -114,9 +115,11 @@ impl Recovery for Mips32 {
     /// calling anything.
     /// `addiu sp, sp, imm`: opcode 9, with `sp`, 29, in both `rs` and `rt`.
     fn may_be_prologue(&self, word: &[u8]) -> bool {
-        const ADDIU_SP_SP: u32 = 0x27bd_0000;
+        const ADDIU: u8 = 9;
+        const SP: u8 = 29;
         let Some(&[a, b, c, d]) = word.get(..INSN_WIDTH) else { return false };
-        self.order().read_word([a, b, c, d]) & 0xffff_0000 == ADDIU_SP_SP
+        let IForm { opcode, rs, rt, .. } = IForm::of(self.order().read_word([a, b, c, d]));
+        (opcode, rs, rt) == (ADDIU, SP, SP)
     }
 
     fn is_prologue(&self, insn: &Insn) -> bool {
@@ -325,14 +328,14 @@ impl Recovery for Mips32 {
     }
 
     fn absolute_call(&self, word: &[u8]) -> Option<AbsoluteCall> {
-        /// The primary opcode of `jal`, in the top 6 bits.
-        const JAL: u32 = 0b00_0011;
+        /// The primary opcode of `jal`.
+        const JAL: u8 = 0b00_0011;
         /// `jal` holds a word index, so the region is 2^26 words.
         const JAL_REGION: u64 = 1 << 28;
 
-        let raw = self.order().read_word([word[0], word[1], word[2], word[3]]);
-        (raw >> 26 == JAL)
-            .then(|| AbsoluteCall { offset: u64::from(raw & 0x03ff_ffff) << 2, region: JAL_REGION })
+        let jump = JForm::of(self.order().read_word([word[0], word[1], word[2], word[3]]));
+        (jump.opcode == JAL)
+            .then(|| AbsoluteCall { offset: u64::from(jump.target) << 2, region: JAL_REGION })
     }
 }
 

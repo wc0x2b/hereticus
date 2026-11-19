@@ -15,6 +15,7 @@
 
 use super::{Insn, InsnKind, JumpTable, Memory, Recovery};
 use core::ops::Range;
+use hereticus_il::arch::aarch64::form::PcRelative;
 use hereticus_il::arch::aarch64::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
 use std::collections::HashMap;
@@ -23,12 +24,6 @@ use yaxpeax_arm::armv8::a64::{InstDecoder, Instruction, Opcode, Operand, ShiftSt
 
 /// A page, as `adrp` counts them.
 const PAGE: u64 = 0x1000;
-
-/// The bits that make a word `adr` or `adrp`: `x 0 0 1 0 0 0 0` at the top,
-/// where `x` tells them apart.
-const ADR_MASK: u32 = 0x1f00_0000;
-
-const ADR_BITS: u32 = 0x1000_0000;
 
 /// The A64 `nop` encoding, little endian.
 const NOP_BYTES: [u8; 4] = [0x1f, 0x20, 0x03, 0xd5];
@@ -190,9 +185,7 @@ impl Recovery for Aarch64 {
         // The scan asks at the target of every jump, so a word that is no
         // `adrp` or `adr` ends the question before anything decodes.
         let first = u32::from_le_bytes(code.get(..INSN_WIDTH)?.try_into().ok()?);
-        if first & ADR_MASK != ADR_BITS {
-            return None;
-        }
+        PcRelative::of(first)?;
         let length = code.len().min(4 * INSN_WIDTH) / INSN_WIDTH * INSN_WIDTH;
         let (insns, _) = super::decode_all(self, &code[..length], address);
         let loaded_into = |load: &Insn, dest: u16| match operands_of(load).as_slice() {
@@ -952,7 +945,7 @@ mod tests {
         bolero::check!().with_type::<u32>().for_each(|&word| {
             let opcode = opcode_of(&decode_one(word));
             let is_address = matches!(opcode, Some(Opcode::ADR | Opcode::ADRP));
-            assert_eq!(word & ADR_MASK == ADR_BITS, is_address, "{word:#010x}");
+            assert_eq!(PcRelative::of(word).is_some(), is_address, "{word:#010x}");
         });
     }
 
