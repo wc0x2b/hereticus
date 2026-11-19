@@ -237,6 +237,11 @@ pub enum ArchName {
     Arm32Be8,
     /// ARM32, big endian (BE8), Thumb-2 instructions.
     Thumb2Be8,
+    /// ARM32, big endian (BE32: both data and instructions big endian), A32
+    /// instructions.
+    Arm32Be32,
+    /// ARM32, big endian (BE32), Thumb-2 instructions.
+    Thumb2Be32,
     /// ARMv8-A, 64-bit, little endian.
     Aarch64,
     /// MIPS32, little endian.
@@ -270,6 +275,8 @@ impl From<ArchName> for Isa {
             ArchName::Thumb2 => Self::Thumb2,
             ArchName::Arm32Be8 => Self::Arm32Be8,
             ArchName::Thumb2Be8 => Self::Thumb2Be8,
+            ArchName::Arm32Be32 => Self::Arm32Be32,
+            ArchName::Thumb2Be32 => Self::Thumb2Be32,
             ArchName::Aarch64 => Self::Aarch64,
             ArchName::Mips32 => Self::Mips32,
             ArchName::Mips32Be => Self::Mips32Be,

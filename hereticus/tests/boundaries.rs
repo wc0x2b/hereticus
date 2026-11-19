@@ -41,6 +41,9 @@ fn builds() -> Vec<PathBuf> {
         .filter(|build| !build.to_string_lossy().contains("-nopic-"))
         // `tests/be8.rs` measures the builds for ARM big endian.
         .filter(|build| !build.to_string_lossy().contains("be8-"))
+        // `tests/be32.rs` measures BE32 and the ARMv5 builds it compares
+        // with.
+        .filter(|build| !["be32-", "v5-"].iter().any(|arch| build.to_string_lossy().contains(arch)))
         .collect();
     builds.sort();
     builds
