@@ -829,6 +829,38 @@ const LO: il::Reg = il::Reg::General(33);
 mod tests {
     use super::*;
 
+    /// FNV-1a over what each of 2.6 million words reads and lifts as: each
+    /// `rs`, `rt` and `function` of the opcodes this module reads, with four
+    /// patterns of `rd` and `sa`, and a million words spread over the rest.
+    fn fingerprint() -> u64 {
+        const OPCODES: [u32; 6] = [0x00, 0x01, 0x10, 0x11, 0x1c, 0x1f];
+        const RD_SA: [u32; 4] = [0, 0x7ff, 0x2a5, 0x540];
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut add = |word: u32| {
+            let read = (decode(word), branch_distance(word), condition_code(word), lift(word));
+            for byte in format!("{read:?}").bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for opcode in OPCODES {
+            for fields in 0..1u32 << 16 {
+                let (rs, rt, function) = (fields >> 11, fields >> 6 & 0x1f, fields & 0x3f);
+                for rd_sa in RD_SA {
+                    add(opcode << 26 | rs << 21 | rt << 16 | rd_sa << 6 | function);
+                }
+            }
+        }
+        for index in 0..1u32 << 20 {
+            add(index.wrapping_mul(0x9e37_79b1));
+        }
+        hash
+    }
+
+    #[test]
+    fn what_each_word_reads_as_is_locked() {
+        assert_eq!(fingerprint(), 11_804_313_933_980_859_995);
+    }
+
     fn text(word: u32) -> Option<String> {
         decode(word).map(|Word { op, operands, .. }| {
             let name = op.name();
