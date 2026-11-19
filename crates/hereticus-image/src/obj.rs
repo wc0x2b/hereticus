@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use deku::{DekuContainerRead, DekuRead, DekuWrite};
 use object::elf::PF_X;
 use object::{
     Object, ObjectKind, ObjectSection, ObjectSegment, ObjectSymbol, SegmentFlags, SymbolKind,
@@ -1094,12 +1095,27 @@ fn descriptor_entry(
         return Some((section, start.wrapping_add_signed(relocation.addend())));
     }
     let at = usize::try_from(offset).ok()?;
-    let entry = u64::from_be_bytes(opd.data().ok()?.get(at..at + 8)?.try_into().ok()?);
+    let (_, descriptor) = Descriptor::from_bytes((opd.data().ok()?.get(at..)?, 0)).ok()?;
     let section = file.sections().find(|section| {
         section.kind() == object::SectionKind::Text
-            && (section.address()..section.address() + section.size()).contains(&entry)
+            && (section.address()..section.address() + section.size()).contains(&descriptor.entry)
     })?;
-    Some((section.index(), entry))
+    Some((section.index(), descriptor.entry))
+}
+
+/// The start of an ELFv1 function descriptor in `.opd`.
+///
+/// The environment doubleword is left out. GCC with
+/// `-mno-pointers-to-nested-functions` spaces descriptors 16 bytes apart, so
+/// the third doubleword of one is the first of the next, and the last one
+/// can end before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "big")]
+struct Descriptor {
+    /// The address of the code.
+    entry: u64,
+    /// The address of the table of contents the code reads.
+    toc: u64,
 }
 
 /// The `size` bytes of `section` from `address` on.
@@ -1607,6 +1623,7 @@ fn has_code_section(file: &object::File<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deku::DekuContainerWrite;
 
     #[test]
     fn a_32_bit_windows_c_name_loses_its_decoration() {
@@ -1619,6 +1636,21 @@ mod tests {
         assert_eq!(undecorated_c_name("_a@b"), "a@b", "no size after the `@`");
         assert_eq!(undecorated_c_name("_@4"), "@4", "no name before the size");
         assert_eq!(undecorated_c_name("_"), "");
+    }
+
+    #[test]
+    fn a_descriptor_reads_its_entry_and_toc_big_endian() {
+        let full = [
+            0x10, 0, 0, 0, 0, 0x01, 0x23, 0x40, // entry
+            0x10, 0, 0, 0, 0, 0x02, 0x80, 0x00, // TOC
+            0, 0, 0, 0, 0, 0, 0, 0, // environment
+        ];
+        let expected = Descriptor { entry: 0x1000_0000_0001_2340, toc: 0x1000_0000_0002_8000 };
+        let read = |bytes| Descriptor::from_bytes((bytes, 0)).ok().map(|(_, value)| value);
+        assert_eq!(read(&full), Some(expected));
+        assert_eq!(read(&full[..16]), Some(expected), "spaced 16 bytes apart");
+        assert_eq!(read(&full[..8]), None, "cut short");
+        assert_eq!(expected.to_bytes().expect("the descriptor writes"), full[..16]);
     }
 
     #[test]

@@ -1181,6 +1181,7 @@ name = "hereticus-image"
 version = "0.7.2"
 dependencies = [
  "bolero",
+ "deku",
  "hereticus-arch",
  "hereticus-il",
  "hereticus-memory",
