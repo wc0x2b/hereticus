@@ -20,6 +20,7 @@
 use crate as il;
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, InstructionSet, Printing, split_printed};
 use compact_str::{CompactString, format_compact};
+use deku::{DekuRead, DekuReader};
 use smallvec::SmallVec;
 use yaxpeax_arch::{Decoder as _, U8Reader};
 use yaxpeax_power::{AliasOp, InstDecoder, Instruction, IsaVersion, OpcodeAlias, Operand};
@@ -283,7 +284,7 @@ fn print(inst: &Instruction, word: u32) -> String {
     let target = il::target_name(distance);
     if is_conditional_form(inst.opcode()) && BranchTest::of(word) == BranchTest::Always {
         let name = inst.opcode().name();
-        let (bo, bi) = (word >> 21 & 0x1f, word >> 16 & 0x1f);
+        let BForm { bo, bi, .. } = BForm::of(word);
         return format!("{name} {bo}, {bi}, {target}");
     }
     let (name, operands) = split_printed(&printed);
@@ -328,21 +329,110 @@ fn operands(inst: &Instruction) -> SmallVec<[Operand; 5]> {
 
 /// Whether a conditional branch takes its target where a bit of the
 /// condition register is set or where it is clear.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub enum BitValue {
     /// It branches where the bit is set.
+    #[deku(id = 1)]
     Set,
     /// It branches where the bit is clear.
+    #[deku(id = 0)]
     Clear,
 }
 
 /// What a branch that counts down the count register tests it for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub enum CountTest {
     /// It branches where the count reaches zero, as `bdz` does.
+    #[deku(id = 1)]
     Zero,
     /// It branches where the count is not yet zero, as `bdnz` does.
+    #[deku(id = 0)]
     NotZero,
+}
+
+/// The fields of a B-form instruction word, as a `bc` holds them, and of
+/// the XL-form `bclr` and `bcctr`, which hold BO and BI in the same place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[deku(endian = "big")]
+struct BForm {
+    #[deku(bits = 6)]
+    opcode: u8,
+    /// The options of the branch: see [`BranchOptions`].
+    #[deku(bits = 5)]
+    bo: u8,
+    /// The bit of the condition register it tests.
+    #[deku(bits = 5)]
+    bi: u8,
+    #[deku(bits = 16)]
+    rest: u16,
+}
+
+/// The fields of a trap word, `tw`, `twi`, `td` or `tdi`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[deku(endian = "big")]
+struct TrapForm {
+    #[deku(bits = 6)]
+    opcode: u8,
+    /// The five tests of the registers it traps on: less, greater, equal,
+    /// and the two unsigned ones.
+    #[deku(bits = 5)]
+    to: u8,
+    #[deku(bits = 21)]
+    rest: u32,
+}
+
+/// The five bits of the BO field of a branch, high bit first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[deku(endian = "big")]
+struct BranchOptions {
+    bit: BitUse,
+    when: BitValue,
+    count: CountUse,
+    until: CountTest,
+    /// A hint, in the old form, which changes nothing a branch does.
+    #[deku(bits = 1, pad_bits_after = "3")]
+    hint: u8,
+}
+
+/// Whether a branch tests a bit of the condition register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
+enum BitUse {
+    #[deku(id = 0)]
+    Test,
+    #[deku(id = 1)]
+    Ignore,
+}
+
+/// Whether a branch counts the count register down and tests it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
+enum CountUse {
+    #[deku(id = 0)]
+    Decrement,
+    #[deku(id = 1)]
+    Keep,
+}
+
+/// The `T` that `bytes` open with.
+fn read<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> T {
+    let mut cursor = deku::no_std_io::Cursor::new(bytes);
+    let mut reader = deku::reader::Reader::new(&mut cursor);
+    T::from_reader_with_ctx(&mut reader, ()).expect("the bytes hold each field")
+}
+
+impl BForm {
+    fn of(word: u32) -> Self {
+        read(&word.to_be_bytes())
+    }
+}
+
+impl BranchOptions {
+    fn of(bo: u8) -> Self {
+        read(&[bo << 3])
+    }
 }
 
 /// What a `bc`, `bclr` or `bcctr` tests, from its BO and BI fields.
@@ -373,20 +463,20 @@ impl BranchTest {
     ///
     /// Of the BO field, `0x10` says to test no bit, `0x08` which value of
     /// the bit branches, `0x04` to leave the count alone, and `0x02` which
-    /// value of the count branches. The lowest bit and `0x01` of the old
-    /// form are hints, which change nothing a branch does.
+    /// value of the count branches: see [`BranchOptions`]. The lowest bit
+    /// and `0x01` of the old form are hints, which change nothing a branch
+    /// does.
     pub fn of(word: u32) -> Self {
-        let bo = word >> 21 & 0x1f;
-        let bit = (word >> 16 & 0x1f) as u8;
-        let when = if bo & 0x08 != 0 { BitValue::Set } else { BitValue::Clear };
-        let tested = (bo & 0x10 == 0).then_some((bit, when));
-        match (bo & 0x04 == 0, tested) {
-            (false, None) => Self::Always,
-            (false, Some((bit, when))) => Self::Bit { bit, when },
-            (true, bit) => {
-                let until = if bo & 0x02 != 0 { CountTest::Zero } else { CountTest::NotZero };
-                Self::Count { until, bit }
-            }
+        let BForm { bo, bi, .. } = BForm::of(word);
+        let options = BranchOptions::of(bo);
+        let tested = match options.bit {
+            BitUse::Test => Some((bi, options.when)),
+            BitUse::Ignore => None,
+        };
+        match (options.count, tested) {
+            (CountUse::Keep, None) => Self::Always,
+            (CountUse::Keep, Some((bit, when))) => Self::Bit { bit, when },
+            (CountUse::Decrement, bit) => Self::Count { until: options.until, bit },
         }
     }
 
@@ -484,8 +574,10 @@ pub(crate) fn classify(inst: &Instruction, word: u32, address: u64, mode: Mode) 
 /// Whether `inst` traps whatever its registers hold, as `trap` does: the
 /// TO field asks for all five tests.
 pub fn is_trap(inst: &Instruction, word: u32) -> bool {
+    /// The TO field that asks for every test.
+    const EVERY_TEST: u8 = 0x1f;
     matches!(inst.opcode(), Opcode::TW | Opcode::TWI | Opcode::TD | Opcode::TDI)
-        && word >> 21 & 0x1f == 0x1f
+        && read::<TrapForm>(&word.to_be_bytes()).to == EVERY_TEST
 }
 
 /// What an instruction does with its operands.
