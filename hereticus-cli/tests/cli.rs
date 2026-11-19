@@ -21,7 +21,7 @@ fn fixture(level: &str, name: &str) -> PathBuf {
 /// Paths appear in error messages, so they must not change with where the
 /// test ran from.
 fn hereticus() -> Command {
-    let mut command = Command::new(insta_cmd::get_cargo_bin("hereticus"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hereticus"));
     command.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."));
     command
 }

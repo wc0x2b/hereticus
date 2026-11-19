@@ -15,7 +15,7 @@ const KSEG0: &str = "0x80000000";
 
 /// The tool under test, with the working directory fixed.
 fn hereticus() -> Command {
-    let mut command = Command::new(insta_cmd::get_cargo_bin("hereticus"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hereticus"));
     command.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."));
     command
 }
