@@ -26,6 +26,9 @@ rust-version = "1.90"
 keywords = ["reverse-engineering", "binary-analysis", "bindiff", "firmware", "elf"]
 categories = ["development-tools", "parsing"]
 
+[patch.crates-io]
+deku = { git = "https://github.com/sharksforarms/deku", rev = "ab492a4" }
+
 # Benches build as the dist binaries do, so that a change measures what
 # ships, and a change elsewhere in a crate does not move a count by how
 # the crate splits into codegen units.

@@ -21,7 +21,7 @@ pub(crate) fn parse_all<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<Vec<T>
     let mut cursor = Cursor::new(bytes);
     let mut reader = Reader::new(&mut cursor);
     let mut values = Vec::new();
-    while !reader.end() {
+    while !reader.try_end().ok()? {
         values.push(T::from_reader_with_ctx(&mut reader, ()).ok()?);
     }
     Some(values)
