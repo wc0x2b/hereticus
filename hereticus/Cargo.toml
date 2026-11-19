@@ -57,3 +57,7 @@ harness = false
 [[bench]]
 name = "gungraun_benchmark"
 harness = false
+
+[[bench]]
+name = "deku_benchmark"
+harness = false
