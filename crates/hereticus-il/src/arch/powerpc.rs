@@ -17,10 +17,13 @@
 //! [`il::Reg::Flags`]: a compiler puts a compare and the branch that reads
 //! it in one field, so one register is enough to pair them.
 
+pub mod form;
+
 use crate as il;
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, InstructionSet, Printing, split_printed};
 use compact_str::{CompactString, format_compact};
-use deku::{DekuRead, DekuReader};
+use deku::DekuRead;
+use form::{BForm, BitUse, BranchOptions, CountUse, XForm};
 use smallvec::SmallVec;
 use yaxpeax_arch::{Decoder as _, U8Reader};
 use yaxpeax_power::{AliasOp, InstDecoder, Instruction, IsaVersion, OpcodeAlias, Operand};
@@ -352,89 +355,6 @@ pub enum CountTest {
     NotZero,
 }
 
-/// The fields of a B-form instruction word, as a `bc` holds them, and of
-/// the XL-form `bclr` and `bcctr`, which hold BO and BI in the same place.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
-#[deku(endian = "big")]
-struct BForm {
-    #[deku(bits = 6)]
-    opcode: u8,
-    /// The options of the branch: see [`BranchOptions`].
-    #[deku(bits = 5)]
-    bo: u8,
-    /// The bit of the condition register it tests.
-    #[deku(bits = 5)]
-    bi: u8,
-    #[deku(bits = 16)]
-    rest: u16,
-}
-
-/// The fields of a trap word, `tw`, `twi`, `td` or `tdi`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
-#[deku(endian = "big")]
-struct TrapForm {
-    #[deku(bits = 6)]
-    opcode: u8,
-    /// The five tests of the registers it traps on: less, greater, equal,
-    /// and the two unsigned ones.
-    #[deku(bits = 5)]
-    to: u8,
-    #[deku(bits = 21)]
-    rest: u32,
-}
-
-/// The five bits of the BO field of a branch, high bit first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
-#[deku(endian = "big")]
-struct BranchOptions {
-    bit: BitUse,
-    when: BitValue,
-    count: CountUse,
-    until: CountTest,
-    /// A hint, in the old form, which changes nothing a branch does.
-    #[deku(bits = 1, pad_bits_after = "3")]
-    hint: u8,
-}
-
-/// Whether a branch tests a bit of the condition register.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
-#[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
-enum BitUse {
-    #[deku(id = 0)]
-    Test,
-    #[deku(id = 1)]
-    Ignore,
-}
-
-/// Whether a branch counts the count register down and tests it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
-#[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
-enum CountUse {
-    #[deku(id = 0)]
-    Decrement,
-    #[deku(id = 1)]
-    Keep,
-}
-
-/// The `T` that `bytes` open with.
-fn read<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> T {
-    let mut cursor = deku::no_std_io::Cursor::new(bytes);
-    let mut reader = deku::reader::Reader::new(&mut cursor);
-    T::from_reader_with_ctx(&mut reader, ()).expect("the bytes hold each field")
-}
-
-impl BForm {
-    fn of(word: u32) -> Self {
-        read(&word.to_be_bytes())
-    }
-}
-
-impl BranchOptions {
-    fn of(bo: u8) -> Self {
-        read(&[bo << 3])
-    }
-}
-
 /// What a `bc`, `bclr` or `bcctr` tests, from its BO and BI fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BranchTest {
@@ -574,10 +494,11 @@ pub(crate) fn classify(inst: &Instruction, word: u32, address: u64, mode: Mode) 
 /// Whether `inst` traps whatever its registers hold, as `trap` does: the
 /// TO field asks for all five tests.
 pub fn is_trap(inst: &Instruction, word: u32) -> bool {
-    /// The TO field that asks for every test.
+    /// The TO field that asks for every test. It sits where RT does, in
+    /// the X form of `tw` and the D form of `twi`.
     const EVERY_TEST: u8 = 0x1f;
     matches!(inst.opcode(), Opcode::TW | Opcode::TWI | Opcode::TD | Opcode::TDI)
-        && read::<TrapForm>(&word.to_be_bytes()).to == EVERY_TEST
+        && XForm::of(word).rt == EVERY_TEST
 }
 
 /// What an instruction does with its operands.
