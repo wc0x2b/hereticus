@@ -1084,6 +1084,19 @@ fn memory_base(operand: il::Operand) -> Option<il::Reg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FNV-1a over the test of every BO and BI field of a `bc`.
+    #[test]
+    fn what_each_branch_tests_is_locked() {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for fields in 0..1u32 << 10 {
+            let word = 0x4000_0000 | fields << 16;
+            for byte in format!("{:?}", BranchTest::of(word)).bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        assert_eq!(hash, 15_530_677_625_345_939_285);
+    }
     use crate::{AccessKind, Comparison, Cond, Op, Reg, RegSet, Test, Update, Value, Width};
     use rstest::rstest;
 
