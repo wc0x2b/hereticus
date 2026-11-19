@@ -4,10 +4,17 @@
 //! tables, are in `hereticus-recovery`, and the rules the matching reads in
 //! `hereticus-arch`.
 
+mod format;
+
 use crate as il;
 use crate::arch::mips::{Decoded as MipsDecoded, Mips32, decoded};
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing};
 use compact_str::CompactString;
+use deku::DekuRead;
+use format::{
+    DelaySlot, Encoded, ExtendAddiu, ExtendFrame, ExtendShift, I, I8, JumpMode, JumpRegister, Kept,
+    Link, Prefix, Ri, Rr, Rri, RriA, Rrr, SaveRestore, Shift, Through,
+};
 use rabbitizer::opcodes::Opcode;
 
 /// The width of one halfword, the unit of MIPS16e code.
@@ -158,11 +165,14 @@ pub enum Reading {
 }
 
 /// Whether a frame instruction makes the frame or drops it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub enum FrameStep {
     /// `save` makes the frame.
+    #[deku(id = 1)]
     Save,
     /// `restore` drops it.
+    #[deku(id = 0)]
     Restore,
 }
 
@@ -178,31 +188,34 @@ pub struct FrameRegisters {
 }
 
 impl FrameRegisters {
-    /// The registers that `insn` and its `extend` prefix name, or `None`
-    /// for a reserved mix of arguments and statics.
-    fn read(insn: u32, extend: Option<u32>) -> Option<Self> {
+    /// The registers that `insn` and the layout of its `extend` prefix
+    /// name, or `None` for a reserved mix of arguments and statics.
+    fn read(insn: SaveRestore, extend: Option<ExtendFrame>) -> Option<Self> {
         // `aregs` splits `a0` to `a3` into arguments, which come first, and
         // statics; two codes name all four of one kind.
-        const ALL_ARGUMENTS: u32 = 0b1110;
-        const ALL_STATICS: u32 = 0b1011;
-        let (xsregs, aregs) = extend.map_or((0, 0), |prefix| (prefix >> 8 & 7, prefix & 0xf));
+        const ALL_ARGUMENTS: u8 = 0b1110;
+        const ALL_STATICS: u8 = 0b1011;
+        let (xsregs, aregs) =
+            extend.map_or((0, 0), |prefix| (prefix.extra_statics, prefix.argument_registers));
         let (arguments, statics) = match aregs {
             ALL_ARGUMENTS => (4, 0),
             ALL_STATICS => (0, 4),
-            _ => (aregs >> 2, aregs & 3),
+            _ => (u32::from(aregs >> 2), u32::from(aregs & 3)),
         };
         if arguments + statics > 4 {
             return None;
         }
-        let has = |bit: u32| insn >> bit & 1 == 1;
         // `s2` to `s7` are numbered in a row, and the seventh is `s8`.
-        let extra = (0..xsregs).map(|index| if index == 6 { S8 } else { S2 + index });
+        let extra = (0..u32::from(xsregs)).map(|index| if index == 6 { S8 } else { S2 + index });
         let kept = (A0 + 4 - statics..A0 + 4)
             .chain(
-                [(5, S0), (4, S0 + 1)].into_iter().filter(|&(bit, _)| has(bit)).map(|(_, reg)| reg),
+                [(insn.s0, S0), (insn.s1, S0 + 1)]
+                    .into_iter()
+                    .filter(|&(kept, _)| kept == Kept::Yes)
+                    .map(|(_, reg)| reg),
             )
             .chain(extra)
-            .chain(has(6).then_some(RA))
+            .chain((insn.ra == Kept::Yes).then_some(RA))
             .collect();
         Some(Self { arguments, kept })
     }
@@ -245,48 +258,46 @@ pub(crate) fn signed(value: u32, bits: u32) -> i64 {
 /// Decode the instruction `first`, with the halfword after it, `next`, at
 /// `address`.
 pub(crate) fn decode_halfwords(first: u16, next: Option<u16>, address: u64) -> Option<Read> {
-    let op = u32::from(first >> 11);
-    // `jal` and `jalx` take two halfwords: a 26-bit target, in words.
-    if op == 0b00011 {
-        let second = u32::from(next?);
-        let first = u32::from(first);
-        let target26 = (first & 0x1f) << 21 | (first >> 5 & 0x1f) << 16 | second;
-        let target = (address + 4) & !0x0fff_ffff | u64::from(target26) << 2;
-        let exchange = first >> 10 & 1 == 1;
-        let (name, decoded) = if exchange {
-            ("jalx", MipsDecoded::Mips16(Op::Jalx))
-        } else {
-            ("jal", MipsDecoded::Rabbitizer(Opcode::core_jal))
-        };
-        let operands = format!("{target:#x}");
-        let kind = InsnKind::Call { target: Some(target) };
-        return Some(Read {
-            reading: Reading::Control { name, decoded, operands, kind, through: None, test: None },
-            width: 4,
-        });
+    match Encoded::of(first, next)? {
+        // `jal` and `jalx` take two halfwords: a 26-bit target, in words.
+        Encoded::Jal(jal) => {
+            let target = (address + 4) & !0x0fff_ffff | u64::from(jal.target()) << 2;
+            let (name, decoded) = match jal.mode {
+                JumpMode::Exchange => ("jalx", MipsDecoded::Mips16(Op::Jalx)),
+                JumpMode::Stay => ("jal", MipsDecoded::Rabbitizer(Opcode::core_jal)),
+            };
+            let operands = format!("{target:#x}");
+            let kind = InsnKind::Call { target: Some(target) };
+            let reading =
+                Reading::Control { name, decoded, operands, kind, through: None, test: None };
+            Some(Read { reading, width: 4 })
+        }
+        Encoded::Extend(extend) => {
+            let reading = read(extend.insn, Some(extend.prefix), address)?;
+            Some(Read { reading, width: 4 })
+        }
+        encoded => Some(Read { reading: reading(encoded, first, None, address)?, width: HALFWORD }),
     }
-    if op == 0b11110 {
-        let extend = u32::from(first);
-        let insn = next?;
-        let imm16 = (extend & 0x1f) << 11 | (extend >> 5 & 0x3f) << 5 | u32::from(insn) & 0x1f;
-        let reading = read(insn, Some((extend, imm16)), address)?;
-        return Some(Read { reading, width: 4 });
-    }
-    Some(Read { reading: read(first, None, address)?, width: HALFWORD })
 }
 
 /// Read one 16-bit instruction, widened by `extend` where an `extend`
-/// prefix came first: the prefix itself, and the 16-bit constant the two
-/// make.
+/// prefix came first.
+pub(crate) fn read(insn: u16, extend: Option<Prefix>, address: u64) -> Option<Reading> {
+    let widened = extend.map(|prefix| (prefix, prefix.immediate(insn)));
+    reading(Encoded::of(insn, None)?, insn, widened, address)
+}
+
+/// What the 16-bit instruction `encoded`, read from the halfword `insn`,
+/// reads as, widened by `extend` where an `extend` prefix came first: the
+/// prefix itself, and the 16-bit constant the two make.
 #[allow(clippy::too_many_lines)]
-pub fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Reading> {
-    let h = u32::from(insn);
-    let op = h >> 11;
-    let rx = REGISTERS[(h >> 8 & 7) as usize];
-    let ry = REGISTERS[(h >> 5 & 7) as usize];
-    let rz = REGISTERS[(h >> 2 & 7) as usize];
-    let imm8 = h & 0xff;
-    let imm5 = h & 0x1f;
+fn reading(
+    encoded: Encoded,
+    insn: u16,
+    extend: Option<(Prefix, u32)>,
+    address: u64,
+) -> Option<Reading> {
+    let gpr = |index: u8| REGISTERS[usize::from(index)];
     let wide = extend.map(|(_, imm16)| signed(imm16, 16));
     let wide_unsigned = extend.map(|(_, imm16)| i64::from(imm16));
     // A branch counts from the instruction after it, which is 2 bytes on,
@@ -316,148 +327,174 @@ pub fn read(insn: u16, extend: Option<(u32, u32)>, address: u64) -> Option<Readi
     };
     // The 3-operand form of a 2-operand MIPS16e instruction.
     let word = |value: u32| Some(Reading::Word(value));
+    // The constant of an instruction: the one `extend` widens it to, or its
+    // own, in units of `scale` bytes.
+    let constant = |imm: u8, scale: u32| wide.unwrap_or(i64::from(u32::from(imm) << scale));
+    let load_store = |op: u32, Rri { rx, ry, imm }: Rri, scale: u32| {
+        word(immediate(op, gpr(rx), gpr(ry), constant(imm, scale)))
+    };
+    let pc_relative = |load: bool, Ri { rx, imm }: Ri| {
+        Some(Reading::PcRelative {
+            load,
+            dest: gpr(rx),
+            address: (address & !3).wrapping_add_signed(constant(imm, 2)),
+        })
+    };
 
-    match op {
+    match encoded {
         // `addiu rx, sp, imm`: a frame address.
-        0b00000 => word(immediate(0x09, SP, rx, wide.unwrap_or(i64::from(imm8 << 2)))),
-        0b00001 => Some(Reading::PcRelative {
-            load: false,
-            dest: rx,
-            address: (address & !3).wrapping_add_signed(wide.unwrap_or(i64::from(imm8 << 2))),
-        }),
-        0b00010 => {
-            let offset = wide.unwrap_or_else(|| signed(h & 0x7ff, 11));
+        Encoded::AddiuSp(Ri { rx, imm }) => word(immediate(0x09, SP, gpr(rx), constant(imm, 2))),
+        Encoded::AddiuPc(ri) => pc_relative(false, ri),
+        Encoded::B(I { imm }) => {
+            let offset = wide.unwrap_or_else(|| signed(u32::from(imm), 11));
             Some(branch(offset, ("b", Opcode::core_b), None))
         }
-        0b00100 | 0b00101 => {
-            let offset = wide.unwrap_or_else(|| signed(imm8, 8));
-            let (name, opcode) = if op == 0b00100 {
+        Encoded::Beqz(Ri { rx, imm }) | Encoded::Bnez(Ri { rx, imm }) => {
+            let offset = wide.unwrap_or_else(|| signed(u32::from(imm), 8));
+            let (name, opcode) = if matches!(encoded, Encoded::Beqz(_)) {
                 (("beqz", Opcode::core_beqz), 0x04)
             } else {
                 (("bnez", Opcode::core_bnez), 0x05)
             };
-            Some(branch(offset, name, Some(immediate(opcode, rx, 0, 0))))
+            Some(branch(offset, name, Some(immediate(opcode, gpr(rx), 0, 0))))
         }
-        0b00110 => {
+        Encoded::Shift(Shift { rx, ry, amount, function }) => {
             let sa = match extend {
-                Some((prefix, _)) => prefix >> 6 & 0x1f,
-                None => match h >> 2 & 7 {
+                Some((prefix, _)) => u32::from(prefix.layout::<ExtendShift>().amount),
+                None => match amount {
                     0 => 8,
-                    sa => sa,
+                    amount => u32::from(amount),
                 },
             };
-            let funct = match h & 3 {
+            let funct = match function {
                 0b00 => 0x00,
                 0b10 => 0x02,
                 0b11 => 0x03,
                 _ => return None,
             };
-            word(register(0, ry, rx, sa, funct))
+            word(register(0, gpr(ry), gpr(rx), sa, funct))
         }
         // `addiu ry, rx, imm4`, or 15 bits extended.
-        0b01000 if h >> 4 & 1 == 0 => {
+        Encoded::RriA(RriA { rx, ry, function: 0, imm }) => {
             let value = match extend {
-                Some((prefix, _)) => {
-                    let imm15 = (prefix & 0xf) << 11 | (prefix >> 4 & 0x7f) << 4 | h & 0xf;
-                    signed(imm15, 15)
-                }
-                None => signed(h & 0xf, 4),
+                Some((prefix, _)) => signed(prefix.layout::<ExtendAddiu>().immediate(imm), 15),
+                None => signed(u32::from(imm), 4),
             };
-            word(immediate(0x09, rx, ry, value))
+            word(immediate(0x09, gpr(rx), gpr(ry), value))
         }
-        0b01001 => word(immediate(0x09, rx, rx, wide.unwrap_or_else(|| signed(imm8, 8)))),
-        0b01010 => word(immediate(0x0a, rx, T, wide.unwrap_or(i64::from(imm8)))),
-        0b01011 => word(immediate(0x0b, rx, T, wide.unwrap_or(i64::from(imm8)))),
-        0b01100 => match h >> 8 & 7 {
-            0b000 | 0b001 => {
-                let offset = wide.unwrap_or_else(|| signed(imm8, 8));
-                let (name, opcode) = if h >> 8 & 7 == 0 {
+        Encoded::Addiu8(Ri { rx, imm }) => {
+            let rx = gpr(rx);
+            word(immediate(0x09, rx, rx, wide.unwrap_or_else(|| signed(u32::from(imm), 8))))
+        }
+        Encoded::Slti(Ri { rx, imm }) => word(immediate(0x0a, gpr(rx), T, constant(imm, 0))),
+        Encoded::Sltiu(Ri { rx, imm }) => word(immediate(0x0b, gpr(rx), T, constant(imm, 0))),
+        Encoded::I8(i8) => match i8 {
+            I8::Bteqz(imm) | I8::Btnez(imm) => {
+                let offset = wide.unwrap_or_else(|| signed(u32::from(imm), 8));
+                let (name, opcode) = if matches!(i8, I8::Bteqz(_)) {
                     (("beqz", Opcode::core_beqz), 0x04)
                 } else {
                     (("bnez", Opcode::core_bnez), 0x05)
                 };
                 Some(branch(offset, name, Some(immediate(opcode, T, 0, 0))))
             }
-            0b010 => word(immediate(0x2b, SP, RA, wide.unwrap_or(i64::from(imm8 << 2)))),
-            0b011 => word(immediate(0x09, SP, SP, wide.unwrap_or_else(|| signed(imm8, 8) << 3))),
-            0b100 => {
-                let step = if h >> 7 & 1 == 1 { FrameStep::Save } else { FrameStep::Restore };
-                let low = h & 0xf;
+            I8::SwRaSp(imm) => word(immediate(0x2b, SP, RA, constant(imm, 2))),
+            I8::AdjSp(imm) => word(immediate(
+                0x09,
+                SP,
+                SP,
+                wide.unwrap_or_else(|| signed(u32::from(imm), 8) << 3),
+            )),
+            I8::SaveRestore(frame) => {
+                let low = u32::from(frame.frame_size);
                 let size = match extend {
-                    Some((prefix, _)) => ((prefix >> 4 & 0xf) << 4 | low) * 8,
+                    Some((prefix, _)) => {
+                        (u32::from(prefix.layout::<ExtendFrame>().frame_size_7_4) << 4 | low) * 8
+                    }
                     None if low == 0 => 128,
                     None => low * 8,
                 };
-                let registers = FrameRegisters::read(h, extend.map(|(prefix, _)| prefix))?;
-                Some(Reading::Frame { step, size, registers })
+                let registers =
+                    FrameRegisters::read(frame, extend.map(|(prefix, _)| prefix.layout()))?;
+                Some(Reading::Frame { step: frame.step, size, registers })
             }
-            0b101 if extend.is_none() => {
+            I8::Mov32R(mov) if extend.is_none() => {
                 // `move r32, rz`, which MIPS32 spells `or r32, rz, zero`,
                 // and `move zero, s0` is the `nop`.
-                let r32 = (h >> 5 & 7) | (h >> 3 & 3) << 3;
-                if r32 == 0 && h & 7 == 0 {
+                let r32 = mov.r32();
+                if r32 == 0 && mov.rz == 0 {
                     return word(0);
                 }
-                word(register(REGISTERS[(h & 7) as usize], 0, r32, 0, 0x25))
+                word(register(gpr(mov.rz), 0, r32, 0, 0x25))
             }
-            0b111 if extend.is_none() => word(register(h & 0x1f, 0, ry, 0, 0x25)),
+            I8::MovR32(mov) if extend.is_none() => {
+                word(register(u32::from(mov.r32), 0, gpr(mov.ry), 0, 0x25))
+            }
             _ => None,
         },
         // `li rx, imm`, zero-extended.
-        0b01101 => word(immediate(0x0d, 0, rx, wide_unsigned.unwrap_or(i64::from(imm8)))),
+        Encoded::Li(Ri { rx, imm }) => {
+            word(immediate(0x0d, 0, gpr(rx), wide_unsigned.unwrap_or(i64::from(imm))))
+        }
         // `cmpi rx, imm`: T is `rx ^ imm`.
-        0b01110 => word(immediate(0x0e, rx, T, wide_unsigned.unwrap_or(i64::from(imm8)))),
-        0b10000 => word(immediate(0x20, rx, ry, wide.unwrap_or(i64::from(imm5)))),
-        0b10001 => word(immediate(0x21, rx, ry, wide.unwrap_or(i64::from(imm5 << 1)))),
-        0b10010 => word(immediate(0x23, SP, rx, wide.unwrap_or(i64::from(imm8 << 2)))),
-        0b10011 => word(immediate(0x23, rx, ry, wide.unwrap_or(i64::from(imm5 << 2)))),
-        0b10100 => word(immediate(0x24, rx, ry, wide.unwrap_or(i64::from(imm5)))),
-        0b10101 => word(immediate(0x25, rx, ry, wide.unwrap_or(i64::from(imm5 << 1)))),
-        0b10110 => Some(Reading::PcRelative {
-            load: true,
-            dest: rx,
-            address: (address & !3).wrapping_add_signed(wide.unwrap_or(i64::from(imm8 << 2))),
-        }),
-        0b11000 => word(immediate(0x28, rx, ry, wide.unwrap_or(i64::from(imm5)))),
-        0b11001 => word(immediate(0x29, rx, ry, wide.unwrap_or(i64::from(imm5 << 1)))),
-        0b11010 => word(immediate(0x2b, SP, rx, wide.unwrap_or(i64::from(imm8 << 2)))),
-        0b11011 => word(immediate(0x2b, rx, ry, wide.unwrap_or(i64::from(imm5 << 2)))),
-        0b11100 if extend.is_none() => match h & 3 {
-            0b01 => word(register(rx, ry, rz, 0, 0x21)),
-            0b11 => word(register(rx, ry, rz, 0, 0x23)),
-            _ => None,
-        },
-        0b11101 if extend.is_none() => read_rr(h, rx, ry),
+        Encoded::Cmpi(Ri { rx, imm }) => {
+            word(immediate(0x0e, gpr(rx), T, wide_unsigned.unwrap_or(i64::from(imm))))
+        }
+        Encoded::Lb(rri) => load_store(0x20, rri, 0),
+        Encoded::Lh(rri) => load_store(0x21, rri, 1),
+        Encoded::LwSp(Ri { rx, imm }) => word(immediate(0x23, SP, gpr(rx), constant(imm, 2))),
+        Encoded::Lw(rri) => load_store(0x23, rri, 2),
+        Encoded::Lbu(rri) => load_store(0x24, rri, 0),
+        Encoded::Lhu(rri) => load_store(0x25, rri, 1),
+        Encoded::LwPc(ri) => pc_relative(true, ri),
+        Encoded::Sb(rri) => load_store(0x28, rri, 0),
+        Encoded::Sh(rri) => load_store(0x29, rri, 1),
+        Encoded::SwSp(Ri { rx, imm }) => word(immediate(0x2b, SP, gpr(rx), constant(imm, 2))),
+        Encoded::Sw(rri) => load_store(0x2b, rri, 2),
+        Encoded::Rrr(Rrr { rx, ry, rz, function }) if extend.is_none() => {
+            let (rx, ry, rz) = (gpr(rx), gpr(ry), gpr(rz));
+            match function {
+                0b01 => word(register(rx, ry, rz, 0, 0x21)),
+                0b11 => word(register(rx, ry, rz, 0, 0x23)),
+                _ => None,
+            }
+        }
+        Encoded::Rr(rr) if extend.is_none() => read_rr(rr, insn),
         _ => None,
     }
 }
 
-/// Read an instruction of the RR group, which names two registers.
-pub(crate) fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
+/// Read an instruction of the RR group, which names two registers, from
+/// its fields `rr` and its halfword `insn`.
+fn read_rr(rr: Rr, insn: u16) -> Option<Reading> {
     let word = |value: u32| Some(Reading::Word(value));
-    match h & 0x1f {
+    let (rx, ry) = (REGISTERS[usize::from(rr.rx)], REGISTERS[usize::from(rr.ry)]);
+    match rr.function {
         0b00000 => {
             // `jr`, `jalr` and their compact forms, which have no delay slot.
-            let (compact, link, from_ra) = (h >> 7 & 1 == 1, h >> 6 & 1 == 1, h >> 5 & 1 == 1);
-            let target = if from_ra { RA } else { rx };
-            let name = REGISTER_NAMES[target as usize];
-            let jump = if compact {
-                ("jrc", MipsDecoded::Mips16(Op::Jrc))
-            } else {
-                ("jr", MipsDecoded::Rabbitizer(Opcode::core_jr))
+            let jump: JumpRegister = format::read(&insn.to_be_bytes())?;
+            let target = match jump.through {
+                Through::ReturnAddress => RA,
+                Through::Rx => rx,
             };
-            let ((name, decoded), operands, kind) = match (link, from_ra) {
-                (false, true) => (jump, name.to_string(), InsnKind::Return),
-                (false, false) => (jump, name.to_string(), InsnKind::Jump { target: None }),
-                (true, false) => {
-                    let call = if compact {
-                        ("jalrc", MipsDecoded::Mips16(Op::Jalrc))
-                    } else {
-                        ("jalr", MipsDecoded::Rabbitizer(Opcode::core_jalr))
+            let name = REGISTER_NAMES[target as usize];
+            let plain = match jump.slot {
+                DelaySlot::Compact => ("jrc", MipsDecoded::Mips16(Op::Jrc)),
+                DelaySlot::Filled => ("jr", MipsDecoded::Rabbitizer(Opcode::core_jr)),
+            };
+            let ((name, decoded), operands, kind) = match (jump.link, jump.through) {
+                (Link::Jump, Through::ReturnAddress) => (plain, name.to_string(), InsnKind::Return),
+                (Link::Jump, Through::Rx) => {
+                    (plain, name.to_string(), InsnKind::Jump { target: None })
+                }
+                (Link::Call, Through::Rx) => {
+                    let call = match jump.slot {
+                        DelaySlot::Compact => ("jalrc", MipsDecoded::Mips16(Op::Jalrc)),
+                        DelaySlot::Filled => ("jalr", MipsDecoded::Rabbitizer(Opcode::core_jalr)),
                     };
                     (call, format!("ra, {name}"), InsnKind::Call { target: None })
                 }
-                (true, true) => return None,
+                (Link::Call, Through::ReturnAddress) => return None,
             };
             Some(Reading::Control {
                 name,
@@ -483,7 +520,8 @@ pub(crate) fn read_rr(h: u32, rx: u32, ry: u32) -> Option<Reading> {
         0b01111 => word(register(ry, 0, rx, 0, 0x27)),
         0b10000 => word(register(0, 0, rx, 0, 0x10)),
         0b10010 => word(register(0, 0, rx, 0, 0x12)),
-        0b10001 => match h >> 5 & 7 {
+        // `cnvt`, which names its operation in the second register field.
+        0b10001 => match rr.ry {
             0b000 => word(immediate(0x0c, rx, rx, 0xff)),
             0b001 => word(immediate(0x0c, rx, rx, 0xffff)),
             0b100 => word(0x1f << 26 | rx << 16 | rx << 11 | 0x10 << 6 | 0x20),
