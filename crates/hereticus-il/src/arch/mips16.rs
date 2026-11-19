@@ -881,6 +881,41 @@ mod tests {
         assert_eq!(guards.len(), 1);
     }
 
+    /// FNV-1a over the readings of every halfword, of every `extend` prefix
+    /// before 256 halfwords of each major opcode, and of `jal` and `jalx`
+    /// with four second halfwords: a fingerprint of what the decoder reads.
+    fn fingerprint() -> u64 {
+        const PATTERNS: [u16; 8] = [0, 0x7ff, 0x555, 0x2aa, 0x0f0, 0x70f, 0x123, 0x4ce];
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut add = |read: Option<Read>| {
+            let text = format!("{:?}", read.map(|read| (read.reading, read.width)));
+            for byte in text.bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for first in 0..=u16::MAX {
+            add(decode_halfwords(first, None, 0x1000));
+        }
+        for prefix in 0..0x800u16 {
+            for op in 0..32u16 {
+                for pattern in PATTERNS {
+                    add(decode_halfwords(0xf000 | prefix, Some(op << 11 | pattern), 0x1000));
+                }
+            }
+        }
+        for target in 0..0x800u16 {
+            for second in [0, 0xffff, 0x1234, 0x8001] {
+                add(decode_halfwords(0x1800 | target, Some(second), 0x1000));
+            }
+        }
+        hash
+    }
+
+    #[test]
+    fn what_each_halfword_reads_as_is_locked() {
+        assert_eq!(fingerprint(), 2_351_915_729_990_541_381);
+    }
+
     #[test]
     fn decoding_any_halfwords_never_panics() {
         bolero::check!().with_type::<(u16, u16)>().for_each(|&(first, second)| {
