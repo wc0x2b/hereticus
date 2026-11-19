@@ -62,6 +62,19 @@ fn zimage_of_arm_xz() -> Vec<u8> {
     zimage(include_bytes!("../../crates/hereticus-unpack/tests/data/arm.xz"))
 }
 
+/// The `.text` of the library of `build`, and the decoder of its
+/// architecture.
+fn text_of(build: Build) -> (Isa, Vec<u8>) {
+    use object::{Object, ObjectSection};
+    let path = fixtures()
+        .join(format!("backports/{}-before/{}-{}/lib.so", build.project, build.arch, build.level));
+    let library = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("{}: {err}, run `just backports` first", path.display()));
+    let file = object::File::parse(library.as_slice()).expect("a fixture library must parse");
+    let text = file.section_by_name(".text").expect("the library has a .text");
+    (build.isa, text.data().expect("the .text holds bytes").to_vec())
+}
+
 fn load_before(build: Build, reading: Reading) -> Image {
     Image::load(build, Side::Before, reading)
 }
@@ -86,6 +99,29 @@ fn bench_stub_scan(kernel: Vec<u8>) {
     black_box(lazy_stubs(0x8000_0000, &kernel, ByteOrder::Big));
 }
 
+// Decode and lift each instruction of a `.text`, one after the other.
+#[library_benchmark]
+#[bench::lua_mips16(args = (LUA_MIPS16,), setup = text_of)]
+#[bench::lua_mips(args = (LUA_MIPS,), setup = text_of)]
+#[bench::lua_powerpc(args = (LUA_POWERPC,), setup = text_of)]
+#[bench::lua_powerpc64(args = (LUA_POWERPC64,), setup = text_of)]
+#[bench::lua_aarch64(args = (LUA_AARCH64,), setup = text_of)]
+#[bench::lua_x86_64(args = (LUA_X86_64,), setup = text_of)]
+fn bench_decode((isa, text): (Isa, Vec<u8>)) {
+    let arch = isa.arch();
+    let mut offset = 0;
+    while offset < text.len() {
+        let width = match arch.decode(&text, offset, 0x1000) {
+            Ok(insn) => {
+                black_box(arch.lift(&insn));
+                insn.bytes_len
+            }
+            Err(_) => arch.instruction_width(),
+        };
+        offset += width.max(1);
+    }
+}
+
 #[library_benchmark]
 #[bench::lua_mips16_stripped(args = (LUA_MIPS16, Reading::Stripped), setup = load_before)]
 #[bench::lua_mips_raw(args = (LUA_MIPS, Reading::Raw), setup = load_before)]
@@ -102,7 +138,7 @@ library_benchmark_group!(
     benchmarks = [bench_unpack, bench_cie_scan, bench_stub_scan]
 );
 
-library_benchmark_group!(name = decoders, benchmarks = bench_parse);
+library_benchmark_group!(name = decoders, benchmarks = [bench_decode, bench_parse]);
 
 main!(
     // As in `gungraun_benchmark.rs`: one thread, so a count is the same on
