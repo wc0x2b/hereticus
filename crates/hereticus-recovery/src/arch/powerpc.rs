@@ -31,6 +31,7 @@
 use super::{Insn, InsnKind, JumpTable, Memory, Recovery};
 use core::ops::Range;
 use hereticus_il::arch::Decoder as _;
+use hereticus_il::arch::powerpc::form::{DForm, DsForm, XForm, XlForm};
 use hereticus_il::arch::powerpc::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
 use yaxpeax_power::{Instruction, Operand};
@@ -132,22 +133,29 @@ impl Recovery for PowerPc {
 
     /// `stwu r1, d(r1)` is primary opcode 37 with `r1` in both register
     /// fields, and `stwux r1, r1, rB` opcode 31 with extended opcode 183.
-    /// `stdu` is opcode 62 with 1 in the two lowest bits, and `stdux`
-    /// extended opcode 181. The decoder reads the two indexed forms whatever
-    /// their lowest bit, the record bit, holds, as `0x7c21016f`.
+    /// `stdu` is opcode 62 with extended opcode 1, and `stdux` extended
+    /// opcode 181. The decoder reads the two indexed forms whatever their
+    /// record bit holds, as `0x7c21016f`.
     fn may_be_prologue(&self, word: &[u8]) -> bool {
-        const STWU_R1_R1: u32 = 0x9421_0000;
-        const STWUX_R1_R1: u32 = 0x7c21_016e;
-        const STDU_R1_R1: u32 = 0xf821_0001;
-        const STDUX_R1_R1: u32 = 0x7c21_016a;
-        /// The two register fields and the extended opcode, without the
-        /// record bit.
-        const INDEXED: u32 = 0xffff_07fe;
+        const STWU: u8 = 37;
+        const STD_GROUP: u8 = 62;
+        const STDU: u8 = 1;
+        const INDEXED_GROUP: u8 = 31;
+        const STWUX: u16 = 183;
+        const STDUX: u16 = 181;
+        // The D, DS and X forms keep the opcode and both registers in the
+        // same bits, so the D form tells which of the others to read.
         word_at(*self, word).is_some_and(|word| {
-            word & 0xffff_0000 == STWU_R1_R1
-                || word & INDEXED == STWUX_R1_R1
-                || word & 0xffff_0003 == STDU_R1_R1
-                || word & INDEXED == STDUX_R1_R1
+            let DForm { opcode, rt, ra, .. } = DForm::of(word);
+            if (rt, ra) != (STACK, STACK) {
+                return false;
+            }
+            match opcode {
+                STWU => true,
+                STD_GROUP => DsForm::of(word).extended == STDU,
+                INDEXED_GROUP => matches!(XForm::of(word).extended, STWUX | STDUX),
+                _ => false,
+            }
         })
     }
 
@@ -206,7 +214,7 @@ impl Recovery for PowerPc {
     /// word after a return is the distance clang keeps before a PIC
     /// function: a positive distance below 64 MiB has its top 6 bits clear.
     fn may_open_function(&self, word: &[u8]) -> bool {
-        word_at(*self, word).is_some_and(|word| word >> 26 != 0)
+        word_at(*self, word).is_some_and(|word| DForm::of(word).opcode != 0)
     }
 
     /// GNU `as` aligns code with `nop`, and with `ori r2, r2, 0` in a
@@ -235,7 +243,7 @@ impl Recovery for PowerPc {
     /// symbol counts it, so there they stay.
     fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
         let pads = |word: u32| match self.mode() {
-            Mode::Bits32 => matches!(word, NOP | GROUP_NOP) || word >> 26 == 0,
+            Mode::Bits32 => matches!(word, NOP | GROUP_NOP) || DForm::of(word).opcode == 0,
             Mode::Bits64 => matches!(word, NOP | GROUP_NOP | TRAP),
         };
         let mut end = bytes.len() - bytes.len() % INSN_WIDTH;
@@ -361,11 +369,20 @@ impl Recovery for PowerPc {
         /// `bctr`, which ends a stub, or a `b` after `bcctr` on a condition,
         /// which ends an ELFv1 stub of GNU `ld`.
         const BCTR: u32 = 0x4e80_0420;
+        /// The primary opcode of `b`, and of the XL forms.
+        const B: u8 = 18;
+        const XL_GROUP: u8 = 19;
+        /// The extended opcode of `bcctr`.
+        const BCCTR: u16 = 528;
+        let is_bcctr = |word: u32| {
+            let XlForm { opcode, bb, extended, lk, .. } = XlForm::of(word);
+            (opcode, bb, extended, lk) == (XL_GROUP, 0, BCCTR, 0)
+        };
         let ends = |at: usize, words: &[u32]| {
             words[at] == BCTR
-                || (words[at] >> 26 == 18
+                || (DForm::of(words[at]).opcode == B
                     && at > 0
-                    && words[at - 1] & 0xfc00_ffff == 0x4c00_0420
+                    && is_bcctr(words[at - 1])
                     && words[at - 1] != BCTR)
         };
         /// The most words of a stub before its `bctr`.
@@ -559,12 +576,16 @@ pub fn toc_from_global_entry(arch: PowerPc, code: &[u8], base: u64) -> Option<u6
         code.as_chunks::<INSN_WIDTH>().0.iter().map(|word| arch.word(*word)).collect();
     words.windows(2).enumerate().find_map(|(at, pair)| {
         // `addis r2, r12, hi`, then `addi r2, r2, lo`.
+        const ADDI: u8 = 14;
+        const ADDIS: u8 = 15;
         let [high, low] = *pair else { return None };
-        (high >> 16 == 0x3c4c && low >> 16 == 0x3842).then(|| {
+        let (high, low) = (DForm::of(high), DForm::of(low));
+        let makes_toc = (high.opcode, high.rt, high.ra) == (ADDIS, TOC, ENTRY)
+            && (low.opcode, low.rt, low.ra) == (ADDI, TOC, TOC);
+        makes_toc.then(|| {
             let address = base + (at * INSN_WIDTH) as u64;
-            let high = i64::from(high as u16 as i16) << 16;
-            let low = i64::from(low as u16 as i16);
-            address.wrapping_add_signed(high + low)
+            let high = i64::from(high.displacement()) << 16;
+            address.wrapping_add_signed(high + i64::from(low.displacement()))
         })
     })
 }
