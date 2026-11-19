@@ -1,14 +1,20 @@
 //! Read the deku types of this crate from bytes.
+//!
+//! The scans call these at each word of an image, so each is inlined: a
+//! call that returns its `Option` through memory took more instructions
+//! than the read itself.
 
 use deku::no_std_io::Cursor;
 use deku::prelude::*;
 
 /// The `T` that `bytes` open with, or `None` where they do not hold one.
+#[inline]
 pub(crate) fn parse<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<T> {
     parse_with(bytes, ())
 }
 
 /// The `T` that `bytes` open with, read in `ctx`, as a byte order.
+#[inline]
 pub(crate) fn parse_with<'a, T: DekuReader<'a, Ctx>, Ctx>(bytes: &'a [u8], ctx: Ctx) -> Option<T> {
     let mut cursor = Cursor::new(bytes);
     let mut reader = Reader::new(&mut cursor);
@@ -17,6 +23,7 @@ pub(crate) fn parse_with<'a, T: DekuReader<'a, Ctx>, Ctx>(bytes: &'a [u8], ctx: 
 
 /// Each `T` that `bytes` hold, one after the other, or `None` where the
 /// bytes do not end with a whole one.
+#[inline]
 pub(crate) fn parse_all<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<Vec<T>> {
     let mut cursor = Cursor::new(bytes);
     let mut reader = Reader::new(&mut cursor);

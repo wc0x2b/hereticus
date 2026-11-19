@@ -174,6 +174,7 @@ struct Elf32ProgramHeader {
 }
 
 /// The `T` that `bytes` open with, or `None` where they do not hold one.
+#[inline]
 fn parse<'a, T: DekuContainerRead<'a>>(bytes: &'a [u8]) -> Option<T> {
     T::from_bytes((bytes, 0)).ok().map(|(_, value)| value)
 }
