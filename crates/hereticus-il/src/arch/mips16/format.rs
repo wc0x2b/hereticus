@@ -10,10 +10,22 @@ use deku::prelude::*;
 
 use super::FrameStep;
 
-/// One instruction, by its major opcode: the five high bits of its first
-/// halfword. `jal`, `jalx` and `extend` take the halfword after it too.
+/// The major opcode of a halfword: its five high bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
-#[deku(id_type = "u8", bits = 5, endian = "big")]
+#[deku(endian = "big")]
+struct Major {
+    #[deku(bits = 5)]
+    opcode: u8,
+    #[deku(bits = 11)]
+    rest: u16,
+}
+
+/// One instruction, by its major opcode, which [`Major`] reads first. Each
+/// format reads the whole halfword again, the opcode as padding, so that
+/// all 16 bits are one read. `jal`, `jalx` and `extend` take the halfword
+/// after it too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[deku(ctx = "major: u8", id = "major", endian = "big")]
 pub(crate) enum Encoded {
     #[deku(id = 0b00000)]
     AddiuSp(Ri),
@@ -22,7 +34,7 @@ pub(crate) enum Encoded {
     #[deku(id = 0b00010)]
     B(I),
     #[deku(id = 0b00011)]
-    Jal(Jal),
+    Jal(#[deku(pad_bits_before = "5")] Jal),
     #[deku(id = 0b00100)]
     Beqz(Ri),
     #[deku(id = 0b00101)]
@@ -38,7 +50,7 @@ pub(crate) enum Encoded {
     #[deku(id = 0b01011)]
     Sltiu(Ri),
     #[deku(id = 0b01100)]
-    I8(I8),
+    I8(#[deku(pad_bits_before = "5")] I8),
     #[deku(id = 0b01101)]
     Li(Ri),
     #[deku(id = 0b01110)]
@@ -70,10 +82,10 @@ pub(crate) enum Encoded {
     #[deku(id = 0b11101)]
     Rr(Rr),
     #[deku(id = 0b11110)]
-    Extend(Extend),
+    Extend(#[deku(pad_bits_before = "5")] Extend),
     /// A major opcode that MIPS16e leaves reserved, or gives to MIPS64.
     #[deku(id_pat = "_")]
-    Reserved(u8),
+    Reserved,
 }
 
 impl Encoded {
@@ -81,32 +93,81 @@ impl Encoded {
     /// `None` where the instruction needs a halfword that is not there.
     pub(crate) fn of(first: u16, next: Option<u16>) -> Option<Self> {
         let [a, b] = first.to_be_bytes();
+        let major: Major = read(&[a, b])?;
+        let read_with_major = |bytes: &[u8]| read_with(bytes, major.opcode);
         match next {
             Some(next) => {
                 let [c, d] = next.to_be_bytes();
-                read(&[a, b, c, d])
+                read_with_major(&[a, b, c, d])
             }
-            None => read(&[a, b]),
+            None => read_with_major(&[a, b]),
         }
     }
 }
 
 /// The `T` that `bytes` open with.
-///
-/// This reads through a `Reader` of its own: `from_bytes` also works out the
-/// bytes that are left, which no caller here reads.
 #[inline]
 pub(crate) fn read<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<T> {
-    let mut cursor = deku::no_std_io::Cursor::new(bytes);
-    let mut reader = Reader::new(&mut cursor);
-    T::from_reader_with_ctx(&mut reader, ()).ok()
+    read_with(bytes, ())
+}
+
+/// The `T` that `bytes` open with, read in `ctx`.
+///
+/// This reads through a [`Slice`] of its own: `from_bytes` also works out
+/// the bytes that are left, which no caller here reads.
+#[inline]
+fn read_with<'a, T: DekuReader<'a, Ctx>, Ctx>(bytes: &'a [u8], ctx: Ctx) -> Option<T> {
+    let mut slice = Slice { rest: bytes };
+    let mut reader = Reader::new(&mut slice);
+    T::from_reader_with_ctx(&mut reader, ctx).ok()
+}
+
+/// The bytes a reader has yet to read.
+///
+/// `std::io::Cursor` copies through `memcpy` whatever the length, which a
+/// read of two bytes calls for each halfword. This copy of a length known
+/// at compile time is a load and a store.
+struct Slice<'a> {
+    rest: &'a [u8],
+}
+
+impl std::io::Read for Slice<'_> {
+    #[inline(always)]
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let length = buf.len().min(self.rest.len());
+        let (head, tail) = self.rest.split_at(length);
+        buf[..length].copy_from_slice(head);
+        self.rest = tail;
+        Ok(length)
+    }
+
+    #[inline(always)]
+    fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
+        let (head, tail) =
+            self.rest.split_at_checked(buf.len()).ok_or(std::io::ErrorKind::UnexpectedEof)?;
+        buf.copy_from_slice(head);
+        self.rest = tail;
+        Ok(())
+    }
+}
+
+/// Only a skip forward, as padding of whole bytes makes, is read here.
+impl std::io::Seek for Slice<'_> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        let std::io::SeekFrom::Current(by) = position else {
+            return Err(std::io::ErrorKind::Unsupported.into());
+        };
+        let by = usize::try_from(by).map_err(|_| std::io::ErrorKind::Unsupported)?;
+        self.rest = self.rest.get(by..).unwrap_or_default();
+        Ok(0)
+    }
 }
 
 /// A register and an 8-bit constant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Ri {
-    #[deku(bits = 3)]
+    #[deku(pad_bits_before = "5", bits = 3)]
     pub rx: u8,
     pub imm: u8,
 }
@@ -115,7 +176,7 @@ pub(crate) struct Ri {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct I {
-    #[deku(bits = 11)]
+    #[deku(pad_bits_before = "5", bits = 11)]
     pub imm: u16,
 }
 
@@ -123,7 +184,7 @@ pub(crate) struct I {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Rri {
-    #[deku(bits = 3)]
+    #[deku(pad_bits_before = "5", bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -135,7 +196,7 @@ pub(crate) struct Rri {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Rrr {
-    #[deku(bits = 3)]
+    #[deku(pad_bits_before = "5", bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -149,7 +210,7 @@ pub(crate) struct Rrr {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Shift {
-    #[deku(bits = 3)]
+    #[deku(pad_bits_before = "5", bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -163,7 +224,7 @@ pub(crate) struct Shift {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct RriA {
-    #[deku(bits = 3)]
+    #[deku(pad_bits_before = "5", bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -178,7 +239,7 @@ pub(crate) struct RriA {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Rr {
-    #[deku(bits = 3)]
+    #[deku(pad_bits_before = "5", bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -441,7 +502,7 @@ mod tests {
         // `addu v1, v1, v0`.
         let addu = Rrr { rx: 3, ry: 2, rz: 3, function: 1 };
         assert_eq!(Encoded::of(0xe34d, None), Some(Encoded::Rrr(addu)));
-        assert_eq!(Encoded::of(0x3800, None), Some(Encoded::Reserved(0b00111)));
+        assert_eq!(Encoded::of(0x3800, None), Some(Encoded::Reserved));
     }
 
     #[test]
