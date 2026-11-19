@@ -77,6 +77,11 @@ pub enum Isa {
     Arm32Be8,
     /// Thumb-2 of BE8.
     Thumb2Be8,
+    /// ARM32 big endian, BE32: both instructions and data big endian, as
+    /// older ARM cores before ARMv6 shipped it.
+    Arm32Be32,
+    /// Thumb-2 of BE32.
+    Thumb2Be32,
     /// ARMv8-A in AArch64 mode, 64-bit.
     Aarch64,
     /// MIPS32, little endian, as a desktop-built object usually is.
@@ -115,6 +120,8 @@ impl Isa {
             Self::Thumb2 => &Thumb2,
             Self::Arm32Be8 => &hereticus_il::arch::arm32::ARM32_BE8,
             Self::Thumb2Be8 => &hereticus_il::arch::thumb::THUMB2_BE8,
+            Self::Arm32Be32 => &hereticus_il::arch::arm32::ARM32_BE32,
+            Self::Thumb2Be32 => &hereticus_il::arch::thumb::THUMB2_BE32,
             Self::Aarch64 => &Aarch64,
             Self::Mips32 => &Mips32::LITTLE,
             Self::Mips32Be => &Mips32::BIG,
@@ -137,6 +144,8 @@ impl Isa {
             Self::Thumb2 => Some(Self::Arm32),
             Self::Arm32Be8 => Some(Self::Thumb2Be8),
             Self::Thumb2Be8 => Some(Self::Arm32Be8),
+            Self::Arm32Be32 => Some(Self::Thumb2Be32),
+            Self::Thumb2Be32 => Some(Self::Arm32Be32),
             Self::Mips32 => Some(Self::Mips16),
             Self::Mips16 => Some(Self::Mips32),
             Self::Mips32Be => Some(Self::Mips16Be),
@@ -166,6 +175,8 @@ impl Isa {
             | Self::Mips16Be
             | Self::Arm32Be8
             | Self::Thumb2Be8
+            | Self::Arm32Be32
+            | Self::Thumb2Be32
             | Self::PowerPc
             | Self::PowerPc64 => ByteOrder::Big,
             _ => ByteOrder::Little,
@@ -174,18 +185,31 @@ impl Isa {
 
     /// The decoder for what `file` says it holds, where one reads it.
     pub(crate) fn of_file(file: &object::File<'_>) -> Option<Self> {
-        Self::from_object(file.architecture(), file.is_little_endian()).ok()
+        Self::from_object(file.architecture(), file.is_little_endian(), file.flags()).ok()
     }
 
     /// Choose a decoder for what an object file says it holds.
     ///
     /// `little_endian` decides which decoder, as MIPS ships in both orders,
-    /// and ARM in both for its data: a big-endian ARM file is read as BE8,
-    /// as every ARMv6 and later core runs it. PowerPC is read in both.
-    fn from_object(arch: object::Architecture, little_endian: bool) -> Result<Self, ObjError> {
+    /// and ARM in both for its data. A big-endian ARM file is BE8, as every
+    /// ARMv6 and later core runs it, where its ELF header sets
+    /// `EF_ARM_BE8`, and BE32, as older cores run it, where not. PowerPC is
+    /// read in both.
+    fn from_object(
+        arch: object::Architecture,
+        little_endian: bool,
+        flags: object::FileFlags,
+    ) -> Result<Self, ObjError> {
         match arch {
             object::Architecture::Arm if little_endian => Ok(Self::Arm32),
-            object::Architecture::Arm => Ok(Self::Arm32Be8),
+            object::Architecture::Arm => match flags {
+                object::FileFlags::Elf { e_flags, .. }
+                    if !e_flags.contains(object::elf::EF_ARM_BE8) =>
+                {
+                    Ok(Self::Arm32Be32)
+                }
+                _ => Ok(Self::Arm32Be8),
+            },
             object::Architecture::Aarch64 => Ok(Self::Aarch64),
             object::Architecture::Mips if little_endian => Ok(Self::Mips32),
             object::Architecture::Mips => Ok(Self::Mips32Be),
@@ -530,12 +554,15 @@ impl Binary {
     pub fn parse(data: &[u8]) -> Result<Self, ObjError> {
         let data = crate::macho::aarch64_slice(data);
         let file = object::File::parse(data)?;
-        let isa = match Isa::from_object(file.architecture(), file.is_little_endian())? {
-            isa @ (Isa::Arm32 | Isa::Arm32Be8 | Isa::Mips32 | Isa::Mips32Be) => {
-                set_of_symbol(isa, most_functions_encoded(&file))
-            }
-            isa => isa,
-        };
+        let isa =
+            match Isa::from_object(file.architecture(), file.is_little_endian(), file.flags())? {
+                isa @ (Isa::Arm32
+                | Isa::Arm32Be8
+                | Isa::Arm32Be32
+                | Isa::Mips32
+                | Isa::Mips32Be) => set_of_symbol(isa, most_functions_encoded(&file)),
+                isa => isa,
+            };
 
         if let object::File::MachO64(macho) = &file
             && let Some((functions, found_by)) =
@@ -1218,6 +1245,8 @@ fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
         (Isa::Mips32Be | Isa::Mips16Be, Encoding::Full) => Isa::Mips32Be,
         (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Compact) => Isa::Thumb2Be8,
         (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Full) => Isa::Arm32Be8,
+        (Isa::Arm32Be32 | Isa::Thumb2Be32, Encoding::Compact) => Isa::Thumb2Be32,
+        (Isa::Arm32Be32 | Isa::Thumb2Be32, Encoding::Full) => Isa::Arm32Be32,
         (
             Isa::Aarch64
             | Isa::X86_64
@@ -1373,6 +1402,8 @@ fn lazy_stubs(isa: Isa, code: &[(u64, &[u8])]) -> Vec<mips_stubs::LazyStub> {
         | Isa::Thumb2
         | Isa::Arm32Be8
         | Isa::Thumb2Be8
+        | Isa::Arm32Be32
+        | Isa::Thumb2Be32
         | Isa::Aarch64
         | Isa::X86_64
         | Isa::X86
@@ -1878,11 +1909,13 @@ mod tests {
         assert_eq!(stable_name(""), "");
     }
 
-    const EVERY_ISA: [Isa; 13] = [
+    const EVERY_ISA: [Isa; 15] = [
         Isa::Arm32,
         Isa::Thumb2,
         Isa::Arm32Be8,
         Isa::Thumb2Be8,
+        Isa::Arm32Be32,
+        Isa::Thumb2Be32,
         Isa::Aarch64,
         Isa::Mips32,
         Isa::Mips32Be,
@@ -1904,18 +1937,55 @@ mod tests {
         assert_eq!(clip(0x100, &data, 0x104..0x104), (0x100, &data[..]), "empty range");
     }
 
-    /// A big-endian ARM file is read as BE8, and each set of BE8 keeps to
-    /// BE8: only the data is big endian there.
+    /// The ELF header flags of an ARM file whose `e_flags` are `e_flags`.
+    fn arm_flags(e_flags: u32) -> object::FileFlags {
+        object::FileFlags::Elf {
+            e_flags: object::elf::FileFlags(e_flags),
+            abi_version: 0,
+            os_abi: object::elf::OsAbi::default(),
+        }
+    }
+
+    /// A big-endian ARM file is read as BE8 where its header says so, and
+    /// each set of BE8 keeps to BE8: only the data is big endian there.
     #[test]
     fn a_big_endian_arm_file_reads_as_be8() {
-        assert!(matches!(Isa::from_object(object::Architecture::Arm, false), Ok(Isa::Arm32Be8)));
-        assert!(matches!(Isa::from_object(object::Architecture::Arm, true), Ok(Isa::Arm32)));
+        let be8 = arm_flags(object::elf::EF_ARM_EABI_VER5.0 | object::elf::EF_ARM_BE8.0);
+        assert!(matches!(
+            Isa::from_object(object::Architecture::Arm, false, be8),
+            Ok(Isa::Arm32Be8)
+        ));
+        assert!(matches!(
+            Isa::from_object(object::Architecture::Arm, true, arm_flags(0)),
+            Ok(Isa::Arm32)
+        ));
         assert_eq!(set_of_symbol(Isa::Arm32Be8, Encoding::Compact), Isa::Thumb2Be8);
         assert_eq!(Isa::Thumb2Be8.byte_order(), ByteOrder::Big);
         assert_eq!(Isa::Thumb2.byte_order(), ByteOrder::Little);
         let word = [0x00, 0x01, 0x02, 0x03];
         assert_eq!(Isa::Arm32Be8.arch().read_pointer(&word), 0x0001_0203);
         assert_eq!(Isa::Arm32.arch().read_pointer(&word), 0x0302_0100);
+    }
+
+    /// A big-endian ARM file with no `EF_ARM_BE8` is BE32, and each set of
+    /// BE32 keeps to BE32. A file of no ELF has no such flag, so it stays
+    /// BE8, as before.
+    #[test]
+    fn a_big_endian_arm_file_without_be8_reads_as_be32() {
+        let be32 = arm_flags(object::elf::EF_ARM_EABI_VER5.0);
+        assert!(matches!(
+            Isa::from_object(object::Architecture::Arm, false, be32),
+            Ok(Isa::Arm32Be32)
+        ));
+        assert!(matches!(
+            Isa::from_object(object::Architecture::Arm, false, object::FileFlags::None),
+            Ok(Isa::Arm32Be8)
+        ));
+        assert_eq!(set_of_symbol(Isa::Arm32Be32, Encoding::Compact), Isa::Thumb2Be32);
+        assert_eq!(set_of_symbol(Isa::Thumb2Be32, Encoding::Full), Isa::Arm32Be32);
+        assert_eq!(Isa::Thumb2Be32.byte_order(), ByteOrder::Big);
+        let word = [0x00, 0x01, 0x02, 0x03];
+        assert_eq!(Isa::Arm32Be32.arch().read_pointer(&word), 0x0001_0203);
     }
 
     #[test]

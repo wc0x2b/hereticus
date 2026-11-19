@@ -8,7 +8,7 @@ use hereticus_il::arch::arm32::Arm32;
 use hereticus_il::arch::thumb::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
 use hereticus_recovery::arch::arm32::{PcModel, track_pool_words};
-use hereticus_recovery::arch::thumb::split_at_switch;
+use hereticus_recovery::arch::thumb::{a32_of, split_at_switch};
 
 impl Arch for Thumb2 {
     fn is_frame_register(&self, reg: hereticus_il::Reg) -> bool {
@@ -34,7 +34,7 @@ impl Arch for Thumb2 {
                     PcModel::T32.with_data(self.data_order()),
                 )
                 .kinds;
-                kinds.extend(Arm32.constant_kinds(&code[offset..], &body[index..], space));
+                kinds.extend(a32_of(self).constant_kinds(&code[offset..], &body[index..], space));
                 kinds
             }
             None => {
