@@ -1232,6 +1232,7 @@ version = "0.7.2"
 dependencies = [
  "bolero",
  "compact_str",
+ "deku",
  "gimli",
  "hereticus-il",
  "hereticus-memory",

@@ -499,7 +499,7 @@ fn read_varint<R: deku::no_std_io::Read + deku::no_std_io::Seek>(
             return Ok(value);
         }
     }
-    Err(DekuError::Parse("an xz varint is longer than nine bytes".into()))
+    Err(deku::deku_error!(DekuError::Parse, "an xz varint is longer than nine bytes"))
 }
 
 fn write_varint<W: deku::no_std_io::Write + deku::no_std_io::Seek>(
@@ -507,7 +507,10 @@ fn write_varint<W: deku::no_std_io::Write + deku::no_std_io::Seek>(
     writer: &mut Writer<W>,
 ) -> Result<(), DekuError> {
     if value >> (VARINT_MAX_BYTES * 7) != 0 {
-        return Err(DekuError::InvalidParam("an xz varint holds at most 63 bits".into()));
+        return Err(deku::deku_error!(
+            DekuError::InvalidParam,
+            "an xz varint holds at most 63 bits"
+        ));
     }
     let mut rest = value;
     loop {

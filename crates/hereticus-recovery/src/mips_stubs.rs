@@ -17,6 +17,10 @@
 
 use core::ops::Range;
 
+use deku::prelude::*;
+
+use crate::parse::parse_with;
+
 /// The words of a stub, but for the last.
 const LOAD_RESOLVER: u32 = 0x8f99_8010;
 /// `move t7, ra`, written as `or` by newer `ld`, as `addu` by older.
@@ -42,30 +46,48 @@ pub enum ByteOrder {
     Big,
 }
 
+impl From<ByteOrder> for deku::ctx::Endian {
+    fn from(order: ByteOrder) -> Self {
+        match order {
+            ByteOrder::Little => Self::Little,
+            ByteOrder::Big => Self::Big,
+        }
+    }
+}
+
+/// The four words a stub would hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "endian", ctx = "endian: deku::ctx::Endian")]
+struct StubWords {
+    load_resolver: u32,
+    save_return: u32,
+    call_resolver: u32,
+    load_index: u32,
+}
+
+impl StubWords {
+    /// The dynamic symbol the stub resolves, or `None` where the words are
+    /// no stub.
+    fn symbol(self) -> Option<u64> {
+        let is_stub = self.load_resolver == LOAD_RESOLVER
+            && SAVE_RETURN.contains(&self.save_return)
+            && self.call_resolver == CALL_RESOLVER
+            && LOAD_INDEX.contains(&(self.load_index & 0xffff_0000));
+        is_stub.then_some(u64::from(self.load_index & 0xffff))
+    }
+}
+
 /// Every lazy binding stub in `code`, at `base`, in address order.
 pub fn lazy_stubs(base: u64, code: &[u8], order: ByteOrder) -> Vec<LazyStub> {
-    let word = |offset: usize| -> Option<u32> {
-        let bytes: [u8; 4] = code.get(offset..offset + 4)?.try_into().ok()?;
-        Some(match order {
-            ByteOrder::Little => u32::from_le_bytes(bytes),
-            ByteOrder::Big => u32::from_be_bytes(bytes),
-        })
-    };
     // Stubs are aligned to their words, so only aligned offsets are tried.
     let first = ((4 - base % 4) % 4) as usize;
     (first..code.len())
         .step_by(4)
         .filter_map(|offset| {
-            let load_index = word(offset + 12)?;
-            let is_stub = word(offset)? == LOAD_RESOLVER
-                && SAVE_RETURN.contains(&word(offset + 4)?)
-                && word(offset + 8)? == CALL_RESOLVER
-                && LOAD_INDEX.contains(&(load_index & 0xffff_0000));
+            let words: StubWords = parse_with(&code[offset..], order.into())?;
+            let symbol = words.symbol()?;
             let address = base + offset as u64;
-            is_stub.then(|| LazyStub {
-                range: address..address + STUB_LENGTH,
-                symbol: u64::from(load_index & 0xffff),
-            })
+            Some(LazyStub { range: address..address + STUB_LENGTH, symbol })
         })
         .collect()
 }

@@ -16,7 +16,7 @@ rust-version.workspace = true
 bench = false
 
 [dependencies]
-deku = "0.20"
+deku = { version = "0.20", default-features = false, features = ["std", "bits"] }
 flate2 = "1"
 lzma-rs = "0.3"
 ruzstd = "0.9"

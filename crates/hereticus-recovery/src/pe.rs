@@ -16,30 +16,115 @@
 use core::ops::Range;
 use std::collections::BTreeMap;
 
+use deku::prelude::*;
 use object::pe;
 use object::read::pe::{ExportTarget, ImageNtHeaders, Import, ImportThunkList, PeFile};
 use object::{LittleEndian as LE, Object, ObjectSection, SectionKind};
+
+use crate::parse::{parse, parse_all};
 
 /// The flag of unwind information that says the entry continues the
 /// function of another entry, as the code after a shrink-wrapped prologue
 /// does.
 const UNW_FLAG_CHAININFO: u8 = 0x4;
 
-/// The bits of an ARM64 entry that say where its length is.
-const ARM64_FLAG: u32 = 0b11;
-/// The flag of an ARM64 entry whose unwind information lies in `.xdata`.
-const ARM64_XDATA: u32 = 0;
-/// The flag of an ARM64 entry that packs its unwind information.
-const ARM64_PACKED: u32 = 1;
-/// The flag of an ARM64 entry that packs the unwind information of a
-/// fragment of a function, with no prologue.
-const ARM64_PACKED_FRAGMENT: u32 = 2;
-/// The bits of the length, in words, of the function of an ARM64 entry,
-/// past the flag where the entry packs it, and at bit 0 of `.xdata`.
-const ARM64_PACKED_LENGTH: u32 = 0x7ff;
-const ARM64_XDATA_LENGTH: u32 = 0x3_ffff;
 /// An ARM64 instruction is one word.
 const ARM64_WORD: u64 = 4;
+
+/// An entry of the x86-64 exception directory, `RUNTIME_FUNCTION`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "little")]
+struct X64RuntimeFunction {
+    begin: u32,
+    end: u32,
+    unwind_info: u32,
+}
+
+/// The byte that opens x86-64 unwind information, `UNWIND_INFO`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(bit_order = "lsb")]
+struct X64UnwindHeader {
+    #[deku(bits = 3)]
+    version: u8,
+    #[deku(bits = 5)]
+    flags: u8,
+}
+
+/// An entry of the ARM64 exception directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "little", bit_order = "lsb")]
+struct Arm64RuntimeFunction {
+    begin: u32,
+    unwind: Arm64Unwind,
+}
+
+/// The unwind word of an ARM64 entry. Its low two bits say where the
+/// length of the function is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(
+    id_type = "u8",
+    bits = 2,
+    endian = "endian",
+    bit_order = "order",
+    ctx = "endian: deku::ctx::Endian, order: deku::ctx::Order"
+)]
+enum Arm64Unwind {
+    /// The unwind information lies in `.xdata`, at the address this gives
+    /// in words.
+    #[deku(id = 0)]
+    Xdata(#[deku(bits = 30)] u32),
+    /// The entry packs its unwind information.
+    #[deku(id = 1)]
+    Packed(Arm64PackedUnwind),
+    /// The entry packs the unwind information of a fragment of a function,
+    /// with no prologue.
+    #[deku(id = 2)]
+    PackedFragment(Arm64PackedUnwind),
+    #[deku(id = 3)]
+    Reserved(#[deku(bits = 30)] u32),
+}
+
+/// The unwind information that an ARM64 entry packs, past its flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(
+    endian = "endian",
+    bit_order = "order",
+    ctx = "endian: deku::ctx::Endian, order: deku::ctx::Order"
+)]
+struct Arm64PackedUnwind {
+    /// The length of the function, in words.
+    #[deku(bits = 11)]
+    function_length: u16,
+    #[deku(bits = 3)]
+    saved_float_registers: u8,
+    #[deku(bits = 4)]
+    saved_integer_registers: u8,
+    #[deku(bits = 1)]
+    homes_parameters: u8,
+    #[deku(bits = 2)]
+    saves_link_register: u8,
+    #[deku(bits = 9)]
+    frame_size: u16,
+}
+
+/// The word that opens the `.xdata` of an ARM64 entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "little", bit_order = "lsb")]
+struct Arm64XdataHeader {
+    /// The length of the function, in words.
+    #[deku(bits = 18)]
+    function_length: u32,
+    #[deku(bits = 2)]
+    version: u8,
+    #[deku(bits = 1)]
+    has_exception_data: u8,
+    #[deku(bits = 1)]
+    packs_one_epilog: u8,
+    #[deku(bits = 5)]
+    epilog_count: u8,
+    #[deku(bits = 5)]
+    code_words: u8,
+}
 
 /// Where each function that the exception directory of `file` lists starts
 /// and ends, in address order. Empty where `file` is no x86-64 or ARM64 PE
@@ -73,23 +158,18 @@ fn x64_ranges<'data>(
     base: u64,
     at: impl Fn(u32) -> Option<&'data [u8]>,
 ) -> Vec<Range<u64>> {
-    let Ok(entries) = object::pod::slice_from_all_bytes::<pe::ImageRuntimeFunctionEntry>(table)
-    else {
-        return Vec::new();
-    };
+    let Some(entries) = parse_all::<X64RuntimeFunction>(table) else { return Vec::new() };
     let unwind_of = |unwind_info: u32| {
-        let flags = at(unwind_info).and_then(|info| info.first());
-        match flags
-            .is_some_and(|&version_and_flags| (version_and_flags >> 3) & UNW_FLAG_CHAININFO != 0)
-        {
+        let header = at(unwind_info).and_then(parse::<X64UnwindHeader>);
+        match header.is_some_and(|header| header.flags & UNW_FLAG_CHAININFO != 0) {
             true => Unwind::Chained,
             false => Unwind::Own,
         }
     };
     joined(entries.iter().map(|entry| {
-        let start = base + u64::from(entry.begin_address.get(LE));
-        let end = base + u64::from(entry.end_address.get(LE));
-        (start..end, unwind_of(entry.unwind_info_address_or_data.get(LE)))
+        let start = base + u64::from(entry.begin);
+        let end = base + u64::from(entry.end);
+        (start..end, unwind_of(entry.unwind_info))
     }))
 }
 
@@ -105,24 +185,21 @@ fn arm64_ranges<'data>(
     base: u64,
     at: impl Fn(u32) -> Option<&'data [u8]>,
 ) -> Vec<Range<u64>> {
-    let Ok(entries) =
-        object::pod::slice_from_all_bytes::<pe::ImageArm64RuntimeFunctionEntry>(table)
-    else {
-        return Vec::new();
-    };
-    let packed_length = |unwind: u32| (unwind >> 2) & ARM64_PACKED_LENGTH;
-    let length_and_unwind = |unwind: u32| match unwind & ARM64_FLAG {
-        ARM64_XDATA => {
-            let header = at(unwind)?.first_chunk::<4>()?;
-            Some((u32::from_le_bytes(*header) & ARM64_XDATA_LENGTH, Unwind::Own))
+    let Some(entries) = parse_all::<Arm64RuntimeFunction>(table) else { return Vec::new() };
+    let length_and_unwind = |unwind: Arm64Unwind| match unwind {
+        Arm64Unwind::Xdata(words) => {
+            let header: Arm64XdataHeader = parse(at(words << 2)?)?;
+            Some((header.function_length, Unwind::Own))
         }
-        ARM64_PACKED => Some((packed_length(unwind), Unwind::Own)),
-        ARM64_PACKED_FRAGMENT => Some((packed_length(unwind), Unwind::Chained)),
-        _ => None,
+        Arm64Unwind::Packed(packed) => Some((packed.function_length.into(), Unwind::Own)),
+        Arm64Unwind::PackedFragment(packed) => {
+            Some((packed.function_length.into(), Unwind::Chained))
+        }
+        Arm64Unwind::Reserved(_) => None,
     };
     joined(entries.iter().filter_map(|entry| {
-        let (words, unwind) = length_and_unwind(entry.unwind_data.get(LE))?;
-        let start = base + u64::from(entry.begin_address.get(LE));
+        let (words, unwind) = length_and_unwind(entry.unwind)?;
+        let start = base + u64::from(entry.begin);
         Some((start..start + u64::from(words) * ARM64_WORD, unwind))
     }))
 }
@@ -362,9 +439,69 @@ mod tests {
         entry
     }
 
-    /// The unwind word of an ARM64 entry that packs a function of `words`.
+    /// The unwind word of an ARM64 entry with `flag` that packs a function
+    /// of `words`.
     fn packed(flag: u32, words: u32) -> u32 {
         flag | (words << 2)
+    }
+
+    /// The flags of an ARM64 entry that packs its unwind information, and
+    /// that packs that of a fragment.
+    const PACKED: u32 = 1;
+    const PACKED_FRAGMENT: u32 = 2;
+
+    #[test]
+    fn an_arm64_unwind_word_reads_each_packed_field() {
+        // From the Microsoft ARM64 exception handling documentation: a
+        // function of 0x1e words, RegF 2, RegI 5, H 1, CR 3, FrameSize 0x41.
+        let word = PACKED | 0x1e << 2 | 2 << 13 | 5 << 16 | 1 << 20 | 3 << 21 | 0x41 << 23;
+        let entry: Arm64RuntimeFunction =
+            parse(&arm64_entry(0x1000, word)).expect("the entry reads");
+        let unpacked = Arm64PackedUnwind {
+            function_length: 0x1e,
+            saved_float_registers: 2,
+            saved_integer_registers: 5,
+            homes_parameters: 1,
+            saves_link_register: 3,
+            frame_size: 0x41,
+        };
+        assert_eq!(
+            entry,
+            Arm64RuntimeFunction { begin: 0x1000, unwind: Arm64Unwind::Packed(unpacked) }
+        );
+        assert_eq!(entry.to_bytes().expect("the entry writes"), arm64_entry(0x1000, word));
+    }
+
+    #[test]
+    fn an_arm64_entry_with_xdata_gives_its_address() {
+        let entry: Arm64RuntimeFunction =
+            parse(&arm64_entry(0x1000, 0x0001_3000)).expect("the entry reads");
+        assert_eq!(entry.unwind, Arm64Unwind::Xdata(0x0001_3000 >> 2));
+    }
+
+    #[test]
+    fn an_arm64_xdata_header_reads_each_field() {
+        let word: u32 = 0x3_1234 | 1 << 18 | 1 << 20 | 1 << 21 | 7 << 22 | 0x1f << 27;
+        let header: Arm64XdataHeader = parse(&word.to_le_bytes()).expect("the header reads");
+        let expected = Arm64XdataHeader {
+            function_length: 0x3_1234,
+            version: 1,
+            has_exception_data: 1,
+            packs_one_epilog: 1,
+            epilog_count: 7,
+            code_words: 0x1f,
+        };
+        assert_eq!(header, expected);
+        assert_eq!(header.to_bytes().expect("the header writes"), word.to_le_bytes());
+    }
+
+    #[test]
+    fn an_arm64_unwind_word_writes_back_the_bytes_it_reads() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            let entry: Arm64RuntimeFunction =
+                parse(&arm64_entry(0, word)).expect("each word reads");
+            assert_eq!(entry.to_bytes().expect("the entry writes"), arm64_entry(0, word));
+        });
     }
 
     #[test]
@@ -372,8 +509,8 @@ mod tests {
         const BASE: u64 = 0x1_8000_0000;
         let xdata_at = 0x3000;
         let table: Vec<u8> = [
-            arm64_entry(0x1000, packed(ARM64_PACKED, 4)),
-            arm64_entry(0x1010, packed(ARM64_PACKED_FRAGMENT, 2)),
+            arm64_entry(0x1000, packed(PACKED, 4)),
+            arm64_entry(0x1010, packed(PACKED_FRAGMENT, 2)),
             arm64_entry(0x1100, xdata_at),
             arm64_entry(0x1200, 0b11),
         ]
@@ -400,8 +537,10 @@ mod tests {
             [start, end, unwind].iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<u8>>()
         };
         let table = [entry(0x1000, 0x1010, 0x3000), entry(0x1010, 0x1020, 0x3010)].concat();
-        let own = [1u8];
-        let chained = [1 | (UNW_FLAG_CHAININFO << 3)];
+        let own = X64UnwindHeader { version: 1, flags: 0 }.to_bytes().expect("own");
+        let chained =
+            X64UnwindHeader { version: 1, flags: UNW_FLAG_CHAININFO }.to_bytes().expect("chained");
+        assert_eq!(chained, [1 | (UNW_FLAG_CHAININFO << 3)]);
         let at = |rva: u32| match rva {
             0x3000 => Some(&own[..]),
             0x3010 => Some(&chained[..]),

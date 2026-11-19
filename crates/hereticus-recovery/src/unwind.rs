@@ -14,13 +14,25 @@
 
 use core::ops::Range;
 
+use deku::prelude::*;
 use gimli::{BaseAddresses, CieOrFde, EhFrame, RunTimeEndian, UnwindSection};
+
+use crate::parse::parse_with;
 
 /// The byte order of the words the tables hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ByteOrder {
     Little,
     Big,
+}
+
+impl From<ByteOrder> for deku::ctx::Endian {
+    fn from(order: ByteOrder) -> Self {
+        match order {
+            ByteOrder::Little => Self::Little,
+            ByteOrder::Big => Self::Big,
+        }
+    }
 }
 
 impl From<ByteOrder> for RunTimeEndian {
@@ -74,21 +86,9 @@ pub fn find_function_ranges(image: &[u8], base: u64, order: ByteOrder) -> Vec<Ra
     const FEWEST_FUNCTIONS: usize = 8;
 
     let end = base + image.len() as u64;
-    let word = |offset: usize| {
-        let bytes: [u8; 4] = image.get(offset..offset + 4)?.try_into().ok()?;
-        Some(match order {
-            ByteOrder::Little => u32::from_le_bytes(bytes),
-            ByteOrder::Big => u32::from_be_bytes(bytes),
-        })
-    };
     let opens_a_cie = |offset: usize| {
-        let (Some(length), Some(id)) = (word(offset), word(offset + 4)) else { return false };
-        let version = image.get(offset + 8).copied();
-        let augmentation = image.get(offset + 9).copied();
-        (8..0x1000).contains(&length)
-            && id == 0
-            && matches!(version, Some(1 | 3))
-            && augmentation == Some(b'z')
+        parse_with::<CieHeader, _>(&image[offset..], order.into())
+            .is_some_and(|header| header.is_likely())
     };
 
     let mut best: Vec<Range<u64>> = Vec::new();
@@ -111,6 +111,30 @@ pub fn find_function_ranges(image: &[u8], base: u64, order: ByteOrder) -> Vec<Ra
     best
 }
 
+/// The fields that open a CIE of `.eh_frame`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuWrite)]
+#[deku(endian = "endian", ctx = "endian: deku::ctx::Endian")]
+struct CieHeader {
+    length: u32,
+    /// Zero for a CIE. An FDE holds the offset back to its CIE here.
+    id: u32,
+    version: u8,
+    /// The first byte of the augmentation string.
+    augmentation: u8,
+}
+
+impl CieHeader {
+    /// Whether the header looks like that of a CIE a compiler writes: a
+    /// length of less than a page, version 1 or 3, and an augmentation
+    /// string that starts with `z`.
+    fn is_likely(self) -> bool {
+        (8..0x1000).contains(&self.length)
+            && self.id == 0
+            && matches!(self.version, 1 | 3)
+            && self.augmentation == b'z'
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +142,23 @@ mod tests {
     /// A CIE with augmentation `zR`, pointers `pcrel | sdata4`, then one FDE
     /// for each of `functions`, as (start, length), little endian, as it
     /// would load at `address`.
+    #[test]
+    fn a_cie_header_reads_in_each_byte_order() {
+        let header = CieHeader { length: 0x10, id: 0, version: 1, augmentation: b'z' };
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let mut bytes = Vec::new();
+            let mut writer = deku::writer::Writer::new(std::io::Cursor::new(&mut bytes));
+            header.to_writer(&mut writer, order.into()).expect("the header writes");
+            writer.finalize().expect("the writer ends");
+            assert_eq!(parse_with::<CieHeader, _>(&bytes, order.into()), Some(header));
+        }
+        assert!(header.is_likely());
+        assert!(!CieHeader { id: 4, ..header }.is_likely(), "an FDE");
+        assert!(!CieHeader { version: 2, ..header }.is_likely());
+        assert!(!CieHeader { augmentation: 0, ..header }.is_likely());
+        assert!(!CieHeader { length: 0x1000, ..header }.is_likely());
+    }
+
     fn eh_frame(address: u64, functions: &[(u64, u32)]) -> Vec<u8> {
         let mut data = vec![
             0x10, 0, 0, 0, // length
