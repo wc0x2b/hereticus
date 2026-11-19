@@ -29,6 +29,7 @@ pub const REGISTERS: [&str; 32] = [
 
 use super::InsnKind;
 use crate as il;
+use deku::{DekuRead, DekuReader};
 
 /// The major opcodes this module reads under.
 const SPECIAL: u32 = 0x00;
@@ -282,7 +283,7 @@ pub(crate) fn decode(word: u32) -> Option<Word> {
         // `sigrie code` traps. Release 6 defines it, and LLD fills the gaps
         // between functions with `sigrie 1` on every release.
         REGIMM if fields.rt == 0x17 && fields.rs == 0 => {
-            Some((Op::Sigrie, format!("{:#x}", fields.immediate)))
+            Some((Op::Sigrie, format!("{:#x}", fields.immediate())))
         }
         PREF => {
             Some((Op::Pref, format!("{:#x}, {}({})", fields.rt, fields.offset(), fields.rs_name())))
@@ -398,28 +399,36 @@ fn cop1(fields: &Fields) -> Option<(Op, String)> {
     }
 }
 
-/// The fields of an instruction word.
+/// The fields of an instruction word, as the R format names them. The I
+/// format's 16-bit constant takes the place of `rd`, `sa` and `function`.
+#[derive(DekuRead)]
+#[deku(endian = "big")]
 struct Fields {
+    #[deku(bits = 6)]
     opcode: u32,
+    #[deku(bits = 5)]
     rs: u32,
+    #[deku(bits = 5)]
     rt: u32,
+    #[deku(bits = 5)]
     rd: u32,
+    #[deku(bits = 5)]
     sa: u32,
+    #[deku(bits = 6)]
     function: u32,
-    immediate: u32,
 }
 
 impl Fields {
     fn of(word: u32) -> Self {
-        Self {
-            opcode: word >> 26,
-            rs: (word >> 21) & 0x1f,
-            rt: (word >> 16) & 0x1f,
-            rd: (word >> 11) & 0x1f,
-            sa: (word >> 6) & 0x1f,
-            function: word & 0x3f,
-            immediate: word & 0xffff,
-        }
+        let bytes = word.to_be_bytes();
+        let mut cursor = deku::no_std_io::Cursor::new(&bytes[..]);
+        let mut reader = deku::reader::Reader::new(&mut cursor);
+        Self::from_reader_with_ctx(&mut reader, ()).expect("a word holds each field")
+    }
+
+    /// The 16-bit constant of the I format.
+    fn immediate(&self) -> u32 {
+        self.rd << 11 | self.sa << 6 | self.function
     }
 
     fn rs_name(&self) -> &'static str {
@@ -437,12 +446,12 @@ impl Fields {
     /// How far a branch goes: from the branch, past its delay slot, by
     /// the signed offset in words.
     fn branch_distance(&self) -> i64 {
-        4 + i64::from(self.immediate as u16 as i16) * 4
+        4 + i64::from(self.immediate() as u16 as i16) * 4
     }
 
     /// The signed 16-bit offset, written as `rabbitizer` writes one.
     fn offset(&self) -> String {
-        let offset = self.immediate as u16 as i16;
+        let offset = self.immediate() as u16 as i16;
         if offset < 0 {
             format!("-{:#X}", offset.unsigned_abs()).replace("0X", "0x")
         } else {
@@ -701,7 +710,7 @@ pub(crate) fn lift_named(word: u32) -> Option<il::Named> {
         _ => format_compact!("[{} + {offset}]", fields.rs_name()),
     };
     let memory: Named =
-        (il::Operand::memory(base, Some(i64::from(fields.immediate as u16 as i16))), place);
+        (il::Operand::memory(base, Some(i64::from(fields.immediate() as u16 as i16))), place);
     let accumulator = |number: u32| other(format_compact!("{}", Accumulator(number)));
     let (op, named, written): (Op, Vec<Named>, Option<il::Operand>) = match decoded {
         self::Op::Movz | self::Op::Movn => (Op::Select, vec![rd.clone(), rs, rt], Some(rd.0)),
@@ -753,7 +762,7 @@ pub(crate) fn lift_named(word: u32) -> Option<il::Named> {
         self::Op::Di | self::Op::Ei => (Op::System, vec![rt.clone()], Some(rt.0)),
         self::Op::Wait | self::Op::Eret | self::Op::Deret => (Op::System, vec![], None),
         self::Op::Sigrie => {
-            let code = constant(fields.immediate, format_compact!("{:#x}", fields.immediate));
+            let code = constant(fields.immediate(), format_compact!("{:#x}", fields.immediate()));
             (Op::System, vec![code], None)
         }
         self::Op::Pref => {
