@@ -31,8 +31,8 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 
 pub use flows::{Cell, Glyph, Gutter, Tint};
-pub use rows::{Half, Places, Side, unified};
-use rows::{change_starts, side_by_side};
+use rows::change_starts;
+pub use rows::{Half, Places, Side, side_by_side, unified};
 
 pub use crate::project::{Browser, Key, Layout, Mark, Order, Scope};
 use crate::project::{Project, Source};

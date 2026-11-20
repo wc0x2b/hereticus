@@ -35,6 +35,7 @@ $ hereticus --tui --open p.json                     # go on where the last save 
 $ hereticus --ignore-names before.elf after.elf     # match from the code alone
 $ hereticus --format markdown before.elf after.elf  # a table to paste into a document
 $ hereticus --format json before.elf after.elf      # for another tool to read
+$ hereticus --format html before.elf after.elf > r.html  # a page with each diff, for a browser
 $ hereticus --raw --base 0x08000000 v1.bin v2.bin   # a flash dump, no ELF header
 $ hereticus --find-base --raw --arch arm32 fw.bin   # where a flash dump loads
 $ hereticus --raw --base auto v1.bin v2.bin         # load each at the base it shows

@@ -295,9 +295,10 @@ book-media: build
     BOOK_MEDIA_UPDATE=1 cargo nextest run --release -p hereticus-cli --test book_media
 
 # Write what the tool prints into each output that the docs and the reports
-# show, where only the lines of the jumps, the indent or the spaces changed.
+# show, where only the lines of the jumps, the indent or the spaces changed,
+# and write the HTML reports of the book again.
 docs-output: build
-    DOCS_OUTPUT_UPDATE=1 cargo nextest run --release -p hereticus-cli --test docs_output
+    DOCS_OUTPUT_UPDATE=1 cargo nextest run --release -p hereticus-cli --test docs_output --test book_reports
 
 lint:
     cargo fmt
