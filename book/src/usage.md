@@ -246,6 +246,10 @@ $ hereticus --raw --arch arm32 --base 0x80208000 --unpack stub zImage-v1 zImage-
 - `compact`: one line for each pair, with tabs between the columns and no
   header, for `grep`, `cut` and `awk`.
 - `json`: one JSON object, for another tool.
+- `html`: one HTML page, to open in a browser or send to a person. It
+  holds the table, then the diff of each listed function side by side,
+  with the lines of its jumps. A button at the top shows the diffs as
+  assembly or as IL. `--view` sets which one shows first.
 
 The columns of `compact` are the change, the name before, the name after,
 the score, and the counts of added, removed and rewritten instructions:
@@ -271,6 +275,18 @@ $ hereticus --format json basic-v1.elf basic-v2.elf
 {"pairs":[{"before":{"name":"array_max","address":144},"after":{"name":"array_min","address":144},"change":"changed","score":0.8378,"added":0,"removed":0,"edited":3,"touched":{"other":3},"features":[],"matched_by":"similar"}],"gone":[],"new":[],"totals":{"matched":8,"unchanged":4,"changed":4,"gone":0,"new":0}}
 ```
 <!-- end output -->
+
+The HTML page below compares `modbusgwd` of Teltonika RUTOS 7.24 and
+7.24.3, from [CVE-2026-18368](./real-life-examples/cve-2026-18368.md). It
+opens on the diff of the fix, `sub_404494`, on row 3<!-- from truth_cves: CVE-2026-18368 modbusgwd MIPS32 / rank -->. Open the
+[page alone](./reports/cve-2026-18368.html#diff-2) to read it at full
+width.
+
+```console
+$ hereticus --format html --view il 7.24/modbusgwd 7.24.3/modbusgwd > report.html
+```
+
+<iframe src="./reports/cve-2026-18368.html#diff-2" title="The HTML report of CVE-2026-18368" class="report"></iframe>
 
 ## Use With a Coding Agent
 
@@ -407,7 +423,7 @@ Options:
       --base <BASE>            Address a raw image loads at, for example `0x08000000`, or `auto`
       --unpack <UNPACK>        Take one part out of each firmware image before reading it raw [possible values: stub, kernel]
       --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, arm32-be8, thumb2-be8, aarch64, mips32, mips32-be, mips16, mips16-be, x86-64, x86, powerpc, powerpc-le, powerpc64, powerpc64-le]
-      --format <FORMAT>        How to print the result [default: text] [possible values: text, compact, markdown, json]
+      --format <FORMAT>        How to print the result [default: text] [possible values: text, compact, markdown, json, html]
       --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified, rare]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]
       --color <COLOR>          When to color the report. [default: auto] [possible values: auto, always, never]

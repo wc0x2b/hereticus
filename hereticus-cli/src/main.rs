@@ -6,6 +6,7 @@
 mod bases;
 mod formats;
 mod functions;
+mod html;
 mod marks;
 mod project;
 mod tui;
@@ -309,6 +310,8 @@ enum Format {
     Markdown,
     /// One JSON object, for another tool to read.
     Json,
+    /// One HTML page, with the diff of each pair, to read in a browser.
+    Html,
 }
 
 /// How a diff shows each instruction.
@@ -475,6 +478,9 @@ fn run(args: &Args) -> Result<bool, String> {
     if args.tui && !Term::stdout().is_term() {
         return Err("--tui needs a terminal on standard output".to_string());
     }
+    if args.format == Format::Html && (args.functions || args.find_base) {
+        return Err("--format html shows a comparison; give it two binaries".to_string());
+    }
     if args.functions {
         let path = args.before.as_deref().ok_or("needs a binary to list")?;
         let binary = read_one(args, path)?;
@@ -600,6 +606,16 @@ fn run(args: &Args) -> Result<bool, String> {
             formats::print_markdown(&diff, &before, &after, listing, args.near_miss)
         }
         Format::Json => formats::print_json(&diff, &before, &after, listing),
+        Format::Html => {
+            let paths = [before_path, after_path].map(|path| path.display().to_string());
+            let report = html::HtmlReport {
+                listing,
+                near_miss_floor: args.near_miss,
+                view: args.view.into(),
+                paths: [&paths[0], &paths[1]],
+            };
+            html::print_html(&diff, &before, &after, report);
+        }
     }
 
     Ok(diff.changed().count() > 0 || !diff.removed.is_empty() || !diff.added.is_empty())

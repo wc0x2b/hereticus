@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--format html` prints the report as one HTML page. The page holds the
+  table, then the diff of each listed function side by side, with the
+  lines of its jumps, and a button that shows the diffs as assembly or as
+  IL. `--view` sets which one shows first. The book shows the page of
+  CVE-2026-18368.
+
 ## [0.7.2](https://github.com/wc0x2b/hereticus/compare/v0.7.1...v0.7.2) - 2026-11-08
 
 ### Changed

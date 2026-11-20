@@ -1,0 +1,17 @@
+---
+source: hereticus-cli/tests/cli.rs
+assertion_line: 260
+info:
+  program: hereticus
+  args:
+    - "--functions"
+    - "--format"
+    - html
+    - fixtures/build/O2/basic.o
+---
+success: false
+exit_code: 2
+----- stdout -----
+
+----- stderr -----
+hereticus: --format html shows a comparison; give it two binaries
