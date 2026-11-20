@@ -29,6 +29,12 @@ const ZERO_BYTES: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 /// pool that ends `luaopen_os`, where it started a function.
 const NOP_BYTES_BIG: [u8; 4] = [0xe3, 0x20, 0xf0, 0x00];
 
+/// Whether `a32` reads BE8, where LLD stores padding in the order of the
+/// data, unlike the instructions.
+fn is_be8(a32: &Arm32) -> bool {
+    (a32.data_order(), a32.instruction_order()) == (ByteOrder::Big, ByteOrder::Little)
+}
+
 /// The program counter, as an operand names it.
 const PC_OPERAND: il::Operand = il::Operand::Reg(il::Reg::ProgramCounter);
 
@@ -46,7 +52,9 @@ impl Recovery for Arm32 {
     /// The first instruction of a function runs always, as almost every
     /// A32 instruction does: its top four bits are `0xE`.
     fn can_open_function(&self, bytes: &[u8]) -> bool {
-        bytes.get(..INSN_WIDTH).is_some_and(|word| word[3] >> 4 == 0xe)
+        bytes
+            .first_chunk::<INSN_WIDTH>()
+            .is_some_and(|word| self.instruction_order().read_word(*word) >> 28 == 0xe)
     }
 
     /// A function that calls anything must save the link register first, so
@@ -82,7 +90,7 @@ impl Recovery for Arm32 {
             || (insn.kind == InsnKind::Unknown
                 && insn.opcode != super::Opcode::Data
                 && (insn.bytes() == NOP_BYTES || insn.bytes() == ZERO_BYTES))
-            || (self.data_order() == ByteOrder::Big && insn.bytes() == NOP_BYTES_BIG)
+            || (is_be8(self) && insn.bytes() == NOP_BYTES_BIG)
     }
 
     /// Only whole words at the end are removed, and only the two encodings a
@@ -91,8 +99,12 @@ impl Recovery for Arm32 {
         let mut end = bytes.len();
         while end >= INSN_WIDTH {
             let word = &bytes[end - INSN_WIDTH..end];
-            let big_nop = self.data_order() == ByteOrder::Big && word == NOP_BYTES_BIG;
-            if word == NOP_BYTES || word == ZERO_BYTES || big_nop {
+            let little = self
+                .instruction_order()
+                .read_word([word[0], word[1], word[2], word[3]])
+                .to_le_bytes();
+            let big_nop = is_be8(self) && word == NOP_BYTES_BIG;
+            if little == NOP_BYTES || little == ZERO_BYTES || big_nop {
                 end -= INSN_WIDTH;
             } else {
                 break;
@@ -140,7 +152,8 @@ impl Recovery for Arm32 {
     /// `-O2` fixture, the constants `vld1` loads after the return otherwise
     /// started a function.
     fn may_open_function(&self, word: &[u8]) -> bool {
-        word.get(3).is_some_and(|&top| top >= 0xe0)
+        word.first_chunk::<WORD_WIDTH>()
+            .is_some_and(|word| self.instruction_order().read_word(*word) >> 28 >= 0xe)
     }
 
     fn data_among_code(&self) -> DataAmongCode {
@@ -235,7 +248,9 @@ impl Recovery for Arm32 {
 
     fn plt_entries(&self, code: &[u8], base: u64) -> Vec<Range<u64>> {
         plt_stubs(code, base, |stub, address| {
-            opens_a32_stub(stub).then(|| self.stub_slot(stub, address)).flatten()?;
+            opens_a32_stub(stub, self.instruction_order())
+                .then(|| self.stub_slot(stub, address))
+                .flatten()?;
             Some(STUB_LENGTH)
         })
     }
@@ -247,7 +262,8 @@ impl Recovery for Arm32 {
         HEADER_WORDS.iter().find_map(|words| {
             let header = first_stub.checked_sub(words * WORD_WIDTH as u64)?;
             let offset = usize::try_from(header.checked_sub(base)?).ok()?;
-            (code.get(offset..offset + WORD_WIDTH)? == PUSH_LR).then_some(header)
+            let word = code.get(offset..offset + WORD_WIDTH)?.try_into().ok()?;
+            (self.instruction_order().read_word(word) == PUSH_LR).then_some(header)
         })
     }
 
@@ -263,17 +279,16 @@ pub(super) const STUB_LENGTH: usize = 3 * WORD_WIDTH;
 const TRAP_WORD: [u8; WORD_WIDTH] = [0xd4; WORD_WIDTH];
 
 /// `str lr, [sp, -4]!`, little endian, which opens the first entry of a PLT.
-const PUSH_LR: [u8; WORD_WIDTH] = [0x04, 0xe0, 0x2d, 0xe5];
+const PUSH_LR: u32 = 0xe52d_e004;
 
-/// Whether `code` opens with `add ip, pc, imm`, as each A32 stub does. A
-/// raw image is searched for stubs word by word, and this costs less than
-/// to decode each word.
-pub(super) fn opens_a32_stub(code: &[u8]) -> bool {
+/// Whether `code` opens with `add ip, pc, imm`, as each A32 stub does, with
+/// the instructions stored in `order`. A raw image is searched for stubs
+/// word by word, and this costs less than to decode each word.
+pub(super) fn opens_a32_stub(code: &[u8], order: ByteOrder) -> bool {
     /// The bits of `add ip, pc, imm` but for the immediate.
     const MASK: u32 = 0xffff_f000;
     const ADD_IP_PC: u32 = 0xe28f_c000;
-    code.first_chunk::<WORD_WIDTH>()
-        .is_some_and(|word| u32::from_le_bytes(*word) & MASK == ADD_IP_PC)
+    code.first_chunk::<WORD_WIDTH>().is_some_and(|word| order.read_word(*word) & MASK == ADD_IP_PC)
 }
 
 /// Where each PLT stub in `code` at `base` lies, where `stub_length` gives
@@ -1522,6 +1537,43 @@ mod tests {
         );
         assert_eq!(Arm32.plt_header(&gnu, 0x1480, 0x14ac), None, "no first entry before");
         assert_eq!(Arm32.plt_header(&gnu, 0x1490, 0x1494), None, "before the code");
+    }
+
+    /// The checks of raw words read them in the order of the image: a
+    /// `push {r4, lr}` can open a function in BE32 stored big endian, and
+    /// the `nop` that pads it is trimmed so, but neither the other way.
+    #[test]
+    fn be32_words_open_functions_and_pad_in_big_endian() {
+        let push = 0xe92d_4010_u32;
+        let nop = 0xe320_f000_u32;
+        assert!(ARM32_BE32.can_open_function(&push.to_be_bytes()));
+        assert!(ARM32_BE32.may_open_function(&push.to_be_bytes()));
+        assert!(!ARM32_BE32.can_open_function(&push.to_le_bytes()));
+        assert!(!ARM32_BE32.may_open_function(&push.to_le_bytes()));
+        assert!(!ARM32_BE32.can_open_function(&push.to_be_bytes()[..3]), "a partial word");
+        let code = [push.to_be_bytes(), nop.to_be_bytes(), [0; 4]].concat();
+        assert_eq!(ARM32_BE32.trim_padding(&code), &code[..4]);
+        let code = [push.to_be_bytes(), nop.to_le_bytes()].concat();
+        assert_eq!(ARM32_BE32.trim_padding(&code), &code[..], "a nop stored little endian");
+        let insn = ARM32_BE32.decode(&nop.to_be_bytes(), 0, 0x1000).expect("bytes must decode");
+        assert!(ARM32_BE32.is_padding(&insn));
+    }
+
+    /// BE32 stores each word of the PLT big endian, and its entries are
+    /// found as those of little endian are.
+    #[test]
+    fn finds_each_entry_of_a_be32_plt() {
+        let first = [0xe52d_e004_u32, 0xe59f_e004, 0xe08f_e00e, 0xe5be_f008, 0x0002_eb70];
+        let stub = [0xe28f_c600, 0xe28c_ca2e, 0xe5bc_fb70];
+        let gnu: Vec<u8> = [&first[..], &stub, &stub]
+            .concat()
+            .iter()
+            .flat_map(|word| word.to_be_bytes())
+            .collect();
+        assert_eq!(ARM32_BE32.plt_entries(&gnu, 0x1480), [0x1494..0x14a0, 0x14a0..0x14ac]);
+        assert_eq!(ARM32_BE32.plt_header(&gnu, 0x1480, 0x1494), Some(0x1480));
+        assert!(ARM32_BE8.plt_entries(&gnu, 0x1480).is_empty(), "read as BE8");
+        assert_eq!(ARM32_BE8.plt_header(&gnu, 0x1480, 0x1494), None, "read as BE8");
     }
 
     /// `sub sp, sp, 0xc` before a `push` opens a variadic function.

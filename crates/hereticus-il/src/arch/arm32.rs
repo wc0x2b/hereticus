@@ -383,19 +383,25 @@ pub fn core_opcode(insn: &Insn) -> Option<Opcode> {
 
 /// ARM32 in A32 (not Thumb) mode.
 ///
-/// The instructions are little endian in every image this reads. The data
-/// is too, but for BE8, where it is big endian: see [`ARM32_BE8`].
+/// The instructions are little endian in every image this reads but BE32.
+/// The data is too, but for BE8 and BE32, where it is big endian: see
+/// [`ARM32_BE8`] and [`ARM32_BE32`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Arm32 {
     data: ByteOrder,
+    instruction: ByteOrder,
 }
 
 /// A32 with little-endian data, as almost every ARM image is.
 #[allow(non_upper_case_globals)]
-pub const Arm32: Arm32 = Arm32 { data: ByteOrder::Little };
+pub const Arm32: Arm32 = Arm32 { data: ByteOrder::Little, instruction: ByteOrder::Little };
 
 /// A32 with big-endian data: BE8, as `ld --be8` links it.
-pub const ARM32_BE8: Arm32 = Arm32 { data: ByteOrder::Big };
+pub const ARM32_BE8: Arm32 = Arm32 { data: ByteOrder::Big, instruction: ByteOrder::Little };
+
+/// A32 with big-endian instructions and data: BE32, as cores before ARMv6
+/// run it.
+pub const ARM32_BE32: Arm32 = Arm32 { data: ByteOrder::Big, instruction: ByteOrder::Big };
 
 impl Default for Arm32 {
     fn default() -> Self {
@@ -404,9 +410,15 @@ impl Default for Arm32 {
 }
 
 impl Arm32 {
-    /// A32 with its data in `order`.
+    /// A32 with its data in `order` and its instructions little endian,
+    /// as BE8 stores them.
     pub const fn with_data(order: ByteOrder) -> Self {
-        Self { data: order }
+        Self { data: order, instruction: ByteOrder::Little }
+    }
+
+    /// The byte order of the instructions in the image.
+    pub const fn instruction_order(self) -> ByteOrder {
+        self.instruction
     }
 
     /// The instruction at `offset` of `code`, which starts at `address`,
@@ -422,7 +434,12 @@ impl Arm32 {
         if bytes.len() < INSN_WIDTH {
             return Err(DecodeError::Truncated);
         }
-        let bytes = &bytes[..INSN_WIDTH];
+        let stored = [bytes[0], bytes[1], bytes[2], bytes[3]];
+        let word = self.instruction.read_word(stored);
+        // The rest of this crate, `yaxpeax-arm` too, reads an instruction
+        // little endian, so a BE32 one is kept in that order.
+        let little = word.to_le_bytes();
+        let bytes = &little[..];
         let insn_address = address + offset as u64;
 
         let mut reader = U8Reader::new(bytes);
@@ -432,7 +449,6 @@ impl Arm32 {
         // returns an error, or it succeeds and sets `Opcode::Invalid`. The
         // standard ARM `nop`, `0xe320f000`, takes the second path. Both mean
         // the same thing here.
-        let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let failed = InstDecoder::default().decode_into(&mut inst, &mut reader).is_err();
         if failed || inst.opcode == Opcode::Invalid || decoder_misreads(word, Encoding::A32) {
             // A32 instructions are all 4 bytes, so stepping over an
@@ -3455,6 +3471,46 @@ mod tests {
     /// Decode one instruction from raw bytes at address 0.
     fn decode_one(bytes: [u8; 4]) -> Insn {
         Arm32.decode(&bytes, 0, 0).expect("bytes must decode")
+    }
+
+    /// A BE32 word reads as the same word stored little endian: the same
+    /// instruction, text, bytes and lift, for any word.
+    #[test]
+    fn a_be32_word_reads_as_the_little_endian_word() {
+        bolero::check!().with_type::<u32>().for_each(|&word| {
+            let little = Arm32.read(&word.to_le_bytes(), 0, 0x1000, Printing::Text);
+            let big = ARM32_BE32.read(&word.to_be_bytes(), 0, 0x1000, Printing::Text);
+            let (little, little_text) = little.expect("a word reads");
+            let (big, big_text) = big.expect("a word reads");
+            assert_eq!(big.bytes(), little.bytes(), "{word:#010x}");
+            assert_eq!(big.kind, little.kind, "{word:#010x}");
+            assert_eq!(big.opcode, little.opcode, "{word:#010x}");
+            assert_eq!(big_text, little_text, "{word:#010x}");
+            assert_eq!(ARM32_BE32.lift_named(&big), Arm32.lift_named(&little), "{word:#010x}");
+        });
+    }
+
+    /// BE32 stores `push {r4, lr}` big endian, and BE8 stores it little
+    /// endian.
+    #[test]
+    fn be32_and_be8_store_an_instruction_in_opposite_orders() {
+        let mut big = words::PUSH_R4_LR;
+        big.reverse();
+        let push = decode_one(words::PUSH_R4_LR);
+        assert_eq!(ARM32_BE32.decode(&big, 0, 0).expect("bytes must decode").opcode, push.opcode);
+        assert_eq!(
+            ARM32_BE8.decode(&words::PUSH_R4_LR, 0, 0).expect("bytes must decode").opcode,
+            push.opcode
+        );
+        assert_eq!(ARM32_BE32.data_order(), ByteOrder::Big);
+        assert_eq!(ARM32_BE32.instruction_order(), ByteOrder::Big);
+        assert_eq!(ARM32_BE8.instruction_order(), ByteOrder::Little);
+    }
+
+    /// A word cut short is no instruction, in BE32 as in any order.
+    #[test]
+    fn a_short_be32_word_is_truncated() {
+        assert_eq!(ARM32_BE32.decode(&[0xe9, 0x2d, 0x40], 0, 0), Err(DecodeError::Truncated));
     }
 
     /// Encodings from `llvm-mc --triple=armv7a --show-encoding`.

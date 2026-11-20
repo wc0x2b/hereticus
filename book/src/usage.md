@@ -406,7 +406,7 @@ Options:
       --raw                    Read the inputs as raw code with no container format
       --base <BASE>            Address a raw image loads at, for example `0x08000000`, or `auto`
       --unpack <UNPACK>        Take one part out of each firmware image before reading it raw [possible values: stub, kernel]
-      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, arm32-be8, thumb2-be8, aarch64, mips32, mips32-be, mips16, mips16-be, x86-64, x86, powerpc, powerpc-le, powerpc64, powerpc64-le]
+      --arch <ARCH>            Architecture of a raw image [default: arm32] [possible values: arm32, thumb2, arm32-be8, thumb2-be8, arm32-be32, thumb2-be32, aarch64, mips32, mips32-be, mips16, mips16-be, x86-64, x86, powerpc, powerpc-le, powerpc64, powerpc64-le]
       --format <FORMAT>        How to print the result [default: text] [possible values: text, compact, markdown, json]
       --sort <SORT>            How to order the changed functions. [default: added] [possible values: confidence, added, removed, modified, rare]
       --progress <PROGRESS>    When to show a progress bar. [default: auto] [possible values: auto, always, never]
@@ -418,7 +418,7 @@ Options:
 
 ## Limits
 * **A32 (ARMv5TE and later, soft-float or hard-float, with VFP and NEON)
-  and Thumb-2 (Cortex-M too), little endian or BE8, AArch64, MIPS32 and
+  and Thumb-2 (Cortex-M too), little endian, BE8 or BE32, AArch64, MIPS32 and
   MIPS16e in either byte order, x86-64 and 32-bit x86, and PowerPC, 32-bit
   and 64-bit in either byte order.** A library that
   mixes A32 and Thumb-2, or MIPS32 and MIPS16e, is read function by function

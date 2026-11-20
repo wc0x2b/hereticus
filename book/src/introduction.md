@@ -94,7 +94,7 @@ See [Use With a Coding Agent](./usage.md#use-with-a-coding-agent).
 
 ### Supported Files
 
-- **Architectures:** A32 and Thumb-2, also big endian (BE8), AArch64,
+- **Architectures:** A32 and Thumb-2, also big endian (BE8 and BE32), AArch64,
   MIPS32, MIPS16e, x86-64, 32-bit x86, and PowerPC, 32-bit and 64-bit.
 - **Files:** ELF (also with no section headers, as `sstrip` leaves it),
   Mach-O and iOS kernelcaches, Windows PE, and raw flash dumps.

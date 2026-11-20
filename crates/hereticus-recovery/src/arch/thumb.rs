@@ -26,15 +26,28 @@ use super::{
 };
 use core::ops::Range;
 use hereticus_il::arch::ByteOrder;
-use hereticus_il::arch::arm32::{ARM32_BE8, Arm32, Decoded, Flags, core_opcode};
+use hereticus_il::arch::arm32::{ARM32_BE8, ARM32_BE32, Arm32, Decoded, Flags, core_opcode};
 use hereticus_il::arch::thumb::*;
 use hereticus_memory::AddressSpace;
 use std::collections::BTreeSet;
 use yaxpeax_arm::armv7::{ConditionCode, Opcode};
 
-/// `bx pc` and `b.n` back, little endian: the T32 words GNU `ld` puts before
-/// an A32 PLT stub that T32 code calls.
-const THUMB_STUB_PREFIX: [u8; 4] = [0x78, 0x47, 0xfd, 0xe7];
+/// `bx pc` and `b.n` back: the T32 halfwords GNU `ld` puts before an A32
+/// PLT stub that T32 code calls.
+const THUMB_STUB_PREFIX: [u16; 2] = [BX_PC, 0xe7fd];
+
+/// The bytes of [`THUMB_STUB_PREFIX`].
+const THUMB_STUB_PREFIX_LENGTH: usize = THUMB_STUB_PREFIX.len() * HALFWORD;
+
+/// Whether `code` opens with `halfwords`, each stored in `order`.
+fn opens_with(code: &[u8], halfwords: &[u16], order: ByteOrder) -> bool {
+    let (stored, _) = code.as_chunks::<HALFWORD>();
+    stored.len() >= halfwords.len()
+        && stored
+            .iter()
+            .zip(halfwords)
+            .all(|(bytes, &halfword)| order.read_halfword(*bytes) == halfword)
+}
 
 /// More cases than any `switch` a compiler turns into one table.
 const MOST_CASES: usize = 1024;
@@ -161,11 +174,13 @@ impl Recovery for Thumb2 {
     /// opens each stub a T32 call reaches with `bx pc; b.n` to switch to A32
     /// first.
     fn stub_slot(&self, code: &[u8], address: u64) -> Option<u64> {
-        match code.split_at_checked(THUMB_STUB_PREFIX.len()) {
-            Some((prefix, stub)) if prefix == THUMB_STUB_PREFIX => {
-                Arm32.stub_slot(stub, address + THUMB_STUB_PREFIX.len() as u64)
-            }
-            _ => Arm32.stub_slot(code, address),
+        let a32 = a32_of(self);
+        match opens_with(code, &THUMB_STUB_PREFIX, self.instruction_order()) {
+            true => a32.stub_slot(
+                &code[THUMB_STUB_PREFIX_LENGTH..],
+                address + THUMB_STUB_PREFIX_LENGTH as u64,
+            ),
+            false => a32.stub_slot(code, address),
         }
     }
 
@@ -173,11 +188,11 @@ impl Recovery for Thumb2 {
     /// A32, and the prefix is part of it.
     fn plt_entries(&self, code: &[u8], base: u64) -> Vec<Range<u64>> {
         super::arm32::plt_stubs(code, base, |stub, address| {
-            let prefix = match stub.starts_with(&THUMB_STUB_PREFIX) {
-                true => THUMB_STUB_PREFIX.len(),
+            let prefix = match opens_with(stub, &THUMB_STUB_PREFIX, self.instruction_order()) {
+                true => THUMB_STUB_PREFIX_LENGTH,
                 false => 0,
             };
-            super::arm32::opens_a32_stub(&stub[prefix..])
+            super::arm32::opens_a32_stub(&stub[prefix..], self.instruction_order())
                 .then(|| self.stub_slot(stub, address))
                 .flatten()?;
             Some(prefix + super::arm32::STUB_LENGTH)
@@ -185,7 +200,7 @@ impl Recovery for Thumb2 {
     }
 
     fn plt_header(&self, code: &[u8], base: u64, first_stub: u64) -> Option<u64> {
-        Arm32.plt_header(code, base, first_stub)
+        a32_of(self).plt_header(code, base, first_stub)
     }
 
     fn is_prologue(&self, insn: &Insn) -> bool {
@@ -201,7 +216,7 @@ impl Recovery for Thumb2 {
     /// `__f_from_thumb`. `pc` reads 4 bytes ahead, rounded down to a word,
     /// and the A32 code goes on from there.
     fn switch_at_start(&self, code: &[u8], address: u64) -> Option<(&'static dyn Recovery, u64)> {
-        (code.get(..HALFWORD)? == BX_PC).then(|| {
+        opens_with(code, &[BX_PC], self.instruction_order()).then(|| {
             let lands = PcModel::T32.of_literal_load(address);
             (self.a32_static(), lands)
         })
@@ -234,8 +249,7 @@ impl Recovery for Thumb2 {
             // LLD's fill, `0xd4d4`, reads as this branch back. No compiler
             // branches back into the middle of the fill before a function.
             || (is(Opcode::B, ConditionCode::MI, Flags::Kept) && branches_back(0x54))
-            || (self.data_order() == ByteOrder::Big
-                && PADDING_BIG.iter().any(|pad| insn.bytes() == pad))
+            || (is_be8(self) && PADDING_BIG.iter().any(|pad| insn.bytes() == pad))
             || (insn.kind == InsnKind::Unknown
                 && insn.opcode != super::Opcode::Data
                 && insn.bytes() == [0, 0])
@@ -245,10 +259,11 @@ impl Recovery for Thumb2 {
     /// pads with.
     fn trim_padding<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
         let mut end = bytes.len() - bytes.len() % HALFWORD;
-        let big = self.data_order() == ByteOrder::Big;
+        let order = self.instruction_order();
+        let be8 = is_be8(self);
         let is_pad = |halfword: &[u8]| {
-            PADDING.iter().any(|pad| halfword == pad)
-                || (big && PADDING_BIG.iter().any(|pad| halfword == pad))
+            let little = order.read_halfword([halfword[0], halfword[1]]).to_le_bytes();
+            PADDING.contains(&little) || (be8 && PADDING_BIG.iter().any(|pad| halfword == pad))
         };
         while end >= HALFWORD && is_pad(&bytes[end - HALFWORD..end]) {
             end -= HALFWORD;
@@ -287,35 +302,54 @@ trait WithData {
     fn a32_static(&self) -> &'static dyn Recovery;
 }
 
+/// Whether `thumb` reads BE8, where LLD stores padding in the order of
+/// the data, unlike the instructions.
+fn is_be8(thumb: &Thumb2) -> bool {
+    (thumb.data_order(), thumb.instruction_order()) == (ByteOrder::Big, ByteOrder::Little)
+}
+
+/// The A32 decoder of the image that `thumb` reads, in the same byte
+/// orders.
+pub fn a32_of(thumb: &Thumb2) -> &'static Arm32 {
+    match (thumb.data_order(), thumb.instruction_order()) {
+        (ByteOrder::Little, _) => &Arm32,
+        (ByteOrder::Big, ByteOrder::Little) => &ARM32_BE8,
+        (ByteOrder::Big, ByteOrder::Big) => &ARM32_BE32,
+    }
+}
+
 impl WithData for Thumb2 {
     fn pc(&self) -> PcModel {
         PcModel::T32.with_data(self.data_order())
     }
 
     fn a32(&self) -> Arm32 {
-        Arm32::with_data(self.data_order())
+        *a32_of(self)
     }
 
     fn a32_static(&self) -> &'static dyn Recovery {
-        match self.data_order() {
-            ByteOrder::Little => &Arm32,
-            ByteOrder::Big => &ARM32_BE8,
-        }
+        a32_of(self)
     }
 }
 
 /// Where a body that opens with a switch to A32 goes on in A32: the offset
 /// into `code`, and the index into `body`. See [`Recovery::switch_at_start`].
+///
+/// The decoder keeps each halfword little endian, in BE32 too, so the first
+/// instruction tells it in any byte order.
 pub fn split_at_switch(code: &[u8], body: &[Insn]) -> Option<(usize, usize)> {
-    let start = body.first()?.address;
-    let (_, lands) = Thumb2.switch_at_start(code, start)?;
-    let offset = usize::try_from(lands.checked_sub(start)?).ok()?;
+    let first = body.first()?;
+    if first.bytes() != BX_PC.to_le_bytes() {
+        return None;
+    }
+    let lands = PcModel::T32.of_literal_load(first.address);
+    let offset = usize::try_from(lands.checked_sub(first.address)?).ok()?;
     let index = body.partition_point(|insn| insn.address < lands);
     (offset < code.len() && index < body.len()).then_some((offset, index))
 }
 
-/// `bx pc`, little endian.
-const BX_PC: [u8; 2] = [0x78, 0x47];
+/// `bx pc`.
+const BX_PC: u16 = 0x4778;
 
 /// The bytes of the table a `tbb` or `tbh` at `insns[index]` jumps
 /// through, and the width of an entry, from the instructions alone.
@@ -839,7 +873,7 @@ mod tests {
     #[test]
     fn a_plt_entry_starts_at_its_thumb_prefix() {
         let stub = [0xe28f_c600_u32, 0xe28c_ca1e, 0xe5bc_fb6c];
-        let prefix = u32::from_le_bytes(THUMB_STUB_PREFIX);
+        let prefix = u32::from(THUMB_STUB_PREFIX[1]) << 16 | u32::from(THUMB_STUB_PREFIX[0]);
         let code: Vec<u8> = [&[prefix][..], &stub, &stub, &[prefix], &stub]
             .concat()
             .iter()
@@ -850,6 +884,58 @@ mod tests {
             [0x1494..0x14a4, 0x14a4..0x14b0, 0x14b0..0x14c0]
         );
         assert!(Thumb2.plt_entries(&code[..4], 0x1494).is_empty(), "a prefix alone");
+    }
+
+    /// BE32 pads with each halfword big endian, and only so.
+    #[test]
+    fn be32_padding_is_read_big_endian() {
+        let push = 0xb510_u16.to_be_bytes();
+        let code = [push, 0xbf00_u16.to_be_bytes(), 0x46c0_u16.to_be_bytes()].concat();
+        assert_eq!(THUMB2_BE32.trim_padding(&code), &code[..2]);
+        let code = [push, 0xbf00_u16.to_le_bytes()].concat();
+        assert_eq!(THUMB2_BE32.trim_padding(&code), &code[..], "a nop stored little endian");
+        let insn = THUMB2_BE32.decode(&0xbf00_u16.to_be_bytes(), 0, 0x1000).expect("a nop reads");
+        assert!(THUMB2_BE32.is_padding(&insn));
+        assert!(THUMB2_BE32.can_open_function(&push));
+    }
+
+    /// BE32 stores the prefix halfword by halfword and the stub word by
+    /// word, both big endian, and its PLT is found as that of little endian
+    /// is. The little-endian bytes are no stub there, as they are no
+    /// instruction in BE32.
+    #[test]
+    fn a_be32_plt_entry_starts_at_its_thumb_prefix() {
+        let stub = [0xe28f_c600_u32, 0xe28c_ca1e, 0xe5bc_fb6c];
+        let prefix: Vec<u8> =
+            THUMB_STUB_PREFIX.iter().flat_map(|half| half.to_be_bytes()).collect();
+        let words = |words: &[u32]| -> Vec<u8> {
+            words.iter().flat_map(|word| word.to_be_bytes()).collect()
+        };
+        let code = [&prefix[..], &words(&stub), &words(&stub), &prefix, &words(&stub)].concat();
+        let entries = [0x1494..0x14a4, 0x14a4..0x14b0, 0x14b0..0x14c0];
+        assert_eq!(THUMB2_BE32.plt_entries(&code, 0x1494), entries);
+        assert!(Thumb2.plt_entries(&code, 0x1494).is_empty(), "read little endian");
+        assert!(THUMB2_BE8.plt_entries(&code, 0x1494).is_empty(), "read as BE8");
+        let slot = THUMB2_BE32.stub_slot(&code, 0x1494);
+        assert_eq!(slot, THUMB2_BE32.stub_slot(&code[4..], 0x1498), "a stub with no prefix");
+        assert!(slot.is_some());
+    }
+
+    /// A body of BE32 that opens with `bx pc` goes on in A32 at the next
+    /// word, as one of little endian does, and in the A32 of BE32.
+    #[test]
+    fn a_be32_switch_to_a32_is_found() {
+        // `bx pc`, `nop`, then the A32 `bx lr`.
+        let code = [0x47, 0x78, 0x46, 0xc0, 0xe1, 0x2f, 0xff, 0x1e];
+        let body = decode_all(&THUMB2_BE32, &code, 0x1000).0;
+        assert_eq!(split_at_switch(&code, &body), Some((4, 2)));
+        let (a32, lands) = THUMB2_BE32.switch_at_start(&code, 0x1000).expect("a switch");
+        assert_eq!(lands, 0x1004);
+        assert_eq!(a32.data_order(), ByteOrder::Big);
+        assert_eq!(a32_of(&THUMB2_BE32), &ARM32_BE32);
+        assert_eq!(a32_of(&THUMB2_BE8), &ARM32_BE8);
+        assert_eq!(a32_of(&Thumb2), &Arm32);
+        assert!(THUMB2_BE8.switch_at_start(&code, 0x1000).is_none(), "read as BE8");
     }
 
     #[test]
