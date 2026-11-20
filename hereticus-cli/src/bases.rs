@@ -88,6 +88,8 @@ pub(crate) fn print_bases(data: &[u8], isa: Isa, format: Format) {
             }
             println!("{}", verdict(found));
         }
+        // `run` refuses it before it lists anything.
+        Format::Html => unreachable!("--format html needs two binaries"),
         Format::Json => println!("{}", json_bases(&ranked, found)),
     }
 }
