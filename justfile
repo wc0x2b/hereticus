@@ -3,8 +3,11 @@ fixtures_image := "hereticus-fixtures"
 # Compile the test fixtures for each architecture, as ELF, Mach-O and PE,
 # and build the Go fixtures with garble. Tests that read them depend on this recipe. The build runs in a container, because the tests compare exact
 # machine code and thus need the same compiler on every machine.
+# `--pull` gets the Debian point release that CI builds from. Without it, an
+# old local base image keeps an old compiler, and the tests pass here but
+# fail in CI.
 fixtures:
-    docker build --quiet --tag {{fixtures_image}} fixtures
+    docker build --pull --quiet --tag {{fixtures_image}} fixtures
     docker run --rm \
         --user "$(id -u):$(id -g)" \
         --volume "{{justfile_directory()}}:/work" \

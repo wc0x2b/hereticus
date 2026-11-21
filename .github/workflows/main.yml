@@ -35,8 +35,10 @@ jobs:
 
       # The fixtures take eight minutes to build. The scripts in `fixtures/`
       # pin each download by its SHA-256, and the Dockerfile pins the
-      # compilers, so the key changes when an input of the build does.
-      # `backports.sh` rebuilds only when its own inputs changed.
+      # major version of the compilers, so the key changes when an input of
+      # the build does. A Debian point release can change the compiler with
+      # no change to the key. `backports.sh` writes `clang --version` into
+      # its stamp, so it then builds again.
       - name: Cache the fixtures
         uses: actions/cache@v6
         with:
