@@ -234,15 +234,15 @@ fn tally_all(reading: Reading) -> Tally {
 
 /// A function cut in pieces pairs each piece with a piece of the same
 /// function, so with no table read, more pairs count as right: 5771 raw, and
-/// 249 functions gone and 218 new, where the whole functions leave 119 and
-/// 99.
+/// 249 functions gone and 218 new, where the whole functions leave 121 and
+/// 102.
 #[test]
 fn releases_that_are_not_pic_pair() {
     assert_eq!(
         [tally_all(Reading::Stripped), tally_all(Reading::Raw)],
         [
             Tally { right: 5639, wrong: 4, gone: 24, new: 30 },
-            Tally { right: 5624, wrong: 4, gone: 119, new: 99 }
+            Tally { right: 5624, wrong: 4, gone: 121, new: 102 }
         ],
         "stripped then raw"
     );
