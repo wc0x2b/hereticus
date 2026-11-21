@@ -153,7 +153,7 @@ fn shown(doc: &str) -> Result<Vec<Shown>, String> {
 /// What the tool prints with `args`, standard output after standard error,
 /// as a terminal shows both.
 fn run(args: &[String]) -> String {
-    let output = Command::new(insta_cmd::get_cargo_bin("hereticus"))
+    let output = Command::new(env!("CARGO_BIN_EXE_hereticus"))
         .current_dir(root())
         .args(["--color", "never", "--progress", "never"])
         .args(args)
