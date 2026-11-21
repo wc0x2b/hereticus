@@ -101,7 +101,7 @@ impl Arch for Arm32 {
             .as_chunks::<INSN_WIDTH>()
             .0
             .iter()
-            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .map(|word| self.instruction_order().read_word(*word))
             .collect();
         if words.len() < FEWEST_WORDS {
             return Contents::Code;
@@ -250,6 +250,18 @@ mod tests {
         assert_eq!(judge(&[text; 16]), Contents::Data);
         assert_eq!(judge(&[0x0000_0010; 16]), Contents::Data, "a table of small offsets");
         assert_eq!(judge(&[text; 15]), Contents::Code, "too short to judge");
+    }
+
+    /// BE32 code runs always too, read with its words big endian.
+    #[test]
+    fn tells_code_from_data_in_be32() {
+        let space = AddressSpace::none();
+        let code = [0xe92d_4010_u32, 0xe1a0_4000, 0x0a00_0002, 0xe594_0000, 0xe8bd_8010];
+        let code: Vec<u8> = code.repeat(4).iter().flat_map(|word| word.to_be_bytes()).collect();
+        let (insns, _) = hereticus_recovery::arch::decode_all(&ARM32_BE32, &code, 0);
+        assert_eq!(ARM32_BE32.contents(&code, &insns, &space), Contents::Code);
+        let (insns, _) = hereticus_recovery::arch::decode_all(&ARM32_BE8, &code, 0);
+        assert_eq!(ARM32_BE8.contents(&code, &insns, &space), Contents::Data, "read as BE8");
     }
 
     /// The name of the operation of the A32 `word`.

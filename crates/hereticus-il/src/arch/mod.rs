@@ -23,7 +23,7 @@ use compact_str::CompactString;
 /// image at the wrong order does not fail: every word still decodes, into a
 /// different instruction, so the order has to be known rather than guessed.
 /// ARM big endian, BE8, stores each instruction little endian, and only its
-/// data in this order.
+/// data in this order. The older BE32 stores both in this order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ByteOrder {
     /// `mipsel` and `arm`, as a desktop-built object usually is.
@@ -180,6 +180,10 @@ impl Insn {
     }
 
     /// The bytes of the instruction, in the order memory holds them.
+    ///
+    /// ARM BE32 is the one exception: its decoders keep each A32 word and
+    /// each T32 halfword little endian, as every other ARM image holds it,
+    /// so that one lifter reads them all.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes[..self.bytes_len.min(self.bytes.len())]
     }

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Read ARM big endian, BE32, as cores before ARMv6 run it: a big-endian
+  ARM file whose ELF header does not set `EF_ARM_BE8` reads as such, and
+  `--arch arm32-be32` and `thumb2-be32` read a raw image. In BE32 the
+  instructions are big endian, as the data is. Over the releases of zlib,
+  Lua, expat and tinyxml2 built so for ARMv5TE, as A32 and as Thumb, 7821
+  of 7862 functions are found exactly stripped and 7734 raw, where the
+  same builds little endian give 7822 and 7726.
+
 ## [0.7.2](https://github.com/wc0x2b/hereticus/compare/v0.7.1...v0.7.2) - 2026-11-08
 
 ### Changed

@@ -59,18 +59,23 @@ pub const WORD: usize = 4;
 /// ARM32 in T32 (Thumb-2) mode.
 ///
 /// As for [`Arm32`](super::arm32::Arm32), the data is little endian but
-/// for BE8: see [`THUMB2_BE8`].
+/// for BE8 and BE32: see [`THUMB2_BE8`] and [`THUMB2_BE32`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Thumb2 {
     data: ByteOrder,
+    instruction: ByteOrder,
 }
 
 /// T32 with little-endian data, as almost every ARM image is.
 #[allow(non_upper_case_globals)]
-pub const Thumb2: Thumb2 = Thumb2 { data: ByteOrder::Little };
+pub const Thumb2: Thumb2 = Thumb2 { data: ByteOrder::Little, instruction: ByteOrder::Little };
 
 /// T32 with big-endian data: BE8, as `ld --be8` links it.
-pub const THUMB2_BE8: Thumb2 = Thumb2 { data: ByteOrder::Big };
+pub const THUMB2_BE8: Thumb2 = Thumb2 { data: ByteOrder::Big, instruction: ByteOrder::Little };
+
+/// T32 with big-endian instructions and data: BE32, as cores before ARMv6
+/// run it.
+pub const THUMB2_BE32: Thumb2 = Thumb2 { data: ByteOrder::Big, instruction: ByteOrder::Big };
 
 impl Default for Thumb2 {
     fn default() -> Self {
@@ -79,9 +84,15 @@ impl Default for Thumb2 {
 }
 
 impl Thumb2 {
-    /// T32 with its data in `order`.
+    /// T32 with its data in `order` and its instructions little endian,
+    /// as BE8 stores them.
     pub const fn with_data(order: ByteOrder) -> Self {
-        Self { data: order }
+        Self { data: order, instruction: ByteOrder::Little }
+    }
+
+    /// The byte order of the instructions in the image.
+    pub const fn instruction_order(self) -> ByteOrder {
+        self.instruction
     }
 
     /// Lift `insn`, with the name of each operand where `printing` asks for
@@ -205,8 +216,19 @@ impl Thumb2 {
     ) -> Result<(Insn, String), DecodeError> {
         let bytes = code.get(offset..).ok_or(DecodeError::Truncated)?;
         let first = bytes.get(..HALFWORD).ok_or(DecodeError::Truncated)?;
-        let width = if is_wide(u16::from_le_bytes([first[0], first[1]])) { WORD } else { HALFWORD };
-        let bytes = bytes.get(..width).ok_or(DecodeError::Truncated)?;
+        let first = self.instruction.read_halfword([first[0], first[1]]);
+        let width = if is_wide(first) { WORD } else { HALFWORD };
+        let stored = bytes.get(..width).ok_or(DecodeError::Truncated)?;
+        // The rest of this crate, `yaxpeax-arm` too, reads each halfword
+        // little endian, so those of BE32 are kept in that order.
+        let mut little = [0; WORD];
+        let (to_halfwords, _) = little.as_chunks_mut::<HALFWORD>();
+        let (from_halfwords, _) = stored.as_chunks::<HALFWORD>();
+        for (to, from) in to_halfwords.iter_mut().zip(from_halfwords) {
+            let halfword = self.instruction.read_halfword(*from);
+            to.copy_from_slice(&halfword.to_le_bytes());
+        }
+        let bytes = &little[..width];
         let insn_address = address + offset as u64;
 
         let mut reader = U8Reader::new(bytes);
@@ -868,6 +890,40 @@ pub fn is_it(insn: &Insn) -> bool {
 mod tests {
     use super::*;
     use crate::arch::arm32::condition_name;
+
+    /// BE32 stores each halfword big endian, so a pair of halfwords reads
+    /// as the same pair stored little endian: the same instruction, width,
+    /// text, bytes and lift, for any pair.
+    #[test]
+    fn be32_halfwords_read_as_the_little_endian_halfwords() {
+        bolero::check!().with_type::<(u16, u16)>().for_each(|&(first, second)| {
+            let little = [first.to_le_bytes(), second.to_le_bytes()].concat();
+            let big = [first.to_be_bytes(), second.to_be_bytes()].concat();
+            let little = Thumb2.read(&little, 0, 0x1000, Printing::Text);
+            let big = THUMB2_BE32.read(&big, 0, 0x1000, Printing::Text);
+            let (little, little_text) = little.expect("a halfword pair reads");
+            let (big, big_text) = big.expect("a halfword pair reads");
+            assert_eq!(big.bytes(), little.bytes(), "{first:#06x} {second:#06x}");
+            assert_eq!(big.kind, little.kind, "{first:#06x} {second:#06x}");
+            assert_eq!(big.opcode, little.opcode, "{first:#06x} {second:#06x}");
+            assert_eq!(big_text, little_text, "{first:#06x} {second:#06x}");
+            let lifted = (THUMB2_BE32.lift_named(&big), Thumb2.lift_named(&little));
+            assert_eq!(lifted.0, lifted.1, "{first:#06x} {second:#06x}");
+        });
+    }
+
+    /// The width of a BE32 instruction comes from its first halfword read
+    /// big endian: `bl` is wide, and `push {r4, lr}` narrow.
+    #[test]
+    fn the_width_of_a_be32_instruction_comes_from_its_first_halfword() {
+        let bl = [0xf0, 0x00, 0xf8, 0x00];
+        assert_eq!(THUMB2_BE32.decode(&bl, 0, 0).expect("a bl reads").bytes_len, WORD);
+        let push = [0xb5, 0x10, 0xf0, 0x00];
+        assert_eq!(THUMB2_BE32.decode(&push, 0, 0).expect("a push reads").bytes_len, HALFWORD);
+        assert_eq!(THUMB2_BE32.decode(&bl[..3], 0, 0), Err(DecodeError::Truncated));
+        assert_eq!(THUMB2_BE32.instruction_order(), ByteOrder::Big);
+        assert_eq!(THUMB2_BE8.instruction_order(), ByteOrder::Little);
+    }
 
     /// Taking out a suffix by bytes gives what `str::replace` gives, for
     /// any text of dots, the two letters and others.
