@@ -27,7 +27,7 @@ keywords = ["reverse-engineering", "binary-analysis", "bindiff", "firmware", "el
 categories = ["development-tools", "parsing"]
 
 [patch.crates-io]
-deku = { git = "https://github.com/sharksforarms/deku", rev = "5c360c3" }
+deku = { git = "https://github.com/sharksforarms/deku", rev = "5ee46d8" }
 
 # Benches build as the dist binaries do, so that a change measures what
 # ships, and a change elsewhere in a crate does not move a count by how
