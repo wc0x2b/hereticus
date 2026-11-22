@@ -1,7 +1,7 @@
 //! The instruction forms of PowerPC, as the Power ISA names them and their
 //! fields, which deku reads from a word most significant bit first.
 
-use deku::{DekuRead, DekuReader};
+use deku::{DekuBitField, DekuRead, DekuReader};
 
 /// The `T` that the 32 bits of `word` hold.
 fn read<T: for<'a> DekuReader<'a>>(word: u32) -> T {
@@ -172,12 +172,16 @@ impl BForm {
 #[deku(endian = "big")]
 pub struct BranchOptions {
     /// Whether it tests a bit.
+    #[deku(bit_field)]
     pub bit: BitUse,
     /// The value of the bit that branches.
+    #[deku(bit_field)]
     pub when: super::BitValue,
     /// Whether it counts down.
+    #[deku(bit_field)]
     pub count: CountUse,
     /// The value of the count that branches.
+    #[deku(bit_field)]
     pub until: super::CountTest,
     /// A hint, in the old form, which changes nothing a branch does.
     #[deku(bits = 1, pad_bits_after = "3")]
@@ -195,7 +199,7 @@ impl BranchOptions {
 }
 
 /// Whether a branch tests a bit of the condition register.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub enum BitUse {
     /// It tests the bit that BI names.
@@ -207,7 +211,7 @@ pub enum BitUse {
 }
 
 /// Whether a branch counts the count register down and tests it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub enum CountUse {
     /// It counts the count register down, and tests it.

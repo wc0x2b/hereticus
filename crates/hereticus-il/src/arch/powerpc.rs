@@ -22,7 +22,7 @@ pub mod form;
 use crate as il;
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, InstructionSet, Printing, split_printed};
 use compact_str::{CompactString, format_compact};
-use deku::DekuRead;
+use deku::{DekuBitField, DekuRead};
 use form::{BForm, BitUse, BranchOptions, CountUse, XForm};
 use smallvec::SmallVec;
 use yaxpeax_arch::{Decoder as _, U8Reader};
@@ -332,7 +332,7 @@ fn operands(inst: &Instruction) -> SmallVec<[Operand; 5]> {
 
 /// Whether a conditional branch takes its target where a bit of the
 /// condition register is set or where it is clear.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub enum BitValue {
     /// It branches where the bit is set.
@@ -344,7 +344,7 @@ pub enum BitValue {
 }
 
 /// What a branch that counts down the count register tests it for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub enum CountTest {
     /// It branches where the count reaches zero, as `bdz` does.
