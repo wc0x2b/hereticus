@@ -10,7 +10,7 @@ use crate as il;
 use crate::arch::mips::{Decoded as MipsDecoded, Mips32, decoded};
 use crate::arch::{DecodeError, Decoder, Insn, InsnKind, Printing};
 use compact_str::CompactString;
-use deku::DekuRead;
+use deku::{DekuBitField, DekuRead};
 use format::{
     DelaySlot, Encoded, ExtendAddiu, ExtendFrame, ExtendShift, I, I8, JumpMode, JumpRegister, Kept,
     Link, Prefix, Ri, Rr, Rri, RriA, Rrr, SaveRestore, Shift, Through,
@@ -165,7 +165,7 @@ pub enum Reading {
 }
 
 /// Whether a frame instruction makes the frame or drops it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub enum FrameStep {
     /// `save` makes the frame.

@@ -10,82 +10,72 @@ use deku::prelude::*;
 
 use super::FrameStep;
 
-/// The major opcode of a halfword: its five high bits.
+/// One instruction, by its major opcode: the five high bits of its first
+/// halfword. Each format holds the bits after the opcode. `jal`, `jalx` and
+/// `extend` take the halfword after it too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
-#[deku(endian = "big")]
-struct Major {
-    #[deku(bits = 5)]
-    opcode: u8,
-    #[deku(bits = 11)]
-    rest: u16,
-}
-
-/// One instruction, by its major opcode, which [`Major`] reads first. Each
-/// format reads the whole halfword again, the opcode as padding, so that
-/// all 16 bits are one read. `jal`, `jalx` and `extend` take the halfword
-/// after it too.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
-#[deku(ctx = "major: u8", id = "major", endian = "big")]
+#[deku(id_type = "u8", bits = 5, endian = "big")]
 pub(crate) enum Encoded {
     #[deku(id = 0b00000)]
-    AddiuSp(Ri),
+    AddiuSp(#[deku(bit_field)] Ri),
     #[deku(id = 0b00001)]
-    AddiuPc(Ri),
+    AddiuPc(#[deku(bit_field)] Ri),
     #[deku(id = 0b00010)]
-    B(I),
+    B(#[deku(bit_field)] I),
     #[deku(id = 0b00011)]
-    Jal(#[deku(pad_bits_before = "5")] Jal),
+    Jal(#[deku(bit_field)] Jal),
     #[deku(id = 0b00100)]
-    Beqz(Ri),
+    Beqz(#[deku(bit_field)] Ri),
     #[deku(id = 0b00101)]
-    Bnez(Ri),
+    Bnez(#[deku(bit_field)] Ri),
     #[deku(id = 0b00110)]
-    Shift(Shift),
+    Shift(#[deku(bit_field)] Shift),
     #[deku(id = 0b01000)]
-    RriA(RriA),
+    RriA(#[deku(bit_field)] RriA),
     #[deku(id = 0b01001)]
-    Addiu8(Ri),
+    Addiu8(#[deku(bit_field)] Ri),
     #[deku(id = 0b01010)]
-    Slti(Ri),
+    Slti(#[deku(bit_field)] Ri),
     #[deku(id = 0b01011)]
-    Sltiu(Ri),
+    Sltiu(#[deku(bit_field)] Ri),
     #[deku(id = 0b01100)]
-    I8(#[deku(pad_bits_before = "5")] I8),
+    I8(#[deku(bit_field)] I8),
     #[deku(id = 0b01101)]
-    Li(Ri),
+    Li(#[deku(bit_field)] Ri),
     #[deku(id = 0b01110)]
-    Cmpi(Ri),
+    Cmpi(#[deku(bit_field)] Ri),
     #[deku(id = 0b10000)]
-    Lb(Rri),
+    Lb(#[deku(bit_field)] Rri),
     #[deku(id = 0b10001)]
-    Lh(Rri),
+    Lh(#[deku(bit_field)] Rri),
     #[deku(id = 0b10010)]
-    LwSp(Ri),
+    LwSp(#[deku(bit_field)] Ri),
     #[deku(id = 0b10011)]
-    Lw(Rri),
+    Lw(#[deku(bit_field)] Rri),
     #[deku(id = 0b10100)]
-    Lbu(Rri),
+    Lbu(#[deku(bit_field)] Rri),
     #[deku(id = 0b10101)]
-    Lhu(Rri),
+    Lhu(#[deku(bit_field)] Rri),
     #[deku(id = 0b10110)]
-    LwPc(Ri),
+    LwPc(#[deku(bit_field)] Ri),
     #[deku(id = 0b11000)]
-    Sb(Rri),
+    Sb(#[deku(bit_field)] Rri),
     #[deku(id = 0b11001)]
-    Sh(Rri),
+    Sh(#[deku(bit_field)] Rri),
     #[deku(id = 0b11010)]
-    SwSp(Ri),
+    SwSp(#[deku(bit_field)] Ri),
     #[deku(id = 0b11011)]
-    Sw(Rri),
+    Sw(#[deku(bit_field)] Rri),
     #[deku(id = 0b11100)]
-    Rrr(Rrr),
+    Rrr(#[deku(bit_field)] Rrr),
     #[deku(id = 0b11101)]
-    Rr(Rr),
+    Rr(#[deku(bit_field)] Rr),
     #[deku(id = 0b11110)]
-    Extend(#[deku(pad_bits_before = "5")] Extend),
-    /// A major opcode that MIPS16e leaves reserved, or gives to MIPS64.
+    Extend(#[deku(bit_field)] Extend),
+    /// A major opcode that MIPS16e leaves reserved, or gives to MIPS64,
+    /// then the 11 bits after it.
     #[deku(id_pat = "_")]
-    Reserved,
+    Reserved(u8, #[deku(bits = 11)] u16),
 }
 
 impl Encoded {
@@ -93,33 +83,25 @@ impl Encoded {
     /// `None` where the instruction needs a halfword that is not there.
     pub(crate) fn of(first: u16, next: Option<u16>) -> Option<Self> {
         let [a, b] = first.to_be_bytes();
-        let major: Major = read(&[a, b])?;
-        let read_with_major = |bytes: &[u8]| read_with(bytes, major.opcode);
         match next {
             Some(next) => {
                 let [c, d] = next.to_be_bytes();
-                read_with_major(&[a, b, c, d])
+                read(&[a, b, c, d])
             }
-            None => read_with_major(&[a, b]),
+            None => read(&[a, b]),
         }
     }
 }
 
 /// The `T` that `bytes` open with.
-#[inline]
-pub(crate) fn read<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<T> {
-    read_with(bytes, ())
-}
-
-/// The `T` that `bytes` open with, read in `ctx`.
 ///
 /// This reads through a [`Slice`] of its own: `from_bytes` also works out
 /// the bytes that are left, which no caller here reads.
 #[inline]
-fn read_with<'a, T: DekuReader<'a, Ctx>, Ctx>(bytes: &'a [u8], ctx: Ctx) -> Option<T> {
+pub(crate) fn read<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<T> {
     let mut slice = Slice { rest: bytes };
     let mut reader = Reader::new(&mut slice);
-    T::from_reader_with_ctx(&mut reader, ctx).ok()
+    T::from_reader_with_ctx(&mut reader, ()).ok()
 }
 
 /// The bytes a reader has yet to read.
@@ -164,27 +146,27 @@ impl std::io::Seek for Slice<'_> {
 }
 
 /// A register and an 8-bit constant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Ri {
-    #[deku(pad_bits_before = "5", bits = 3)]
+    #[deku(bits = 3)]
     pub rx: u8,
     pub imm: u8,
 }
 
 /// An 11-bit constant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct I {
-    #[deku(pad_bits_before = "5", bits = 11)]
+    #[deku(bits = 11)]
     pub imm: u16,
 }
 
 /// Two registers and a 5-bit constant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Rri {
-    #[deku(pad_bits_before = "5", bits = 3)]
+    #[deku(bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -193,10 +175,10 @@ pub(crate) struct Rri {
 }
 
 /// Three registers and a function.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Rrr {
-    #[deku(pad_bits_before = "5", bits = 3)]
+    #[deku(bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -207,10 +189,10 @@ pub(crate) struct Rrr {
 }
 
 /// A shift by a constant: `sll`, `srl` or `sra`. A shift of 0 means 8.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Shift {
-    #[deku(pad_bits_before = "5", bits = 3)]
+    #[deku(bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -221,10 +203,10 @@ pub(crate) struct Shift {
 }
 
 /// `addiu ry, rx, imm` with a 4-bit constant, where the function is 0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct RriA {
-    #[deku(pad_bits_before = "5", bits = 3)]
+    #[deku(bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -236,10 +218,10 @@ pub(crate) struct RriA {
 
 /// Two registers and a function of five bits, which `jr` and `cnvt` read
 /// on in the second register.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Rr {
-    #[deku(pad_bits_before = "5", bits = 3)]
+    #[deku(bits = 3)]
     pub rx: u8,
     #[deku(bits = 3)]
     pub ry: u8,
@@ -248,26 +230,29 @@ pub(crate) struct Rr {
 }
 
 /// `jal` or `jalx`, with a 26-bit target in words.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Jal {
+    #[deku(bit_field)]
     pub mode: JumpMode,
     #[deku(bits = 5)]
-    target_20_16: u32,
+    target_20_16: u8,
     #[deku(bits = 5)]
-    target_25_21: u32,
+    target_25_21: u8,
     target_15_0: u16,
 }
 
 impl Jal {
     /// The 26-bit target, in words.
     pub(crate) fn target(self) -> u32 {
-        self.target_25_21 << 21 | self.target_20_16 << 16 | u32::from(self.target_15_0)
+        u32::from(self.target_25_21) << 21
+            | u32::from(self.target_20_16) << 16
+            | u32::from(self.target_15_0)
     }
 }
 
 /// Whether a `jal` stays in MIPS16e, or switches to MIPS32 as `jalx` does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) enum JumpMode {
     #[deku(id = 0)]
@@ -277,9 +262,10 @@ pub(crate) enum JumpMode {
 }
 
 /// The `extend` prefix, and the halfword it widens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Extend {
+    #[deku(bit_field)]
     pub prefix: Prefix,
     pub insn: u16,
 }
@@ -287,7 +273,7 @@ pub(crate) struct Extend {
 /// The 11 bits of an `extend` prefix. What they hold depends on the
 /// instruction they widen, so each layout is read when the instruction is
 /// known.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Prefix {
     #[deku(bits = 11)]
@@ -363,7 +349,7 @@ pub(crate) struct ExtendFrame {
 }
 
 /// The `I8` group, by the function in bits 10 to 8.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 3, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) enum I8 {
     /// `bteqz`: branch where T is zero.
@@ -380,32 +366,37 @@ pub(crate) enum I8 {
     AdjSp(u8),
     /// `save` or `restore`.
     #[deku(id = 0b100)]
-    SaveRestore(SaveRestore),
+    SaveRestore(#[deku(bit_field)] SaveRestore),
     /// `move r32, rz`.
     #[deku(id = 0b101)]
-    Mov32R(Mov32R),
+    Mov32R(#[deku(bit_field)] Mov32R),
     /// `move ry, r32`.
     #[deku(id = 0b111)]
-    MovR32(MovR32),
-    #[deku(id_pat = "_")]
+    MovR32(#[deku(bit_field)] MovR32),
+    /// The one function that MIPS16e leaves unassigned.
+    #[deku(id = 0b110)]
     Reserved(u8),
 }
 
 /// `save` or `restore`: whether it saves, which of `ra`, `s0` and `s1` it
 /// keeps, and the low bits of the frame size, in units of 8 bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct SaveRestore {
+    #[deku(bit_field)]
     pub step: FrameStep,
+    #[deku(bit_field)]
     pub ra: Kept,
+    #[deku(bit_field)]
     pub s0: Kept,
+    #[deku(bit_field)]
     pub s1: Kept,
     #[deku(bits = 4)]
     pub frame_size: u8,
 }
 
 /// Whether `save` and `restore` keep a register in the frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) enum Kept {
     #[deku(id = 0)]
@@ -416,7 +407,7 @@ pub(crate) enum Kept {
 
 /// `move r32, rz`: any of the 32 registers from one of the eight. The
 /// manual splits the number of `r32`, low bits first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct Mov32R {
     #[deku(bits = 3)]
@@ -435,7 +426,7 @@ impl Mov32R {
 }
 
 /// `move ry, r32`: one of the eight registers from any of the 32.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) struct MovR32 {
     #[deku(bits = 3)]
@@ -451,15 +442,18 @@ pub(crate) struct MovR32 {
 pub(crate) struct JumpRegister {
     #[deku(pad_bits_before = "5", bits = 3)]
     pub rx: u8,
+    #[deku(bit_field)]
     pub slot: DelaySlot,
+    #[deku(bit_field)]
     pub link: Link,
+    #[deku(bit_field)]
     pub through: Through,
     #[deku(bits = 5, assert_eq = "0")]
     function: u8,
 }
 
 /// Whether a jump through a register has a delay slot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) enum DelaySlot {
     #[deku(id = 0)]
@@ -470,7 +464,7 @@ pub(crate) enum DelaySlot {
 }
 
 /// Whether a jump through a register links, as a call does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) enum Link {
     #[deku(id = 0)]
@@ -480,7 +474,7 @@ pub(crate) enum Link {
 }
 
 /// The register a jump goes through.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, DekuRead, DekuBitField)]
 #[deku(id_type = "u8", bits = 1, endian = "big", ctx = "_: deku::ctx::Endian")]
 pub(crate) enum Through {
     /// The register `rx` names.
@@ -502,7 +496,7 @@ mod tests {
         // `addu v1, v1, v0`.
         let addu = Rrr { rx: 3, ry: 2, rz: 3, function: 1 };
         assert_eq!(Encoded::of(0xe34d, None), Some(Encoded::Rrr(addu)));
-        assert_eq!(Encoded::of(0x3800, None), Some(Encoded::Reserved));
+        assert_eq!(Encoded::of(0x3800, None), Some(Encoded::Reserved(0b00111, 0)));
     }
 
     #[test]
