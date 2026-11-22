@@ -90,6 +90,8 @@ pub(crate) fn print_functions(binary: &Binary, format: Format) {
             table.with(Style::markdown());
             println!("{table}");
         }
+        // `run` refuses it before it lists anything.
+        Format::Html => unreachable!("--format html needs two binaries"),
         Format::Json => println!("{}", json_functions(binary)),
     }
 }

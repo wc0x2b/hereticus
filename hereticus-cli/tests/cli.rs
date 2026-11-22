@@ -192,6 +192,79 @@ fn markdown_format_is_stable() {
     ]));
 }
 
+/// The HTML report is one page that holds what it needs, with a diff in
+/// each view for each pair it lists, each linked from the table.
+#[test]
+fn html_format_is_one_whole_page() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    let output = hereticus()
+        .args([
+            "--format",
+            "html",
+            "--show-retouched",
+            "fixtures/build/O2/basic.o",
+            "fixtures/build/O2/basic_v2.o",
+        ])
+        .output()
+        .expect("hereticus runs");
+    assert!(output.status.success() || output.status.code() == Some(1));
+    let page = String::from_utf8(output.stdout).expect("UTF-8");
+    assert!(page.starts_with("<!DOCTYPE html><html lang=\"en\">"), "{page}");
+    assert!(page.trim_end().ends_with("</html>"), "{page}");
+    assert!(!page.contains("src=") && !page.contains("<link"), "loads nothing: {page}");
+
+    let pairs = page.matches("<details class=\"pair\"").count();
+    assert_eq!(pairs, 4, "one diff for each changed pair");
+    for at in 0..pairs {
+        assert!(page.contains(&format!("href=\"#diff-{at}\"")), "a link to diff {at}");
+        assert!(page.contains(&format!("id=\"diff-{at}\"")), "diff {at}");
+    }
+    assert_eq!(page.matches("class=\"scroll view asm\"").count(), pairs);
+    assert_eq!(page.matches("class=\"scroll view il\"").count(), pairs);
+    assert!(page.contains("<code>array_max -&gt; array_min</code>"), "{page}");
+}
+
+/// `--view` chooses the view that shows when the page opens.
+#[test]
+fn html_format_opens_in_the_chosen_view() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    for (view, checked) in [("asm", "view-asm"), ("il", "view-il")] {
+        let output = hereticus()
+            .args(["--format", "html", "--view", view])
+            .args(["fixtures/build/O2/basic.o", "fixtures/build/O2/basic_v2.o"])
+            .output()
+            .expect("hereticus runs");
+        let page = String::from_utf8(output.stdout).expect("UTF-8");
+        let input = format!("id=\"{checked}\" checked>");
+        assert!(page.contains(&input), "{view}: {page}");
+        assert_eq!(page.matches(" checked>").count(), 1, "{view}");
+    }
+}
+
+/// A page shows a comparison, so it needs two binaries.
+#[test]
+fn html_format_refuses_one_binary() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(hereticus().args([
+        "--functions",
+        "--format",
+        "html",
+        "fixtures/build/O2/basic.o"
+    ]));
+}
+
 /// The JSON format is for tools, so its fields must stay put.
 #[test]
 fn json_format_is_stable() {
