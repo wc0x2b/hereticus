@@ -1,14 +1,13 @@
 //! The instruction forms of MIPS32 that a scan tests a word for, as deku
 //! reads them from a word most significant bit first.
 
-use deku::{DekuRead, DekuReader};
+use deku::{DekuContainerRead, DekuRead};
 
 /// The `T` that the 32 bits of `word` hold.
-fn read<T: for<'a> DekuReader<'a>>(word: u32) -> T {
-    let bytes = word.to_be_bytes();
-    let mut cursor = deku::reader::SliceReader::new(&bytes);
-    let mut reader = deku::reader::Reader::new(&mut cursor);
-    T::from_reader_with_ctx(&mut reader, ()).expect("a word holds each field of a form")
+fn read<T: for<'a> DekuContainerRead<'a>>(word: u32) -> T {
+    let (_, value) =
+        T::from_bytes((&word.to_be_bytes(), 0)).expect("a word holds each field of a form");
+    value
 }
 
 /// The I form: two registers and a 16-bit constant, as `addiu` and `sw`

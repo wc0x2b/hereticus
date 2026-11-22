@@ -1,14 +1,13 @@
 //! The instruction forms of PowerPC, as the Power ISA names them and their
 //! fields, which deku reads from a word most significant bit first.
 
-use deku::{DekuBitField, DekuRead, DekuReader};
+use deku::{DekuBitField, DekuContainerRead, DekuRead};
 
 /// The `T` that the 32 bits of `word` hold.
-fn read<T: for<'a> DekuReader<'a>>(word: u32) -> T {
-    let bytes = word.to_be_bytes();
-    let mut cursor = deku::reader::SliceReader::new(&bytes);
-    let mut reader = deku::reader::Reader::new(&mut cursor);
-    T::from_reader_with_ctx(&mut reader, ()).expect("a word holds each field of a form")
+fn read<T: for<'a> DekuContainerRead<'a>>(word: u32) -> T {
+    let (_, value) =
+        T::from_bytes((&word.to_be_bytes(), 0)).expect("a word holds each field of a form");
+    value
 }
 
 /// The D form: a register, a base and a 16-bit constant, as `addi`, `addis`
@@ -191,10 +190,8 @@ pub struct BranchOptions {
 impl BranchOptions {
     /// The options that the five bits of `bo` give.
     pub fn of(bo: u8) -> Self {
-        let bytes = [bo << 3];
-        let mut cursor = deku::reader::SliceReader::new(&bytes);
-        let mut reader = deku::reader::Reader::new(&mut cursor);
-        Self::from_reader_with_ctx(&mut reader, ()).expect("a byte holds each option")
+        let (_, value) = Self::from_bytes((&[bo << 3], 0)).expect("a byte holds each option");
+        value
     }
 }
 

@@ -1,7 +1,7 @@
 //! The instruction forms of AArch64 that a scan tests a word for, as deku
 //! reads them from a word most significant bit first.
 
-use deku::{DekuRead, DekuReader};
+use deku::{DekuContainerRead, DekuRead};
 
 /// The fixed bits of `adr` and `adrp`, bits 28 to 24.
 const PC_RELATIVE: u8 = 0b10000;
@@ -39,10 +39,8 @@ pub enum AddressUnit {
 impl PcRelative {
     /// The fields of `word`, where it is `adr` or `adrp`.
     pub fn of(word: u32) -> Option<Self> {
-        let bytes = word.to_be_bytes();
-        let mut cursor = deku::reader::SliceReader::new(&bytes);
-        let mut reader = deku::reader::Reader::new(&mut cursor);
-        Self::from_reader_with_ctx(&mut reader, ()).ok()
+        let (_, value) = Self::from_bytes((&word.to_be_bytes(), 0)).ok()?;
+        Some(value)
     }
 
     /// The 21-bit distance, in the unit of the instruction, unsigned.

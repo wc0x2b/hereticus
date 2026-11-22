@@ -94,14 +94,10 @@ impl Encoded {
 }
 
 /// The `T` that `bytes` open with.
-///
-/// This reads through a reader of its own: `from_bytes` also works out the
-/// bytes that are left, which no caller here reads.
 #[inline]
-pub(crate) fn read<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<T> {
-    let mut slice = deku::reader::SliceReader::new(bytes);
-    let mut reader = Reader::new(&mut slice);
-    T::from_reader_with_ctx(&mut reader, ()).ok()
+pub(crate) fn read<'a, T: DekuContainerRead<'a>>(bytes: &'a [u8]) -> Option<T> {
+    let (_, value) = T::from_bytes((bytes, 0)).ok()?;
+    Some(value)
 }
 
 /// A register and an 8-bit constant.
@@ -242,7 +238,7 @@ pub(crate) struct Prefix {
 impl Prefix {
     /// The prefix laid out as `T`, which reads the 11 bits after five bits
     /// of padding.
-    pub(crate) fn layout<T: for<'a> DekuReader<'a>>(self) -> T {
+    pub(crate) fn layout<T: for<'a> DekuContainerRead<'a>>(self) -> T {
         read(&self.bits.to_be_bytes()).expect("each layout reads 16 bits")
     }
 

@@ -29,7 +29,7 @@ pub const REGISTERS: [&str; 32] = [
 
 use super::InsnKind;
 use crate as il;
-use deku::{DekuRead, DekuReader};
+use deku::{DekuContainerRead, DekuRead};
 
 /// The major opcodes this module reads under.
 const SPECIAL: u32 = 0x00;
@@ -420,10 +420,9 @@ struct Fields {
 
 impl Fields {
     fn of(word: u32) -> Self {
-        let bytes = word.to_be_bytes();
-        let mut cursor = deku::reader::SliceReader::new(&bytes);
-        let mut reader = deku::reader::Reader::new(&mut cursor);
-        Self::from_reader_with_ctx(&mut reader, ()).expect("a word holds each field")
+        let (_, value) =
+            Self::from_bytes((&word.to_be_bytes(), 0)).expect("a word holds each field");
+        value
     }
 
     /// The 16-bit constant of the I format.
