@@ -421,7 +421,7 @@ struct Fields {
 impl Fields {
     fn of(word: u32) -> Self {
         let bytes = word.to_be_bytes();
-        let mut cursor = deku::no_std_io::Cursor::new(&bytes[..]);
+        let mut cursor = deku::reader::SliceReader::new(&bytes);
         let mut reader = deku::reader::Reader::new(&mut cursor);
         Self::from_reader_with_ctx(&mut reader, ()).expect("a word holds each field")
     }

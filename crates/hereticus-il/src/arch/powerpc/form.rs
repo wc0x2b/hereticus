@@ -6,7 +6,7 @@ use deku::{DekuBitField, DekuRead, DekuReader};
 /// The `T` that the 32 bits of `word` hold.
 fn read<T: for<'a> DekuReader<'a>>(word: u32) -> T {
     let bytes = word.to_be_bytes();
-    let mut cursor = deku::no_std_io::Cursor::new(&bytes[..]);
+    let mut cursor = deku::reader::SliceReader::new(&bytes);
     let mut reader = deku::reader::Reader::new(&mut cursor);
     T::from_reader_with_ctx(&mut reader, ()).expect("a word holds each field of a form")
 }
@@ -192,7 +192,7 @@ impl BranchOptions {
     /// The options that the five bits of `bo` give.
     pub fn of(bo: u8) -> Self {
         let bytes = [bo << 3];
-        let mut cursor = deku::no_std_io::Cursor::new(&bytes[..]);
+        let mut cursor = deku::reader::SliceReader::new(&bytes);
         let mut reader = deku::reader::Reader::new(&mut cursor);
         Self::from_reader_with_ctx(&mut reader, ()).expect("a byte holds each option")
     }

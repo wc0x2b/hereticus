@@ -40,7 +40,7 @@ impl PcRelative {
     /// The fields of `word`, where it is `adr` or `adrp`.
     pub fn of(word: u32) -> Option<Self> {
         let bytes = word.to_be_bytes();
-        let mut cursor = deku::no_std_io::Cursor::new(&bytes[..]);
+        let mut cursor = deku::reader::SliceReader::new(&bytes);
         let mut reader = deku::reader::Reader::new(&mut cursor);
         Self::from_reader_with_ctx(&mut reader, ()).ok()
     }

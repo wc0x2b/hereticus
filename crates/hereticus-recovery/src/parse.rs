@@ -4,7 +4,6 @@
 //! call that returns its `Option` through memory took more instructions
 //! than the read itself.
 
-use deku::no_std_io::Cursor;
 use deku::prelude::*;
 
 /// The `T` that `bytes` open with, or `None` where they do not hold one.
@@ -16,7 +15,7 @@ pub(crate) fn parse<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<T> {
 /// The `T` that `bytes` open with, read in `ctx`, as a byte order.
 #[inline]
 pub(crate) fn parse_with<'a, T: DekuReader<'a, Ctx>, Ctx>(bytes: &'a [u8], ctx: Ctx) -> Option<T> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = deku::reader::SliceReader::new(bytes);
     let mut reader = Reader::new(&mut cursor);
     T::from_reader_with_ctx(&mut reader, ctx).ok()
 }
@@ -25,7 +24,7 @@ pub(crate) fn parse_with<'a, T: DekuReader<'a, Ctx>, Ctx>(bytes: &'a [u8], ctx: 
 /// bytes do not end with a whole one.
 #[inline]
 pub(crate) fn parse_all<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<Vec<T>> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = deku::reader::SliceReader::new(bytes);
     let mut reader = Reader::new(&mut cursor);
     let mut values = Vec::new();
     while !reader.try_end().ok()? {

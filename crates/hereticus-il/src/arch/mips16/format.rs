@@ -95,54 +95,13 @@ impl Encoded {
 
 /// The `T` that `bytes` open with.
 ///
-/// This reads through a [`Slice`] of its own: `from_bytes` also works out
-/// the bytes that are left, which no caller here reads.
+/// This reads through a reader of its own: `from_bytes` also works out the
+/// bytes that are left, which no caller here reads.
 #[inline]
 pub(crate) fn read<'a, T: DekuReader<'a>>(bytes: &'a [u8]) -> Option<T> {
-    let mut slice = Slice { rest: bytes };
+    let mut slice = deku::reader::SliceReader::new(bytes);
     let mut reader = Reader::new(&mut slice);
     T::from_reader_with_ctx(&mut reader, ()).ok()
-}
-
-/// The bytes a reader has yet to read.
-///
-/// `std::io::Cursor` copies through `memcpy` whatever the length, which a
-/// read of two bytes calls for each halfword. This copy of a length known
-/// at compile time is a load and a store.
-struct Slice<'a> {
-    rest: &'a [u8],
-}
-
-impl std::io::Read for Slice<'_> {
-    #[inline(always)]
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let length = buf.len().min(self.rest.len());
-        let (head, tail) = self.rest.split_at(length);
-        buf[..length].copy_from_slice(head);
-        self.rest = tail;
-        Ok(length)
-    }
-
-    #[inline(always)]
-    fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
-        let (head, tail) =
-            self.rest.split_at_checked(buf.len()).ok_or(std::io::ErrorKind::UnexpectedEof)?;
-        buf.copy_from_slice(head);
-        self.rest = tail;
-        Ok(())
-    }
-}
-
-/// Only a skip forward, as padding of whole bytes makes, is read here.
-impl std::io::Seek for Slice<'_> {
-    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
-        let std::io::SeekFrom::Current(by) = position else {
-            return Err(std::io::ErrorKind::Unsupported.into());
-        };
-        let by = usize::try_from(by).map_err(|_| std::io::ErrorKind::Unsupported)?;
-        self.rest = self.rest.get(by..).unwrap_or_default();
-        Ok(0)
-    }
 }
 
 /// A register and an 8-bit constant.
