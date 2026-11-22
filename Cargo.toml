@@ -26,9 +26,14 @@ rust-version = "1.90"
 keywords = ["reverse-engineering", "binary-analysis", "bindiff", "firmware", "elf"]
 categories = ["development-tools", "parsing"]
 
+# Benches build as the dist binaries do, so that a change measures what
+# ships, and a change elsewhere in a crate does not move a count by how
+# the crate splits into codegen units.
 [profile.bench]
 debug = true
 strip = false
+codegen-units = 1
+lto = true
 
 [profile.release]
 overflow-checks = true
