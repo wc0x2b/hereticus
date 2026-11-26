@@ -15,10 +15,10 @@ expression: "screen(&mut app, 120, 24)"
 │││                                                        ││      f8 + adr r3, pc, 0x4                                ║
 │││                                                        ││      fc + ldr r1, [r3, r1, lsl 2]                        ║
 │││                                                        ││     100 + add pc, r3, r1                                 ║
-│││                                                        ││     104 + andeq r0, r0, r0, lsl r0                       ║
-│││                                                        ││     108 + andeq r0, r0, r0, asr 1                        ║
-│││                                                        ││     10c + andeq r0, r0, r4, lsr 0                        ║
-│││                                                        ││     110 + andeq r0, r0, ip, lsr 1                        ║
+│││                                                        ││     104 + .word 00000010                                 ║
+│││                                                        ││     108 + .word 000000c0                                 ║
+│││                                                        ││     10c + .word 00000024                                 ║
+│││                                                        ││     110 + .word 000000ac                                 ║
 │││    dc   ldrh r0, [r0, 0x2]                             ││     114   ldrh r0, [r0, 0x2]                             ║
 │││    e0   mov r2, 0x0                                    ││     118   mov r2, 0x0                                    ║
 │││    e4 ~ cmp r0, 0x400                                  ││     11c ~ cmp r0, 0x200                                  ║

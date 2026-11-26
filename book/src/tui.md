@@ -72,7 +72,10 @@ last use, and such a move stays red and green:
 - `]` and `[` go to the next and the previous change.
 - `v` changes from assembly to IL, from IL to high IL, and from high IL
   back to assembly. The high IL shows each call on one line with its
-  arguments: see [The High IL](./methods.md#the-high-il).
+  arguments, and folds a value into the one statement that reads it:
+  see [The High IL](./methods.md#the-high-il).
+
+![The diff of one function, as high IL](./images/tui-diff-hil.png)
 - `l` changes between two columns and one.
 - `n` and `p` go to the next and the previous function.
 - `Esc` goes back to the list.

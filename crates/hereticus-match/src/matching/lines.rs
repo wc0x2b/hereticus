@@ -71,7 +71,7 @@ pub struct LinePlace {
 pub fn line_places(view: View, binary: &Binary, index: usize) -> Vec<LinePlace> {
     let function = &binary.functions[index];
     let arch = binary.isa_of(function).arch();
-    let insns = decode_shown(arch, function);
+    let insns = decode_shown(arch, function, Some(binary));
     let jump_of = |address: u64| {
         let at = insns.binary_search_by_key(&address, |insn| insn.address).ok()?;
         let (InsnKind::Branch { target: Some(target) } | InsnKind::Jump { target: Some(target) }) =
@@ -126,15 +126,30 @@ fn context_of<'a>(
 }
 
 /// The instructions of `function` as a diff shows them, with each word of
-/// a literal pool as data.
+/// a literal pool as data, and, where `binary` holds the function, each
+/// word of a table of the cases of a switch.
 ///
 /// A32 keeps its pool words as wide as its instructions, so the decoder
 /// reads them as whatever their bits spell, as `mrc2` or `andeq`. Their
 /// values move with each release, which put ten lines of noise after the
-/// `procd` fix of CVE-2026-30874.
-fn decode_shown(arch: &dyn Arch, function: &Function) -> Vec<Insn> {
+/// `procd` fix of CVE-2026-30874. A table of cases right after its jump
+/// reads so too.
+fn decode_shown(arch: &dyn Arch, function: &Function, binary: Option<&Binary>) -> Vec<Insn> {
     let mut insns = decode_all(arch, &function.code, function.address).0;
-    let pool: HashSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
+    let mut pool: HashSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
+    if let Some(binary) = binary {
+        // An object holds no sections in its links, but the function holds
+        // the table that follows its jump.
+        let mut regions = binary.links.regions();
+        regions.push((function.address, &function.code));
+        let memory = hereticus_recovery::arch::Memory::new(&regions);
+        let code = function.address..function.address + function.code.len() as u64;
+        for table in arch.jump_tables(&memory, code, &insns) {
+            pool.extend(
+                insns.iter().map(|insn| insn.address).filter(|at| table.words.contains(at)),
+            );
+        }
+    }
     for insn in insns.iter_mut().filter(|insn| pool.contains(&insn.address)) {
         *insn = hereticus_il::arch::data_word(insn.address, insn.bytes());
     }
@@ -159,11 +174,11 @@ pub fn instruction_diff_in(
     let (left, right) = (&before.functions[before_index], &after.functions[after_index]);
     let (before_isa, after_isa) = (before.isa_of(left), after.isa_of(right));
     if view == View::Assembly {
-        return instruction_diff(left, before_isa, right, after_isa);
+        return instruction_diff_of(left, before_isa, Some(before), right, after_isa, Some(after));
     }
     let side = |binary: &Binary, function: &Function, isa: Isa, paired| {
         let arch = isa.arch();
-        let insns = decode_shown(arch, function);
+        let insns = decode_shown(arch, function, Some(binary));
         let context = context_of(binary, paired);
         let statements = match view {
             View::Hil => {
@@ -925,10 +940,23 @@ pub fn instruction_diff(
     after: &Function,
     after_isa: Isa,
 ) -> Vec<DiffLine> {
+    instruction_diff_of(before, before_isa, None, after, after_isa, None)
+}
+
+/// [`instruction_diff`], where each binary that holds its function lets
+/// the diff read the tables of cases in it as data.
+fn instruction_diff_of(
+    before: &Function,
+    before_isa: Isa,
+    before_binary: Option<&Binary>,
+    after: &Function,
+    after_isa: Isa,
+    after_binary: Option<&Binary>,
+) -> Vec<DiffLine> {
     let before_arch = before_isa.arch();
     let after_arch = after_isa.arch();
-    let before_insns = decode_shown(before_arch, before);
-    let after_insns = decode_shown(after_arch, after);
+    let before_insns = decode_shown(before_arch, before, before_binary);
+    let after_insns = decode_shown(after_arch, after, after_binary);
 
     // Align on the printed text, but with branch targets collapsed. Keeping the
     // constant in the key is what lets a new `tst r5, #4` stand apart from an

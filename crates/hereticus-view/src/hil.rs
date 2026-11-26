@@ -194,10 +194,20 @@ pub fn hil_statements_in(
     let mut statements = Vec::with_capacity(insns.len());
     let mut index = 0;
     while index < insns.len() {
-        // A delay slot runs before its call, so it shows before it.
-        let last = by_index.get(&index).map_or(index, |call| call.last);
-        statements.extend((index + 1..=last).chain([index]).filter_map(statement));
-        index = last + 1;
+        // A delay slot runs before its call, branch or return goes, so it
+        // shows before it, where it writes nothing the branch reads.
+        let last =
+            by_index.get(&index).map_or_else(|| body.slot_first(index), |call| Some(call.last));
+        match last {
+            Some(last) => {
+                statements.extend((index + 1..=last).chain([index]).filter_map(statement));
+                index = last + 1;
+            }
+            None => {
+                statements.extend(statement(index));
+                index += 1;
+            }
+        }
     }
     statements
 }
@@ -283,6 +293,32 @@ impl Values<'_, '_> {
         let body = self.body;
         (index + 1..body.insns.len())
             .take_while(move |&at| body.next[at - 1] == [at] && body.entries[at] == 1)
+    }
+
+    /// The instructions after `index` on the path a value of `reg` can fold
+    /// along: the straight path, and past a branch where the other path
+    /// does not read `reg`, as a MIPS delay slot sets a value that only the
+    /// code the branch falls into reads. A call keeps its place, so its
+    /// result takes the straight path alone.
+    fn path_after(&self, index: usize, reg: Reg, source: Source) -> Vec<usize> {
+        let body = self.body;
+        let mut path = Vec::new();
+        let mut at = index;
+        while at + 1 < body.insns.len() && body.entries[at + 1] == 1 {
+            let next = &body.next[at];
+            let falls_through = next.contains(&(at + 1));
+            let others_read = next
+                .iter()
+                .filter(|&&successor| successor != at + 1)
+                .any(|&successor| self.live[successor].contains(reg));
+            let crosses = next.len() > 1;
+            if !falls_through || others_read || (crosses && source == Source::Call) {
+                break;
+            }
+            at += 1;
+            path.push(at);
+        }
+        path
     }
 
     /// Hide each compare whose flags only the branch after it reads: the
@@ -447,7 +483,7 @@ impl Values<'_, '_> {
         let mut user = None;
         // A compare that shows no line passes the value on to its branch.
         let mut compared = false;
-        for at in self.straight_after(start) {
+        for at in self.path_after(start, reg, source) {
             let uses = self.uses(at);
             if compares.contains(&at) {
                 compared |= uses.contains(reg);
@@ -591,6 +627,17 @@ fn worked_out(inner: &str) -> Option<String> {
     let (left, op, right) = (parts.next()?, parts.next()?, parts.next()?);
     if parts.next().is_some() {
         return None;
+    }
+    // An address the code formed, plus a distance, is another address.
+    if let Some(address) = left.strip_prefix('@')
+        && let (Some(address), Some(distance)) = (parse_constant(address), parse_constant(right))
+    {
+        let address = match op {
+            "+" => address.checked_add(distance)?,
+            "-" => address.checked_sub(distance)?,
+            _ => return None,
+        };
+        return (address >= 0).then(|| format!("@{address:#x}"));
     }
     let (left, right) = (parse_constant(left)?, parse_constant(right)?);
     let value = match op {
@@ -924,6 +971,27 @@ impl<'a> Body<'a> {
             }));
         }
         Some(entry)
+    }
+
+    /// The last delay slot of the branch, jump or return at `index`, where
+    /// its slots can show before it: they write nothing it reads.
+    fn slot_first(&self, index: usize) -> Option<usize> {
+        let insn = &self.insns[index];
+        if matches!(insn.kind, InsnKind::Normal | InsnKind::Unknown | InsnKind::Call { .. }) {
+            return None;
+        }
+        let slots = self.arch.delay_slots(insn);
+        let last = index + slots;
+        if slots == 0 || last >= self.insns.len() {
+            return None;
+        }
+        let reads = self.lifts[index].as_ref()?.lifted.reads;
+        let writes_read = (index + 1..=last).any(|slot| {
+            self.lifts[slot]
+                .as_ref()
+                .is_none_or(|named| named.lifted.writes.iter().any(|reg| reads.contains(reg)))
+        });
+        (!writes_read).then_some(last)
     }
 
     fn is_call(&self, index: usize) -> bool {
@@ -2679,6 +2747,12 @@ mod tests {
         );
         assert_eq!(simplified("a3 = arg4 + (-0x10000 + 0x760f)"), "a3 = arg4 + -0x89f1");
         assert_eq!(simplified("v0 = load.32 [0 + 0x20]"), "v0 = load.32 [0x20]");
+        assert_eq!(
+            simplified("s1 = load.32 [@0x440000 + -0x38C0]"),
+            "s1 = load.32 [@0x43c740]",
+            "an address and a distance"
+        );
+        assert_eq!(simplified("x = [@strcmp + 4]"), "x = [@strcmp + 4]", "a name stays");
         assert_eq!(simplified("x0 = (x1 + 2)"), "x0 = (x1 + 2)");
         assert_eq!(simplified("w0 = ((1 << 4) | 3)"), "w0 = 0x13");
         assert_eq!(simplified(r#"x0 = &"(1 + 2)""#), r#"x0 = &"(1 + 2)""#, "a string stays");

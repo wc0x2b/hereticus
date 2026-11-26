@@ -32,6 +32,10 @@ Type "v"
 Sleep 500ms
 Screenshot "book/src/images/tui-diff-il.png"
 Sleep 500ms
+Type "v"
+Sleep 500ms
+Screenshot "book/src/images/tui-diff-hil.png"
+Sleep 500ms
 Escape
 Type "GM"
 Sleep 300ms

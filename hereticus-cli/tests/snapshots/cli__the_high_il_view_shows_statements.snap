@@ -20,14 +20,11 @@ dispatch
 │││   + flags = compare(arg2, 3)
 │││┌< + if (arg2 u> 3) goto $+0x100
 ││││  +   adr r3, pc, 0x4
-││││  +   pc = r3 + (load.32 [r3 + (arg2 lsl 2)])
-││││  +   if (eq) r0 = arg1 & (arg1 lsl arg1)
-││││  +   if (eq) r0 = r0 & (r0 asr 1)
-││││  +   if (eq) r0 = r0 & (r4 lsr 0)
-││││  +   if (eq) r0 = r0 & (ip lsr 1)
+││││  +   r1 = load.32 [r3 + (arg2 lsl 2)]
+││││  +   pc = r3 + r1
 ││││      r2 = 0
 ││││  -       flags = compare((load.16 [arg1 + 0x2]), 0x400)
-││││  +   flags = compare((load.16 [r0 + 0x2]), 0x200)
+││││  +   flags = compare((load.16 [arg1 + 0x2]), 0x200)
 ││││      if (hi) r2 = -0x1
 ││││  -       r0 = r2
 ││││  -       return

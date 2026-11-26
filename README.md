@@ -8,7 +8,7 @@
 
 Compare two versions of a binary or firmware and find the functions that changed.
 
-![hereticus reports the functions that changed between two builds of a firmware, then shows the diff of one in the terminal, as assembly and as IL](https://raw.githubusercontent.com/wc0x2b/hereticus/master/book/src/images/demo.gif)
+![hereticus reports the functions that changed between two builds of a firmware, then shows the diff of one in the terminal, as assembly, as IL and as high IL](https://raw.githubusercontent.com/wc0x2b/hereticus/master/book/src/images/demo.gif)
 
 * **No IDA or Ghidra**: `hereticus` is one command-line program, so a script or a coding agent can run it.
 * **Or inside Ghidra**: The [Ghidra extension](https://wc0x2b.github.io/hereticus/ghidra.html) gives Ghidra what `hereticus` finds: the load base of a raw image, the functions that Ghidra missed, and the function pairs for Version Tracking.
