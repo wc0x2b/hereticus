@@ -30,7 +30,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use hereticus_arch::{Arch, CallingConvention};
+use hereticus_arch::{Arch, CallingConvention, NamedReg};
 use hereticus_il::arch::{Insn, InsnKind};
 use hereticus_il::flow::{held_on_every_path_of, successors};
 use hereticus_il::{AccessKind, Lifted, Named, Op, Operand, Reg, RegSet, Update, Width};
@@ -102,6 +102,28 @@ const MOST_LOOKED_BACK: usize = 64;
 /// The most arguments on the stack that a call shows.
 const MOST_STACK_ARGUMENTS: usize = 12;
 
+/// The registers GCC passes the first arguments of a local function in on
+/// 32-bit x86, in order, where cdecl passes each on the stack.
+const LOCAL_REGISTERS: [NamedReg; 3] = [
+    NamedReg { reg: Reg::General(0), name: "eax" },
+    NamedReg { reg: Reg::General(2), name: "edx" },
+    NamedReg { reg: Reg::General(1), name: "ecx" },
+];
+
+/// How many arguments a callee reads, and how many of them come first in
+/// [`LOCAL_REGISTERS`], on an ABI that passes them on the stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Takes {
+    arity: Arity,
+    in_registers: usize,
+}
+
+impl From<Arity> for Takes {
+    fn from(arity: Arity) -> Self {
+        Self { arity, in_registers: 0 }
+    }
+}
+
 /// The most instructions of a callee that the high IL reads for its count
 /// of arguments: a larger one costs more than the count is worth.
 const MOST_READ_OF_A_CALLEE: usize = 4096;
@@ -148,18 +170,19 @@ pub fn hil_statements_in(
     let mut sites: Vec<CallSite> = (0..insns.len())
         .filter_map(|index| body.call_site(index, &printed, &lines, &folds))
         .collect();
-    let mut arities: HashMap<String, Option<Arity>> = HashMap::new();
+    let mut arities: HashMap<String, Option<Takes>> = HashMap::new();
     for site in &mut sites {
         let arity = *arities
             .entry(site.callee.clone())
             .or_insert_with(|| arity_of(arch, convention, context, &site.callee));
-        if let Some(arity) = arity {
+        if let Some(Takes { arity, in_registers }) = arity {
             let most = match convention.stack_arguments {
                 Some(_) => MOST_STACK_ARGUMENTS,
                 None => convention.arguments.len(),
             };
             site.count = arity.shown(site.count, most);
             site.counted = Counted::ByCallee;
+            site.in_registers = in_registers;
         }
     }
     let live = body.live_in(&sites);
@@ -232,6 +255,8 @@ struct CallSite {
     count: usize,
     /// Where the count comes from.
     counted: Counted,
+    /// How many arguments come first in [`LOCAL_REGISTERS`].
+    in_registers: usize,
 }
 
 /// Where the count of arguments of a call comes from.
@@ -423,12 +448,7 @@ impl Values<'_, '_> {
     fn uses(&self, index: usize) -> RegSet {
         let own = self.lifted(index).map_or(RegSet::ALL, |lifted| lifted.reads);
         match self.calls.get(&index) {
-            Some(call) => {
-                let registers = &self.body.convention.arguments;
-                let count = call.arguments.len().min(registers.len());
-                let arguments: RegSet = registers[..count].iter().map(|arg| arg.reg).collect();
-                own.union(arguments)
-            }
+            Some(call) => own.union(call.reads),
             None => own,
         }
     }
@@ -727,6 +747,8 @@ struct Call {
     hidden: Vec<usize>,
     /// Whether code after the call reads what it gives back.
     gives: bool,
+    /// The registers of the arguments it shows.
+    reads: RegSet,
 }
 
 /// Functions of the C library that never return. The flow of the code
@@ -894,10 +916,9 @@ impl<'a> Body<'a> {
                 if lifted.memory?.kind == AccessKind::Store {
                     return None;
                 }
-                body.stack_places(index, &lifted, &body.holding[index])
+                Some(body.stack_addresses(index, &lifted, &body.holding[index]))
             })
             .flatten()
-            .map(|(at, _)| at)
             .collect();
         body
     }
@@ -1030,6 +1051,18 @@ impl<'a> Body<'a> {
                 .is_none_or(|named| named.lifted.writes.iter().any(|reg| reads.contains(reg)))
         });
         (!writes_read).then_some(last)
+    }
+
+    /// The registers instruction `index` reads, where it lifts. An idiom
+    /// that sets a constant, as `xor eax, eax`, reads none.
+    fn reads_of(&self, index: usize) -> RegSet {
+        let Some(named) = &self.lifts[index] else { return RegSet::ALL };
+        match self.canonical(index).as_ref().map(|lifted| (lifted.op, lifted.operands.as_slice())) {
+            Some((Op::Move, [Operand::Reg(_), Operand::Const(_)])) => {
+                named.lifted.reads.difference(named.lifted.writes)
+            }
+            _ => named.lifted.reads,
+        }
     }
 
     /// Whether a save of the value `reg` held at the entry keeps the frame:
@@ -1166,12 +1199,20 @@ impl<'a> Body<'a> {
             (Some(AccessKind::Store), Some(places)) => {
                 stored = places.iter().map(|&(at, reg)| (at, holding.reg(reg).copied())).collect();
             }
-            // A store through an address the high IL does not know can
-            // reach a place on the stack whose address escaped.
+            // An operation that writes a place it names, as `add [esp], eax`,
+            // leaves it holding a new value. A store through an address the
+            // high IL does not know can reach a place on the stack whose
+            // address escaped.
             (Some(AccessKind::Store | AccessKind::LoadStore), None) => {
-                holding.retain(|place, held| {
-                    matches!(place, Place::Reg(_)) || held.outlives_unknown_stores()
-                });
+                let written = self.stack_addresses(index, &lifted, holding);
+                match written.is_empty() {
+                    false => written.iter().for_each(|&at| {
+                        holding.remove(&Place::Slot(at));
+                    }),
+                    true => holding.retain(|place, held| {
+                        matches!(place, Place::Reg(_)) || held.outlives_unknown_stores()
+                    }),
+                }
             }
             _ => {}
         }
@@ -1354,6 +1395,28 @@ impl<'a> Body<'a> {
         (fixed < count && count > 1).then_some(fixed)
     }
 
+    /// The places on the stack that instruction `index` reads or writes,
+    /// with no regard to which register a value comes from or goes to, as
+    /// `add eax, [esp + 4]` reads `arg1`.
+    fn stack_addresses(&self, index: usize, lifted: &Lifted, holding: &Holding) -> Vec<i64> {
+        if let Some(places) = self.stack_places(index, lifted, holding) {
+            return places.into_iter().map(|(at, _)| at).collect();
+        }
+        lifted
+            .operands
+            .iter()
+            .filter_map(|operand| match *operand {
+                Operand::Memory { base: Some(base), offset, index: None, update: Update::None } => {
+                    match holding.reg(base) {
+                        Some(&Held::Stack(at)) => Some(at + displacement(offset)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The places on the stack that instruction `index` stores to or loads
     /// from, each with the register it stores or loads there, where every
     /// place it reaches is on the stack.
@@ -1377,7 +1440,11 @@ impl<'a> Body<'a> {
             .collect();
         let (start, values): (i64, Vec<Reg>) = match (memory.as_slice(), lifted.operands.as_slice())
         {
-            ([Operand::Memory { base: Some(base), offset, index: None, update }], operands) => {
+            // Only a load or a store moves values between registers and the
+            // place: `add eax, [esp + 4]` reads `eax` and the place.
+            ([Operand::Memory { base: Some(base), offset, index: None, update }], operands)
+                if matches!(lifted.op, Op::Load | Op::Store) =>
+            {
                 let at = at_of(*base)?;
                 let start = if *update == Update::After { at } else { at + displacement(*offset) };
                 let values = operands
@@ -1483,6 +1550,7 @@ impl<'a> Body<'a> {
             order: (start..index).chain(index + 1..=last).collect(),
             count: 0,
             counted: Counted::ByCaller,
+            in_registers: 0,
         };
         site.count = match self.convention.stack_arguments {
             Some(_) => self.stack_argument_count(&site),
@@ -1581,8 +1649,8 @@ impl<'a> Body<'a> {
         };
         let own = || match &self.lifts[index] {
             None => (unknown_reads, RegSet::EMPTY),
-            Some(named) if self.is_conditional(index) => (named.lifted.reads, RegSet::EMPTY),
-            Some(named) => (named.lifted.reads, named.lifted.writes),
+            Some(named) if self.is_conditional(index) => (self.reads_of(index), RegSet::EMPTY),
+            Some(named) => (self.reads_of(index), named.lifted.writes),
         };
         // A call can change each register that it does not keep.
         let changed: RegSet = (0..GENERAL_REGISTERS)
@@ -1625,7 +1693,17 @@ impl<'a> Body<'a> {
                 };
                 let registers = &self.convention.arguments;
                 let read = registers[..count.min(registers.len())].iter().map(|arg| arg.reg);
-                (site.index, read.collect())
+                // A local function of 32-bit x86 can take registers, which a
+                // guessed count does not say.
+                let in_registers =
+                    match (site.counted, self.unknown, self.convention.stack_arguments) {
+                        (Counted::ByCaller, Unknown::ReadsArguments, Some(_)) => {
+                            LOCAL_REGISTERS.len()
+                        }
+                        _ => site.in_registers,
+                    };
+                let local = LOCAL_REGISTERS[..in_registers].iter().map(|arg| arg.reg);
+                (site.index, read.chain(local).collect())
             })
             .collect();
         let effects: Vec<(RegSet, RegSet)> =
@@ -1920,15 +1998,40 @@ impl<'b, 'a> Block<'b, 'a> {
                 }
             }
         }
-        if body.convention.stack_arguments.is_some() {
-            let arguments = self.stack_arguments();
-            let gives = body.live_after(live, self.site.last).contains(body.convention.result.reg);
-            let mut hidden: Vec<usize> = self.hidden.into_iter().collect();
-            hidden.sort_unstable();
-            return Call { index, last: self.site.last, callee, arguments, hidden, gives };
-        }
-        let mut arguments = Vec::with_capacity(self.site.count);
-        for arg in &body.convention.arguments[..self.site.count] {
+        let (arguments, registers) = match body.convention.stack_arguments {
+            // The registers of a local function come first, then the stack.
+            Some(_) => {
+                let registers = &LOCAL_REGISTERS[..self.site.in_registers];
+                let mut arguments = self.register_arguments(registers, targets, live);
+                arguments.extend(self.stack_arguments());
+                (arguments, registers)
+            }
+            None => {
+                let registers = &body.convention.arguments[..self.site.count];
+                (self.register_arguments(registers, targets, live), registers)
+            }
+        };
+        let reads = registers.iter().map(|arg| arg.reg).collect();
+        let gives = body.live_after(live, self.site.last).contains(body.convention.result.reg);
+        let mut hidden: Vec<usize> = self.hidden.into_iter().collect();
+        hidden.sort_unstable();
+        Call { index, last: self.site.last, callee, arguments, hidden, gives, reads }
+    }
+
+    /// The arguments of the call that `registers` pass: each the value its
+    /// setting puts there, which folds into the call where it can move, or
+    /// else the register.
+    fn register_arguments(
+        &mut self,
+        registers: &[NamedReg],
+        targets: RegSet,
+        live: &[RegSet],
+    ) -> Vec<String> {
+        let body = self.body;
+        let index = self.site.index;
+        let end = self.site.order.len();
+        let mut arguments = Vec::with_capacity(registers.len());
+        for arg in registers {
             let setting = self.last_setting(arg.reg, end).filter(|_| !targets.contains(arg.reg));
             let shown = match setting {
                 Some(position) => {
@@ -1958,10 +2061,7 @@ impl<'b, 'a> Block<'b, 'a> {
             };
             arguments.push(shown);
         }
-        let gives = body.live_after(live, self.site.last).contains(body.convention.result.reg);
-        let mut hidden: Vec<usize> = self.hidden.into_iter().collect();
-        hidden.sort_unstable();
-        Call { index, last: self.site.last, callee, arguments, hidden, gives }
+        arguments
     }
 }
 
@@ -1973,9 +2073,9 @@ fn arity_of(
     convention: CallingConvention,
     context: Option<Context<'_>>,
     name: &str,
-) -> Option<Arity> {
+) -> Option<Takes> {
     if let Some(arity) = arity::known(name) {
-        return Some(arity);
+        return Some(arity.into());
     }
     let context = context?;
     let label = |function: &hereticus_image::Function| {
@@ -1994,7 +2094,7 @@ fn arity_of_code(
     convention: CallingConvention,
     code: &[u8],
     address: u64,
-) -> Option<Arity> {
+) -> Option<Takes> {
     let (insns, _) = hereticus_recovery::arch::decode_all(arch, code, address);
     if insns.is_empty() || insns.len() > MOST_READ_OF_A_CALLEE {
         return None;
@@ -2019,14 +2119,14 @@ fn arity_of_code(
         let read = (0..insns.len())
             .filter_map(|index| {
                 let lifted = body.canonical(index)?;
-                if lifted.memory?.kind != AccessKind::Load {
+                if lifted.memory?.kind == AccessKind::Store {
                     return None;
                 }
-                body.stack_places(index, &lifted, &body.holding[index])
+                Some(body.stack_addresses(index, &lifted, &body.holding[index]))
             })
             .flatten()
-            .filter(|&(at, _)| at >= stack.first && (at - stack.first) % stack.width == 0)
-            .map(|(at, _)| ((at - stack.first) / stack.width) as usize + 1)
+            .filter(|&at| at >= stack.first && (at - stack.first) % stack.width == 0)
+            .map(|at| ((at - stack.first) / stack.width) as usize + 1)
             .max()
             .unwrap_or(0)
             .min(MOST_STACK_ARGUMENTS);
@@ -2034,16 +2134,24 @@ fn arity_of_code(
             .iter()
             .zip(&body.next)
             .any(|(insn, next)| matches!(insn.kind, InsnKind::Jump { .. }) && next.is_empty());
-        return Some(if jumps_out { Arity::AtLeast(read) } else { Arity::Exact(read) });
+        // GCC can pass the first arguments of a local function in
+        // registers: the callee reads them before it writes them.
+        let at_entry = live.first().copied().unwrap_or(RegSet::EMPTY);
+        let in_registers = LOCAL_REGISTERS
+            .iter()
+            .rposition(|arg| at_entry.contains(arg.reg))
+            .map_or(0, |position| position + 1);
+        let arity = if jumps_out { Arity::AtLeast(read) } else { Arity::Exact(read) };
+        return Some(Takes { arity, in_registers });
     }
     if let Some(fixed) = body.variadic_from() {
-        return Some(Arity::AtLeast(fixed));
+        return Some(Arity::AtLeast(fixed).into());
     }
     let jumps_out = insns
         .iter()
         .zip(&body.next)
         .any(|(insn, next)| matches!(insn.kind, InsnKind::Jump { .. }) && next.is_empty());
-    Some(if jumps_out { Arity::AtLeast(count) } else { Arity::Exact(count) })
+    Some(if jumps_out { Arity::AtLeast(count) } else { Arity::Exact(count) }.into())
 }
 
 impl Block<'_, '_> {
@@ -2724,7 +2832,7 @@ mod tests {
             .expect("AArch64 has a convention");
         assert_eq!(
             arity_of_code(&Aarch64, convention, &code[0x14..], 0x1014),
-            Some(Arity::Exact(2))
+            Some(Arity::Exact(2).into())
         );
     }
 
@@ -2744,13 +2852,16 @@ mod tests {
             0xd65f_03c0, // ret
         ];
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-        assert_eq!(arity_of_code(&Aarch64, convention, &code, 0x1000), Some(Arity::AtLeast(1)));
+        assert_eq!(
+            arity_of_code(&Aarch64, convention, &code, 0x1000),
+            Some(Arity::AtLeast(1).into())
+        );
         // A function that stores the one argument it names takes one.
         let one: Vec<u8> = [0xf81f_0fe0_u32, 0xd65f_03c0] // str x0, [sp, #-0x10]!; ret
             .iter()
             .flat_map(|word| word.to_le_bytes())
             .collect();
-        assert_eq!(arity_of_code(&Aarch64, convention, &one, 0x1000), Some(Arity::Exact(1)));
+        assert_eq!(arity_of_code(&Aarch64, convention, &one, 0x1000), Some(Arity::Exact(1).into()));
     }
 
     /// The address of a function that the code keeps on the stack over a
@@ -3021,6 +3132,75 @@ mod tests {
         assert_eq!(shown(hereticus_arch::Abi::Unix)[0], "eax = load.32 [arg4 + 0x10]");
     }
 
+    /// GCC passes the first arguments of a local function in `eax`, `edx`
+    /// and `ecx` on 32-bit x86: the callee reads them before it writes
+    /// them, so the call shows them first.
+    #[test]
+    fn a_local_function_of_x86_takes_registers() {
+        use hereticus_il::arch::x86::X86;
+        let code = [
+            0xb8, 0x05, 0x00, 0x00, 0x00, // 0x1000 mov eax, 5
+            0xba, 0x07, 0x00, 0x00, 0x00, // 0x1005 mov edx, 7
+            0x6a, 0x09, // 0x100a push 9
+            0xe8, 0x04, 0x00, 0x00, 0x00, // 0x100c call 0x1015
+            0x83, 0xc4, 0x04, // 0x1011 add esp, 4
+            0xc3, // 0x1014 ret
+            0x01, 0xd0, // 0x1015 add eax, edx: the callee
+            0x03, 0x44, 0x24, 0x04, // 0x1017 add eax, [esp + 4]
+            0xc3, // 0x101b ret
+        ];
+        let callee = hereticus_image::Function {
+            name: "local".into(),
+            address: 0x1015,
+            code: code[0x15..].to_vec(),
+        };
+        let functions = [callee];
+        let (links, space) = (Links::default(), hereticus_memory::AddressSpace::default());
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &functions,
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+        };
+        let (insns, _) = decode_all(&X86::BITS32, &code[..0x15], 0x1000);
+        let shown: Vec<String> =
+            hil_statements_in(&X86::BITS32, &code[..0x15], &insns, Some(context))
+                .into_iter()
+                .map(|line| line.text)
+                .collect();
+        assert_eq!(shown, ["ret = local(5, 7, 9)", "return"]);
+        // `xor eax, eax` sets `eax` and reads nothing of it.
+        let zeroing = [0x31, 0xc0, 0xc3]; // xor eax, eax; ret
+        let convention =
+            X86::BITS32.calling_convention(hereticus_arch::Abi::Unix).expect("x86 has an ABI");
+        let takes = arity_of_code(&X86::BITS32, convention, &zeroing, 0x2000);
+        assert_eq!(takes, Some(Takes { arity: Arity::Exact(0), in_registers: 0 }));
+    }
+
+    /// An operation on a place in memory reads the place: it moves no value
+    /// between a register and the place, as a load or a store does.
+    #[test]
+    fn an_operation_on_a_place_moves_no_value_into_it() {
+        use hereticus_il::arch::x86::X86;
+        let code = [
+            0x83, 0xec, 0x08, // sub esp, 8
+            0x89, 0x04, 0x24, // mov [esp], eax
+            0x01, 0x04, 0x24, // add [esp], eax
+            0x8b, 0x0c, 0x24, // mov ecx, [esp]
+            0x8b, 0x01, // mov eax, [ecx]
+            0x83, 0xc4, 0x08, // add esp, 8
+            0xc3, // ret
+        ];
+        let (insns, _) = decode_all(&X86::BITS32, &code, 0x1000);
+        let printed = instruction_lines(&X86::BITS32, &code, &insns, None);
+        let convention =
+            X86::BITS32.calling_convention(hereticus_arch::Abi::Unix).expect("x86 has an ABI");
+        let body = Body::new(&X86::BITS32, convention, &insns, &printed);
+        // After the add, the place holds no copy of what `eax` held.
+        assert_ne!(body.holding[3].get(&Place::Slot(-8)), body.holding[1].reg(Reg::General(0)));
+    }
+
     /// A call to a function that never returns gives nothing back.
     #[test]
     fn a_call_that_never_returns_gives_nothing() {
@@ -3031,6 +3211,7 @@ mod tests {
             arguments: vec!["1".to_string()],
             hidden: Vec::new(),
             gives: true,
+            reads: RegSet::EMPTY,
         };
         assert_eq!(call("exit").text(), "exit(1)");
         assert_eq!(call("strlen").text(), "ret = strlen(1)");
