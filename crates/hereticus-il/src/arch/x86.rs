@@ -348,6 +348,11 @@ enum Form {
     /// `add rax, rbx`. The IL names it twice, as `rax = rax + rbx`, so it
     /// reads as a three-operand operation on every architecture.
     TwoAddress,
+    /// The one operand is both a source and the destination, and the
+    /// other source is a 1 the instruction does not name, as in `inc eax`.
+    /// The IL names it as `eax = eax + 1`, with the destination twice as
+    /// in [`Form::TwoAddress`].
+    Step,
     /// As the instruction names them.
     AsNamed,
 }
@@ -366,6 +371,9 @@ fn op_of(inst: &iced_x86::Instruction) -> (Op, Form) {
     // An operation with three operands names its destination apart, as
     // `imul eax, ebx, 3` and `andn eax, ebx, ecx` do.
     let arithmetic = |op| if inst.op_count() >= 3 { as_named(op) } else { two_address(op) };
+    // With one operand, `mul ebx` and `imul ebx` multiply `eax` by it into
+    // `edx:eax`, which no IL operation names.
+    let multiply = |op| if inst.op_count() == 1 { as_named(op) } else { arithmetic(op) };
     match mnemonic {
         M::Mov
         | M::Movd
@@ -394,9 +402,11 @@ fn op_of(inst: &iced_x86::Instruction) -> (Op, Form) {
         M::Lea => as_named(Op::Add),
         M::Push => as_named(Op::Store),
         M::Pop => as_named(Op::Load),
-        M::Add | M::Adc | M::Inc => two_address(Op::Add),
-        M::Sub | M::Sbb | M::Dec => two_address(Op::Subtract),
-        M::Imul | M::Mul => arithmetic(Op::Multiply),
+        M::Add | M::Adc => two_address(Op::Add),
+        M::Sub | M::Sbb => two_address(Op::Subtract),
+        M::Inc => (Op::Add, Form::Step),
+        M::Dec => (Op::Subtract, Form::Step),
+        M::Imul | M::Mul => multiply(Op::Multiply),
         M::Div | M::Idiv => as_named(Op::Divide),
         M::And => two_address(Op::And),
         M::Or => two_address(Op::Or),
@@ -633,6 +643,10 @@ pub fn lift(inst: &iced_x86::Instruction) -> Lifted {
             let destination = il_operand(inst, 0);
             core::iter::once(destination).chain(named).collect()
         }
+        Form::Step => {
+            let destination = il_operand(inst, 0);
+            core::iter::once(destination).chain(named).chain([il::Operand::Const(1)]).collect()
+        }
         Form::AsNamed => named.collect(),
     };
     Lifted { op, reads, writes, memory, test: test_of(inst), operands }
@@ -672,6 +686,10 @@ pub fn names(inst: &iced_x86::Instruction) -> il::Names {
     let named = (0..inst.op_count()).map(|index| operand_name(inst, index));
     match op_of(inst).1 {
         Form::TwoAddress => core::iter::once(operand_name(inst, 0)).chain(named).collect(),
+        Form::Step => core::iter::once(operand_name(inst, 0))
+            .chain(named)
+            .chain([il::constant_name(1)])
+            .collect(),
         Form::AsNamed => named.collect(),
     }
 }
@@ -857,6 +875,30 @@ mod tests {
         assert_eq!(lifted.operands.as_slice(), [rax, rax, rbx]);
         assert!(lifted.reads.contains(general(0)) && lifted.reads.contains(general(3)));
         assert!(lifted.writes.contains(general(0)) && lifted.writes.contains(Reg::Flags));
+    }
+
+    #[rstest]
+    #[case::inc(&[0xff, 0xc3], Op::Add)]
+    #[case::dec(&[0xff, 0xcb], Op::Subtract)]
+    fn a_step_adds_or_subtracts_a_one_it_does_not_name(#[case] bytes: &[u8], #[case] op: Op) {
+        // inc ebx, dec ebx
+        let (insn, _) = read(bytes);
+        let lifted = lift_one(bytes);
+        let ebx = il::Operand::Reg(general(3));
+        assert_eq!(
+            (lifted.op, lifted.operands.as_slice()),
+            (op, [ebx, ebx, il::Operand::Const(1)].as_slice())
+        );
+        let names = names(&instruction(&insn).expect("decoded"));
+        assert_eq!(names.as_slice(), ["ebx", "ebx", "1"]);
+    }
+
+    #[test]
+    fn a_multiply_of_one_operand_names_only_it() {
+        // mul ebx: edx:eax = eax * ebx
+        let lifted = lift_one(&[0xf7, 0xe3]);
+        assert_eq!(lifted.operands.as_slice(), [il::Operand::Reg(general(3))]);
+        assert!(lifted.reads.contains(general(0)) && lifted.writes.contains(general(2)));
     }
 
     #[test]

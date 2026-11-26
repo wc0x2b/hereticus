@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The IL of AArch64 `movn` holds the inverse of its constant, as the
   instruction does: `mov w0, #-1`, which is `movn w0, #0`, read as
   `w0 = 0` and now reads as `w0 = -0x1`.
+- The IL of x86 `inc` and `dec` adds or subtracts 1: `inc ebx` read as
+  `ebx = ebx + ebx` and now reads as `ebx = ebx + 1`. A `mul` or `imul`
+  of one operand, which multiplies `eax` into `edx:eax`, shows as the
+  instruction, where it read as the operand times itself.
 
 ## [0.8.0](https://github.com/wc0x2b/hereticus/compare/v0.7.2...v0.8.0) - 2026-11-22
 
