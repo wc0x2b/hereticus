@@ -352,6 +352,22 @@ pub struct VirtualSlot<'a> {
 /// information. More than any class holds, and far less than an address.
 const FARTHEST_BASE: u64 = 1 << 24;
 
+/// The family of ABIs that a binary of `format` keeps.
+fn abi_of(format: object::BinaryFormat) -> hereticus_arch::Abi {
+    match format {
+        object::BinaryFormat::Pe | object::BinaryFormat::Coff => hereticus_arch::Abi::Windows,
+        _ => hereticus_arch::Abi::Unix,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_pe_file_keeps_the_abis_of_windows() {
+    assert_eq!(abi_of(object::BinaryFormat::Pe), hereticus_arch::Abi::Windows);
+    assert_eq!(abi_of(object::BinaryFormat::Elf), hereticus_arch::Abi::Unix);
+    assert_eq!(abi_of(object::BinaryFormat::MachO), hereticus_arch::Abi::Unix);
+}
+
 /// A binary, with the functions found in it.
 #[derive(Clone, Debug)]
 pub struct Binary {
@@ -363,6 +379,8 @@ pub struct Binary {
     pub addresses: AddressSpace,
     /// What the linker left that names the callee of each call.
     pub links: Links,
+    /// The family of ABIs the binary keeps, which its format tells.
+    pub abi: hereticus_arch::Abi,
     /// The addresses of the functions in [`Isa::other_set`] of `isa`.
     ///
     /// An ARM library can mix A32 and Thumb-2 functions, and bit 0 of each
@@ -575,6 +593,7 @@ impl Binary {
                 addresses: address_space(&file),
                 links: Links::of_object(&file),
                 other_set: BTreeSet::new(),
+                abi: abi_of(file.format()),
             });
         }
 
@@ -640,6 +659,7 @@ impl Binary {
                 addresses,
                 links,
                 other_set,
+                abi: abi_of(file.format()),
             });
         }
 
@@ -716,6 +736,7 @@ impl Binary {
             addresses: address_space(&file),
             links,
             other_set,
+            abi: abi_of(file.format()),
         })
     }
 
@@ -797,6 +818,7 @@ impl Binary {
             addresses: AddressSpace::none(),
             links: Links::of_module(file, &bases),
             other_set: BTreeSet::new(),
+            abi: abi_of(file.format()),
         })
     }
 
@@ -954,6 +976,7 @@ impl Binary {
             ),
             links,
             other_set,
+            abi: abi_of(file.format()),
         })
     }
 
@@ -1022,7 +1045,15 @@ impl Binary {
         }
 
         let addresses = AddressSpace::of_raw_image(base, data.len() as u64);
-        Ok(Self { isa, functions, found_by: FoundBy::Scanning, addresses, links, other_set })
+        Ok(Self {
+            isa,
+            functions,
+            found_by: FoundBy::Scanning,
+            addresses,
+            links,
+            abi: hereticus_arch::Abi::Unix,
+            other_set,
+        })
     }
 }
 
@@ -1668,6 +1699,7 @@ mod tests {
             addresses: AddressSpace::none(),
             links: Links::of_parts(memory, BTreeMap::new()),
             other_set: BTreeSet::new(),
+            abi: hereticus_arch::Abi::Unix,
         };
         assert_eq!(
             binary.function_tables(),
@@ -1711,6 +1743,7 @@ mod tests {
             addresses: AddressSpace::none(),
             links: Links::of_parts(memory, BTreeMap::new()),
             other_set: BTreeSet::new(),
+            abi: hereticus_arch::Abi::Unix,
         };
         let row = |text, slots| RowText { text, slots };
         assert_eq!(
@@ -1765,6 +1798,7 @@ mod tests {
             addresses: AddressSpace::none(),
             links: Links::of_parts(memory, BTreeMap::new()),
             other_set: BTreeSet::new(),
+            abi: hereticus_arch::Abi::Unix,
         };
         let slot = |class, slot, length| VirtualSlot { class, slot, length };
         assert_eq!(

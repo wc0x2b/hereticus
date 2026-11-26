@@ -65,6 +65,9 @@ pub struct Context<'a> {
     /// The labels the functions take from their pairs in the other binary
     /// of a diff.
     pub paired: Option<&'a PairedLabels>,
+    /// The family of ABIs the binary keeps, which says where a call passes
+    /// its arguments.
+    pub abi: hereticus_arch::Abi,
 }
 
 impl Context<'_> {
@@ -1766,7 +1769,13 @@ mod tests {
         let links = Links::default()
             .with_sites(sites.iter().map(|&(at, name)| (at, name.to_string())).collect());
         let space = AddressSpace::none();
-        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &[],
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+        };
         let shown = il_lines_in(&Mips32::BIG, &code, &insns, Some(context));
         assert!(shown.contains(&"call capable".to_string()), "{shown:?}");
         assert!(shown.contains(&"call __raw_copy_to_user".to_string()), "{shown:?}");
@@ -2202,8 +2211,13 @@ mod tests {
         let functions = [function("main", 0x100), function("", 0x200), function("", 0x300)];
         let paired = PairedLabels([(0x200, "sub_1f0".to_string())].into_iter().collect());
         let (links, space) = (Links::default(), AddressSpace::default());
-        let context =
-            |paired| Context { links: &links, space: &space, functions: &functions, paired };
+        let context = |paired| Context {
+            links: &links,
+            space: &space,
+            functions: &functions,
+            paired,
+            abi: hereticus_arch::Abi::Unix,
+        };
         let arch = &hereticus_il::arch::aarch64::Aarch64;
         let named = |paired, address| context(paired).callee_at(arch, address);
         assert_eq!(named(None, 0x100).as_deref(), Some("main"));
@@ -2240,7 +2254,13 @@ mod tests {
             code: Vec::new(),
         }];
         let (links, space) = (Links::default(), AddressSpace::default());
-        let context = Context { links: &links, space: &space, functions: &functions, paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &functions,
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+        };
         let (insns, _) = decode_all(arch, code, 0x1000);
         il_lines_in(arch, code, &insns, Some(context))
     }
@@ -2266,7 +2286,13 @@ mod tests {
             BTreeMap::from([(0x4008, "strcmp".to_string()), (0x4010, "free".to_string())]),
         );
         let space = AddressSpace::default();
-        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &[],
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+        };
         let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
         let shown = il_lines_in(&Aarch64, &code, &insns, Some(context));
         assert_eq!(shown[5], "call x26", "strcmp on one path, free on the other");
@@ -2304,7 +2330,13 @@ mod tests {
         image.extend(b"GET /tmui\0next\0");
         let links = Links::of_parts(vec![(u64::from(base), image)], BTreeMap::new());
         let space = AddressSpace::of_raw_image(u64::from(base), 0x200);
-        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &[],
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+        };
         let (insns, _) = decode_all(&Arm32, &code, u64::from(base));
         let shown = il_lines_in(&Arm32, &code, &insns, Some(context));
         assert_eq!(shown[0], "r1 = &\"GET /tmui\"");

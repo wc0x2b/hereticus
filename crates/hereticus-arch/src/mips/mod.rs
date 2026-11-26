@@ -3,7 +3,7 @@
 //! functions are in [`hereticus_recovery::arch::mips`].
 
 use super::{
-    Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory, NamedReg,
+    Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory, NamedReg,
     Recovery,
 };
 use hereticus_il as il;
@@ -181,7 +181,7 @@ impl Arch for Mips32 {
     }
 
     /// The o32 ABI: `a0` to `a3`, and `v0`.
-    fn calling_convention(&self) -> Option<CallingConvention> {
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
         Some(O32)
     }
 }

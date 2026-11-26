@@ -132,7 +132,8 @@ pub fn hil_statements_in(
     insns: &[Insn],
     context: Option<Context<'_>>,
 ) -> Vec<Statement> {
-    let Some(convention) = arch.calling_convention().filter(|_| !insns.is_empty()) else {
+    let abi = context.map_or(hereticus_arch::Abi::Unix, |context| context.abi);
+    let Some(convention) = arch.calling_convention(abi).filter(|_| !insns.is_empty()) else {
         return crate::il_statements_in(arch, code, insns, context);
     };
     let folds = folds(arch, insns);
@@ -2705,14 +2706,22 @@ mod tests {
         };
         let functions = [callee];
         let (links, space) = (Links::default(), hereticus_memory::AddressSpace::default());
-        let context = Context { links: &links, space: &space, functions: &functions, paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &functions,
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+        };
         let (insns, _) = decode_all(&Aarch64, &code[..0x14], 0x1000);
         let shown: Vec<String> = hil_statements_in(&Aarch64, &code[..0x14], &insns, Some(context))
             .into_iter()
             .map(|line| line.text)
             .collect();
         assert_eq!(shown, ["w2 = 3", "ret = add(1, 2)", "return"]);
-        let convention = Aarch64.calling_convention().expect("AArch64 has a convention");
+        let convention = Aarch64
+            .calling_convention(hereticus_arch::Abi::Unix)
+            .expect("AArch64 has a convention");
         assert_eq!(
             arity_of_code(&Aarch64, convention, &code[0x14..], 0x1014),
             Some(Arity::Exact(2))
@@ -2723,7 +2732,9 @@ mod tests {
     /// as `va_start` needs, takes a format and more.
     #[test]
     fn a_callee_that_stores_its_last_arguments_is_variadic() {
-        let convention = Aarch64.calling_convention().expect("AArch64 has a convention");
+        let convention = Aarch64
+            .calling_convention(hereticus_arch::Abi::Unix)
+            .expect("AArch64 has a convention");
         let words: [u32; 6] = [
             0xa9bf_8be1, // stp x1, x2, [sp, #-0x8]!, as the top of a frame
             0xa9bf_93e3, // stp x3, x4, [sp, #-0x8]!
@@ -2762,7 +2773,13 @@ mod tests {
             std::collections::BTreeMap::from([(0x4008, "strcmp".to_string())]),
         );
         let space = hereticus_memory::AddressSpace::default();
-        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &[],
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+        };
         let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
         let shown: Vec<String> = hil_statements_in(&Aarch64, &code, &insns, Some(context))
             .into_iter()
@@ -2982,6 +2999,26 @@ mod tests {
             .collect();
         assert!(shown.contains(&"var_4 = 7".to_string()), "{shown:?}");
         assert!(shown.iter().any(|line| line.contains("(5, var_4)")), "{shown:?}");
+    }
+
+    /// x86-64 code of Windows takes its first argument in `rcx`, where
+    /// System V passes the fourth.
+    #[test]
+    fn x86_64_of_windows_names_its_arguments_by_its_abi() {
+        use hereticus_il::arch::x86::X86;
+        let code = [0x8b, 0x41, 0x10, 0xc3]; // mov eax, [rcx + 0x10]; ret
+        let (insns, _) = decode_all(&X86::BITS64, &code, 0x1000);
+        let (links, space) = (Links::default(), hereticus_memory::AddressSpace::default());
+        let context =
+            |abi| Context { links: &links, space: &space, functions: &[], paired: None, abi };
+        let shown = |abi| -> Vec<String> {
+            hil_statements_in(&X86::BITS64, &code, &insns, Some(context(abi)))
+                .into_iter()
+                .map(|line| line.text)
+                .collect()
+        };
+        assert_eq!(shown(hereticus_arch::Abi::Windows)[0], "eax = load.32 [arg1 + 0x10]");
+        assert_eq!(shown(hereticus_arch::Abi::Unix)[0], "eax = load.32 [arg4 + 0x10]");
     }
 
     /// A call to a function that never returns gives nothing back.

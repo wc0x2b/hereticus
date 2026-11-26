@@ -2,7 +2,7 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::arm32`].
 
-use super::{Arch, CallingConvention, Insn, InsnKind, Memory, NamedReg};
+use super::{Abi, Arch, CallingConvention, Insn, InsnKind, Memory, NamedReg};
 use hereticus_il as il;
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::*;
@@ -126,7 +126,7 @@ impl Arch for Arm32 {
     }
 
     /// The AAPCS: `r0` to `r3`, and `r0`.
-    fn calling_convention(&self) -> Option<CallingConvention> {
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
         Some(AAPCS)
     }
 }

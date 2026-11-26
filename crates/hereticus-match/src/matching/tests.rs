@@ -831,6 +831,7 @@ fn binary_of(functions: &[(&str, &[u8])]) -> hereticus_image::Binary {
         addresses: hereticus_memory::AddressSpace::none(),
         links: hereticus_image::Links::default(),
         other_set: std::collections::BTreeSet::new(),
+        abi: hereticus_arch::Abi::Unix,
         functions: functions
             .iter()
             .enumerate()
@@ -1385,6 +1386,7 @@ fn passes_text(text: &str) -> hereticus_image::Binary {
         found_by: hereticus_image::FoundBy::Symbols,
         addresses: hereticus_memory::AddressSpace::of_raw_image(0x8000, 0x880),
         other_set: std::collections::BTreeSet::new(),
+        abi: hereticus_arch::Abi::Unix,
         links: hereticus_image::Links::of_parts(
             vec![(0x8000, code.clone()), (0x9000, data)],
             BTreeMap::new(),
@@ -1495,6 +1497,7 @@ fn raw_mips(code: &[u8]) -> hereticus_image::Binary {
         addresses: AddressSpace::of_raw_image(0x8000_0000, 0x10_0000),
         links: hereticus_image::Links::default(),
         other_set: std::collections::BTreeSet::new(),
+        abi: hereticus_arch::Abi::Unix,
         functions: vec![Function {
             name: String::new(),
             address: 0x8000_0000,

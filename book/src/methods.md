@@ -305,7 +305,9 @@ it, so it changes no score. It changes how a diff reads in these ways:
 
 The roles come from the usual ABI of each architecture: o32 on MIPS, the
 AAPCS on A32 and T32, the AAPCS64 on AArch64, System V on x86-64 and on
-PowerPC, and cdecl on 32-bit x86. cdecl passes each argument on the
+PowerPC, and cdecl on 32-bit x86. An x86-64 PE file keeps the x64 ABI of
+Windows, which passes the first arguments in `rcx`, `rdx`, `r8` and
+`r9`. cdecl passes each argument on the
 stack: a place above the stack pointer at the entry shows as `arg1`,
 `arg2` and so on, and the pushes and stores before a call fold into it
 as its arguments. GCC can pass the arguments of a local function in

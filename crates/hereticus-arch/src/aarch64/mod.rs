@@ -2,7 +2,7 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::aarch64`].
 
-use super::{Arch, CallingConvention, Insn, Memory, NamedReg};
+use super::{Abi, Arch, CallingConvention, Insn, Memory, NamedReg};
 use hereticus_il::Reg;
 use hereticus_il::arch::aarch64::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
@@ -56,7 +56,7 @@ impl Arch for Aarch64 {
     }
 
     /// The AAPCS64: `x0` to `x7`, and `x0`.
-    fn calling_convention(&self) -> Option<CallingConvention> {
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
         const AAPCS64: CallingConvention = CallingConvention {
             arguments: &[
                 NamedReg::new(Reg::General(0), "x0"),

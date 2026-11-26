@@ -30,6 +30,7 @@ fn gz_error(arch: &str) -> Vec<String> {
         space: &binary.addresses,
         functions: &binary.functions,
         paired: None,
+        abi: binary.abi,
     };
     il_lines_in(isa, &function.code, &insns, Some(context))
 }

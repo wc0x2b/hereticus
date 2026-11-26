@@ -2,7 +2,7 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::thumb`].
 
-use super::{Arch, CallingConvention, Insn, Memory};
+use super::{Abi, Arch, CallingConvention, Insn, Memory};
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::Arm32;
 use hereticus_il::arch::thumb::*;
@@ -53,7 +53,7 @@ impl Arch for Thumb2 {
         track_pool_words(code, body, space, PcModel::T32.with_data(self.data_order())).formed
     }
 
-    fn calling_convention(&self) -> Option<CallingConvention> {
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
         Some(super::arm32::AAPCS)
     }
 }

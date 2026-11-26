@@ -122,6 +122,7 @@ fn context_of<'a>(
         space: &binary.addresses,
         functions: &binary.functions,
         paired,
+        abi: binary.abi,
     }
 }
 

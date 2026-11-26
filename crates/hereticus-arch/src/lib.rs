@@ -140,9 +140,21 @@ pub trait Arch: Recovery {
     ///
     /// Defaults to `None`, for an architecture whose ABI the high IL does
     /// not read.
-    fn calling_convention(&self) -> Option<CallingConvention> {
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
         None
     }
+}
+
+/// The family of ABIs that a binary keeps, which its format tells: an x86-64
+/// PE file passes its arguments as Windows does, in other registers than
+/// an ELF file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Abi {
+    /// The System V ABIs of ELF and Mach-O, and of a raw image.
+    #[default]
+    Unix,
+    /// The ABIs of Windows, of a PE file.
+    Windows,
 }
 
 /// A register of a [`CallingConvention`], with the name its architecture
@@ -274,7 +286,7 @@ mod tests {
     #[test]
     fn a_calling_convention_keeps_the_stack_and_not_the_arguments() {
         for (name, arch) in ARCHES {
-            let convention = arch.calling_convention().expect("each architecture has one");
+            let convention = arch.calling_convention(Abi::Unix).expect("each architecture has one");
             assert_eq!(
                 convention.arguments.is_empty(),
                 convention.stack_arguments.is_some(),
@@ -288,5 +300,22 @@ mod tests {
             assert!(convention.preserves(convention.stack), "{name}");
             assert!(!arguments.contains(&convention.stack), "{name}");
         }
+    }
+
+    /// x86-64 code of Windows passes its arguments in `rcx`, `rdx`, `r8`
+    /// and `r9`, and keeps `rdi` and `rsi`, which System V passes them in.
+    #[test]
+    fn x86_64_of_windows_passes_its_arguments_elsewhere() {
+        let windows = X86::BITS64.calling_convention(Abi::Windows).expect("x64 has an ABI");
+        let names: Vec<&str> = windows.arguments.iter().map(|arg| arg.name).collect();
+        assert_eq!(names, ["rcx", "rdx", "r8", "r9"]);
+        assert!(windows.preserves(hereticus_il::Reg::General(7)), "rdi");
+        let unix = X86::BITS64.calling_convention(Abi::Unix).expect("x64 has an ABI");
+        assert_eq!(unix.arguments[0].name, "rdi");
+        assert_eq!(
+            Aarch64.calling_convention(Abi::Windows),
+            Aarch64.calling_convention(Abi::Unix),
+            "ARM64 of Windows keeps the AAPCS64"
+        );
     }
 }

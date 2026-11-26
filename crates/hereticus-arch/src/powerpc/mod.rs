@@ -2,7 +2,7 @@
 //! instructions keep the frame and which constants are addresses. The rules
 //! that find functions are in [`hereticus_recovery::arch::powerpc`].
 
-use super::{Arch, CallingConvention, Insn, Memory, NamedReg};
+use super::{Abi, Arch, CallingConvention, Insn, Memory, NamedReg};
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::InsnKind;
 use hereticus_il::arch::powerpc::{LINK, Opcode, PowerPc, decoded};
@@ -82,7 +82,7 @@ impl Arch for PowerPc {
     }
 
     /// The System V and ELFv2 ABIs: `r3` to `r10`, and `r3`.
-    fn calling_convention(&self) -> Option<CallingConvention> {
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
         const SYSTEM_V: CallingConvention = CallingConvention {
             arguments: &[
                 NamedReg::new(Reg::General(3), "r3"),
