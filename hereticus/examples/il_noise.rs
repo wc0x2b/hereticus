@@ -418,8 +418,9 @@ fn main() {
             let diff = diff_with(&before, &after, Options::default());
             let mut counts = Counts::default();
             for pair in diff.matched.iter().filter(|pair| pair.changed != Changed::No) {
+                let view = if std::env::var_os("HIL").is_some() { View::Hil } else { View::Il };
                 let lines =
-                    instruction_diff_in(View::Il, None, &before, pair.before, &after, pair.after);
+                    instruction_diff_in(view, None, &before, pair.before, &after, pair.after);
                 count(&lines, &mut counts);
             }
             Some(counts)

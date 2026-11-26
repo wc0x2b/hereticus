@@ -3239,3 +3239,29 @@ thread, but each instruction is now hashed beforehand, on every core,
 and the interner finds it by that hash. Reading the tables, the rows and
 the classes of the two binaries at once took 0.1 s more off. The
 comparison took 3.38 s, with the same report, byte for byte.
+
+### What the high IL takes out of a diff
+
+Measured on 2026-11-26 with `hereticus/examples/view_noise.rs`, which
+diffs each changed pair once as IL and once as high IL, and counts the
+lines and the lines that differ: removed, added or rewritten.
+
+| Set | Changed pairs | Lines, IL | Lines, high IL | Differ, IL | Differ, high IL |
+|---|---|---|---|---|---|
+| The backports, 282 binaries | 651 | 269,197 | 252,139 | 54,010 | 51,718 |
+| Assemblage, 300 binaries | 18,279 | 3,919,151 | 3,048,296 | 721,498 | 680,769 |
+
+The high IL shows 6.3% fewer lines on the backports and 22.2% fewer on
+Assemblage, where the saves, the restores and the moves of the stack
+pointer of x86 take many lines. It shows 4.2% and 5.6% fewer lines that
+differ: most of a diff stays.
+
+`hereticus/examples/il_noise.rs` with `HIL=1` sorts what stays on the
+backports. Calls fall from 1,604 removed or added lines to 150, as the
+setting of each argument folds into its call. The largest share left,
+19.7%, is a line whose twin in the same hunk differs only in a register
+or a number: the high IL names a register by its role where it holds an
+argument or a result, and leaves each temporary register as the compiler
+chose it. A further layer that names each temporary by the value it
+holds, and folds a value that one line uses into that line, would reach
+those.
