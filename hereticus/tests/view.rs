@@ -31,7 +31,7 @@ fn gz_error(arch: &str) -> Vec<String> {
         functions: &binary.functions,
         paired: None,
         abi: binary.abi,
-        unread_results: None,
+        calls: None,
     };
     il_lines_in(isa, &function.code, &insns, Some(context))
 }
@@ -290,7 +290,7 @@ fn a_function_whose_result_no_call_reads_returns_nothing(
     #[values("arm", "aarch64", "mips", "x86_64")] arch: &str,
 ) {
     let binary = library("lua", "after", arch);
-    let unread = hereticus::view::unread_results(&binary);
+    let unread = hereticus::view::call_facts(&binary).unread_results;
     let address = |name: &str| {
         binary.functions.iter().find(|function| function.name == name).expect(name).address
     };
@@ -302,4 +302,33 @@ fn a_function_whose_result_no_call_reads_returns_nothing(
     // its result.
     assert!(binary.exported.contains(&address("lua_gettop")), "{arch}: the library exports");
     assert!(binary.exported.iter().all(|export| !unread.contains(export)), "{arch}");
+}
+
+/// `mix_two(a, b)` calls `beta(a, b)` with the arguments it was given, so
+/// it sets no argument register for the call. The other calls of `beta`
+/// set two, so this one shows two. `table` passes `v` to `alpha` in a
+/// tail call, and the copy that passes it shows.
+#[rstest]
+fn a_call_takes_the_fewest_arguments_the_other_calls_set(#[values("x86_64", "arm64")] arch: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../fixtures/build/pe/{arch}-calls.dll"));
+    let data = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("{}: {err}, run `just fixtures` first", path.display()));
+    let binary = Binary::parse(&data).expect("a fixture DLL parses");
+    let shown = |name: &str| {
+        let index = binary.functions.iter().position(|f| f.name == name).expect(name);
+        instruction_diff_in(View::Hil, None, &binary, index, &binary, index)
+            .iter()
+            .map(|line| match line {
+                DiffLine::Same(text) => text.trim().to_string(),
+                other => panic!("{arch}: {name} differs from itself: {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    let mix_two = shown("mix_two");
+    assert!(mix_two[0].ends_with(" = beta(arg1, arg2)"), "{arch}: {mix_two:?}");
+    assert!(mix_two[1].ends_with(" = alpha(arg1)"), "{arch}: {mix_two:?}");
+    let table = shown("table");
+    let tail = table.iter().position(|line| line == "goto alpha").expect("a tail call of alpha");
+    assert_eq!(table[tail - 1], format!("{} = arg2", if arch == "x86_64" { "ecx" } else { "w0" }));
 }

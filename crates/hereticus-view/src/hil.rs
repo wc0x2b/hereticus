@@ -171,8 +171,8 @@ pub fn hil_statements_in(
     let printed = instruction_lines(arch, code, insns, context);
     let mut body = Body::new(arch, convention, insns, &printed);
     let returns_nothing = context
-        .and_then(|context| context.unread_results)
-        .is_some_and(|unread| unread.contains(&insns[0].address));
+        .and_then(|context| context.calls)
+        .is_some_and(|calls| calls.unread_results.contains(&insns[0].address));
     if returns_nothing {
         body.returns = Returns::Nothing;
     }
@@ -185,19 +185,30 @@ pub fn hil_statements_in(
     let mut sites: Vec<CallSite> = (0..insns.len())
         .filter_map(|index| body.call_site(index, &printed, &lines, &folds))
         .collect();
-    let mut arities: HashMap<String, Option<Takes>> = HashMap::new();
+    let mut arities: HashMap<String, (Option<Takes>, Option<usize>)> = HashMap::new();
     for site in &mut sites {
-        let arity = *arities
-            .entry(site.callee.clone())
-            .or_insert_with(|| arity_of(arch, convention, context, &site.callee));
+        let (arity, fewest) = *arities.entry(site.callee.clone()).or_insert_with(|| {
+            (arity_of(arch, convention, context, &site.callee), fewest_set(context, &site.callee))
+        });
+        let most = match convention.stack_arguments {
+            Some(_) => MOST_STACK_ARGUMENTS,
+            None => convention.arguments.len(),
+        };
         if let Some(Takes { arity, in_registers }) = arity {
-            let most = match convention.stack_arguments {
-                Some(_) => MOST_STACK_ARGUMENTS,
-                None => convention.arguments.len(),
-            };
             site.count = arity.shown(site.count, most);
-            site.counted = Counted::ByCallee;
+            // A callee that reads at least some arguments can read more.
+            site.counted = match arity {
+                Arity::Exact(_) => Counted::ByCallee,
+                Arity::AtLeast(_) => Counted::ByCaller,
+            };
             site.in_registers = in_registers;
+        }
+        // Where the callee does not say how many it reads, the other calls
+        // of it say how many it reads at least. Each argument register is
+        // one a call can change, so a call that sets one passes it.
+        let exact = matches!(arity, Some(Takes { arity: Arity::Exact(_), .. }));
+        if let Some(fewest) = fewest.filter(|_| !exact && convention.stack_arguments.is_none()) {
+            site.count = site.count.max(fewest).min(most);
         }
     }
     let live = body.live_in(&sites);
@@ -2117,19 +2128,23 @@ impl<'b, 'a> Block<'b, 'a> {
     }
 }
 
-/// The most instructions after a call that [`unread_results`] follows on
-/// each path for a read of the result.
+/// The most instructions after a call that [`call_facts`] follows on each
+/// path for a read of the result.
 const MOST_FOLLOWED: usize = 32;
 
-/// The addresses of the functions of `binary` whose result no direct call
-/// reads: on each path after each call, the code writes the result
-/// register before it reads it, within [`MOST_FOLLOWED`] instructions. A
-/// return after the call reads it, as the caller can give it back, and so
-/// does a path that runs longer. A function whose address the code forms,
-/// as a callback, can give a result to a call through a pointer, so it is
-/// none of these, and nor is one that the binary exports, or that no call
-/// reaches.
-pub fn unread_results(binary: &hereticus_image::Binary) -> HashSet<u64> {
+/// What the direct calls of `binary` tell of their callees.
+///
+/// A function gives back no result where on each path after each call,
+/// the code writes the result register before it reads it, within
+/// [`MOST_FOLLOWED`] instructions. A return after the call reads it, as
+/// the caller can give it back, and so does a path that runs longer. A
+/// function whose address the code forms, as a callback, can give a result
+/// to a call through a pointer, so it is none of these, and nor is one
+/// that the binary exports, or that no call reaches.
+///
+/// The fewest arguments that each callee takes are the fewest that a call
+/// of it sets, by [`arguments_set`], of the calls that set any.
+pub fn call_facts(binary: &hereticus_image::Binary) -> hereticus_image::CallFacts {
     let addresses: HashSet<u64> =
         binary.functions.iter().map(|function| function.address).collect();
     let regions = binary.links.regions();
@@ -2144,6 +2159,15 @@ pub fn unread_results(binary: &hereticus_image::Binary) -> HashSet<u64> {
         hereticus_il::arch::ByteOrder::Big => hereticus_image::links::ByteOrder::Big,
     };
     let word_at = |address: u64| binary.links.word_at(address, width, order);
+    let naming = Context {
+        links: &binary.links,
+        space: &binary.addresses,
+        functions: &binary.functions,
+        paired: None,
+        abi: binary.abi,
+        calls: None,
+    };
+    let mut fewest_set: HashMap<String, usize> = HashMap::new();
     let mut read: HashSet<u64> = HashSet::new();
     let mut called: HashSet<u64> = HashSet::new();
     // The slots of the global offset table that calls go through, which
@@ -2172,12 +2196,27 @@ pub fn unread_results(binary: &hereticus_image::Binary) -> HashSet<u64> {
             .iter()
             .map(|insn| hereticus_il::arch::lift_named(insn).map(|named| named.lifted))
             .collect();
+        let entries = entries_of(&next);
         let result = convention.result.reg;
         // A call that passes the result on, as `f(g())` on AArch64, reads it.
         let passes_on = convention.arguments.iter().any(|arg| arg.reg == result)
             || convention.stack_arguments.is_some();
         for (index, target) in arch.call_targets(&insns) {
             use hereticus_recovery::arch::CallTarget;
+            let is_call = matches!(insns[index].kind, InsnKind::Call { .. });
+            let name = binary
+                .links
+                .site_name(insns[index].address)
+                .map(str::to_string)
+                .or_else(|| naming.callee_of(arch, target?));
+            if let Some(name) = name.filter(|_| is_call && convention.stack_arguments.is_none()) {
+                let calls = Calls { insns: &insns, next: &next, entries: &entries, lifts: &lifts };
+                let set = calls.arguments_set(index, arch, convention);
+                if set > 0 {
+                    let fewest = fewest_set.entry(name).or_insert(set);
+                    *fewest = (*fewest).min(set);
+                }
+            }
             let target = match target {
                 Some(CallTarget::Address(address)) => Some(address),
                 // MIPS PIC calls through a slot of the global offset table,
@@ -2245,13 +2284,76 @@ pub fn unread_results(binary: &hereticus_image::Binary) -> HashSet<u64> {
             }
         }
         if read.len() == before {
-            return unread;
+            return hereticus_image::CallFacts { unread_results: unread, fewest_set };
         }
     }
 }
 
+/// How many paths lead into each instruction of a function, by its
+/// successors `next`.
+fn entries_of(next: &[Vec<usize>]) -> Vec<usize> {
+    let mut entries = vec![0; next.len()];
+    for &successor in next.iter().flatten() {
+        entries[successor] += 1;
+    }
+    entries
+}
+
+/// The code of one function, as [`call_facts`] reads its calls.
+struct Calls<'a> {
+    insns: &'a [Insn],
+    next: &'a [Vec<usize>],
+    entries: &'a [usize],
+    lifts: &'a [Option<Lifted>],
+}
+
+impl Calls<'_> {
+    /// How many argument registers the code right before the call at
+    /// `index` sets for it: the last that the straight code before the
+    /// call, and its delay slots, write and then read only to test or copy
+    /// it. The call can change each argument register, so the code sets
+    /// one only to pass it.
+    fn arguments_set(&self, index: usize, arch: &dyn Arch, convention: CallingConvention) -> usize {
+        let (insns, lifts) = (self.insns, self.lifts);
+        // A delay slot runs before its call, which can change what the
+        // slot sets. No architecture has more than one.
+        let slots_of_call = |at: usize| {
+            at > 0
+                && matches!(insns[at - 1].kind, InsnKind::Call { .. })
+                && arch.delay_slots(&insns[at - 1]) > 0
+        };
+        let mut start = index;
+        while start > 0
+            && index - start < MOST_LOOKED_BACK
+            && self.entries[start] == 1
+            && self.next[start - 1] == [start]
+            && lifts[start - 1].is_some()
+            && !matches!(insns[start - 1].kind, InsnKind::Call { .. })
+            && !slots_of_call(start - 1)
+        {
+            start -= 1;
+        }
+        let last = (index + arch.delay_slots(&insns[index])).min(insns.len() - 1);
+        let order: Vec<&Lifted> =
+            (start..index).chain(index + 1..=last).filter_map(|at| lifts[at].as_ref()).collect();
+        let passed = |reg: Reg| {
+            let Some(written) = order.iter().rposition(|lifted| lifted.writes.contains(reg)) else {
+                return false;
+            };
+            order[written + 1..].iter().all(|later| {
+                let is_test = later.memory.is_none()
+                    && later.writes.difference(RegSet::from_iter([Reg::Flags])).is_empty();
+                let copies = copy_of(&(*later).clone().canonical())
+                    .is_some_and(|(dest, source)| source == reg && dest != reg);
+                !later.reads.contains(reg) || is_test || copies
+            })
+        };
+        convention.arguments.iter().rposition(|arg| passed(arg.reg)).map_or(0, |at| at + 1)
+    }
+}
+
 /// Whether code after instruction `last` reads `result` before it writes
-/// it, on some path, as [`unread_results`] follows the paths.
+/// it, on some path, as [`call_facts`] follows the paths.
 fn result_read_after(
     insns: &[Insn],
     next: &[Vec<usize>],
@@ -2307,13 +2409,28 @@ fn arity_of(
     if let Some(arity) = arity::known(name) {
         return Some(arity.into());
     }
-    let context = context?;
+    let function = function_named(context?, name)?;
+    arity_of_code(arch, convention, &function.code, function.address)
+}
+
+/// The function that the view names `name`, by its label or the label of
+/// its pair.
+fn function_named<'a>(context: Context<'a>, name: &str) -> Option<&'a hereticus_image::Function> {
     let label = |function: &hereticus_image::Function| {
         let paired = context.paired.and_then(|paired| paired.0.get(&function.address));
         paired.cloned().unwrap_or_else(|| function.label())
     };
-    let function = context.functions.iter().find(|function| label(function) == name)?;
-    arity_of_code(arch, convention, &function.code, function.address)
+    context.functions.iter().find(|function| label(function) == name)
+}
+
+/// The fewest arguments that a call of the callee `name` sets, of the
+/// calls of it in the binary that set any, by [`call_facts`].
+fn fewest_set(context: Option<Context<'_>>, name: &str) -> Option<usize> {
+    let context = context?;
+    // The facts name a function by its own label, where the view can name
+    // it by the label of its pair.
+    let own = function_named(context, name).map(hereticus_image::Function::label);
+    context.calls?.fewest_set.get(own.as_deref().unwrap_or(name)).copied()
 }
 
 /// How many arguments the function of `code`, at `address`, reads before it
@@ -3070,7 +3187,7 @@ mod tests {
             functions: &functions,
             paired: None,
             abi: hereticus_arch::Abi::Unix,
-            unread_results: None,
+            calls: None,
         };
         let (insns, _) = decode_all(&Aarch64, &code[..0x14], 0x1000);
         let shown: Vec<String> = hil_statements_in(&Aarch64, &code[..0x14], &insns, Some(context))
@@ -3141,7 +3258,7 @@ mod tests {
             functions: &[],
             paired: None,
             abi: hereticus_arch::Abi::Unix,
-            unread_results: None,
+            calls: None,
         };
         let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
         let shown: Vec<String> = hil_statements_in(&Aarch64, &code, &insns, Some(context))
@@ -3378,7 +3495,7 @@ mod tests {
             functions: &[],
             paired: None,
             abi,
-            unread_results: None,
+            calls: None,
         };
         let shown = |abi| -> Vec<String> {
             hil_statements_in(&X86::BITS64, &code, &insns, Some(context(abi)))
@@ -3420,7 +3537,7 @@ mod tests {
             functions: &functions,
             paired: None,
             abi: hereticus_arch::Abi::Unix,
-            unread_results: None,
+            calls: None,
         };
         let (insns, _) = decode_all(&X86::BITS32, &code[..0x15], 0x1000);
         let shown: Vec<String> =
@@ -3442,6 +3559,54 @@ mod tests {
         assert_eq!(takes, Some(Takes { arity: Arity::AtLeast(0), in_registers: 0 }));
         let takes = arity_of_code(&X86::BITS32, convention, &[0xc3], 0x2000);
         assert_eq!(takes, Some(Takes { arity: Arity::Exact(0), in_registers: 0 }));
+    }
+
+    /// The arguments set for the call at `index` of `code`, decoded by
+    /// `arch` at 0x1000.
+    fn arguments_set_at(arch: &dyn Arch, code: &[u8], index: usize) -> usize {
+        let (insns, _) = decode_all(arch, code, 0x1000);
+        let next = successors(&insns, |insn| arch.delay_slots(insn));
+        let entries = entries_of(&next);
+        let lifts: Vec<Option<Lifted>> = insns
+            .iter()
+            .map(|insn| hereticus_il::arch::lift_named(insn).map(|n| n.lifted))
+            .collect();
+        let convention = arch.calling_convention(hereticus_arch::Abi::Unix).expect("an ABI");
+        Calls { insns: &insns, next: &next, entries: &entries, lifts: &lifts }
+            .arguments_set(index, arch, convention)
+    }
+
+    /// A register that the code sets and then reads for itself before the
+    /// call is no argument, and a delay slot of the call before runs before
+    /// that call.
+    #[test]
+    fn a_call_sets_the_registers_it_passes() {
+        let words =
+            |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_le_bytes()).collect() };
+        let set = words(&[
+            0x5280_0020, // mov w0, #1
+            0x5280_0041, // mov w1, #2
+            0x9400_0040, // bl $+0x100
+        ]);
+        assert_eq!(arguments_set_at(&Aarch64, &set, 2), 2);
+        let read = words(&[
+            0x5280_00a1, // mov w1, #5
+            0x1100_0423, // add w3, w1, #1
+            0xb900_03e3, // str w3, [sp]
+            0x9400_0040, // bl $+0x100
+        ]);
+        assert_eq!(arguments_set_at(&Aarch64, &read, 3), 0);
+        let code: Vec<u8> = [
+            0x0c00_0400_u32, // jal 0x1000
+            0x0200_2025,     // move a0, s0: the slot of the first call
+            0x0c00_0400,     // jal 0x1000
+            0x0000_0000,     // nop
+        ]
+        .iter()
+        .flat_map(|word| word.to_be_bytes())
+        .collect();
+        assert_eq!(arguments_set_at(&Mips32::BIG, &code, 2), 0);
+        assert_eq!(arguments_set_at(&Mips32::BIG, &code, 0), 1);
     }
 
     /// The result register of AArch64 is its first argument register: a

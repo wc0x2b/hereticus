@@ -15,7 +15,7 @@ mod arity;
 mod depth;
 mod hil;
 
-pub use hil::{hil_statements_in, unread_results};
+pub use hil::{call_facts, hil_statements_in};
 
 use std::collections::{HashMap, HashSet};
 
@@ -68,9 +68,9 @@ pub struct Context<'a> {
     /// The family of ABIs the binary keeps, which says where a call passes
     /// its arguments.
     pub abi: hereticus_arch::Abi,
-    /// The functions whose result no call reads, as [`unread_results`]
-    /// works them out, where the view knows them.
-    pub unread_results: Option<&'a HashSet<u64>>,
+    /// What the calls of the binary tell of their callees, as
+    /// [`call_facts`] works it out, where the view knows it.
+    pub calls: Option<&'a hereticus_image::CallFacts>,
 }
 
 impl Context<'_> {
@@ -1836,7 +1836,7 @@ mod tests {
             functions: &[],
             paired: None,
             abi: hereticus_arch::Abi::Unix,
-            unread_results: None,
+            calls: None,
         };
         let shown = il_lines_in(&Mips32::BIG, &code, &insns, Some(context));
         assert!(shown.contains(&"call capable".to_string()), "{shown:?}");
@@ -2279,7 +2279,7 @@ mod tests {
             functions: &functions,
             paired,
             abi: hereticus_arch::Abi::Unix,
-            unread_results: None,
+            calls: None,
         };
         let arch = &hereticus_il::arch::aarch64::Aarch64;
         let named = |paired, address| context(paired).callee_at(arch, address);
@@ -2323,7 +2323,7 @@ mod tests {
             functions: &functions,
             paired: None,
             abi: hereticus_arch::Abi::Unix,
-            unread_results: None,
+            calls: None,
         };
         let (insns, _) = decode_all(arch, code, 0x1000);
         il_lines_in(arch, code, &insns, Some(context))
@@ -2356,7 +2356,7 @@ mod tests {
             functions: &[],
             paired: None,
             abi: hereticus_arch::Abi::Unix,
-            unread_results: None,
+            calls: None,
         };
         let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
         let shown = il_lines_in(&Aarch64, &code, &insns, Some(context));
@@ -2401,7 +2401,7 @@ mod tests {
             functions: &[],
             paired: None,
             abi: hereticus_arch::Abi::Unix,
-            unread_results: None,
+            calls: None,
         };
         let (insns, _) = decode_all(&Arm32, &code, u64::from(base));
         let shown = il_lines_in(&Arm32, &code, &insns, Some(context));

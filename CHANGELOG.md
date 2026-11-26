@@ -14,9 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ret = strcmp(arg2, &"expect")`, with the setting of an argument in a
   MIPS delay slot folded in. The count of arguments comes from the
   prototype of a common function of the C library or the kernel, or
-  from the code of the callee. A call through a register names the
-  function the register holds, also where the code kept its address on
-  the stack. A value that one later statement reads folds into it, so a
+  from the code of the callee, or else from the other calls of it. A
+  call through a register names the function the register holds, also
+  where the code kept its address on the stack. A value that one later statement reads folds into it, so a
   test of what a call gave back reads as
   `if (strncmp(x20, &"PATH=", 5) == 0)`. A register shows as `arg1`
   where it holds the first argument of the function, and as `ret` where

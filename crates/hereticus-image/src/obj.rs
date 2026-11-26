@@ -390,6 +390,17 @@ fn a_pe_file_keeps_the_abis_of_windows() {
     assert_eq!(abi_of(object::BinaryFormat::MachO), hereticus_arch::Abi::Unix);
 }
 
+/// What the calls of a binary tell of their callees, which no one callee
+/// tells by its own code.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CallFacts {
+    /// The addresses of the functions whose result no call reads.
+    pub unread_results: std::collections::HashSet<u64>,
+    /// The fewest arguments, by the name of the callee, that a call of it
+    /// sets, of the calls that set any.
+    pub fewest_set: HashMap<String, usize>,
+}
+
 /// A binary, with the functions found in it.
 #[derive(Clone, Debug)]
 pub struct Binary {
@@ -403,9 +414,9 @@ pub struct Binary {
     pub links: Links,
     /// The family of ABIs the binary keeps, which its format tells.
     pub abi: hereticus_arch::Abi,
-    /// The addresses of the functions whose result no call reads, which a
-    /// view works out once, where it needs them.
-    pub unread_results: std::sync::OnceLock<std::collections::HashSet<u64>>,
+    /// What the calls of the binary tell of their callees, which a view
+    /// works out once, where it needs it.
+    pub calls: std::sync::OnceLock<CallFacts>,
     /// The addresses of the functions the binary exports, which code of
     /// other binaries can call.
     pub exported: BTreeSet<u64>,
@@ -622,7 +633,7 @@ impl Binary {
                 links: Links::of_object(&file),
                 other_set: BTreeSet::new(),
                 abi: abi_of(file.format()),
-                unread_results: std::sync::OnceLock::new(),
+                calls: std::sync::OnceLock::new(),
                 exported: exported_functions(&file),
             });
         }
@@ -690,7 +701,7 @@ impl Binary {
                 links,
                 other_set,
                 abi: abi_of(file.format()),
-                unread_results: std::sync::OnceLock::new(),
+                calls: std::sync::OnceLock::new(),
                 exported: exported_functions(&file),
             });
         }
@@ -769,7 +780,7 @@ impl Binary {
             links,
             other_set,
             abi: abi_of(file.format()),
-            unread_results: std::sync::OnceLock::new(),
+            calls: std::sync::OnceLock::new(),
             exported: exported_functions(&file),
         })
     }
@@ -853,7 +864,7 @@ impl Binary {
             links: Links::of_module(file, &bases),
             other_set: BTreeSet::new(),
             abi: abi_of(file.format()),
-            unread_results: std::sync::OnceLock::new(),
+            calls: std::sync::OnceLock::new(),
             exported: exported_functions(file),
         })
     }
@@ -1013,7 +1024,7 @@ impl Binary {
             links,
             other_set,
             abi: abi_of(file.format()),
-            unread_results: std::sync::OnceLock::new(),
+            calls: std::sync::OnceLock::new(),
             exported: exported_functions(file),
         })
     }
@@ -1090,7 +1101,7 @@ impl Binary {
             addresses,
             links,
             abi: hereticus_arch::Abi::Unix,
-            unread_results: std::sync::OnceLock::new(),
+            calls: std::sync::OnceLock::new(),
             exported: BTreeSet::new(),
             other_set,
         })
@@ -1740,7 +1751,7 @@ mod tests {
             links: Links::of_parts(memory, BTreeMap::new()),
             other_set: BTreeSet::new(),
             abi: hereticus_arch::Abi::Unix,
-            unread_results: std::sync::OnceLock::new(),
+            calls: std::sync::OnceLock::new(),
             exported: BTreeSet::new(),
         };
         assert_eq!(
@@ -1786,7 +1797,7 @@ mod tests {
             links: Links::of_parts(memory, BTreeMap::new()),
             other_set: BTreeSet::new(),
             abi: hereticus_arch::Abi::Unix,
-            unread_results: std::sync::OnceLock::new(),
+            calls: std::sync::OnceLock::new(),
             exported: BTreeSet::new(),
         };
         let row = |text, slots| RowText { text, slots };
@@ -1843,7 +1854,7 @@ mod tests {
             links: Links::of_parts(memory, BTreeMap::new()),
             other_set: BTreeSet::new(),
             abi: hereticus_arch::Abi::Unix,
-            unread_results: std::sync::OnceLock::new(),
+            calls: std::sync::OnceLock::new(),
             exported: BTreeSet::new(),
         };
         let slot = |class, slot, length| VirtualSlot { class, slot, length };

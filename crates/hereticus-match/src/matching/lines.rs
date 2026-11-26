@@ -123,9 +123,7 @@ fn context_of<'a>(
         functions: &binary.functions,
         paired,
         abi: binary.abi,
-        unread_results: Some(
-            binary.unread_results.get_or_init(|| hereticus_view::unread_results(binary)),
-        ),
+        calls: Some(binary.calls.get_or_init(|| hereticus_view::call_facts(binary))),
     }
 }
 

@@ -334,6 +334,15 @@ the count comes from one of three places, the first that knows it:
   only that block leads to it, up to the last argument set that nothing
   but a test or a copy reads before the call.
 
+Where the callee does not give an exact count, as an imported function
+or a stub that jumps to one, the other calls of the callee in the binary
+give a least count: the fewest argument registers that a call of it sets,
+of the calls that set any. A call can change each argument register, so
+code sets one before a call only to pass it. A call that passes on the
+arguments of its own function sets none, so `mix_two(a, b)` shows its
+call as `beta(arg1, arg2)` where another call of `beta` sets two. A
+callee that takes a variable count takes at least the fewest.
+
 Limits: a call through a register that holds another function on each
 path, as `x26()`, has no name, so only the code before the call counts
 its arguments. Such a call can still read each argument register, so no
