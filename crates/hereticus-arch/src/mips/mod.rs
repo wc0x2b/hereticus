@@ -37,6 +37,7 @@ pub(crate) const O32: CallingConvention = CallingConvention {
     // `s0` to `s7`, `gp`, `sp` and `fp`.
     preserved: &[16, 17, 18, 19, 20, 21, 22, 23, 28, 29, 30],
     stack_arguments: None,
+    link: Some(il::Reg::General(31)),
 };
 
 impl Arch for Mips32 {

@@ -504,7 +504,10 @@ impl Values<'_, '_> {
                 Source::Memory => stores,
                 Source::Registers => false,
             };
-            if changes || moves_past || self.calls.contains_key(&at) {
+            // A call can change the registers and memory the value reads,
+            // whether the high IL shows it as a call or not.
+            let calls = matches!(body.insns[at].kind, InsnKind::Call { .. });
+            if changes || moves_past || calls {
                 return None;
             }
         }
@@ -536,6 +539,16 @@ impl Values<'_, '_> {
         let folded = simplified(&replace_read_once(text, &name, &operand)?);
         (folded.len() <= LONGEST_FOLDED).then_some((user, folded))
     }
+}
+
+/// Whether `insn` is a MIPS branch likely, whose delay slot runs only where
+/// it branches.
+fn is_branch_likely(insn: &Insn) -> bool {
+    const LIKELY: [&str; 12] = [
+        "beql", "bnel", "blezl", "bgtzl", "bltzl", "bgezl", "bltzall", "bgezall", "bc1fl", "bc1tl",
+        "beqzl", "bnezl",
+    ];
+    LIKELY.contains(&hereticus_il::arch::printed_name(insn).as_str())
 }
 
 /// Whether the statement `text` leaves each register as it was, as
@@ -770,6 +783,12 @@ struct Body<'a> {
     registers: HashMap<String, Reg>,
     /// The functions whose addresses the code loads, by name.
     callees: Vec<String>,
+    /// The places on the stack that the code loads from, by their distance
+    /// from the stack pointer at the entry.
+    loaded_places: HashSet<i64>,
+    /// The registers a call writes the return address to, as `lr` or `ra`:
+    /// a function saves one, as it saves a register that a call keeps.
+    links: RegSet,
     /// For each instruction that loads the address of a function from a
     /// slot of the global offset table, as `x26 = load.64 [@strcmp]`, the
     /// index of the function in [`Body::callees`].
@@ -855,7 +874,10 @@ impl<'a> Body<'a> {
             registers,
             callees,
             callee_loads,
+            links: RegSet::EMPTY,
+            loaded_places: HashSet::new(),
         };
+        body.links = convention.link.into_iter().collect();
         body.holding = body.held();
         // A load from a place that a save filled gives back the value it
         // saved, so the restore shows as such: PowerPC saves `lr` through
@@ -865,6 +887,17 @@ impl<'a> Body<'a> {
             body.holding = body.held();
         }
         body.upkeep = body.frame_upkeep();
+        body.loaded_places = (0..insns.len())
+            .filter_map(|index| {
+                let lifted = body.canonical(index)?;
+                if lifted.memory?.kind == AccessKind::Store {
+                    return None;
+                }
+                body.stack_places(index, &lifted, &body.holding[index])
+            })
+            .flatten()
+            .map(|(at, _)| at)
+            .collect();
         body
     }
 
@@ -924,7 +957,9 @@ impl<'a> Body<'a> {
             let holding = &self.holding[index];
             if let Some(frame) = self.frame(index, holding).filter(|frame| frame.saves) {
                 for &(at, reg) in &frame.places {
-                    if let Some(&Held::Entry(saved)) = holding.reg(reg) {
+                    if let Some(&Held::Entry(saved)) = holding.reg(reg)
+                        && self.is_saved_by_frame(saved)
+                    {
                         slots.insert(at, saved);
                     }
                 }
@@ -935,7 +970,9 @@ impl<'a> Body<'a> {
             }
             let holding = &self.holding[index];
             for (at, reg) in self.stack_places(index, &lifted, holding).into_iter().flatten() {
-                if let Some(&Held::Entry(saved)) = holding.reg(reg) {
+                if let Some(&Held::Entry(saved)) = holding.reg(reg)
+                    && self.is_saved_by_frame(saved)
+                {
                     slots.insert(at, saved);
                 }
             }
@@ -982,7 +1019,7 @@ impl<'a> Body<'a> {
         }
         let slots = self.arch.delay_slots(insn);
         let last = index + slots;
-        if slots == 0 || last >= self.insns.len() {
+        if slots == 0 || last >= self.insns.len() || is_branch_likely(insn) {
             return None;
         }
         let reads = self.lifts[index].as_ref()?.lifted.reads;
@@ -992,6 +1029,12 @@ impl<'a> Body<'a> {
                 .is_none_or(|named| named.lifted.writes.iter().any(|reg| reads.contains(reg)))
         });
         (!writes_read).then_some(last)
+    }
+
+    /// Whether a save of the value `reg` held at the entry keeps the frame:
+    /// a call keeps `reg`, or writes its return address there.
+    fn is_saved_by_frame(&self, reg: Reg) -> bool {
+        self.convention.preserves(reg) || self.links.contains(reg)
     }
 
     fn is_call(&self, index: usize) -> bool {
@@ -1131,8 +1174,22 @@ impl<'a> Body<'a> {
             }
             _ => {}
         }
+        // An instruction that runs only on a condition leaves each place it
+        // writes holding one of two values, which the high IL does not name.
+        if self.is_conditional(index) {
+            gained.clear();
+            stored.iter_mut().for_each(|(_, held)| *held = None);
+        }
         for reg in lifted.writes.iter() {
             holding.unset(reg);
+        }
+        // A store also changes each place it overlaps.
+        let width = self.width(&lifted);
+        for &(at, _) in &stored {
+            holding.retain(|place, _| match *place {
+                Place::Slot(other) => other == at || other + 8 <= at || other >= at + width,
+                Place::Reg(_) => true,
+            });
         }
         for (at, held) in stored {
             match held {
@@ -1213,12 +1270,19 @@ impl<'a> Body<'a> {
             *keeps = match (lifted.memory.map(|access| access.kind), places) {
                 // A save, or the link of a PowerPC frame to the one before.
                 (Some(AccessKind::Store), Some(places)) => places.iter().all(|(_, reg)| {
-                    *reg == stack || matches!(holding.reg(*reg), Some(Held::Entry(_)))
+                    *reg == stack
+                        || matches!(holding.reg(*reg), Some(&Held::Entry(saved)) if self.is_saved_by_frame(saved))
                 }),
-                // A restore. A `pop` into the program counter is the return.
+                // A restore, into the register saved there, or a return
+                // address into a register that passes it on, as PowerPC
+                // restores `lr` through `r0`. A `pop` into the program
+                // counter is the return.
                 (Some(AccessKind::Load), Some(places)) => {
                     self.insns[index].kind == InsnKind::Normal
-                        && places.iter().all(|(at, _)| self.save_slots.contains_key(at))
+                        && places.iter().all(|(at, reg)| match self.save_slots.get(at) {
+                            Some(&saved) => saved == *reg || self.links.contains(saved),
+                            None => false,
+                        })
                 }
                 (None, _) => {
                     self.moves_frame(&lifted, holding)
@@ -2012,7 +2076,10 @@ impl Block<'_, '_> {
                         .iter()
                         .any(|written| inputs.contains(written) && written != body.convention.stack)
                 });
-                if changed {
+                // A place the code loads from again holds a value of its
+                // own, as GCC keeps locals right above the arguments on
+                // 32-bit x86: its store stays.
+                if changed || body.loaded_places.contains(&place) {
                     return body.place_name(place);
                 }
                 self.hidden.insert(setter);
@@ -2799,6 +2866,122 @@ mod tests {
             0xd65f_03c0, // ret
         ]);
         assert_eq!(shown, ["var_10 = arg2", "w0 = load.32 [arg2 + 0x4]", "return"]);
+    }
+
+    /// A copy that runs on a condition leaves the register holding one of
+    /// two values, so no read of it shows the argument.
+    #[test]
+    fn a_conditional_copy_names_no_role() {
+        use hereticus_il::arch::arm32::Arm32;
+        let code: Vec<u8> = [
+            0xe350_0000_u32, // cmp r0, #0
+            0x01a0_4001,     // moveq r4, r1
+            0xe594_0000,     // ldr r0, [r4]
+            0xe12f_ff1e,     // bx lr
+        ]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        let shown: Vec<String> = hil_statements_in(&Arm32, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert!(shown.contains(&"if (eq) r4 = arg2".to_string()), "{shown:?}");
+        assert!(shown.contains(&"r0 = load.32 [r4]".to_string()), "{shown:?}");
+    }
+
+    /// A value does not fold past a call that the high IL shows as none,
+    /// as one that runs on a condition: the call can change what it reads.
+    #[test]
+    fn a_value_does_not_fold_past_a_conditional_call() {
+        use hereticus_il::arch::arm32::Arm32;
+        let code: Vec<u8> = [
+            0xe591_3000_u32, // ldr r3, [r1]
+            0xe350_0000,     // cmp r0, #0
+            0x1b00_0040,     // blne $+0x108
+            0xe583_5000,     // str r5, [r3]
+            0xe12f_ff1e,     // bx lr
+        ]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        let shown: Vec<String> = hil_statements_in(&Arm32, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert!(shown.contains(&"r3 = load.32 [arg2]".to_string()), "{shown:?}");
+    }
+
+    /// A push of a register that no call keeps is no save: on 32-bit x86
+    /// it passes an argument.
+    #[test]
+    fn a_push_of_a_register_no_call_keeps_is_an_argument() {
+        use hereticus_il::arch::x86::X86;
+        let code = [
+            0x50, // push eax, as it came in
+            0xe8, 0x00, 0x00, 0x00, 0x00, // call $+0x5
+            0x83, 0xc4, 0x04, // add esp, 4
+            0xc3, // ret
+        ];
+        let (insns, _) = decode_all(&X86::BITS32, &code, 0x1000);
+        let shown: Vec<String> = hil_statements_in(&X86::BITS32, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(shown, ["ret = $+0x5(eax)", "return"]);
+    }
+
+    /// A load of a saved register into another register reads it: it is no
+    /// restore.
+    #[test]
+    fn a_load_of_a_saved_value_into_another_register_shows() {
+        let shown = aarch64(&[
+            0xf81f_0ff3, // str x19, [sp, #-0x10]!
+            0xf940_03e0, // ldr x0, [sp]
+            0xf841_07f3, // ldr x19, [sp], #0x10
+            0xd65f_03c0, // ret
+        ]);
+        assert_eq!(shown, ["x0 = var_10", "return"]);
+    }
+
+    /// A wide store changes the narrow places inside it.
+    #[test]
+    fn a_wide_store_changes_the_places_inside_it() {
+        let shown = aarch64(&[
+            0xd100_43ff, // sub sp, sp, #0x10
+            0xb900_0fe0, // str w0, [sp, #0xc]
+            0xf900_07e1, // str x1, [sp, #0x8]
+            0xb940_0fe2, // ldr w2, [sp, #0xc]
+            0xb940_0440, // ldr w0, [x2, #4]
+            0x9100_43ff, // add sp, sp, #0x10
+            0xd65f_03c0, // ret
+        ]);
+        assert!(!shown.iter().any(|line| line.contains("[arg1 + 0x4]")), "{shown:?}");
+    }
+
+    /// A store to a place above the stack pointer that the code loads from
+    /// again keeps its line, though the call may take it as an argument.
+    #[test]
+    fn a_store_to_a_local_that_is_read_again_stays() {
+        use hereticus_il::arch::x86::X86;
+        let code = [
+            0x83, 0xec, 0x08, // sub esp, 8
+            0xc7, 0x44, 0x24, 0x04, 0x07, 0x00, 0x00, 0x00, // mov dword [esp + 4], 7
+            0xc7, 0x04, 0x24, 0x05, 0x00, 0x00, 0x00, // mov dword [esp], 5
+            0xe8, 0x00, 0x00, 0x00, 0x00, // call $+0x5
+            0x8b, 0x44, 0x24, 0x04, // mov eax, [esp + 4]
+            0x83, 0xc4, 0x08, // add esp, 8
+            0xc3, // ret
+        ];
+        let (insns, _) = decode_all(&X86::BITS32, &code, 0x1000);
+        let shown: Vec<String> = hil_statements_in(&X86::BITS32, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert!(shown.contains(&"var_4 = 7".to_string()), "{shown:?}");
+        assert!(shown.iter().any(|line| line.contains("(5, var_4)")), "{shown:?}");
     }
 
     /// A call to a function that never returns gives nothing back.

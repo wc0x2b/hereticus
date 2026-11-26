@@ -178,6 +178,10 @@ pub struct CallingConvention {
     /// Where the arguments that no register holds sit on the stack, where
     /// the ABI passes them there.
     pub stack_arguments: Option<StackArguments>,
+    /// The register a call writes its return address to, as `lr` or `ra`,
+    /// where a call writes one: a function saves it, as it saves a
+    /// register that a call keeps.
+    pub link: Option<hereticus_il::Reg>,
 }
 
 /// Where an ABI passes arguments on the stack: argument `n`, from 0, at

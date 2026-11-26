@@ -94,6 +94,7 @@ impl Arch for X86 {
             // `rbx`, `rbp` and `r12` to `r15`.
             preserved: &[3, 5, 12, 13, 14, 15],
             stack_arguments: None,
+            link: None,
         };
         /// cdecl: each argument on the stack, and the result in `eax`.
         const CDECL: CallingConvention = CallingConvention {
@@ -103,6 +104,7 @@ impl Arch for X86 {
             // `ebx`, `ebp`, `esi` and `edi`.
             preserved: &[3, 5, 6, 7],
             stack_arguments: Some(StackArguments { first: 4, width: 4 }),
+            link: None,
         };
         Some(match self.mode() {
             Mode::Bits64 => SYSTEM_V,

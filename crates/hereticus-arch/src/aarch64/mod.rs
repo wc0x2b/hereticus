@@ -72,6 +72,7 @@ impl Arch for Aarch64 {
             stack: Reg::Stack,
             preserved: &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
             stack_arguments: None,
+            link: Some(Reg::General(30)),
         };
         Some(AAPCS64)
     }
