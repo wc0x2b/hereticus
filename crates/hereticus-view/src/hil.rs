@@ -588,8 +588,10 @@ impl Values<'_, '_> {
         }
         // A value that is the whole right side needs no parentheses.
         let operand =
-            if text.ends_with(&format!(" = {name}")) { value } else { operand_of(&value) };
-        let folded = simplified(&replace_read_once(text, &name, &operand)?);
+            if text.ends_with(&format!(" = {name}")) { value.clone() } else { operand_of(&value) };
+        let replaced = replace_read_once(text, &name, &operand)?;
+        let replaced = plain_test(&replaced, &operand, &value).unwrap_or(replaced);
+        let folded = simplified(&replaced);
         (folded.len() <= LONGEST_FOLDED).then_some((user, folded))
     }
 }
@@ -735,6 +737,55 @@ enum Source {
 
 /// `value` as one operand of another statement: in parentheses where it
 /// holds a space outside of brackets, parentheses and strings.
+/// The branch `text`, where it tests the folded `operand` against zero
+/// and `value` is one relation, as `if ((a u< 5) != 0) goto`, with the
+/// relation alone as its test: `if (a u< 5) goto`. A relation is 1 where
+/// it holds and 0 where it does not, so a test that it is 0 tests the
+/// opposite relation.
+fn plain_test(text: &str, operand: &str, value: &str) -> Option<String> {
+    let [left, op, right] = top_level_parts(value)[..] else { return None };
+    let opposite = match op {
+        "==" => "!=",
+        "!=" => "==",
+        "<" => ">=",
+        ">=" => "<",
+        ">" => "<=",
+        "<=" => ">",
+        "u<" => "u>=",
+        "u>=" => "u<",
+        "u>" => "u<=",
+        "u<=" => "u>",
+        _ => return None,
+    };
+    let (rest, op) = match text.strip_prefix(&format!("if ({operand} != 0)")) {
+        Some(rest) => (rest, op),
+        None => (text.strip_prefix(&format!("if ({operand} == 0)"))?, opposite),
+    };
+    Some(format!("if ({left} {op} {right}){rest}"))
+}
+
+/// The parts of `value` that spaces outside parentheses, brackets and
+/// strings part.
+fn top_level_parts(value: &str) -> Vec<&str> {
+    let (mut parts, mut start) = (Vec::new(), 0);
+    let (mut depth, mut quoted, mut escaped) = (0_i32, false, false);
+    for (at, c) in value.char_indices() {
+        match c {
+            '"' if !escaped => quoted = !quoted,
+            '(' | '[' if !quoted => depth += 1,
+            ')' | ']' if !quoted => depth -= 1,
+            ' ' if !quoted && depth == 0 => {
+                parts.push(&value[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+        escaped = quoted && c == '\\' && !escaped;
+    }
+    parts.push(&value[start..]);
+    parts
+}
+
 fn operand_of(value: &str) -> String {
     let mut depth = 0_i32;
     let mut quoted = false;
@@ -880,6 +931,17 @@ impl<'a> Body<'a> {
         for (edges, insn) in next.iter_mut().zip(insns) {
             if is_data(insn) {
                 edges.clear();
+            }
+        }
+        // In an unlinked object, a jump to another function holds no target
+        // yet, as `b $+0x0`: the relocation at it names the callee, and the
+        // jump leaves the function, after its delay slots.
+        for (index, (insn, line)) in insns.iter().zip(printed).enumerate() {
+            let names_a_function =
+                line.strip_prefix("goto ").is_some_and(|target| !target.starts_with('$'));
+            if matches!(insn.kind, InsnKind::Jump { target: Some(_) }) && names_a_function {
+                let last = (index + arch.delay_slots(insn)).min(insns.len() - 1);
+                next[last].clear();
             }
         }
         // What only a word of data led to, a jump through a register can
@@ -1153,6 +1215,13 @@ impl<'a> Body<'a> {
 
     /// Apply an instruction that is no call.
     fn apply(&self, index: usize, holding: &mut Holding) {
+        // A return that runs only on a condition, as `poplt {r4, pc}`,
+        // changes nothing on the path past it: where it runs, the function
+        // ends.
+        let returns = self.canonical(index).is_some_and(|lifted| lifted.op == Op::Return);
+        if self.is_conditional(index) && returns {
+            return;
+        }
         if let Some(frame) = self.frame(index, holding) {
             self.apply_frame(&frame, holding);
             return;
@@ -2957,6 +3026,53 @@ mod tests {
             .map(|line| line.text)
             .collect();
         assert_eq!(shown, ["a1 = &var_1c", "return"]);
+    }
+
+    /// A relation is 1 or 0, so a branch on whether it is zero tests the
+    /// relation, or its opposite.
+    #[test]
+    fn a_branch_on_a_relation_tests_the_relation() {
+        for (branch, test) in [
+            (0x1500_0001, "if (arg1 u< 0x65) goto $+0x8"), // bnez t0
+            (0x1100_0001, "if (arg1 u>= 0x65) goto $+0x8"), // beqz t0
+        ] {
+            let shown = mips(&[
+                0x2c88_0065, // sltiu t0, a0, 0x65
+                branch,
+                0x0000_0000, // nop
+                0x03e0_0008, // jr ra
+                0x0000_0000, // nop
+            ]);
+            assert_eq!(shown, [test, "return"]);
+        }
+        assert_eq!(top_level_parts("(a + b) u< \"x y\""), ["(a + b)", "u<", "\"x y\""]);
+        assert_eq!(plain_test("if ((a & 1) != 0) goto $+0x8", "(a & 1)", "a & 1"), None);
+    }
+
+    /// A return on a condition changes nothing on the path past it: `r4`
+    /// still holds the first argument, so each read of it shows `arg1`,
+    /// and the restore before the jump out is frame upkeep.
+    #[test]
+    fn a_return_on_a_condition_keeps_what_the_code_after_it_holds() {
+        let words: [u32; 7] = [
+            0xe92d_4010, // push {r4, lr}
+            0xe1a0_4000, // mov r4, r0
+            0xe350_000b, // cmp r0, #0xb
+            0xb8bd_8010, // poplt {r4, pc}
+            0xe1a0_1004, // mov r1, r4
+            0xe8bd_4010, // pop {r4, lr}
+            0xea00_0040, // b $+0x108
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        let shown: Vec<String> = hil_statements_in(&Arm32, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(
+            shown,
+            ["flags = compare(arg1, 0xb)", "if (lt) return", "r1 = arg1", "goto $+0x108"]
+        );
     }
 
     /// A T32 `push` names its list alone, and moves the stack all the same.

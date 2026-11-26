@@ -307,28 +307,31 @@ fn a_function_whose_result_no_call_reads_returns_nothing(
 /// `mix_two(a, b)` calls `beta(a, b)` with the arguments it was given, so
 /// it sets no argument register for the call. The other calls of `beta`
 /// set two, so this one shows two. `table` passes `v` to `alpha` in a
-/// tail call, and the copy that passes it shows.
+/// tail call, and the copy that passes it shows, also where the jump of an
+/// unlinked object holds no target yet.
 #[rstest]
-fn a_call_takes_the_fewest_arguments_the_other_calls_set(#[values("x86_64", "arm64")] arch: &str) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("../fixtures/build/pe/{arch}-calls.dll"));
+#[case::x86_64_pe("pe/x86_64-calls.dll", "ecx")]
+#[case::aarch64_pe("pe/arm64-calls.dll", "w0")]
+#[case::arm_object("O2/calls.o", "r0")]
+fn a_call_takes_the_fewest_arguments_the_other_calls_set(#[case] file: &str, #[case] first: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build").join(file);
     let data = std::fs::read(&path)
         .unwrap_or_else(|err| panic!("{}: {err}, run `just fixtures` first", path.display()));
-    let binary = Binary::parse(&data).expect("a fixture DLL parses");
+    let binary = Binary::parse(&data).expect("a fixture parses");
     let shown = |name: &str| {
         let index = binary.functions.iter().position(|f| f.name == name).expect(name);
         instruction_diff_in(View::Hil, None, &binary, index, &binary, index)
             .iter()
             .map(|line| match line {
                 DiffLine::Same(text) => text.trim().to_string(),
-                other => panic!("{arch}: {name} differs from itself: {other:?}"),
+                other => panic!("{file}: {name} differs from itself: {other:?}"),
             })
             .collect::<Vec<_>>()
     };
-    let mix_two = shown("mix_two");
-    assert!(mix_two[0].ends_with(" = beta(arg1, arg2)"), "{arch}: {mix_two:?}");
-    assert!(mix_two[1].ends_with(" = alpha(arg1)"), "{arch}: {mix_two:?}");
+    let mix_two = shown("mix_two").join("\n");
+    assert!(mix_two.contains("beta(arg1, arg2)"), "{file}: {mix_two}");
+    assert!(mix_two.contains("alpha(arg1)"), "{file}: {mix_two}");
     let table = shown("table");
     let tail = table.iter().position(|line| line == "goto alpha").expect("a tail call of alpha");
-    assert_eq!(table[tail - 1], format!("{} = arg2", if arch == "x86_64" { "ecx" } else { "w0" }));
+    assert_eq!(table[tail - 1], format!("{first} = arg2"), "{file}");
 }
