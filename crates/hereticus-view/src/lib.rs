@@ -1645,7 +1645,17 @@ fn statement(
                             _ => return None,
                         },
                     };
+                    // The top bit of a value is its sign.
+                    let sign = match guard.width {
+                        hereticus_il::Width::Bits32 => Some(1 << 31),
+                        hereticus_il::Width::Bits64 => Some(1 << 63),
+                        _ => None,
+                    };
+                    let tests_sign =
+                        sign.is_some_and(|sign| guard.right == hereticus_il::Value::Const(sign));
                     let test = match (guard.cond, relation(guard.cond)) {
+                        (Cond::BitsClear, _) if tests_sign => format!("{left} >= 0"),
+                        (Cond::BitsSet, _) if tests_sign => format!("{left} < 0"),
                         (Cond::BitsClear, _) => format!("({left} & {right}) == 0"),
                         (Cond::BitsSet, _) => format!("({left} & {right}) != 0"),
                         (_, Some(operator)) => format!("{left} {operator} {right}"),
@@ -1852,25 +1862,29 @@ mod tests {
         assert_eq!(high, ["capable(arg1)", "at = 0", "__raw_copy_to_user(a0, a1, a2)"]);
     }
 
-    /// A test of one bit reads with the mask of that bit, not its number.
+    /// A test of one bit reads with the mask of that bit, not its number,
+    /// and a test of the top bit reads as a test of the sign.
     #[test]
     fn a_test_of_one_bit_reads_as_its_mask() {
         let shown = lines(&[
-            0x36f8_0080, // tbz w0, #31, $+0x10
+            0x3618_0080, // tbz w0, #3, $+0x10
+            0x36f8_0060, // tbz w0, #31, $+0xc
             0xb7f8_0041, // tbnz x1, #63, $+0x8
         ]);
         assert_eq!(
             shown,
             [
-                "if ((w0 & 0x80000000) == 0) goto $+0x10",
-                "if ((x1 & 0x8000000000000000) != 0) goto $+0x8"
+                "if ((w0 & 8) == 0) goto $+0x10",
+                "if (w0 >= 0) goto $+0xc",
+                "if (x1 < 0) goto $+0x8"
             ]
         );
         assert_eq!(
-            high(&[0x36f8_0080, 0xb7f8_0041]),
+            high(&[0x3618_0080, 0x36f8_0060, 0xb7f8_0041]),
             [
-                "if ((arg1 & 0x80000000) == 0) goto $+0x10",
-                "if ((arg2 & 0x8000000000000000) != 0) goto $+0x8"
+                "if ((arg1 & 8) == 0) goto $+0x10",
+                "if (arg1 >= 0) goto $+0xc",
+                "if (arg2 < 0) goto $+0x8"
             ]
         );
     }

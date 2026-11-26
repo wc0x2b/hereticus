@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the TUI and the button of the HTML report go to it too. The matching
   does not read it.
 
+### Changed
+
+- A test of the top bit of a register, as AArch64 `tbz w0, #31`, reads
+  as a test of its sign in the IL: `if (w0 >= 0)`, where it read as
+  `if ((w0 & 0x80000000) == 0)`.
+
 ### Fixed
 
 - The IL of AArch64 `movn` holds the inverse of its constant, as the
