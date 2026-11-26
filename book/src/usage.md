@@ -287,7 +287,7 @@ opens on the diff of the fix, `sub_404494`, on row 3<!-- from truth_cves: CVE-20
 width.
 
 ```console
-$ hereticus --format html --view il 7.24/modbusgwd 7.24.3/modbusgwd > report.html
+$ hereticus --format html --view hil 7.24/modbusgwd 7.24.3/modbusgwd > report.html
 ```
 
 <iframe src="./reports/cve-2026-18368.html#diff-2" title="The HTML report of CVE-2026-18368" class="report"></iframe>
@@ -299,8 +299,8 @@ and gives the name that the next one takes:
 
 ```console
 $ hereticus --format markdown before.bin after.bin | head -20       # the most likely fixes
-$ hereticus --view il --diff sub_7630 before.bin after.bin          # what one function changed
-$ hereticus --view il --diff-all before.bin after.bin | grep -E '^(sub_|[-+].*PATH)'  # find a text
+$ hereticus --view hil --diff sub_7630 before.bin after.bin         # what one function changed
+$ hereticus --view hil --diff-all before.bin after.bin | grep -E '^sub_|[-+] .*PATH'  # find a text
 $ hereticus --functions --format json before.bin                     # each function, for a script
 ```
 
@@ -319,9 +319,9 @@ To find what changed between two builds of a binary, use `hereticus`:
 
 - `hereticus --format markdown OLD NEW | head -20` lists the changed
   functions, the most likely fix first.
-- `hereticus --view il --diff NAME OLD NEW` shows the diff of one function.
+- `hereticus --view hil --diff NAME OLD NEW` shows the diff of one function.
   Use the name the report gives, as `sub_7630`.
-- `hereticus --view il --diff-all OLD NEW | grep TEXT` finds the function
+- `hereticus --view hil --diff-all OLD NEW | grep TEXT` finds the function
   that uses a text an advisory names.
 - For a raw image, add `--raw --arch ARCH --base ADDRESS`. Without
   `--base`, the error gives the base the code shows; check it before you

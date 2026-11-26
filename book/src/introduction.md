@@ -83,9 +83,10 @@ gives one answer, so an agent runs it as it runs `grep`:
   pair, and `--format json` gives one object for each pair.
 - **Each name works as input.** The report names a stripped function
   `sub_7630`, and `--diff sub_7630` shows its diff.
-- **The diff reads alike on each architecture.** `--view il` shows a
-  compare, a call or a text in one form, as `if (w0 == 0) goto ...` and
-  `call strncmp`, so the agent does not need to know each instruction set.
+- **The diff reads alike on each architecture.** `--view hil` shows a
+  compare, a call or a text in one form, as `if (ret == 0) goto ...` and
+  `ret = strncmp(x20, &"PATH=", 5)`, so the agent does not need to know
+  each instruction set.
 - **An error tells what to do next.** With no `--base`, the error gives
   the base that the words of the image show, where they show one. A
   failure exits with 2, and `--exit-code` makes a change exit with 1.

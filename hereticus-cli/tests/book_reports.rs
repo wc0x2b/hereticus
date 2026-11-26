@@ -27,7 +27,7 @@ struct Page {
 const PAGES: &[Page] = &[Page {
     file: "book/src/reports/cve-2026-18368.html",
     dir: ".cache/hereticus-teltonika",
-    args: &["--view", "il", "7.24/RUT9M/usr/sbin/modbusgwd", "7.24.3/RUT9M/usr/sbin/modbusgwd"],
+    args: &["--view", "hil", "7.24/RUT9M/usr/sbin/modbusgwd", "7.24.3/RUT9M/usr/sbin/modbusgwd"],
     fix: ("diff-2", "sub_404494"),
 }];
 

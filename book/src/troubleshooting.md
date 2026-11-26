@@ -7,7 +7,7 @@
   for it:
 
   ```console
-  $ hereticus --view il --diff-all before.bin after.bin | grep -E '^(sub_|[-+].*PATH)'
+  $ hereticus --view hil --diff-all before.bin after.bin | grep -E '^sub_|[-+] .*PATH'
   ```
 
   See [CVE-2026-30874](./real-life-examples/cve-2026-30874.md) for this
