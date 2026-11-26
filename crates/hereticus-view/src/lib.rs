@@ -11,7 +11,11 @@
 //! them. An instruction the IL does not name shows as the decoder prints
 //! it.
 
+mod arity;
 mod depth;
+mod hil;
+
+pub use hil::hil_statements_in;
 
 use std::collections::{HashMap, HashSet};
 
@@ -170,6 +174,21 @@ pub fn il_line_depths(arch: &dyn Arch, insns: &[Insn]) -> Vec<usize> {
         .zip(folds(arch, insns))
         .filter(|(_, fold)| *fold != Fold::Hidden)
         .map(|(depth, _)| depth)
+        .collect()
+}
+
+/// How deep in the jumps of its function the line at each of `addresses`
+/// sits, as [`il_line_depths`] gives it for each line of the IL view.
+/// Each address is the address of an instruction of `insns`.
+pub fn line_depths_at(arch: &dyn Arch, insns: &[Insn], addresses: &[u64]) -> Vec<usize> {
+    let depths = depth::nesting_depths(insns, |insn| arch.delay_slots(insn));
+    addresses
+        .iter()
+        .map(|&address| {
+            insns
+                .binary_search_by_key(&address, |insn| insn.address)
+                .map_or(0, |index| depths[index])
+        })
         .collect()
 }
 
@@ -1203,6 +1222,16 @@ impl ListOrder {
     }
 }
 
+/// Where an A32 or T32 access to a list of `count` registers puts the
+/// first, from its base, and how far it moves the base where it writes it
+/// back: `(-0x8, -0x8)` for `push {r4, lr}`.
+fn list_offsets(insn: &Insn, lifted: &Lifted, count: usize) -> Option<(i64, i64)> {
+    let (order, _) = ListOrder::of(insn)?;
+    let bits = lifted.memory.and_then(|memory| memory.width).map_or(32, |width| width.bits());
+    let slot = u64::from(bits / 8);
+    Some(order.offsets(slot * count as u64, slot))
+}
+
 /// An ARM access to a list of registers as one load or store, as
 /// `store.32 [sp - 0x8] = r4, lr; sp = sp - 0x8` for `push {r4, lr}`.
 ///
@@ -1616,6 +1645,18 @@ mod tests {
         il_lines(&Aarch64, &code, &insns)
     }
 
+    /// The high IL of `code`, which `context` names the addresses of.
+    fn high_in(arch: &dyn Arch, code: &[u8], context: Option<Context<'_>>) -> Vec<String> {
+        let (insns, _) = decode_all(arch, code, 0x1000);
+        hil_statements_in(arch, code, &insns, context).into_iter().map(|line| line.text).collect()
+    }
+
+    /// The high IL of the AArch64 `words`, as [`lines`] gives the IL.
+    fn high(words: &[u32]) -> Vec<String> {
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        high_in(&Aarch64, &code, None)
+    }
+
     #[test]
     fn a_constant_reads_as_code_writes_it() {
         assert_eq!(constant_text(3), "3");
@@ -1644,6 +1685,17 @@ mod tests {
                 "return",
             ]
         );
+        // `w2` and `x1` hold the third and the second argument.
+        assert_eq!(
+            high(&[0x7100_fc5f, 0x5400_0208, 0x8b02_0020, 0xb940_1020, 0xd65f_03c0]),
+            [
+                "flags = compare(arg3, 0x3f)",
+                "if (arg3 u> 0x3f) goto $+0x40",
+                "x0 = arg2 + arg3",
+                "w0 = load.32 [arg2 + 0x10]",
+                "return",
+            ]
+        );
     }
 
     #[test]
@@ -1663,6 +1715,15 @@ mod tests {
                 "call x1",
             ]
         );
+        // The call goes through `x1`, the second argument, and takes the
+        // settings of `x0` and `w3` before it.
+        assert_eq!(
+            high(&[0xa8c2_7bfd, 0x9a80_9020, 0x531c_6c23, 0xd63f_0020]),
+            [
+                "x29, x30 = load.64 arg_0; sp = sp + 0x20",
+                "arg2(ls ? arg2 : arg1, arg2, arg3, arg2 << 0x4)",
+            ]
+        );
     }
 
     #[test]
@@ -1677,6 +1738,11 @@ mod tests {
         assert_eq!(
             shown,
             ["w0 = ne ? 1 : 0", "w1 = ~w19", "x0 = x1 * x2", "x1 = sxtw(w1)", "w0 = clz(w1)"]
+        );
+        // After `mvn w1, w19`, `w1` holds no argument; `x2` still does.
+        assert_eq!(
+            high(&[0x1a9f_07e0, 0x2a33_03e1, 0x9b02_7c20, 0x9340_7c21, 0x5ac0_1020]),
+            ["w0 = ne ? 1 : 0", "w1 = ~w19", "x0 = x1 * arg3", "x1 = sxtw(w1)", "w0 = clz(w1)"]
         );
     }
 
@@ -1704,6 +1770,15 @@ mod tests {
         let shown = il_lines_in(&Mips32::BIG, &code, &insns, Some(context));
         assert!(shown.contains(&"call capable".to_string()), "{shown:?}");
         assert!(shown.contains(&"call __raw_copy_to_user".to_string()), "{shown:?}");
+        // The relocated callee takes the place of `at`, the register the
+        // call goes through, so the `addiu` that ends its making folds away.
+        // Each callee takes the count of arguments of its prototype; after
+        // `capable`, the argument registers hold nothing known.
+        let high: Vec<String> = hil_statements_in(&Mips32::BIG, &code, &insns, Some(context))
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(high, ["capable(arg1)", "at = 0", "__raw_copy_to_user(a0, a1, a2)"]);
     }
 
     /// A test of one bit reads with the mask of that bit, not its number.
@@ -1720,6 +1795,13 @@ mod tests {
                 "if ((x1 & 0x8000000000000000) != 0) goto $+0x8"
             ]
         );
+        assert_eq!(
+            high(&[0x36f8_0080, 0xb7f8_0041]),
+            [
+                "if ((arg1 & 0x80000000) == 0) goto $+0x10",
+                "if ((arg2 & 0x8000000000000000) != 0) goto $+0x8"
+            ]
+        );
     }
 
     #[test]
@@ -1728,6 +1810,7 @@ mod tests {
         let code = 0xe081_3204_u32.to_le_bytes(); // add r3, r1, r4, lsl #4
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         assert_eq!(il_lines(&Arm32, &code, &insns), ["r3 = r1 + (r4 lsl 4)"]);
+        assert_eq!(high_in(&Arm32, &code, None), ["r3 = arg2 + (r4 lsl 4)"]);
     }
 
     #[test]
@@ -1752,6 +1835,22 @@ mod tests {
                 "store.32 [sp - 8] = r4, lr; sp = sp - 8",
                 "r1, r2 = load.32 [r0]",
                 "r1 = load.32 [r0]; r0 = r0 - 4",
+                "r1, r2 = load.32 [r0 + 4]",
+                "if (ne) r1 = load.32 [r0]",
+                "store.64 [sp - 8] = d8; sp = sp - 8",
+                "d8, d9 = load.64 [r0]; r0 = r0 + 0x10",
+                "r0 = load.32 [sp]; sp = sp + 4",
+                "r0 = load.32 [r0]",
+            ]
+        );
+        // The `push` saves, so it shows no line. The write-back of `ldmda`
+        // writes `r0`, which keeps its name to the left of its `=`; after
+        // it, `r0` holds no argument.
+        assert_eq!(
+            high_in(&Arm32, &code, None),
+            [
+                "r1, r2 = load.32 [arg1]",
+                "r1 = load.32 [arg1]; r0 = arg1 - 4",
                 "r1, r2 = load.32 [r0 + 4]",
                 "if (ne) r1 = load.32 [r0]",
                 "store.64 [sp - 8] = d8; sp = sp - 8",
@@ -1973,6 +2072,7 @@ mod tests {
         let shown = il_lines(&Arm32, &code, &insns);
         assert_eq!(shown[1], "if (ne) flags = compare(r6, r3)");
         assert!(shown[2].starts_with("if (flags.Equal) goto"), "{shown:?}");
+        assert_eq!(high_in(&Arm32, &code, None)[1], "if (ne) flags = compare(r6, arg4)");
     }
 
     #[test]
@@ -1984,6 +2084,7 @@ mod tests {
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         let shown = il_lines(&Arm32, &code, &insns);
         assert_eq!(shown[1], "if (ne) r6 = r4 + 1");
+        assert_eq!(high_in(&Arm32, &code, None)[0], "flags = compare(arg3, arg4)");
         assert_eq!(a32_condition(&insns[0], Some(Op::Compare)), None, "a compare that always runs");
         assert_eq!(a32_condition(&insns[1], Some(Op::Add)), Some("ne"));
         // mls r0, r1, r2, r3 ends in the letters of a condition.
@@ -2060,6 +2161,9 @@ mod tests {
                 "s4 = r5",
             ]
         );
+        let high = high_in(&Arm32, &code, None);
+        assert_eq!(high[0], "flags = compare(arg1, arg2)");
+        assert_eq!(high[6], "d3 = arg4:arg3", "the pair reads the third and fourth arguments");
     }
 
     #[test]
@@ -2085,6 +2189,7 @@ mod tests {
             kept: vec!["s0", "ra"],
         };
         assert_eq!(frame_statement(&too_small), None, "a frame too small");
+        assert!(high_in(&Mips16::BIG, &code, None).is_empty(), "each makes or drops the frame");
     }
 
     #[test]
@@ -2123,6 +2228,8 @@ mod tests {
         assert!(shown[2].ends_with("return"), "{shown:?}");
         assert_eq!(shown[3], "if (ne) goto r3");
         assert!(shown[4].starts_with("if (r1 != r3) goto"), "{shown:?}");
+        let high = high_in(&Arm32, &code, None);
+        assert_eq!(high[1..4], ["if (ne) return", "if (ne) return", "if (ne) goto arg4"]);
     }
 
     /// A function that calls a named one, `foo`, at `foo` from its start.
@@ -2164,6 +2271,23 @@ mod tests {
         let shown = il_lines_in(&Aarch64, &code, &insns, Some(context));
         assert_eq!(shown[5], "call x26", "strcmp on one path, free on the other");
         assert_eq!(shown[7], "call strcmp");
+        // The pages fold into the loads, and `x26` keeps its name where two
+        // paths load two callees into it.
+        assert_eq!(
+            hil_statements_in(&Aarch64, &code, &insns, Some(context))
+                .into_iter()
+                .map(|line| line.text)
+                .collect::<Vec<_>>(),
+            [
+                "x26 = load.64 [@strcmp]",
+                "if (arg1 == 0) goto $+0x14",
+                "x26 = load.64 [@free]",
+                "ret = x26()",
+                "return",
+                "strcmp(arg1, arg2)",
+                "goto $-0xc",
+            ]
+        );
     }
 
     /// An A32 load of a pool word that holds the address of a text, in an
@@ -2196,6 +2320,7 @@ mod tests {
             calling_foo(&Thumb2, &code, 0xa),
             ["flags = compare(r0, 0)", "if (ne) call foo", "return", "return"]
         );
+        assert_eq!(high_in(&Thumb2, &code, None)[0], "flags = compare(arg1, 0)");
     }
 
     #[test]
@@ -2224,6 +2349,7 @@ mod tests {
             statements.iter().map(|line| (line.address, line.text.as_str())).collect();
         assert_eq!(shown, [(0x1008, "sp = sp + -0x38"), (0x100c, "gp = _gp")]);
         assert_eq!(il_line_addresses(&Mips32::BIG, &insns), [0x1008, 0x100c]);
+        assert_eq!(high_in(&Mips32::BIG, &code, None), ["gp = _gp"], "the frame shows no line");
     }
 
     #[test]
@@ -2234,6 +2360,7 @@ mod tests {
         let code: Vec<u8> = halfwords.iter().flat_map(|half| half.to_be_bytes()).collect();
         let (insns, _) = decode_all(&Mips16::BIG, &code, 0x1000);
         assert_eq!(il_lines(&Mips16::BIG, &code, &insns), ["v0 = _gp"]);
+        assert_eq!(high_in(&Mips16::BIG, &code, None), ["v0 = _gp"]);
     }
 
     #[test]
@@ -2259,6 +2386,41 @@ mod tests {
                 assert_eq!(il_line_addresses(arch, &insns), addresses);
                 assert_eq!(il_line_depths(arch, &insns).len(), addresses.len());
                 assert!(addresses.is_sorted_by(|earlier, later| earlier < later));
+            }
+        });
+    }
+
+    /// The high IL of any code shows each line for an instruction the IL
+    /// shows too, at most one each, and no more lines than the IL.
+    #[test]
+    fn any_code_shows_as_high_il_without_a_panic() {
+        use hereticus_il::arch::powerpc::PowerPc;
+        use hereticus_il::arch::x86::X86;
+        use hereticus_il::arch::{arm32::Arm32, mips::Mips32, mips16::Mips16, thumb::Thumb2};
+        bolero::check!().with_type::<Vec<u8>>().for_each(|code| {
+            let arches: [&dyn Arch; 8] = [
+                &Aarch64,
+                &Arm32,
+                &Thumb2,
+                &Mips32::BIG,
+                &Mips16::BIG,
+                &X86::BITS64,
+                &X86::BITS32,
+                &PowerPc::BIG,
+            ];
+            for arch in arches {
+                let (insns, _) = decode_all(arch, code, 0x1000);
+                let shown: HashSet<u64> = il_line_addresses(arch, &insns).into_iter().collect();
+                let high = hil_statements_in(arch, code, &insns, None);
+                let addresses: Vec<u64> = high.iter().map(|line| line.address).collect();
+                let distinct: HashSet<u64> = addresses.iter().copied().collect();
+                assert_eq!(
+                    distinct.len(),
+                    addresses.len(),
+                    "one line for each instruction at most"
+                );
+                assert!(distinct.is_subset(&shown), "a line for an instruction the IL shows");
+                assert_eq!(line_depths_at(arch, &insns, &addresses).len(), addresses.len());
             }
         });
     }
@@ -2333,6 +2495,17 @@ mod tests {
                 "flags = compare(r1, (r3 lsl 4))",
                 "store.32 [sp - 4] = lr; sp = sp - 4",
                 "r2 = -r2",
+                "pc = load.32 [sp]; sp = sp + 4",
+            ]
+        );
+        // `push {lr}` saves, so it shows no line.
+        assert_eq!(
+            high_in(&Arm32, &words(&a32, u32::to_le_bytes), None),
+            [
+                "r5 = 1 - r5",
+                "r0 = arg1 << arg2",
+                "flags = compare(arg2, (arg4 lsl 4))",
+                "r2 = -arg3",
                 "pc = load.32 [sp]; sp = sp + 4",
             ]
         );

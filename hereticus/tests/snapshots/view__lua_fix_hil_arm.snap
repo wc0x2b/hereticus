@@ -1,0 +1,25 @@
+---
+source: hereticus/tests/view.rs
+assertion_line: 207
+expression: patch(&lines)
+---
++ r3 = load.32 [arg1 + 0x14]
+  r4 = arg1
++ flags = compare(r3, 0)
++ if (r3 != 0) goto $+0x4c
+  ret = (load.32 [arg1 + 0x8])(load.32 [arg1 + 0x10], load.32 [arg1 + 0xc], &var_c)
+  flags = compare(ret, 0)
+  if (ret == 0) goto $+0x2c
+  r3 = var_c
+  flags = compare(r3, 0)
+  if (r3 == 0) goto $+0x20
+  r2 = ret + 1
+  r3 = r3 - 1
+  store.32 [arg1 + 0x4] = r2
+  store.32 [arg1] = r3
+  r0 = load.8 [ret]
+  return
++ r3 = 1
++ store.32 [arg1 + 0x14] = r3
+  r0 = -0x1
+  goto $-0x14

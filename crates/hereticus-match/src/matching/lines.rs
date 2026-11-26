@@ -46,6 +46,9 @@ pub enum View {
     Assembly,
     /// As the IL reads it: see [`hereticus_view`].
     Il,
+    /// As the high IL reads it, with each call and what it passes on one
+    /// line: see [`hereticus_view::hil_statements_in`].
+    Hil,
 }
 
 /// Where a line of a view sits in its function.
@@ -86,6 +89,39 @@ pub fn line_places(view: View, binary: &Binary, index: usize) -> Vec<LinePlace> 
             .zip(hereticus_view::il_line_depths(arch, &insns))
             .map(|(address, depth)| place(address, depth))
             .collect(),
+        View::Hil => {
+            // Which lines fold into a call hangs on what the binary names,
+            // so the places come from the statements themselves.
+            let addresses: Vec<u64> = hereticus_view::hil_statements_in(
+                arch,
+                &function.code,
+                &insns,
+                Some(context_of(binary, None)),
+            )
+            .into_iter()
+            .map(|statement| statement.address)
+            .collect();
+            let depths = hereticus_view::line_depths_at(arch, &insns, &addresses);
+            addresses
+                .into_iter()
+                .zip(depths)
+                .map(|(address, depth)| place(address, depth))
+                .collect()
+        }
+    }
+}
+
+/// What `binary` says around its code, for a view to name what the code
+/// points at.
+fn context_of<'a>(
+    binary: &'a Binary,
+    paired: Option<&'a PairedLabels>,
+) -> hereticus_view::Context<'a> {
+    hereticus_view::Context {
+        links: &binary.links,
+        space: &binary.addresses,
+        functions: &binary.functions,
+        paired,
     }
 }
 
@@ -108,7 +144,7 @@ fn decode_shown(arch: &dyn Arch, function: &Function) -> Vec<Insn> {
 /// [`instruction_diff`], or the same diff with each instruction shown as
 /// `view` says.
 ///
-/// The IL view aligns on the IL statements, so two spellings of one
+/// The IL and high IL views align on their statements, so two spellings of one
 /// operation, as `eor r0, r0, r0` and `mov r0, #0`, are the same line. With
 /// `paired`, a call to a stripped function of `after` names the function as
 /// its pair in `before` is named.
@@ -128,13 +164,16 @@ pub fn instruction_diff_in(
     let side = |binary: &Binary, function: &Function, isa: Isa, paired| {
         let arch = isa.arch();
         let insns = decode_shown(arch, function);
-        let context = hereticus_view::Context {
-            links: &binary.links,
-            space: &binary.addresses,
-            functions: &binary.functions,
-            paired,
+        let context = context_of(binary, paired);
+        let statements = match view {
+            View::Hil => {
+                hereticus_view::hil_statements_in(arch, &function.code, &insns, Some(context))
+            }
+            View::Assembly | View::Il => {
+                hereticus_view::il_statements_in(arch, &function.code, &insns, Some(context))
+            }
         };
-        IlSide::new(arch, &function.code, insns, Some(context))
+        IlSide::with_statements(arch, insns, statements)
     };
     let before_side = side(before, left, before_isa, None);
     let after_side = side(after, right, after_isa, paired);
@@ -155,6 +194,7 @@ pub(super) struct IlSide<'a> {
 }
 
 impl<'a> IlSide<'a> {
+    #[cfg(test)]
     pub(super) fn new(
         arch: &'a dyn Arch,
         code: &[u8],
@@ -162,6 +202,15 @@ impl<'a> IlSide<'a> {
         context: Option<hereticus_view::Context<'_>>,
     ) -> Self {
         let statements = hereticus_view::il_statements_in(arch, code, &insns, context);
+        Self::with_statements(arch, insns, statements)
+    }
+
+    /// The side whose lines are `statements`, which show `insns`.
+    pub(super) fn with_statements(
+        arch: &'a dyn Arch,
+        insns: Vec<Insn>,
+        statements: Vec<hereticus_view::Statement>,
+    ) -> Self {
         let printed = insns
             .iter()
             .filter_map(hereticus_il::arch::lift_named)

@@ -98,8 +98,12 @@ its target, marked `>`, as in the terminal interface. A jump that a
 change added or removed takes the color of the change. The IL view
 shows no padding, as `nop`, and prints a block of code that moved in
 gray. A stripped function has the name that the report gives it, as
-`sub_7630`. See
-[The Diff of One Function](./examples.md#the-diff-of-one-function).
+`sub_7630`. `--view hil` shows the high IL: the IL statements, with each
+call on one line with its arguments and its result, as
+`ret = strcmp(arg2, &"expect")`. It also names the registers and the
+stack by their roles, and it shows no line that only keeps the frame.
+See [The Diff of One Function](./examples.md#the-diff-of-one-function)
+and [The High IL](./methods.md#the-high-il).
 
 ## Terminal Interface
 
@@ -249,7 +253,7 @@ $ hereticus --raw --arch arm32 --base 0x80208000 --unpack stub zImage-v1 zImage-
 - `html`: one HTML page, to open in a browser or send to a person. It
   holds the table, then the diff of each listed function side by side,
   with the lines of its jumps. A button at the top shows the diffs as
-  assembly or as IL. `--view` sets which one shows first.
+  assembly, as IL or as high IL. `--view` sets which one shows first.
 
 The columns of `compact` are the change, the name before, the name after,
 the score, and the counts of added, removed and rewritten instructions:
@@ -411,7 +415,7 @@ Options:
       --open <PROJECT>         Open a project that `--save` or `--tui` saved, in place of two binaries
       --functions              List the functions of one binary, then stop
       --find-base              List the bases a raw image could load at, the best first, then stop
-      --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il]
+      --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il, hil]
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
       --show-data              List regions that look like data rather than code

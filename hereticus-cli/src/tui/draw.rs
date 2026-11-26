@@ -35,7 +35,7 @@ const SELECTED_SIGN: &str = "▶ ";
 /// The keys of each pane, at the right of its frame.
 const TABLE_HINTS: &str = "⏎ open  s/S sort  t touched  f feature  / filter  m mark  w save";
 const FILTER_HINTS: &str = "⏎ keep  esc clear";
-const PAIR_HINTS: &str = "]/[ change  v asm/il  l layout  n/p next/prev  m mark  esc back";
+const PAIR_HINTS: &str = "]/[ change  v asm/il/hil  l layout  n/p next/prev  m mark  esc back";
 
 /// Parts the path of the earlier binary from that of the later one.
 const PATH_ARROW: &str = " → ";
@@ -600,7 +600,7 @@ fn draw_help(frame: &mut Frame<'_>) {
         help_entry("PgDn/PgUp", "a page down / up"),
         help_entry("g / G", "top / bottom"),
         help_entry("] / [", "next / previous change"),
-        help_entry("v", "assembly or IL"),
+        help_entry("v", "assembly, IL or high IL"),
         help_entry("l", "side by side or one"),
         help_entry("n / p", "next / previous"),
         help_entry("esc", "back to the list"),

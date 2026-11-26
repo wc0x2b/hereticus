@@ -117,13 +117,14 @@ fn page(diff: &Diff, before: &Binary, after: &Binary, report: HtmlReport<'_>) ->
 }
 
 /// The views the page holds each diff in.
-const VIEWS: [View; 2] = [View::Assembly, View::Il];
+const VIEWS: [View; 3] = [View::Assembly, View::Il, View::Hil];
 
 /// The name of a view on its button.
 fn view_label(view: View) -> &'static str {
     match view {
         View::Assembly => "assembly",
         View::Il => "IL",
+        View::Hil => "high IL",
     }
 }
 
@@ -458,7 +459,13 @@ fn tokens(text: &str, view: View) -> Vec<(TokenKind, &str)> {
             _ => rest.find(|c: char| is_word_start(c) || c == '"').unwrap_or(rest.len()),
         };
         let (token, tail) = rest.split_at(length.max(first.len_utf8()));
-        let kind = kind_of(token, found.is_empty(), after_call, view);
+        let mut kind = kind_of(token, found.is_empty(), after_call, view);
+        if view == View::Hil
+            && kind == TokenKind::Plain
+            && calls(&text[..text.len() - rest.len()], tail)
+        {
+            kind = TokenKind::Function;
+        }
         if kind != TokenKind::Punctuation {
             after_call = names_a_target(token, view);
         }
@@ -466,6 +473,14 @@ fn tokens(text: &str, view: View) -> Vec<(TokenKind, &str)> {
         rest = tail;
     }
     found
+}
+
+/// Whether a word of a high IL line between `before` and `after` names
+/// the callee of the call the line makes, as `strcmp` of
+/// `ret = strcmp(arg1, &"a")`. An operation such as `compare(` follows a
+/// ` = ` of another register, or comes later in the line.
+fn calls(before: &str, after: &str) -> bool {
+    after.starts_with('(') && matches!(before, "" | "ret = ")
 }
 
 /// The length of the string at the start of `text`, to its closing quote
@@ -494,7 +509,7 @@ fn is_word_start(c: char) -> bool {
 /// Report whether the word after `token` names a function to go to.
 fn names_a_target(token: &str, view: View) -> bool {
     match view {
-        View::Il => matches!(token, "call" | "goto"),
+        View::Il | View::Hil => matches!(token, "call" | "goto"),
         View::Assembly => matches!(token, "call" | "jmp" | "bl" | "b" | "jal" | "j" | "blx"),
     }
 }
@@ -513,7 +528,7 @@ fn kind_of(token: &str, first: bool, after_call: bool, view: View) -> TokenKind 
     }
     let word = token.split('.').next().unwrap_or(token);
     let keyword = match view {
-        View::Il => IL_KEYWORDS.contains(&word),
+        View::Il | View::Hil => IL_KEYWORDS.contains(&word),
         View::Assembly => first,
     };
     match () {
@@ -622,6 +637,19 @@ mod tests {
                 (Number, "0x1C".into())
             ]
         );
+    }
+
+    #[test]
+    fn a_high_il_call_names_its_callee() {
+        use TokenKind::*;
+        let call = kinds("ret = strcmp(arg1, &\"a\")", View::Hil);
+        assert_eq!(call[0], (Plain, "ret".into()));
+        assert_eq!(call[1], (Function, "strcmp".into()));
+        assert_eq!(call[2], (Plain, "arg1".into()));
+        assert_eq!(kinds("free(x0)", View::Hil)[0], (Function, "free".into()));
+        assert_eq!(kinds("flags = compare(arg1, 0)", View::Hil)[1], (Keyword, "compare".into()));
+        assert_eq!(kinds("x1 = sxtw(w1)", View::Hil)[1], (Plain, "sxtw".into()));
+        assert_eq!(kinds("strcmp(x0)", View::Il)[0], (Plain, "strcmp".into()), "no call in the IL");
     }
 
     #[test]

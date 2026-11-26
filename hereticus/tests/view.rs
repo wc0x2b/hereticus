@@ -157,6 +157,68 @@ fn only_the_il_view_indents(
     let il = line_places(View::Il, &binary, index);
     assert!(il.iter().any(|place| place.depth > 0), "{arch}");
     assert!(il.is_sorted_by(|earlier, later| earlier.address < later.address), "{arch}");
+    let high = line_places(View::Hil, &binary, index);
+    assert!(high.iter().any(|place| place.depth > 0), "{arch}");
+    assert!(high.len() <= il.len(), "{arch}: the high IL shows no more lines than the IL");
+}
+
+/// The diff of the high IL holds one line for each place of each side, as
+/// the TUI and `--diff` draw its jumps from the places.
+#[rstest]
+fn the_high_il_diff_and_its_places_agree(
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "x86_64", "powerpc")]
+    arch: &str,
+) {
+    let (before, after) = (library("lua", "before", arch), library("lua", "after", arch));
+    let diff = diff_with(&before, &after, Options::default());
+    let paired = diff.paired_labels(&before, &after);
+    for pair in &diff.matched {
+        let lines =
+            instruction_diff_in(View::Hil, Some(&paired), &before, pair.before, &after, pair.after);
+        let sides = lines.iter().fold((0, 0), |(old, new), line| match line {
+            DiffLine::Same(_) | DiffLine::Changed { .. } => (old + 1, new + 1),
+            DiffLine::Removed(_) => (old + 1, new),
+            DiffLine::Added(_) => (old, new + 1),
+        });
+        let places = (
+            line_places(View::Hil, &before, pair.before).len(),
+            line_places(View::Hil, &after, pair.after).len(),
+        );
+        assert_eq!(sides, places, "{arch}: {}", before.functions[pair.before].label());
+    }
+}
+
+/// The high IL view of the Lua fix, as `--view hil --diff luaZ_fill` shows
+/// it.
+#[rstest]
+fn the_high_il_diff_of_a_fix_is_locked(#[values("arm", "aarch64", "mips")] arch: &str) {
+    let (before, after) = (library("lua", "before", arch), library("lua", "after", arch));
+    let diff = diff_with(&before, &after, Options::default());
+    let index = before.functions.iter().position(|f| f.name == "luaZ_fill").expect("luaZ_fill");
+    let pair = diff.matched.iter().find(|pair| pair.before == index).expect("luaZ_fill pairs");
+    let lines = instruction_diff_in(
+        View::Hil,
+        Some(&diff.paired_labels(&before, &after)),
+        &before,
+        pair.before,
+        &after,
+        pair.after,
+    );
+    insta::assert_snapshot!(format!("lua_fix_hil_{arch}"), patch(&lines));
+}
+
+/// `lines` as a patch shows them.
+fn patch(lines: &[DiffLine]) -> String {
+    let shown: Vec<String> = lines
+        .iter()
+        .map(|line| match line {
+            DiffLine::Same(text) => format!("  {text}"),
+            DiffLine::Added(text) => format!("+ {text}"),
+            DiffLine::Removed(text) => format!("- {text}"),
+            DiffLine::Changed { before, after } => format!("- {before}\n+ {after}"),
+        })
+        .collect();
+    shown.join("\n")
 }
 
 /// The IL view of the Lua fix, as `--view il --diff luaZ_fill` shows it.
@@ -174,16 +236,7 @@ fn the_il_diff_of_a_fix_is_locked(#[values("arm", "aarch64", "mips16")] arch: &s
         &after,
         pair.after,
     );
-    let shown: Vec<String> = lines
-        .iter()
-        .map(|line| match line {
-            DiffLine::Same(text) => format!("  {text}"),
-            DiffLine::Added(text) => format!("+ {text}"),
-            DiffLine::Removed(text) => format!("- {text}"),
-            DiffLine::Changed { before, after } => format!("- {before}\n+ {after}"),
-        })
-        .collect();
-    insta::assert_snapshot!(format!("lua_fix_{arch}"), shown.join("\n"));
+    insta::assert_snapshot!(format!("lua_fix_{arch}"), patch(&lines));
 }
 
 /// The stripped library of the backports, built by GCC at -O2 for `arch`.

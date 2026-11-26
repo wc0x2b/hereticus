@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--view hil` shows the high IL, a second layer on the IL. A call shows
+  on one line with its arguments and its result, as
+  `ret = strcmp(arg2, &"expect")`, with the setting of an argument in a
+  MIPS delay slot folded in. The count of arguments comes from the
+  prototype of a common function of the C library or the kernel, or
+  from the code of the callee. A register shows as `arg1` where it holds
+  the first argument of the function, and as `ret` where it holds what
+  the last call gave back. A place on the stack shows as `var_1c`. The
+  saves and restores of registers and the moves of the stack pointer do
+  not show. `v` in the TUI and the button of the HTML report go to it
+  too. The matching does not read it.
+
 ## [0.8.0](https://github.com/wc0x2b/hereticus/compare/v0.7.2...v0.8.0) - 2026-11-22
 
 ### Added

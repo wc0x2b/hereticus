@@ -133,6 +133,59 @@ pub trait Arch: Recovery {
     ) -> Vec<Option<u64>> {
         vec![None; body.len()]
     }
+
+    /// The registers that the usual ABI of the architecture passes the
+    /// arguments of a call in and gives its result in, which the high IL
+    /// names by their roles.
+    ///
+    /// Defaults to `None`, for an ABI that passes the arguments on the
+    /// stack, as 32-bit x86 does.
+    fn calling_convention(&self) -> Option<CallingConvention> {
+        None
+    }
+}
+
+/// A register of a [`CallingConvention`], with the name its architecture
+/// gives it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamedReg {
+    /// The register, as the lift names it.
+    pub reg: hereticus_il::Reg,
+    /// The name of the full register, as `x0` or `a0`.
+    pub name: &'static str,
+}
+
+impl NamedReg {
+    const fn new(reg: hereticus_il::Reg, name: &'static str) -> Self {
+        Self { reg, name }
+    }
+}
+
+/// Where the usual ABI of an architecture keeps the arguments of a call,
+/// its result and the stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallingConvention {
+    /// The registers of the first arguments, in order.
+    pub arguments: &'static [NamedReg],
+    /// The register of the result.
+    pub result: NamedReg,
+    /// The stack pointer, as the lift names it: MIPS lifts it as a general
+    /// register.
+    pub stack: hereticus_il::Reg,
+    /// The numbers of the general registers that a call keeps. A call can
+    /// change each other register.
+    pub preserved: &'static [u8],
+}
+
+impl CallingConvention {
+    /// Report whether a call keeps the value of `reg`.
+    pub fn preserves(&self, reg: hereticus_il::Reg) -> bool {
+        match reg {
+            hereticus_il::Reg::General(number) => self.preserved.contains(&number),
+            hereticus_il::Reg::Stack => true,
+            _ => reg == self.stack,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +248,24 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Each ABI passes its arguments in registers that a call can change,
+    /// and keeps the stack. 32-bit x86 passes them on the stack.
+    #[test]
+    fn a_calling_convention_keeps_the_stack_and_not_the_arguments() {
+        for (name, arch) in ARCHES {
+            let Some(convention) = arch.calling_convention() else {
+                assert_eq!(name, "x86", "only 32-bit x86 has no convention");
+                continue;
+            };
+            let arguments: Vec<_> = convention.arguments.iter().map(|arg| arg.reg).collect();
+            let distinct: std::collections::HashSet<_> = arguments.iter().collect();
+            assert_eq!(distinct.len(), arguments.len(), "{name}");
+            assert!(arguments.iter().all(|&reg| !convention.preserves(reg)), "{name}");
+            assert!(!convention.preserves(convention.result.reg), "{name}");
+            assert!(convention.preserves(convention.stack), "{name}");
+            assert!(!arguments.contains(&convention.stack), "{name}");
+        }
     }
 }

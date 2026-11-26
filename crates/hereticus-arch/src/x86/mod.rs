@@ -2,9 +2,9 @@
 //! frame and which constants are addresses. The rules that find functions
 //! are in [`hereticus_recovery::arch::x86`].
 
-use super::{Arch, Insn, Memory};
+use super::{Arch, CallingConvention, Insn, Memory, NamedReg};
 use hereticus_il::Reg;
-use hereticus_il::arch::x86::{X86, il_register, instruction};
+use hereticus_il::arch::x86::{Mode, X86, il_register, instruction};
 use hereticus_memory::{AddressSpace, ConstantKind};
 use hereticus_recovery::arch::x86::{
     formed_address, global_offset_table_uses, is_branch_target_mark,
@@ -75,6 +75,26 @@ impl Arch for X86 {
             .zip(from_table)
             .map(|(insn, from_table)| (!from_table).then(|| formed_address(insn, space)).flatten())
             .collect()
+    }
+
+    /// The System V ABI of x86-64: `rdi`, `rsi`, `rdx`, `rcx`, `r8` and
+    /// `r9`, and `rax`. 32-bit code passes the arguments on the stack.
+    fn calling_convention(&self) -> Option<CallingConvention> {
+        const SYSTEM_V: CallingConvention = CallingConvention {
+            arguments: &[
+                NamedReg::new(Reg::General(7), "rdi"),
+                NamedReg::new(Reg::General(6), "rsi"),
+                NamedReg::new(Reg::General(2), "rdx"),
+                NamedReg::new(Reg::General(1), "rcx"),
+                NamedReg::new(Reg::General(8), "r8"),
+                NamedReg::new(Reg::General(9), "r9"),
+            ],
+            result: NamedReg::new(Reg::General(0), "rax"),
+            stack: Reg::Stack,
+            // `rbx`, `rbp` and `r12` to `r15`.
+            preserved: &[3, 5, 12, 13, 14, 15],
+        };
+        (self.mode() == Mode::Bits64).then_some(SYSTEM_V)
     }
 }
 

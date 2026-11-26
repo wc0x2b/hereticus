@@ -105,3 +105,37 @@ mul_by_constant
   return
 ```
 <!-- end output -->
+
+`--view hil` shows the high IL: each call on one line with its
+arguments, each argument of the function as `arg1`, `arg2` and so on,
+what a call gave back as `ret`, and each place on the stack by name, as
+`var_10`. The lines that save and restore registers do not show. The fix
+of `luaZ_fill` in Lua, built for MIPS by GCC at `-O2`, adds a test of a
+flag before the call:
+
+<!-- output: --view hil --diff luaZ_fill fixtures/build/backports/lua-before/mips-gcc-O2/lib.so fixtures/build/backports/lua-after/mips-gcc-O2/lib.so -->
+```console
+$ hereticus --view hil --diff luaZ_fill before.so after.so
+luaZ_fill
+      + v0 = load.32 [arg1 + 0x14]
+        s0 = arg1
+┌───< + if (v0 != 0) goto $+0x50
+│         ret = (load.32 [arg1 + 0x8])(load.32 [arg1 + 0x10], load.32 [arg1 + 0xC], &var_10)
+│┌──<     if (ret == 0) goto $+0x30
+││        v1 = var_10
+││┌─<       if (v1 == 0) goto $+0x28
+│││         a0 = ret + 1
+│││           v1 = v1 + -0x1
+│││           store.32 [arg1 + 0x4] = a0
+│││           store.32 [arg1] = v1
+│││           v0 = load.8 [ret]
+│││┌>   return
+│└┴┼> + v0 = 1
+│  │  + store.32 [arg1 + 0x14] = v0
+└──┴<   goto $-0x18
+        v0 = -0x1
+```
+<!-- end output -->
+
+See [The High IL](./methods.md#the-high-il) for how it names each
+value.

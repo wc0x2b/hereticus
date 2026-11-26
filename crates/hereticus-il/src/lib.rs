@@ -104,6 +104,19 @@ impl RegSet {
     /// The empty set.
     pub const EMPTY: Self = Self(0);
 
+    /// The set of every register.
+    pub const ALL: Self = Self(u128::MAX);
+
+    /// The registers in this set or in `other`.
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// The registers in this set and not in `other`.
+    pub fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
     /// Put `reg` in the set.
     pub fn insert(&mut self, reg: Reg) {
         self.0 |= 1 << reg.bit();
@@ -1118,6 +1131,23 @@ mod tests {
             assert_eq!(set.iter().count(), set.len());
         });
         assert_eq!(RegSet::EMPTY.iter().next(), None);
+    }
+
+    /// A union holds each register of either set, and a difference each
+    /// register of the first set that the second does not hold.
+    #[test]
+    fn a_union_and_a_difference_hold_what_their_sets_say() {
+        bolero::check!().with_type::<([u64; 2], [u64; 2])>().for_each(|&(left, right)| {
+            let set = |[high, low]: [u64; 2]| RegSet(u128::from(high) << 64 | u128::from(low));
+            let (left, right) = (set(left), set(right));
+            for reg in (0..128).map(Reg::of_bit) {
+                let (in_left, in_right) = (left.contains(reg), right.contains(reg));
+                assert_eq!(left.union(right).contains(reg), in_left || in_right);
+                assert_eq!(left.difference(right).contains(reg), in_left && !in_right);
+            }
+        });
+        assert_eq!(RegSet::ALL.len(), 128);
+        assert!(RegSet::ALL.difference(RegSet::ALL).is_empty());
     }
 
     fn compare(left: Value, right: Value) -> Option<Lifted> {
