@@ -791,7 +791,53 @@ pub(super) fn il_key(line: &str) -> String {
         collapsed.push_str(rest);
         key = collapsed;
     }
-    collapse_into_texts(&key)
+    collapse_into_texts(&collapse_slot_names(&key))
+}
+
+/// `line` with each place on the stack that the high IL names, as
+/// `var_1c` or `arg_10`, written without its distance, as a frame slot of
+/// the IL is: the distance moves when the frame grows.
+fn collapse_slot_names(line: &str) -> String {
+    let mut collapsed = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(['v', 'a']) {
+        let before = &line[..line.len() - rest.len() + at];
+        let starts_word = !inside_text(before)
+            && !before.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        let marker = ["var_", "arg_"].into_iter().find(|marker| rest[at..].starts_with(marker));
+        match marker.filter(|_| starts_word) {
+            Some(marker) => {
+                let after = &rest[at + marker.len()..];
+                let digits =
+                    after.len() - after.trim_start_matches(|c: char| c.is_ascii_hexdigit()).len();
+                let ends_word =
+                    !after[digits..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+                collapsed.push_str(&rest[..at + marker.len()]);
+                rest = if digits > 0 && ends_word { &after[digits..] } else { after };
+            }
+            None => {
+                collapsed.push_str(&rest[..=at]);
+                rest = &rest[at + 1..];
+            }
+        }
+    }
+    collapsed.push_str(rest);
+    collapsed
+}
+
+/// Whether `before`, the start of a line, ends inside a text: it opens one
+/// more quote than it closes.
+fn inside_text(before: &str) -> bool {
+    let mut quoted = false;
+    let mut escaped = false;
+    for c in before.chars() {
+        match c {
+            '"' if !escaped => quoted = !quoted,
+            _ => {}
+        }
+        escaped = quoted && c == '\\' && !escaped;
+    }
+    quoted
 }
 
 /// `line` with each pointer into a text, as `"Unexpected character\n"[10]`,

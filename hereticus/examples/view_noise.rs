@@ -90,7 +90,15 @@ fn main() {
                     )
                 };
                 il.add(Counts::of(&lines(View::Il)));
-                high.add(Counts::of(&lines(View::Hil)));
+                let shown = lines(View::Hil);
+                if std::env::var_os("SAMPLE").is_some() {
+                    for pair in shown.windows(2) {
+                        if let [DiffLine::Removed(old), DiffLine::Added(new)] = pair {
+                            println!("- {old}\n+ {new}");
+                        }
+                    }
+                }
+                high.add(Counts::of(&shown));
                 pairs += 1;
             }
             Some((il, high, pairs))

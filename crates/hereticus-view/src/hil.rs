@@ -737,7 +737,33 @@ impl<'a> Body<'a> {
             })
             .collect();
         let lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
-        let next = successors(insns, |insn| arch.delay_slots(insn));
+        let mut next = successors(insns, |insn| arch.delay_slots(insn));
+        // A word of data among the code never runs, though a jump through a
+        // register can seem to reach it: it leads nowhere.
+        let is_data = |insn: &Insn| insn.opcode == hereticus_il::arch::Opcode::Data;
+        for (edges, insn) in next.iter_mut().zip(insns) {
+            if is_data(insn) {
+                edges.clear();
+            }
+        }
+        // What only a word of data led to, a jump through a register can
+        // reach, as `successors` lets it reach each other unreached one.
+        let mut reached = vec![false; insns.len()];
+        for &successor in next.iter().flatten() {
+            reached[successor] = true;
+        }
+        let unreached: Vec<usize> =
+            (1..insns.len()).filter(|&index| !reached[index] && !is_data(&insns[index])).collect();
+        for (index, insn) in insns.iter().enumerate() {
+            if matches!(insn.kind, InsnKind::Jump { target: None }) {
+                let last = (index + arch.delay_slots(insn)).min(insns.len() - 1);
+                for &target in &unreached {
+                    if !next[last].contains(&target) {
+                        next[last].push(target);
+                    }
+                }
+            }
+        }
         let mut entries = vec![0; insns.len()];
         for &successor in next.iter().flatten() {
             entries[successor] += 1;
@@ -963,7 +989,11 @@ impl<'a> Body<'a> {
         let moved = match lifted.operands.as_slice() {
             // An A32 or T32 `push` or `pop` names its list and its base
             // alone.
+            // T32 `push` and `pop` name the list alone.
             [Operand::Reg(base), Operand::RegisterList(list)] if *base == stack => {
+                crate::list_offsets(&self.insns[index], &lifted, list.len()).map(|(_, moved)| moved)
+            }
+            [Operand::RegisterList(list)] if lifted.writes.contains(stack) => {
                 crate::list_offsets(&self.insns[index], &lifted, list.len()).map(|(_, moved)| moved)
             }
             // An x86 `push` or `pop` names its value alone.
@@ -1198,6 +1228,10 @@ impl<'a> Body<'a> {
             ([], [Operand::Reg(base), Operand::RegisterList(list)]) => {
                 let (start, _) = crate::list_offsets(&self.insns[index], lifted, list.len())?;
                 (at_of(*base)? + start, list.iter().collect())
+            }
+            ([], [Operand::RegisterList(list)]) if lifted.writes.contains(stack) => {
+                let (start, _) = crate::list_offsets(&self.insns[index], lifted, list.len())?;
+                (at_of(stack)? + start, list.iter().collect())
             }
             ([], [Operand::Reg(value)]) if lifted.writes.contains(stack) => {
                 let at = at_of(stack)?;
@@ -2089,6 +2123,43 @@ mod tests {
             .map(|line| line.text)
             .collect();
         assert_eq!(shown, ["a1 = &var_1c", "return"]);
+    }
+
+    /// A T32 `push` names its list alone, and moves the stack all the same.
+    #[test]
+    fn a_t32_push_moves_the_stack() {
+        use hereticus_il::arch::thumb::Thumb2;
+        // push {r4, lr}; sub sp, #8; add r1, sp, #4; add sp, #8; pop {r4, pc}
+        let halfwords: [u16; 5] = [0xb510, 0xb082, 0xa901, 0xb002, 0xbd10];
+        let code: Vec<u8> = halfwords.iter().flat_map(|half| half.to_le_bytes()).collect();
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        let shown: Vec<String> = hil_statements_in(&Thumb2, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(shown, ["r1 = &var_c", "return"]);
+    }
+
+    /// A word of data that a jump through a register seems to reach leaves
+    /// what the code after it holds as the jump left it.
+    #[test]
+    fn a_word_of_data_leads_nowhere() {
+        use hereticus_il::arch::arm32::Arm32;
+        let words: [u32; 5] = [
+            0xe92d_4010, // push {r4, lr}
+            0xe12f_ff13, // bx r3
+            0x0000_493c, // a word of a table
+            0xe28d_1004, // add r1, sp, #4, which only the jump reaches
+            0xe8bd_8010, // pop {r4, pc}
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (mut insns, _) = decode_all(&Arm32, &code, 0x1000);
+        insns[2] = hereticus_il::arch::data_word(insns[2].address, insns[2].bytes());
+        let shown: Vec<String> = hil_statements_in(&Arm32, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert!(shown.contains(&"r1 = &var_4".to_string()), "{shown:?}");
     }
 
     /// x86-64 `push` and `pop` move the stack, and they save and restore
