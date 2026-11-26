@@ -1,6 +1,5 @@
 ---
 source: hereticus/tests/view.rs
-assertion_line: 51
 expression: "gz_error(arch).join(\"\\n\")"
 ---
 store.64 [sp - 0x30] = x29, x30
@@ -62,6 +61,6 @@ x29, x30 = load.64 [sp]; sp = sp + 0x30
 return
 call free
 goto $-0xb8
-w0 = 3
+w0 = -0x4
 store.32 [x19 + 0x74] = w0
 goto $-0x20

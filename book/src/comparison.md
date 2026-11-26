@@ -205,7 +205,7 @@ settings.
 
 | Tool | Fixes found | Fix on row 1 | Rows | Rows the fix did not touch |
 |------|-------------|--------------|------|----------------------------|
-| hereticus | 28<!-- from rivals_radare2_crossed: hereticus / found --> | 7<!-- from rivals_radare2_crossed: hereticus / first --> | 7194<!-- from rivals_radare2_crossed: hereticus / rows --> | 7111<!-- from rivals_radare2_crossed: hereticus / extras --> |
+| hereticus | 28<!-- from rivals_radare2_crossed: hereticus / found --> | 7<!-- from rivals_radare2_crossed: hereticus / first --> | 7193<!-- from rivals_radare2_crossed: hereticus / rows --> | 7110<!-- from rivals_radare2_crossed: hereticus / extras --> |
 | radiff2 | 16<!-- from rivals_radare2_crossed: radare2-crossed / found --> | 0<!-- from rivals_radare2_crossed: radare2-crossed / first --> | 5227<!-- from rivals_radare2_crossed: radare2-crossed / rows --> | 5185<!-- from rivals_radare2_crossed: radare2-crossed / extras --> |
 | Ghidra | 28<!-- from truth_ghidra_crossed: ghidra-crossed / found --> | 9<!-- from truth_ghidra_crossed: ghidra-crossed / first --> | 8009<!-- from truth_ghidra_crossed: ghidra-crossed / rows --> | 7873<!-- from truth_ghidra_crossed: ghidra-crossed / extras --> |
 

@@ -1,6 +1,5 @@
 ---
 source: hereticus/tests/view.rs
-assertion_line: 207
 expression: patch(&lines)
 ---
 + w1 = load.32 [arg1 + 0x28]
@@ -18,5 +17,5 @@ expression: patch(&lines)
   return
 + w0 = 1
 + store.32 [arg1 + 0x28] = w0
-  w0 = 0
+  w0 = -0x1
   goto $-0x18

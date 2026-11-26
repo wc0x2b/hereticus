@@ -588,7 +588,22 @@ pub fn lift(inst: &Instruction) -> Lifted {
     lifted.reads = reads;
     lifted.writes = writes;
     lifted.operands = operands.iter().map(|operand| il_operand(*operand)).collect();
+    if inst.opcode == Opcode::MOVN
+        && let (Some(Operand::Register(size, _)), Some(il::Operand::Const(value))) =
+            (operands.first(), lifted.operands.get_mut(1))
+    {
+        *value = inverted(*value, *size);
+    }
     lifted
+}
+
+/// The constant that a `movn` of `value` puts in a register of `size`: all
+/// the bits of `value` inverted, in the width of the register.
+fn inverted(value: u64, size: SizeCode) -> u64 {
+    match size {
+        SizeCode::W => u64::from(!(value as u32)),
+        SizeCode::X => !value,
+    }
 }
 
 /// An operand as the IL names it. Register 31 is the zero register as a
@@ -1763,6 +1778,19 @@ mod tests {
         assert_eq!(select.writes, regs(&[x(8)]));
         let movk = lift_one(words::MOVK_X23);
         assert_eq!((movk.reads, movk.writes), (regs(&[x(23)]), regs(&[x(23)])));
+    }
+
+    /// `movn` puts the inverse of its constant in the register, in the
+    /// width of the register: `mov w0, #-1` is `movn w0, #0`.
+    #[test]
+    fn a_movn_lifts_the_inverse_of_its_constant() {
+        let constant = |word| lift_one(word).operands[1];
+        assert_eq!(constant(0x1280_0000), il::Operand::Const(0xffff_ffff), "movn w0, #0");
+        assert_eq!(constant(0x92a0_0020), il::Operand::Const(!0x1_0000), "movn x0, #1, lsl #16");
+        assert_eq!(constant(0x5280_0020), il::Operand::Const(1), "movz w0, #1 stays");
+        assert_eq!(inverted(0, SizeCode::W), 0xffff_ffff);
+        assert_eq!(inverted(0xffff_ffff, SizeCode::W), 0);
+        assert_eq!(inverted(0, SizeCode::X), u64::MAX);
     }
 
     #[test]

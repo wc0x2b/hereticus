@@ -26,5 +26,5 @@ expression: "flow_text(&lines, &places)"
 ││││  2400c   return
 │└┴┼> 24010 + w0 = 1
 │  │  24014 + store.32 [x19 + 0x28] = w0
-└──┼> 24018   w0 = 0
+└──┼> 24018   w0 = -0x1
    └< 2401c   goto $-0x18

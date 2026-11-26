@@ -61,6 +61,6 @@ expression: text
 │  │  6680   return
 │  │  6684   call free
 │  │  6688   goto $-0xb8
-│  └> 668c   w0 = 3
+│  └> 668c   w0 = -0x4
 │     6690   store.32 [x19 + 0x74] = w0
 └───< 6694   goto $-0x20

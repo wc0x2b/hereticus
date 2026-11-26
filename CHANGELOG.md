@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not show. `v` in the TUI and the button of the HTML report go to it
   too. The matching does not read it.
 
+### Fixed
+
+- The IL of AArch64 `movn` holds the inverse of its constant, as the
+  instruction does: `mov w0, #-1`, which is `movn w0, #0`, read as
+  `w0 = 0` and now reads as `w0 = -0x1`.
+
 ## [0.8.0](https://github.com/wc0x2b/hereticus/compare/v0.7.2...v0.8.0) - 2026-11-22
 
 ### Added
