@@ -290,7 +290,9 @@ it, so it changes no score. It changes how a diff reads in these ways:
   and its restore, do not show. Nor does a move of the stack pointer or
   the making of the frame pointer.
 - A call through a register that the code just loaded shows the load, as
-  `(load.32 [arg1 + 0x8])(…)`.
+  `(load.32 [arg1 + 0x8])(…)`. A register that holds the address of one
+  function on every path names that function, also where the code kept
+  the address on the stack over other calls.
 
 The roles come from the usual ABI of each architecture: o32 on MIPS, the
 AAPCS on A32 and T32, the AAPCS64 on AArch64, System V on x86-64 and on
@@ -311,8 +313,9 @@ the count comes from one of three places, the first that knows it:
   only that block leads to it, up to the last argument set that nothing
   but a test or a copy reads before the call.
 
-Limits: a callee through a register, as `x26()`, has no name, so only
-the code before the call counts its arguments. A setting folds into the
+Limits: a call through a register that holds another function on each
+path, as `x26()`, has no name, so only the code before the call counts
+its arguments. A setting folds into the
 call only where nothing between them reads its register or changes what
 it reads, and no other path from a branch between them reads the
 register. Else the setting stays on its own line, and the argument

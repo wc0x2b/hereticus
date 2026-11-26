@@ -49,10 +49,52 @@ enum Held {
     Stack(i64),
     /// What this register held at the entry, which is no argument.
     Entry(Reg),
+    /// The address of a function, by its index in [`Body::callees`].
+    Callee(usize),
 }
 
-/// What each register that the high IL knows holds before one instruction.
-type Holding = HashMap<Reg, Held>;
+impl Held {
+    /// Whether a call or a store through an unknown address leaves the
+    /// value in a place on the stack: a pointer to the place can escape,
+    /// but code writes a saved register or the address of a function there
+    /// only itself.
+    fn outlives_unknown_stores(self) -> bool {
+        matches!(self, Self::Entry(_) | Self::Callee(_))
+    }
+}
+
+/// A register, or a place on the stack by its distance from the stack
+/// pointer at the entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Place {
+    Reg(Reg),
+    Slot(i64),
+}
+
+/// What each register and place on the stack that the high IL knows holds
+/// before one instruction.
+type Holding = HashMap<Place, Held>;
+
+/// The registers of a [`Holding`].
+trait Registers {
+    fn reg(&self, reg: Reg) -> Option<&Held>;
+    fn set(&mut self, reg: Reg, held: Held);
+    fn unset(&mut self, reg: Reg);
+}
+
+impl Registers for Holding {
+    fn reg(&self, reg: Reg) -> Option<&Held> {
+        self.get(&Place::Reg(reg))
+    }
+
+    fn set(&mut self, reg: Reg, held: Held) {
+        self.insert(Place::Reg(reg), held);
+    }
+
+    fn unset(&mut self, reg: Reg) {
+        self.remove(&Place::Reg(reg));
+    }
+}
 
 /// The most instructions a call looks back over for its arguments.
 const MOST_LOOKED_BACK: usize = 64;
@@ -91,8 +133,8 @@ pub fn hil_statements_in(
         return crate::il_statements_in(arch, code, insns, context);
     };
     let folds = folds(arch, insns);
-    let body = Body::new(arch, convention, insns);
     let printed = instruction_lines(arch, code, insns, context);
+    let body = Body::new(arch, convention, insns, &printed);
     let lines: Vec<String> =
         printed.iter().enumerate().map(|(index, line)| body.rename(index, line)).collect();
     let mut hidden = body.upkeep.clone();
@@ -239,10 +281,34 @@ struct Body<'a> {
     unknown: Unknown,
     /// The register each name of an operand names.
     registers: HashMap<String, Reg>,
+    /// The functions whose addresses the code loads, by name.
+    callees: Vec<String>,
+    /// For each instruction that loads the address of a function from a
+    /// slot of the global offset table, as `x26 = load.64 [@strcmp]`, the
+    /// index of the function in [`Body::callees`].
+    callee_loads: Vec<Option<usize>>,
 }
 
 impl<'a> Body<'a> {
-    fn new(arch: &'a dyn Arch, convention: CallingConvention, insns: &'a [Insn]) -> Self {
+    /// The body of `insns`, which the IL shows as `printed`.
+    fn new(
+        arch: &'a dyn Arch,
+        convention: CallingConvention,
+        insns: &'a [Insn],
+        printed: &[String],
+    ) -> Self {
+        let mut callees: Vec<String> = Vec::new();
+        let callee_loads = printed
+            .iter()
+            .map(|line| {
+                let name = loaded_function(line)?;
+                let index = callees.iter().position(|known| known == name).unwrap_or_else(|| {
+                    callees.push(name.to_string());
+                    callees.len() - 1
+                });
+                Some(index)
+            })
+            .collect();
         let lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
         let next = successors(insns, |insn| arch.delay_slots(insn));
         let mut entries = vec![0; insns.len()];
@@ -274,6 +340,8 @@ impl<'a> Body<'a> {
             save_slots: HashMap::new(),
             unknown: Unknown::ReadsArguments,
             registers,
+            callees,
+            callee_loads,
         };
         body.holding = body.held();
         // A load from a place that a save filled gives back the value it
@@ -303,7 +371,7 @@ impl<'a> Body<'a> {
     /// holds a known place before it, which no lift reads.
     fn frame(&self, index: usize, holding: &Holding) -> Option<Frame> {
         let frame = hereticus_il::arch::mips16::frame(&self.insns[index])?;
-        let Some(&Held::Stack(at)) = holding.get(&self.convention.stack) else { return None };
+        let Some(&Held::Stack(at)) = holding.reg(self.convention.stack) else { return None };
         let reg = |name: &str| {
             let number =
                 hereticus_il::arch::mips32::REGISTERS.iter().position(|known| *known == name)?;
@@ -327,12 +395,12 @@ impl<'a> Body<'a> {
         if !frame.saves {
             for &(at, reg) in &frame.places {
                 match self.save_slots.get(&at) {
-                    Some(&saved) => holding.insert(reg, Held::Entry(saved)),
-                    None => holding.remove(&reg),
+                    Some(&saved) => holding.set(reg, Held::Entry(saved)),
+                    None => holding.unset(reg),
                 };
             }
         }
-        holding.insert(self.convention.stack, Held::Stack(frame.stack));
+        holding.set(self.convention.stack, Held::Stack(frame.stack));
     }
 
     /// The places on the stack where a store puts the value that a register
@@ -343,7 +411,7 @@ impl<'a> Body<'a> {
             let holding = &self.holding[index];
             if let Some(frame) = self.frame(index, holding).filter(|frame| frame.saves) {
                 for &(at, reg) in &frame.places {
-                    if let Some(&Held::Entry(saved)) = holding.get(&reg) {
+                    if let Some(&Held::Entry(saved)) = holding.reg(reg) {
                         slots.insert(at, saved);
                     }
                 }
@@ -354,7 +422,7 @@ impl<'a> Body<'a> {
             }
             let holding = &self.holding[index];
             for (at, reg) in self.stack_places(index, &lifted, holding).into_iter().flatten() {
-                if let Some(&Held::Entry(saved)) = holding.get(&reg) {
+                if let Some(&Held::Entry(saved)) = holding.reg(reg) {
                     slots.insert(at, saved);
                 }
             }
@@ -377,7 +445,11 @@ impl<'a> Body<'a> {
             .map(|(n, arg)| (arg.reg, Held::Argument(n + 1)));
         // A later entry takes the place of an earlier one: the result
         // register can be the first argument too.
-        let entry = own.chain(arguments).chain([(convention.stack, Held::Stack(0))]).collect();
+        let entry = own
+            .chain(arguments)
+            .chain([(convention.stack, Held::Stack(0))])
+            .map(|(reg, held)| (Place::Reg(reg), held))
+            .collect();
         Some(entry)
     }
 
@@ -419,8 +491,11 @@ impl<'a> Body<'a> {
     /// register that the call does not keep holds nothing known. A copy of
     /// what an earlier call gave back is no longer `ret`.
     fn apply_call(&self, holding: &mut Holding) {
-        holding.retain(|reg, held| self.convention.preserves(*reg) && *held != Held::Result);
-        holding.insert(self.convention.result.reg, Held::Result);
+        holding.retain(|place, held| match place {
+            Place::Reg(reg) => self.convention.preserves(*reg) && *held != Held::Result,
+            Place::Slot(_) => held.outlives_unknown_stores(),
+        });
+        holding.set(self.convention.result.reg, Held::Result);
     }
 
     /// Apply an instruction that is no call.
@@ -435,7 +510,7 @@ impl<'a> Body<'a> {
         };
         let mut gained: Vec<(Reg, Held)> = Vec::new();
         if let Some((dest, source)) = copy_of(&lifted)
-            && let Some(&held) = holding.get(&source)
+            && let Some(&held) = holding.reg(source)
         {
             gained.push((dest, held));
         }
@@ -447,7 +522,7 @@ impl<'a> Body<'a> {
             let Operand::Memory { base: Some(base), offset, update, .. } = *operand else {
                 continue;
             };
-            let Some(&Held::Stack(at)) = holding.get(&base) else { continue };
+            let Some(&Held::Stack(at)) = holding.reg(base) else { continue };
             let moved = match update {
                 Update::None => None,
                 Update::Before => offset,
@@ -474,21 +549,49 @@ impl<'a> Body<'a> {
             _ => None,
         };
         if let Some(moved) = moved
-            && let Some(&Held::Stack(at)) = holding.get(&stack)
+            && let Some(&Held::Stack(at)) = holding.reg(stack)
         {
             gained.push((stack, Held::Stack(at + moved)));
         }
-        if lifted.memory.is_some_and(|access| access.kind == AccessKind::Load) {
-            for (at, reg) in self.stack_places(index, &lifted, holding).into_iter().flatten() {
-                if let Some(&saved) = self.save_slots.get(&at) {
-                    gained.push((reg, Held::Entry(saved)));
+        if let Some(callee) = self.callee_loads[index]
+            && let Some(dest) = lifted.writes.iter().next()
+        {
+            gained.push((dest, Held::Callee(callee)));
+        }
+        let places = self.stack_places(index, &lifted, holding);
+        let mut stored: Vec<(i64, Option<Held>)> = Vec::new();
+        match (lifted.memory.map(|access| access.kind), &places) {
+            (Some(AccessKind::Load), Some(places)) => {
+                for &(at, reg) in places {
+                    let held = holding.get(&Place::Slot(at)).copied();
+                    let saved = self.save_slots.get(&at).map(|&saved| Held::Entry(saved));
+                    if let Some(held) = held.or(saved) {
+                        gained.push((reg, held));
+                    }
                 }
             }
+            (Some(AccessKind::Store), Some(places)) => {
+                stored = places.iter().map(|&(at, reg)| (at, holding.reg(reg).copied())).collect();
+            }
+            // A store through an address the high IL does not know can
+            // reach a place on the stack whose address escaped.
+            (Some(AccessKind::Store | AccessKind::LoadStore), None) => {
+                holding.retain(|place, held| {
+                    matches!(place, Place::Reg(_)) || held.outlives_unknown_stores()
+                });
+            }
+            _ => {}
         }
         for reg in lifted.writes.iter() {
-            holding.remove(&reg);
+            holding.unset(reg);
         }
-        holding.extend(gained);
+        for (at, held) in stored {
+            match held {
+                Some(held) => holding.insert(Place::Slot(at), held),
+                None => holding.remove(&Place::Slot(at)),
+            };
+        }
+        holding.extend(gained.into_iter().map(|(reg, held)| (Place::Reg(reg), held)));
     }
 
     /// `line`, the IL statement of instruction `index`, with each place on
@@ -507,7 +610,7 @@ impl<'a> Body<'a> {
             let Operand::Memory { base: Some(base), offset, index: None, update } = *operand else {
                 continue;
             };
-            let Some(&Held::Stack(at)) = holding.get(&base) else { continue };
+            let Some(&Held::Stack(at)) = holding.reg(base) else { continue };
             let at = if update == Update::After { at } else { at + offset.unwrap_or(0) };
             if !name.is_empty()
                 && let Some(start) = text.find(name.as_str())
@@ -527,10 +630,10 @@ impl<'a> Body<'a> {
         let text = plain_slot_access(&text);
         rename_registers(&text, |word| {
             let reg = self.registers.get(word)?;
-            match holding.get(reg)? {
+            match holding.reg(*reg)? {
                 Held::Argument(n) => Some(format!("arg{n}")),
                 Held::Result => Some("ret".to_string()),
-                Held::Stack(_) | Held::Entry(_) => None,
+                Held::Stack(_) | Held::Entry(_) | Held::Callee(_) => None,
             }
         })
     }
@@ -554,7 +657,7 @@ impl<'a> Body<'a> {
             *keeps = match (lifted.memory.map(|access| access.kind), places) {
                 // A save, or the link of a PowerPC frame to the one before.
                 (Some(AccessKind::Store), Some(places)) => places.iter().all(|(_, reg)| {
-                    *reg == stack || matches!(holding.get(reg), Some(Held::Entry(_)))
+                    *reg == stack || matches!(holding.reg(*reg), Some(Held::Entry(_)))
                 }),
                 // A restore. A `pop` into the program counter is the return.
                 (Some(AccessKind::Load), Some(places)) => {
@@ -564,7 +667,7 @@ impl<'a> Body<'a> {
                 (None, _) => {
                     self.moves_frame(&lifted, holding)
                         || copy_of(&lifted).is_some_and(|(dest, source)| {
-                            dest != source && holding.get(&source) == Some(&Held::Entry(dest))
+                            dest != source && holding.reg(source) == Some(&Held::Entry(dest))
                         })
                 }
                 _ => false,
@@ -574,7 +677,7 @@ impl<'a> Body<'a> {
         // reads, as `r0 = lr` before PowerPC saves `r0`.
         for index in 0..self.insns.len() {
             if let Some((dest, source)) = self.canonical(index).as_ref().and_then(copy_of)
-                && self.holding[index].get(&source) == Some(&Held::Entry(source))
+                && self.holding[index].reg(source) == Some(&Held::Entry(source))
                 && self.next_reader(index, dest).is_some_and(|reader| upkeep[reader])
             {
                 upkeep[index] = true;
@@ -621,7 +724,7 @@ impl<'a> Body<'a> {
             }
             let holding = &self.holding[index];
             for (_, reg) in self.stack_places(index, &lifted, holding).into_iter().flatten() {
-                if let Some(&Held::Argument(n)) = holding.get(&reg) {
+                if let Some(&Held::Argument(n)) = holding.reg(reg) {
                     stored[n - 1] = true;
                 }
             }
@@ -641,7 +744,7 @@ impl<'a> Body<'a> {
     ) -> Option<Vec<(i64, Reg)>> {
         let access = lifted.memory?;
         let stack = self.convention.stack;
-        let at_of = |reg: Reg| match holding.get(&reg) {
+        let at_of = |reg: Reg| match holding.reg(reg) {
             Some(&Held::Stack(at)) => Some(at),
             _ => None,
         };
@@ -767,9 +870,15 @@ impl<'a> Body<'a> {
     /// load of it, as `(load.64 [arg1 + 0x10])`.
     fn callee(&self, index: usize, printed: &str, line: &str) -> Option<String> {
         if let Some(callee) = printed.strip_prefix("call ")
-            && self.registers.contains_key(callee)
+            && let Some(&target) = self.registers.get(callee)
         {
-            return Some(callee.to_string());
+            // A register that holds the address of one function on every
+            // path, as one loaded from the stack where the code kept it,
+            // names that function.
+            return match self.holding[index].reg(target) {
+                Some(&Held::Callee(function)) => Some(self.callees[function].clone()),
+                _ => Some(callee.to_string()),
+            };
         }
         let Some(callee) = line.strip_prefix("call ") else {
             let mut targets = self.targets(index).iter();
@@ -917,10 +1026,11 @@ impl<'a> Body<'a> {
     /// The name that argument `reg` shows as where the code before the call
     /// at `index` does not set it, by what it holds there.
     fn held_name(&self, index: usize, reg: Reg, name: &str) -> String {
-        match self.holding[index].get(&reg) {
+        match self.holding[index].reg(reg) {
             Some(Held::Argument(n)) => format!("arg{n}"),
             Some(Held::Result) => "ret".to_string(),
             Some(Held::Stack(at)) => format!("&{}", slot_name(*at)),
+            Some(Held::Callee(callee)) => format!("&{}", self.callees[*callee]),
             Some(Held::Entry(_)) | None => name.to_string(),
         }
     }
@@ -997,7 +1107,7 @@ impl<'b, 'a> Block<'b, 'a> {
         let inputs: RegSet = lifted
             .reads
             .iter()
-            .filter(|reg| !matches!(holding.get(reg), Some(Held::Argument(_) | Held::Stack(_))))
+            .filter(|reg| !matches!(holding.reg(*reg), Some(Held::Argument(_) | Held::Stack(_))))
             .collect();
         !self.read_between(reg, position + 1..self.site.order.len())
             && self.stays_inside(reg, position, live)
@@ -1147,9 +1257,9 @@ fn arity_of_code(
     if insns.is_empty() || insns.len() > MOST_READ_OF_A_CALLEE {
         return None;
     }
-    let mut body = Body::new(arch, convention, &insns);
-    body.unknown = Unknown::ReadsNothing;
     let printed = instruction_lines(arch, code, &insns, None);
+    let mut body = Body::new(arch, convention, &insns, &printed);
+    body.unknown = Unknown::ReadsNothing;
     let folds = folds(arch, &insns);
     let sites: Vec<CallSite> = (0..insns.len())
         .filter_map(|index| body.call_site(index, &printed, &printed, &folds))
@@ -1188,7 +1298,7 @@ fn stack_arithmetic(lifted: &Lifted, holding: &Holding) -> Option<(Reg, i64)> {
             (dest, source, 0)
         }
     };
-    let Held::Stack(at) = *holding.get(&source)? else { return None };
+    let Held::Stack(at) = *holding.reg(source)? else { return None };
     Some((dest, if lifted.op == Op::Subtract { at - value } else { at + value }))
 }
 
@@ -1207,6 +1317,16 @@ fn copy_of(lifted: &Lifted) -> Option<(Reg, Reg)> {
         }
         _ => None,
     }
+}
+
+/// The function whose address the IL statement `line` loads from a slot of
+/// the global offset table, as `strcmp` of `x26 = load.64 [@strcmp]`.
+fn loaded_function(line: &str) -> Option<&str> {
+    let (_, value) = line.split_once(" = load.")?;
+    let name = value.split_once(" [@")?.1.strip_suffix(']')?;
+    let is_name = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '@'));
+    is_name.then_some(name)
 }
 
 /// The register that each name of an operand of `lifts` names, with the
@@ -1754,6 +1874,44 @@ mod tests {
             .flat_map(|word| word.to_le_bytes())
             .collect();
         assert_eq!(arity_of_code(&Aarch64, convention, &one, 0x1000), Some(Arity::Exact(1)));
+    }
+
+    /// The address of a function that the code keeps on the stack over a
+    /// call names the call through the register it loads it back into.
+    #[test]
+    fn a_callee_kept_on_the_stack_names_its_call() {
+        let words: [u32; 8] = [
+            0xf000_001a, // 0x1000 adrp x26, 0x4000
+            0xf940_075a, // 0x1004 ldr x26, [x26, #8]: strcmp
+            0xd100_43ff, // 0x1008 sub sp, sp, #0x10
+            0xf900_07fa, // 0x100c str x26, [sp, #8]
+            0x9400_0040, // 0x1010 bl $+0x100
+            0xf940_07e8, // 0x1014 ldr x8, [sp, #8]
+            0xd63f_0100, // 0x1018 blr x8
+            0xd65f_03c0, // 0x101c ret
+        ];
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let links = Links::of_parts(
+            vec![(0x4000, vec![0; 0x18])],
+            std::collections::BTreeMap::from([(0x4008, "strcmp".to_string())]),
+        );
+        let space = hereticus_memory::AddressSpace::default();
+        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
+        let shown: Vec<String> = hil_statements_in(&Aarch64, &code, &insns, Some(context))
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert!(shown.iter().any(|line| line.starts_with("ret = strcmp(ret, x1)")), "{shown:?}");
+    }
+
+    #[test]
+    fn a_load_from_a_named_slot_loads_a_function() {
+        assert_eq!(loaded_function("x26 = load.64 [@strcmp]"), Some("strcmp"));
+        assert_eq!(loaded_function("x0 = load.64 [@0x50990]"), None, "an address");
+        assert_eq!(loaded_function("x0 = load.64 [x1 + 0x8]"), None);
+        assert_eq!(loaded_function("store.64 [@strcmp] = x0"), None);
+        assert_eq!(loaded_function("x0 = load.64 [@strcmp] + 1"), None);
     }
 
     /// A call to a function that never returns gives nothing back.
