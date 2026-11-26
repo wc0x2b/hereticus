@@ -416,6 +416,9 @@ impl Values<'_, '_> {
     fn reads_show_argument(&self, index: usize, dest: Reg, n: usize) -> bool {
         let body = self.body;
         let shows = |at: usize| {
+            if body.reads_unnamed(at).contains(dest) {
+                return false;
+            }
             !self.uses(at).contains(dest) || body.holding[at].reg(dest) == Some(&Held::Argument(n))
         };
         let mut last = index;
@@ -423,8 +426,11 @@ impl Values<'_, '_> {
             if !shows(at) {
                 return false;
             }
+            // A call changes the registers it does not keep, though it
+            // does not name them.
+            let call_writes = body.effects(at, &HashMap::new()).1.contains(dest);
             let writes = self.lifted(at).is_none_or(|lifted| lifted.writes.contains(dest));
-            if writes && !body.is_conditional(at) {
+            if (writes || call_writes) && !body.is_conditional(at) {
                 return true;
             }
             last = at;
@@ -1695,9 +1701,34 @@ impl<'a> Body<'a> {
             },
             // A jump out of the function is a call that returns for it.
             InsnKind::Jump { .. } if self.next[index].is_empty() => {
-                (own().0.union(all_arguments).union(result), RegSet::EMPTY)
+                let returned = match self.returns {
+                    Returns::Value => result,
+                    Returns::Nothing => RegSet::EMPTY,
+                };
+                (own().0.union(all_arguments).union(returned), RegSet::EMPTY)
             }
             _ => own(),
+        }
+    }
+
+    /// The registers that instruction `index` reads and its text does not
+    /// name: the result that a return gives back, and the arguments and
+    /// result that a jump out of the function passes on.
+    fn reads_unnamed(&self, index: usize) -> RegSet {
+        let returned = match self.returns {
+            Returns::Value => RegSet::from_iter([self.convention.result.reg]),
+            Returns::Nothing => RegSet::EMPTY,
+        };
+        match self.insns[index].kind {
+            InsnKind::Return => returned,
+            InsnKind::Jump { .. } if self.next[index].is_empty() => self
+                .convention
+                .arguments
+                .iter()
+                .map(|arg| arg.reg)
+                .collect::<RegSet>()
+                .union(returned),
+            _ => RegSet::EMPTY,
         }
     }
 
@@ -2301,6 +2332,9 @@ fn arity_of_code(
     let printed = instruction_lines(arch, code, &insns, None);
     let mut body = Body::new(arch, convention, &insns, &printed);
     body.unknown = Unknown::ReadsNothing;
+    // A register that only a return reads is no argument, as the result
+    // register of a function that gives nothing back is not.
+    body.returns = Returns::Nothing;
     let folds = folds(arch, &insns);
     let sites: Vec<CallSite> = (0..insns.len())
         .filter_map(|index| body.call_site(index, &printed, &printed, &folds))
@@ -2664,6 +2698,23 @@ mod tests {
             .into_iter()
             .map(|line| line.text)
             .collect()
+    }
+
+    /// A return reads the result, and a jump out of the function reads
+    /// the arguments, though neither names them: a copy of an argument
+    /// into one of them stays.
+    #[test]
+    fn a_copy_that_a_return_or_a_jump_out_reads_stays() {
+        let returned = aarch64(&[
+            0xaa01_03e0, // mov x0, x1
+            0xd65f_03c0, // ret
+        ]);
+        assert_eq!(returned, ["x0 = arg2", "return"]);
+        let jumped = aarch64(&[
+            0xaa01_03e0, // mov x0, x1
+            0x1400_0040, // b $+0x100
+        ]);
+        assert_eq!(jumped, ["x0 = arg2", "goto $+0x100"]);
     }
 
     /// The settings of the arguments fold into the call, and a return
@@ -3384,6 +3435,24 @@ mod tests {
             X86::BITS32.calling_convention(hereticus_arch::Abi::Unix).expect("x86 has an ABI");
         let takes = arity_of_code(&X86::BITS32, convention, &zeroing, 0x2000);
         assert_eq!(takes, Some(Takes { arity: Arity::Exact(0), in_registers: 0 }));
+        // A return and a jump out read the result register, which is no
+        // argument: an import thunk takes none in registers.
+        let thunk = [0xff, 0x25, 0x94, 0x20, 0x00, 0x10]; // jmp [0x10002094]
+        let takes = arity_of_code(&X86::BITS32, convention, &thunk, 0x2000);
+        assert_eq!(takes, Some(Takes { arity: Arity::AtLeast(0), in_registers: 0 }));
+        let takes = arity_of_code(&X86::BITS32, convention, &[0xc3], 0x2000);
+        assert_eq!(takes, Some(Takes { arity: Arity::Exact(0), in_registers: 0 }));
+    }
+
+    /// The result register of AArch64 is its first argument register: a
+    /// function that only returns reads no argument.
+    #[test]
+    fn a_return_reads_no_argument_of_the_callee() {
+        let convention =
+            Aarch64.calling_convention(hereticus_arch::Abi::Unix).expect("AArch64 has an ABI");
+        let ret = 0xd65f_03c0_u32.to_le_bytes(); // ret
+        let takes = arity_of_code(&Aarch64, convention, &ret, 0x2000);
+        assert_eq!(takes, Some(Arity::Exact(0).into()));
     }
 
     /// An operation on a place in memory reads the place: it moves no value
