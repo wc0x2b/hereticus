@@ -118,22 +118,19 @@ flag before the call:
 ```console
 $ hereticus --view hil --diff luaZ_fill before.so after.so
 luaZ_fill
-      + v0 = load.32 [arg1 + 0x14]
         s0 = arg1
-┌───< + if (v0 != 0) goto $+0x50
+┌───< + if ((load.32 [arg1 + 0x14]) != 0) goto $+0x50
 │         ret = (load.32 [arg1 + 0x8])(load.32 [arg1 + 0x10], load.32 [arg1 + 0xC], &var_10)
-│┌──<     if (ret == 0) goto $+0x30
-││        v1 = var_10
-││┌─<       if (v1 == 0) goto $+0x28
+│         if (ret == 0) goto $+0x30
+│         v1 = var_10
+│┌┬─<       if (v1 == 0) goto $+0x28
 │││         a0 = ret + 1
-│││           v1 = v1 + -0x1
 │││           store.32 [arg1 + 0x4] = a0
-│││           store.32 [arg1] = v1
+│││           store.32 [arg1] = v1 + -0x1
 │││           v0 = load.8 [ret]
 │││┌>   return
-│└┴┼> + v0 = 1
-│  │  + store.32 [arg1 + 0x14] = v0
-└──┴<   goto $-0x18
+││└┼> + store.32 [arg1 + 0x14] = 1
+└┴─┴<   goto $-0x18
         v0 = -0x1
 ```
 <!-- end output -->

@@ -289,6 +289,15 @@ it, so it changes no score. It changes how a diff reads in these ways:
 - The save of a register that the function must give back as it came,
   and its restore, do not show. Nor does a move of the stack pointer or
   the making of the frame pointer.
+- A value that one statement sets and one later statement on the same
+  straight path reads folds into that statement, where nothing between
+  them changes what the value reads and nothing reads the register after.
+  So `ret = strncmp(x20, &"PATH=", 5)` and the test of `ret` after it
+  read as `if (strncmp(x20, &"PATH=", 5) == 0) goto …`. A compare that
+  only its branch reads shows no line, as the branch names what it
+  compares. A copy of an argument, as `x19 = arg1`, shows no line where
+  each read of the register shows the argument. An operation on two
+  constants is worked out, as MIPS builds a constant in two halves.
 - A call through a register that the code just loaded shows the load, as
   `(load.32 [arg1 + 0x8])(…)`. A register that holds the address of one
   function on every path names that function, also where the code kept
@@ -315,7 +324,10 @@ the count comes from one of three places, the first that knows it:
 
 Limits: a call through a register that holds another function on each
 path, as `x26()`, has no name, so only the code before the call counts
-its arguments. A setting folds into the
+its arguments. Such a call can still read each argument register, so no
+setting of one folds away before it. Where one build folds a value and
+the other does not, as where the other reads the register again, the
+diff shows the two forms as a change. A setting folds into the
 call only where nothing between them reads its register or changes what
 it reads, and no other path from a branch between them reads the
 register. Else the setting stays on its own line, and the argument

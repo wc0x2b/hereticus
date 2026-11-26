@@ -2,20 +2,16 @@
 source: hereticus/tests/view.rs
 expression: patch(&lines)
 ---
-+ w1 = load.32 [arg1 + 0x28]
   x19 = arg1
-+ if (w1 != 0) goto $+0x40
++ if ((load.32 [arg1 + 0x28]) != 0) goto $+0x40
   x3, x1 = load.64 [arg1 + 0x10]
   ret = x3(load.64 [arg1 + 0x20], x1, &var_8)
   if (ret == 0) goto $+0x28
   x1 = var_8
   if (x1 == 0) goto $+0x20
-  x2 = ret + 1
-  x1 = x1 - 1
-  store.64 [arg1] = x1, x2
+  store.64 [arg1] = (x1 - 1), (ret + 1)
   w0 = load.8 [ret]
   return
-+ w0 = 1
-+ store.32 [arg1 + 0x28] = w0
++ store.32 [arg1 + 0x28] = 1
   w0 = -0x1
   goto $-0x18

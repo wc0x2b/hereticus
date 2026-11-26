@@ -3265,3 +3265,20 @@ argument or a result, and leaves each temporary register as the compiler
 chose it. A further layer that names each temporary by the value it
 holds, and folds a value that one line uses into that line, would reach
 those.
+
+The high IL then folded each value that one later statement reads into
+that statement, hid a compare that only its branch reads and a copy of
+an argument, and worked out an operation on two constants. On the same
+sets:
+
+| Set | Lines, high IL | Differ, high IL | Fewer lines than the IL | Fewer that differ |
+|---|---|---|---|---|
+| The backports | 207,654 | 45,364 | 22.9% | 16.0% |
+| Assemblage | 2,623,999 | 598,131 | 33.0% | 17.1% |
+
+A fix often reads as one line: the fix of `luaZ_fill` in Lua is
+`if ((load.32 [arg1 + 0x14]) != 0) goto …` and the store of the flag, on
+A32, AArch64 and MIPS alike. A call whose callee has no known count of
+arguments counts as one that reads each argument register, so that no
+setting of one folds away before it; that cost 0.8 points of the 16.8%
+fewer lines that differ on the backports.

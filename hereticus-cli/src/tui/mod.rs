@@ -108,6 +108,16 @@ struct Labeled {
     label: String,
 }
 
+/// A view of the open diff that is not shown, kept with the row it showed
+/// first, so `v` back to it shows the same screen.
+#[derive(Debug)]
+struct KeptView {
+    view: View,
+    lines: Vec<DiffLine>,
+    places: Places,
+    scroll: usize,
+}
+
 /// The diff of the selected row, kept so a redraw does not compute it
 /// again.
 #[derive(Debug)]
@@ -117,7 +127,7 @@ struct Opened {
     lines: Vec<DiffLine>,
     /// The lines of the other views and their places, once shown, so `v`
     /// back to one is at once.
-    other_views: Vec<(View, Vec<DiffLine>, Places)>,
+    other_views: Vec<KeptView>,
     places: Places,
     /// What a gone or new function is shown against: its closest
     /// candidate.
@@ -758,14 +768,20 @@ impl<'a> App<'a> {
             View::Hil => View::Assembly,
         };
         let Screen::Pair(opened) = &mut self.screen else { return };
-        let shown =
-            (opened.view, core::mem::take(&mut opened.lines), core::mem::take(&mut opened.places));
+        let shown = KeptView {
+            view: opened.view,
+            lines: core::mem::take(&mut opened.lines),
+            places: core::mem::take(&mut opened.places),
+            scroll: opened.scroll,
+        };
         let view = self.view;
-        if let Some(at) = opened.other_views.iter().position(|(kept, ..)| *kept == view) {
-            let (_, lines, places) = opened.other_views.swap_remove(at);
-            (opened.lines, opened.places, opened.view) = (lines, places, view);
+        if let Some(at) = opened.other_views.iter().position(|kept| kept.view == view) {
+            let kept = opened.other_views.swap_remove(at);
+            (opened.lines, opened.places, opened.view) = (kept.lines, kept.places, view);
             opened.other_views.push(shown);
             opened.relayout(self.layout);
+            let last = opened.changes.len().saturating_sub(1);
+            opened.scroll = kept.scroll.min(last);
             return;
         }
         let mut kept = core::mem::take(&mut opened.other_views);

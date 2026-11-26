@@ -151,6 +151,7 @@ pub fn hil_statements_in(
             .or_insert_with(|| arity_of(arch, convention, context, &site.callee));
         if let Some(arity) = arity {
             site.count = arity.shown(site.count, convention.arguments.len());
+            site.counted = Counted::ByCallee;
         }
     }
     let live = body.live_in(&sites);
@@ -164,14 +165,23 @@ pub fn hil_statements_in(
         }
     }
     let by_index: HashMap<usize, &Call> = calls.iter().map(|call| (call.index, call)).collect();
+    let mut texts: Vec<Option<String>> = (0..insns.len())
+        .map(|index| match (&folds[index], by_index.get(&index)) {
+            (Fold::Hidden, _) => None,
+            _ if hidden[index] => None,
+            (Fold::GlobalPointer(register), _) => Some(format!("{register} = _gp")),
+            (Fold::Own, Some(call)) => Some(call.text()),
+            (Fold::Own, None) => Some(lines[index].clone()),
+        })
+        .collect();
+    // An instruction the IL does not name shows as the decoder prints it,
+    // with no value to fold into.
+    let raw: Vec<bool> =
+        insns.iter().zip(&printed).map(|(insn, line)| *line == insn.to_string()).collect();
+    Values { body: &body, live: &live, calls: &by_index, folds: &folds, raw: &raw }
+        .fold(&mut texts);
     let statement = |index: usize| -> Option<Statement> {
-        let text = match (&folds[index], by_index.get(&index)) {
-            (Fold::Hidden, _) => return None,
-            _ if hidden[index] => return None,
-            (Fold::GlobalPointer(register), _) => format!("{register} = _gp"),
-            (Fold::Own, Some(call)) => call.text(),
-            (Fold::Own, None) => lines[index].clone(),
-        };
+        let text = texts[index].clone()?;
         Some(Statement { address: insns[index].address, text })
     };
     let mut statements = Vec::with_capacity(insns.len());
@@ -202,6 +212,18 @@ struct CallSite {
     order: Vec<usize>,
     /// How many arguments the call shows.
     count: usize,
+    /// Where the count comes from.
+    counted: Counted,
+}
+
+/// Where the count of arguments of a call comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Counted {
+    /// The prototype or the code of the callee.
+    ByCallee,
+    /// The code before the call, which can set a register for another use
+    /// or leave one set from before.
+    ByCaller,
 }
 
 /// A MIPS16e `save` or `restore`, read for the high IL.
@@ -212,6 +234,411 @@ struct Frame {
     places: Vec<(i64, Reg)>,
     /// What the stack pointer holds after it.
     stack: i64,
+}
+
+/// The values that one statement sets and one later statement reads, to
+/// fold into the one that reads them.
+struct Values<'v, 'a> {
+    body: &'v Body<'a>,
+    live: &'v [RegSet],
+    calls: &'v HashMap<usize, &'v Call>,
+    folds: &'v [Fold],
+    /// Whether each instruction shows as the decoder prints it.
+    raw: &'v [bool],
+}
+
+/// The longest statement that folding makes: a longer one is harder to
+/// read than the two it joins.
+const LONGEST_FOLDED: usize = 120;
+
+impl Values<'_, '_> {
+    /// Fold each value of `texts`, the text each instruction shows, into
+    /// the statement that reads it: hide a compare that only its branch
+    /// reads, a copy of an argument, and each value that one statement of
+    /// the same straight run reads and nothing reads after.
+    fn fold(&self, texts: &mut [Option<String>]) {
+        let compares = self.hide_compares(texts);
+        self.hide_argument_copies(texts);
+        for index in 0..texts.len() {
+            if let Some((user, text)) = self.folded(index, texts, &compares) {
+                texts[index] = None;
+                texts[user] = Some(text);
+            }
+        }
+    }
+
+    fn lifted(&self, index: usize) -> Option<&Lifted> {
+        Some(&self.body.lifts[index].as_ref()?.lifted)
+    }
+
+    /// The instructions after `index` on its one straight path.
+    fn straight_after(&self, index: usize) -> impl Iterator<Item = usize> + '_ {
+        let body = self.body;
+        (index + 1..body.insns.len())
+            .take_while(move |&at| body.next[at - 1] == [at] && body.entries[at] == 1)
+    }
+
+    /// Hide each compare whose flags only the branch after it reads: the
+    /// branch names what the compare compared, as `if (r1 == 2) goto …`.
+    fn hide_compares(&self, texts: &mut [Option<String>]) -> HashSet<usize> {
+        let mut hidden = HashSet::new();
+        for index in 0..texts.len() {
+            let Some(lifted) = self.lifted(index) else { continue };
+            let is_compare = lifted.writes == RegSet::from_iter([Reg::Flags])
+                && lifted.memory.is_none()
+                && texts[index].as_deref().is_some_and(|text| text.starts_with("flags = "))
+                && !self.body.is_conditional(index);
+            if !is_compare {
+                continue;
+            }
+            let reader = self.straight_after(index).find(|&at| {
+                self.lifted(at).is_none_or(|lifted| {
+                    lifted.reads.contains(Reg::Flags) || lifted.writes.contains(Reg::Flags)
+                })
+            });
+            let Some(branch) = reader else { continue };
+            let names_the_test = texts[branch].as_deref().is_some_and(names_its_test);
+            let reads_flags =
+                self.lifted(branch).is_some_and(|lifted| lifted.reads.contains(Reg::Flags));
+            if matches!(self.body.insns[branch].kind, InsnKind::Branch { .. })
+                && names_the_test
+                && reads_flags
+                && !self.body.live_after(self.live, branch).contains(Reg::Flags)
+            {
+                texts[index] = None;
+                hidden.insert(index);
+            }
+        }
+        hidden
+    }
+
+    /// Hide each copy of an argument, as `x19 = arg1`, or load of one from
+    /// the place on the stack that holds it, where each statement that
+    /// reads the register shows it as the argument.
+    fn hide_argument_copies(&self, texts: &mut [Option<String>]) {
+        for (index, text) in texts.iter_mut().enumerate() {
+            let Some((dest, n)) = self.argument_copied(index) else { continue };
+            let is_copy = text.as_deref().is_some_and(|text| text.contains(" = "));
+            if is_copy && self.reads_show_argument(index, dest, n) {
+                *text = None;
+            }
+        }
+    }
+
+    /// Whether each statement that reads `dest` as instruction `index` sets
+    /// it shows it as argument `n`: on the straight path after it, up to a
+    /// write of `dest` or a point where nothing reads it any more, or else
+    /// in the whole function.
+    fn reads_show_argument(&self, index: usize, dest: Reg, n: usize) -> bool {
+        let body = self.body;
+        let shows = |at: usize| {
+            !self.uses(at).contains(dest) || body.holding[at].reg(dest) == Some(&Held::Argument(n))
+        };
+        let mut last = index;
+        for at in self.straight_after(index) {
+            if !shows(at) {
+                return false;
+            }
+            let writes = self.lifted(at).is_none_or(|lifted| lifted.writes.contains(dest));
+            if writes && !body.is_conditional(at) {
+                return true;
+            }
+            last = at;
+        }
+        !body.live_after(self.live, last).contains(dest)
+            || (0..body.insns.len()).all(|at| at == index || shows(at))
+    }
+
+    /// The register that instruction `index` copies argument `n` into, as a
+    /// copy of a register or a load from the stack, and `n`.
+    fn argument_copied(&self, index: usize) -> Option<(Reg, usize)> {
+        let body = self.body;
+        let lifted = body.canonical(index)?;
+        let holding = &body.holding[index];
+        let held = match copy_of(&lifted) {
+            Some((dest, source)) => (dest, *holding.reg(source)?),
+            None => {
+                let [(at, dest)] = body.stack_places(index, &lifted, holding)?[..] else {
+                    return None;
+                };
+                let loads = lifted.memory.is_some_and(|access| access.kind == AccessKind::Load);
+                if !loads || lifted.writes != RegSet::from_iter([dest]) {
+                    return None;
+                }
+                (dest, *holding.get(&Place::Slot(at))?)
+            }
+        };
+        match held {
+            (dest, Held::Argument(n)) => Some((dest, n)),
+            _ => None,
+        }
+    }
+
+    /// The registers that instruction `index` reads, with the arguments
+    /// of the call it makes.
+    fn uses(&self, index: usize) -> RegSet {
+        let own = self.lifted(index).map_or(RegSet::ALL, |lifted| lifted.reads);
+        match self.calls.get(&index) {
+            Some(call) => {
+                let count = call.arguments.len();
+                let arguments: RegSet =
+                    self.body.convention.arguments[..count].iter().map(|arg| arg.reg).collect();
+                own.union(arguments)
+            }
+            None => own,
+        }
+    }
+
+    /// The value that instruction `index` sets, where it sets one register
+    /// and does nothing else: the register, its name, the value, and
+    /// whether the value comes from a call.
+    fn value_of(&self, index: usize, text: &str) -> Option<(Reg, String, String, Source)> {
+        let body = self.body;
+        if let Some(call) = self.calls.get(&index) {
+            let value = text.strip_prefix("ret = ")?;
+            return call.gives.then(|| {
+                (body.convention.result.reg, "ret".to_string(), value.to_string(), Source::Call)
+            });
+        }
+        let lifted = self.lifted(index)?;
+        let (name, value) = text.split_once(" = ")?;
+        let reg = *body.registers.get(name)?;
+        let pure = lifted.writes == RegSet::from_iter([reg])
+            && lifted.memory.is_none_or(|access| access.kind == AccessKind::Load)
+            && self.folds[index] == Fold::Own
+            && !body.is_conditional(index)
+            && !matches!(body.insns[index].kind, InsnKind::Call { .. })
+            && !value.contains(';');
+        let source = if lifted.memory.is_some() { Source::Memory } else { Source::Registers };
+        pure.then(|| (reg, name.to_string(), value.to_string(), source))
+    }
+
+    /// The statement that the value of instruction `index` folds into, and
+    /// its text with the value in place of the register.
+    fn folded(
+        &self,
+        index: usize,
+        texts: &[Option<String>],
+        compares: &HashSet<usize>,
+    ) -> Option<(usize, String)> {
+        let body = self.body;
+        let (reg, name, value, source) = self.value_of(index, texts[index].as_deref()?)?;
+        let start = self.calls.get(&index).map_or(index, |call| call.last);
+        // The registers the value reads that a later write would change.
+        let holding = &body.holding[index];
+        let inputs: RegSet = match source {
+            Source::Call => RegSet::EMPTY,
+            _ => self
+                .lifted(index)?
+                .reads
+                .iter()
+                .filter(|reg| {
+                    !matches!(holding.reg(*reg), Some(Held::Argument(_) | Held::Stack(_)))
+                })
+                .collect(),
+        };
+        let mut user = None;
+        // A compare that shows no line passes the value on to its branch.
+        let mut compared = false;
+        for at in self.straight_after(start) {
+            let uses = self.uses(at);
+            if compares.contains(&at) {
+                compared |= uses.contains(reg);
+            } else if uses.contains(reg) || (compared && uses.contains(Reg::Flags)) {
+                user = Some(at);
+                break;
+            }
+            let lifted = self.lifted(at)?;
+            // A save of a register to the new frame stores nowhere that a
+            // load can read.
+            let stores = !body.upkeep[at]
+                && lifted.memory.is_some_and(|access| access.kind != AccessKind::Load);
+            let changes =
+                lifted.writes.iter().any(|written| written == reg || inputs.contains(written));
+            let moves_past = match source {
+                // A call keeps its place among the statements that show.
+                Source::Call => texts[at].is_some() || stores,
+                Source::Memory => stores,
+                Source::Registers => false,
+            };
+            if changes || moves_past || self.calls.contains_key(&at) {
+                return None;
+            }
+        }
+        let user = user?;
+        if self.raw[user] || self.raw[index] {
+            return None;
+        }
+        let text = texts[user].as_deref()?;
+        // A copy of the result keeps the name `ret` where code reads it, so
+        // the line that names it stays.
+        if source == Source::Call
+            && let Some((copy, _)) = body.canonical(user).as_ref().and_then(copy_of)
+            && (0..body.insns.len()).any(|at| {
+                at != user
+                    && self.uses(at).contains(copy)
+                    && body.holding[at].reg(copy) == Some(&Held::Result)
+            })
+        {
+            return None;
+        }
+        let rewrites = self.lifted(user).is_some_and(|lifted| lifted.writes.contains(reg))
+            && !body.is_conditional(user);
+        if body.live_after(self.live, user).contains(reg) && !rewrites {
+            return None;
+        }
+        // A value that is the whole right side needs no parentheses.
+        let operand =
+            if text.ends_with(&format!(" = {name}")) { value } else { operand_of(&value) };
+        let folded = simplified(&replace_read_once(text, &name, &operand)?);
+        (folded.len() <= LONGEST_FOLDED).then_some((user, folded))
+    }
+}
+
+/// Whether the branch `text` names what it tests, as `if (r1 == 2) goto`,
+/// where `if (ne) return` names a condition of the flags alone.
+fn names_its_test(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("if (") else { return false };
+    let mut depth = 1;
+    let condition = rest
+        .char_indices()
+        .find_map(|(at, c)| {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then(|| &rest[..at])
+        })
+        .unwrap_or(rest);
+    condition.contains(' ') && !condition.contains("flags")
+}
+
+/// `text` with each operation on two constants in parentheses or
+/// brackets worked out, as MIPS builds a constant in two halves:
+/// `(0x7fff0000 | 0xfff1)` is `0x7ffffff1`.
+fn simplified(text: &str) -> String {
+    let mut text = text.to_string();
+    // Each pass works out the innermost operations, which can leave an
+    // operation on two constants one level out.
+    for _ in 0..4 {
+        let next = simplify_once(&text);
+        if next == text {
+            break;
+        }
+        text = next;
+    }
+    text
+}
+
+fn simplify_once(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = opening_outside_strings(rest) {
+        let close_char = if rest[open..].starts_with('(') { ')' } else { ']' };
+        let Some(length) = rest[open + 1..].find(close_char) else { break };
+        let inner = &rest[open + 1..open + 1 + length];
+        out.push_str(&rest[..open]);
+        match worked_out(inner) {
+            Some(value) if close_char == ')' => out.push_str(&value),
+            Some(value) => {
+                out.push('[');
+                out.push_str(&value);
+                out.push(']');
+            }
+            None => out.push_str(&rest[open..open + 1]),
+        }
+        rest = match worked_out(inner) {
+            Some(_) => &rest[open + 2 + length..],
+            None => &rest[open + 1..],
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Where the first `(` or `[` of `text` outside a string is.
+fn opening_outside_strings(text: &str) -> Option<usize> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (at, c) in text.char_indices() {
+        match c {
+            '"' if !escaped => quoted = !quoted,
+            '(' | '[' if !quoted => return Some(at),
+            _ => {}
+        }
+        escaped = quoted && c == '\\' && !escaped;
+    }
+    None
+}
+
+/// The value of `inner`, where it is one operation on two constants.
+fn worked_out(inner: &str) -> Option<String> {
+    let mut parts = inner.split(' ');
+    let (left, op, right) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let (left, right) = (parse_constant(left)?, parse_constant(right)?);
+    let value = match op {
+        "+" => left.checked_add(right)?,
+        "-" => left.checked_sub(right)?,
+        "|" => left | right,
+        "&" => left & right,
+        "^" => left ^ right,
+        "<<" => left.checked_shl(u32::try_from(right).ok()?)?,
+        _ => return None,
+    };
+    Some(if value < 0 {
+        format!("-{:#x}", value.unsigned_abs())
+    } else {
+        hereticus_il::constant_name(value as u64).to_string()
+    })
+}
+
+/// Where a folded value comes from, which says what it can move past.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    /// A call: it keeps its place among the statements that show.
+    Call,
+    /// A load: no store can come between.
+    Memory,
+    /// Registers alone.
+    Registers,
+}
+
+/// `value` as one operand of another statement: in parentheses where it
+/// holds a space outside of brackets, parentheses and strings.
+fn operand_of(value: &str) -> String {
+    let mut depth = 0_i32;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut spaced = false;
+    for c in value.chars() {
+        match c {
+            '"' if !escaped => quoted = !quoted,
+            '(' | '[' if !quoted => depth += 1,
+            ')' | ']' if !quoted => depth -= 1,
+            ' ' if !quoted && depth == 0 => spaced = true,
+            _ => {}
+        }
+        escaped = quoted && c == '\\' && !escaped;
+    }
+    if spaced { format!("({value})") } else { value.to_string() }
+}
+
+/// `text` with the one read of the register `name` replaced by `value`,
+/// where `text` reads it once, outside strings and addresses, and to the
+/// right of a ` = `.
+fn replace_read_once(text: &str, name: &str, value: &str) -> Option<String> {
+    let reads = std::cell::Cell::new(0);
+    let replaced = rename_registers(text, |word| {
+        (word == name).then(|| {
+            reads.set(reads.get() + 1);
+            value.to_string()
+        })
+    });
+    (reads.get() == 1).then_some(replaced)
 }
 
 /// A call, as the high IL shows it.
@@ -857,6 +1284,7 @@ impl<'a> Body<'a> {
             callee,
             order: (start..index).chain(index + 1..=last).collect(),
             count: 0,
+            counted: Counted::ByCaller,
         };
         site.count = self.argument_count(&site);
         Some(site)
@@ -989,8 +1417,13 @@ impl<'a> Body<'a> {
         let reads_of_call: HashMap<usize, RegSet> = sites
             .iter()
             .map(|site| {
-                let shown = self.convention.arguments[..site.count].iter().map(|arg| arg.reg);
-                (site.index, shown.collect())
+                // A guessed count can leave out an argument the callee reads.
+                let count = match (site.counted, self.unknown) {
+                    (Counted::ByCaller, Unknown::ReadsArguments) => self.convention.arguments.len(),
+                    _ => site.count,
+                };
+                let read = self.convention.arguments[..count].iter().map(|arg| arg.reg);
+                (site.index, read.collect())
             })
             .collect();
         let effects: Vec<(RegSet, RegSet)> =
@@ -1201,15 +1634,18 @@ impl<'b, 'a> Block<'b, 'a> {
                             value.to_string()
                         }
                         // The setting stays, so the argument shows as the
-                        // register it names, as `x1` of `x3, x1 = …`.
-                        _ => self.lines[setter]
-                            .split_once(" = ")
-                            .and_then(|(dest, _)| {
-                                dest.split(", ")
-                                    .find(|word| body.registers.get(*word) == Some(&arg.reg))
-                            })
-                            .unwrap_or(arg.name)
-                            .to_string(),
+                        // register it names, as `x1` of `x3, x1 = …`, or
+                        // as what it holds.
+                        _ => {
+                            let name = self.lines[setter]
+                                .split_once(" = ")
+                                .and_then(|(dest, _)| {
+                                    dest.split(", ")
+                                        .find(|word| body.registers.get(*word) == Some(&arg.reg))
+                                })
+                                .unwrap_or(arg.name);
+                            body.held_name(index, arg.reg, name)
+                        }
                     }
                 }
                 None => body.held_name(index, arg.reg, arg.name),
@@ -1544,7 +1980,8 @@ mod tests {
     }
 
     /// A store reads `w0` before the call, so the call may read no
-    /// argument: it shows none, and the setting stays.
+    /// argument: it shows none. A callee of no known count can still read
+    /// `w0`, so its setting stays.
     #[test]
     fn a_register_that_other_code_reads_is_no_argument() {
         let shown = aarch64(&[
@@ -1912,6 +2349,81 @@ mod tests {
         assert_eq!(loaded_function("x0 = load.64 [x1 + 0x8]"), None);
         assert_eq!(loaded_function("store.64 [@strcmp] = x0"), None);
         assert_eq!(loaded_function("x0 = load.64 [@strcmp] + 1"), None);
+    }
+
+    /// A value that a compare reads folds into the branch that shows the
+    /// compare.
+    #[test]
+    fn a_compared_value_folds_into_its_branch() {
+        use hereticus_il::arch::arm32::Arm32;
+        let code: Vec<u8> = [
+            0xe590_3014_u32, // ldr r3, [r0, #0x14]
+            0xe353_0000,     // cmp r3, #0
+            0x1a00_0000,     // bne $+0x8
+            0xe12f_ff1e,     // bx lr
+            0xe350_0000,     // cmp r0, #0
+            0x0a00_0000,     // beq $+0x8
+            0xe12f_ff1e,     // bx lr
+        ]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        let shown: Vec<String> = hil_statements_in(&Arm32, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(shown[0], "if ((load.32 [arg1 + 0x14]) != 0) goto $+0x8", "{shown:?}");
+        assert_eq!(shown[2], "if (arg1 == 0) goto $+0x8", "the return reads no `r0` there");
+    }
+
+    #[test]
+    fn an_operation_on_two_constants_is_worked_out() {
+        assert_eq!(
+            simplified("if ((arg3 u< (0x7fff0000 | 0xfff1)) == 0) goto $+0x8"),
+            "if ((arg3 u< 0x7ffffff1) == 0) goto $+0x8"
+        );
+        assert_eq!(simplified("a3 = arg4 + (-0x10000 + 0x760f)"), "a3 = arg4 + -0x89f1");
+        assert_eq!(simplified("v0 = load.32 [0 + 0x20]"), "v0 = load.32 [0x20]");
+        assert_eq!(simplified("x0 = (x1 + 2)"), "x0 = (x1 + 2)");
+        assert_eq!(simplified("w0 = ((1 << 4) | 3)"), "w0 = 0x13");
+        assert_eq!(simplified(r#"x0 = &"(1 + 2)""#), r#"x0 = &"(1 + 2)""#, "a string stays");
+    }
+
+    #[test]
+    fn a_branch_names_its_test_where_it_shows_the_operands() {
+        assert!(names_its_test("if (r1 == 2) goto $+0x8"));
+        assert!(names_its_test("if ((w0 & 0x80000000) == 0) goto $+0x10"));
+        assert!(!names_its_test("if (ne) return"));
+        assert!(!names_its_test("if (flags.Equal) goto $+0x8"));
+        assert!(!names_its_test("return"));
+    }
+
+    /// A copy of a result that a later statement reads as `ret` keeps the
+    /// call that names `ret`.
+    #[test]
+    fn a_result_that_a_copy_keeps_stays_named() {
+        let shown = aarch64(&[
+            0x9400_0040, // bl $+0x100
+            0xaa00_03e2, // mov x2, x0
+            0xb900_0022, // str w2, [x1]
+            0xd65f_03c0, // ret
+        ]);
+        assert_eq!(shown[..2], ["ret = $+0x100()", "x2 = ret"], "{shown:?}");
+    }
+
+    /// A load of an argument from the place the code stored it shows no
+    /// line: each read of the register shows the argument.
+    #[test]
+    fn a_load_of_a_stored_argument_shows_no_line() {
+        let shown = aarch64(&[
+            0xf81f_0fe1, // str x1, [sp, #-0x10]!
+            0xf940_03e2, // ldr x2, [sp]
+            0xb940_0440, // ldr w0, [x2, #4]
+            0x9100_43ff, // add sp, sp, #0x10
+            0xd65f_03c0, // ret
+        ]);
+        assert_eq!(shown, ["var_10 = arg2", "w0 = load.32 [arg2 + 0x4]", "return"]);
     }
 
     /// A call to a function that never returns gives nothing back.

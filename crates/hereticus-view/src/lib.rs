@@ -1685,11 +1685,11 @@ mod tests {
                 "return",
             ]
         );
-        // `w2` and `x1` hold the third and the second argument.
+        // `w2` and `x1` hold the third and the second argument, and the
+        // branch names what the compare compared.
         assert_eq!(
             high(&[0x7100_fc5f, 0x5400_0208, 0x8b02_0020, 0xb940_1020, 0xd65f_03c0]),
             [
-                "flags = compare(arg3, 0x3f)",
                 "if (arg3 u> 0x3f) goto $+0x40",
                 "x0 = arg2 + arg3",
                 "w0 = load.32 [arg2 + 0x10]",
@@ -2284,7 +2284,7 @@ mod tests {
                 "x26 = load.64 [@free]",
                 "ret = x26()",
                 "return",
-                "strcmp(arg1, arg2)",
+                "ret = strcmp(arg1, arg2)",
                 "goto $-0xc",
             ]
         );

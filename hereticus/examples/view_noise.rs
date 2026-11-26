@@ -80,7 +80,14 @@ fn main() {
             let (mut il, mut high, mut pairs) = (Counts::default(), Counts::default(), 0);
             for pair in diff.matched.iter().filter(|pair| pair.changed != Changed::No) {
                 let lines = |view| {
-                    instruction_diff_in(view, Some(&paired), &before, pair.before, &after, pair.after)
+                    instruction_diff_in(
+                        view,
+                        Some(&paired),
+                        &before,
+                        pair.before,
+                        &after,
+                        pair.after,
+                    )
                 };
                 il.add(Counts::of(&lines(View::Il)));
                 high.add(Counts::of(&lines(View::Hil)));
