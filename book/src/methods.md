@@ -310,9 +310,15 @@ Windows, which passes the first arguments in `rcx`, `rdx`, `r8` and
 `r9`. cdecl passes each argument on the
 stack: a place above the stack pointer at the entry shows as `arg1`,
 `arg2` and so on, and the pushes and stores before a call fold into it
-as its arguments. GCC can pass the arguments of a local function in
-registers on 32-bit x86, so such a call shows fewer arguments than it
-takes.
+as its arguments. GCC can pass the first arguments of a local function
+in `eax`, `edx` and `ecx`; where the callee reads them before it writes
+them, the call shows them first.
+
+A return reads the result register only where the function can give a
+value back. A function gives none where it has a direct caller, no
+direct call reads its result, no code or data holds its address, as for
+a callback, and the binary does not export it. A tail call reads the
+result where its own caller can give one back.
 
 The code of a call does not say how many arguments the callee reads, so
 the count comes from one of three places, the first that knows it:

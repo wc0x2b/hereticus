@@ -15,7 +15,7 @@ mod arity;
 mod depth;
 mod hil;
 
-pub use hil::hil_statements_in;
+pub use hil::{hil_statements_in, unread_results};
 
 use std::collections::{HashMap, HashSet};
 
@@ -68,6 +68,9 @@ pub struct Context<'a> {
     /// The family of ABIs the binary keeps, which says where a call passes
     /// its arguments.
     pub abi: hereticus_arch::Abi,
+    /// The functions whose result no call reads, as [`unread_results`]
+    /// works them out, where the view knows them.
+    pub unread_results: Option<&'a HashSet<u64>>,
 }
 
 impl Context<'_> {
@@ -1775,6 +1778,7 @@ mod tests {
             functions: &[],
             paired: None,
             abi: hereticus_arch::Abi::Unix,
+            unread_results: None,
         };
         let shown = il_lines_in(&Mips32::BIG, &code, &insns, Some(context));
         assert!(shown.contains(&"call capable".to_string()), "{shown:?}");
@@ -2217,6 +2221,7 @@ mod tests {
             functions: &functions,
             paired,
             abi: hereticus_arch::Abi::Unix,
+            unread_results: None,
         };
         let arch = &hereticus_il::arch::aarch64::Aarch64;
         let named = |paired, address| context(paired).callee_at(arch, address);
@@ -2260,6 +2265,7 @@ mod tests {
             functions: &functions,
             paired: None,
             abi: hereticus_arch::Abi::Unix,
+            unread_results: None,
         };
         let (insns, _) = decode_all(arch, code, 0x1000);
         il_lines_in(arch, code, &insns, Some(context))
@@ -2292,6 +2298,7 @@ mod tests {
             functions: &[],
             paired: None,
             abi: hereticus_arch::Abi::Unix,
+            unread_results: None,
         };
         let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
         let shown = il_lines_in(&Aarch64, &code, &insns, Some(context));
@@ -2336,6 +2343,7 @@ mod tests {
             functions: &[],
             paired: None,
             abi: hereticus_arch::Abi::Unix,
+            unread_results: None,
         };
         let (insns, _) = decode_all(&Arm32, &code, u64::from(base));
         let shown = il_lines_in(&Arm32, &code, &insns, Some(context));

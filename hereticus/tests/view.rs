@@ -31,6 +31,7 @@ fn gz_error(arch: &str) -> Vec<String> {
         functions: &binary.functions,
         paired: None,
         abi: binary.abi,
+        unread_results: None,
     };
     il_lines_in(isa, &function.code, &insns, Some(context))
 }
@@ -277,4 +278,28 @@ fn a_call_to_a_stripped_function_names_its_pair(
     }
     assert!(same > 1000, "{arch}: {same} calls to a stripped function");
     assert_eq!(differ, Vec::<String>::new(), "{arch}");
+}
+
+/// Lua's `luaZ_init` returns nothing, and `luaZ_fill` an `int`: no call of
+/// the first reads its result, and a call of the second does. `lua_dump`
+/// gives back what `luaU_dump` gives back, through a tail call, and a
+/// table of the data holds `luaB_cocreate`, for a call through a pointer.
+/// No export is one, as another binary can read its result.
+#[rstest]
+fn a_function_whose_result_no_call_reads_returns_nothing(
+    #[values("arm", "aarch64", "mips", "x86_64")] arch: &str,
+) {
+    let binary = library("lua", "after", arch);
+    let unread = hereticus::view::unread_results(&binary);
+    let address = |name: &str| {
+        binary.functions.iter().find(|function| function.name == name).expect(name).address
+    };
+    assert!(unread.contains(&address("luaZ_init")), "{arch}: luaZ_init returns nothing");
+    for name in ["luaZ_fill", "luaU_dump", "luaB_cocreate"] {
+        assert!(!unread.contains(&address(name)), "{arch}: {name} gives back a result");
+    }
+    // Code of another binary can call an export of the library and read
+    // its result.
+    assert!(binary.exported.contains(&address("lua_gettop")), "{arch}: the library exports");
+    assert!(binary.exported.iter().all(|export| !unread.contains(export)), "{arch}");
 }

@@ -128,6 +128,15 @@ impl From<Arity> for Takes {
 /// of arguments: a larger one costs more than the count is worth.
 const MOST_READ_OF_A_CALLEE: usize = 4096;
 
+/// Whether a function gives back a value in the result register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Returns {
+    /// It can: each return reads the result register.
+    Value,
+    /// No call of it reads one, so a return reads nothing.
+    Nothing,
+}
+
 /// What the liveness of a body takes an unknown read to be: an
 /// instruction that does not lift, a call that shows no arguments, or a
 /// jump out of the function.
@@ -160,7 +169,13 @@ pub fn hil_statements_in(
     };
     let folds = folds(arch, insns);
     let printed = instruction_lines(arch, code, insns, context);
-    let body = Body::new(arch, convention, insns, &printed);
+    let mut body = Body::new(arch, convention, insns, &printed);
+    let returns_nothing = context
+        .and_then(|context| context.unread_results)
+        .is_some_and(|unread| unread.contains(&insns[0].address));
+    if returns_nothing {
+        body.returns = Returns::Nothing;
+    }
     let lines: Vec<String> =
         printed.iter().enumerate().map(|(index, line)| body.rename(index, line)).collect();
     let mut hidden = body.upkeep.clone();
@@ -802,6 +817,8 @@ struct Body<'a> {
     save_slots: HashMap<i64, Reg>,
     /// What the liveness takes an unknown read to be.
     unknown: Unknown,
+    /// Whether a return reads the result register.
+    returns: Returns,
     /// The register each name of an operand names.
     registers: HashMap<String, Reg>,
     /// The functions whose addresses the code loads, by name.
@@ -894,6 +911,7 @@ impl<'a> Body<'a> {
             upkeep: Vec::new(),
             save_slots: HashMap::new(),
             unknown: Unknown::ReadsArguments,
+            returns: Returns::Value,
             registers,
             callees,
             callee_loads,
@@ -1671,7 +1689,10 @@ impl<'a> Body<'a> {
         match self.insns[index].kind {
             InsnKind::Call { .. } if self.has_slots(index) => (RegSet::EMPTY, RegSet::EMPTY),
             InsnKind::Call { .. } => call(index),
-            InsnKind::Return => (own().0.union(result), RegSet::EMPTY),
+            InsnKind::Return => match self.returns {
+                Returns::Value => (own().0.union(result), RegSet::EMPTY),
+                Returns::Nothing => (own().0, RegSet::EMPTY),
+            },
             // A jump out of the function is a call that returns for it.
             InsnKind::Jump { .. } if self.next[index].is_empty() => {
                 (own().0.union(all_arguments).union(result), RegSet::EMPTY)
@@ -2063,6 +2084,184 @@ impl<'b, 'a> Block<'b, 'a> {
         }
         arguments
     }
+}
+
+/// The most instructions after a call that [`unread_results`] follows on
+/// each path for a read of the result.
+const MOST_FOLLOWED: usize = 32;
+
+/// The addresses of the functions of `binary` whose result no direct call
+/// reads: on each path after each call, the code writes the result
+/// register before it reads it, within [`MOST_FOLLOWED`] instructions. A
+/// return after the call reads it, as the caller can give it back, and so
+/// does a path that runs longer. A function whose address the code forms,
+/// as a callback, can give a result to a call through a pointer, so it is
+/// none of these, and nor is one that the binary exports, or that no call
+/// reaches.
+pub fn unread_results(binary: &hereticus_image::Binary) -> HashSet<u64> {
+    let addresses: HashSet<u64> =
+        binary.functions.iter().map(|function| function.address).collect();
+    let regions = binary.links.regions();
+    let memory = hereticus_recovery::arch::Memory::new(&regions);
+    let arch = binary.isa.arch();
+    let width = match arch.pointer_width() {
+        8 => hereticus_image::links::Width::Bits64,
+        _ => hereticus_image::links::Width::Bits32,
+    };
+    let order = match arch.data_order() {
+        hereticus_il::arch::ByteOrder::Little => hereticus_image::links::ByteOrder::Little,
+        hereticus_il::arch::ByteOrder::Big => hereticus_image::links::ByteOrder::Big,
+    };
+    let word_at = |address: u64| binary.links.word_at(address, width, order);
+    let mut read: HashSet<u64> = HashSet::new();
+    let mut called: HashSet<u64> = HashSet::new();
+    // The slots of the global offset table that calls go through, which
+    // hold the address of a callee but make it no callback.
+    let mut call_slots: HashSet<u64> = HashSet::new();
+    // Each tail call, by the function that makes it and its callee.
+    let mut tail_calls: Vec<(u64, u64)> = Vec::new();
+    for function in &binary.functions {
+        let arch = binary.isa_of(function).arch();
+        let Some(convention) = arch.calling_convention(binary.abi) else { continue };
+        let (insns, _) =
+            hereticus_recovery::arch::decode_all(arch, &function.code, function.address);
+        if insns.is_empty() {
+            continue;
+        }
+        // A formed address of a function makes it a callback.
+        let formed = arch.formed_addresses(&function.code, &insns, &binary.addresses, &memory);
+        read.extend(formed.iter().flatten().filter(|address| addresses.contains(address)));
+        let mut loads_of_slot: HashMap<u64, usize> = HashMap::new();
+        for &slot in formed.iter().flatten() {
+            *loads_of_slot.entry(slot).or_default() += 1;
+        }
+        let mut calls_through_slot: HashMap<u64, usize> = HashMap::new();
+        let next = successors(&insns, |insn| arch.delay_slots(insn));
+        let lifts: Vec<Option<Lifted>> = insns
+            .iter()
+            .map(|insn| hereticus_il::arch::lift_named(insn).map(|named| named.lifted))
+            .collect();
+        let result = convention.result.reg;
+        // A call that passes the result on, as `f(g())` on AArch64, reads it.
+        let passes_on = convention.arguments.iter().any(|arg| arg.reg == result)
+            || convention.stack_arguments.is_some();
+        for (index, target) in arch.call_targets(&insns) {
+            use hereticus_recovery::arch::CallTarget;
+            let target = match target {
+                Some(CallTarget::Address(address)) => Some(address),
+                // MIPS PIC calls through a slot of the global offset table,
+                // or adds an offset to the page a slot holds.
+                Some(CallTarget::Slot(slot)) => {
+                    call_slots.insert(slot);
+                    *calls_through_slot.entry(slot).or_default() += 1;
+                    word_at(slot)
+                }
+                Some(CallTarget::PageOffset { slot, offset }) => {
+                    word_at(slot).and_then(|page| page.checked_add(offset))
+                }
+                None => None,
+            };
+            let Some(target) = target.filter(|target| addresses.contains(target)) else {
+                continue;
+            };
+            called.insert(target);
+            // A jump out of the function is a tail call: the caller gives
+            // back what the callee gives back, which the fixpoint below
+            // weighs.
+            if matches!(insns[index].kind, InsnKind::Jump { .. }) {
+                tail_calls.push((function.address, target));
+                continue;
+            }
+            let last = (index + arch.delay_slots(&insns[index])).min(insns.len() - 1);
+            if result_read_after(&insns, &next, &lifts, last, result, passes_on) {
+                read.insert(target);
+            }
+        }
+        // A slot that the code loads more often than it calls through it
+        // gives the address of its function to some other use, as a
+        // callback.
+        for (slot, loads) in loads_of_slot {
+            let calls = calls_through_slot.get(&slot).copied().unwrap_or(0);
+            if calls > 0
+                && loads > calls
+                && let Some(callee) = word_at(slot)
+            {
+                read.insert(callee);
+            }
+        }
+    }
+    // A function whose address the data holds, as a table of callbacks
+    // does, can give a result to a call through a pointer.
+    read.extend(
+        binary
+            .links
+            .words(width, order)
+            .filter(|(address, _)| !call_slots.contains(address))
+            .map(|(_, value)| value)
+            .filter(|value| addresses.contains(value)),
+    );
+    // Code of another binary can call an exported function, and read its
+    // result.
+    read.extend(binary.exported.iter().copied());
+    // A tail call gives the result on to the caller of its caller, which
+    // reads it unless that caller gives back nothing in turn.
+    loop {
+        let unread: HashSet<u64> = called.difference(&read).copied().collect();
+        let before = read.len();
+        for &(caller, callee) in &tail_calls {
+            if !unread.contains(&caller) {
+                read.insert(callee);
+            }
+        }
+        if read.len() == before {
+            return unread;
+        }
+    }
+}
+
+/// Whether code after instruction `last` reads `result` before it writes
+/// it, on some path, as [`unread_results`] follows the paths.
+fn result_read_after(
+    insns: &[Insn],
+    next: &[Vec<usize>],
+    lifts: &[Option<Lifted>],
+    last: usize,
+    result: Reg,
+    passes_on: bool,
+) -> bool {
+    let mut work: Vec<(usize, usize)> = next[last].iter().map(|&at| (at, 0)).collect();
+    let mut seen: HashSet<usize> = HashSet::new();
+    while let Some((at, steps)) = work.pop() {
+        if steps >= MOST_FOLLOWED {
+            return true;
+        }
+        if !seen.insert(at) {
+            continue;
+        }
+        let Some(lifted) = &lifts[at] else { return true };
+        match insns[at].kind {
+            InsnKind::Return | InsnKind::Unknown => return true,
+            InsnKind::Jump { .. } if next[at].is_empty() => return true,
+            InsnKind::Call { .. } => {
+                if passes_on {
+                    return true;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if lifted.reads.contains(result) {
+            return true;
+        }
+        if lifted.writes.contains(result) {
+            continue;
+        }
+        if next[at].is_empty() {
+            return true;
+        }
+        work.extend(next[at].iter().map(|&successor| (successor, steps + 1)));
+    }
+    false
 }
 
 /// How many arguments the callee `name` reads: by its prototype, where the
@@ -2820,6 +3019,7 @@ mod tests {
             functions: &functions,
             paired: None,
             abi: hereticus_arch::Abi::Unix,
+            unread_results: None,
         };
         let (insns, _) = decode_all(&Aarch64, &code[..0x14], 0x1000);
         let shown: Vec<String> = hil_statements_in(&Aarch64, &code[..0x14], &insns, Some(context))
@@ -2890,6 +3090,7 @@ mod tests {
             functions: &[],
             paired: None,
             abi: hereticus_arch::Abi::Unix,
+            unread_results: None,
         };
         let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
         let shown: Vec<String> = hil_statements_in(&Aarch64, &code, &insns, Some(context))
@@ -3120,8 +3321,14 @@ mod tests {
         let code = [0x8b, 0x41, 0x10, 0xc3]; // mov eax, [rcx + 0x10]; ret
         let (insns, _) = decode_all(&X86::BITS64, &code, 0x1000);
         let (links, space) = (Links::default(), hereticus_memory::AddressSpace::default());
-        let context =
-            |abi| Context { links: &links, space: &space, functions: &[], paired: None, abi };
+        let context = |abi| Context {
+            links: &links,
+            space: &space,
+            functions: &[],
+            paired: None,
+            abi,
+            unread_results: None,
+        };
         let shown = |abi| -> Vec<String> {
             hil_statements_in(&X86::BITS64, &code, &insns, Some(context(abi)))
                 .into_iter()
@@ -3162,6 +3369,7 @@ mod tests {
             functions: &functions,
             paired: None,
             abi: hereticus_arch::Abi::Unix,
+            unread_results: None,
         };
         let (insns, _) = decode_all(&X86::BITS32, &code[..0x15], 0x1000);
         let shown: Vec<String> =
@@ -3199,6 +3407,29 @@ mod tests {
         let body = Body::new(&X86::BITS32, convention, &insns, &printed);
         // After the add, the place holds no copy of what `eax` held.
         assert_ne!(body.holding[3].get(&Place::Slot(-8)), body.holding[1].reg(Reg::General(0)));
+    }
+
+    /// The code after a call reads its result where it reads the result
+    /// register before it writes it, on some path, or returns.
+    #[test]
+    fn a_result_is_read_where_a_path_reads_it_first() {
+        let read_after = |words: &[u32]| {
+            let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+            let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
+            let next = successors(&insns, |_| 0);
+            let lifts: Vec<Option<Lifted>> = insns
+                .iter()
+                .map(|insn| hereticus_il::arch::lift_named(insn).map(|named| named.lifted))
+                .collect();
+            result_read_after(&insns, &next, &lifts, 0, Reg::General(0), true)
+        };
+        let call = 0x9400_0040; // bl $+0x100
+        assert!(!read_after(&[call, 0x5280_0020, 0x9400_0040]), "w0 = 1 writes it first");
+        assert!(read_after(&[call, 0x1100_0401]), "add w1, w0, #1 reads it");
+        assert!(read_after(&[call, 0xd65f_03c0]), "a return gives it back");
+        assert!(read_after(&[call, 0x9400_0040]), "the next call can take it as x0");
+        // cbz w1 to a read of w0 on one path, and a write on the other.
+        assert!(read_after(&[call, 0x3400_0041, 0x5280_0020, 0x1100_0401]));
     }
 
     /// A call to a function that never returns gives nothing back.

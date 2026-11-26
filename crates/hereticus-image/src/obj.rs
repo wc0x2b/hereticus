@@ -352,6 +352,28 @@ pub struct VirtualSlot<'a> {
 /// information. More than any class holds, and far less than an address.
 const FARTHEST_BASE: u64 = 1 << 24;
 
+/// The addresses of the functions `file` exports: its defined global
+/// dynamic symbols of code, and the exports of a PE file. Bit 0 of a T32
+/// address is left out, as a function holds it.
+fn exported_functions(file: &object::File<'_>) -> BTreeSet<u64> {
+    use object::{Object, ObjectSymbol};
+    let symbols = file
+        .dynamic_symbols()
+        .filter(|symbol| {
+            symbol.is_definition()
+                && symbol.is_global()
+                && symbol.kind() == object::SymbolKind::Text
+        })
+        .map(|symbol| symbol.address());
+    let exports = file.exports().into_iter().flatten().filter_map(Result::ok).filter_map(
+        |export| match export.target() {
+            object::ExportTarget::Address { address } => Some(address),
+            _ => None,
+        },
+    );
+    symbols.chain(exports).flat_map(|address| [address, address & !1]).collect()
+}
+
 /// The family of ABIs that a binary of `format` keeps.
 fn abi_of(format: object::BinaryFormat) -> hereticus_arch::Abi {
     match format {
@@ -381,6 +403,12 @@ pub struct Binary {
     pub links: Links,
     /// The family of ABIs the binary keeps, which its format tells.
     pub abi: hereticus_arch::Abi,
+    /// The addresses of the functions whose result no call reads, which a
+    /// view works out once, where it needs them.
+    pub unread_results: std::sync::OnceLock<std::collections::HashSet<u64>>,
+    /// The addresses of the functions the binary exports, which code of
+    /// other binaries can call.
+    pub exported: BTreeSet<u64>,
     /// The addresses of the functions in [`Isa::other_set`] of `isa`.
     ///
     /// An ARM library can mix A32 and Thumb-2 functions, and bit 0 of each
@@ -594,6 +622,8 @@ impl Binary {
                 links: Links::of_object(&file),
                 other_set: BTreeSet::new(),
                 abi: abi_of(file.format()),
+                unread_results: std::sync::OnceLock::new(),
+                exported: exported_functions(&file),
             });
         }
 
@@ -660,6 +690,8 @@ impl Binary {
                 links,
                 other_set,
                 abi: abi_of(file.format()),
+                unread_results: std::sync::OnceLock::new(),
+                exported: exported_functions(&file),
             });
         }
 
@@ -737,6 +769,8 @@ impl Binary {
             links,
             other_set,
             abi: abi_of(file.format()),
+            unread_results: std::sync::OnceLock::new(),
+            exported: exported_functions(&file),
         })
     }
 
@@ -819,6 +853,8 @@ impl Binary {
             links: Links::of_module(file, &bases),
             other_set: BTreeSet::new(),
             abi: abi_of(file.format()),
+            unread_results: std::sync::OnceLock::new(),
+            exported: exported_functions(file),
         })
     }
 
@@ -977,6 +1013,8 @@ impl Binary {
             links,
             other_set,
             abi: abi_of(file.format()),
+            unread_results: std::sync::OnceLock::new(),
+            exported: exported_functions(file),
         })
     }
 
@@ -1052,6 +1090,8 @@ impl Binary {
             addresses,
             links,
             abi: hereticus_arch::Abi::Unix,
+            unread_results: std::sync::OnceLock::new(),
+            exported: BTreeSet::new(),
             other_set,
         })
     }
@@ -1700,6 +1740,8 @@ mod tests {
             links: Links::of_parts(memory, BTreeMap::new()),
             other_set: BTreeSet::new(),
             abi: hereticus_arch::Abi::Unix,
+            unread_results: std::sync::OnceLock::new(),
+            exported: BTreeSet::new(),
         };
         assert_eq!(
             binary.function_tables(),
@@ -1744,6 +1786,8 @@ mod tests {
             links: Links::of_parts(memory, BTreeMap::new()),
             other_set: BTreeSet::new(),
             abi: hereticus_arch::Abi::Unix,
+            unread_results: std::sync::OnceLock::new(),
+            exported: BTreeSet::new(),
         };
         let row = |text, slots| RowText { text, slots };
         assert_eq!(
@@ -1799,6 +1843,8 @@ mod tests {
             links: Links::of_parts(memory, BTreeMap::new()),
             other_set: BTreeSet::new(),
             abi: hereticus_arch::Abi::Unix,
+            unread_results: std::sync::OnceLock::new(),
+            exported: BTreeSet::new(),
         };
         let slot = |class, slot, length| VirtualSlot { class, slot, length };
         assert_eq!(
