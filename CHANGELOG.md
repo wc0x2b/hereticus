@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ebx = ebx + ebx` and now reads as `ebx = ebx + 1`. A `mul` or `imul`
   of one operand, which multiplies `eax` into `edx:eax`, shows as the
   instruction, where it read as the operand times itself.
+- A branch of the IL names the values of its compare only where no
+  instruction between the two writes a register that the compare read.
+  `cmp w0, #1; mov w0, #-1; b.gt` read as `if (w0 > 1)`, which tests the
+  new `w0`, and now reads as `if (flags.SignedGreater)`.
 
 ## [0.8.0](https://github.com/wc0x2b/hereticus/compare/v0.7.2...v0.8.0) - 2026-11-22
 

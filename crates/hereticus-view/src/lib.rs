@@ -27,7 +27,7 @@ use hereticus_il::arch::mips16::Op as Mips16Op;
 use hereticus_il::arch::mips32::Op as Mips32Op;
 use hereticus_il::arch::neon::NeonOperation;
 use hereticus_il::arch::{Insn, aarch64, is_branch_target};
-use hereticus_il::{AccessKind, Comparison, Cond, Lifted, Named, Op, Operand, Reg, Test};
+use hereticus_il::{AccessKind, Comparison, Cond, Lifted, Named, Op, Operand, Reg, RegSet, Test};
 use hereticus_image::Links;
 use hereticus_memory::{AddressSpace, Function};
 use rabbitizer::opcodes::Opcode as MipsOpcode;
@@ -321,6 +321,11 @@ fn instruction_lines(
             // leaves out.
             let shown: Vec<&str> =
                 tokens.iter().copied().filter(|token| !token.is_empty()).collect();
+            if last_compare.as_ref().is_some_and(|compared| {
+                compared.is_changed_by(insn, named.map(|named| &named.lifted))
+            }) {
+                last_compare = None;
+            }
             if let Some(named) = named {
                 forget_overwritten_flags(insn, &named.lifted, &shown, carry, &mut last_compare);
             }
@@ -811,6 +816,25 @@ struct Compared {
     left: String,
     right: String,
     kind: CompareKind,
+    /// The registers that `left` and `right` name. A write of one between
+    /// the compare and its branch makes the names false, though the flags
+    /// stay.
+    reads: RegSet,
+    /// Whether the compare reads memory, which a store can change.
+    loads: bool,
+}
+
+impl Compared {
+    /// Whether `lifted` changes a value that the compare names.
+    fn is_changed_by(&self, insn: &Insn, lifted: Option<&Lifted>) -> bool {
+        let Some(lifted) = lifted else { return true };
+        let stores = lifted
+            .memory
+            .is_some_and(|access| matches!(access.kind, AccessKind::Store | AccessKind::LoadStore));
+        matches!(insn.kind, hereticus_il::arch::InsnKind::Call { .. })
+            || !lifted.writes.intersection(self.reads).is_empty()
+            || (self.loads && stores)
+    }
 }
 
 /// Which condition on the flags reads a carry out of a sum: the order of
@@ -909,6 +933,8 @@ fn forget_overwritten_flags(
             left: (*dest).to_string(),
             right: "0".to_string(),
             kind: CompareKind::Result(result_of),
+            reads: lifted.writes.difference(RegSet::from_iter([Reg::Flags])),
+            loads: lifted.memory.is_some(),
         }),
         _ => None,
     };
@@ -1569,7 +1595,13 @@ fn statement(
                         format!("flags = compare({left}, {right})")
                     }
                 };
-                *last_compare = Some(Compared { left: left.clone(), right: right.clone(), kind });
+                *last_compare = Some(Compared {
+                    left: left.clone(),
+                    right: right.clone(),
+                    kind,
+                    reads: canonical.reads.difference(RegSet::from_iter([Reg::Flags])),
+                    loads: canonical.memory.is_some(),
+                });
                 text
             }
             Some(Test::SetOnCompare { cond, .. }) => {
@@ -1670,6 +1702,32 @@ mod tests {
         assert_eq!(constant_text(u64::MAX), "-0x1");
         assert_eq!(constant_text(0xffff_fffc), "-0x4", "in a 32-bit register");
         assert_eq!(constant_text(0x8000_0000), "0x80000000");
+    }
+
+    /// A write of a register that a compare read, between the compare and
+    /// its branch, leaves the branch on the flags: the register no longer
+    /// holds the value compared.
+    #[test]
+    fn a_branch_after_a_write_of_a_compared_register_tests_the_flags() {
+        let shown = lines(&[
+            0x7100_041f, // cmp w0, #1
+            0x1280_0000, // mov w0, #-1
+            0x5400_012c, // b.gt $+0x24
+        ]);
+        assert_eq!(shown[2], "if (flags.SignedGreater) goto $+0x24");
+        let shown = lines(&[
+            0x7100_0400, // subs w0, w0, #1
+            0x2a05_03e0, // mov w0, w5
+            0x5400_0040, // b.eq $+0x8
+        ]);
+        assert_eq!(shown[2], "if (flags.Equal) goto $+0x8");
+        // A write of another register keeps the test.
+        let shown = lines(&[
+            0x7100_041f, // cmp w0, #1
+            0x1280_0001, // mov w1, #-1
+            0x5400_012c, // b.gt $+0x24
+        ]);
+        assert_eq!(shown[2], "if (w0 > 1) goto $+0x24");
     }
 
     #[test]

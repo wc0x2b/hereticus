@@ -112,6 +112,11 @@ impl RegSet {
         Self(self.0 | other.0)
     }
 
+    /// The registers in both this set and `other`.
+    pub fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
     /// The registers in this set and not in `other`.
     pub fn difference(self, other: Self) -> Self {
         Self(self.0 & !other.0)
@@ -1133,8 +1138,9 @@ mod tests {
         assert_eq!(RegSet::EMPTY.iter().next(), None);
     }
 
-    /// A union holds each register of either set, and a difference each
-    /// register of the first set that the second does not hold.
+    /// A union holds each register of either set, an intersection each
+    /// register of both, and a difference each register of the first set
+    /// that the second does not hold.
     #[test]
     fn a_union_and_a_difference_hold_what_their_sets_say() {
         bolero::check!().with_type::<([u64; 2], [u64; 2])>().for_each(|&(left, right)| {
@@ -1143,6 +1149,7 @@ mod tests {
             for reg in (0..128).map(Reg::of_bit) {
                 let (in_left, in_right) = (left.contains(reg), right.contains(reg));
                 assert_eq!(left.union(right).contains(reg), in_left || in_right);
+                assert_eq!(left.intersection(right).contains(reg), in_left && in_right);
                 assert_eq!(left.difference(right).contains(reg), in_left && !in_right);
             }
         });
