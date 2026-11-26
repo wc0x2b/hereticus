@@ -71,6 +71,7 @@ impl Arch for Aarch64 {
             result: NamedReg::new(Reg::General(0), "x0"),
             stack: Reg::Stack,
             preserved: &[19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
+            stack_arguments: None,
         };
         Some(AAPCS64)
     }

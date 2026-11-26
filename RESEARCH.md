@@ -3282,3 +3282,18 @@ A32, AArch64 and MIPS alike. A call whose callee has no known count of
 arguments counts as one that reads each argument register, so that no
 setting of one folds away before it; that cost 0.8 points of the 16.8%
 fewer lines that differ on the backports.
+
+Three gaps then took the most out. The diff took `var_1c` and `var_20`
+for two lines, where it takes `[sp + 0x1c]` and `[sp + 0x20]` of the IL
+for one: the distance now leaves the key. T32 lost its stack after each
+`push`, and a function with a switch after each word of its table that
+seemed to run. And 32-bit x86 had no ABI in the high IL; cdecl now names
+its arguments on the stack, folds the pushes before a call into it, and
+reads `[ebp - 8]` as the place 8 below `ebp`, where the lift held the
+distance as `0xfffffff8`. Over zlib at `-O2` on i686, the high IL then
+named 735 places on the stack and left 30 unnamed, from 871 unnamed.
+
+| Set | Lines, high IL | Differ, high IL | Fewer lines than the IL | Fewer that differ |
+|---|---|---|---|---|
+| The backports | 201,003 | 42,487 | 25.3% | 21.3% |
+| Assemblage | 2,566,965 | 533,066 | 34.5% | 26.1% |

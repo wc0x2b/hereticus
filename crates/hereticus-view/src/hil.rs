@@ -99,6 +99,9 @@ impl Registers for Holding {
 /// The most instructions a call looks back over for its arguments.
 const MOST_LOOKED_BACK: usize = 64;
 
+/// The most arguments on the stack that a call shows.
+const MOST_STACK_ARGUMENTS: usize = 12;
+
 /// The most instructions of a callee that the high IL reads for its count
 /// of arguments: a larger one costs more than the count is worth.
 const MOST_READ_OF_A_CALLEE: usize = 4096;
@@ -150,7 +153,11 @@ pub fn hil_statements_in(
             .entry(site.callee.clone())
             .or_insert_with(|| arity_of(arch, convention, context, &site.callee));
         if let Some(arity) = arity {
-            site.count = arity.shown(site.count, convention.arguments.len());
+            let most = match convention.stack_arguments {
+                Some(_) => MOST_STACK_ARGUMENTS,
+                None => convention.arguments.len(),
+            };
+            site.count = arity.shown(site.count, most);
             site.counted = Counted::ByCallee;
         }
     }
@@ -168,7 +175,7 @@ pub fn hil_statements_in(
     let mut texts: Vec<Option<String>> = (0..insns.len())
         .map(|index| match (&folds[index], by_index.get(&index)) {
             (Fold::Hidden, _) => None,
-            _ if hidden[index] => None,
+            _ if hidden[index] || does_nothing(&lines[index]) => None,
             (Fold::GlobalPointer(register), _) => Some(format!("{register} = _gp")),
             (Fold::Own, Some(call)) => Some(call.text()),
             (Fold::Own, None) => Some(lines[index].clone()),
@@ -380,9 +387,9 @@ impl Values<'_, '_> {
         let own = self.lifted(index).map_or(RegSet::ALL, |lifted| lifted.reads);
         match self.calls.get(&index) {
             Some(call) => {
-                let count = call.arguments.len();
-                let arguments: RegSet =
-                    self.body.convention.arguments[..count].iter().map(|arg| arg.reg).collect();
+                let registers = &self.body.convention.arguments;
+                let count = call.arguments.len().min(registers.len());
+                let arguments: RegSet = registers[..count].iter().map(|arg| arg.reg).collect();
                 own.union(arguments)
             }
             None => own,
@@ -493,6 +500,12 @@ impl Values<'_, '_> {
         let folded = simplified(&replace_read_once(text, &name, &operand)?);
         (folded.len() <= LONGEST_FOLDED).then_some((user, folded))
     }
+}
+
+/// Whether the statement `text` leaves each register as it was, as
+/// `esi = &[esi]`, which x86 code pads with.
+fn does_nothing(text: &str) -> bool {
+    text.split_once(" = &[").is_some_and(|(dest, rest)| rest.strip_suffix(']') == Some(dest))
 }
 
 /// Whether the branch `text` names what it tests, as `if (r1 == 2) goto`,
@@ -898,11 +911,18 @@ impl<'a> Body<'a> {
             .map(|(n, arg)| (arg.reg, Held::Argument(n + 1)));
         // A later entry takes the place of an earlier one: the result
         // register can be the first argument too.
-        let entry = own
+        let mut entry: Holding = own
             .chain(arguments)
             .chain([(convention.stack, Held::Stack(0))])
             .map(|(reg, held)| (Place::Reg(reg), held))
             .collect();
+        // An ABI that passes the arguments on the stack holds each in its
+        // place there.
+        if let Some(stack) = convention.stack_arguments {
+            entry.extend((0..MOST_STACK_ARGUMENTS).map(|n| {
+                (Place::Slot(stack.first + n as i64 * stack.width), Held::Argument(n + 1))
+            }));
+        }
         Some(entry)
     }
 
@@ -978,7 +998,7 @@ impl<'a> Body<'a> {
             let Some(&Held::Stack(at)) = holding.reg(base) else { continue };
             let moved = match update {
                 Update::None => None,
-                Update::Before => offset,
+                Update::Before => Some(displacement(offset)),
                 Update::After => write_back.and_then(parse_constant),
             };
             if let Some(moved) = moved {
@@ -996,12 +1016,16 @@ impl<'a> Body<'a> {
             [Operand::RegisterList(list)] if lifted.writes.contains(stack) => {
                 crate::list_offsets(&self.insns[index], &lifted, list.len()).map(|(_, moved)| moved)
             }
-            // An x86 `push` or `pop` names its value alone.
-            [Operand::Reg(_)] if lifted.writes.contains(stack) => {
-                lifted.memory.map(|access| match access.kind {
-                    AccessKind::Store => -self.width(&lifted),
-                    _ => self.width(&lifted),
-                })
+            // An x86 `push` or `pop` names its value alone, as a register,
+            // a constant, or a place in memory.
+            [Operand::Reg(_) | Operand::Const(_) | Operand::Memory { .. }]
+                if lifted.writes.contains(stack) =>
+            {
+                match lifted.op {
+                    Op::Store => Some(-self.width(&lifted)),
+                    Op::Load => Some(self.width(&lifted)),
+                    _ => None,
+                }
             }
             _ => None,
         };
@@ -1068,11 +1092,11 @@ impl<'a> Body<'a> {
                 continue;
             };
             let Some(&Held::Stack(at)) = holding.reg(base) else { continue };
-            let at = if update == Update::After { at } else { at + offset.unwrap_or(0) };
+            let at = if update == Update::After { at } else { at + displacement(offset) };
             if !name.is_empty()
                 && let Some(start) = text.find(name.as_str())
             {
-                text.replace_range(start..start + name.len(), &slot_name(at));
+                text.replace_range(start..start + name.len(), &self.place_name(at));
             }
         }
         if let Some(lifted) = self.canonical(index)
@@ -1082,10 +1106,17 @@ impl<'a> Body<'a> {
             && let Some(name) = named.names.first()
             && text.starts_with(&format!("{name} = "))
         {
-            text = format!("{name} = &{}", slot_name(at));
+            text = format!("{name} = &{}", self.place_name(at));
         }
         let text = plain_slot_access(&text);
-        rename_registers(&text, |word| {
+        self.renamed(index, &text)
+    }
+
+    /// `text` with each register named for its role before instruction
+    /// `index`, as `arg1` or `ret`.
+    fn renamed(&self, index: usize, text: &str) -> String {
+        let holding = &self.holding[index];
+        rename_registers(text, |word| {
             let reg = self.registers.get(word)?;
             match holding.reg(*reg)? {
                 Held::Argument(n) => Some(format!("arg{n}")),
@@ -1215,7 +1246,7 @@ impl<'a> Body<'a> {
         {
             ([Operand::Memory { base: Some(base), offset, index: None, update }], operands) => {
                 let at = at_of(*base)?;
-                let start = if *update == Update::After { at } else { at + offset.unwrap_or(0) };
+                let start = if *update == Update::After { at } else { at + displacement(*offset) };
                 let values = operands
                     .iter()
                     .filter_map(|operand| match operand {
@@ -1320,7 +1351,10 @@ impl<'a> Body<'a> {
             count: 0,
             counted: Counted::ByCaller,
         };
-        site.count = self.argument_count(&site);
+        site.count = match self.convention.stack_arguments {
+            Some(_) => self.stack_argument_count(&site),
+            None => self.argument_count(&site),
+        };
         Some(site)
     }
 
@@ -1456,7 +1490,8 @@ impl<'a> Body<'a> {
                     (Counted::ByCaller, Unknown::ReadsArguments) => self.convention.arguments.len(),
                     _ => site.count,
                 };
-                let read = self.convention.arguments[..count].iter().map(|arg| arg.reg);
+                let registers = &self.convention.arguments;
+                let read = registers[..count.min(registers.len())].iter().map(|arg| arg.reg);
                 (site.index, read.collect())
             })
             .collect();
@@ -1490,13 +1525,110 @@ impl<'a> Body<'a> {
         crate::a32_condition(&self.insns[index], None).is_some()
     }
 
+    /// The name of the place on the stack `at` bytes from the stack pointer
+    /// at the entry: an argument where the ABI passes one there, as `arg1`,
+    /// or else as [`slot_name`] names it.
+    fn place_name(&self, at: i64) -> String {
+        match self.convention.stack_arguments {
+            Some(stack) if at >= stack.first && (at - stack.first) % stack.width == 0 => {
+                format!("arg{}", (at - stack.first) / stack.width + 1)
+            }
+            _ => slot_name(at),
+        }
+    }
+
+    /// The place on the stack that instruction `index` stores one value to,
+    /// and the value, as `push esi` and `store.32 [esp + 0x8] = 3` do.
+    fn stack_store(&self, index: usize) -> Option<(i64, String)> {
+        let named = self.lifts[index].as_ref()?;
+        let lifted = &named.lifted;
+        // A push of a place in memory loads and stores at once.
+        if lifted.memory?.kind == AccessKind::Load {
+            return None;
+        }
+        let holding = &self.holding[index];
+        let stack = self.convention.stack;
+        let at_of = |reg: Reg| match holding.reg(reg) {
+            Some(&Held::Stack(at)) => Some(at),
+            _ => None,
+        };
+        let (at, value) = match lifted.operands.as_slice() {
+            // A push stores below the stack pointer, and moves it there.
+            [value @ (Operand::Reg(_) | Operand::Const(_) | Operand::Memory { .. })]
+                if lifted.writes.contains(stack) && lifted.op == Op::Store =>
+            {
+                (at_of(stack)? - self.width(lifted), (value, named.names.first()?))
+            }
+            [
+                Operand::Memory { base: Some(base), offset, index: None, update: Update::None },
+                value,
+            ] if matches!(value, Operand::Reg(_) | Operand::Const(_)) => {
+                (at_of(*base)? + displacement(*offset), (value, named.names.get(1)?))
+            }
+            _ => return None,
+        };
+        let shown = match value {
+            (Operand::Reg(reg), name) => self.held_name(index, *reg, name),
+            // A push of a place in memory passes what the place holds.
+            (Operand::Memory { base: Some(base), offset, index: None, .. }, _)
+                if matches!(holding.reg(*base), Some(Held::Stack(_))) =>
+            {
+                let Some(&Held::Stack(base_at)) = holding.reg(*base) else { return None };
+                self.place_name(base_at + displacement(*offset))
+            }
+            (Operand::Memory { .. }, name) => {
+                let bits = self.width(lifted) * 8;
+                format!("load.{bits} {}", self.renamed(index, name))
+            }
+            (_, name) => name.to_string(),
+        };
+        Some((at, shown))
+    }
+
+    /// The argument that the store at `index` sets for a call at whose entry
+    /// the stack pointer holds `at_call`, counted from 0.
+    fn stack_argument_of(&self, index: usize, at_call: i64) -> Option<(usize, String)> {
+        let stack = self.convention.stack_arguments?;
+        // A save of a register is no argument.
+        if self.upkeep.get(index).copied().unwrap_or(false) {
+            return None;
+        }
+        let (at, value) = self.stack_store(index)?;
+        let distance = at - at_call;
+        let argument = (distance >= 0 && distance % stack.width == 0)
+            .then(|| (distance / stack.width) as usize)
+            .filter(|&argument| argument < MOST_STACK_ARGUMENTS)?;
+        Some((argument, value))
+    }
+
+    /// What the stack pointer holds at the call at `index`.
+    fn stack_at(&self, index: usize) -> Option<i64> {
+        match self.holding[index].reg(self.convention.stack) {
+            Some(&Held::Stack(at)) => Some(at),
+            _ => None,
+        }
+    }
+
+    /// How many arguments on the stack the code before the call of `site`
+    /// sets, each from the first, with none left out.
+    fn stack_argument_count(&self, site: &CallSite) -> usize {
+        let Some(at_call) = self.stack_at(site.index) else { return 0 };
+        let mut set = [false; MOST_STACK_ARGUMENTS];
+        for &index in site.order.iter().filter(|&&index| index < site.index) {
+            if let Some((argument, _)) = self.stack_argument_of(index, at_call) {
+                set[argument] = true;
+            }
+        }
+        set.iter().take_while(|&&set| set).count()
+    }
+
     /// The name that argument `reg` shows as where the code before the call
     /// at `index` does not set it, by what it holds there.
     fn held_name(&self, index: usize, reg: Reg, name: &str) -> String {
         match self.holding[index].reg(reg) {
             Some(Held::Argument(n)) => format!("arg{n}"),
             Some(Held::Result) => "ret".to_string(),
-            Some(Held::Stack(at)) => format!("&{}", slot_name(*at)),
+            Some(Held::Stack(at)) => format!("&{}", self.place_name(*at)),
             Some(Held::Callee(callee)) => format!("&{}", self.callees[*callee]),
             Some(Held::Entry(_)) | None => name.to_string(),
         }
@@ -1655,6 +1787,13 @@ impl<'b, 'a> Block<'b, 'a> {
                 }
             }
         }
+        if body.convention.stack_arguments.is_some() {
+            let arguments = self.stack_arguments();
+            let gives = body.live_after(live, self.site.last).contains(body.convention.result.reg);
+            let mut hidden: Vec<usize> = self.hidden.into_iter().collect();
+            hidden.sort_unstable();
+            return Call { index, last: self.site.last, callee, arguments, hidden, gives };
+        }
         let mut arguments = Vec::with_capacity(self.site.count);
         for arg in &body.convention.arguments[..self.site.count] {
             let setting = self.last_setting(arg.reg, end).filter(|_| !targets.contains(arg.reg));
@@ -1741,6 +1880,29 @@ fn arity_of_code(
         .iter()
         .rposition(|arg| read.contains(arg.reg))
         .map_or(0, |position| position + 1);
+    // An ABI that passes the arguments on the stack: the callee reads them
+    // from the places above the stack pointer at its entry.
+    if let Some(stack) = convention.stack_arguments {
+        let read = (0..insns.len())
+            .filter_map(|index| {
+                let lifted = body.canonical(index)?;
+                if lifted.memory?.kind != AccessKind::Load {
+                    return None;
+                }
+                body.stack_places(index, &lifted, &body.holding[index])
+            })
+            .flatten()
+            .filter(|&(at, _)| at >= stack.first && (at - stack.first) % stack.width == 0)
+            .map(|(at, _)| ((at - stack.first) / stack.width) as usize + 1)
+            .max()
+            .unwrap_or(0)
+            .min(MOST_STACK_ARGUMENTS);
+        let jumps_out = insns
+            .iter()
+            .zip(&body.next)
+            .any(|(insn, next)| matches!(insn.kind, InsnKind::Jump { .. }) && next.is_empty());
+        return Some(if jumps_out { Arity::AtLeast(read) } else { Arity::Exact(read) });
+    }
     if let Some(fixed) = body.variadic_from() {
         return Some(Arity::AtLeast(fixed));
     }
@@ -1749,6 +1911,47 @@ fn arity_of_code(
         .zip(&body.next)
         .any(|(insn, next)| matches!(insn.kind, InsnKind::Jump { .. }) && next.is_empty());
     Some(if jumps_out { Arity::AtLeast(count) } else { Arity::Exact(count) })
+}
+
+impl Block<'_, '_> {
+    /// The arguments of a call that the ABI passes on the stack: each the
+    /// value the code before the call stores where the argument sits, which
+    /// folds into the call, or else the place, by its name.
+    fn stack_arguments(&mut self) -> Vec<String> {
+        let body = self.body;
+        let index = self.site.index;
+        let Some(stack) = body.convention.stack_arguments else { return Vec::new() };
+        let Some(at_call) = body.stack_at(index) else { return Vec::new() };
+        let before: Vec<usize> = self.site.order.iter().copied().filter(|&at| at < index).collect();
+        (0..self.site.count)
+            .map(|argument| {
+                let place = at_call + argument as i64 * stack.width;
+                let setting = before.iter().rposition(|&at| {
+                    body.stack_argument_of(at, at_call).is_some_and(|(set, _)| set == argument)
+                });
+                let Some(position) = setting else { return body.place_name(place) };
+                let setter = before[position];
+                let Some((_, value)) = body.stack_argument_of(setter, at_call) else {
+                    return body.place_name(place);
+                };
+                // The value folds where nothing after its store changes a
+                // register it reads.
+                let lifted = self.lifted(setter);
+                let inputs = lifted.reads.difference(RegSet::from_iter([body.convention.stack]));
+                let changed = before[position + 1..].iter().any(|&later| {
+                    self.lifted(later)
+                        .writes
+                        .iter()
+                        .any(|written| inputs.contains(written) && written != body.convention.stack)
+                });
+                if changed {
+                    return body.place_name(place);
+                }
+                self.hidden.insert(setter);
+                value
+            })
+            .collect()
+    }
 }
 
 /// Where `lifted` adds a constant to a register that holds a place on the
@@ -1763,6 +1966,14 @@ fn stack_arithmetic(lifted: &Lifted, holding: &Holding) -> Option<(Reg, i64)> {
         | (Op::Add, [Operand::Reg(dest), Operand::Const(value), Operand::Reg(source)]) => {
             (*dest, *source, signed(*value))
         }
+        // An x86 `lea` forms the address of a place.
+        (
+            Op::Add,
+            [
+                Operand::Reg(dest),
+                Operand::Memory { base: Some(source), offset, index: None, update: Update::None },
+            ],
+        ) => (*dest, *source, displacement(*offset)),
         _ => {
             let (dest, source) = copy_of(lifted)?;
             (dest, source, 0)
@@ -1942,15 +2153,27 @@ fn plain_slot_access(text: &str) -> String {
 
 /// Whether `word` names a place on the stack, as `var_1c` or `arg_10`.
 fn is_slot(word: &str) -> bool {
-    word.strip_prefix("var_")
+    let named = word
+        .strip_prefix("var_")
         .or_else(|| word.strip_prefix("arg_"))
-        .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
+        .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()));
+    // An argument that the ABI passes on the stack, as `arg1`.
+    let argument = word
+        .strip_prefix("arg")
+        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()));
+    named || argument
 }
 
 /// The name of the place on the stack `at` bytes from the stack pointer of
 /// the entry.
 fn slot_name(at: i64) -> String {
     if at < 0 { format!("var_{:x}", at.unsigned_abs()) } else { format!("arg_{at:x}") }
+}
+
+/// The displacement of a memory operand as a signed number: 32-bit x86
+/// lifts `[ebp - 8]` with `0xfffffff8`.
+fn displacement(offset: Option<i64>) -> i64 {
+    signed(offset.unwrap_or(0) as u64)
 }
 
 /// A constant of the IL as a signed number. A 32-bit architecture can hold
@@ -2462,6 +2685,13 @@ mod tests {
     }
 
     #[test]
+    fn padding_that_does_nothing_shows_no_line() {
+        assert!(does_nothing("esi = &[esi]"));
+        assert!(!does_nothing("esi = &[esi + 0x4]"));
+        assert!(!does_nothing("esi = &[edi]"));
+    }
+
+    #[test]
     fn a_branch_names_its_test_where_it_shows_the_operands() {
         assert!(names_its_test("if (r1 == 2) goto $+0x8"));
         assert!(names_its_test("if ((w0 & 0x80000000) == 0) goto $+0x10"));
@@ -2554,16 +2784,47 @@ mod tests {
         assert_eq!(shown[0], "w0 = load.32 [x0 + 0x10]");
     }
 
-    /// An architecture with no calling convention shows the IL.
+    /// 32-bit x86 passes each argument on the stack: a place above the
+    /// stack pointer at the entry is an argument, and the pushes and stores
+    /// before a call are its arguments.
     #[test]
-    fn code_with_no_calling_convention_shows_the_il() {
+    fn x86_passes_the_arguments_on_the_stack() {
         use hereticus_il::arch::x86::X86;
-        let code = [0x55, 0x89, 0xe5, 0x5d, 0xc3]; // push ebp; mov ebp, esp; pop ebp; ret
+        let code = [
+            0x55, // push ebp
+            0x89, 0xe5, // mov ebp, esp
+            0x8b, 0x45, 0x08, // mov eax, [ebp + 8]
+            0x8d, 0x55, 0xf8, // lea edx, [ebp - 8]
+            0x52, // push edx
+            0x6a, 0x10, // push 0x10
+            0x50, // push eax
+            0xe8, 0x00, 0x00, 0x00, 0x00, // call $+0x5
+            0x83, 0xc4, 0x0c, // add esp, 0xc
+            0x5d, // pop ebp
+            0xc3, // ret
+        ];
         let (insns, _) = decode_all(&X86::BITS32, &code, 0x1000);
-        assert_eq!(
-            hil_statements_in(&X86::BITS32, &code, &insns, None),
-            crate::il_statements_in(&X86::BITS32, &code, &insns, None)
-        );
+        let shown: Vec<String> = hil_statements_in(&X86::BITS32, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(shown, ["edx = &var_c", "ret = $+0x5(arg1, 0x10, &var_c)", "return"]);
+        // A push of a place in memory passes what it holds, and moves the
+        // stack as the others do.
+        let code = [
+            0x8b, 0x5c, 0x24, 0x04, // mov ebx, [esp + 4]
+            0xff, 0x73, 0x0c, // push dword ptr [ebx + 0xc]
+            0xe8, 0x00, 0x00, 0x00, 0x00, // call $+0x5
+            0x83, 0xc4, 0x04, // add esp, 4
+            0x8b, 0x44, 0x24, 0x08, // mov eax, [esp + 8]
+            0xc3, // ret
+        ];
+        let (insns, _) = decode_all(&X86::BITS32, &code, 0x1000);
+        let shown: Vec<String> = hil_statements_in(&X86::BITS32, &code, &insns, None)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(shown, ["$+0x5(load.32 [arg1 + 0xc])", "eax = arg2", "return"]);
         assert!(hil_statements_in(&Aarch64, &[], &[], None).is_empty());
     }
 
@@ -2608,7 +2869,8 @@ mod tests {
         assert_eq!(slot_name(0x10), "arg_10");
         assert_eq!(slot_name(0), "arg_0");
         assert!(is_slot("var_1c") && is_slot("arg_0"));
-        assert!(!is_slot("arg1") && !is_slot("var_") && !is_slot("var_xy"));
+        assert!(is_slot("arg1"), "an argument on the stack");
+        assert!(!is_slot("var_") && !is_slot("var_xy") && !is_slot("arg"));
     }
 
     #[test]

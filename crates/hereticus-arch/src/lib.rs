@@ -138,8 +138,8 @@ pub trait Arch: Recovery {
     /// arguments of a call in and gives its result in, which the high IL
     /// names by their roles.
     ///
-    /// Defaults to `None`, for an ABI that passes the arguments on the
-    /// stack, as 32-bit x86 does.
+    /// Defaults to `None`, for an architecture whose ABI the high IL does
+    /// not read.
     fn calling_convention(&self) -> Option<CallingConvention> {
         None
     }
@@ -175,6 +175,21 @@ pub struct CallingConvention {
     /// The numbers of the general registers that a call keeps. A call can
     /// change each other register.
     pub preserved: &'static [u8],
+    /// Where the arguments that no register holds sit on the stack, where
+    /// the ABI passes them there.
+    pub stack_arguments: Option<StackArguments>,
+}
+
+/// Where an ABI passes arguments on the stack: argument `n`, from 0, at
+/// `first + n * width` bytes from the stack pointer at the entry, and at
+/// `n * width` bytes from it at the call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StackArguments {
+    /// The distance of the first argument from the stack pointer at the
+    /// entry, past the return address.
+    pub first: i64,
+    /// The bytes of each argument.
+    pub width: i64,
 }
 
 impl CallingConvention {
@@ -251,14 +266,16 @@ mod tests {
     }
 
     /// Each ABI passes its arguments in registers that a call can change,
-    /// and keeps the stack. 32-bit x86 passes them on the stack.
+    /// or on the stack, as 32-bit x86 does, and keeps the stack.
     #[test]
     fn a_calling_convention_keeps_the_stack_and_not_the_arguments() {
         for (name, arch) in ARCHES {
-            let Some(convention) = arch.calling_convention() else {
-                assert_eq!(name, "x86", "only 32-bit x86 has no convention");
-                continue;
-            };
+            let convention = arch.calling_convention().expect("each architecture has one");
+            assert_eq!(
+                convention.arguments.is_empty(),
+                convention.stack_arguments.is_some(),
+                "{name}"
+            );
             let arguments: Vec<_> = convention.arguments.iter().map(|arg| arg.reg).collect();
             let distinct: std::collections::HashSet<_> = arguments.iter().collect();
             assert_eq!(distinct.len(), arguments.len(), "{name}");

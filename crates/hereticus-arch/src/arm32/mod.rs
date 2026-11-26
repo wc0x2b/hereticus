@@ -24,6 +24,7 @@ pub(crate) const AAPCS: CallingConvention = CallingConvention {
     result: NamedReg::new(il::Reg::General(0), "r0"),
     stack: il::Reg::Stack,
     preserved: &[4, 5, 6, 7, 8, 9, 10, 11],
+    stack_arguments: None,
 };
 
 impl Arch for Arm32 {

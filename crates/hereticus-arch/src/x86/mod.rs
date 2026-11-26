@@ -2,7 +2,7 @@
 //! frame and which constants are addresses. The rules that find functions
 //! are in [`hereticus_recovery::arch::x86`].
 
-use super::{Arch, CallingConvention, Insn, Memory, NamedReg};
+use super::{Arch, CallingConvention, Insn, Memory, NamedReg, StackArguments};
 use hereticus_il::Reg;
 use hereticus_il::arch::x86::{Mode, X86, il_register, instruction};
 use hereticus_memory::{AddressSpace, ConstantKind};
@@ -78,7 +78,7 @@ impl Arch for X86 {
     }
 
     /// The System V ABI of x86-64: `rdi`, `rsi`, `rdx`, `rcx`, `r8` and
-    /// `r9`, and `rax`. 32-bit code passes the arguments on the stack.
+    /// `r9`, and `rax`. 32-bit code passes each argument on the stack.
     fn calling_convention(&self) -> Option<CallingConvention> {
         const SYSTEM_V: CallingConvention = CallingConvention {
             arguments: &[
@@ -93,8 +93,21 @@ impl Arch for X86 {
             stack: Reg::Stack,
             // `rbx`, `rbp` and `r12` to `r15`.
             preserved: &[3, 5, 12, 13, 14, 15],
+            stack_arguments: None,
         };
-        (self.mode() == Mode::Bits64).then_some(SYSTEM_V)
+        /// cdecl: each argument on the stack, and the result in `eax`.
+        const CDECL: CallingConvention = CallingConvention {
+            arguments: &[],
+            result: NamedReg::new(Reg::General(0), "eax"),
+            stack: Reg::Stack,
+            // `ebx`, `ebp`, `esi` and `edi`.
+            preserved: &[3, 5, 6, 7],
+            stack_arguments: Some(StackArguments { first: 4, width: 4 }),
+        };
+        Some(match self.mode() {
+            Mode::Bits64 => SYSTEM_V,
+            Mode::Bits32 => CDECL,
+        })
     }
 }
 

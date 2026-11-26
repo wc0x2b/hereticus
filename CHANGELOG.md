@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where it holds the first argument of the function, and as `ret` where
   it holds what the last call gave back. A place on the stack shows as
   `var_1c`. The saves and restores of registers, the moves of the stack
-  pointer and a compare that only its branch reads do not show. `v` in
+  pointer and a compare that only its branch reads do not show. On
+  32-bit x86, the arguments that cdecl passes on the stack show as
+  `arg1` and so on, and the pushes before a call fold into it. `v` in
   the TUI and the button of the HTML report go to it too. The matching
   does not read it.
 

@@ -166,7 +166,7 @@ fn only_the_il_view_indents(
 /// the TUI and `--diff` draw its jumps from the places.
 #[rstest]
 fn the_high_il_diff_and_its_places_agree(
-    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "x86_64", "powerpc")]
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64", "powerpc")]
     arch: &str,
 ) {
     let (before, after) = (library("lua", "before", arch), library("lua", "after", arch));
