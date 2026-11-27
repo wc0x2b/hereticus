@@ -625,17 +625,6 @@ fn op_of(inst: &Instruction, alias: OpcodeAlias, test: BranchTest) -> il::Op {
     if let Some((kind, _)) = access_of(opcode) {
         return match (opcode, kind) {
             (Opcode::LWARX | Opcode::LDARX | Opcode::STWCX | Opcode::STDCX, _) => Op::Atomic,
-            // A byte-reversed access swaps the bytes it moves, which a load
-            // or store of the IL does not say.
-            (
-                Opcode::LHBRX
-                | Opcode::LWBRX
-                | Opcode::LDBRX
-                | Opcode::STHBRX
-                | Opcode::STWBRX
-                | Opcode::STDBRX,
-                _,
-            ) => Op::Other,
             (_, il::AccessKind::Load) => Op::Load,
             _ => Op::Store,
         };
@@ -696,12 +685,8 @@ fn plain_op(opcode: Opcode) -> il::Op {
     match opcode {
         ADD | ADDC | ADDI | ADDIC | ADDIS => Op::Add,
         SUBF | SUBFC | SUBFIC => Op::Subtract,
-        ADDE => Op::AddCarry,
-        SUBFE => Op::SubtractBorrow,
-        // `addze` adds the carry alone, and `addme`, `subfze` and `subfme`
-        // add it and a -1 or negate, with one source, which no form of the
-        // IL names: they read as the code prints them.
-        ADDZE | ADDME | SUBFZE | SUBFME => Op::Other,
+        ADDE | ADDZE | ADDME => Op::AddCarry,
+        SUBFE | SUBFZE | SUBFME => Op::SubtractBorrow,
         NEG => Op::Negate,
         MULLW | MULLI | MULLD | MUL => Op::Multiply,
         MULHW | MULHWU | MULHD | MULHDU => Op::MultiplyPart,
@@ -721,10 +706,7 @@ fn plain_op(opcode: Opcode) -> il::Op {
         CNTLZW | CNTLZD => Op::Bits,
         ISEL | FSEL => Op::Select,
         CMP | CMPI | CMPL | CMPLI => Op::Compare,
-        MFSPR | MTSPR | MFCR | MCRF | MCRXR | MFTB => Op::Move,
-        // A move of fields of the condition register names the fields by a
-        // mask, which is no place the IL names.
-        MFOCRF | MTCRF | MTOCRF => Op::Other,
+        MFSPR | MTSPR | MFCR | MFOCRF | MTCRF | MTOCRF | MCRF | MCRXR | MFTB => Op::Move,
         FMR => Op::Move,
         FADD | FADDS => Op::FloatAdd,
         FSUB | FSUBS => Op::FloatSubtract,
@@ -941,6 +923,36 @@ pub fn names(inst: &Instruction) -> il::Names {
         names.swap(1, 2);
     }
     names
+}
+
+/// Whether `insn` does more than the operation the IL holds for it says, so
+/// a view shows it as the code prints it:
+///
+/// - A byte-reversed access, as `lwbrx`, swaps the bytes it moves.
+/// - `addze`, `addme`, `subfze` and `subfme` add the carry to one source,
+///   and a -1 or a negate.
+/// - A move of fields of the condition register, as `mtcrf 0x20, r12`,
+///   names the fields by a mask.
+pub fn reads_as_printed(insn: &Insn) -> bool {
+    use Opcode::*;
+    decoded(insn).is_some_and(|decoded| {
+        matches!(
+            decoded.opcode,
+            LHBRX
+                | LWBRX
+                | LDBRX
+                | STHBRX
+                | STWBRX
+                | STDBRX
+                | ADDZE
+                | ADDME
+                | SUBFZE
+                | SUBFME
+                | MFOCRF
+                | MTCRF
+                | MTOCRF
+        )
+    })
 }
 
 /// The constant of an `addis`, `oris`, `andis.` or `xoris`, which works on
@@ -1480,13 +1492,15 @@ mod tests {
     /// A byte-reversed access reads as the code prints it.
     #[test]
     fn a_byte_reversed_access_reads_as_printed() {
-        assert_eq!(lift_one(0x7fe0_252c).op, Op::Other); // stwbrx r31, 0, r4
+        // stwbrx r31, 0, r4
+        assert_eq!(lift_one(0x7fe0_252c).op, Op::Store);
+        assert!(reads_as_printed(&decode_one(0x7fe0_252c)));
     }
 
     /// A move of fields of the condition register names them by a mask.
     #[test]
     fn a_move_of_condition_fields_reads_as_printed() {
-        assert_eq!(lift_one(0x7d82_0120).op, Op::Other); // mtcrf 0x20, r12
+        assert!(reads_as_printed(&decode_one(0x7d82_0120))); // mtcrf 0x20, r12
     }
 
     #[rstest]

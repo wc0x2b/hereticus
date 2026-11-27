@@ -372,6 +372,13 @@ fn instruction_lines(
                 return text;
             }
             let moves = moving.get(index).copied().unwrap_or(false);
+            // A lift the IL holds as a plainer operation than the code does, for
+            // the matching, reads as the code prints it.
+            if mips::moves_part_of_a_word(insn)
+                || hereticus_il::arch::powerpc::reads_as_printed(insn)
+            {
+                return insn.to_string();
+            }
             let shown = named.and_then(|named| {
                 let text = statement(insn, named, address, moves, &mut last_compare)?;
                 Some((named.lifted.op, text))

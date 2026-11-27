@@ -498,6 +498,16 @@ pub fn lift(inst: &Instruction) -> il::Lifted {
     il::Lifted { op, reads, writes, memory, test: test_of(inst), operands }
 }
 
+/// Whether `insn` moves a part of a word, as `lwl`, `lwr`, `swl` and `swr`
+/// do where code reads a word at an address that is not a multiple of 4.
+/// The IL holds them as loads and stores, but no load of the IL says which
+/// part.
+pub fn moves_part_of_a_word(insn: &Insn) -> bool {
+    [Opcode::core_lwl, Opcode::core_lwr, Opcode::core_swl, Opcode::core_swr]
+        .into_iter()
+        .any(|opcode| is(insn, opcode))
+}
+
 /// Whether `opcode` moves a general register into a float one, as
 /// `mtc1 a3, fv0` sets `fv0`: it names the source first.
 fn moves_to_float(opcode: Opcode) -> bool {
@@ -596,14 +606,6 @@ pub(crate) fn il_operand(operand: ValuedOperand) -> il::Operand {
 /// or `beqz`, has an opcode of its own.
 pub(crate) fn op_of(inst: &Instruction, access: Option<il::AccessKind>) -> il::Op {
     use il::Op;
-    // `lwl`, `lwr`, `swl` and `swr` move a part of a word, as code reads one
-    // at an address that is not a multiple of 4.
-    if matches!(
-        inst.opcode(),
-        Opcode::core_lwl | Opcode::core_lwr | Opcode::core_swl | Opcode::core_swr
-    ) {
-        return Op::Other;
-    }
     match access {
         Some(il::AccessKind::Load) => return Op::Load,
         Some(il::AccessKind::Store) => return Op::Store,
@@ -831,8 +833,8 @@ mod tests {
     }
 
     /// `mtc1` names its source first, and the IL its destination; a
-    /// partial load reads as the code prints it; a memory operand names its
-    /// offset as on every architecture.
+    /// partial load is a load that a view shows as the code prints it; a
+    /// memory operand names its offset as on every architecture.
     #[test]
     fn a_move_to_a_float_register_writes_it() {
         let named = |word: u32| Mips32::LITTLE.lift_named(&decode_one(word)).expect("named");
@@ -841,7 +843,9 @@ mod tests {
             (il::Operand::Reg(il::Reg::General(7)), il::Operand::Reg(il::Reg::Vector(0)));
         assert_eq!(mtc1.lifted.operands.as_slice(), [f0, a3]);
         assert_eq!(mtc1.names[1], "a3");
-        assert_eq!(named(0x8864_0004).lifted.op, il::Op::Other); // lwl a0, 4(v1)
+        // lwl a0, 4(v1)
+        assert_eq!(named(0x8864_0004).lifted.op, il::Op::Load);
+        assert!(moves_part_of_a_word(&decode_one(0x8864_0004)));
         assert_eq!(named(0x8fa8_fff0).names[1], "[sp - 0x10]"); // lw t0, -16(sp)
     }
 
