@@ -2,7 +2,7 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::aarch64`].
 
-use super::{Abi, Arch, CallingConvention, Insn, Memory, NamedReg};
+use super::{Abi, Arch, CallingConvention, Insn, Memory, NamedReg, RegisterClass, is_numbered};
 use hereticus_il::Reg;
 use hereticus_il::arch::aarch64::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
@@ -10,6 +10,19 @@ use hereticus_recovery::arch::aarch64::{SP, memory_base, operands_of, track_page
 use yaxpeax_arm::armv8::a64::{Opcode, Operand, SizeCode};
 
 impl Arch for Aarch64 {
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        match name {
+            "sp" | "xzr" => RegisterClass::General(64),
+            "wsp" | "wzr" => RegisterClass::General(32),
+            _ if is_numbered(name, "x") => RegisterClass::General(64),
+            _ if is_numbered(name, "w") => RegisterClass::General(32),
+            _ if is_numbered(name, "bhsdqv") => {
+                RegisterClass::Vector(name.chars().next().unwrap_or(' '))
+            }
+            _ => RegisterClass::Named(name),
+        }
+    }
+
     fn is_frame_register(&self, reg: Reg) -> bool {
         matches!(reg, Reg::Stack | FRAME)
     }

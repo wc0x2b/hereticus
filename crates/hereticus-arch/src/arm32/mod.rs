@@ -2,7 +2,9 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::arm32`].
 
-use super::{Abi, Arch, CallingConvention, Insn, InsnKind, Memory, NamedReg};
+use super::{
+    Abi, Arch, CallingConvention, Insn, InsnKind, Memory, NamedReg, RegisterClass, is_numbered,
+};
 use hereticus_il as il;
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::*;
@@ -28,7 +30,21 @@ pub(crate) const AAPCS: CallingConvention = CallingConvention {
     link: Some(il::Reg::General(14)),
 };
 
+/// The class of the register `name` of A32 and T32 code.
+pub(super) fn register_class(name: &str) -> RegisterClass<'_> {
+    match name {
+        "sb" | "sl" | "fp" | "ip" | "sp" | "lr" | "pc" => RegisterClass::General(32),
+        _ if is_numbered(name, "r") => RegisterClass::General(32),
+        _ if is_numbered(name, "sdq") => RegisterClass::Vector(name.chars().next().unwrap_or(' ')),
+        _ => RegisterClass::Named(name),
+    }
+}
+
 impl Arch for Arm32 {
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        register_class(name)
+    }
+
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         matches!(reg, il::Reg::Stack | FRAME)
     }

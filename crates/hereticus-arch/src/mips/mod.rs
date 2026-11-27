@@ -4,7 +4,7 @@
 
 use super::{
     Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory, NamedReg,
-    Recovery,
+    Recovery, RegisterClass, is_numbered,
 };
 use hereticus_il as il;
 use hereticus_il::arch::mips::*;
@@ -21,6 +21,16 @@ pub(super) fn register_name(register: il::Reg) -> Option<&'static str> {
     match register {
         il::Reg::General(number) => super::mips32::REGISTERS.get(usize::from(number)).copied(),
         _ => None,
+    }
+}
+
+/// The class of the register `name` of MIPS32 and MIPS16e code. The frame
+/// pointer `s8` is also named `fp`.
+pub(super) fn register_class(name: &str) -> RegisterClass<'_> {
+    match name {
+        _ if super::mips32::REGISTERS.contains(&name) || name == "fp" => RegisterClass::General(32),
+        _ if is_numbered(name, "f") => RegisterClass::Vector('f'),
+        _ => RegisterClass::Named(name),
     }
 }
 
@@ -41,6 +51,10 @@ pub(crate) const O32: CallingConvention = CallingConvention {
 };
 
 impl Arch for Mips32 {
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        register_class(name)
+    }
+
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         matches!(reg, il::Reg::General(SP | FP))
     }

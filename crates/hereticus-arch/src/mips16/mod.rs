@@ -5,6 +5,7 @@
 use super::mips::register_name;
 use super::{
     Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, Memory, Recovery as _,
+    RegisterClass,
 };
 use hereticus_il as il;
 use hereticus_il::arch::mips16::*;
@@ -18,6 +19,10 @@ use hereticus_recovery::arch::mips16::{
 const ADDU: u32 = 0x21;
 
 impl Arch for Mips16 {
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        super::mips::register_class(name)
+    }
+
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         self.base.is_frame_register(reg)
     }

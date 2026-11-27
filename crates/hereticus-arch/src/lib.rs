@@ -143,6 +143,56 @@ pub trait Arch: Recovery {
     fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
         None
     }
+
+    /// The class of the register `name`: what its name says of the value
+    /// it holds. Defaults to [`RegisterClass::Named`], for an architecture
+    /// whose names the matching does not read.
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        RegisterClass::Named(name)
+    }
+
+    /// What the frame register holds. Defaults to
+    /// [`FramePointer::FrameOnly`].
+    fn frame_pointer(&self) -> FramePointer {
+        FramePointer::FrameOnly
+    }
+}
+
+/// What the name of a register says of the value it holds.
+///
+/// Two names of one class are a free choice of the compiler. Two of other
+/// classes hold values of other widths: the fix of CVE-2021-30883 in the
+/// iPhone kernel turns `mul w10, w10, w8` into `mul x10, x10, x8`, so a
+/// product of 32 bits that overflowed is one of 64 bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegisterClass<'a> {
+    /// A general register of this many bits.
+    General(u8),
+    /// A floating point or vector register, by the letter of its kind, as
+    /// `d` for a double of AArch64.
+    Vector(char),
+    /// A name of no class this knows, which matches only itself.
+    Named(&'a str),
+}
+
+/// Whether `name` is one of the letters of `prefixes` and a number, as `x19`
+/// is for the prefixes `"xw"`.
+fn is_numbered(name: &str, prefixes: &str) -> bool {
+    let mut characters = name.chars();
+    characters.next().is_some_and(|first| prefixes.contains(first))
+        && name.len() > 1
+        && characters.all(|character| character.is_ascii_digit())
+}
+
+/// What the frame register of an architecture holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FramePointer {
+    /// Only the frame, so each place it addresses is a slot.
+    FrameOnly,
+    /// The frame where the code keeps one, and a value of its own where it
+    /// does not, as `rbp` of x86 code built with `-O2`. Only a place below
+    /// it is a slot of the frame.
+    FrameOrValue,
 }
 
 /// The family of ABIs that a binary keeps, which its format tells: an x86-64
@@ -317,5 +367,47 @@ mod tests {
             Aarch64.calling_convention(Abi::Unix),
             "ARM64 of Windows keeps the AAPCS64"
         );
+    }
+
+    #[test]
+    fn a_register_name_tells_its_width_on_each_architecture() {
+        use RegisterClass::{General, Named, Vector};
+        let a64 = |name| Aarch64.register_class(name);
+        assert_eq!(a64("x19"), General(64));
+        assert_eq!(a64("w19"), General(32));
+        assert_eq!(a64("xzr"), a64("x0"));
+        assert_eq!(a64("wzr"), a64("w0"));
+        assert_eq!(a64("d8"), Vector('d'));
+        assert_ne!(a64("d8"), a64("s8"));
+        let x64 = |name| X86::BITS64.register_class(name);
+        assert_eq!(x64("rax"), x64("r12"));
+        assert_eq!(x64("eax"), x64("r9d"));
+        assert_ne!(x64("eax"), x64("rax"));
+        assert_eq!(x64("al"), x64("r15b"));
+        assert_eq!(x64("ax"), General(16));
+        assert_eq!(x64("r16"), Named("r16"));
+        assert_eq!(X86::BITS32.register_class("esi"), General(32));
+        assert_eq!(Arm32.register_class("r4"), Thumb2.register_class("lr"));
+        assert_eq!(Arm32.register_class("d16"), Vector('d'));
+        assert_eq!(Mips32::LITTLE.register_class("s0"), Mips32::BIG.register_class("t9"));
+        assert_eq!(Mips32::BIG.register_class("fp"), General(32));
+        assert_eq!(Mips16::BIG.register_class("f12"), Vector('f'));
+        assert_eq!(Mips32::BIG.register_class("hi"), Named("hi"));
+        assert_eq!(
+            PowerPc::BIG.register_class("r3"),
+            Named("r3"),
+            "names the matching does not read"
+        );
+    }
+
+    #[test]
+    fn only_the_frame_register_of_x86_can_hold_a_value() {
+        for (name, arch) in ARCHES {
+            let expected = match name {
+                "x86-64" | "x86" => FramePointer::FrameOrValue,
+                _ => FramePointer::FrameOnly,
+            };
+            assert_eq!(arch.frame_pointer(), expected, "{name}");
+        }
     }
 }

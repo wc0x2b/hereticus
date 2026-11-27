@@ -2,7 +2,10 @@
 //! frame and which constants are addresses. The rules that find functions
 //! are in [`hereticus_recovery::arch::x86`].
 
-use super::{Abi, Arch, CallingConvention, Insn, Memory, NamedReg, StackArguments};
+use super::{
+    Abi, Arch, CallingConvention, FramePointer, Insn, Memory, NamedReg, RegisterClass,
+    StackArguments,
+};
 use hereticus_il::Reg;
 use hereticus_il::arch::x86::{Mode, X86, il_register, instruction};
 use hereticus_memory::{AddressSpace, ConstantKind};
@@ -14,7 +17,47 @@ use iced_x86::{Mnemonic, OpKind};
 /// The frame pointer, `rbp` or `ebp`, by its encoding number.
 const FRAME: Reg = Reg::General(5);
 
+/// The class of an x86 register: `rax` holds 64 bits, `eax` 32, `ax` 16
+/// and `al` 8, and so on for each.
+fn register_class(name: &str) -> RegisterClass<'_> {
+    const BITS_64: [&str; 8] = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp"];
+    const BITS_32: [&str; 8] = ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"];
+    const BITS_16: [&str; 8] = ["ax", "bx", "cx", "dx", "si", "di", "bp", "sp"];
+    const BITS_8: [&str; 12] =
+        ["al", "bl", "cl", "dl", "ah", "bh", "ch", "dh", "sil", "dil", "bpl", "spl"];
+    // `r8` to `r15`, with `d`, `w` or `b` for a part of 32, 16 or 8 bits.
+    let numbered = name.strip_prefix('r').and_then(|rest| {
+        let digits = rest.trim_end_matches(['d', 'w', 'b']);
+        let number: u8 = digits.parse().ok()?;
+        (8..=15).contains(&number).then_some(&rest[digits.len()..])
+    });
+    match (name, numbered) {
+        (_, Some("")) => RegisterClass::General(64),
+        (_, Some("d")) => RegisterClass::General(32),
+        (_, Some("w")) => RegisterClass::General(16),
+        (_, Some("b")) => RegisterClass::General(8),
+        _ if BITS_64.contains(&name) => RegisterClass::General(64),
+        _ if BITS_32.contains(&name) => RegisterClass::General(32),
+        _ if BITS_16.contains(&name) => RegisterClass::General(16),
+        _ if BITS_8.contains(&name) => RegisterClass::General(8),
+        _ if name.starts_with("xmm") => RegisterClass::Vector('x'),
+        _ if name.starts_with("ymm") => RegisterClass::Vector('y'),
+        _ if name.starts_with("zmm") => RegisterClass::Vector('z'),
+        _ => RegisterClass::Named(name),
+    }
+}
+
 impl Arch for X86 {
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        register_class(name)
+    }
+
+    /// Code built with `-O2` keeps a value of its own in `rbp`, and code
+    /// that keeps a frame pointer there keeps its slots below it.
+    fn frame_pointer(&self) -> FramePointer {
+        FramePointer::FrameOrValue
+    }
+
     fn is_frame_register(&self, reg: Reg) -> bool {
         matches!(reg, Reg::Stack | FRAME)
     }

@@ -669,7 +669,7 @@ impl IlRun<'_> {
         }
         let before = words_of(&before_key);
         let after = words_of(&after_key);
-        let (before_triple, after_triple) = (self.before.arch.triple(), self.after.arch.triple());
+        let (before_arch, after_arch) = (self.before.arch, self.after.arch);
         before.len() == after.len()
             && before.iter().zip(&after).all(|(a, b)| {
                 let number = a.starts_with(|c: char| c.is_ascii_digit());
@@ -677,101 +677,8 @@ impl IlRun<'_> {
                     || (self.before.printed.contains(a)
                         && self.after.printed.contains(b)
                         && (number
-                            || register_class(before_triple, a) == register_class(after_triple, b)))
+                            || before_arch.register_class(a) == after_arch.register_class(b)))
             })
-    }
-}
-
-/// What the name of a register says of the value it holds, on the
-/// architecture of `triple`.
-///
-/// Two names of one class are a free choice of the compiler. Two of other
-/// classes hold values of other widths: the fix of CVE-2021-30883 in the
-/// iPhone kernel turns `mul w10, w10, w8` into `mul x10, x10, x8`, so a
-/// product of 32 bits that overflowed is one of 64 bits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RegisterClass<'a> {
-    /// A general register of this many bits.
-    General(u8),
-    /// A floating point or vector register, by the letter of its kind, as
-    /// `d` for a double of AArch64.
-    Vector(char),
-    /// A name of no class this knows, which matches only itself.
-    Named(&'a str),
-}
-
-/// The class of the register `name` on the architecture of `triple`.
-pub(super) fn register_class<'a>(triple: &str, name: &'a str) -> RegisterClass<'a> {
-    let numbered = |prefixes: &str| {
-        let mut characters = name.chars();
-        characters.next().is_some_and(|first| prefixes.contains(first))
-            && name.len() > 1
-            && characters.all(|character| character.is_ascii_digit())
-    };
-    let first = name.chars().next().unwrap_or(' ');
-    if triple.starts_with("aarch64") {
-        return match name {
-            "sp" | "xzr" => RegisterClass::General(64),
-            "wsp" | "wzr" => RegisterClass::General(32),
-            _ if numbered("x") => RegisterClass::General(64),
-            _ if numbered("w") => RegisterClass::General(32),
-            _ if numbered("bhsdqv") => RegisterClass::Vector(first),
-            _ => RegisterClass::Named(name),
-        };
-    }
-    if triple.starts_with("x86_64") || triple.starts_with("i386") || triple.starts_with("i686") {
-        return x86_register_class(name);
-    }
-    if triple.starts_with("arm") || triple.starts_with("thumb") {
-        return match name {
-            "sb" | "sl" | "fp" | "ip" | "sp" | "lr" | "pc" => RegisterClass::General(32),
-            _ if numbered("r") => RegisterClass::General(32),
-            _ if numbered("sdq") => RegisterClass::Vector(first),
-            _ => RegisterClass::Named(name),
-        };
-    }
-    if triple.starts_with("mips") {
-        const GENERAL: [&str; 32] = [
-            "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5",
-            "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1",
-            "gp", "sp", "fp", "ra",
-        ];
-        return match name {
-            _ if GENERAL.contains(&name) || name == "s8" => RegisterClass::General(32),
-            _ if numbered("f") => RegisterClass::Vector('f'),
-            _ => RegisterClass::Named(name),
-        };
-    }
-    RegisterClass::Named(name)
-}
-
-/// The class of an x86 register: `rax` holds 64 bits, `eax` 32, `ax` 16
-/// and `al` 8, and so on for each.
-fn x86_register_class(name: &str) -> RegisterClass<'_> {
-    const BITS_64: [&str; 8] = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp"];
-    const BITS_32: [&str; 8] = ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"];
-    const BITS_16: [&str; 8] = ["ax", "bx", "cx", "dx", "si", "di", "bp", "sp"];
-    const BITS_8: [&str; 12] =
-        ["al", "bl", "cl", "dl", "ah", "bh", "ch", "dh", "sil", "dil", "bpl", "spl"];
-    // `r8` to `r15`, with `d`, `w` or `b` for a part of 32, 16 or 8 bits.
-    let numbered = name.strip_prefix('r').and_then(|rest| {
-        let digits = rest.trim_end_matches(['d', 'w', 'b']);
-        let number: u8 = digits.parse().ok()?;
-        (8..=15).contains(&number).then_some(&rest[digits.len()..])
-    });
-    match (name, numbered) {
-        (_, Some("")) => RegisterClass::General(64),
-        (_, Some("d")) => RegisterClass::General(32),
-        (_, Some("w")) => RegisterClass::General(16),
-        (_, Some("b")) => RegisterClass::General(8),
-        _ if BITS_64.contains(&name) => RegisterClass::General(64),
-        _ if BITS_32.contains(&name) => RegisterClass::General(32),
-        _ if BITS_16.contains(&name) => RegisterClass::General(16),
-        _ if BITS_8.contains(&name) => RegisterClass::General(8),
-        _ if name.starts_with("xmm") => RegisterClass::Vector('x'),
-        _ if name.starts_with("ymm") => RegisterClass::Vector('y'),
-        _ if name.starts_with("zmm") => RegisterClass::Vector('z'),
-        _ => RegisterClass::Named(name),
     }
 }
 

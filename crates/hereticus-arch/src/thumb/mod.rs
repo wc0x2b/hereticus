@@ -2,7 +2,7 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::thumb`].
 
-use super::{Abi, Arch, CallingConvention, Insn, Memory};
+use super::{Abi, Arch, CallingConvention, Insn, Memory, RegisterClass};
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::Arm32;
 use hereticus_il::arch::thumb::*;
@@ -11,6 +11,10 @@ use hereticus_recovery::arch::arm32::{PcModel, track_pool_words};
 use hereticus_recovery::arch::thumb::{a32_of, split_at_switch};
 
 impl Arch for Thumb2 {
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        super::arm32::register_class(name)
+    }
+
     fn is_frame_register(&self, reg: hereticus_il::Reg) -> bool {
         Arm32.is_frame_register(reg)
     }
