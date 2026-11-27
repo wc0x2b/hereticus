@@ -2,7 +2,7 @@
 source: hereticus/tests/view.rs
 expression: patch(&lines)
 ---
-  store.64 [sp - 0x30] = x29, x30
+  store.64 [sp - 0x30] = x29, x30; sp = sp - 0x30
   x29 = sp
 - x2 = sp + 0x28
 + w1 = load.32 [x0 + 0x28]

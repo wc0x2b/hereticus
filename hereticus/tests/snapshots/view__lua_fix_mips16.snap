@@ -1,6 +1,6 @@
 ---
 source: hereticus/tests/view.rs
-expression: "shown.join(\"\\n\")"
+expression: patch(&lines)
 ---
   store.32 [sp - 8] = s0, ra; sp = sp - 0x28
 - a1 = load.32 [a0 + 0xC]
@@ -18,7 +18,7 @@ expression: "shown.join(\"\\n\")"
   if (v0 == 0) goto $+0x14
   v1 = load.32 [sp + 0x18]
   if (v1 == 0) goto $+0x10
-  v1 = v1 + -0x1
+  v1 = v1 - 1
   store.32 [s0] = v1
   v1 = v0 + 1
   store.32 [s0 + 0x4] = v1

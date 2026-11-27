@@ -2,7 +2,7 @@
 source: hereticus/tests/view.rs
 expression: indented
 ---
-store.64 [sp - 0x30] = x29, x30
+store.64 [sp - 0x30] = x29, x30; sp = sp - 0x30
 x29 = sp
 store.64 [sp + 0x10] = x19, x20
 x19 = x0

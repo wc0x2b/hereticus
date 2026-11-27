@@ -44,6 +44,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ebx = ebx + ebx` and now reads as `ebx = ebx + 1`. A `mul` or `imul`
   of one operand, which multiplies `eax` into `edx:eax`, shows as the
   instruction, where it read as the operand times itself.
+- The IL of the PowerPC `subf`, `subfc`, `subfe` and `subfic` subtracts
+  the first source from the second, as they do: `subf r6, r6, r5` read
+  as `r6 = r6 - r5` and now reads as `r6 = r5 - r6`. `addis`, `lis`,
+  `subis`, `oris`, `andis.` and `xoris` work on the upper half, so
+  `addis r5, r5, 0x80` reads as `r5 = r5 + 0x800000`, where it read as
+  `+ 0x80`. A move of fields of the condition register, as `mtcrf`,
+  reads as the instruction, where it read as `0x20 = r12`.
+- A pre-index access shows the write of its base, as
+  `x23 = load.32 [x2 + 0x4c]; x2 = x2 + 0x4c` for `ldrsw x23, [x2, #0x4c]!`
+  and the PowerPC `lwzu`.
+- An add of a negative constant reads as a subtract: `sp = sp - 0x38`,
+  where it read as `sp = sp + -0x38`. A constant of an `or` or an `xor`
+  reads in plain hex, as one of an `and` does.
 - The IL names the carry that an add or a subtract reads, as
   `rax = rax + rbx + carry` for `adc` and `esi = esi - esi - borrow` for
   `sbb`, on x86, ARM, AArch64 and PowerPC. `sbb esi, esi` read as

@@ -18,7 +18,7 @@ expression: "flow_text(&lines, &places)"
 │┌──< 1e014     if (v0 == 0) goto $+0x14
 ││    1e016       v1 = load.32 [sp + 0x18]
 ││┌─< 1e018       if (v1 == 0) goto $+0x10
-│││   1e01a         v1 = v1 + -0x1
+│││   1e01a         v1 = v1 - 1
 │││   1e01c         store.32 [s0] = v1
 │││   1e01e         v1 = v0 + 1
 │││   1e020         store.32 [s0 + 0x4] = v1

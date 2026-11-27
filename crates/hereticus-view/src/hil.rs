@@ -645,7 +645,33 @@ fn simplified(text: &str) -> String {
         }
         text = next;
     }
-    text
+    subtract_negatives(&text)
+}
+
+/// `text` with each add of a negative constant outside strings as a
+/// subtract: `arg4 + -0x89f1` is `arg4 - 0x89f1`.
+fn subtract_negatives(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let (mut quoted, mut escaped) = (false, false);
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        if !quoted
+            && let Some(after) = rest.strip_prefix(" + -")
+            && after.starts_with(|digit: char| digit.is_ascii_digit())
+        {
+            out.push_str(" - ");
+            rest = after;
+            continue;
+        }
+        match c {
+            '"' if !escaped => quoted = !quoted,
+            _ => {}
+        }
+        escaped = quoted && c == '\\' && !escaped;
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
 }
 
 fn simplify_once(text: &str) -> String {
@@ -1363,6 +1389,25 @@ impl<'a> Body<'a> {
         }
         let holding = &self.holding[index];
         let mut text = line.to_string();
+        // The high IL shows no move of the stack pointer, so an access that
+        // writes its address back to it, as `str x1, [sp, #-0x10]!`, drops
+        // the write.
+        let stack = self.convention.stack;
+        let stack_name = named.lifted.operands.iter().zip(&named.names).find_map(
+            |(operand, name)| match *operand {
+                Operand::Memory {
+                    base: Some(base),
+                    update: Update::Before | Update::After,
+                    ..
+                } if base == stack => name.trim_start_matches('[').split([' ', ']']).next(),
+                _ => None,
+            },
+        );
+        if let Some(stack_name) = stack_name.filter(|name| !name.is_empty())
+            && let Some(at) = text.rfind(&format!("; {stack_name} = "))
+        {
+            text.truncate(at);
+        }
         for (operand, name) in named.lifted.operands.iter().zip(&named.names) {
             let Operand::Memory { base: Some(base), offset, index: None, update } = *operand else {
                 continue;
@@ -2826,7 +2871,10 @@ fn plain_slot_access(text: &str) -> String {
         let rest = rest.trim_start_matches(|c: char| c.is_ascii_digit()).strip_prefix(' ')?;
         Some(rest.to_string())
     };
+    // A load of a pair, as `ldp x29, x30`, reads two places, which one
+    // name does not say.
     if let Some((dest, value)) = text.split_once(" = load.")
+        && !dest.contains(',')
         && let Some(place) = without_width(value)
         && is_slot(&place)
     {
@@ -3473,7 +3521,8 @@ mod tests {
             simplified("if ((arg3 u< (0x7fff0000 | 0xfff1)) == 0) goto $+0x8"),
             "if ((arg3 u< 0x7ffffff1) == 0) goto $+0x8"
         );
-        assert_eq!(simplified("a3 = arg4 + (-0x10000 + 0x760f)"), "a3 = arg4 + -0x89f1");
+        assert_eq!(simplified("a3 = arg4 + (-0x10000 + 0x760f)"), "a3 = arg4 - 0x89f1");
+        assert_eq!(simplified("x0 = &\"a + -1\" + -2"), "x0 = &\"a + -1\" - 2");
         assert_eq!(simplified("v0 = load.32 [0 + 0x20]"), "v0 = load.32 [0x20]");
         assert_eq!(
             simplified("s1 = load.32 [@0x440000 + -0x38C0]"),

@@ -2,7 +2,7 @@
 source: hereticus-cli/src/tui/mod.rs
 expression: "flow_text(&lines, &places)"
 ---
-      23fc0   store.64 [sp - 0x30] = x29, x30
+      23fc0   store.64 [sp - 0x30] = x29, x30; sp = sp - 0x30
       23fc4   x29 = sp
       23fc8 - x2 = sp + 0x28
       23fc8 + w1 = load.32 [x0 + 0x28]

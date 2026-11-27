@@ -1078,6 +1078,16 @@ fn aarch64_opcode(insn: &Insn) -> Option<A64Opcode> {
 
 /// A constant as code reads it: small ones in decimal, a negative one with
 /// its sign.
+/// The size of `value` where it is a negative number as [`constant_text`]
+/// names one, or one of 32 bits held in 64: `-0x20000` is `0x20000`.
+fn negative_magnitude(value: u64) -> Option<u64> {
+    let signed = value as i64;
+    if (-0x8000_0000..0).contains(&signed) {
+        return Some(signed.unsigned_abs());
+    }
+    (0xffff_0000..=0xffff_ffff).contains(&value).then(|| 0x1_0000_0000 - value)
+}
+
 fn constant_text(value: u64) -> String {
     hereticus_il::constant_name(value).to_string()
 }
@@ -1326,7 +1336,9 @@ fn statement(
     let constant = |value: u64| {
         // A mask reads in plain hex: `& 0xffffffff` keeps the low half of a
         // 64-bit register, which `& -0x1` does not say.
-        let is_mask = named.lifted.op == Op::And && (0x8000_0000..=0xffff_ffff).contains(&value);
+        let bitwise =
+            matches!(named.lifted.op, Op::And | Op::Or | Op::Xor | Op::AndNot | Op::OrNot);
+        let is_mask = bitwise && (0x8000_0000..=0xffff_ffff).contains(&value);
         match (moves, is_mask) {
             (true, _) => format!("@{value:#x}"),
             (false, true) => format!("{value:#x}"),
@@ -1434,6 +1446,28 @@ fn statement(
         let base = name.trim_start_matches('[').trim_end_matches(']');
         after = format!("; {base} = {base} + {amount}");
     }
+    // A pre-index access, as `ldr x0, [x1, #8]!` and the PowerPC `lwzu`,
+    // writes the address it reads back to its base.
+    let pre_index = lifted.operands.iter().zip(&lift_names).find_map(|(operand, name)| {
+        let moves = |offset: &Option<i64>, index: &Option<(Reg, u8)>| {
+            offset.is_some_and(|offset| offset != 0) || index.is_some()
+        };
+        match operand {
+            Operand::Memory {
+                base: Some(_),
+                offset,
+                index,
+                update: hereticus_il::Update::Before,
+            } if moves(offset, index) => Some(*name),
+            _ => None,
+        }
+    });
+    if let Some(name) = pre_index
+        && let Some((base, change)) =
+            name.trim_start_matches('[').trim_end_matches(']').split_once(' ')
+    {
+        after = format!("; {base} = {base} {change}");
+    }
 
     // The idioms `canonical` reads plainly rewrite the operands, so their
     // registers are named by what each was paired with.
@@ -1509,12 +1543,29 @@ fn statement(
             }
             ([dest, _], Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
             // A distance that moves, as half of `_gp_disp`.
+            // `lis` puts its constant in the upper half, which the IL holds
+            // shifted.
+            ([dest, _], None) if hereticus_il::arch::powerpc::decoded(insn).is_some() => {
+                match canonical.operands.get(1) {
+                    Some(Operand::Const(value)) => format!("{dest} = {}", constant(*value)),
+                    _ => return None,
+                }
+            }
             ([dest, source], None) if moves => format!("{dest} = @{source}"),
             ([dest, source], None) => format!("{dest} = &{source}"),
             _ => return None,
         },
         Op::Add => match (operands.as_slice(), &address) {
             ([dest, ..], Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
+            // An add of a negative constant reads as a subtract, as
+            // `addiu sp, sp, -0x20` is `sp = sp - 0x20`.
+            ([dest, left, _], None)
+                if !moves
+                    && let Some(Operand::Const(value)) = canonical.operands.get(2)
+                    && let Some(magnitude) = negative_magnitude(*value) =>
+            {
+                format!("{dest} = {left} - {}", constant_text(magnitude))
+            }
             // The x86 `lea` adds the parts of its memory operand and reads
             // no memory.
             ([dest, formed], None)
@@ -1827,7 +1878,7 @@ mod tests {
         assert_eq!(
             high(&[0xa8c2_7bfd, 0x9a80_9020, 0x531c_6c23, 0xd63f_0020]),
             [
-                "x29, x30 = load.64 arg_0; sp = sp + 0x20",
+                "x29, x30 = load.64 arg_0",
                 "arg2(ls ? arg2 : arg1, arg2, arg3, arg2 << 0x4)",
             ]
         );
@@ -2524,7 +2575,7 @@ mod tests {
         let statements = il_statements_in(&Mips32::BIG, &code, &insns, None);
         let shown: Vec<(u64, &str)> =
             statements.iter().map(|line| (line.address, line.text.as_str())).collect();
-        assert_eq!(shown, [(0x1008, "sp = sp + -0x38"), (0x100c, "gp = _gp")]);
+        assert_eq!(shown, [(0x1008, "sp = sp - 0x38"), (0x100c, "gp = _gp")]);
         assert_eq!(il_line_addresses(&Mips32::BIG, &insns), [0x1008, 0x100c]);
         assert_eq!(high_in(&Mips32::BIG, &code, None), ["gp = _gp"], "the frame shows no line");
     }
@@ -2811,7 +2862,7 @@ mod tests {
             (0, "if (a0 == 0) goto $+0x18"),
             (0, "a2 = a2 + 1"),
             (2, "a1 = a1 + 1"),
-            (2, "a0 = a0 + -0x1"),
+            (2, "a0 = a0 - 1"),
             (1, "if (a0 != 0) goto $-0x8"),
             (1, "a3 = a3 + 1"),
             (0, "return"),
@@ -2835,7 +2886,7 @@ mod tests {
         let expected = at_depths([
             (0, "if (a0 == 0) goto $+0x8"),
             (2, "a1 = a1 + 1"),
-            (2, "a0 = a0 + -0x1"),
+            (2, "a0 = a0 - 1"),
             (1, "if (a0 != 0) goto $-0x4"),
             (0, "return"),
         ]);

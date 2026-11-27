@@ -11,7 +11,7 @@ store.64 [r1 - 0x18] = r29
 store.64 [r1 - 0x10] = r30
 r29 = r4
 r30 = r5
-store.64 [r1 - 0x80] = r1
+store.64 [r1 - 0x80] = r1; r1 = r1 - 0x80
 flags = compare(r3, 0)
 if (r3 == 0) goto $+0x18
   r9 = load.32 [r31 + 0x74]
@@ -50,8 +50,8 @@ if (r3 == 0) goto $+0xe0
   r3 = r30
   call strlen
   r2 = load.64 [r1 + 0x18]
-  r7 = r2 + @0xfffffffffffffffe
-  r5 = r2 + @0xfffffffffffffffe
+  r7 = r2 + @0xfffffffffffe0000
+  r5 = r2 + @0xfffffffffffe0000
   r6 = r28
   r8 = r30
   r4 = r31 + r3

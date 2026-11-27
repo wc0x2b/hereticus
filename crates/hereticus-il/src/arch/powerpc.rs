@@ -710,7 +710,10 @@ fn plain_op(opcode: Opcode) -> il::Op {
         CNTLZW | CNTLZD => Op::Bits,
         ISEL | FSEL => Op::Select,
         CMP | CMPI | CMPL | CMPLI => Op::Compare,
-        MFSPR | MTSPR | MFCR | MFOCRF | MTCRF | MTOCRF | MCRF | MCRXR | MFTB => Op::Move,
+        MFSPR | MTSPR | MFCR | MCRF | MCRXR | MFTB => Op::Move,
+        // A move of fields of the condition register names the fields by a
+        // mask, which is no place the IL names.
+        MFOCRF | MTCRF | MTOCRF => Op::Other,
         FMR => Op::Move,
         FADD | FADDS => Op::FloatAdd,
         FSUB | FSUBS => Op::FloatSubtract,
@@ -920,7 +923,38 @@ pub fn names(inst: &Instruction) -> il::Names {
         // no -1.
         *last = format_compact!("{mask:#x}");
     }
+    if let (Some(shifted), Some(last)) = (shifted_immediate(inst), names.last_mut()) {
+        *last = il::constant_name(shifted);
+    }
+    if subtracts_from_last(inst, &spelling) {
+        names.swap(1, 2);
+    }
     names
+}
+
+/// The constant of an `addis`, `oris`, `andis.` or `xoris`, which works on
+/// the upper half: `addis r5, r5, 0x80` adds `0x800000`. `lis` and `subis`
+/// are `addis`.
+fn shifted_immediate(inst: &Instruction) -> Option<u64> {
+    use Opcode::*;
+    if !matches!(inst.opcode(), ADDIS | ORIS | ANDIS | XORIS) {
+        return None;
+    }
+    match operands(inst).last()? {
+        Operand::ImmExts16(value) => Some((i64::from(*value) << 16) as u64),
+        Operand::ImmU16(value) => Some(u64::from(*value) << 16),
+        _ => None,
+    }
+}
+
+/// Whether `inst` subtracts its first source from its second, as
+/// `subf r3, r4, r5` computes `r5 - r4` and `subfic r3, r4, 8` computes
+/// `8 - r4`. The IL names the value subtracted from first.
+fn subtracts_from_last(inst: &Instruction, spelling: &Spelling) -> bool {
+    use Opcode::*;
+    matches!(spelling.opcode, OpcodeAlias::Hardware(_))
+        && matches!(inst.opcode(), SUBF | SUBFC | SUBFE | SUBFIC)
+        && lifted_operands(inst, spelling).len() == 3
 }
 
 /// The mask that a `clrlwi`, `clrrwi`, `clrldi` or `clrrdi` keeps, which
@@ -1102,6 +1136,12 @@ pub fn lift(inst: &Instruction, word: u32) -> il::Lifted {
         shown.iter().map(|&operand| il_operand(operand, update)).collect();
     if let (Some(mask), Some(last)) = (clear_mask(&spelling), operands.last_mut()) {
         *last = il::Operand::Const(mask);
+    }
+    if let (Some(shifted), Some(last)) = (shifted_immediate(inst), operands.last_mut()) {
+        *last = il::Operand::Const(shifted);
+    }
+    if subtracts_from_last(inst, &spelling) {
+        operands.swap(1, 2);
     }
     il::Lifted {
         op: op_of(inst, spelling.opcode, test),
@@ -1379,6 +1419,38 @@ mod tests {
     #[case::vaddubm(0x1000_0000, Op::Vector)]
     fn an_operation_is_named_as_on_every_architecture(#[case] word: u32, #[case] op: Op) {
         assert_eq!(lift_one(word).op, op);
+    }
+
+    /// `subf` subtracts its first source from its second, and the IL
+    /// names the value subtracted from first.
+    #[test]
+    fn a_subtract_from_names_its_sources_in_order() {
+        let r = |number| il::Operand::Reg(il::Reg::General(number));
+        // subf r6, r6, r5: r5 - r6
+        assert_eq!(lift_one(0x7cc6_2850).operands.as_slice(), [r(6), r(5), r(6)]);
+        // subfic r7, r4, -0x2712: -0x2712 - r4
+        let subfic = lift_one(0x20e4_d8ee);
+        assert_eq!(
+            subfic.operands.as_slice(),
+            [r(7), il::Operand::Const(-0x2712_i64 as u64), r(4)]
+        );
+    }
+
+    /// An operation on the upper half holds its constant shifted.
+    #[rstest]
+    #[case::addis(0x3ca5_0080, 0x80_0000)] // addis r5, r5, 0x80
+    #[case::lis(0x3cc0_4330, 0x4330_0000)] // lis r6, 0x4330
+    #[case::subis(0x3ca4_fffe, -0x2_0000_i64 as u64)] // subis r5, r4, 2
+    #[case::oris(0x6464_0080, 0x80_0000)] // oris r4, r3, 0x80
+    #[case::andis(0x74a5_fffe, 0xfffe_0000)] // andis. r5, r5, 0xfffe
+    fn an_upper_half_holds_its_constant_shifted(#[case] word: u32, #[case] value: u64) {
+        assert_eq!(lift_one(word).operands.last(), Some(&il::Operand::Const(value)));
+    }
+
+    /// A move of fields of the condition register names them by a mask.
+    #[test]
+    fn a_move_of_condition_fields_reads_as_printed() {
+        assert_eq!(lift_one(0x7d82_0120).op, Op::Other); // mtcrf 0x20, r12
     }
 
     #[rstest]

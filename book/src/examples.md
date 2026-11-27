@@ -125,7 +125,7 @@ luaZ_fill
 │┌──<     if (ret == 0) goto $+0x30
 ││┌─<       if (v1 == 0) goto $+0x28
 │││           store.32 [arg1 + 0x4] = ret + 1
-│││           store.32 [arg1] = v1 + -0x1
+│││           store.32 [arg1] = v1 - 1
 │││           v0 = load.8 [ret]
 │││┌>   return
 │└┴┼> + store.32 [arg1 + 0x14] = 1

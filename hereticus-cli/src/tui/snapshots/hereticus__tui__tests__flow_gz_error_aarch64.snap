@@ -2,7 +2,7 @@
 source: hereticus-cli/src/tui/mod.rs
 expression: text
 ---
-      65a0   store.64 [sp - 0x30] = x29, x30
+      65a0   store.64 [sp - 0x30] = x29, x30; sp = sp - 0x30
       65a4   x29 = sp
       65a8   store.64 [sp + 0x10] = x19, x20
       65ac   x19 = x0
