@@ -2,7 +2,7 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::arm32`].
 
-use super::{Arch, Insn, InsnKind, Memory};
+use super::{Abi, Arch, CallingConvention, Insn, InsnKind, Memory, NamedReg};
 use hereticus_il as il;
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::*;
@@ -12,6 +12,21 @@ use yaxpeax_arm::armv7::Opcode;
 
 /// The frame pointer, as the A32 procedure call standard names it.
 const FRAME: il::Reg = il::Reg::General(11);
+
+/// The AAPCS, which T32 code keeps too.
+pub(crate) const AAPCS: CallingConvention = CallingConvention {
+    arguments: &[
+        NamedReg::new(il::Reg::General(0), "r0"),
+        NamedReg::new(il::Reg::General(1), "r1"),
+        NamedReg::new(il::Reg::General(2), "r2"),
+        NamedReg::new(il::Reg::General(3), "r3"),
+    ],
+    result: NamedReg::new(il::Reg::General(0), "r0"),
+    stack: il::Reg::Stack,
+    preserved: &[4, 5, 6, 7, 8, 9, 10, 11],
+    stack_arguments: None,
+    link: Some(il::Reg::General(14)),
+};
 
 impl Arch for Arm32 {
     fn is_frame_register(&self, reg: il::Reg) -> bool {
@@ -108,6 +123,11 @@ impl Arch for Arm32 {
         }
         let always = words.iter().filter(|&&word| word >> 28 >= 0xe).count();
         if always * 4 < words.len() { Contents::Data } else { Contents::Code }
+    }
+
+    /// The AAPCS: `r0` to `r3`, and `r0`.
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
+        Some(AAPCS)
     }
 }
 

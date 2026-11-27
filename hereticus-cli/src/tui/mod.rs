@@ -108,6 +108,16 @@ struct Labeled {
     label: String,
 }
 
+/// A view of the open diff that is not shown, kept with the row it showed
+/// first, so `v` back to it shows the same screen.
+#[derive(Debug)]
+struct KeptView {
+    view: View,
+    lines: Vec<DiffLine>,
+    places: Places,
+    scroll: usize,
+}
+
 /// The diff of the selected row, kept so a redraw does not compute it
 /// again.
 #[derive(Debug)]
@@ -115,9 +125,9 @@ struct Opened {
     /// The view the lines show.
     view: View,
     lines: Vec<DiffLine>,
-    /// The lines of the other view and their places, once shown, so `v`
-    /// back is at once.
-    other_view: Option<(Vec<DiffLine>, Places)>,
+    /// The lines of the other views and their places, once shown, so `v`
+    /// back to one is at once.
+    other_views: Vec<KeptView>,
     places: Places,
     /// What a gone or new function is shown against: its closest
     /// candidate.
@@ -735,7 +745,7 @@ impl<'a> App<'a> {
         let mut opened = Opened {
             view,
             lines,
-            other_view: None,
+            other_views: Vec::new(),
             places,
             against,
             scroll,
@@ -748,28 +758,38 @@ impl<'a> App<'a> {
         self.screen = Screen::Pair(Box::new(opened));
     }
 
-    /// Show the open diff in the other view, from the same row. The two
-    /// views hold about a line for each instruction, so the row shows about
-    /// the same code.
+    /// Show the open diff in the next view, from the same row: assembly,
+    /// IL, high IL, and assembly again. The views hold about a line for
+    /// each instruction, so the row shows about the same code.
     fn switch_view(&mut self) {
         self.view = match self.view {
             View::Assembly => View::Il,
-            View::Il => View::Assembly,
+            View::Il => View::Hil,
+            View::Hil => View::Assembly,
         };
         let Screen::Pair(opened) = &mut self.screen else { return };
-        if let Some((lines, places)) = opened.other_view.take() {
-            let lines = core::mem::replace(&mut opened.lines, lines);
-            let places = core::mem::replace(&mut opened.places, places);
-            opened.other_view = Some((lines, places));
-            opened.view = self.view;
+        let shown = KeptView {
+            view: opened.view,
+            lines: core::mem::take(&mut opened.lines),
+            places: core::mem::take(&mut opened.places),
+            scroll: opened.scroll,
+        };
+        let view = self.view;
+        if let Some(at) = opened.other_views.iter().position(|kept| kept.view == view) {
+            let kept = opened.other_views.swap_remove(at);
+            (opened.lines, opened.places, opened.view) = (kept.lines, kept.places, view);
+            opened.other_views.push(shown);
             opened.relayout(self.layout);
+            let last = opened.changes.len().saturating_sub(1);
+            opened.scroll = kept.scroll.min(last);
             return;
         }
-        let shown = (core::mem::take(&mut opened.lines), core::mem::take(&mut opened.places));
+        let mut kept = core::mem::take(&mut opened.other_views);
+        kept.push(shown);
         let scroll = opened.scroll;
         self.open_at(scroll);
         if let Screen::Pair(opened) = &mut self.screen {
-            opened.other_view = Some(shown);
+            opened.other_views = kept;
         }
     }
 
@@ -1267,6 +1287,20 @@ mod tests {
         assert_ne!(opened.lines, assembly, "IL reads otherwise");
         assert!(screen(&mut app, 120, 30).contains("view il"));
 
+        press(&mut app, &[KeyCode::Char('v')]);
+        let Screen::Pair(opened) = &app.screen else { panic!("the pair stays open") };
+        assert_eq!(app.view, View::Hil);
+        let high = opened.lines.clone();
+        assert!(screen(&mut app, 120, 30).contains("view hil"));
+
+        press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('v'), KeyCode::Char('v')]);
+        let Screen::Pair(opened) = &app.screen else { panic!("the pair stays open") };
+        assert_eq!(app.view, View::Hil, "the views go round");
+        assert_eq!(opened.lines, high, "a view shown once comes back as it was");
+
+        press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('v')]);
+        assert_eq!(app.view, View::Il);
+
         press(&mut app, &[KeyCode::End]);
         let Screen::Pair(opened) = &app.screen else { panic!("the pair stays open") };
         assert_eq!(opened.scroll, app.diff_rows() - 1);
@@ -1445,6 +1479,10 @@ mod tests {
                         (0..rows).any(|row| gutter.head(row).glyph == flows::Glyph::Source)
                     });
                 }
+                press(&mut app, &[KeyCode::Char('v')]);
+                assert_eq!(app.view, View::Hil, "{arch}");
+                let high = places(&app);
+                assert!(high.before.len() <= il.before.len(), "{arch}: the high IL folds");
                 press(&mut app, &[KeyCode::Char('v')]);
                 assert!(depths(&places(&app)).iter().all(|&depth| depth == 0), "{arch}: asm");
                 press(&mut app, &[KeyCode::Char('v')]);
@@ -1671,9 +1709,9 @@ mod tests {
         };
         assert!(last.lines().nth(3).is_some_and(shows_an_address), "{last}");
 
-        press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('v')]);
+        press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('v'), KeyCode::Char('v')]);
         assert!(matches!(app.screen, Screen::Pair(_)), "the diff stays open");
-        assert_eq!(screen(&mut app, 200, 60), last, "two changes of view give the same screen");
+        assert_eq!(screen(&mut app, 200, 60), last, "three changes of view give the same screen");
     }
 
     /// A key must answer at once on the kernels of
@@ -1708,8 +1746,11 @@ mod tests {
         let jump = per_step(&mut app, KeyCode::Char(']'));
         assert!(jump < Duration::from_millis(35), "a jump takes {jump:?}");
 
-        // The second change of view takes the lines the first one kept.
-        press(&mut app, &[KeyCode::Char('v')]);
+        // The third change of view takes the lines the first one kept.
+        let at = Instant::now();
+        press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('v')]);
+        let high = at.elapsed();
+        assert!(high < Duration::from_secs(5), "the IL and the high IL take {high:?}");
         let at = Instant::now();
         press(&mut app, &[KeyCode::Char('v')]);
         let back = at.elapsed();

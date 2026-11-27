@@ -10,7 +10,7 @@ expression: "screen(&mut app, 120, 24)"
 │      c8 -   flags =│  PgDn/PgUp  a page down / up           PgDn/PgUp  a page down / up         │                    █
 │┌──<  cc -   if (r1 │  g / G      first / last               g / G      top / bottom             │                    █
 ││     e4 + store.32 │  ⏎          open the diff              ] / [      next / previous change   │                    ║
-││     e8 + sp = sp -│  s          next order                 v          assembly or IL           │                    ║
+││     e8 + sp = sp -│  s          next order                 v          assembly, IL or high IL  │                    ║
 ││     ec   r2 = -0x1│  S          reverse the order          l          side by side or one      │                    ║
 ││     d4 -     flags│  t          next kind touched          n / p      next / previous          │                    ║
 ││     f0 + flags = c│  f          next feature               esc        back to the list         │                    ║
@@ -19,10 +19,10 @@ expression: "screen(&mut app, 120, 24)"
 ││││   f8 +   adr r3,│  d          data regions               changed values unread               │                    ║
 ││││   fc +   r1 = lo│  /          filter the names, fuzzy    reordered data same                 │                    ║
 ││││  100 +   pc = r3│                                        + added - removed ~ value           │                    ║
-││││  104 +   if (eq)│Global                                                                      │                    ║
-││││  108 +   if (eq)│  ?          this help                Project                               │                    ║
-││││  10c +   if (eq)│  q          quit, after a question     m / M      mark or unmark / label   │                    ║
-││││  110 +   if (eq)│  wheel      scroll                     w          save, to open again      │                    ║
-││││  114     r0 = lo│  click      select, again to open                                          │                    ║
-││││  118     r2 = 0 └───────────────────────────────────────────────────────────────esc/q/? close┘                    ║
+││││  114     r0 = lo│Global                                                                      │                    ║
+││││  118     r2 = 0 │  ?          this help                Project                               │                    ║
+││││   e4 -       fla│  q          quit, after a question     m / M      mark or unmark / label   │                    ║
+││││  11c +   flags =│  wheel      scroll                     w          save, to open again      │                    ║
+││││  120     if (hi)│  click      select, again to open                                          │                    ║
+││││   ec -       r0 └───────────────────────────────────────────────────────────────esc/q/? close┘                    ║
  sort added ↓  │  3 of 5 functions  │  view il  │  hidden retouched, data                         0 gone  0 new  ? help

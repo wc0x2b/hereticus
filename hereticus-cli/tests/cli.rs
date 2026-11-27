@@ -299,6 +299,25 @@ fn the_il_view_shows_statements() {
     ]));
 }
 
+/// The high IL view shows a diff as high IL statements: the call of
+/// `handle` takes its arguments, and the save of `r4` and `lr` shows no
+/// line.
+#[test]
+fn the_high_il_view_shows_statements() {
+    if !fixtures_present() {
+        eprintln!("skipped: run `just fixtures` first");
+        return;
+    }
+
+    assert_cmd_snapshot!(hereticus().args([
+        "--view",
+        "hil",
+        "--diff-all",
+        "fixtures/build/O2/firmware.o",
+        "fixtures/build/O2/firmware_v2.o",
+    ]));
+}
+
 /// The JSON report parses, and its totals agree with what it lists.
 #[test]
 fn the_json_report_parses_and_adds_up() {

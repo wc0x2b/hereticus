@@ -3,7 +3,9 @@
 //! functions are in [`hereticus_recovery::arch::mips16`].
 
 use super::mips::register_name;
-use super::{Arch, Decoder, GlobalPointerSetup, Insn, Memory, Recovery as _};
+use super::{
+    Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, Memory, Recovery as _,
+};
 use hereticus_il as il;
 use hereticus_il::arch::mips16::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
@@ -155,6 +157,10 @@ impl Arch for Mips16 {
         let preamble = body.get(..GP_PREAMBLE_LENGTH).filter(|run| is_gp_preamble(run))?;
         let register = register_name(first_register(preamble.last()?)?)?.to_string();
         Some(GlobalPointerSetup { parts: (0..GP_PREAMBLE_LENGTH).collect(), register })
+    }
+
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
+        Some(super::mips::O32)
     }
 }
 

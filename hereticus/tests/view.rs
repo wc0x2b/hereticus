@@ -30,6 +30,8 @@ fn gz_error(arch: &str) -> Vec<String> {
         space: &binary.addresses,
         functions: &binary.functions,
         paired: None,
+        abi: binary.abi,
+        calls: None,
     };
     il_lines_in(isa, &function.code, &insns, Some(context))
 }
@@ -157,6 +159,68 @@ fn only_the_il_view_indents(
     let il = line_places(View::Il, &binary, index);
     assert!(il.iter().any(|place| place.depth > 0), "{arch}");
     assert!(il.is_sorted_by(|earlier, later| earlier.address < later.address), "{arch}");
+    let high = line_places(View::Hil, &binary, index);
+    assert!(high.iter().any(|place| place.depth > 0), "{arch}");
+    assert!(high.len() <= il.len(), "{arch}: the high IL shows no more lines than the IL");
+}
+
+/// The diff of the high IL holds one line for each place of each side, as
+/// the TUI and `--diff` draw its jumps from the places.
+#[rstest]
+fn the_high_il_diff_and_its_places_agree(
+    #[values("arm", "thumb", "aarch64", "mips", "mipsel", "mips16", "i686", "x86_64", "powerpc")]
+    arch: &str,
+) {
+    let (before, after) = (library("lua", "before", arch), library("lua", "after", arch));
+    let diff = diff_with(&before, &after, Options::default());
+    let paired = diff.paired_labels(&before, &after);
+    for pair in &diff.matched {
+        let lines =
+            instruction_diff_in(View::Hil, Some(&paired), &before, pair.before, &after, pair.after);
+        let sides = lines.iter().fold((0, 0), |(old, new), line| match line {
+            DiffLine::Same(_) | DiffLine::Changed { .. } => (old + 1, new + 1),
+            DiffLine::Removed(_) => (old + 1, new),
+            DiffLine::Added(_) => (old, new + 1),
+        });
+        let places = (
+            line_places(View::Hil, &before, pair.before).len(),
+            line_places(View::Hil, &after, pair.after).len(),
+        );
+        assert_eq!(sides, places, "{arch}: {}", before.functions[pair.before].label());
+    }
+}
+
+/// The high IL view of the Lua fix, as `--view hil --diff luaZ_fill` shows
+/// it.
+#[rstest]
+fn the_high_il_diff_of_a_fix_is_locked(#[values("arm", "aarch64", "mips")] arch: &str) {
+    let (before, after) = (library("lua", "before", arch), library("lua", "after", arch));
+    let diff = diff_with(&before, &after, Options::default());
+    let index = before.functions.iter().position(|f| f.name == "luaZ_fill").expect("luaZ_fill");
+    let pair = diff.matched.iter().find(|pair| pair.before == index).expect("luaZ_fill pairs");
+    let lines = instruction_diff_in(
+        View::Hil,
+        Some(&diff.paired_labels(&before, &after)),
+        &before,
+        pair.before,
+        &after,
+        pair.after,
+    );
+    insta::assert_snapshot!(format!("lua_fix_hil_{arch}"), patch(&lines));
+}
+
+/// `lines` as a patch shows them.
+fn patch(lines: &[DiffLine]) -> String {
+    let shown: Vec<String> = lines
+        .iter()
+        .map(|line| match line {
+            DiffLine::Same(text) => format!("  {text}"),
+            DiffLine::Added(text) => format!("+ {text}"),
+            DiffLine::Removed(text) => format!("- {text}"),
+            DiffLine::Changed { before, after } => format!("- {before}\n+ {after}"),
+        })
+        .collect();
+    shown.join("\n")
 }
 
 /// The IL view of the Lua fix, as `--view il --diff luaZ_fill` shows it.
@@ -174,16 +238,7 @@ fn the_il_diff_of_a_fix_is_locked(#[values("arm", "aarch64", "mips16")] arch: &s
         &after,
         pair.after,
     );
-    let shown: Vec<String> = lines
-        .iter()
-        .map(|line| match line {
-            DiffLine::Same(text) => format!("  {text}"),
-            DiffLine::Added(text) => format!("+ {text}"),
-            DiffLine::Removed(text) => format!("- {text}"),
-            DiffLine::Changed { before, after } => format!("- {before}\n+ {after}"),
-        })
-        .collect();
-    insta::assert_snapshot!(format!("lua_fix_{arch}"), shown.join("\n"));
+    insta::assert_snapshot!(format!("lua_fix_{arch}"), patch(&lines));
 }
 
 /// The stripped library of the backports, built by GCC at -O2 for `arch`.
@@ -223,4 +278,82 @@ fn a_call_to_a_stripped_function_names_its_pair(
     }
     assert!(same > 1000, "{arch}: {same} calls to a stripped function");
     assert_eq!(differ, Vec::<String>::new(), "{arch}");
+}
+
+/// Lua's `luaZ_init` returns nothing, and `luaZ_fill` an `int`: no call of
+/// the first reads its result, and a call of the second does. `lua_dump`
+/// gives back what `luaU_dump` gives back, through a tail call, and a
+/// table of the data holds `luaB_cocreate`, for a call through a pointer.
+/// No export is one, as another binary can read its result.
+#[rstest]
+fn a_function_whose_result_no_call_reads_returns_nothing(
+    #[values("arm", "aarch64", "mips", "x86_64")] arch: &str,
+) {
+    let binary = library("lua", "after", arch);
+    let unread = hereticus::view::call_facts(&binary).unread_results;
+    let address = |name: &str| {
+        binary.functions.iter().find(|function| function.name == name).expect(name).address
+    };
+    assert!(unread.contains(&address("luaZ_init")), "{arch}: luaZ_init returns nothing");
+    for name in ["luaZ_fill", "luaU_dump", "luaB_cocreate"] {
+        assert!(!unread.contains(&address(name)), "{arch}: {name} gives back a result");
+    }
+    // Code of another binary can call an export of the library and read
+    // its result.
+    assert!(binary.exported.contains(&address("lua_gettop")), "{arch}: the library exports");
+    assert!(binary.exported.iter().all(|export| !unread.contains(export)), "{arch}");
+}
+
+/// `mix_two(a, b)` calls `beta(a, b)` with the arguments it was given, so
+/// it sets no argument register for the call. The other calls of `beta`
+/// set two, so this one shows two. `table` passes `v` to `alpha` in a
+/// tail call, and the copy that passes it shows, also where the jump of an
+/// unlinked object holds no target yet.
+#[rstest]
+#[case::x86_64_pe("pe/x86_64-calls.dll", "ecx")]
+#[case::aarch64_pe("pe/arm64-calls.dll", "w0")]
+#[case::arm_object("O2/calls.o", "r0")]
+fn a_call_takes_the_fewest_arguments_the_other_calls_set(#[case] file: &str, #[case] first: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build").join(file);
+    let data = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("{}: {err}, run `just fixtures` first", path.display()));
+    let binary = Binary::parse(&data).expect("a fixture parses");
+    let shown = |name: &str| {
+        let index = binary.functions.iter().position(|f| f.name == name).expect(name);
+        instruction_diff_in(View::Hil, None, &binary, index, &binary, index)
+            .iter()
+            .map(|line| match line {
+                DiffLine::Same(text) => text.trim().to_string(),
+                other => panic!("{file}: {name} differs from itself: {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    let mix_two = shown("mix_two").join("\n");
+    assert!(mix_two.contains("beta(arg1, arg2)"), "{file}: {mix_two}");
+    assert!(mix_two.contains("alpha(arg1)"), "{file}: {mix_two}");
+    let table = shown("table");
+    let tail = table.iter().position(|line| line == "goto alpha").expect("a tail call of alpha");
+    assert_eq!(table[tail - 1], format!("{first} = arg2"), "{file}");
+}
+
+/// The high IL shows a delay slot before its branch, so a jump to the
+/// branch comes in at the line of the slot: in `luaZ_fill` of MIPS, the
+/// test of `z->eoz` jumps to the `b` that sets `v0 = -1` in its slot.
+#[test]
+fn a_jump_to_a_branch_comes_in_at_its_delay_slot() {
+    let binary = library("lua", "after", "mips");
+    let index = binary.functions.iter().position(|f| f.name == "luaZ_fill").expect("luaZ_fill");
+    let lines: Vec<String> = instruction_diff_in(View::Hil, None, &binary, index, &binary, index)
+        .into_iter()
+        .map(|line| match line {
+            DiffLine::Same(text) => text.trim().to_string(),
+            other => panic!("luaZ_fill differs from itself: {other:?}"),
+        })
+        .collect();
+    let places = line_places(View::Hil, &binary, index);
+    let line_of = |text: &str| lines.iter().position(|line| line.starts_with(text)).expect(text);
+    let test = line_of("if ((load.32 [arg1 + 0x14]) != 0)");
+    let slot = line_of("v0 = -0x1");
+    assert_eq!(line_of("goto"), slot + 1, "{lines:?}");
+    assert_eq!(places[test].jump, Some(places[slot].address));
 }

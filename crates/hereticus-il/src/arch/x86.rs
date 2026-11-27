@@ -348,6 +348,11 @@ enum Form {
     /// `add rax, rbx`. The IL names it twice, as `rax = rax + rbx`, so it
     /// reads as a three-operand operation on every architecture.
     TwoAddress,
+    /// The one operand is both a source and the destination, and the
+    /// other source is a 1 the instruction does not name, as in `inc eax`.
+    /// The IL names it as `eax = eax + 1`, with the destination twice as
+    /// in [`Form::TwoAddress`].
+    Step,
     /// As the instruction names them.
     AsNamed,
 }
@@ -366,6 +371,9 @@ fn op_of(inst: &iced_x86::Instruction) -> (Op, Form) {
     // An operation with three operands names its destination apart, as
     // `imul eax, ebx, 3` and `andn eax, ebx, ecx` do.
     let arithmetic = |op| if inst.op_count() >= 3 { as_named(op) } else { two_address(op) };
+    // With one operand, `mul ebx` and `imul ebx` multiply `eax` by it into
+    // `edx:eax`, which no IL operation names.
+    let multiply = |op| if inst.op_count() == 1 { as_named(op) } else { arithmetic(op) };
     match mnemonic {
         M::Mov
         | M::Movd
@@ -394,9 +402,13 @@ fn op_of(inst: &iced_x86::Instruction) -> (Op, Form) {
         M::Lea => as_named(Op::Add),
         M::Push => as_named(Op::Store),
         M::Pop => as_named(Op::Load),
-        M::Add | M::Adc | M::Inc => two_address(Op::Add),
-        M::Sub | M::Sbb | M::Dec => two_address(Op::Subtract),
-        M::Imul | M::Mul => arithmetic(Op::Multiply),
+        M::Add => two_address(Op::Add),
+        M::Sub => two_address(Op::Subtract),
+        M::Adc => two_address(Op::AddCarry),
+        M::Sbb => two_address(Op::SubtractBorrow),
+        M::Inc => (Op::Add, Form::Step),
+        M::Dec => (Op::Subtract, Form::Step),
+        M::Imul | M::Mul => multiply(Op::Multiply),
         M::Div | M::Idiv => as_named(Op::Divide),
         M::And => two_address(Op::And),
         M::Or => two_address(Op::Or),
@@ -407,10 +419,13 @@ fn op_of(inst: &iced_x86::Instruction) -> (Op, Form) {
         M::Shl | M::Sal | M::Shlx => arithmetic(Op::ShiftLeft),
         M::Shr | M::Shrx => arithmetic(Op::ShiftRight),
         M::Sar | M::Sarx => arithmetic(Op::ShiftRightArithmetic),
-        M::Rol | M::Ror | M::Rcl | M::Rcr | M::Rorx => arithmetic(Op::Rotate),
-        M::Shld | M::Shrd | M::Bt | M::Bts | M::Btr | M::Btc | M::Bextr | M::Pdep | M::Pext => {
-            as_named(Op::BitField)
-        }
+        M::Ror | M::Rorx => arithmetic(Op::Rotate),
+        // A rotate left, and one through the carry, read as functions: the
+        // IL rotates right only.
+        M::Rol | M::Rcl | M::Rcr => arithmetic(Op::BitField),
+        // `bts` and its kin change the bit they test, and `bt` only tests.
+        M::Bts | M::Btr | M::Btc | M::Shld | M::Shrd => two_address(Op::BitField),
+        M::Bt | M::Bextr | M::Pdep | M::Pext => as_named(Op::BitField),
         M::Bsf | M::Bsr | M::Lzcnt | M::Tzcnt | M::Popcnt | M::Bswap => as_named(Op::Bits),
         M::Cmp | M::Test => as_named(Op::Compare),
         M::Cmove
@@ -569,6 +584,17 @@ fn test_of(inst: &iced_x86::Instruction) -> Option<Test> {
     }
 }
 
+/// The displacement of the memory operand of `inst`, with its sign. An
+/// address of 32 bits wraps, so `[ebx - 8]` adds `0xfffffff8`, which iced
+/// gives as it is.
+fn displacement(inst: &iced_x86::Instruction) -> i64 {
+    let is_32_bit = |register: Register| register != Register::None && register.size() == 4;
+    match is_32_bit(inst.memory_base()) || is_32_bit(inst.memory_index()) {
+        true => i64::from(inst.memory_displacement32() as i32),
+        false => inst.memory_displacement64() as i64,
+    }
+}
+
 /// Operand `index` of `inst` as the IL names it.
 fn il_operand(inst: &iced_x86::Instruction, index: u32) -> il::Operand {
     match inst.op_kind(index) {
@@ -591,7 +617,7 @@ fn il_operand(inst: &iced_x86::Instruction, index: u32) -> il::Operand {
             let base = il_register(inst.memory_base());
             // The distance from `rip` moves whenever the code does.
             let offset = (!inst.is_ip_rel_memory_operand())
-                .then(|| inst.memory_displacement64() as i64)
+                .then(|| displacement(inst))
                 .filter(|&offset| offset != 0 || base.is_none());
             let index = il_register(inst.memory_index())
                 .map(|reg| (reg, inst.memory_index_scale().trailing_zeros() as u8));
@@ -633,6 +659,10 @@ pub fn lift(inst: &iced_x86::Instruction) -> Lifted {
             let destination = il_operand(inst, 0);
             core::iter::once(destination).chain(named).collect()
         }
+        Form::Step => {
+            let destination = il_operand(inst, 0);
+            core::iter::once(destination).chain(named).chain([il::Operand::Const(1)]).collect()
+        }
         Form::AsNamed => named.collect(),
     };
     Lifted { op, reads, writes, memory, test: test_of(inst), operands }
@@ -664,7 +694,11 @@ fn memory_access(
         (false, false) => return None,
     };
     let width = used.first().and_then(|used| width_of(used.memory_size().size()));
-    Some(MemoryAccess { kind, width })
+    let extension = match inst.mnemonic() {
+        Mnemonic::Movsx | Mnemonic::Movsxd => crate::Extension::Sign,
+        _ => crate::Extension::Zero,
+    };
+    Some(MemoryAccess { kind, width, extension })
 }
 
 /// The name of each operand of [`lift`], as a reader reads it.
@@ -672,6 +706,10 @@ pub fn names(inst: &iced_x86::Instruction) -> il::Names {
     let named = (0..inst.op_count()).map(|index| operand_name(inst, index));
     match op_of(inst).1 {
         Form::TwoAddress => core::iter::once(operand_name(inst, 0)).chain(named).collect(),
+        Form::Step => core::iter::once(operand_name(inst, 0))
+            .chain(named)
+            .chain([il::constant_name(1)])
+            .collect(),
         Form::AsNamed => named.collect(),
     }
 }
@@ -700,7 +738,7 @@ fn operand_name(inst: &iced_x86::Instruction, index: u32) -> CompactString {
                 let distance = inst.memory_displacement64().wrapping_sub(inst.next_ip()) as i64;
                 return il::memory_name("rip", None, Some(distance));
             }
-            let offset = Some(inst.memory_displacement64() as i64);
+            let offset = Some(displacement(inst));
             match inst.memory_base() {
                 Register::None => match index_name {
                     Some(index_name) => il::memory_name(&index_name, None, offset),
@@ -857,6 +895,61 @@ mod tests {
         assert_eq!(lifted.operands.as_slice(), [rax, rax, rbx]);
         assert!(lifted.reads.contains(general(0)) && lifted.reads.contains(general(3)));
         assert!(lifted.writes.contains(general(0)) && lifted.writes.contains(Reg::Flags));
+    }
+
+    #[rstest]
+    #[case::inc(&[0xff, 0xc3], Op::Add)]
+    #[case::dec(&[0xff, 0xcb], Op::Subtract)]
+    fn a_step_adds_or_subtracts_a_one_it_does_not_name(#[case] bytes: &[u8], #[case] op: Op) {
+        // inc ebx, dec ebx
+        let (insn, _) = read(bytes);
+        let lifted = lift_one(bytes);
+        let ebx = il::Operand::Reg(general(3));
+        assert_eq!(
+            (lifted.op, lifted.operands.as_slice()),
+            (op, [ebx, ebx, il::Operand::Const(1)].as_slice())
+        );
+        let names = names(&instruction(&insn).expect("decoded"));
+        assert_eq!(names.as_slice(), ["ebx", "ebx", "1"]);
+    }
+
+    /// `adc` and `sbb` add and subtract the carry too, so `sbb esi, esi`
+    /// is 0 or -1, not the 0 of `sub esi, esi`.
+    #[test]
+    fn a_carry_reads_into_an_add_and_a_subtract() {
+        assert_eq!(lift_one(&[0x48, 0x11, 0xd8]).op, Op::AddCarry); // adc rax, rbx
+        let sbb = lift_one(&[0x19, 0xf6]).canonical(); // sbb esi, esi
+        assert_eq!(sbb.op, Op::SubtractBorrow);
+        let esi = il::Operand::Reg(general(6));
+        assert_eq!(sbb.operands.as_slice(), [esi, esi, esi]);
+        assert!(sbb.reads.contains(Reg::Flags));
+    }
+
+    /// A displacement of an address of 32 bits keeps its sign.
+    #[test]
+    fn a_32_bit_displacement_keeps_its_sign() {
+        // mov eax, [ebx - 8]
+        let (insn, _) =
+            X86::BITS32.read(&[0x8b, 0x43, 0xf8], 0, 0x1000, Printing::Skip).expect("decoded");
+        let lifted = X86::BITS32.lift(&insn).expect("lifted");
+        let ebx = Some(general(3));
+        let memory = il::Operand::Memory {
+            base: ebx,
+            offset: Some(-8),
+            index: None,
+            update: il::Update::None,
+        };
+        assert_eq!(lifted.operands[1], memory);
+        let names = names(&instruction(&insn).expect("decoded"));
+        assert_eq!(names[1], "[ebx - 0x8]");
+    }
+
+    #[test]
+    fn a_multiply_of_one_operand_names_only_it() {
+        // mul ebx: edx:eax = eax * ebx
+        let lifted = lift_one(&[0xf7, 0xe3]);
+        assert_eq!(lifted.operands.as_slice(), [il::Operand::Reg(general(3))]);
+        assert!(lifted.reads.contains(general(0)) && lifted.writes.contains(general(2)));
     }
 
     #[test]

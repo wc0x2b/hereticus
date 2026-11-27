@@ -15,8 +15,8 @@ expression: text
 │     46c8   r3 = 0
 │     46ca   store.32 [r4 + 0x68] = r3
 └───> 46cc   flags = compare(r5, 0)
-      46d0   if (ne) flags = compare(r5, 5)
-┌───< 46d4   if (r5 != 5) goto $+0x4e
+      46d0   if (ne) flags = compare(r5, -5)
+┌───< 46d4   if (r5 != -5) goto $+0x4e
 │     46d6     store.32 [r4 + 0x64] = r5
 │┌──< 46d8     if (r6 == 0) goto $+0x46
 ││    46da   r7 = load.32 [r4 + 0x18]
@@ -50,7 +50,7 @@ expression: text
 │ ││  4720   return
 └─┼┼> 4722   r3 = 0
   ││  4724   store.32 [r4 + 0x64] = r5
-  ││  4726   flags = compare(r5, 4)
+  ││  4726   flags = compare(r5, -4)
   ││  472c   if (ne) flags = compare(r6, r3)
   ││  472e   store.32 [r4] = r3
   ││  4730   if (r6 != r3) goto $-0x56

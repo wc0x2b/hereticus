@@ -1,6 +1,5 @@
 ---
 source: hereticus/tests/view.rs
-assertion_line: 51
 expression: "gz_error(arch).join(\"\\n\")"
 ---
 store.32 [sp - 0x14] = r4, r5, r6, r7, lr; sp = sp - 0x14
@@ -12,8 +11,8 @@ r6 = r2
 flags = compare(r0, 0)
 if (r0 == 0) goto $+0x18
 r3 = load.32 [r4 + 0x64]
-flags = compare(r3, 4)
-if (r3 != 4) goto $+0xbc
+flags = compare(r3, -4)
+if (r3 != -4) goto $+0xbc
 r3 = 0
 store.32 [r4 + 0x68] = r3
 flags = compare(r5, 0)
@@ -54,7 +53,7 @@ sp = sp + 0xc
 return
 r3 = 0
 store.32 [r4 + 0x64] = r5
-flags = compare(r5, 4)
+flags = compare(r5, -4)
 if (ne) flags = compare(r6, r3)
 store.32 [r4] = r3
 if (flags.NotEqual) goto $-0x8c

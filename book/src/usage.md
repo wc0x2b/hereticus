@@ -86,7 +86,7 @@ inflate_table: gone, closest inflate_table at 0.57, same place as inflate_table
 <!-- end output -->
 
 A place is a hint and not a pair: over the backports,
-62.5%<!-- from cross_build: all / right% --> of them are right.
+62.8%<!-- from cross_build: all / right% --> of them are right.
 
 ## Look Inside a Function
 
@@ -98,8 +98,12 @@ its target, marked `>`, as in the terminal interface. A jump that a
 change added or removed takes the color of the change. The IL view
 shows no padding, as `nop`, and prints a block of code that moved in
 gray. A stripped function has the name that the report gives it, as
-`sub_7630`. See
-[The Diff of One Function](./examples.md#the-diff-of-one-function).
+`sub_7630`. `--view hil` shows the high IL: the IL statements, with each
+call on one line with its arguments and its result, as
+`ret = strcmp(arg2, &"expect")`. It also names the registers and the
+stack by their roles, and it shows no line that only keeps the frame.
+See [The Diff of One Function](./examples.md#the-diff-of-one-function)
+and [The High IL](./methods.md#the-high-il).
 
 ## Terminal Interface
 
@@ -249,7 +253,7 @@ $ hereticus --raw --arch arm32 --base 0x80208000 --unpack stub zImage-v1 zImage-
 - `html`: one HTML page, to open in a browser or send to a person. It
   holds the table, then the diff of each listed function side by side,
   with the lines of its jumps. A button at the top shows the diffs as
-  assembly or as IL. `--view` sets which one shows first.
+  assembly, as IL or as high IL. `--view` sets which one shows first.
 
 The columns of `compact` are the change, the name before, the name after,
 the score, and the counts of added, removed and rewritten instructions:
@@ -283,7 +287,7 @@ opens on the diff of the fix, `sub_404494`, on row 3<!-- from truth_cves: CVE-20
 width.
 
 ```console
-$ hereticus --format html --view il 7.24/modbusgwd 7.24.3/modbusgwd > report.html
+$ hereticus --format html --view hil 7.24/modbusgwd 7.24.3/modbusgwd > report.html
 ```
 
 <iframe src="./reports/cve-2026-18368.html#diff-2" title="The HTML report of CVE-2026-18368" class="report"></iframe>
@@ -295,8 +299,8 @@ and gives the name that the next one takes:
 
 ```console
 $ hereticus --format markdown before.bin after.bin | head -20       # the most likely fixes
-$ hereticus --view il --diff sub_7630 before.bin after.bin          # what one function changed
-$ hereticus --view il --diff-all before.bin after.bin | grep -E '^(sub_|[-+].*PATH)'  # find a text
+$ hereticus --view hil --diff sub_7630 before.bin after.bin         # what one function changed
+$ hereticus --view hil --diff-all before.bin after.bin | grep -E '^sub_|[-+] .*PATH'  # find a text
 $ hereticus --functions --format json before.bin                     # each function, for a script
 ```
 
@@ -315,9 +319,9 @@ To find what changed between two builds of a binary, use `hereticus`:
 
 - `hereticus --format markdown OLD NEW | head -20` lists the changed
   functions, the most likely fix first.
-- `hereticus --view il --diff NAME OLD NEW` shows the diff of one function.
+- `hereticus --view hil --diff NAME OLD NEW` shows the diff of one function.
   Use the name the report gives, as `sub_7630`.
-- `hereticus --view il --diff-all OLD NEW | grep TEXT` finds the function
+- `hereticus --view hil --diff-all OLD NEW | grep TEXT` finds the function
   that uses a text an advisory names.
 - For a raw image, add `--raw --arch ARCH --base ADDRESS`. Without
   `--base`, the error gives the base the code shows; check it before you
@@ -411,7 +415,7 @@ Options:
       --open <PROJECT>         Open a project that `--save` or `--tui` saved, in place of two binaries
       --functions              List the functions of one binary, then stop
       --find-base              List the bases a raw image could load at, the best first, then stop
-      --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il]
+      --view <VIEW>            How `--diff`, `--diff-all` and `--tui` show each instruction [default: asm] [possible values: asm, il, hil]
       --ignore-names           Ignore symbol names, as though both binaries were stripped
       --show-retouched         List functions that differ in nothing but a constant
       --show-data              List regions that look like data rather than code

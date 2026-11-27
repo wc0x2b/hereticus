@@ -831,6 +831,9 @@ fn binary_of(functions: &[(&str, &[u8])]) -> hereticus_image::Binary {
         addresses: hereticus_memory::AddressSpace::none(),
         links: hereticus_image::Links::default(),
         other_set: std::collections::BTreeSet::new(),
+        abi: hereticus_arch::Abi::Unix,
+        calls: std::sync::OnceLock::new(),
+        exported: std::collections::BTreeSet::new(),
         functions: functions
             .iter()
             .enumerate()
@@ -989,6 +992,10 @@ fn an_il_shape_collapses_numbers_but_not_names() {
     assert_eq!(il_key("r2 = load.32 [pc + 0x5c]"), "r2 = load.32 [pc + ]");
     assert_eq!(il_key("store.64 [sp + 0x20] = x22, x21"), "store.64 [sp + ] = x22, x21");
     assert_eq!(il_key("sp = sp - 0x40"), "sp = sp - 0x40", "the frame size stays");
+    assert_eq!(il_key("var_1c = arg1"), "var_ = arg1", "a place of the high IL");
+    assert_eq!(il_key("x0 = f(&var_148, arg_10)"), "x0 = f(&var_, arg_)");
+    assert_eq!(il_key("var_x = avar_10"), "var_x = avar_10", "no place");
+    assert_eq!(il_key("x0 = &\"var_10\""), "x0 = &\"var_10\"", "a text stays");
     assert_eq!(il_key("rdi = load.64 [rsp + 0x8]"), "rdi = load.64 [rsp + ]");
     assert_eq!(il_key("store.32 [esp + 0x1c] = eax"), "store.32 [esp + ] = eax");
     assert_eq!(il_key("rax = load.64 [rbp + 0x18]"), "rax = load.64 [rbp + 0x18]", "a field");
@@ -1381,6 +1388,9 @@ fn passes_text(text: &str) -> hereticus_image::Binary {
         found_by: hereticus_image::FoundBy::Symbols,
         addresses: hereticus_memory::AddressSpace::of_raw_image(0x8000, 0x880),
         other_set: std::collections::BTreeSet::new(),
+        abi: hereticus_arch::Abi::Unix,
+        calls: std::sync::OnceLock::new(),
+        exported: std::collections::BTreeSet::new(),
         links: hereticus_image::Links::of_parts(
             vec![(0x8000, code.clone()), (0x9000, data)],
             BTreeMap::new(),
@@ -1491,6 +1501,9 @@ fn raw_mips(code: &[u8]) -> hereticus_image::Binary {
         addresses: AddressSpace::of_raw_image(0x8000_0000, 0x10_0000),
         links: hereticus_image::Links::default(),
         other_set: std::collections::BTreeSet::new(),
+        abi: hereticus_arch::Abi::Unix,
+        calls: std::sync::OnceLock::new(),
+        exported: std::collections::BTreeSet::new(),
         functions: vec![Function {
             name: String::new(),
             address: 0x8000_0000,

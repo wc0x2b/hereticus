@@ -3239,3 +3239,61 @@ thread, but each instruction is now hashed beforehand, on every core,
 and the interner finds it by that hash. Reading the tables, the rows and
 the classes of the two binaries at once took 0.1 s more off. The
 comparison took 3.38 s, with the same report, byte for byte.
+
+### What the high IL takes out of a diff
+
+Measured on 2026-11-26 with `hereticus/examples/view_noise.rs`, which
+diffs each changed pair once as IL and once as high IL, and counts the
+lines and the lines that differ: removed, added or rewritten.
+
+| Set | Changed pairs | Lines, IL | Lines, high IL | Differ, IL | Differ, high IL |
+|---|---|---|---|---|---|
+| The backports, 282 binaries | 651 | 269,197 | 252,139 | 54,010 | 51,718 |
+| Assemblage, 300 binaries | 18,279 | 3,919,151 | 3,048,296 | 721,498 | 680,769 |
+
+The high IL shows 6.3% fewer lines on the backports and 22.2% fewer on
+Assemblage, where the saves, the restores and the moves of the stack
+pointer of x86 take many lines. It shows 4.2% and 5.6% fewer lines that
+differ: most of a diff stays.
+
+`hereticus/examples/il_noise.rs` with `HIL=1` sorts what stays on the
+backports. Calls fall from 1,604 removed or added lines to 150, as the
+setting of each argument folds into its call. The largest share left,
+19.7%, is a line whose twin in the same hunk differs only in a register
+or a number: the high IL names a register by its role where it holds an
+argument or a result, and leaves each temporary register as the compiler
+chose it. A further layer that names each temporary by the value it
+holds, and folds a value that one line uses into that line, would reach
+those.
+
+The high IL then folded each value that one later statement reads into
+that statement, hid a compare that only its branch reads and a copy of
+an argument, and worked out an operation on two constants. On the same
+sets:
+
+| Set | Lines, high IL | Differ, high IL | Fewer lines than the IL | Fewer that differ |
+|---|---|---|---|---|
+| The backports | 207,654 | 45,364 | 22.9% | 16.0% |
+| Assemblage | 2,623,999 | 598,131 | 33.0% | 17.1% |
+
+A fix often reads as one line: the fix of `luaZ_fill` in Lua is
+`if ((load.32 [arg1 + 0x14]) != 0) goto …` and the store of the flag, on
+A32, AArch64 and MIPS alike. A call whose callee has no known count of
+arguments counts as one that reads each argument register, so that no
+setting of one folds away before it; that cost 0.8 points of the 16.8%
+fewer lines that differ on the backports.
+
+Three gaps then took the most out. The diff took `var_1c` and `var_20`
+for two lines, where it takes `[sp + 0x1c]` and `[sp + 0x20]` of the IL
+for one: the distance now leaves the key. T32 lost its stack after each
+`push`, and a function with a switch after each word of its table that
+seemed to run. And 32-bit x86 had no ABI in the high IL; cdecl now names
+its arguments on the stack, folds the pushes before a call into it, and
+reads `[ebp - 8]` as the place 8 below `ebp`, where the lift held the
+distance as `0xfffffff8`. Over zlib at `-O2` on i686, the high IL then
+named 735 places on the stack and left 30 unnamed, from 871 unnamed.
+
+| Set | Lines, high IL | Differ, high IL | Fewer lines than the IL | Fewer that differ |
+|---|---|---|---|---|
+| The backports | 201,003 | 42,487 | 25.3% | 21.3% |
+| Assemblage | 2,566,965 | 533,066 | 34.5% | 26.1% |

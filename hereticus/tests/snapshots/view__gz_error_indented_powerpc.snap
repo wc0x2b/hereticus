@@ -2,7 +2,7 @@
 source: hereticus/tests/view.rs
 expression: indented
 ---
-store.32 [r1 - 0x20] = r1
+store.32 [r1 - 0x20] = r1; r1 = r1 - 0x20
 r0 = lr
 bcl 20, 31, $+0x4
 store.32 [r1 + 0x1c] = r31

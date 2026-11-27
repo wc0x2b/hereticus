@@ -46,6 +46,9 @@ pub enum View {
     Assembly,
     /// As the IL reads it: see [`hereticus_view`].
     Il,
+    /// As the high IL reads it, with each call and what it passes on one
+    /// line: see [`hereticus_view::hil_statements_in`].
+    Hil,
 }
 
 /// Where a line of a view sits in its function.
@@ -68,7 +71,7 @@ pub struct LinePlace {
 pub fn line_places(view: View, binary: &Binary, index: usize) -> Vec<LinePlace> {
     let function = &binary.functions[index];
     let arch = binary.isa_of(function).arch();
-    let insns = decode_shown(arch, function);
+    let insns = decode_shown(arch, function, Some(binary));
     let jump_of = |address: u64| {
         let at = insns.binary_search_by_key(&address, |insn| insn.address).ok()?;
         let (InsnKind::Branch { target: Some(target) } | InsnKind::Jump { target: Some(target) }) =
@@ -86,19 +89,86 @@ pub fn line_places(view: View, binary: &Binary, index: usize) -> Vec<LinePlace> 
             .zip(hereticus_view::il_line_depths(arch, &insns))
             .map(|(address, depth)| place(address, depth))
             .collect(),
+        View::Hil => {
+            // Which lines fold into a call hangs on what the binary names,
+            // so the places come from the statements themselves.
+            let addresses: Vec<u64> = hereticus_view::hil_statements_in(
+                arch,
+                &function.code,
+                &insns,
+                Some(context_of(binary, None)),
+            )
+            .into_iter()
+            .map(|statement| statement.address)
+            .collect();
+            let depths = hereticus_view::line_depths_at(arch, &insns, &addresses);
+            // The high IL shows a delay slot before its branch, so a jump to
+            // the branch comes in at the line of the slot, which runs first.
+            let slot_before = |target: u64| {
+                let line = addresses.iter().position(|&address| address == target)?;
+                let before = *addresses.get(line.checked_sub(1)?)?;
+                let at = insns.binary_search_by_key(&target, |insn| insn.address).ok()?;
+                let slots = arch.delay_slots(&insns[at]);
+                insns[at + 1..]
+                    .iter()
+                    .take(slots)
+                    .any(|slot| slot.address == before)
+                    .then_some(before)
+            };
+            addresses
+                .iter()
+                .zip(depths)
+                .map(|(&address, depth)| {
+                    let mut place = place(address, depth);
+                    place.jump = place.jump.map(|target| slot_before(target).unwrap_or(target));
+                    place
+                })
+                .collect()
+        }
+    }
+}
+
+/// What `binary` says around its code, for a view to name what the code
+/// points at.
+fn context_of<'a>(
+    binary: &'a Binary,
+    paired: Option<&'a PairedLabels>,
+) -> hereticus_view::Context<'a> {
+    hereticus_view::Context {
+        links: &binary.links,
+        space: &binary.addresses,
+        functions: &binary.functions,
+        paired,
+        abi: binary.abi,
+        calls: Some(binary.calls.get_or_init(|| hereticus_view::call_facts(binary))),
     }
 }
 
 /// The instructions of `function` as a diff shows them, with each word of
-/// a literal pool as data.
+/// a literal pool as data, and, where `binary` holds the function, each
+/// word of a table of the cases of a switch.
 ///
 /// A32 keeps its pool words as wide as its instructions, so the decoder
 /// reads them as whatever their bits spell, as `mrc2` or `andeq`. Their
 /// values move with each release, which put ten lines of noise after the
-/// `procd` fix of CVE-2026-30874.
-fn decode_shown(arch: &dyn Arch, function: &Function) -> Vec<Insn> {
+/// `procd` fix of CVE-2026-30874. A table of cases right after its jump
+/// reads so too.
+fn decode_shown(arch: &dyn Arch, function: &Function, binary: Option<&Binary>) -> Vec<Insn> {
     let mut insns = decode_all(arch, &function.code, function.address).0;
-    let pool: HashSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
+    let mut pool: HashSet<u64> = arch.literal_pool_words(&insns).into_iter().collect();
+    if let Some(binary) = binary {
+        // An object holds no sections in its links, but the function holds
+        // the table that follows its jump.
+        let mut regions = binary.links.regions();
+        regions.push((function.address, &function.code));
+        let memory = hereticus_recovery::arch::Memory::new(&regions);
+        let code = function.address..function.address + function.code.len() as u64;
+        for table in arch.jump_tables(&memory, code, &insns) {
+            pool.extend(
+                insns.iter().map(|insn| insn.address).filter(|at| table.words.contains(at)),
+            );
+        }
+    }
     for insn in insns.iter_mut().filter(|insn| pool.contains(&insn.address)) {
         *insn = hereticus_il::arch::data_word(insn.address, insn.bytes());
     }
@@ -108,7 +178,7 @@ fn decode_shown(arch: &dyn Arch, function: &Function) -> Vec<Insn> {
 /// [`instruction_diff`], or the same diff with each instruction shown as
 /// `view` says.
 ///
-/// The IL view aligns on the IL statements, so two spellings of one
+/// The IL and high IL views align on their statements, so two spellings of one
 /// operation, as `eor r0, r0, r0` and `mov r0, #0`, are the same line. With
 /// `paired`, a call to a stripped function of `after` names the function as
 /// its pair in `before` is named.
@@ -123,18 +193,21 @@ pub fn instruction_diff_in(
     let (left, right) = (&before.functions[before_index], &after.functions[after_index]);
     let (before_isa, after_isa) = (before.isa_of(left), after.isa_of(right));
     if view == View::Assembly {
-        return instruction_diff(left, before_isa, right, after_isa);
+        return instruction_diff_of(left, before_isa, Some(before), right, after_isa, Some(after));
     }
     let side = |binary: &Binary, function: &Function, isa: Isa, paired| {
         let arch = isa.arch();
-        let insns = decode_shown(arch, function);
-        let context = hereticus_view::Context {
-            links: &binary.links,
-            space: &binary.addresses,
-            functions: &binary.functions,
-            paired,
+        let insns = decode_shown(arch, function, Some(binary));
+        let context = context_of(binary, paired);
+        let statements = match view {
+            View::Hil => {
+                hereticus_view::hil_statements_in(arch, &function.code, &insns, Some(context))
+            }
+            View::Assembly | View::Il => {
+                hereticus_view::il_statements_in(arch, &function.code, &insns, Some(context))
+            }
         };
-        IlSide::new(arch, &function.code, insns, Some(context))
+        IlSide::with_statements(arch, insns, statements)
     };
     let before_side = side(before, left, before_isa, None);
     let after_side = side(after, right, after_isa, paired);
@@ -155,6 +228,7 @@ pub(super) struct IlSide<'a> {
 }
 
 impl<'a> IlSide<'a> {
+    #[cfg(test)]
     pub(super) fn new(
         arch: &'a dyn Arch,
         code: &[u8],
@@ -162,6 +236,15 @@ impl<'a> IlSide<'a> {
         context: Option<hereticus_view::Context<'_>>,
     ) -> Self {
         let statements = hereticus_view::il_statements_in(arch, code, &insns, context);
+        Self::with_statements(arch, insns, statements)
+    }
+
+    /// The side whose lines are `statements`, which show `insns`.
+    pub(super) fn with_statements(
+        arch: &'a dyn Arch,
+        insns: Vec<Insn>,
+        statements: Vec<hereticus_view::Statement>,
+    ) -> Self {
         let printed = insns
             .iter()
             .filter_map(hereticus_il::arch::lift_named)
@@ -742,7 +825,53 @@ pub(super) fn il_key(line: &str) -> String {
         collapsed.push_str(rest);
         key = collapsed;
     }
-    collapse_into_texts(&key)
+    collapse_into_texts(&collapse_slot_names(&key))
+}
+
+/// `line` with each place on the stack that the high IL names, as
+/// `var_1c` or `arg_10`, written without its distance, as a frame slot of
+/// the IL is: the distance moves when the frame grows.
+fn collapse_slot_names(line: &str) -> String {
+    let mut collapsed = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(['v', 'a']) {
+        let before = &line[..line.len() - rest.len() + at];
+        let starts_word = !inside_text(before)
+            && !before.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        let marker = ["var_", "arg_"].into_iter().find(|marker| rest[at..].starts_with(marker));
+        match marker.filter(|_| starts_word) {
+            Some(marker) => {
+                let after = &rest[at + marker.len()..];
+                let digits =
+                    after.len() - after.trim_start_matches(|c: char| c.is_ascii_hexdigit()).len();
+                let ends_word =
+                    !after[digits..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+                collapsed.push_str(&rest[..at + marker.len()]);
+                rest = if digits > 0 && ends_word { &after[digits..] } else { after };
+            }
+            None => {
+                collapsed.push_str(&rest[..=at]);
+                rest = &rest[at + 1..];
+            }
+        }
+    }
+    collapsed.push_str(rest);
+    collapsed
+}
+
+/// Whether `before`, the start of a line, ends inside a text: it opens one
+/// more quote than it closes.
+fn inside_text(before: &str) -> bool {
+    let mut quoted = false;
+    let mut escaped = false;
+    for c in before.chars() {
+        match c {
+            '"' if !escaped => quoted = !quoted,
+            _ => {}
+        }
+        escaped = quoted && c == '\\' && !escaped;
+    }
+    quoted
 }
 
 /// `line` with each pointer into a text, as `"Unexpected character\n"[10]`,
@@ -830,10 +959,23 @@ pub fn instruction_diff(
     after: &Function,
     after_isa: Isa,
 ) -> Vec<DiffLine> {
+    instruction_diff_of(before, before_isa, None, after, after_isa, None)
+}
+
+/// [`instruction_diff`], where each binary that holds its function lets
+/// the diff read the tables of cases in it as data.
+fn instruction_diff_of(
+    before: &Function,
+    before_isa: Isa,
+    before_binary: Option<&Binary>,
+    after: &Function,
+    after_isa: Isa,
+    after_binary: Option<&Binary>,
+) -> Vec<DiffLine> {
     let before_arch = before_isa.arch();
     let after_arch = after_isa.arch();
-    let before_insns = decode_shown(before_arch, before);
-    let after_insns = decode_shown(after_arch, after);
+    let before_insns = decode_shown(before_arch, before, before_binary);
+    let after_insns = decode_shown(after_arch, after, after_binary);
 
     // Align on the printed text, but with branch targets collapsed. Keeping the
     // constant in the key is what lets a new `tst r5, #4` stand apart from an

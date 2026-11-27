@@ -1,9 +1,8 @@
 ---
 source: hereticus/tests/view.rs
-assertion_line: 71
-expression: "shown.join(\"\\n\")"
+expression: patch(&lines)
 ---
-  store.64 [sp - 0x30] = x29, x30
+  store.64 [sp - 0x30] = x29, x30; sp = sp - 0x30
   x29 = sp
 - x2 = sp + 0x28
 + w1 = load.32 [x0 + 0x28]
@@ -27,5 +26,5 @@ expression: "shown.join(\"\\n\")"
   return
 + w0 = 1
 + store.32 [x19 + 0x28] = w0
-  w0 = 0
+  w0 = -0x1
   goto $-0x18

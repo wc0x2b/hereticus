@@ -104,6 +104,24 @@ impl RegSet {
     /// The empty set.
     pub const EMPTY: Self = Self(0);
 
+    /// The set of every register.
+    pub const ALL: Self = Self(u128::MAX);
+
+    /// The registers in this set or in `other`.
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// The registers in both this set and `other`.
+    pub fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// The registers in this set and not in `other`.
+    pub fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
     /// Put `reg` in the set.
     pub fn insert(&mut self, reg: Reg) {
         self.0 |= 1 << reg.bit();
@@ -221,6 +239,18 @@ pub struct MemoryAccess {
     pub kind: AccessKind,
     /// The width of each value moved, where the instruction says it.
     pub width: Option<Width>,
+    /// How a load fills the bits of its register above the value.
+    pub extension: Extension,
+}
+
+/// How a load widens a value narrower than its register.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Extension {
+    /// With zeros, as `ldrb` and `lbu` do, or not at all.
+    #[default]
+    Zero,
+    /// With copies of its top bit, as `ldrsb`, `lb` and `movsx` do.
+    Sign,
 }
 
 /// A condition on a comparison of two values, `left` against `right`.
@@ -597,6 +627,16 @@ pub enum Op {
     /// Anything the lifter does not name.
     #[default]
     Other,
+    // The variants below come after `Other` so that the number of each one
+    // above, which the features of the matching mix in, stays the same.
+    /// `left + right + carry`, as `adc` and `adde` do.
+    AddCarry,
+    /// `left - right - borrow`, as `sbb` and `sbc` do. The borrow is the
+    /// carry flag on x86 and its inverse on ARM and PowerPC.
+    SubtractBorrow,
+    /// A multiply that keeps a part of the product, or multiplies parts of
+    /// its operands, as `umulh`, `mulhw` and `smulbb` do.
+    MultiplyPart,
 }
 
 impl Op {
@@ -650,6 +690,9 @@ impl Op {
             Self::Vector => "vector",
             Self::System => "system",
             Self::Other => "other",
+            Self::AddCarry => "add-carry",
+            Self::SubtractBorrow => "subtract-borrow",
+            Self::MultiplyPart => "multiply-part",
         }
     }
 }
@@ -1120,6 +1163,25 @@ mod tests {
         assert_eq!(RegSet::EMPTY.iter().next(), None);
     }
 
+    /// A union holds each register of either set, an intersection each
+    /// register of both, and a difference each register of the first set
+    /// that the second does not hold.
+    #[test]
+    fn a_union_and_a_difference_hold_what_their_sets_say() {
+        bolero::check!().with_type::<([u64; 2], [u64; 2])>().for_each(|&(left, right)| {
+            let set = |[high, low]: [u64; 2]| RegSet(u128::from(high) << 64 | u128::from(low));
+            let (left, right) = (set(left), set(right));
+            for reg in (0..128).map(Reg::of_bit) {
+                let (in_left, in_right) = (left.contains(reg), right.contains(reg));
+                assert_eq!(left.union(right).contains(reg), in_left || in_right);
+                assert_eq!(left.intersection(right).contains(reg), in_left && in_right);
+                assert_eq!(left.difference(right).contains(reg), in_left && !in_right);
+            }
+        });
+        assert_eq!(RegSet::ALL.len(), 128);
+        assert!(RegSet::ALL.difference(RegSet::ALL).is_empty());
+    }
+
     fn compare(left: Value, right: Value) -> Option<Lifted> {
         Some(Lifted {
             test: Some(Test::Compare {
@@ -1479,7 +1541,11 @@ mod tests {
             op: Op::Load,
             reads: [Reg::General(base)].into_iter().collect(),
             writes: [Reg::General(base + 2)].into_iter().collect(),
-            memory: Some(MemoryAccess { kind: AccessKind::Load, width: Some(Width::Bits32) }),
+            memory: Some(MemoryAccess {
+                kind: AccessKind::Load,
+                width: Some(Width::Bits32),
+                extension: crate::Extension::Zero,
+            }),
             operands: [r(base + 2), Operand::memory(Some(Reg::General(base)), Some(8))]
                 .into_iter()
                 .collect(),

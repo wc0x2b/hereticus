@@ -70,7 +70,12 @@ last use, and such a move stays red and green:
 ![The diff of one function, as IL](./images/tui-diff-il.png)
 
 - `]` and `[` go to the next and the previous change.
-- `v` changes between assembly and IL.
+- `v` changes from assembly to IL, from IL to high IL, and from high IL
+  back to assembly. The high IL shows each call on one line with its
+  arguments, and folds a value into the one statement that reads it:
+  see [The High IL](./methods.md#the-high-il).
+
+![The diff of one function, as high IL](./images/tui-diff-hil.png)
 - `l` changes between two columns and one.
 - `n` and `p` go to the next and the previous function.
 - `Esc` goes back to the list.
@@ -159,7 +164,7 @@ together, and the project opens from any directory.
 | `a` / `r` / `d` | every function / retouched pairs / data regions | |
 | `/` | filter the names | |
 | `]` / `[` | | next / previous change |
-| `v` | | assembly or IL |
+| `v` | | assembly, IL or high IL |
 | `l` | | side by side or one column |
 | `n` / `p` | | next / previous function |
 | `Esc` or `Backspace` | | back to the list |

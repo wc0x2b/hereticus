@@ -1,9 +1,8 @@
 ---
 source: hereticus/tests/view.rs
-assertion_line: 51
 expression: "gz_error(arch).join(\"\\n\")"
 ---
-store.64 [sp - 0x30] = x29, x30
+store.64 [sp - 0x30] = x29, x30; sp = sp - 0x30
 x29 = sp
 store.64 [sp + 0x10] = x19, x20
 x19 = x0
@@ -13,8 +12,8 @@ x21 = x2
 x0 = load.64 [x0 + 0x78]
 if (x0 == 0) goto $+0x14
 w1 = load.32 [x19 + 0x74]
-flags = compare(w1, 4)
-if (w1 != 4) goto $+0xb8
+flags = compare(w1, -4)
+if (w1 != -4) goto $+0xb8
 store.64 [x19 + 0x78] = xzr
 flags = compare(w20, 0)
 flags = ne ? compare(w20, -5) : nzcv(4)
@@ -62,6 +61,6 @@ x29, x30 = load.64 [sp]; sp = sp + 0x30
 return
 call free
 goto $-0xb8
-w0 = 3
+w0 = -0x4
 store.32 [x19 + 0x74] = w0
 goto $-0x20

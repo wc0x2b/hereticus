@@ -480,12 +480,38 @@ pub fn lift(inst: &Instruction) -> il::Lifted {
         (false, true) => Some(il::AccessKind::Store),
         (false, false) => None,
     };
-    let memory =
-        kind.map(|kind| il::MemoryAccess { kind, width: access_width(opcode.access_type()) });
+    let extension = match opcode {
+        Opcode::core_lb | Opcode::core_lh => il::Extension::Sign,
+        _ => il::Extension::Zero,
+    };
+    let memory = kind.map(|kind| il::MemoryAccess {
+        kind,
+        width: access_width(opcode.access_type()),
+        extension,
+    });
 
     let op = op_of(inst, kind);
-    let operands = inst.valued_operands_iter().map(il_operand).collect();
+    let mut operands: il::Operands = inst.valued_operands_iter().map(il_operand).collect();
+    if moves_to_float(opcode) {
+        operands.swap(0, 1);
+    }
     il::Lifted { op, reads, writes, memory, test: test_of(inst), operands }
+}
+
+/// Whether `insn` moves a part of a word, as `lwl`, `lwr`, `swl` and `swr`
+/// do where code reads a word at an address that is not a multiple of 4.
+/// The IL holds them as loads and stores, but no load of the IL says which
+/// part.
+pub fn moves_part_of_a_word(insn: &Insn) -> bool {
+    [Opcode::core_lwl, Opcode::core_lwr, Opcode::core_swl, Opcode::core_swr]
+        .into_iter()
+        .any(|opcode| is(insn, opcode))
+}
+
+/// Whether `opcode` moves a general register into a float one, as
+/// `mtc1 a3, fv0` sets `fv0`: it names the source first.
+fn moves_to_float(opcode: Opcode) -> bool {
+    matches!(opcode, Opcode::core_mtc1 | Opcode::core_ctc1)
 }
 
 /// How far the target of `inst`, which moves control as `kind` from
@@ -514,7 +540,8 @@ pub fn names(inst: &Instruction, kind: InsnKind, address: u64) -> il::Names {
     let shown = |operand: ValuedOperand| -> CompactString {
         format_compact!("{}", operand.display::<&str>(inst, &flags, None)).replace('$', "").into()
     };
-    inst.valued_operands_iter()
+    let mut names: il::Names = inst
+        .valued_operands_iter()
         .map(|operand| match operand {
             ValuedOperand::core_label(_) | ValuedOperand::core_branch_target_label(_) => {
                 match target_distance(inst, kind, address) {
@@ -525,13 +552,7 @@ pub fn names(inst: &Instruction, kind: InsnKind, address: u64) -> il::Names {
             // `offset(base)`, as `[base + offset]`.
             ValuedOperand::core_imm_rs(offset, base) => {
                 let base = shown(ValuedOperand::core_rs(base));
-                match offset {
-                    0 => format_compact!("[{base}]"),
-                    offset if offset < 0 => {
-                        format_compact!("[{base} + -0x{:X}]", i32::from(offset).unsigned_abs())
-                    }
-                    offset => format_compact!("[{base} + 0x{offset:X}]"),
-                }
+                il::memory_name(&base, None, Some(offset.into()))
             }
             // `jalr` and the GNU `div` print another register before the
             // one they read.
@@ -539,7 +560,11 @@ pub fn names(inst: &Instruction, kind: InsnKind, address: u64) -> il::Names {
             | ValuedOperand::core_maybe_zero_rs((), reg) => shown(ValuedOperand::core_rs(reg)),
             operand => shown(operand),
         })
-        .collect()
+        .collect();
+    if moves_to_float(inst.opcode()) {
+        names.swap(0, 1);
+    }
+    names
 }
 
 /// An operand as the IL names it.
@@ -807,6 +832,23 @@ mod tests {
         big.expect("the word must lift")
     }
 
+    /// `mtc1` names its source first, and the IL its destination; a
+    /// partial load is a load that a view shows as the code prints it; a
+    /// memory operand names its offset as on every architecture.
+    #[test]
+    fn a_move_to_a_float_register_writes_it() {
+        let named = |word: u32| Mips32::LITTLE.lift_named(&decode_one(word)).expect("named");
+        let mtc1 = named(0x4487_0000); // mtc1 a3, $f0
+        let (a3, f0) =
+            (il::Operand::Reg(il::Reg::General(7)), il::Operand::Reg(il::Reg::Vector(0)));
+        assert_eq!(mtc1.lifted.operands.as_slice(), [f0, a3]);
+        assert_eq!(mtc1.names[1], "a3");
+        // lwl a0, 4(v1)
+        assert_eq!(named(0x8864_0004).lifted.op, il::Op::Load);
+        assert!(moves_part_of_a_word(&decode_one(0x8864_0004)));
+        assert_eq!(named(0x8fa8_fff0).names[1], "[sp - 0x10]"); // lw t0, -16(sp)
+    }
+
     #[test]
     fn operands_come_in_printed_order() {
         use il::Operand::{Const, Target};
@@ -890,7 +932,11 @@ mod tests {
         assert_eq!((load.reads, load.writes), (regs(&[29]), regs(&[8])));
         assert_eq!(
             load.memory,
-            Some(il::MemoryAccess { kind: il::AccessKind::Load, width: Some(il::Width::Bits32) })
+            Some(il::MemoryAccess {
+                kind: il::AccessKind::Load,
+                width: Some(il::Width::Bits32),
+                extension: crate::Extension::Zero
+            })
         );
         let store = lift_one(words::SB_T1_A0);
         assert_eq!((store.reads, store.writes), (regs(&[4, 9]), il::RegSet::EMPTY));

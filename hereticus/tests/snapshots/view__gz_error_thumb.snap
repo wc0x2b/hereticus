@@ -15,8 +15,8 @@ if (r3 != 0) goto $+0x70
 r3 = 0
 store.32 [r4 + 0x68] = r3
 flags = compare(r5, 0)
-if (ne) flags = compare(r5, 5)
-if (r5 != 5) goto $+0x4e
+if (ne) flags = compare(r5, -5)
+if (r5 != -5) goto $+0x4e
 store.32 [r4 + 0x64] = r5
 if (r6 == 0) goto $+0x46
 r7 = load.32 [r4 + 0x18]
@@ -50,7 +50,7 @@ sp = sp + 0xc
 return
 r3 = 0
 store.32 [r4 + 0x64] = r5
-flags = compare(r5, 4)
+flags = compare(r5, -4)
 if (ne) flags = compare(r6, r3)
 store.32 [r4] = r3
 if (r6 != r3) goto $-0x56

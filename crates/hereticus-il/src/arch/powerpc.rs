@@ -671,7 +671,7 @@ fn alias_op(alias: AliasOp) -> Option<il::Op> {
         NOP => Op::System,
         SLWI | SLDI => Op::ShiftLeft,
         SRWI | SRDI => Op::ShiftRight,
-        ROTLWI | ROTLW => Op::Rotate,
+        ROTLWI | ROTLW => Op::BitField,
         CLRLWI | CLRRWI | CLRLDI | CLRRDI => Op::And,
         EXTLWI | INSLWI => Op::BitField,
         _ => return None,
@@ -683,10 +683,13 @@ fn plain_op(opcode: Opcode) -> il::Op {
     use Opcode::*;
     use il::Op;
     match opcode {
-        ADD | ADDC | ADDE | ADDI | ADDIC | ADDIS | ADDZE | ADDME => Op::Add,
-        SUBF | SUBFC | SUBFE | SUBFIC | SUBFZE | SUBFME => Op::Subtract,
+        ADD | ADDC | ADDI | ADDIC | ADDIS => Op::Add,
+        SUBF | SUBFC | SUBFIC => Op::Subtract,
+        ADDE | ADDZE | ADDME => Op::AddCarry,
+        SUBFE | SUBFZE | SUBFME => Op::SubtractBorrow,
         NEG => Op::Negate,
-        MULLW | MULLI | MULHW | MULHWU | MULLD | MULHD | MULHDU | MUL => Op::Multiply,
+        MULLW | MULLI | MULLD | MUL => Op::Multiply,
+        MULHW | MULHWU | MULHD | MULHDU => Op::MultiplyPart,
         DIVW | DIVWU | DIVD | DIVDU | DIV | DIVS => Op::Divide,
         AND | ANDI | ANDIS => Op::And,
         ANDC => Op::AndNot,
@@ -696,7 +699,8 @@ fn plain_op(opcode: Opcode) -> il::Op {
         SLW | SLD => Op::ShiftLeft,
         SRW | SRD => Op::ShiftRight,
         SRAW | SRAWI | SRAD | SRADI => Op::ShiftRightArithmetic,
-        RLWNM | RLDCL | RLDCR => Op::Rotate,
+        // A rotate left, with a mask: the IL rotates right only.
+        RLWNM | RLDCL | RLDCR => Op::BitField,
         RLWINM | RLWIMI | RLDIC | RLDICL | RLDICR | RLDIMI | RLMI => Op::BitField,
         EXTSB | EXTSH | EXTSW => Op::Extend,
         CNTLZW | CNTLZD => Op::Bits,
@@ -904,7 +908,101 @@ fn operand_name(operand: Operand) -> CompactString {
 
 /// The name of each operand that [`lift`] gives `inst`, in its order.
 pub fn names(inst: &Instruction) -> il::Names {
-    lifted_operands(inst, &spelling_of(inst)).into_iter().map(operand_name).collect()
+    let spelling = spelling_of(inst);
+    let mut names: il::Names =
+        lifted_operands(inst, &spelling).into_iter().map(operand_name).collect();
+    if let (Some(mask), Some(last)) = (clear_mask(&spelling), names.last_mut()) {
+        // A mask reads in plain hex: 0xffffffff keeps the low half and is
+        // no -1.
+        *last = format_compact!("{mask:#x}");
+    }
+    if let (Some(shifted), Some(last)) = (shifted_immediate(inst), names.last_mut()) {
+        *last = il::constant_name(shifted);
+    }
+    if subtracts_from_last(inst, &spelling) {
+        names.swap(1, 2);
+    }
+    names
+}
+
+/// Whether `insn` does more than the operation the IL holds for it says, so
+/// a view shows it as the code prints it:
+///
+/// - A byte-reversed access, as `lwbrx`, swaps the bytes it moves.
+/// - `addze`, `addme`, `subfze` and `subfme` add the carry to one source,
+///   and a -1 or a negate.
+/// - A move of fields of the condition register, as `mtcrf 0x20, r12`,
+///   names the fields by a mask.
+pub fn reads_as_printed(insn: &Insn) -> bool {
+    use Opcode::*;
+    decoded(insn).is_some_and(|decoded| {
+        matches!(
+            decoded.opcode,
+            LHBRX
+                | LWBRX
+                | LDBRX
+                | STHBRX
+                | STWBRX
+                | STDBRX
+                | ADDZE
+                | ADDME
+                | SUBFZE
+                | SUBFME
+                | MFOCRF
+                | MTCRF
+                | MTOCRF
+        )
+    })
+}
+
+/// The constant of an `addis`, `oris`, `andis.` or `xoris`, which works on
+/// the upper half: `addis r5, r5, 0x80` adds `0x800000`. `lis` and `subis`
+/// are `addis`.
+fn shifted_immediate(inst: &Instruction) -> Option<u64> {
+    use Opcode::*;
+    if !matches!(inst.opcode(), ADDIS | ORIS | ANDIS | XORIS) {
+        return None;
+    }
+    match operands(inst).last()? {
+        Operand::ImmExts16(value) => Some((i64::from(*value) << 16) as u64),
+        Operand::ImmU16(value) => Some(u64::from(*value) << 16),
+        _ => None,
+    }
+}
+
+/// Whether `inst` subtracts its first source from its second, as
+/// `subf r3, r4, r5` computes `r5 - r4` and `subfic r3, r4, 8` computes
+/// `8 - r4`. The IL names the value subtracted from first.
+fn subtracts_from_last(inst: &Instruction, spelling: &Spelling) -> bool {
+    use Opcode::*;
+    matches!(spelling.opcode, OpcodeAlias::Hardware(_))
+        && matches!(inst.opcode(), SUBF | SUBFC | SUBFE | SUBFIC)
+        && lifted_operands(inst, spelling).len() == 3
+}
+
+/// The mask that a `clrlwi`, `clrrwi`, `clrldi` or `clrrdi` keeps, which
+/// names the count of bits it clears: `clrldi r3, r3, 32` keeps the low 32
+/// bits, `0xffffffff`.
+fn clear_mask(spelling: &Spelling) -> Option<u64> {
+    let OpcodeAlias::Alias(alias) = spelling.opcode else { return None };
+    let count = match spelling.operands.last()? {
+        Operand::Imm8(count) => u32::from(*count),
+        Operand::ImmU16(count) => u32::from(*count),
+        Operand::ImmU32(count) => *count,
+        _ => return None,
+    };
+    let (width, from_left) = match alias {
+        AliasOp::CLRLWI => (32, true),
+        AliasOp::CLRRWI => (32, false),
+        AliasOp::CLRLDI => (64, true),
+        AliasOp::CLRRDI => (64, false),
+        _ => return None,
+    };
+    let all = u64::MAX >> (64 - width);
+    match from_left {
+        true => all.checked_shr(count),
+        false => all.checked_shl(count).map(|mask| mask & all),
+    }
 }
 
 /// The registers `operand` holds a value in: a register, or none.
@@ -1056,8 +1154,29 @@ pub fn lift(inst: &Instruction, word: u32) -> il::Lifted {
         }
     }
 
-    let memory = access_of(opcode).map(|(kind, width)| il::MemoryAccess { kind, width });
-    let operands: il::Operands = shown.iter().map(|&operand| il_operand(operand, update)).collect();
+    // An algebraic load, as `lha` and `lwa`, widens with the sign.
+    let extension = match opcode {
+        Opcode::LHA
+        | Opcode::LHAU
+        | Opcode::LHAX
+        | Opcode::LHAUX
+        | Opcode::LWA
+        | Opcode::LWAX
+        | Opcode::LWAUX => il::Extension::Sign,
+        _ => il::Extension::Zero,
+    };
+    let memory = access_of(opcode).map(|(kind, width)| il::MemoryAccess { kind, width, extension });
+    let mut operands: il::Operands =
+        shown.iter().map(|&operand| il_operand(operand, update)).collect();
+    if let (Some(mask), Some(last)) = (clear_mask(&spelling), operands.last_mut()) {
+        *last = il::Operand::Const(mask);
+    }
+    if let (Some(shifted), Some(last)) = (shifted_immediate(inst), operands.last_mut()) {
+        *last = il::Operand::Const(shifted);
+    }
+    if subtracts_from_last(inst, &spelling) {
+        operands.swap(1, 2);
+    }
     il::Lifted {
         op: op_of(inst, spelling.opcode, test),
         reads,
@@ -1223,7 +1342,11 @@ mod tests {
         assert_eq!(store.op, Op::Store);
         assert_eq!(
             store.memory,
-            Some(il::MemoryAccess { kind: AccessKind::Store, width: Some(Width::Bits32) })
+            Some(il::MemoryAccess {
+                kind: AccessKind::Store,
+                width: Some(Width::Bits32),
+                extension: crate::Extension::Zero
+            })
         );
         assert_eq!(store.reads, regs(&[Reg::Stack]));
         assert_eq!(store.writes, regs(&[Reg::Stack]));
@@ -1253,7 +1376,11 @@ mod tests {
         assert_eq!(load.op, Op::Load);
         assert_eq!(
             load.memory,
-            Some(il::MemoryAccess { kind: AccessKind::Load, width: Some(width) })
+            Some(il::MemoryAccess {
+                kind: AccessKind::Load,
+                width: Some(width),
+                extension: crate::Extension::Zero
+            })
         );
         assert_eq!(load.writes, regs(&[loaded]));
     }
@@ -1334,6 +1461,56 @@ mod tests {
     #[case::vaddubm(0x1000_0000, Op::Vector)]
     fn an_operation_is_named_as_on_every_architecture(#[case] word: u32, #[case] op: Op) {
         assert_eq!(lift_one(word).op, op);
+    }
+
+    /// `subf` subtracts its first source from its second, and the IL
+    /// names the value subtracted from first.
+    #[test]
+    fn a_subtract_from_names_its_sources_in_order() {
+        let r = |number| il::Operand::Reg(il::Reg::General(number));
+        // subf r6, r6, r5: r5 - r6
+        assert_eq!(lift_one(0x7cc6_2850).operands.as_slice(), [r(6), r(5), r(6)]);
+        // subfic r7, r4, -0x2712: -0x2712 - r4
+        let subfic = lift_one(0x20e4_d8ee);
+        assert_eq!(
+            subfic.operands.as_slice(),
+            [r(7), il::Operand::Const(-0x2712_i64 as u64), r(4)]
+        );
+    }
+
+    /// An operation on the upper half holds its constant shifted.
+    #[rstest]
+    #[case::addis(0x3ca5_0080, 0x80_0000)] // addis r5, r5, 0x80
+    #[case::lis(0x3cc0_4330, 0x4330_0000)] // lis r6, 0x4330
+    #[case::subis(0x3ca4_fffe, -0x2_0000_i64 as u64)] // subis r5, r4, 2
+    #[case::oris(0x6464_0080, 0x80_0000)] // oris r4, r3, 0x80
+    #[case::andis(0x74a5_fffe, 0xfffe_0000)] // andis. r5, r5, 0xfffe
+    fn an_upper_half_holds_its_constant_shifted(#[case] word: u32, #[case] value: u64) {
+        assert_eq!(lift_one(word).operands.last(), Some(&il::Operand::Const(value)));
+    }
+
+    /// A byte-reversed access reads as the code prints it.
+    #[test]
+    fn a_byte_reversed_access_reads_as_printed() {
+        // stwbrx r31, 0, r4
+        assert_eq!(lift_one(0x7fe0_252c).op, Op::Store);
+        assert!(reads_as_printed(&decode_one(0x7fe0_252c)));
+    }
+
+    /// A move of fields of the condition register names them by a mask.
+    #[test]
+    fn a_move_of_condition_fields_reads_as_printed() {
+        assert!(reads_as_printed(&decode_one(0x7d82_0120))); // mtcrf 0x20, r12
+    }
+
+    #[rstest]
+    #[case::clrlwi(0x5484_063e, 0xff)] // clrlwi r4, r4, 24
+    #[case::clrrwi(0x5484_0036, 0xffff_fff0)] // clrrwi r4, r4, 4
+    #[case::clrldi(0x7863_0020, 0xffff_ffff)] // clrldi r3, r3, 32
+    #[case::clrrdi(0x7863_06e4, 0xffff_ffff_ffff_fff0)] // clrrdi r3, r3, 4
+    fn a_clear_keeps_the_mask_of_the_bits_it_leaves(#[case] word: u32, #[case] mask: u64) {
+        let lifted = lift_one(word);
+        assert_eq!((lifted.op, lifted.operands.last()), (Op::And, Some(&il::Operand::Const(mask))));
     }
 
     #[test]

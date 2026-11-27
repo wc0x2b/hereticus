@@ -28,6 +28,8 @@ Type "]"
 Sleep 1.2s
 Type "v"
 Sleep 2s
+Type "v"
+Sleep 2.5s
 Escape
 Sleep 800ms
 Type "q"

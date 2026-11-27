@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--view hil` shows the high IL, a second layer on the IL. A call shows
+  on one line with its arguments and its result, as
+  `ret = strcmp(arg2, &"expect")`, with the setting of an argument in a
+  MIPS delay slot folded in. The count of arguments comes from the
+  prototype of a common function of the C library or the kernel, or
+  from the code of the callee, or else from the other calls of it. A
+  call through a register names the function the register holds, also
+  where the code kept its address on the stack. A value that one later statement reads folds into it, so a
+  test of what a call gave back reads as
+  `if (strncmp(x20, &"PATH=", 5) == 0)`. A register shows as `arg1`
+  where it holds the first argument of the function, and as `ret` where
+  it holds what the last call gave back. A place on the stack shows as
+  `var_1c`. The saves and restores of registers, the moves of the stack
+  pointer and a compare that only its branch reads do not show. On
+  32-bit x86, the arguments that cdecl passes on the stack show as
+  `arg1` and so on, and the pushes before a call fold into it. An x86-64
+  PE file takes the x64 ABI of Windows. `v` in
+  the TUI and the button of the HTML report go to it too. The matching
+  does not read it.
+
+### Changed
+
+- A load that widens its value with the sign reads as `sload`, as
+  `x0 = sload.8 [x1]` for `ldrsb x0, [x1]`, where it read as a plain
+  `load.8`. This holds for x86 `movsx`, ARM and AArch64 `ldrs*`, MIPS
+  `lb` and `lh`, and the PowerPC `lha` and `lwa`.
+- A test of the top bit of a register, as AArch64 `tbz w0, #31`, reads
+  as a test of its sign in the IL: `if (w0 >= 0)`, where it read as
+  `if ((w0 & 0x80000000) == 0)`.
+
+### Fixed
+
+- The IL of AArch64 `movn` holds the inverse of its constant, as the
+  instruction does: `mov w0, #-1`, which is `movn w0, #0`, read as
+  `w0 = 0` and now reads as `w0 = -0x1`.
+- The IL of x86 `inc` and `dec` adds or subtracts 1: `inc ebx` read as
+  `ebx = ebx + ebx` and now reads as `ebx = ebx + 1`. A `mul` or `imul`
+  of one operand, which multiplies `eax` into `edx:eax`, shows as the
+  instruction, where it read as the operand times itself.
+- The MIPS `mtc1 a3, $f0` reads as `fv0 = a3`, where it read as
+  `a3 = fv0`. `lwl`, `lwr`, `swl` and `swr`, which move a part of a word,
+  and the PowerPC byte-reversed loads and stores, as `lwbrx`, read as the
+  instruction, where they read as a plain load or store. A MIPS memory
+  operand names its offset as on the other architectures, as
+  `[sp - 0x10]`, where it read as `[sp + -0x10]`.
+- `cmn r1, #1` compares with -1, so the branch after it reads as
+  `if (r1 == -1)`, where it read as `if (r1 == 1)`: the IL took the sign
+  of the subtract it reads `cmn` as from the constant that the code
+  names. This held on ARM, T32 and AArch64.
+- `mls`, `msub` and `mneg` subtract the product, as `w8 = w9 - w10 * w8`,
+  where they read as an add.
+- The AArch64 `csinc`, `csinv` and `csneg`, and their aliases `cinc`,
+  `cinv` and `cneg`, read with the change they make, as
+  `w8 = ne ? w8 + 1 : w8` for `cinc w8, w8, ne`, where they read as a
+  plain select.
+- A conditional A32 `tst` or `teq` reads as the `and` or `xor` it tests,
+  where it read as a compare. `brk` reads as the instruction, where it
+  read as a jump to its number.
+- The IL of the PowerPC `subf`, `subfc`, `subfe` and `subfic` subtracts
+  the first source from the second, as they do: `subf r6, r6, r5` read
+  as `r6 = r6 - r5` and now reads as `r6 = r5 - r6`. `addis`, `lis`,
+  `subis`, `oris`, `andis.` and `xoris` work on the upper half, so
+  `addis r5, r5, 0x80` reads as `r5 = r5 + 0x800000`, where it read as
+  `+ 0x80`. A move of fields of the condition register, as `mtcrf`,
+  reads as the instruction, where it read as `0x20 = r12`.
+- A pre-index access shows the write of its base, as
+  `x23 = load.32 [x2 + 0x4c]; x2 = x2 + 0x4c` for `ldrsw x23, [x2, #0x4c]!`
+  and the PowerPC `lwzu`.
+- An add of a negative constant reads as a subtract: `sp = sp - 0x38`,
+  where it read as `sp = sp + -0x38`. A constant of an `or` or an `xor`
+  reads in plain hex, as one of an `and` does.
+- The IL names the carry that an add or a subtract reads, as
+  `rax = rax + rbx + carry` for `adc` and `esi = esi - esi - borrow` for
+  `sbb`, on x86, ARM, AArch64 and PowerPC. `sbb esi, esi` read as
+  `esi = 0`, and `adc ecx, 0` as `ecx = ecx`.
+- A multiply that keeps the high word of its product or multiplies
+  halves, as `umulh`, `mulhw`, `smmul` and `smulbb`, reads as a function,
+  `x8 = umulh(x8, x9)`, where it read as a plain multiply. One that writes
+  two registers, as `umull r0, r1, r2, r3`, reads as the instruction.
+- A rotate left, as x86 `rol` and PowerPC `rotlwi`, and a rotate through
+  the carry, as `rcl` and `rrx`, read as functions, where they read as a
+  rotate right.
+- `bt rdx, rcx` reads as `flags = bt(rdx, rcx)`: it writes only the
+  flags, where it read as `rdx = bt(rcx)`.
+- A displacement of a 32-bit x86 address keeps its sign: `[ebx - 0x8]`
+  read as `[ebx + 0xfffffff8]`.
+- A conditional A32 instruction that reads as a function drops its
+  condition from the name: `if (eq) r0 = clz(r0)`, where it read as
+  `clzeq(r0)`.
+- An insert or an accumulate that reads as a function names the
+  destination it reads, as `w8 = bfi(w8, w21, 0xe, 0x12)` and
+  `d17 = vmla(d17, d16, d18)`, where they read as `bfi(w21, ...)`. The
+  T16 `adcs r6, r7` reads as `r6 = r6 + r7 + carry`.
+- The IL of the PowerPC `clrlwi`, `clrrwi`, `clrldi` and `clrrdi`
+  keeps the mask of the bits they leave: `clrldi r3, r3, 32` read as
+  `r3 = r3 & 0x20` and now reads as `r3 = r3 & 0xffffffff`. A mask of 32
+  bits with its top bit set reads in plain hex, where it read as a small
+  negative number.
+- A branch of the IL names the values of its compare only where no
+  instruction between the two writes a register that the compare read.
+  `cmp w0, #1; mov w0, #-1; b.gt` read as `if (w0 > 1)`, which tests the
+  new `w0`, and now reads as `if (flags.SignedGreater)`.
+
 ## [0.8.0](https://github.com/wc0x2b/hereticus/compare/v0.7.2...v0.8.0) - 2026-11-22
 
 ### Added

@@ -1033,18 +1033,21 @@ pub(crate) fn op_of(inst: &Instruction, operands: &[Operand]) -> il::Op {
         Opcode::MVN => Op::Not,
         Opcode::MOVT | Opcode::UBFX | Opcode::SBFX | Opcode::BFI | Opcode::BFC => Op::BitField,
         Opcode::ADR => Op::Address,
-        Opcode::ADD | Opcode::ADC => Op::Add,
-        Opcode::SUB | Opcode::SBC | Opcode::RSB | Opcode::RSC => Op::Subtract,
-        Opcode::MUL
-        | Opcode::UMULL
+        Opcode::ADD => Op::Add,
+        Opcode::SUB | Opcode::RSB => Op::Subtract,
+        Opcode::ADC => Op::AddCarry,
+        Opcode::SBC | Opcode::RSC => Op::SubtractBorrow,
+        Opcode::MUL => Op::Multiply,
+        Opcode::MLA | Opcode::MLS => Op::MultiplyAdd,
+        // A multiply of halves, one that keeps the high word, and one with
+        // a result of two registers.
+        Opcode::UMULL
         | Opcode::SMULL
         | Opcode::SMUL(..)
         | Opcode::SMULW(_)
         | Opcode::SMMUL
         | Opcode::SMUAD
-        | Opcode::SMUSD => Op::Multiply,
-        Opcode::MLA
-        | Opcode::MLS
+        | Opcode::SMUSD
         | Opcode::UMLAL
         | Opcode::SMLAL
         | Opcode::SMLAL_halfword(..)
@@ -1058,7 +1061,7 @@ pub(crate) fn op_of(inst: &Instruction, operands: &[Operand]) -> il::Op {
         | Opcode::SMMLA
         | Opcode::SMMLS
         | Opcode::SMAL(..)
-        | Opcode::USADA8 => Op::MultiplyAdd,
+        | Opcode::USADA8 => Op::MultiplyPart,
         Opcode::SDIV | Opcode::UDIV => Op::Divide,
         Opcode::AND => Op::And,
         Opcode::ORR => Op::Or,
@@ -1068,7 +1071,9 @@ pub(crate) fn op_of(inst: &Instruction, operands: &[Operand]) -> il::Op {
         Opcode::LSL => Op::ShiftLeft,
         Opcode::LSR => Op::ShiftRight,
         Opcode::ASR => Op::ShiftRightArithmetic,
-        Opcode::ROR | Opcode::RRX => Op::Rotate,
+        Opcode::ROR => Op::Rotate,
+        // `rrx` rotates through the carry.
+        Opcode::RRX => Op::BitField,
         Opcode::SXTB
         | Opcode::SXTH
         | Opcode::UXTB
@@ -1356,7 +1361,11 @@ pub(crate) fn memory_access(opcode: Opcode, operands: &[Operand]) -> Option<il::
         Opcode::LDM(..) | Opcode::STM(..) | Opcode::PUSH | Opcode::POP => None,
         _ => Some(il::Width::Bits32),
     };
-    Some(il::MemoryAccess { kind, width })
+    let extension = match opcode {
+        Opcode::LDRSB | Opcode::LDRSBT | Opcode::LDRSH | Opcode::LDRSHT => il::Extension::Sign,
+        _ => il::Extension::Zero,
+    };
+    Some(il::MemoryAccess { kind, width, extension })
 }
 
 /// What an operand gives as a value. The program counter, and a register
@@ -2128,21 +2137,18 @@ impl IntegerWord {
                 }
             }
             Self::HalfwordMultiply { kind, rd, ra, rn, rm, .. } => {
+                // Each multiplies halves of its operands.
+                lifted.op = Op::MultiplyPart;
                 // Written first, then read, as the operands list them.
                 let (written, read_too): (&[u32], &[u32]) = match kind {
                     HalfwordMultiply::Multiply | HalfwordMultiply::WordMultiply => {
-                        lifted.op = Op::Multiply;
                         (&[rd], &[rn, rm])
                     }
                     HalfwordMultiply::MultiplyAdd | HalfwordMultiply::WordMultiplyAdd => {
-                        lifted.op = Op::MultiplyAdd;
                         (&[rd], &[rn, rm, ra])
                     }
                     // The sum is in the pair it adds to, low then high.
-                    HalfwordMultiply::LongMultiplyAdd => {
-                        lifted.op = Op::MultiplyAdd;
-                        (&[ra, rd], &[ra, rd, rn, rm])
-                    }
+                    HalfwordMultiply::LongMultiplyAdd => (&[ra, rd], &[ra, rd, rn, rm]),
                 };
                 let listed = written.iter().chain(read_too.iter().filter(|r| !written.contains(r)));
                 lifted.operands = listed.map(|&number| value(number)).collect();
@@ -2185,7 +2191,11 @@ impl IntegerWord {
                     write(&mut lifted, rn);
                 }
                 let kind = if load { il::AccessKind::Load } else { il::AccessKind::Store };
-                lifted.memory = Some(il::MemoryAccess { kind, width: Some(width) });
+                let extension = match access {
+                    HalfwordAccess::Ldrsb | HalfwordAccess::Ldrsh => il::Extension::Sign,
+                    _ => il::Extension::Zero,
+                };
+                lifted.memory = Some(il::MemoryAccess { kind, width: Some(width), extension });
             }
             Self::Reverse { rd, rm, .. } => {
                 lifted.op = Op::Bits;
@@ -2194,15 +2204,11 @@ impl IntegerWord {
                 write(&mut lifted, rd);
             }
             Self::TopMultiply { kind, rd, ra, rn, rm, .. } => {
+                // Each keeps the high word of the product.
+                lifted.op = Op::MultiplyPart;
                 let sources: &[u32] = match kind {
-                    TopMultiply::Multiply => {
-                        lifted.op = Op::Multiply;
-                        &[rn, rm]
-                    }
-                    TopMultiply::MultiplyAdd | TopMultiply::MultiplySubtract => {
-                        lifted.op = Op::MultiplyAdd;
-                        &[rn, rm, ra]
-                    }
+                    TopMultiply::Multiply => &[rn, rm],
+                    TopMultiply::MultiplyAdd | TopMultiply::MultiplySubtract => &[rn, rm, ra],
                 };
                 lifted.operands = [rd].iter().chain(sources).map(|&number| value(number)).collect();
                 sources.iter().for_each(|&number| read(&mut lifted, number));
@@ -2827,7 +2833,11 @@ impl VfpWord {
                 lifted.operands = [il::Operand::RegisterList(list), memory].into_iter().collect();
                 let kind = if load { il::AccessKind::Load } else { il::AccessKind::Store };
                 let width = if double { il::Width::Bits64 } else { il::Width::Bits32 };
-                lifted.memory = Some(il::MemoryAccess { kind, width: Some(width) });
+                lifted.memory = Some(il::MemoryAccess {
+                    kind,
+                    width: Some(width),
+                    extension: crate::Extension::Zero,
+                });
                 let moved = if load { &mut lifted.writes } else { &mut lifted.reads };
                 (first..first + count).for_each(|number| moved.insert(vector(number)));
                 if write_back {
@@ -3107,7 +3117,11 @@ pub fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted> {
         op,
         reads,
         writes,
-        memory: Some(il::MemoryAccess { kind, width: Some(width) }),
+        memory: Some(il::MemoryAccess {
+            kind,
+            width: Some(width),
+            extension: crate::Extension::Zero,
+        }),
         test: None,
         operands: [values, memory].into_iter().collect(),
     })
@@ -4038,10 +4052,10 @@ mod tests {
         assert_eq!(reverse.writes, [general(0)].into_iter().collect());
         assert_eq!(reverse.reads, [general(1)].into_iter().collect());
         let multiply = lift(0xe751_f110);
-        assert_eq!(multiply.op, il::Op::Multiply, "smmul r1, r0, r1");
+        assert_eq!(multiply.op, il::Op::MultiplyPart, "smmul r1, r0, r1");
         assert_eq!(multiply.reads, [general(0), general(1)].into_iter().collect());
         let add = lift(0xe750_3211);
-        assert_eq!(add.op, il::Op::MultiplyAdd, "smmla r0, r1, r2, r3");
+        assert_eq!(add.op, il::Op::MultiplyPart, "smmla r0, r1, r2, r3");
         assert_eq!(add.reads, [general(1), general(2), general(3)].into_iter().collect());
         assert_eq!(add.writes, [general(0)].into_iter().collect());
         assert_eq!(fallback_names(0xe750_3211, Encoding::A32).map(|names| names.len()), Some(4));
@@ -4126,11 +4140,11 @@ mod tests {
         let general = il::Reg::General;
         // `smulwb r7, r2, r1` multiplies and adds nothing.
         let word = lift(0xe127_31a2);
-        assert_eq!(word.op, il::Op::Multiply);
+        assert_eq!(word.op, il::Op::MultiplyPart);
         assert_eq!(word.reads, [general(2), general(1)].into_iter().collect());
         // `smlalbb r3, r7, r2, r1` adds to the pair, and writes both.
         let long = lift(0xe147_3182);
-        assert_eq!(long.op, il::Op::MultiplyAdd);
+        assert_eq!(long.op, il::Op::MultiplyPart);
         assert_eq!(long.writes, [general(3), general(7)].into_iter().collect());
         assert_eq!(
             long.reads,

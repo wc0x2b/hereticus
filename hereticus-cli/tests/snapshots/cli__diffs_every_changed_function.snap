@@ -1,6 +1,6 @@
 ---
 source: hereticus-cli/tests/cli.rs
-assertion_line: 329
+assertion_line: 421
 info:
   program: hereticus
   args:
@@ -28,10 +28,10 @@ dispatch
 ││││  + adr r3, pc, 0x4
 ││││  + ldr r1, [r3, r1, lsl 2]
 ││││  + add pc, r3, r1
-││││  + andeq r0, r0, r0, lsl r0
-││││  + andeq r0, r0, r0, asr 1
-││││  + andeq r0, r0, r4, lsr 0
-││││  + andeq r0, r0, ip, lsr 1
+││││  + .word 00000010
+││││  + .word 000000c0
+││││  + .word 00000024
+││││  + .word 000000ac
 ││││    ldrh r0, [r0, 0x2]
 ││││    mov r2, 0x0
 ││││  - cmp r0, 0x400

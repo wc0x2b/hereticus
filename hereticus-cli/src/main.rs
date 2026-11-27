@@ -322,6 +322,10 @@ enum ViewName {
     /// As the IL reads it, one statement each, the same on every
     /// architecture, as `w0 = w1 + 0x10` and `if (w2 u> 0x3f) goto $+0x40`.
     Il,
+    /// As the high IL reads it: the IL, with each call on one line with
+    /// its arguments, as `ret = strcmp(arg1, "admin")`, and each register
+    /// and stack place named for what it holds.
+    Hil,
 }
 
 impl From<ViewName> for View {
@@ -329,6 +333,7 @@ impl From<ViewName> for View {
         match name {
             ViewName::Asm => Self::Assembly,
             ViewName::Il => Self::Il,
+            ViewName::Hil => Self::Hil,
         }
     }
 }
@@ -788,6 +793,7 @@ fn name_of_view(view: View) -> &'static str {
     match view {
         View::Assembly => "asm",
         View::Il => "il",
+        View::Hil => "hil",
     }
 }
 

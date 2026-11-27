@@ -3,11 +3,11 @@ source: hereticus-cli/src/tui/mod.rs
 expression: text
 ---
       69cc   gp = _gp
-      69d0   sp = sp + -0x38
+      69d0   sp = sp - 0x38
       69d4   store.32 [sp + 0x24] = s0
       69d8   s0 = a0
       69dc   store.32 [sp + 0x18] = gp
-      69e0   store.32 [sp + 0x2C] = s2
+      69e0   store.32 [sp + 0x2c] = s2
       69e4   s2 = a1
       69e8   store.32 [sp + 0x28] = s1
       69ec   store.32 [sp + 0x34] = ra
@@ -65,7 +65,7 @@ expression: text
 │     6abc     store.32 [sp + 0x10] = v0
 └┬┬─> 6ac0   ra = load.32 [sp + 0x34]
 ┌┼┼─> 6ac4   s3 = load.32 [sp + 0x30]
-│││   6ac8   s2 = load.32 [sp + 0x2C]
+│││   6ac8   s2 = load.32 [sp + 0x2c]
 │││   6acc   s1 = load.32 [sp + 0x28]
 │││   6ad0   s0 = load.32 [sp + 0x24]
 │││   6ad4   return
@@ -78,7 +78,7 @@ expression: text
 ││ │  6af4     if (s2 != v0) goto $-0xd0
 ││ │  6af8     ra = load.32 [sp + 0x34]
 ││ │  6afc     s3 = load.32 [sp + 0x30]
-││ │  6b00     s2 = load.32 [sp + 0x2C]
+││ │  6b00     s2 = load.32 [sp + 0x2c]
 ││ │  6b04     s1 = load.32 [sp + 0x28]
 ││ │  6b08     s0 = load.32 [sp + 0x24]
 ││ │  6b0c     return

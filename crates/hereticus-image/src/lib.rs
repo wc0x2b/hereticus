@@ -14,5 +14,6 @@ use macho::{apply_chained_fixups, indirect_names};
 
 pub use links::Links;
 pub use obj::{
-    Binary, FoundBy, Function, Isa, ObjError, ROW_REACH, RowText, VirtualSlot, stable_name,
+    Binary, CallFacts, FoundBy, Function, Isa, ObjError, ROW_REACH, RowText, VirtualSlot,
+    stable_name,
 };

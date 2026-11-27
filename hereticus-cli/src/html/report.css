@@ -81,13 +81,15 @@ header .views label {
     color: var(--text);
 }
 #view-asm:checked ~ header label[for="view-asm"],
-#view-il:checked ~ header label[for="view-il"] {
+#view-il:checked ~ header label[for="view-il"],
+#view-hil:checked ~ header label[for="view-hil"] {
     background: var(--accent);
     border-color: var(--accent);
     color: var(--bg);
 }
-#view-asm:checked ~ main .view.il,
-#view-il:checked ~ main .view.asm { display: none; }
+#view-asm:checked ~ main .view:not(.asm),
+#view-il:checked ~ main .view:not(.il),
+#view-hil:checked ~ main .view:not(.hil) { display: none; }
 
 h2 {
     margin: 2rem 0 0.6rem;

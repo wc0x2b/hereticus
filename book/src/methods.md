@@ -270,6 +270,92 @@ instruction computes. That keeps it fast: a whole kernel lifts in seconds.
 Code: [`Lifted`, `find_guards` and `flow_features`][il]. See `RESEARCH.md`,
 A9 and A15.
 
+## The High IL
+
+`--view hil` shows a second layer on the IL. The matching does not read
+it, so it changes no score. It changes how a diff reads in these ways:
+
+- A call shows on one line, with its arguments and its result, as
+  `ret = capable(0xc)`. On MIPS the setting of an argument in the delay
+  slot of the call folds into it, and a delay slot that stays shows
+  before its call, because it runs first.
+- A register shows as `arg1`, `arg2` and so on where it holds that
+  argument of the function as it came in, on every path. It shows as
+  `ret` where it holds what the last call gave back, on every path. A
+  copy keeps the role: after `s0 = a0`, `s0` shows as `arg1`.
+- A place on the stack shows by its distance from the stack pointer at
+  the entry: `var_1c` is 0x1c bytes below it and `arg_10` is 0x10 bytes
+  above it, in the frame of the caller. Its address shows as `&var_1c`.
+- The save of a register that the function must give back as it came,
+  and its restore, do not show. Nor does a move of the stack pointer or
+  the making of the frame pointer.
+- A value that one statement sets and one later statement on the same
+  straight path reads folds into that statement, where nothing between
+  them changes what the value reads and nothing reads the register after.
+  So `ret = strncmp(x20, &"PATH=", 5)` and the test of `ret` after it
+  read as `if (strncmp(x20, &"PATH=", 5) == 0) goto …`. A compare that
+  only its branch reads shows no line, as the branch names what it
+  compares. A copy of an argument, as `x19 = arg1`, shows no line where
+  each read of the register shows the argument. An operation on two
+  constants is worked out, as MIPS builds a constant in two halves.
+- A call through a register that the code just loaded shows the load, as
+  `(load.32 [arg1 + 0x8])(…)`. A register that holds the address of one
+  function on every path names that function, also where the code kept
+  the address on the stack over other calls.
+
+The roles come from the usual ABI of each architecture: o32 on MIPS, the
+AAPCS on A32 and T32, the AAPCS64 on AArch64, System V on x86-64 and on
+PowerPC, and cdecl on 32-bit x86. An x86-64 PE file keeps the x64 ABI of
+Windows, which passes the first arguments in `rcx`, `rdx`, `r8` and
+`r9`. cdecl passes each argument on the
+stack: a place above the stack pointer at the entry shows as `arg1`,
+`arg2` and so on, and the pushes and stores before a call fold into it
+as its arguments. GCC can pass the first arguments of a local function
+in `eax`, `edx` and `ecx`; where the callee reads them before it writes
+them, the call shows them first.
+
+A return reads the result register only where the function can give a
+value back. A function gives none where it has a direct caller, no
+direct call reads its result, no code or data holds its address, as for
+a callback, and the binary does not export it. A tail call reads the
+result where its own caller can give one back.
+
+The code of a call does not say how many arguments the callee reads, so
+the count comes from one of three places, the first that knows it:
+
+- A table of the prototypes of common functions of the C library and of
+  the Linux kernel: `strncmp` takes 3, `getuid` none, and `printf` at
+  least 1.
+- The code of the callee, where the binary holds it: the argument
+  registers it reads before it writes them. A callee that stores each
+  argument register from some one on, as `va_start` needs, takes at
+  least the ones before.
+- The code before the call: its block, and the block before it where
+  only that block leads to it, up to the last argument set that nothing
+  but a test or a copy reads before the call.
+
+Where the callee does not give an exact count, as an imported function
+or a stub that jumps to one, the other calls of the callee in the binary
+give a least count: the fewest argument registers that a call of it sets,
+of the calls that set any. A call can change each argument register, so
+code sets one before a call only to pass it. A call that passes on the
+arguments of its own function sets none, so `mix_two(a, b)` shows its
+call as `beta(arg1, arg2)` where another call of `beta` sets two. A
+callee that takes a variable count takes at least the fewest.
+
+Limits: a call through a register that holds another function on each
+path, as `x26()`, has no name, so only the code before the call counts
+its arguments. Such a call can still read each argument register, so no
+setting of one folds away before it. Where one build folds a value and
+the other does not, as where the other reads the register again, the
+diff shows the two forms as a change. A setting folds into the
+call only where nothing between them reads its register or changes what
+it reads, and no other path from a branch between them reads the
+register. Else the setting stays on its own line, and the argument
+shows as the register.
+
+Code: [`hil_statements_in`][hil].
+
 ## Pairing Functions
 
 The pairing is a cascade of stages. Each stage pairs the functions it is
@@ -444,6 +530,7 @@ the methods that did not help.
 [scan]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-recovery/src/scan.rs
 [norm]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/norm.rs
 [il]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-il/src/lib.rs
+[hil]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-view/src/hil.rs
 [cascade]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/cascade.rs
 [score]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/score.rs
 [moved]: https://github.com/wc0x2b/hereticus/blob/master/crates/hereticus-match/src/matching/moved.rs

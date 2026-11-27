@@ -133,6 +133,90 @@ pub trait Arch: Recovery {
     ) -> Vec<Option<u64>> {
         vec![None; body.len()]
     }
+
+    /// The registers that the usual ABI of the architecture passes the
+    /// arguments of a call in and gives its result in, which the high IL
+    /// names by their roles.
+    ///
+    /// Defaults to `None`, for an architecture whose ABI the high IL does
+    /// not read.
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
+        None
+    }
+}
+
+/// The family of ABIs that a binary keeps, which its format tells: an x86-64
+/// PE file passes its arguments as Windows does, in other registers than
+/// an ELF file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Abi {
+    /// The System V ABIs of ELF and Mach-O, and of a raw image.
+    #[default]
+    Unix,
+    /// The ABIs of Windows, of a PE file.
+    Windows,
+}
+
+/// A register of a [`CallingConvention`], with the name its architecture
+/// gives it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamedReg {
+    /// The register, as the lift names it.
+    pub reg: hereticus_il::Reg,
+    /// The name of the full register, as `x0` or `a0`.
+    pub name: &'static str,
+}
+
+impl NamedReg {
+    const fn new(reg: hereticus_il::Reg, name: &'static str) -> Self {
+        Self { reg, name }
+    }
+}
+
+/// Where the usual ABI of an architecture keeps the arguments of a call,
+/// its result and the stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallingConvention {
+    /// The registers of the first arguments, in order.
+    pub arguments: &'static [NamedReg],
+    /// The register of the result.
+    pub result: NamedReg,
+    /// The stack pointer, as the lift names it: MIPS lifts it as a general
+    /// register.
+    pub stack: hereticus_il::Reg,
+    /// The numbers of the general registers that a call keeps. A call can
+    /// change each other register.
+    pub preserved: &'static [u8],
+    /// Where the arguments that no register holds sit on the stack, where
+    /// the ABI passes them there.
+    pub stack_arguments: Option<StackArguments>,
+    /// The register a call writes its return address to, as `lr` or `ra`,
+    /// where a call writes one: a function saves it, as it saves a
+    /// register that a call keeps.
+    pub link: Option<hereticus_il::Reg>,
+}
+
+/// Where an ABI passes arguments on the stack: argument `n`, from 0, at
+/// `first + n * width` bytes from the stack pointer at the entry, and at
+/// `n * width` bytes from it at the call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StackArguments {
+    /// The distance of the first argument from the stack pointer at the
+    /// entry, past the return address.
+    pub first: i64,
+    /// The bytes of each argument.
+    pub width: i64,
+}
+
+impl CallingConvention {
+    /// Report whether a call keeps the value of `reg`.
+    pub fn preserves(&self, reg: hereticus_il::Reg) -> bool {
+        match reg {
+            hereticus_il::Reg::General(number) => self.preserved.contains(&number),
+            hereticus_il::Reg::Stack => true,
+            _ => reg == self.stack,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +279,43 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Each ABI passes its arguments in registers that a call can change,
+    /// or on the stack, as 32-bit x86 does, and keeps the stack.
+    #[test]
+    fn a_calling_convention_keeps_the_stack_and_not_the_arguments() {
+        for (name, arch) in ARCHES {
+            let convention = arch.calling_convention(Abi::Unix).expect("each architecture has one");
+            assert_eq!(
+                convention.arguments.is_empty(),
+                convention.stack_arguments.is_some(),
+                "{name}"
+            );
+            let arguments: Vec<_> = convention.arguments.iter().map(|arg| arg.reg).collect();
+            let distinct: std::collections::HashSet<_> = arguments.iter().collect();
+            assert_eq!(distinct.len(), arguments.len(), "{name}");
+            assert!(arguments.iter().all(|&reg| !convention.preserves(reg)), "{name}");
+            assert!(!convention.preserves(convention.result.reg), "{name}");
+            assert!(convention.preserves(convention.stack), "{name}");
+            assert!(!arguments.contains(&convention.stack), "{name}");
+        }
+    }
+
+    /// x86-64 code of Windows passes its arguments in `rcx`, `rdx`, `r8`
+    /// and `r9`, and keeps `rdi` and `rsi`, which System V passes them in.
+    #[test]
+    fn x86_64_of_windows_passes_its_arguments_elsewhere() {
+        let windows = X86::BITS64.calling_convention(Abi::Windows).expect("x64 has an ABI");
+        let names: Vec<&str> = windows.arguments.iter().map(|arg| arg.name).collect();
+        assert_eq!(names, ["rcx", "rdx", "r8", "r9"]);
+        assert!(windows.preserves(hereticus_il::Reg::General(7)), "rdi");
+        let unix = X86::BITS64.calling_convention(Abi::Unix).expect("x64 has an ABI");
+        assert_eq!(unix.arguments[0].name, "rdi");
+        assert_eq!(
+            Aarch64.calling_convention(Abi::Windows),
+            Aarch64.calling_convention(Abi::Unix),
+            "ARM64 of Windows keeps the AAPCS64"
+        );
     }
 }

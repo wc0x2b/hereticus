@@ -27,10 +27,6 @@ dispatch
 ││││  +   adr r3, pc, 0x4
 ││││  +   r1 = load.32 [r3 + (r1 lsl 2)]
 ││││  +   pc = r3 + r1
-││││  +   if (eq) r0 = r0 & (r0 lsl r0)
-││││  +   if (eq) r0 = r0 & (r0 asr 1)
-││││  +   if (eq) r0 = r0 & (r4 lsr 0)
-││││  +   if (eq) r0 = r0 & (ip lsr 1)
 ││││      r0 = load.16 [r0 + 0x2]
 ││││      r2 = 0
 ││││  -       flags = compare(r0, 0x400)

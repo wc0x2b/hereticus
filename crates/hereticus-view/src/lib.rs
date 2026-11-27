@@ -11,7 +11,11 @@
 //! them. An instruction the IL does not name shows as the decoder prints
 //! it.
 
+mod arity;
 mod depth;
+mod hil;
+
+pub use hil::{call_facts, hil_statements_in};
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,7 +27,7 @@ use hereticus_il::arch::mips16::Op as Mips16Op;
 use hereticus_il::arch::mips32::Op as Mips32Op;
 use hereticus_il::arch::neon::NeonOperation;
 use hereticus_il::arch::{Insn, aarch64, is_branch_target};
-use hereticus_il::{AccessKind, Comparison, Cond, Lifted, Named, Op, Operand, Reg, Test};
+use hereticus_il::{AccessKind, Comparison, Cond, Lifted, Named, Op, Operand, Reg, RegSet, Test};
 use hereticus_image::Links;
 use hereticus_memory::{AddressSpace, Function};
 use rabbitizer::opcodes::Opcode as MipsOpcode;
@@ -61,6 +65,12 @@ pub struct Context<'a> {
     /// The labels the functions take from their pairs in the other binary
     /// of a diff.
     pub paired: Option<&'a PairedLabels>,
+    /// The family of ABIs the binary keeps, which says where a call passes
+    /// its arguments.
+    pub abi: hereticus_arch::Abi,
+    /// What the calls of the binary tell of their callees, as
+    /// [`call_facts`] works it out, where the view knows it.
+    pub calls: Option<&'a hereticus_image::CallFacts>,
 }
 
 impl Context<'_> {
@@ -170,6 +180,21 @@ pub fn il_line_depths(arch: &dyn Arch, insns: &[Insn]) -> Vec<usize> {
         .zip(folds(arch, insns))
         .filter(|(_, fold)| *fold != Fold::Hidden)
         .map(|(depth, _)| depth)
+        .collect()
+}
+
+/// How deep in the jumps of its function the line at each of `addresses`
+/// sits, as [`il_line_depths`] gives it for each line of the IL view.
+/// Each address is the address of an instruction of `insns`.
+pub fn line_depths_at(arch: &dyn Arch, insns: &[Insn], addresses: &[u64]) -> Vec<usize> {
+    let depths = depth::nesting_depths(insns, |insn| arch.delay_slots(insn));
+    addresses
+        .iter()
+        .map(|&address| {
+            insns
+                .binary_search_by_key(&address, |insn| insn.address)
+                .map_or(0, |index| depths[index])
+        })
         .collect()
 }
 
@@ -296,6 +321,11 @@ fn instruction_lines(
             // leaves out.
             let shown: Vec<&str> =
                 tokens.iter().copied().filter(|token| !token.is_empty()).collect();
+            if last_compare.as_ref().is_some_and(|compared| {
+                compared.is_changed_by(insn, named.map(|named| &named.lifted))
+            }) {
+                last_compare = None;
+            }
             if let Some(named) = named {
                 forget_overwritten_flags(insn, &named.lifted, &shown, carry, &mut last_compare);
             }
@@ -342,6 +372,13 @@ fn instruction_lines(
                 return text;
             }
             let moves = moving.get(index).copied().unwrap_or(false);
+            // A lift the IL holds as a plainer operation than the code does, for
+            // the matching, reads as the code prints it.
+            if mips::moves_part_of_a_word(insn)
+                || hereticus_il::arch::powerpc::reads_as_printed(insn)
+            {
+                return insn.to_string();
+            }
             let shown = named.and_then(|named| {
                 let text = statement(insn, named, address, moves, &mut last_compare)?;
                 Some((named.lifted.op, text))
@@ -786,6 +823,25 @@ struct Compared {
     left: String,
     right: String,
     kind: CompareKind,
+    /// The registers that `left` and `right` name. A write of one between
+    /// the compare and its branch makes the names false, though the flags
+    /// stay.
+    reads: RegSet,
+    /// Whether the compare reads memory, which a store can change.
+    loads: bool,
+}
+
+impl Compared {
+    /// Whether `lifted` changes a value that the compare names.
+    fn is_changed_by(&self, insn: &Insn, lifted: Option<&Lifted>) -> bool {
+        let Some(lifted) = lifted else { return true };
+        let stores = lifted
+            .memory
+            .is_some_and(|access| matches!(access.kind, AccessKind::Store | AccessKind::LoadStore));
+        matches!(insn.kind, hereticus_il::arch::InsnKind::Call { .. })
+            || !lifted.writes.intersection(self.reads).is_empty()
+            || (self.loads && stores)
+    }
 }
 
 /// Which condition on the flags reads a carry out of a sum: the order of
@@ -884,6 +940,8 @@ fn forget_overwritten_flags(
             left: (*dest).to_string(),
             right: "0".to_string(),
             kind: CompareKind::Result(result_of),
+            reads: lifted.writes.difference(RegSet::from_iter([Reg::Flags])),
+            loads: lifted.memory.is_some(),
         }),
         _ => None,
     };
@@ -1023,6 +1081,49 @@ fn vfp_statement(
 /// The opcode of `insn`, where it is A64.
 fn aarch64_opcode(insn: &Insn) -> Option<A64Opcode> {
     aarch64::decoded(insn).map(|decoded| decoded.opcode)
+}
+
+/// The name of an A32 instruction without the condition it ends with, as
+/// `clz` of `clzeq` and `uxtah` of `uxtahcc`.
+fn without_condition(name: &str) -> &str {
+    const CONDITIONS: [&str; 16] = [
+        "eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt",
+        "le",
+    ];
+    match name.len().checked_sub(2).map(|at| name.split_at(at)) {
+        Some((base, condition)) if !base.is_empty() && CONDITIONS.contains(&condition) => base,
+        _ => name,
+    }
+}
+
+/// Whether the multiply-add `insn` subtracts the product, as `mls` and
+/// `msub` do.
+fn subtracts_product(insn: &Insn) -> bool {
+    arm32::core_opcode(insn) == Some(ArmOpcode::MLS)
+        || matches!(
+            aarch64_opcode(insn),
+            Some(A64Opcode::MSUB | A64Opcode::UMSUBL | A64Opcode::SMSUBL)
+        )
+}
+
+/// The size of `value` where it is a negative number as [`constant_text`]
+/// names one, or one of 32 bits held in 64: `-0x20000` is `0x20000`.
+fn negative_magnitude(value: u64) -> Option<u64> {
+    let signed = value as i64;
+    if (-0x8000_0000..0).contains(&signed) {
+        return Some(signed.unsigned_abs());
+    }
+    (0xffff_0000..=0xffff_ffff).contains(&value).then(|| 0x1_0000_0000 - value)
+}
+
+/// The negative of the operand `text`, as `-1`, `1` for `-1`, and
+/// `-(r1 lsl 2)`.
+fn negated(text: &str) -> String {
+    match text.strip_prefix('-') {
+        Some(positive) => positive.to_string(),
+        None if text.contains(' ') => format!("-({text})"),
+        None => format!("-{text}"),
+    }
 }
 
 /// A constant as code reads it: small ones in decimal, a negative one with
@@ -1203,6 +1304,16 @@ impl ListOrder {
     }
 }
 
+/// Where an A32 or T32 access to a list of `count` registers puts the
+/// first, from its base, and how far it moves the base where it writes it
+/// back: `(-0x8, -0x8)` for `push {r4, lr}`.
+fn list_offsets(insn: &Insn, lifted: &Lifted, count: usize) -> Option<(i64, i64)> {
+    let (order, _) = ListOrder::of(insn)?;
+    let bits = lifted.memory.and_then(|memory| memory.width).map_or(32, |width| width.bits());
+    let slot = u64::from(bits / 8);
+    Some(order.offsets(slot * count as u64, slot))
+}
+
 /// An ARM access to a list of registers as one load or store, as
 /// `store.32 [sp - 0x8] = r4, lr; sp = sp - 0x8` for `push {r4, lr}`.
 ///
@@ -1263,7 +1374,16 @@ fn statement(
 ) -> Option<String> {
     // A constant that is part of an address shows as one, as `@0x20000`.
     let constant = |value: u64| {
-        if moves { format!("@{value:#x}") } else { constant_text(value) }
+        // A mask reads in plain hex: `& 0xffffffff` keeps the low half of a
+        // 64-bit register, which `& -0x1` does not say.
+        let bitwise =
+            matches!(named.lifted.op, Op::And | Op::Or | Op::Xor | Op::AndNot | Op::OrNot);
+        let is_mask = bitwise && (0x8000_0000..=0xffff_ffff).contains(&value);
+        match (moves, is_mask) {
+            (true, _) => format!("@{value:#x}"),
+            (false, true) => format!("{value:#x}"),
+            (false, false) => constant_text(value),
+        }
     };
     let lifted = &named.lifted;
     // One name for each lifted operand; an operand the instruction shows no
@@ -1282,6 +1402,9 @@ fn statement(
             }
         }
         Op::Call => return Some(format!("call {}", target.or(tokens.last().copied())?)),
+        // `brk` traps, and ends the code as a jump does, but goes nowhere it
+        // names.
+        Op::Jump if aarch64_opcode(insn) == Some(A64Opcode::BRK) => return None,
         Op::Jump => return Some(format!("goto {}", target.or(tokens.last().copied())?)),
         _ => {}
     }
@@ -1324,17 +1447,45 @@ fn statement(
             | Op::FloatSquareRoot
             | Op::FloatMinMax
             | Op::FloatMultiplyAdd
+            | Op::MultiplyPart
     ) && arm32::core_opcode(insn) != Some(ArmOpcode::MOVT);
+    // A result of two registers, as `umull r0, r1, r2, r3` gives, reads as
+    // the instruction: a function gives one.
+    let one_result = lifted.writes.difference(RegSet::from_iter([Reg::Flags])).len() <= 1;
     if functional
+        && one_result
         && !lifted.writes.is_empty()
         && let Some((dest, sources)) = tokens.split_first()
         && !sources.is_empty()
     {
-        // Without the size: `vsqrt` of `vsqrt.f64`.
-        let printed_name = hereticus_il::arch::printed_name(insn);
+        // Without the size: `vsqrt` of `vsqrt.f64`. The condition of an A32
+        // instruction shows before it, so `clzeq` reads as `clz`.
+        let printed_name = hereticus_il::arch::printed_name(insn).to_string();
+        let printed_name = match a32_condition(insn, None) {
+            Some(_) => without_condition(&printed_name).to_string(),
+            None => printed_name,
+        };
         let name = printed_name.split('.').next().unwrap_or(&printed_name);
-        let sources: Vec<String> =
-            sources.iter().map(|source| source.trim_start_matches('#').to_string()).collect();
+        let strip = |source: &&str| source.trim_start_matches('#').to_string();
+        // An operation that writes only the flags, as `bt rdx, rcx`, reads
+        // each operand it names.
+        if lifted.writes.iter().all(|reg| reg == Reg::Flags) {
+            let operands: Vec<String> = tokens.iter().map(strip).collect();
+            return Some(format!("flags = {name}({})", operands.join(", ")));
+        }
+        let mut sources: Vec<String> = sources.iter().map(strip).collect();
+        // An insert or an accumulate, as `bfi w8, w21, #14, #18` and
+        // `vmla.f64 d17, d16, d18`, reads its destination too. `fcvt d0, s0`
+        // reads its source, which the IL names as the same register.
+        let reads_dest = match lifted.operands.split_first() {
+            Some((Operand::Reg(reg), rest)) => {
+                lifted.reads.contains(*reg) && !rest.contains(&Operand::Reg(*reg))
+            }
+            _ => false,
+        };
+        if reads_dest {
+            sources.insert(0, dest.to_string());
+        }
         return Some(format!("{dest} = {name}({})", sources.join(", ")));
     }
     let paired = operand_texts(&lifted.operands, &lift_names)?;
@@ -1348,6 +1499,28 @@ fn statement(
     if let Some((name, amount)) = post_index.zip(named.write_back.as_deref()) {
         let base = name.trim_start_matches('[').trim_end_matches(']');
         after = format!("; {base} = {base} + {amount}");
+    }
+    // A pre-index access, as `ldr x0, [x1, #8]!` and the PowerPC `lwzu`,
+    // writes the address it reads back to its base.
+    let pre_index = lifted.operands.iter().zip(&lift_names).find_map(|(operand, name)| {
+        let moves = |offset: &Option<i64>, index: &Option<(Reg, u8)>| {
+            offset.is_some_and(|offset| offset != 0) || index.is_some()
+        };
+        match operand {
+            Operand::Memory {
+                base: Some(_),
+                offset,
+                index,
+                update: hereticus_il::Update::Before,
+            } if moves(offset, index) => Some(*name),
+            _ => None,
+        }
+    });
+    if let Some(name) = pre_index
+        && let Some((base, change)) =
+            name.trim_start_matches('[').trim_end_matches(']').split_once(' ')
+    {
+        after = format!("; {base} = {base} {change}");
     }
 
     // The idioms `canonical` reads plainly rewrite the operands, so their
@@ -1424,12 +1597,29 @@ fn statement(
             }
             ([dest, _], Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
             // A distance that moves, as half of `_gp_disp`.
+            // `lis` puts its constant in the upper half, which the IL holds
+            // shifted.
+            ([dest, _], None) if hereticus_il::arch::powerpc::decoded(insn).is_some() => {
+                match canonical.operands.get(1) {
+                    Some(Operand::Const(value)) => format!("{dest} = {}", constant(*value)),
+                    _ => return None,
+                }
+            }
             ([dest, source], None) if moves => format!("{dest} = @{source}"),
             ([dest, source], None) => format!("{dest} = &{source}"),
             _ => return None,
         },
         Op::Add => match (operands.as_slice(), &address) {
             ([dest, ..], Some(pointed)) => format!("{dest} = {}", pointed.as_value()),
+            // An add of a negative constant reads as a subtract, as
+            // `addiu sp, sp, -0x20` is `sp = sp - 0x20`.
+            ([dest, left, _], None)
+                if !moves
+                    && let Some(Operand::Const(value)) = canonical.operands.get(2)
+                    && let Some(magnitude) = negative_magnitude(*value) =>
+            {
+                format!("{dest} = {left} - {}", constant_text(magnitude))
+            }
             // The x86 `lea` adds the parts of its memory operand and reads
             // no memory.
             ([dest, formed], None)
@@ -1440,11 +1630,27 @@ fn statement(
             _ => binary("+")?,
         },
         Op::Subtract => binary("-")?,
-        // `mul` is a multiply-add of zero on AArch64.
+        // A form of two operands, as the T16 `adcs r6, r7`, adds to its
+        // destination.
+        Op::AddCarry => match operands.as_slice() {
+            [dest, left, right] => format!("{dest} = {left} + {right} + carry"),
+            [dest, right] => format!("{dest} = {dest} + {right} + carry"),
+            _ => return None,
+        },
+        Op::SubtractBorrow => match operands.as_slice() {
+            [dest, left, right] => format!("{dest} = {left} - {right} - borrow"),
+            [dest, right] => format!("{dest} = {dest} - {right} - borrow"),
+            _ => return None,
+        },
+        // `mul` is a multiply-add of zero on AArch64, and `mneg` a
+        // multiply-subtract of it.
         Op::Multiply | Op::MultiplyAdd
             if operands.len() == 4 && canonical.operands.get(3).is_some_and(is_zero) =>
         {
-            format!("{} = {} * {}", operands[0], operands[1], operands[2])
+            match subtracts_product(insn) {
+                true => format!("{} = -({} * {})", operands[0], operands[1], operands[2]),
+                false => format!("{} = {} * {}", operands[0], operands[1], operands[2]),
+            }
         }
         Op::Multiply => binary("*")?,
         Op::FloatAdd => binary("+")?,
@@ -1476,12 +1682,47 @@ fn statement(
                 if !canonical.operands.get(1).is_some_and(is_zero)
                     || !canonical.operands.get(2).is_some_and(is_zero) =>
             {
-                format!("{dest} = {cond} ? {chosen} : {other}")
+                let other_is_zero = canonical.operands.get(2).is_some_and(is_zero);
+                let printed = hereticus_il::arch::printed_name(insn);
+                match (aarch64_opcode(insn), printed.as_str()) {
+                    // `cinc x0, x1, ne` is `csinc x0, x1, x1, eq`: it prints
+                    // the condition of the change.
+                    (Some(A64Opcode::CSINC), "cinc") => {
+                        format!("{dest} = {cond} ? {chosen} + 1 : {chosen}")
+                    }
+                    (Some(A64Opcode::CSINV), "cinv") => {
+                        format!("{dest} = {cond} ? ~{chosen} : {chosen}")
+                    }
+                    (Some(A64Opcode::CSNEG), "cneg") => {
+                        format!("{dest} = {cond} ? -{chosen} : {chosen}")
+                    }
+                    // Else `csinc` adds 1 to what it picks where the
+                    // condition fails, `csinv` inverts it and `csneg`
+                    // negates it.
+                    (Some(A64Opcode::CSINC), _) if other_is_zero => {
+                        format!("{dest} = {cond} ? {chosen} : 1")
+                    }
+                    (Some(A64Opcode::CSINC), _) => {
+                        format!("{dest} = {cond} ? {chosen} : {other} + 1")
+                    }
+                    (Some(A64Opcode::CSINV), _) if other_is_zero => {
+                        format!("{dest} = {cond} ? {chosen} : -1")
+                    }
+                    (Some(A64Opcode::CSINV), _) => format!("{dest} = {cond} ? {chosen} : ~{other}"),
+                    (Some(A64Opcode::CSNEG), _) if other_is_zero => {
+                        format!("{dest} = {cond} ? {chosen} : 0")
+                    }
+                    (Some(A64Opcode::CSNEG), _) => format!("{dest} = {cond} ? {chosen} : -{other}"),
+                    _ => format!("{dest} = {cond} ? {chosen} : {other}"),
+                }
             }
             _ => return None,
         },
         Op::Rotate => binary("ror")?,
         Op::MultiplyAdd => match operands.as_slice() {
+            [dest, left, right, add] if subtracts_product(insn) => {
+                format!("{dest} = {add} - {left} * {right}")
+            }
             [dest, left, right, add] => format!("{dest} = {left} * {right} + {add}"),
             _ => return None,
         },
@@ -1508,7 +1749,12 @@ fn statement(
             let values = values.iter().map(|value| value.as_str()).collect::<Vec<_>>().join(", ");
             match access.kind {
                 AccessKind::Load => {
-                    format!("{values} = load{} {place}{after}", width_text(&canonical))
+                    // `sload` widens the value with its sign, as `ldrsb` does.
+                    let load = match access.extension {
+                        hereticus_il::Extension::Sign => "sload",
+                        hereticus_il::Extension::Zero => "load",
+                    };
+                    format!("{values} = {load}{} {place}{after}", width_text(&canonical))
                 }
                 AccessKind::Store => {
                     format!("store{} {place} = {values}{after}", width_text(&canonical))
@@ -1526,15 +1772,30 @@ fn statement(
                 };
                 // `cmp` writes the zero register, which comes first.
                 let [.., left, right] = operands.as_slice() else { return None };
+                // `cmn r1, #1` adds 1, and so compares with -1. The lifter
+                // reads it as a subtract of -1, where the code names 1.
+                let adds = arm32::core_opcode(insn) == Some(ArmOpcode::CMN)
+                    || aarch64_opcode(insn) == Some(A64Opcode::ADDS);
+                let right = match (comparison, adds) {
+                    (Comparison::Subtract { .. }, true) => negated(right),
+                    _ => right.clone(),
+                };
                 let text = match comparison {
                     Comparison::And { .. } => format!("flags = {left} & {right}"),
-                    Comparison::Subtract { .. }
-                    | Comparison::Unsigned { .. }
-                    | Comparison::Add { .. } => {
+                    Comparison::Subtract { .. } | Comparison::Unsigned { .. } => {
                         format!("flags = compare({left}, {right})")
                     }
+                    Comparison::Add { .. } => {
+                        format!("flags = compare({left}, {})", negated(&right))
+                    }
                 };
-                *last_compare = Some(Compared { left: left.clone(), right: right.clone(), kind });
+                *last_compare = Some(Compared {
+                    left: left.clone(),
+                    right,
+                    kind,
+                    reads: canonical.reads.difference(RegSet::from_iter([Reg::Flags])),
+                    loads: canonical.memory.is_some(),
+                });
                 text
             }
             Some(Test::SetOnCompare { cond, .. }) => {
@@ -1547,9 +1808,11 @@ fn statement(
             None => {
                 *last_compare = None;
                 let [left, right] = operands.as_slice() else { return None };
-                match arm32::core_opcode(insn) == Some(ArmOpcode::CMN) {
-                    true => format!("flags = compare({left}, -{right})"),
-                    false => format!("flags = compare({left}, {right})"),
+                match arm32::core_opcode(insn) {
+                    Some(ArmOpcode::CMN) => format!("flags = compare({left}, {})", negated(right)),
+                    Some(ArmOpcode::TST) => format!("flags = {left} & {right}"),
+                    Some(ArmOpcode::TEQ) => format!("flags = {left} ^ {right}"),
+                    _ => format!("flags = compare({left}, {right})"),
                 }
             }
             _ => return None,
@@ -1578,7 +1841,17 @@ fn statement(
                             _ => return None,
                         },
                     };
+                    // The top bit of a value is its sign.
+                    let sign = match guard.width {
+                        hereticus_il::Width::Bits32 => Some(1 << 31),
+                        hereticus_il::Width::Bits64 => Some(1 << 63),
+                        _ => None,
+                    };
+                    let tests_sign =
+                        sign.is_some_and(|sign| guard.right == hereticus_il::Value::Const(sign));
                     let test = match (guard.cond, relation(guard.cond)) {
+                        (Cond::BitsClear, _) if tests_sign => format!("{left} >= 0"),
+                        (Cond::BitsSet, _) if tests_sign => format!("{left} < 0"),
                         (Cond::BitsClear, _) => format!("({left} & {right}) == 0"),
                         (Cond::BitsSet, _) => format!("({left} & {right}) != 0"),
                         (_, Some(operator)) => format!("{left} {operator} {right}"),
@@ -1616,6 +1889,18 @@ mod tests {
         il_lines(&Aarch64, &code, &insns)
     }
 
+    /// The high IL of `code`, which `context` names the addresses of.
+    fn high_in(arch: &dyn Arch, code: &[u8], context: Option<Context<'_>>) -> Vec<String> {
+        let (insns, _) = decode_all(arch, code, 0x1000);
+        hil_statements_in(arch, code, &insns, context).into_iter().map(|line| line.text).collect()
+    }
+
+    /// The high IL of the AArch64 `words`, as [`lines`] gives the IL.
+    fn high(words: &[u32]) -> Vec<String> {
+        let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        high_in(&Aarch64, &code, None)
+    }
+
     #[test]
     fn a_constant_reads_as_code_writes_it() {
         assert_eq!(constant_text(3), "3");
@@ -1623,6 +1908,32 @@ mod tests {
         assert_eq!(constant_text(u64::MAX), "-0x1");
         assert_eq!(constant_text(0xffff_fffc), "-0x4", "in a 32-bit register");
         assert_eq!(constant_text(0x8000_0000), "0x80000000");
+    }
+
+    /// A write of a register that a compare read, between the compare and
+    /// its branch, leaves the branch on the flags: the register no longer
+    /// holds the value compared.
+    #[test]
+    fn a_branch_after_a_write_of_a_compared_register_tests_the_flags() {
+        let shown = lines(&[
+            0x7100_041f, // cmp w0, #1
+            0x1280_0000, // mov w0, #-1
+            0x5400_012c, // b.gt $+0x24
+        ]);
+        assert_eq!(shown[2], "if (flags.SignedGreater) goto $+0x24");
+        let shown = lines(&[
+            0x7100_0400, // subs w0, w0, #1
+            0x2a05_03e0, // mov w0, w5
+            0x5400_0040, // b.eq $+0x8
+        ]);
+        assert_eq!(shown[2], "if (flags.Equal) goto $+0x8");
+        // A write of another register keeps the test.
+        let shown = lines(&[
+            0x7100_041f, // cmp w0, #1
+            0x1280_0001, // mov w1, #-1
+            0x5400_012c, // b.gt $+0x24
+        ]);
+        assert_eq!(shown[2], "if (w0 > 1) goto $+0x24");
     }
 
     #[test]
@@ -1641,6 +1952,17 @@ mod tests {
                 "if (w2 u> 0x3f) goto $+0x40",
                 "x0 = x1 + x2",
                 "w0 = load.32 [x1 + 0x10]",
+                "return",
+            ]
+        );
+        // `w2` and `x1` hold the third and the second argument, and the
+        // branch names what the compare compared.
+        assert_eq!(
+            high(&[0x7100_fc5f, 0x5400_0208, 0x8b02_0020, 0xb940_1020, 0xd65f_03c0]),
+            [
+                "if (arg3 u> 0x3f) goto $+0x40",
+                "x0 = arg2 + arg3",
+                "w0 = load.32 [arg2 + 0x10]",
                 "return",
             ]
         );
@@ -1663,6 +1985,12 @@ mod tests {
                 "call x1",
             ]
         );
+        // The call goes through `x1`, the second argument, and takes the
+        // settings of `x0` and `w3` before it.
+        assert_eq!(
+            high(&[0xa8c2_7bfd, 0x9a80_9020, 0x531c_6c23, 0xd63f_0020]),
+            ["x29, x30 = load.64 arg_0", "arg2(ls ? arg2 : arg1, arg2, arg3, arg2 << 0x4)",]
+        );
     }
 
     #[test]
@@ -1677,6 +2005,11 @@ mod tests {
         assert_eq!(
             shown,
             ["w0 = ne ? 1 : 0", "w1 = ~w19", "x0 = x1 * x2", "x1 = sxtw(w1)", "w0 = clz(w1)"]
+        );
+        // After `mvn w1, w19`, `w1` holds no argument; `x2` still does.
+        assert_eq!(
+            high(&[0x1a9f_07e0, 0x2a33_03e1, 0x9b02_7c20, 0x9340_7c21, 0x5ac0_1020]),
+            ["w0 = ne ? 1 : 0", "w1 = ~w19", "x0 = x1 * arg3", "x1 = sxtw(w1)", "w0 = clz(w1)"]
         );
     }
 
@@ -1700,24 +2033,137 @@ mod tests {
         let links = Links::default()
             .with_sites(sites.iter().map(|&(at, name)| (at, name.to_string())).collect());
         let space = AddressSpace::none();
-        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &[],
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+            calls: None,
+        };
         let shown = il_lines_in(&Mips32::BIG, &code, &insns, Some(context));
         assert!(shown.contains(&"call capable".to_string()), "{shown:?}");
         assert!(shown.contains(&"call __raw_copy_to_user".to_string()), "{shown:?}");
+        // The relocated callee takes the place of `at`, the register the
+        // call goes through, so the `addiu` that ends its making folds away.
+        // Each callee takes the count of arguments of its prototype; after
+        // `capable`, the argument registers hold nothing known.
+        let high: Vec<String> = hil_statements_in(&Mips32::BIG, &code, &insns, Some(context))
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(high, ["capable(arg1)", "at = 0", "__raw_copy_to_user(a0, a1, a2)"]);
     }
 
-    /// A test of one bit reads with the mask of that bit, not its number.
+    /// An add and a subtract name the carry they read, a test of one bit
+    /// writes the flags alone, a conditional function drops the condition
+    /// from its name, and a multiply into two registers reads as itself.
+    #[test]
+    fn a_carry_a_bit_test_and_a_wide_multiply_read_plainly() {
+        use hereticus_il::arch::arm32::Arm32;
+        use hereticus_il::arch::x86::X86;
+        let code = [
+            0x48, 0x11, 0xd8, // adc rax, rbx
+            0x19, 0xf6, // sbb esi, esi
+            0x48, 0x0f, 0xa3, 0xca, // bt rdx, rcx
+        ];
+        let (insns, _) = decode_all(&X86::BITS64, &code, 0x1000);
+        assert_eq!(
+            il_lines(&X86::BITS64, &code, &insns),
+            ["rax = rax + rbx + carry", "esi = esi - esi - borrow", "flags = bt(rdx, rcx)"]
+        );
+        let code: Vec<u8> = [0x016f_0f10_u32, 0xe081_0392] // clzeq r0, r0; umull r0, r1, r2, r3
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        assert_eq!(
+            il_lines(&Arm32, &code, &insns),
+            ["if (eq) r0 = clz(r0)", "umull r0, r1, r2, r3"]
+        );
+        // The T16 `adcs r6, r7` adds to its destination.
+        use hereticus_il::arch::thumb::Thumb2;
+        let code = 0x417e_u16.to_le_bytes();
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        assert_eq!(il_lines(&Thumb2, &code, &insns), ["r6 = r6 + r7 + carry"]);
+    }
+
+    /// A multiply-subtract subtracts the product, and a conditional select
+    /// that changes what it picks names the change.
+    #[test]
+    fn a_multiply_subtract_and_the_conditional_selects_read_what_they_do() {
+        let shown = lines(&[
+            0x1b08_a548, // msub w8, w10, w8, w9
+            0x1a88_0508, // cinc w8, w8, ne
+            0x1a9f_1662, // csinc w2, w19, wzr, ne
+        ]);
+        assert_eq!(shown, ["w8 = w9 - w10 * w8", "w8 = ne ? w8 + 1 : w8", "w2 = ne ? w19 : 1"]);
+    }
+
+    /// An insert reads its destination, and names it first; a conversion
+    /// reads only its source, which the IL holds in the same register.
+    #[test]
+    fn a_function_of_its_destination_names_it() {
+        let shown = lines(&[
+            0x3312_46a8, // bfi w8, w21, #14, #18
+            0x1e22_c000, // fcvt d0, s0
+        ]);
+        assert_eq!(shown, ["w8 = bfi(w8, w21, 0xe, 0x12)", "d0 = fcvt(s0)"]);
+        assert_eq!(without_condition("uxtahcc"), "uxtah");
+        assert_eq!(without_condition("smlawbmi"), "smlawb");
+        assert_eq!(without_condition("eq"), "eq");
+    }
+
+    /// A load that widens with the sign says so.
+    #[test]
+    fn a_signed_load_reads_as_one() {
+        let shown = lines(&[
+            0x3980_0020, // ldrsb x0, [x1]
+            0x3940_0020, // ldrb w0, [x1]
+            0xb980_0020, // ldrsw x0, [x1]
+        ]);
+        assert_eq!(shown, ["x0 = sload.8 [x1]", "w0 = load.8 [x1]", "x0 = sload.32 [x1]"]);
+    }
+
+    /// `cmn` compares with the negative of its operand.
+    #[test]
+    fn a_compare_of_a_negative_reads_with_its_sign() {
+        let shown = lines(&[
+            0x3100_043f, // cmn w1, #1
+            0x5400_0040, // b.eq $+0x8
+        ]);
+        assert_eq!(shown, ["flags = compare(w1, -1)", "if (w1 == -1) goto $+0x8"]);
+        // brk #1
+        assert_eq!(lines(&[0xd420_0020]), ["brk #0x1"]);
+    }
+
+    /// A mask reads in plain hex, where a number of 32 bits with its top bit
+    /// set reads as a small negative number.
+    #[test]
+    fn a_mask_reads_in_plain_hex() {
+        let shown = lines(&[0x9240_7c00]); // and x0, x0, #0xffffffff
+        assert_eq!(shown[0], "x0 = x0 & 0xffffffff");
+    }
+
+    /// A test of one bit reads with the mask of that bit, not its number,
+    /// and a test of the top bit reads as a test of the sign.
     #[test]
     fn a_test_of_one_bit_reads_as_its_mask() {
         let shown = lines(&[
-            0x36f8_0080, // tbz w0, #31, $+0x10
+            0x3618_0080, // tbz w0, #3, $+0x10
+            0x36f8_0060, // tbz w0, #31, $+0xc
             0xb7f8_0041, // tbnz x1, #63, $+0x8
         ]);
         assert_eq!(
             shown,
+            ["if ((w0 & 8) == 0) goto $+0x10", "if (w0 >= 0) goto $+0xc", "if (x1 < 0) goto $+0x8"]
+        );
+        assert_eq!(
+            high(&[0x3618_0080, 0x36f8_0060, 0xb7f8_0041]),
             [
-                "if ((w0 & 0x80000000) == 0) goto $+0x10",
-                "if ((x1 & 0x8000000000000000) != 0) goto $+0x8"
+                "if ((arg1 & 8) == 0) goto $+0x10",
+                "if (arg1 >= 0) goto $+0xc",
+                "if (arg2 < 0) goto $+0x8"
             ]
         );
     }
@@ -1728,6 +2174,7 @@ mod tests {
         let code = 0xe081_3204_u32.to_le_bytes(); // add r3, r1, r4, lsl #4
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         assert_eq!(il_lines(&Arm32, &code, &insns), ["r3 = r1 + (r4 lsl 4)"]);
+        assert_eq!(high_in(&Arm32, &code, None), ["r3 = arg2 + (r4 lsl 4)"]);
     }
 
     #[test]
@@ -1752,6 +2199,22 @@ mod tests {
                 "store.32 [sp - 8] = r4, lr; sp = sp - 8",
                 "r1, r2 = load.32 [r0]",
                 "r1 = load.32 [r0]; r0 = r0 - 4",
+                "r1, r2 = load.32 [r0 + 4]",
+                "if (ne) r1 = load.32 [r0]",
+                "store.64 [sp - 8] = d8; sp = sp - 8",
+                "d8, d9 = load.64 [r0]; r0 = r0 + 0x10",
+                "r0 = load.32 [sp]; sp = sp + 4",
+                "r0 = load.32 [r0]",
+            ]
+        );
+        // The `push` saves, so it shows no line. The write-back of `ldmda`
+        // writes `r0`, which keeps its name to the left of its `=`; after
+        // it, `r0` holds no argument.
+        assert_eq!(
+            high_in(&Arm32, &code, None),
+            [
+                "r1, r2 = load.32 [arg1]",
+                "r1 = load.32 [arg1]; r0 = arg1 - 4",
                 "r1, r2 = load.32 [r0 + 4]",
                 "if (ne) r1 = load.32 [r0]",
                 "store.64 [sp - 8] = d8; sp = sp - 8",
@@ -1973,6 +2436,7 @@ mod tests {
         let shown = il_lines(&Arm32, &code, &insns);
         assert_eq!(shown[1], "if (ne) flags = compare(r6, r3)");
         assert!(shown[2].starts_with("if (flags.Equal) goto"), "{shown:?}");
+        assert_eq!(high_in(&Arm32, &code, None)[1], "if (ne) flags = compare(r6, arg4)");
     }
 
     #[test]
@@ -1984,6 +2448,7 @@ mod tests {
         let (insns, _) = decode_all(&Arm32, &code, 0x1000);
         let shown = il_lines(&Arm32, &code, &insns);
         assert_eq!(shown[1], "if (ne) r6 = r4 + 1");
+        assert_eq!(high_in(&Arm32, &code, None)[0], "flags = compare(arg3, arg4)");
         assert_eq!(a32_condition(&insns[0], Some(Op::Compare)), None, "a compare that always runs");
         assert_eq!(a32_condition(&insns[1], Some(Op::Add)), Some("ne"));
         // mls r0, r1, r2, r3 ends in the letters of a condition.
@@ -2060,6 +2525,9 @@ mod tests {
                 "s4 = r5",
             ]
         );
+        let high = high_in(&Arm32, &code, None);
+        assert_eq!(high[0], "flags = compare(arg1, arg2)");
+        assert_eq!(high[6], "d3 = arg4:arg3", "the pair reads the third and fourth arguments");
     }
 
     #[test]
@@ -2085,6 +2553,7 @@ mod tests {
             kept: vec!["s0", "ra"],
         };
         assert_eq!(frame_statement(&too_small), None, "a frame too small");
+        assert!(high_in(&Mips16::BIG, &code, None).is_empty(), "each makes or drops the frame");
     }
 
     #[test]
@@ -2097,8 +2566,14 @@ mod tests {
         let functions = [function("main", 0x100), function("", 0x200), function("", 0x300)];
         let paired = PairedLabels([(0x200, "sub_1f0".to_string())].into_iter().collect());
         let (links, space) = (Links::default(), AddressSpace::default());
-        let context =
-            |paired| Context { links: &links, space: &space, functions: &functions, paired };
+        let context = |paired| Context {
+            links: &links,
+            space: &space,
+            functions: &functions,
+            paired,
+            abi: hereticus_arch::Abi::Unix,
+            calls: None,
+        };
         let arch = &hereticus_il::arch::aarch64::Aarch64;
         let named = |paired, address| context(paired).callee_at(arch, address);
         assert_eq!(named(None, 0x100).as_deref(), Some("main"));
@@ -2123,6 +2598,8 @@ mod tests {
         assert!(shown[2].ends_with("return"), "{shown:?}");
         assert_eq!(shown[3], "if (ne) goto r3");
         assert!(shown[4].starts_with("if (r1 != r3) goto"), "{shown:?}");
+        let high = high_in(&Arm32, &code, None);
+        assert_eq!(high[1..4], ["if (ne) return", "if (ne) return", "if (ne) goto arg4"]);
     }
 
     /// A function that calls a named one, `foo`, at `foo` from its start.
@@ -2133,7 +2610,14 @@ mod tests {
             code: Vec::new(),
         }];
         let (links, space) = (Links::default(), AddressSpace::default());
-        let context = Context { links: &links, space: &space, functions: &functions, paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &functions,
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+            calls: None,
+        };
         let (insns, _) = decode_all(arch, code, 0x1000);
         il_lines_in(arch, code, &insns, Some(context))
     }
@@ -2159,11 +2643,35 @@ mod tests {
             BTreeMap::from([(0x4008, "strcmp".to_string()), (0x4010, "free".to_string())]),
         );
         let space = AddressSpace::default();
-        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &[],
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+            calls: None,
+        };
         let (insns, _) = decode_all(&Aarch64, &code, 0x1000);
         let shown = il_lines_in(&Aarch64, &code, &insns, Some(context));
         assert_eq!(shown[5], "call x26", "strcmp on one path, free on the other");
         assert_eq!(shown[7], "call strcmp");
+        // The pages fold into the loads, and `x26` keeps its name where two
+        // paths load two callees into it.
+        assert_eq!(
+            hil_statements_in(&Aarch64, &code, &insns, Some(context))
+                .into_iter()
+                .map(|line| line.text)
+                .collect::<Vec<_>>(),
+            [
+                "x26 = load.64 [@strcmp]",
+                "if (arg1 == 0) goto $+0x14",
+                "x26 = load.64 [@free]",
+                "ret = x26()",
+                "return",
+                "ret = strcmp(arg1, arg2)",
+                "goto $-0xc",
+            ]
+        );
     }
 
     /// An A32 load of a pool word that holds the address of a text, in an
@@ -2180,7 +2688,14 @@ mod tests {
         image.extend(b"GET /tmui\0next\0");
         let links = Links::of_parts(vec![(u64::from(base), image)], BTreeMap::new());
         let space = AddressSpace::of_raw_image(u64::from(base), 0x200);
-        let context = Context { links: &links, space: &space, functions: &[], paired: None };
+        let context = Context {
+            links: &links,
+            space: &space,
+            functions: &[],
+            paired: None,
+            abi: hereticus_arch::Abi::Unix,
+            calls: None,
+        };
         let (insns, _) = decode_all(&Arm32, &code, u64::from(base));
         let shown = il_lines_in(&Arm32, &code, &insns, Some(context));
         assert_eq!(shown[0], "r1 = &\"GET /tmui\"");
@@ -2196,6 +2711,7 @@ mod tests {
             calling_foo(&Thumb2, &code, 0xa),
             ["flags = compare(r0, 0)", "if (ne) call foo", "return", "return"]
         );
+        assert_eq!(high_in(&Thumb2, &code, None)[0], "flags = compare(arg1, 0)");
     }
 
     #[test]
@@ -2222,8 +2738,9 @@ mod tests {
         let statements = il_statements_in(&Mips32::BIG, &code, &insns, None);
         let shown: Vec<(u64, &str)> =
             statements.iter().map(|line| (line.address, line.text.as_str())).collect();
-        assert_eq!(shown, [(0x1008, "sp = sp + -0x38"), (0x100c, "gp = _gp")]);
+        assert_eq!(shown, [(0x1008, "sp = sp - 0x38"), (0x100c, "gp = _gp")]);
         assert_eq!(il_line_addresses(&Mips32::BIG, &insns), [0x1008, 0x100c]);
+        assert_eq!(high_in(&Mips32::BIG, &code, None), ["gp = _gp"], "the frame shows no line");
     }
 
     #[test]
@@ -2234,6 +2751,7 @@ mod tests {
         let code: Vec<u8> = halfwords.iter().flat_map(|half| half.to_be_bytes()).collect();
         let (insns, _) = decode_all(&Mips16::BIG, &code, 0x1000);
         assert_eq!(il_lines(&Mips16::BIG, &code, &insns), ["v0 = _gp"]);
+        assert_eq!(high_in(&Mips16::BIG, &code, None), ["v0 = _gp"]);
     }
 
     #[test]
@@ -2259,6 +2777,41 @@ mod tests {
                 assert_eq!(il_line_addresses(arch, &insns), addresses);
                 assert_eq!(il_line_depths(arch, &insns).len(), addresses.len());
                 assert!(addresses.is_sorted_by(|earlier, later| earlier < later));
+            }
+        });
+    }
+
+    /// The high IL of any code shows each line for an instruction the IL
+    /// shows too, at most one each, and no more lines than the IL.
+    #[test]
+    fn any_code_shows_as_high_il_without_a_panic() {
+        use hereticus_il::arch::powerpc::PowerPc;
+        use hereticus_il::arch::x86::X86;
+        use hereticus_il::arch::{arm32::Arm32, mips::Mips32, mips16::Mips16, thumb::Thumb2};
+        bolero::check!().with_type::<Vec<u8>>().for_each(|code| {
+            let arches: [&dyn Arch; 8] = [
+                &Aarch64,
+                &Arm32,
+                &Thumb2,
+                &Mips32::BIG,
+                &Mips16::BIG,
+                &X86::BITS64,
+                &X86::BITS32,
+                &PowerPc::BIG,
+            ];
+            for arch in arches {
+                let (insns, _) = decode_all(arch, code, 0x1000);
+                let shown: HashSet<u64> = il_line_addresses(arch, &insns).into_iter().collect();
+                let high = hil_statements_in(arch, code, &insns, None);
+                let addresses: Vec<u64> = high.iter().map(|line| line.address).collect();
+                let distinct: HashSet<u64> = addresses.iter().copied().collect();
+                assert_eq!(
+                    distinct.len(),
+                    addresses.len(),
+                    "one line for each instruction at most"
+                );
+                assert!(distinct.is_subset(&shown), "a line for an instruction the IL shows");
+                assert_eq!(line_depths_at(arch, &insns, &addresses).len(), addresses.len());
             }
         });
     }
@@ -2333,6 +2886,17 @@ mod tests {
                 "flags = compare(r1, (r3 lsl 4))",
                 "store.32 [sp - 4] = lr; sp = sp - 4",
                 "r2 = -r2",
+                "pc = load.32 [sp]; sp = sp + 4",
+            ]
+        );
+        // `push {lr}` saves, so it shows no line.
+        assert_eq!(
+            high_in(&Arm32, &words(&a32, u32::to_le_bytes), None),
+            [
+                "r5 = 1 - r5",
+                "r0 = arg1 << arg2",
+                "flags = compare(arg2, (arg4 lsl 4))",
+                "r2 = -arg3",
                 "pc = load.32 [sp]; sp = sp + 4",
             ]
         );
@@ -2461,7 +3025,7 @@ mod tests {
             (0, "if (a0 == 0) goto $+0x18"),
             (0, "a2 = a2 + 1"),
             (2, "a1 = a1 + 1"),
-            (2, "a0 = a0 + -0x1"),
+            (2, "a0 = a0 - 1"),
             (1, "if (a0 != 0) goto $-0x8"),
             (1, "a3 = a3 + 1"),
             (0, "return"),
@@ -2485,7 +3049,7 @@ mod tests {
         let expected = at_depths([
             (0, "if (a0 == 0) goto $+0x8"),
             (2, "a1 = a1 + 1"),
-            (2, "a0 = a0 + -0x1"),
+            (2, "a0 = a0 - 1"),
             (1, "if (a0 != 0) goto $-0x4"),
             (0, "return"),
         ]);

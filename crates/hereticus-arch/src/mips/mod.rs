@@ -2,7 +2,10 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::mips`].
 
-use super::{Arch, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory, Recovery};
+use super::{
+    Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory, NamedReg,
+    Recovery,
+};
 use hereticus_il as il;
 use hereticus_il::arch::mips::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
@@ -20,6 +23,22 @@ pub(super) fn register_name(register: il::Reg) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// The o32 ABI, which MIPS16e code keeps too.
+pub(crate) const O32: CallingConvention = CallingConvention {
+    arguments: &[
+        NamedReg::new(il::Reg::General(4), "a0"),
+        NamedReg::new(il::Reg::General(5), "a1"),
+        NamedReg::new(il::Reg::General(6), "a2"),
+        NamedReg::new(il::Reg::General(7), "a3"),
+    ],
+    result: NamedReg::new(il::Reg::General(2), "v0"),
+    stack: il::Reg::General(SP),
+    // `s0` to `s7`, `gp`, `sp` and `fp`.
+    preserved: &[16, 17, 18, 19, 20, 21, 22, 23, 28, 29, 30],
+    stack_arguments: None,
+    link: Some(il::Reg::General(31)),
+};
 
 impl Arch for Mips32 {
     fn is_frame_register(&self, reg: il::Reg) -> bool {
@@ -159,6 +178,11 @@ impl Arch for Mips32 {
             }
         }
         formed
+    }
+
+    /// The o32 ABI: `a0` to `a3`, and `v0`.
+    fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
+        Some(O32)
     }
 }
 

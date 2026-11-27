@@ -324,12 +324,14 @@ impl Jump {
 fn jumps_of(halves: &[Half<'_>]) -> Vec<Jump> {
     let mut jumps = Vec::new();
     for side in 0..2 {
-        // The address of each row that shows this side, in order.
-        let rows: Vec<(u64, usize)> = halves
+        // The address of each row that shows this side, by address: the
+        // high IL shows a delay slot before its call.
+        let mut rows: Vec<(u64, usize)> = halves
             .iter()
             .enumerate()
             .filter_map(|(row, half)| Some((half.places[side]?.address, row)))
             .collect();
+        rows.sort_unstable();
         for (row, half) in halves.iter().enumerate() {
             let Some(target) = half.places[side].and_then(|place| place.jump) else { continue };
             let at = rows.partition_point(|&(address, _)| address < target);
