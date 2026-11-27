@@ -167,26 +167,88 @@ fn run(args: &[String]) -> String {
 /// Whether `shown` appears in `printed` as one run, line by line, with the
 /// spaces at the ends of the lines left out. A line `...` in `shown`, or a
 /// table row of `...`, stands for lines left out, so the runs between such
-/// lines must appear in order.
+/// lines must appear in order. A line `...` between two runs gives how
+/// many lines it leaves out, as `... 12 lines`, and the count must agree.
 fn appears_in(shown: &str, printed: &str) -> bool {
     let printed: Vec<&str> = printed.lines().map(str::trim_end).collect();
-    let printed = format!("\n{}\n", printed.join("\n"));
     let shown: Vec<&str> = shown.lines().map(str::trim_end).collect();
-    let mut rest = printed.as_str();
-    for run in shown.split(|line| is_elision(line)).filter(|run| !run.is_empty()) {
-        let run = format!("\n{}\n", run.join("\n"));
-        let Some(at) = rest.find(&run) else { return false };
+    let mut from = 0;
+    // Where the run before ends in `printed`.
+    let mut end_before: Option<usize> = None;
+    // The elision since the run before.
+    let mut elision = Elision::Row;
+    let mut at = 0;
+    while at < shown.len() {
+        if let Some(found) = elision_of(shown[at]) {
+            elision = found;
+            at += 1;
+            continue;
+        }
+        let end = (at..shown.len()).find(|&line| is_elision(shown[line])).unwrap_or(shown.len());
+        let run = &shown[at..end];
+        let start = match (end_before, elision) {
+            (Some(before), Elision::Counted(hidden)) => Some(before + hidden)
+                .filter(|&start| printed.get(start..).is_some_and(|rest| rest.starts_with(run))),
+            (Some(_), Elision::Bare) => None,
+            _ => find_run(&printed, run, from),
+        };
+        let Some(start) = start else { return false };
         // The next run may start on the line this one ends with.
-        rest = &rest[at + run.len() - 1..];
+        from = start + run.len() - 1;
+        end_before = Some(start + run.len());
+        elision = Elision::Row;
+        at = end;
     }
     true
 }
 
-/// Whether `line` stands for lines left out: `...`, or a table row whose
-/// cells are `...` or empty.
+/// Where `run` first appears in `printed`, from the line `from` on.
+fn find_run(printed: &[&str], run: &[&str], from: usize) -> Option<usize> {
+    (from..=printed.len().saturating_sub(run.len())).find(|&at| printed[at..].starts_with(run))
+}
+
+/// What a line that stands for lines left out says of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Elision {
+    /// `...`, which gives no count.
+    Bare,
+    /// `... 12 lines`.
+    Counted(usize),
+    /// A table row of `...`, which gives no count.
+    Row,
+}
+
+/// What `line` says of the lines it leaves out, or none where it shows a
+/// line: `...`, `... 12 lines`, or a table row whose cells are `...` or
+/// empty.
+fn elision_of(line: &str) -> Option<Elision> {
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix("...") {
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            return Some(Elision::Bare);
+        }
+        let count = rest.strip_suffix(" lines").or_else(|| rest.strip_suffix(" line"))?;
+        return count.parse().ok().map(Elision::Counted);
+    }
+    let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+    let row = line.starts_with('|')
+        && cells.contains(&"...")
+        && cells.iter().all(|cell| cell.is_empty() || *cell == "...");
+    row.then_some(Elision::Row)
+}
+
+/// Whether `line` stands for lines left out.
 fn is_elision(line: &str) -> bool {
-    let cells: Vec<&str> = line.trim().trim_matches('|').split('|').map(str::trim).collect();
-    cells.contains(&"...") && cells.iter().all(|cell| cell.is_empty() || *cell == "...")
+    elision_of(line).is_some()
+}
+
+/// The line that says `hidden` lines are left out.
+fn counted_elision(hidden: usize) -> String {
+    match hidden {
+        1 => "... 1 line".to_owned(),
+        _ => format!("... {hidden} lines"),
+    }
 }
 
 /// The README and the pages of the book, which read only the fixtures.
@@ -336,6 +398,8 @@ fn updated(body: &str, printed: &str) -> Result<String, String> {
         at += 1;
     }
     let mut from = 0;
+    // Where the run before ends, in the body and in `printed`.
+    let mut before: Option<(usize, usize)> = None;
     for run in runs {
         let wanted: Vec<String> = lines[run.clone()].iter().map(|line| bare(line)).collect();
         let found = (from..=bare_printed.len().saturating_sub(wanted.len()))
@@ -344,10 +408,29 @@ fn updated(body: &str, printed: &str) -> Result<String, String> {
         for (offset, line) in run.clone().enumerate() {
             lines[line] = printed[found + offset].to_owned();
         }
+        if let Some((body_end, printed_end)) = before {
+            count_elisions(&mut lines[body_end..run.start], found.checked_sub(printed_end))?;
+        }
         // The next run may start on the line this one ends with.
         from = found + wanted.len() - 1;
+        before = Some((run.end, found + wanted.len()));
     }
     Ok(lines.join("\n"))
+}
+
+/// Write the count `hidden` into the line `...` of `between`, the lines
+/// of a body between two runs. A table row of `...` gives no count.
+fn count_elisions(between: &mut [String], hidden: Option<usize>) -> Result<(), String> {
+    for line in between {
+        match elision_of(line) {
+            Some(Elision::Bare | Elision::Counted(_)) => match hidden {
+                Some(hidden) if hidden > 0 => *line = counted_elision(hidden),
+                _ => return Err(format!("`{}` leaves out no line", line.trim())),
+            },
+            Some(Elision::Row) | None => {}
+        }
+    }
+    Ok(())
 }
 
 /// The bytes of the two stubs that differ, as the example in the book says.
@@ -416,15 +499,23 @@ fn a_shown_output_may_be_a_part_of_what_is_printed() {
     assert!(appears_in("b\nc", "a\nb  \nc\nd"));
     assert!(!appears_in("b\nd", "a\nb\nc\nd"));
     assert!(!appears_in("b\nc", "a\nb\nC"));
-    assert!(appears_in("...\nb\n...\nd\n...", "a\nb\nc\nd\ne"));
+    assert!(appears_in("...\nb\n... 1 line\nd\n...", "a\nb\nc\nd\ne"));
+    assert!(!appears_in("...\nb\n...\nd\n...", "a\nb\nc\nd\ne"), "no count");
+    assert!(!appears_in("b\n... 2 lines\nd", "a\nb\nc\nd\ne"), "a wrong count");
     assert!(!appears_in("d\n...\nb", "a\nb\nc\nd"));
-    assert!(!appears_in("b\n...\nx", "a\nb\nc\nd"));
+    assert!(!appears_in("b\n... 1 line\nx", "a\nb\nc\nd"));
     assert!(!appears_in("b", "ab\nc"));
     assert!(appears_in("| a |\n| ... |   |\n| d |", "| a |\n| b |\n| c |\n| d |"));
     assert!(is_elision("..."));
     assert!(is_elision("| ...  |    |  |"));
     assert!(!is_elision("|    |    |"));
     assert!(!is_elision("| ... | x |"));
+    assert_eq!(elision_of("... 12 lines"), Some(Elision::Counted(12)));
+    assert_eq!(elision_of("... 1 line"), Some(Elision::Counted(1)));
+    assert_eq!(elision_of("... many lines"), None);
+    assert_eq!(elision_of("...x"), None);
+    assert_eq!(counted_elision(1), "... 1 line");
+    assert_eq!(counted_elision(3), "... 3 lines");
 }
 
 #[test]
@@ -456,8 +547,17 @@ fn an_update_takes_the_lines_of_the_jumps_and_the_indent() {
 #[test]
 fn an_update_keeps_the_order_of_the_runs() {
     let body = "a\n...\nc";
-    assert_eq!(updated(body, "│ a\nb\n│ c"), Ok("│ a\n...\n│ c".to_owned()));
+    assert_eq!(updated(body, "│ a\nb\n│ c"), Ok("│ a\n... 1 line\n│ c".to_owned()));
     assert!(updated("c\n...\na", "a\nb\nc").is_err(), "c comes after a");
+}
+
+#[test]
+fn an_update_counts_the_lines_between_two_runs_only() {
+    let body = "...\na\n... 9 lines\nd\n...";
+    assert_eq!(updated(body, "x\na\nb\nc\nd\ny"), Ok("...\na\n... 2 lines\nd\n...".to_owned()));
+    let table = "| a |\n| ... |\n| c |";
+    assert_eq!(updated(table, "| a |\n| b |\n| c |"), Ok(table.to_owned()));
+    assert!(updated("a\n...\nb", "a\nb").is_err(), "the runs meet");
 }
 
 #[test]

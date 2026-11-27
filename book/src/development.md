@@ -122,6 +122,10 @@ tool changes only the lines of the jumps at the left, the indent or the
 spaces of an output, `just docs-output` writes the new output into the
 docs. Any other change it names, so that you can choose the part to show.
 
+A line `...` in an output stands for lines left out. A line `...` between
+two parts gives how many lines it leaves out, as `... 12 lines`, and the
+test checks that count. `just docs-output` writes it.
+
 ## The Book
 
 Each page of [Real-Life Examples](./real-life-examples.md) includes a file of
