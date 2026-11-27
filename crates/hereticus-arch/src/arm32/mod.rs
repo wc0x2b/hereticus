@@ -2,7 +2,11 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::arm32`].
 
-use super::{Abi, Arch, CallingConvention, Insn, InsnKind, Memory, NamedReg};
+use super::relocation::{DataReference, Part, RelocationType, Width, references_of};
+use super::{
+    Abi, Arch, CallingConvention, CodeSet, Insn, InsnKind, Memory, NamedReg, RegisterClass,
+    is_numbered,
+};
 use hereticus_il as il;
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::*;
@@ -28,7 +32,55 @@ pub(crate) const AAPCS: CallingConvention = CallingConvention {
     link: Some(il::Reg::General(14)),
 };
 
+/// The absolute and the relative relocation of a word, of A32 and T32 code.
+pub(super) const ADDRESS_RELOCATIONS: [RelocationType; 2] =
+    [object::elf::R_ARM_ABS32, object::elf::R_ARM_RELATIVE];
+
+/// What a relocation of A32 or T32 code names of the address of data.
+pub(super) const PART_OF: fn(RelocationType) -> Option<Part> = |r_type| match r_type {
+    object::elf::R_ARM_ABS32 => Some(Part::Word(Width::Four)),
+    _ => None,
+};
+
+/// The encoding of the function at `address`: Thumb-2 where bit 0 is set.
+pub(super) fn thumb_bit(address: u64) -> CodeSet {
+    match address & 1 {
+        1 => CodeSet::Compact,
+        _ => CodeSet::Full,
+    }
+}
+
+/// The class of the register `name` of A32 and T32 code.
+pub(super) fn register_class(name: &str) -> RegisterClass<'_> {
+    match name {
+        "sb" | "sl" | "fp" | "ip" | "sp" | "lr" | "pc" => RegisterClass::General(32),
+        _ if is_numbered(name, "r") => RegisterClass::General(32),
+        _ if is_numbered(name, "sdq") => RegisterClass::Vector(name.chars().next().unwrap_or(' ')),
+        _ => RegisterClass::Named(name),
+    }
+}
+
 impl Arch for Arm32 {
+    /// A linked file sets bit 0 of the address of a Thumb-2 function.
+    fn symbol_encoding(&self, address: u64, _other: u8) -> CodeSet {
+        thumb_bit(address)
+    }
+
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        references_of(relocations, word, PART_OF)
+    }
+
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        Some(ADDRESS_RELOCATIONS)
+    }
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        register_class(name)
+    }
+
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         matches!(reg, il::Reg::Stack | FRAME)
     }

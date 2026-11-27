@@ -1,7 +1,7 @@
 //! How two paired functions differ, and what kind of change that is.
 
 use crate::norm::{FlowShape, NormInsn};
-use hereticus_arch::Arch;
+use hereticus_arch::{Arch, FramePointer};
 use hereticus_il as il;
 use hereticus_il::arch::Insn;
 use hereticus_memory::{ConstantKind, Contents};
@@ -263,15 +263,13 @@ pub(super) fn difference(
             Difference::Shape
         };
     };
-    // On x86, the IL view reads the stack pointer as the base of a slot,
-    // and `rbp` only where it reads below it: code built with `-O2` keeps a
-    // value of its own in `rbp`, but code that keeps a frame pointer there
-    // keeps its slots below it.
+    // Where the frame register can hold a value of its own, the IL view
+    // reads the stack pointer as the base of a slot, and the frame register
+    // only where it reads below it.
     let marks_slot = |arch: &dyn Arch, base: il::Reg, offset: Option<i64>| {
-        let x86 = ["x86_64", "i386", "i686"].iter().any(|name| arch.triple().starts_with(name));
         arch.is_frame_register(base)
             && (address_registers == AddressRegisters::Keep
-                || !x86
+                || arch.frame_pointer() == FramePointer::FrameOnly
                 || base == il::Reg::Stack
                 || offset.is_some_and(|offset| offset < 0))
     };

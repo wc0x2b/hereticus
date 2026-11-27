@@ -1129,31 +1129,6 @@ fn a_load_from_another_frame_slot_into_a_renamed_register_folds() {
     assert!(matches!(folded[..], [DiffLine::Removed(_), DiffLine::Added(_)]), "{folded:?}");
 }
 
-#[test]
-fn a_register_name_tells_its_width_on_each_architecture() {
-    use RegisterClass::{General, Named, Vector};
-    let class = register_class;
-    assert_eq!(class("aarch64-linux-gnu", "x19"), General(64));
-    assert_eq!(class("aarch64-linux-gnu", "w19"), General(32));
-    assert_eq!(class("aarch64-linux-gnu", "xzr"), class("aarch64-linux-gnu", "x0"));
-    assert_eq!(class("aarch64-linux-gnu", "wzr"), class("aarch64-linux-gnu", "w0"));
-    assert_eq!(class("aarch64-linux-gnu", "d8"), Vector('d'));
-    assert_ne!(class("aarch64-linux-gnu", "d8"), class("aarch64-linux-gnu", "s8"));
-    assert_eq!(class("x86_64-linux-gnu", "rax"), class("x86_64-linux-gnu", "r12"));
-    assert_eq!(class("x86_64-linux-gnu", "eax"), class("x86_64-linux-gnu", "r9d"));
-    assert_ne!(class("x86_64-linux-gnu", "eax"), class("x86_64-linux-gnu", "rax"));
-    assert_eq!(class("x86_64-linux-gnu", "al"), class("x86_64-linux-gnu", "r15b"));
-    assert_eq!(class("x86_64-linux-gnu", "ax"), General(16));
-    assert_eq!(class("i386-linux-gnu", "esi"), General(32));
-    assert_eq!(class("x86_64-linux-gnu", "r16"), Named("r16"));
-    assert_eq!(class("arm-linux-gnueabi", "r4"), class("thumbv7-linux-gnueabi", "lr"));
-    assert_eq!(class("arm-linux-gnueabi", "d16"), Vector('d'));
-    assert_eq!(class("mipsel", "s0"), class("mips", "t9"));
-    assert_eq!(class("mips", "f12"), Vector('f'));
-    assert_eq!(class("mips", "hi"), Named("hi"));
-    assert_eq!(class("riscv64", "a0"), Named("a0"), "an architecture this does not know");
-}
-
 /// A register that the statements around a run keep under its own name is
 /// no other register renamed: the fix of CVE-2025-14282 in `dropbear` tests
 /// what `getuid` returned in `w0`, right after `w0 = 1`, where the old code

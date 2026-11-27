@@ -3,9 +3,10 @@
 //! functions are in [`hereticus_recovery::arch::mips`].
 
 use super::{
-    Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory, NamedReg,
-    Recovery,
+    Abi, Arch, CallingConvention, CodeSet, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory,
+    NamedReg, Recovery, RegisterClass, is_numbered,
 };
+use crate::relocation::{DataReference, RelocationType};
 use hereticus_il as il;
 use hereticus_il::arch::mips::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
@@ -16,11 +17,23 @@ use hereticus_recovery::arch::mips::{
 use rabbitizer::opcodes::Opcode;
 use std::collections::BTreeMap;
 
+mod relocation;
+
 /// The name the ABI gives a general register, as `gp` for 28.
 pub(super) fn register_name(register: il::Reg) -> Option<&'static str> {
     match register {
         il::Reg::General(number) => super::mips32::REGISTERS.get(usize::from(number)).copied(),
         _ => None,
+    }
+}
+
+/// The class of the register `name` of MIPS32 and MIPS16e code. The frame
+/// pointer `s8` is also named `fp`.
+pub(super) fn register_class(name: &str) -> RegisterClass<'_> {
+    match name {
+        _ if super::mips32::REGISTERS.contains(&name) || name == "fp" => RegisterClass::General(32),
+        _ if is_numbered(name, "f") => RegisterClass::Vector('f'),
+        _ => RegisterClass::Named(name),
     }
 }
 
@@ -40,7 +53,65 @@ pub(crate) const O32: CallingConvention = CallingConvention {
     link: Some(il::Reg::General(31)),
 };
 
+/// The encoding of the function that a symbol at `address`, with `other`
+/// in its `st_other` field, names. A linked file sets bit 0 of the address
+/// of a MIPS16e function, and an unlinked object marks the symbol in
+/// `st_other` instead.
+pub(super) fn symbol_encoding(address: u64, other: u8) -> CodeSet {
+    /// The `st_other` value of a symbol that names a MIPS16e function.
+    const STO_MIPS16: u8 = 0xf0;
+    match address & 1 == 1 || other & STO_MIPS16 == STO_MIPS16 {
+        true => CodeSet::Compact,
+        false => CodeSet::Full,
+    }
+}
+
+/// Whether `e_flags` of a MIPS file say that it holds MIPS16e code.
+pub(super) fn holds_compact_code(e_flags: u32) -> bool {
+    /// The flag of the header of a file that holds MIPS16e code.
+    const EF_MIPS_ARCH_ASE_M16: u32 = 0x0400_0000;
+    e_flags & EF_MIPS_ARCH_ASE_M16 != 0
+}
+
+/// The absolute and the relative relocation of a word, of MIPS32 and
+/// MIPS16e code.
+pub(super) const ADDRESS_RELOCATIONS: [RelocationType; 2] =
+    [object::elf::R_MIPS_32, object::elf::R_MIPS_REL32];
+
+/// What each relocation of a code section of MIPS32 or MIPS16e names of the
+/// address of data: see [`Arch::data_references`].
+pub(super) fn data_references(
+    relocations: &[(u64, object::Relocation)],
+    word: &dyn Fn(u64) -> Option<u64>,
+) -> Vec<DataReference> {
+    relocation::data_references(relocations, word)
+}
+
 impl Arch for Mips32 {
+    fn symbol_encoding(&self, address: u64, other: u8) -> CodeSet {
+        symbol_encoding(address, other)
+    }
+
+    fn holds_compact_code(&self, e_flags: u32) -> bool {
+        holds_compact_code(e_flags)
+    }
+
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        data_references(relocations, word)
+    }
+
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        Some(ADDRESS_RELOCATIONS)
+    }
+
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        register_class(name)
+    }
+
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         matches!(reg, il::Reg::General(SP | FP))
     }

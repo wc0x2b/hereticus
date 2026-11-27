@@ -2,16 +2,155 @@
 //! instructions keep the frame and which constants are addresses. The rules
 //! that find functions are in [`hereticus_recovery::arch::powerpc`].
 
+use super::relocation::{DataReference, Part, RelocationType, Width, references_of};
 use super::{Abi, Arch, CallingConvention, Insn, Memory, NamedReg};
+use hereticus_il::arch::ByteOrder;
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::InsnKind;
 use hereticus_il::arch::powerpc::{LINK, Opcode, PowerPc, decoded};
 use hereticus_il::{Op, Operand, Reg};
 use hereticus_memory::{AddressSpace, ConstantKind};
 use hereticus_recovery::arch::Recovery as _;
-use hereticus_recovery::arch::powerpc::track;
+use hereticus_recovery::arch::powerpc::{toc_from_global_entry, track};
+use hereticus_recovery::dynamic::Dynamic;
+use object::{Object as _, ObjectKind, ObjectSection as _, ObjectSymbol as _};
+
+/// The TOC of 64-bit code, which its call stubs reach their slots from:
+/// where the first ELFv2 global entry in `regions` of little-endian code
+/// makes it, or else 0x8000 past `got`, the start of `.got`, as GNU `ld`
+/// and LLD put it. An ELFv1 function makes no TOC of its own, so only
+/// `.got`, or a descriptor the dynamic segment names, gives it there.
+fn toc(arch: PowerPc, regions: &[(u64, &[u8])], got: Option<u64>) -> Option<u64> {
+    /// How far past the start of `.got` the TOC lies.
+    const TOC_BIAS: u64 = 0x8000;
+    let global_entry = || match arch.data_order() {
+        ByteOrder::Little => {
+            regions.iter().find_map(|&(base, data)| toc_from_global_entry(arch, data, base))
+        }
+        ByteOrder::Big => None,
+    };
+    global_entry().or_else(|| got.map(|got| got + TOC_BIAS))
+}
+
+/// The TOC of ELFv1 64-bit code, from the second doubleword of the
+/// descriptor that an exported function names, as GNU `ld` writes it.
+fn descriptor_toc(dynamic: &Dynamic<'_>) -> Option<u64> {
+    dynamic
+        .exports()
+        .iter()
+        .find_map(|export| dynamic.field(export.address + 8).filter(|&toc| toc != 0))
+}
+
+/// The section and the address of the code that an ELFv1 symbol `symbol`
+/// names, where it names a descriptor.
+///
+/// 64-bit big-endian PowerPC names a function by its descriptor in `.opd`:
+/// three doublewords that hold the address of its code, its TOC and its
+/// environment. The symbol gives the size of the code. A linked file holds
+/// the address in the first doubleword, and an object leaves it to a
+/// relocation.
+fn descriptor_entry_of(
+    file: &object::File<'_>,
+    symbol: &object::Symbol<'_, '_>,
+) -> Option<(object::SectionIndex, u64)> {
+    let opd = file.section_by_index(symbol.section_index()?).ok()?;
+    if opd.name().ok()? != ".opd" {
+        return None;
+    }
+    let offset = symbol.address().checked_sub(opd.address())?;
+    if file.kind() == ObjectKind::Relocatable {
+        let (_, relocation) = opd.relocations().find(|(at, _)| *at == offset)?;
+        let (section, start) = match relocation.target() {
+            object::RelocationTarget::Section(index) => {
+                (index, file.section_by_index(index).ok()?.address())
+            }
+            object::RelocationTarget::Symbol(index) => {
+                let target = file.symbol_by_index(index).ok()?;
+                (target.section_index()?, target.address())
+            }
+            _ => return None,
+        };
+        return Some((section, start.wrapping_add_signed(relocation.addend())));
+    }
+    let at = usize::try_from(offset).ok()?;
+    let entry = u64::from_be_bytes(opd.data().ok()?.get(at..at + 8)?.try_into().ok()?);
+    let section = file.sections().find(|section| {
+        section.kind() == object::SectionKind::Text
+            && (section.address()..section.address() + section.size()).contains(&entry)
+    })?;
+    Some((section.index(), entry))
+}
+
+/// What a relocation of 32-bit PowerPC code names of the address of data.
+fn part_of_32(r_type: RelocationType) -> Option<Part> {
+    use object::elf::*;
+    Some(match r_type {
+        R_PPC_ADDR32 => Part::Word(Width::Four),
+        R_PPC_ADDR16_HA | R_PPC_ADDR16_HI => Part::High,
+        R_PPC_ADDR16_LO => Part::Low,
+        _ => return None,
+    })
+}
+
+/// What a relocation of 64-bit PowerPC code names of the address of data.
+fn part_of_64(r_type: RelocationType) -> Option<Part> {
+    use object::elf::*;
+    Some(match r_type {
+        R_PPC64_ADDR64 => Part::Word(Width::Eight),
+        R_PPC64_ADDR16_HA | R_PPC64_ADDR16_HI => Part::High,
+        R_PPC64_ADDR16_LO | R_PPC64_ADDR16_LO_DS => Part::Low,
+        _ => return None,
+    })
+}
 
 impl Arch for PowerPc {
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        match self.pointer_width() {
+            8 => references_of(relocations, word, part_of_64),
+            _ => references_of(relocations, word, part_of_32),
+        }
+    }
+
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        use object::elf::{R_PPC_ADDR32, R_PPC_RELATIVE, R_PPC64_ADDR64, R_PPC64_RELATIVE};
+        match self.pointer_width() {
+            8 => Some([R_PPC64_ADDR64, R_PPC64_RELATIVE]),
+            _ => Some([R_PPC_ADDR32, R_PPC_RELATIVE]),
+        }
+    }
+
+    fn descriptor_entry(
+        &self,
+        file: &object::File<'_>,
+        symbol: &object::Symbol<'_, '_>,
+    ) -> Option<(object::SectionIndex, u64)> {
+        match (self.pointer_width(), self.data_order()) {
+            (8, ByteOrder::Big) => descriptor_entry_of(file, symbol),
+            _ => None,
+        }
+    }
+
+    /// 32-bit PIC code holds the global offset table in `r30`, as
+    /// `DT_PPC_GOT` gives it: `DT_PLTGOT` there gives the table of the PLT.
+    /// 64-bit code reaches its slots from the TOC.
+    fn global_table(
+        &self,
+        dynamic: Option<&Dynamic<'_>>,
+        regions: &[(u64, &[u8])],
+        got: Option<u64>,
+    ) -> Option<u64> {
+        /// `DT_PPC_GOT`, the first tag of the processor range.
+        const DT_PPC_GOT: u64 = 0x7000_0000;
+        match self.pointer_width() {
+            8 => toc(*self, regions, got).or_else(|| descriptor_toc(dynamic?)),
+            _ => dynamic?.value(DT_PPC_GOT),
+        }
+    }
+
     /// Making and freeing the frame, a load or a store of a frame slot, and
     /// the moves of the link register that save and restore it:
     ///
@@ -111,6 +250,22 @@ mod tests {
 
     fn one(word: u32) -> Insn {
         PowerPc::BIG.decode(&word.to_be_bytes(), 0, 0x1000).expect("4 bytes always decode")
+    }
+
+    /// ELFv2 code makes its TOC at its first global entry, and ELFv1 code
+    /// keeps it 0x8000 past the start of `.got`.
+    #[test]
+    fn the_toc_comes_from_a_global_entry_or_the_got() {
+        let entry: Vec<u8> = [0x4e80_0020_u32, 0x3c4c_0002, 0x3842_2d28, 0x7c08_02a6]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let regions = [(0x2_1c9c, entry.as_slice())];
+        assert_eq!(toc(PowerPc::LITTLE64, &regions, Some(0x1000)), Some(0x4_49c8));
+        assert_eq!(toc(PowerPc::BIG64, &regions, Some(0x1000)), Some(0x9000));
+        assert_eq!(toc(PowerPc::BIG64, &regions, None), None);
+        assert_eq!(PowerPc::BIG64.global_table(None, &regions, Some(0x1000)), Some(0x9000));
+        assert_eq!(PowerPc::BIG.global_table(None, &regions, Some(0x1000)), None, "no DT_PPC_GOT");
     }
 
     #[rstest]

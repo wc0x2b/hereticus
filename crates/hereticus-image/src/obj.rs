@@ -9,7 +9,7 @@ use object::{
 
 use crate::Links;
 use crate::links::{ByteOrder, Width};
-use hereticus_arch::Arch;
+use hereticus_arch::{Arch, CodeSet, UnsizedSymbol};
 use hereticus_il::arch::aarch64::Aarch64;
 use hereticus_il::arch::arm32::Arm32;
 use hereticus_il::arch::mips::Mips32;
@@ -19,7 +19,6 @@ use hereticus_il::arch::x86::X86;
 use hereticus_memory::AddressSpace;
 pub use hereticus_memory::Function;
 use hereticus_recovery::dynamic::Dynamic;
-use hereticus_recovery::mips_stubs;
 use hereticus_recovery::scan;
 use hereticus_recovery::unwind;
 
@@ -133,6 +132,33 @@ impl Isa {
             Self::PowerPcLe => &PowerPc::LITTLE,
             Self::PowerPc64 => &PowerPc::BIG64,
             Self::PowerPc64Le => &PowerPc::LITTLE64,
+        }
+    }
+
+    /// The instruction set of a function in `set`, in a binary read as this
+    /// one.
+    pub(crate) fn in_set(self, set: CodeSet) -> Self {
+        match (self, set) {
+            (Self::Arm32 | Self::Thumb2, CodeSet::Compact) => Self::Thumb2,
+            (Self::Arm32 | Self::Thumb2, CodeSet::Full) => Self::Arm32,
+            (Self::Mips32 | Self::Mips16, CodeSet::Compact) => Self::Mips16,
+            (Self::Mips32 | Self::Mips16, CodeSet::Full) => Self::Mips32,
+            (Self::Mips32Be | Self::Mips16Be, CodeSet::Compact) => Self::Mips16Be,
+            (Self::Mips32Be | Self::Mips16Be, CodeSet::Full) => Self::Mips32Be,
+            (Self::Arm32Be8 | Self::Thumb2Be8, CodeSet::Compact) => Self::Thumb2Be8,
+            (Self::Arm32Be8 | Self::Thumb2Be8, CodeSet::Full) => Self::Arm32Be8,
+            (Self::Arm32Be32 | Self::Thumb2Be32, CodeSet::Compact) => Self::Thumb2Be32,
+            (Self::Arm32Be32 | Self::Thumb2Be32, CodeSet::Full) => Self::Arm32Be32,
+            (
+                Self::Aarch64
+                | Self::X86_64
+                | Self::X86
+                | Self::PowerPc
+                | Self::PowerPcLe
+                | Self::PowerPc64
+                | Self::PowerPc64Le,
+                _,
+            ) => self,
         }
     }
 
@@ -611,15 +637,11 @@ impl Binary {
     pub fn parse(data: &[u8]) -> Result<Self, ObjError> {
         let data = crate::macho::aarch64_slice(data);
         let file = object::File::parse(data)?;
-        let isa =
-            match Isa::from_object(file.architecture(), file.is_little_endian(), file.flags())? {
-                isa @ (Isa::Arm32
-                | Isa::Arm32Be8
-                | Isa::Arm32Be32
-                | Isa::Mips32
-                | Isa::Mips32Be) => set_of_symbol(isa, most_functions_encoded(&file)),
-                isa => isa,
-            };
+        let isa = Isa::from_object(file.architecture(), file.is_little_endian(), file.flags())?;
+        let isa = match isa.other_set() {
+            Some(_) => isa.in_set(most_functions_encoded(&file, isa.arch())),
+            None => isa,
+        };
 
         if let object::File::MachO64(macho) = &file
             && let Some((functions, found_by)) =
@@ -656,11 +678,8 @@ impl Binary {
                 continue;
             }
 
-            let own = set_of_symbol(isa, encoding_of(&symbol));
-            let entry = match isa {
-                Isa::PowerPc64 => descriptor_entry(&file, &symbol),
-                _ => None,
-            };
+            let own = isa.in_set(encoding_of(isa.arch(), &symbol));
+            let entry = isa.arch().descriptor_entry(&file, &symbol);
             let address = match entry {
                 Some((_, entry)) => entry,
                 None => own.arch().function_address(symbol.address()),
@@ -722,7 +741,7 @@ impl Binary {
             {
                 // ARM marks a Thumb function by setting bit 0 of its address.
                 let address = scan::symbol_address(isa.arch(), symbol.address());
-                if set_of_symbol(isa, encoding_of(&symbol)) != isa {
+                if isa.in_set(encoding_of(isa.arch(), &symbol)) != isa {
                     other_set.insert(address);
                 }
                 let name_of = exported.entry(address).or_insert(name);
@@ -861,7 +880,7 @@ impl Binary {
             functions,
             found_by: FoundBy::Scanning,
             addresses: AddressSpace::none(),
-            links: Links::of_module(file, &bases),
+            links: Links::of_module(file, arch, &bases),
             other_set: BTreeSet::new(),
             abi: abi_of(file.format()),
             calls: std::sync::OnceLock::new(),
@@ -917,7 +936,8 @@ impl Binary {
         }
         // The lazy binding stubs of MIPS are read apart, as MIPS32 whatever
         // the code around them is, and named for the import each resolves.
-        let stubs = lazy_stubs(isa, &code);
+        let stubs: Vec<_> =
+            code.iter().flat_map(|&(base, data)| arch.lazy_stubs(base, data)).collect();
         let code = without(&code, stubs.iter().map(|stub| stub.range.clone()));
 
         // The index of ARM lies after the code, so the whole segment is
@@ -950,7 +970,10 @@ impl Binary {
                 .map(|export| scan::symbol_range(isa.arch(), export.address, export.size))
                 .collect(),
             pointers: Vec::new(),
-            slot_names: dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default(),
+            slot_names: dynamic
+                .as_ref()
+                .map(|dynamic| dynamic.slot_names(isa.arch()))
+                .unwrap_or_default(),
         };
         let functions: Vec<Function> = scan::recover_in_memory(
             &code,
@@ -972,13 +995,9 @@ impl Binary {
         let mut exported: BTreeMap<u64, &str> = BTreeMap::new();
         let mut other_set = BTreeSet::new();
         for export in &exports {
-            let encoding = match export.address & 1 == 1 || export.other & STO_MIPS16 == STO_MIPS16
-            {
-                true => Encoding::Compact,
-                false => Encoding::Full,
-            };
+            let encoding = isa.arch().symbol_encoding(export.address, export.other);
             let address = scan::symbol_address(isa.arch(), export.address);
-            if set_of_symbol(isa, encoding) != isa {
+            if isa.in_set(encoding) != isa {
                 other_set.insert(address);
             }
             let name_of = exported.entry(address).or_insert(export.name);
@@ -995,7 +1014,7 @@ impl Binary {
         for stub in &stubs {
             let Some(bytes) = loaded.iter().find_map(|&(base, data)| {
                 let start = usize::try_from(stub.range.start.checked_sub(base)?).ok()?;
-                data.get(start..start + mips_stubs::STUB_LENGTH as usize)
+                data.get(start..start + usize::try_from(stub.range.end - stub.range.start).ok()?)
             }) else {
                 continue;
             };
@@ -1005,7 +1024,7 @@ impl Binary {
                 .map(|name| format!("{name}@plt"))
                 .unwrap_or_default();
             // A stub is MIPS32, so in MIPS16e code it is in the other set.
-            if set_of_symbol(isa, Encoding::Full) != isa {
+            if isa.in_set(CodeSet::Full) != isa {
                 other_set.insert(stub.range.start);
             }
             functions.push(Function { name, address: stub.range.start, code: bytes.to_vec() });
@@ -1144,46 +1163,6 @@ fn powerpc_stub_callee(name: &str) -> Option<&str> {
     (is_distance && !callee.is_empty()).then_some(callee)
 }
 
-/// The section and the address of the code that an ELFv1 symbol `symbol`
-/// names, where it names a descriptor.
-///
-/// 64-bit big-endian PowerPC names a function by its descriptor in `.opd`:
-/// three doublewords that hold the address of its code, its TOC and its
-/// environment. The symbol gives the size of the code. A linked file holds
-/// the address in the first doubleword, and an object leaves it to a
-/// relocation.
-fn descriptor_entry(
-    file: &object::File<'_>,
-    symbol: &object::Symbol<'_, '_>,
-) -> Option<(object::SectionIndex, u64)> {
-    let opd = file.section_by_index(symbol.section_index()?).ok()?;
-    if opd.name().ok()? != ".opd" {
-        return None;
-    }
-    let offset = symbol.address().checked_sub(opd.address())?;
-    if file.kind() == ObjectKind::Relocatable {
-        let (_, relocation) = opd.relocations().find(|(at, _)| *at == offset)?;
-        let (section, start) = match relocation.target() {
-            object::RelocationTarget::Section(index) => {
-                (index, file.section_by_index(index).ok()?.address())
-            }
-            object::RelocationTarget::Symbol(index) => {
-                let target = file.symbol_by_index(index).ok()?;
-                (target.section_index()?, target.address())
-            }
-            _ => return None,
-        };
-        return Some((section, start.wrapping_add_signed(relocation.addend())));
-    }
-    let at = usize::try_from(offset).ok()?;
-    let entry = u64::from_be_bytes(opd.data().ok()?.get(at..at + 8)?.try_into().ok()?);
-    let section = file.sections().find(|section| {
-        section.kind() == object::SectionKind::Text
-            && (section.address()..section.address() + section.size()).contains(&entry)
-    })?;
-    Some((section.index(), entry))
-}
-
 /// The `size` bytes of `section` from `address` on.
 fn section_code(
     file: &object::File<'_>,
@@ -1222,7 +1201,9 @@ fn symbol_code(
 /// left out, each thunk read as code of the function before it. On another
 /// architecture a symbol of code with no size marks no function.
 fn unsized_function_ends(file: &object::File<'_>, isa: Isa) -> BTreeMap<u64, u64> {
-    if !matches!(isa, Isa::X86 | Isa::X86_64) || file.kind() == ObjectKind::Relocatable {
+    if isa.arch().unsized_symbol() == UnsizedSymbol::MarksNothing
+        || file.kind() == ObjectKind::Relocatable
+    {
         return BTreeMap::new();
     }
     let starts: BTreeSet<u64> = file
@@ -1256,90 +1237,20 @@ fn pe_symbol_names<'data>(file: &object::File<'data>, isa: Isa) -> Vec<(u64, &'d
         .filter(|symbol| symbol.kind() == SymbolKind::Text)
         .filter_map(|symbol| {
             let name = symbol.name().ok().filter(|name| !name.is_empty())?;
-            let name = match isa {
-                Isa::X86 => undecorated_c_name(name),
-                _ => name,
-            };
+            let name = isa.arch().undecorated_name(name);
             Some((symbol.address(), name))
         })
         .collect()
 }
 
-/// The name of a C function of 32-bit Windows, as its symbol `name` gives
-/// it with the decoration of its calling convention.
-///
-/// MSVC and clang put `_` before a `__cdecl` or `__stdcall` name and `@`
-/// before a `__fastcall` one, and the size of the arguments after a
-/// `__stdcall` or `__fastcall` one, as `_send@16`. The export and import
-/// directories name the function without them. A C++ name starts with `?`
-/// and keeps its decoration.
-fn undecorated_c_name(name: &str) -> &str {
-    let Some(bare) = name.strip_prefix('_').or_else(|| name.strip_prefix('@')) else {
-        return name;
+/// The encoding of the function a symbol names, as `arch` reads its
+/// address and, in an ELF file, its `st_other` field.
+fn encoding_of(arch: &dyn Arch, symbol: &object::Symbol<'_, '_>) -> CodeSet {
+    let other = match symbol.flags() {
+        object::SymbolFlags::Elf { st_other, .. } => st_other.0,
+        _ => 0,
     };
-    match bare.rsplit_once('@') {
-        Some((base, size))
-            if !base.is_empty() && !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit()) =>
-        {
-            base
-        }
-        _ => bare,
-    }
-}
-
-/// How a function's instructions are encoded, where an architecture has a
-/// compact set beside its full one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Encoding {
-    /// A32, or MIPS32.
-    Full,
-    /// Thumb-2, or MIPS16e.
-    Compact,
-}
-
-/// The `st_other` value of an ELF symbol that names a MIPS16e function.
-const STO_MIPS16: u8 = 0xf0;
-
-/// The encoding of the function a symbol names.
-///
-/// A linked file sets bit 0 of a Thumb-2 or MIPS16e function's address. An
-/// unlinked MIPS object does not: it marks the symbol in `st_other` instead.
-fn encoding_of(symbol: &object::Symbol<'_, '_>) -> Encoding {
-    let marked = match symbol.flags() {
-        object::SymbolFlags::Elf { st_other, .. } => st_other.0 & STO_MIPS16 == STO_MIPS16,
-        _ => false,
-    };
-    match symbol.address() & 1 == 1 || marked {
-        true => Encoding::Compact,
-        false => Encoding::Full,
-    }
-}
-
-/// The instruction set of a function in `encoding`, in a binary read as
-/// `isa`.
-fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
-    match (isa, encoding) {
-        (Isa::Arm32 | Isa::Thumb2, Encoding::Compact) => Isa::Thumb2,
-        (Isa::Arm32 | Isa::Thumb2, Encoding::Full) => Isa::Arm32,
-        (Isa::Mips32 | Isa::Mips16, Encoding::Compact) => Isa::Mips16,
-        (Isa::Mips32 | Isa::Mips16, Encoding::Full) => Isa::Mips32,
-        (Isa::Mips32Be | Isa::Mips16Be, Encoding::Compact) => Isa::Mips16Be,
-        (Isa::Mips32Be | Isa::Mips16Be, Encoding::Full) => Isa::Mips32Be,
-        (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Compact) => Isa::Thumb2Be8,
-        (Isa::Arm32Be8 | Isa::Thumb2Be8, Encoding::Full) => Isa::Arm32Be8,
-        (Isa::Arm32Be32 | Isa::Thumb2Be32, Encoding::Compact) => Isa::Thumb2Be32,
-        (Isa::Arm32Be32 | Isa::Thumb2Be32, Encoding::Full) => Isa::Arm32Be32,
-        (
-            Isa::Aarch64
-            | Isa::X86_64
-            | Isa::X86
-            | Isa::PowerPc
-            | Isa::PowerPcLe
-            | Isa::PowerPc64
-            | Isa::PowerPc64Le,
-            _,
-        ) => isa,
-    }
+    arch.symbol_encoding(symbol.address(), other)
 }
 
 /// The encoding of most functions of a file, as their symbols say.
@@ -1354,7 +1265,7 @@ fn set_of_symbol(isa: Isa, encoding: Encoding) -> Isa {
 /// Where no relocation stores one, bit 0 of the entry point says which set
 /// the code runs in. The entry of a MIPS16e program is MIPS32 code of the C
 /// library.
-fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
+fn most_functions_encoded(file: &object::File<'_>, arch: &dyn Arch) -> CodeSet {
     /// The functions `crti` and `crtn` of the C library make, in the full
     /// set whatever set the program is built in. An executable exports
     /// little more, so they would outvote it.
@@ -1365,7 +1276,7 @@ fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
             .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.size() > 0)
             .filter(|symbol| !symbol.name().is_ok_and(|name| FROM_THE_C_LIBRARY.contains(&name)))
             .fold((0usize, 0usize), |(compact, all), symbol| {
-                let found = usize::from(encoding_of(&symbol) == Encoding::Compact);
+                let found = usize::from(encoding_of(arch, &symbol) == CodeSet::Compact);
                 (compact + found, all + 1)
             })
     };
@@ -1376,8 +1287,8 @@ fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
         let exports = exports.unwrap_or_default();
         let ours = exports.iter().filter(|export| !FROM_THE_C_LIBRARY.contains(&export.name));
         ours.fold((0usize, 0usize), |(compact, all), export| {
-            let marked = export.address & 1 == 1 || export.other & STO_MIPS16 == STO_MIPS16;
-            (compact + usize::from(marked), all + 1)
+            let encoding = arch.symbol_encoding(export.address, export.other);
+            (compact + usize::from(encoding == CodeSet::Compact), all + 1)
         })
     };
     let (compact, all) = match count(&mut file.symbols()) {
@@ -1390,15 +1301,15 @@ fn most_functions_encoded(file: &object::File<'_>) -> Encoding {
     let most_of = |(compact, all): (usize, usize)| compact * 2 > all;
     let most = match all {
         0 => match code_pointers_encoded(file) {
-            _ if holds_mips16(file) => true,
+            _ if holds_compact_code(file, arch) => true,
             (_, 0) => file.entry() & 1 == 1,
             pointers => most_of(pointers),
         },
         _ => most_of((compact, all)),
     };
     match most {
-        true => Encoding::Compact,
-        false => Encoding::Full,
+        true => CodeSet::Compact,
+        false => CodeSet::Full,
     }
 }
 
@@ -1474,29 +1385,6 @@ fn plt_stubs_after(
         .collect()
 }
 
-/// The lazy binding stubs of MIPS in `code`: see [`mips_stubs`]. None
-/// for another architecture.
-fn lazy_stubs(isa: Isa, code: &[(u64, &[u8])]) -> Vec<mips_stubs::LazyStub> {
-    let order = match isa {
-        Isa::Mips32 | Isa::Mips16 => mips_stubs::ByteOrder::Little,
-        Isa::Mips32Be | Isa::Mips16Be => mips_stubs::ByteOrder::Big,
-        Isa::Arm32
-        | Isa::Thumb2
-        | Isa::Arm32Be8
-        | Isa::Thumb2Be8
-        | Isa::Arm32Be32
-        | Isa::Thumb2Be32
-        | Isa::Aarch64
-        | Isa::X86_64
-        | Isa::X86
-        | Isa::PowerPc
-        | Isa::PowerPcLe
-        | Isa::PowerPc64
-        | Isa::PowerPc64Le => return Vec::new(),
-    };
-    code.iter().flat_map(|&(base, data)| mips_stubs::lazy_stubs(base, data, order)).collect()
-}
-
 /// The parts of `regions` outside every one of `cuts`, which are sorted.
 fn without<'a>(
     regions: &[(u64, &'a [u8])],
@@ -1530,15 +1418,11 @@ fn clip(base: u64, data: &[u8], range: core::ops::Range<u64>) -> (u64, &[u8]) {
     (start, &data[(start - base) as usize..(end - base) as usize])
 }
 
-/// The flag of the header of a MIPS file that holds MIPS16e code.
-const EF_MIPS_ARCH_ASE_M16: u32 = 0x0400_0000;
-
-/// Report whether the header of a MIPS file says that it holds MIPS16e
-/// code.
-fn holds_mips16(file: &object::File<'_>) -> bool {
-    let is_mips = matches!(file.architecture(), object::Architecture::Mips);
+/// Report whether the header of `file` says that it holds code of the
+/// compact set of `arch`.
+fn holds_compact_code(file: &object::File<'_>, arch: &dyn Arch) -> bool {
     match file.flags() {
-        object::FileFlags::Elf { e_flags, .. } => is_mips && e_flags.0 & EF_MIPS_ARCH_ASE_M16 != 0,
+        object::FileFlags::Elf { e_flags, .. } => arch.holds_compact_code(e_flags.0),
         _ => false,
     }
 }
@@ -1689,19 +1573,6 @@ fn has_code_section(file: &object::File<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_32_bit_windows_c_name_loses_its_decoration() {
-        assert_eq!(undecorated_c_name("_handle"), "handle");
-        assert_eq!(undecorated_c_name("_send@16"), "send");
-        assert_eq!(undecorated_c_name("@fast@8"), "fast");
-        assert_eq!(undecorated_c_name("__imp_log"), "_imp_log", "one `_` only");
-        assert_eq!(undecorated_c_name("?f@@YAHH@Z"), "?f@@YAHH@Z", "C++");
-        assert_eq!(undecorated_c_name("plain"), "plain");
-        assert_eq!(undecorated_c_name("_a@b"), "a@b", "no size after the `@`");
-        assert_eq!(undecorated_c_name("_@4"), "@4", "no name before the size");
-        assert_eq!(undecorated_c_name("_"), "");
-    }
 
     #[test]
     fn a_powerpc_call_stub_is_named_by_its_callee() {
@@ -2050,7 +1921,7 @@ mod tests {
             Isa::from_object(object::Architecture::Arm, true, arm_flags(0)),
             Ok(Isa::Arm32)
         ));
-        assert_eq!(set_of_symbol(Isa::Arm32Be8, Encoding::Compact), Isa::Thumb2Be8);
+        assert_eq!(Isa::Arm32Be8.in_set(CodeSet::Compact), Isa::Thumb2Be8);
         assert_eq!(Isa::Thumb2Be8.byte_order(), ByteOrder::Big);
         assert_eq!(Isa::Thumb2.byte_order(), ByteOrder::Little);
         let word = [0x00, 0x01, 0x02, 0x03];
@@ -2072,8 +1943,8 @@ mod tests {
             Isa::from_object(object::Architecture::Arm, false, object::FileFlags::None),
             Ok(Isa::Arm32Be8)
         ));
-        assert_eq!(set_of_symbol(Isa::Arm32Be32, Encoding::Compact), Isa::Thumb2Be32);
-        assert_eq!(set_of_symbol(Isa::Thumb2Be32, Encoding::Full), Isa::Arm32Be32);
+        assert_eq!(Isa::Arm32Be32.in_set(CodeSet::Compact), Isa::Thumb2Be32);
+        assert_eq!(Isa::Thumb2Be32.in_set(CodeSet::Full), Isa::Arm32Be32);
         assert_eq!(Isa::Thumb2Be32.byte_order(), ByteOrder::Big);
         let word = [0x00, 0x01, 0x02, 0x03];
         assert_eq!(Isa::Arm32Be32.arch().read_pointer(&word), 0x0001_0203);
@@ -2092,17 +1963,20 @@ mod tests {
     #[test]
     fn a_symbol_keeps_to_the_sets_of_its_binary() {
         for isa in EVERY_ISA {
-            for encoding in [Encoding::Full, Encoding::Compact] {
-                let own = set_of_symbol(isa, encoding);
+            for encoding in [CodeSet::Full, CodeSet::Compact] {
+                let own = isa.in_set(encoding);
                 assert!(own == isa || isa.other_set() == Some(own), "{isa:?} {encoding:?}");
-                assert_eq!(set_of_symbol(own, encoding), own, "{isa:?} {encoding:?}");
+                assert_eq!(own.in_set(encoding), own, "{isa:?} {encoding:?}");
             }
         }
-        assert_eq!(set_of_symbol(Isa::Mips32, Encoding::Compact), Isa::Mips16);
-        assert_eq!(set_of_symbol(Isa::Mips16Be, Encoding::Full), Isa::Mips32Be);
-        assert_eq!(set_of_symbol(Isa::Arm32, Encoding::Compact), Isa::Thumb2);
-        assert_eq!(set_of_symbol(Isa::Aarch64, Encoding::Compact), Isa::Aarch64);
+        assert_eq!(Isa::Mips32.in_set(CodeSet::Compact), Isa::Mips16);
+        assert_eq!(Isa::Mips16Be.in_set(CodeSet::Full), Isa::Mips32Be);
+        assert_eq!(Isa::Arm32.in_set(CodeSet::Compact), Isa::Thumb2);
+        assert_eq!(Isa::Aarch64.in_set(CodeSet::Compact), Isa::Aarch64);
     }
+
+    /// The `st_other` value of an ELF symbol that names a MIPS16e function.
+    const STO_MIPS16: u8 = 0xf0;
 
     /// How a MIPS object marks a MIPS16e function.
     #[derive(Clone, Copy, Debug)]

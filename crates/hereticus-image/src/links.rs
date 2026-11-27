@@ -64,28 +64,25 @@ impl Links {
         let pointer_width = isa.arch().pointer_width();
         let dynamic =
             hereticus_recovery::dynamic::Dynamic::find_in_raw(base, data, pointer_width, order);
-        let slots = dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default();
-        let table = match isa {
-            Isa::PowerPc64 | Isa::PowerPc64Le => powerpc64_toc(isa, &[(base, data)], None)
-                .or_else(|| dynamic.as_ref()?.powerpc64_descriptor_toc()),
-            Isa::PowerPc | Isa::PowerPcLe => {
-                dynamic.and_then(|dynamic| dynamic.powerpc_global_offset_table())
-            }
-            _ => dynamic.and_then(|dynamic| dynamic.global_offset_table()),
-        };
+        let slots =
+            dynamic.as_ref().map(|dynamic| dynamic.slot_names(isa.arch())).unwrap_or_default();
+        let table = isa.arch().global_table(dynamic.as_ref(), &[(base, data)], None);
         Self { memory: vec![(base, data.to_vec())], slots, table, ..Self::default() }
     }
 
     /// Read what an object file says about its calls.
     pub fn of_object(file: &object::File<'_>) -> Self {
         if file.kind() == ObjectKind::Relocatable {
-            let unlinked = Unlinked::of(file, |section| Some(section.address())).map(Box::new);
+            let unlinked = Isa::of_file(file)
+                .and_then(|isa| Unlinked::of(file, isa.arch(), |section| Some(section.address())))
+                .map(Box::new);
             return Self { sites: call_site_names(file), unlinked, ..Self::default() };
         }
 
         let mut memory = loaded_memory(file);
 
-        let mut slots = slot_names(file);
+        let arch = Isa::of_file(file).map(Isa::arch);
+        let mut slots = arch.map(|arch| slot_names(file, arch)).unwrap_or_default();
         let mut stubs = BTreeMap::new();
         if let object::File::MachO64(macho) = file {
             crate::apply_chained_fixups(macho, &mut memory);
@@ -101,20 +98,17 @@ impl Links {
             .map(|section| section.address())
             .filter(|&address| address != 0)
             .collect();
-        let relocated = relocated_addresses(file, &memory);
+        let relocated =
+            arch.map(|arch| relocated_addresses(file, arch, &memory)).unwrap_or_default();
         let dynamic = hereticus_recovery::dynamic::Dynamic::of(file);
-        let table = match Isa::of_file(file) {
-            Some(isa @ (Isa::PowerPc64 | Isa::PowerPc64Le)) => {
+        let table = match arch {
+            Some(arch) => {
                 let regions: Vec<(u64, &[u8])> =
                     memory.iter().map(|(start, data)| (*start, data.as_slice())).collect();
                 let got = file.section_by_name(".got").map(|got| got.address());
-                powerpc64_toc(isa, &regions, got)
-                    .or_else(|| dynamic.as_ref()?.powerpc64_descriptor_toc())
+                arch.global_table(dynamic.as_ref(), &regions, got)
             }
-            Some(Isa::PowerPc | Isa::PowerPcLe) => {
-                dynamic.and_then(|dynamic| dynamic.powerpc_global_offset_table())
-            }
-            _ => dynamic.and_then(|dynamic| dynamic.global_offset_table()),
+            None => dynamic.and_then(|dynamic| dynamic.global_offset_table()),
         };
         let stub_names = match file.format() {
             object::BinaryFormat::Pe => StubNames::Import,
@@ -136,13 +130,17 @@ impl Links {
     /// Links for a kernel module, or another unlinked object, whose code
     /// sections lie at the addresses `bases` gives, by section index: the
     /// symbol each call relocation names, and the code as memory.
-    pub fn of_module(file: &object::File<'_>, bases: &BTreeMap<usize, u64>) -> Self {
+    pub fn of_module(
+        file: &object::File<'_>,
+        arch: &dyn Arch,
+        bases: &BTreeMap<usize, u64>,
+    ) -> Self {
         let base_of = |section: &object::Section<'_, '_>| bases.get(&section.index().0).copied();
         let memory = file
             .sections()
             .filter_map(|section| Some((base_of(&section)?, section.data().ok()?.to_vec())))
             .collect();
-        let unlinked = Unlinked::of(file, base_of).map(Box::new);
+        let unlinked = Unlinked::of(file, arch, base_of).map(Box::new);
         Self { memory, sites: call_site_names_at(file, base_of), unlinked, ..Self::default() }
     }
 
@@ -478,7 +476,11 @@ fn loaded_memory(file: &object::File<'_>) -> Vec<(u64, Vec<u8>)> {
 
 /// The address each dynamic relocation of a linked `file` stores in a word.
 pub(crate) fn stored_addresses(file: &object::File<'_>) -> impl Iterator<Item = u64> {
-    relocated_addresses(file, &loaded_memory(file)).into_values()
+    let addresses = match Isa::of_file(file) {
+        Some(isa) => relocated_addresses(file, isa.arch(), &loaded_memory(file)),
+        None => BTreeMap::new(),
+    };
+    addresses.into_values()
 }
 
 /// The address each dynamic relocation of `file` stores in a word, by the
@@ -487,8 +489,12 @@ pub(crate) fn stored_addresses(file: &object::File<'_>) -> impl Iterator<Item = 
 /// Only the relocations that store an address are read: an absolute one,
 /// which adds the address of a symbol, and a relative one, which adds the
 /// load address, zero as the file is linked.
-fn relocated_addresses(file: &object::File<'_>, memory: &[(u64, Vec<u8>)]) -> BTreeMap<u64, u64> {
-    let Some(stores_address) = address_relocations(file.architecture()) else {
+fn relocated_addresses(
+    file: &object::File<'_>,
+    arch: &dyn Arch,
+    memory: &[(u64, Vec<u8>)],
+) -> BTreeMap<u64, u64> {
+    let Some(stores_address) = arch.address_relocations() else {
         return BTreeMap::new();
     };
     let Some(relocations) = file.dynamic_relocations() else { return BTreeMap::new() };
@@ -522,53 +528,6 @@ fn relocated_addresses(file: &object::File<'_>, memory: &[(u64, Vec<u8>)]) -> BT
             Some((address, base.wrapping_add(addend)))
         })
         .collect()
-}
-
-/// The TOC of 64-bit PowerPC code, which its call stubs reach their slots
-/// from: where the first ELFv2 global entry in `regions` of little-endian
-/// code makes it, or else
-/// 0x8000 past `got`, the start of `.got`, as GNU `ld` and LLD put it. An
-/// ELFv1 function makes no TOC of its own, so only `.got`, or a descriptor
-/// the dynamic segment names, gives it there.
-fn powerpc64_toc(isa: Isa, regions: &[(u64, &[u8])], got: Option<u64>) -> Option<u64> {
-    /// How far past the start of `.got` the TOC lies.
-    const TOC_BIAS: u64 = 0x8000;
-    let global_entry = || match isa {
-        Isa::PowerPc64Le => regions.iter().find_map(|&(base, data)| {
-            let arch = hereticus_il::arch::powerpc::PowerPc::LITTLE64;
-            hereticus_recovery::arch::powerpc::toc_from_global_entry(arch, data, base)
-        }),
-        _ => None,
-    };
-    global_entry().or_else(|| got.map(|got| got + TOC_BIAS))
-}
-
-/// The absolute and the relative relocation of `architecture`, the two that
-/// store an address in a word, or `None` where this crate reads neither.
-///
-/// Each architecture numbers its relocations from 1, so a number alone
-/// says nothing: 1 is `R_X86_64_64` but `R_ARM_PC24`. On x86-64, GNU `ld`
-/// writes the address of a `RELATIVE` relocation into the file too, but
-/// zero for an `R_X86_64_64`, which fills the vtable of each class that a
-/// shared library exports.
-fn address_relocations(
-    architecture: object::Architecture,
-) -> Option<[object::elf::RelocationType; 2]> {
-    use object::Architecture;
-    use object::elf::{R_386_32, R_386_RELATIVE, R_AARCH64_ABS64, R_AARCH64_RELATIVE};
-    use object::elf::{R_ARM_ABS32, R_ARM_RELATIVE, R_MIPS_32, R_MIPS_REL32};
-    use object::elf::{R_PPC_ADDR32, R_PPC_RELATIVE, R_PPC64_ADDR64, R_PPC64_RELATIVE};
-    use object::elf::{R_X86_64_64, R_X86_64_RELATIVE};
-    match architecture {
-        Architecture::Aarch64 => Some([R_AARCH64_ABS64, R_AARCH64_RELATIVE]),
-        Architecture::Arm => Some([R_ARM_ABS32, R_ARM_RELATIVE]),
-        Architecture::Mips => Some([R_MIPS_32, R_MIPS_REL32]),
-        Architecture::X86_64 => Some([R_X86_64_64, R_X86_64_RELATIVE]),
-        Architecture::I386 => Some([R_386_32, R_386_RELATIVE]),
-        Architecture::PowerPc => Some([R_PPC_ADDR32, R_PPC_RELATIVE]),
-        Architecture::PowerPc64 => Some([R_PPC64_ADDR64, R_PPC64_RELATIVE]),
-        _ => None,
-    }
 }
 
 /// Fewer bytes than this are as likely a small number as text: the word

@@ -2,14 +2,60 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::aarch64`].
 
-use super::{Abi, Arch, CallingConvention, Insn, Memory, NamedReg};
+use super::relocation::{DataReference, Part, RelocationType, Width, references_of};
+use super::{Abi, Arch, CallingConvention, Insn, Memory, NamedReg, RegisterClass, is_numbered};
 use hereticus_il::Reg;
 use hereticus_il::arch::aarch64::*;
 use hereticus_memory::{AddressSpace, ConstantKind};
 use hereticus_recovery::arch::aarch64::{SP, memory_base, operands_of, track_pages};
 use yaxpeax_arm::armv8::a64::{Opcode, Operand, SizeCode};
 
+/// The absolute and the relative relocation of a word.
+const ADDRESS_RELOCATIONS: [RelocationType; 2] =
+    [object::elf::R_AARCH64_ABS64, object::elf::R_AARCH64_RELATIVE];
+
+/// What a relocation of A64 code names of the address of data.
+const PART_OF: fn(RelocationType) -> Option<Part> = |r_type| {
+    use object::elf::*;
+    Some(match r_type {
+        R_AARCH64_ABS64 => Part::Word(Width::Eight),
+        R_AARCH64_ABS32 => Part::Word(Width::Four),
+        R_AARCH64_ADR_PREL_PG_HI21 | R_AARCH64_ADR_PREL_PG_HI21_NC => Part::High,
+        R_AARCH64_ADD_ABS_LO12_NC
+        | R_AARCH64_LDST8_ABS_LO12_NC
+        | R_AARCH64_LDST16_ABS_LO12_NC
+        | R_AARCH64_LDST32_ABS_LO12_NC
+        | R_AARCH64_LDST64_ABS_LO12_NC
+        | R_AARCH64_LDST128_ABS_LO12_NC => Part::Low,
+        _ => return None,
+    })
+};
+
 impl Arch for Aarch64 {
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        references_of(relocations, word, PART_OF)
+    }
+
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        Some(ADDRESS_RELOCATIONS)
+    }
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        match name {
+            "sp" | "xzr" => RegisterClass::General(64),
+            "wsp" | "wzr" => RegisterClass::General(32),
+            _ if is_numbered(name, "x") => RegisterClass::General(64),
+            _ if is_numbered(name, "w") => RegisterClass::General(32),
+            _ if is_numbered(name, "bhsdqv") => {
+                RegisterClass::Vector(name.chars().next().unwrap_or(' '))
+            }
+            _ => RegisterClass::Named(name),
+        }
+    }
+
     fn is_frame_register(&self, reg: Reg) -> bool {
         matches!(reg, Reg::Stack | FRAME)
     }

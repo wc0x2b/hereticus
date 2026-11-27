@@ -35,6 +35,7 @@ use hereticus_il::arch::{Insn, InsnKind};
 use hereticus_il::flow::{held_on_every_path_of, successors};
 use hereticus_il::{AccessKind, Lifted, Named, Op, Operand, Reg, RegSet, Update, Width};
 
+use crate::arch::FrameStep;
 use crate::arity::{self, Arity};
 use crate::{Context, Fold, Statement, folds, instruction_lines};
 
@@ -1130,24 +1131,20 @@ impl<'a> Body<'a> {
     /// The MIPS16e `save` or `restore` at `index`, where the stack pointer
     /// holds a known place before it, which no lift reads.
     fn frame(&self, index: usize, holding: &Holding) -> Option<Frame> {
-        let frame = hereticus_il::arch::mips16::frame(&self.insns[index])?;
+        let insn = &self.insns[index];
+        let frame = crate::arch::rules_of(insn).whole_frame(insn)?;
         let Some(&Held::Stack(at)) = holding.reg(self.convention.stack) else { return None };
-        let reg = |name: &str| {
-            let number =
-                hereticus_il::arch::mips32::REGISTERS.iter().position(|known| *known == name)?;
-            Some(Reg::General(number as u8))
-        };
-        let kept: Option<Vec<Reg>> = frame.kept.iter().map(|name| reg(name)).collect();
-        let size = i64::from(frame.size);
+        let saves = frame.step == FrameStep::Makes;
+        let size = frame.size;
         // The kept registers sit at the top of the new frame, the lowest
         // first.
-        let top = if frame.saves { at } else { at + size };
-        let kept = kept?;
+        let top = if saves { at } else { at + size };
+        let kept = frame.kept?;
         let first = top - 4 * kept.len() as i64;
         let places =
             kept.into_iter().enumerate().map(|(k, reg)| (first + 4 * k as i64, reg)).collect();
-        let moved = if frame.saves { -size } else { size };
-        Some(Frame { saves: frame.saves, places, stack: at + moved })
+        let moved = if saves { -size } else { size };
+        Some(Frame { saves, places, stack: at + moved })
     }
 
     /// Apply a MIPS16e `save` or `restore`.
@@ -1355,10 +1352,14 @@ impl<'a> Body<'a> {
             // alone.
             // T32 `push` and `pop` name the list alone.
             [Operand::Reg(base), Operand::RegisterList(list)] if *base == stack => {
-                crate::list_offsets(&self.insns[index], &lifted, list.len()).map(|(_, moved)| moved)
+                crate::arch::rules_of(&self.insns[index])
+                    .list_offsets(&self.insns[index], &lifted, list.len())
+                    .map(|(_, moved)| moved)
             }
             [Operand::RegisterList(list)] if lifted.writes.contains(stack) => {
-                crate::list_offsets(&self.insns[index], &lifted, list.len()).map(|(_, moved)| moved)
+                crate::arch::rules_of(&self.insns[index])
+                    .list_offsets(&self.insns[index], &lifted, list.len())
+                    .map(|(_, moved)| moved)
             }
             // An x86 `push` or `pop` names its value alone, as a register,
             // a constant, or a place in memory.
@@ -1519,7 +1520,8 @@ impl<'a> Body<'a> {
         let mut upkeep = vec![false; self.insns.len()];
         for (index, keeps) in upkeep.iter_mut().enumerate() {
             // A MIPS16e `save` or `restore` makes or drops the frame whole.
-            if hereticus_il::arch::mips16::frame(&self.insns[index]).is_some() {
+            let insn = &self.insns[index];
+            if crate::arch::rules_of(insn).whole_frame(insn).is_some() {
                 *keeps = self.frame(index, &self.holding[index]).is_some();
                 continue;
             }
@@ -1675,11 +1677,19 @@ impl<'a> Body<'a> {
                 (start, values)
             }
             ([], [Operand::Reg(base), Operand::RegisterList(list)]) => {
-                let (start, _) = crate::list_offsets(&self.insns[index], lifted, list.len())?;
+                let (start, _) = crate::arch::rules_of(&self.insns[index]).list_offsets(
+                    &self.insns[index],
+                    lifted,
+                    list.len(),
+                )?;
                 (at_of(*base)? + start, list.iter().collect())
             }
             ([], [Operand::RegisterList(list)]) if lifted.writes.contains(stack) => {
-                let (start, _) = crate::list_offsets(&self.insns[index], lifted, list.len())?;
+                let (start, _) = crate::arch::rules_of(&self.insns[index]).list_offsets(
+                    &self.insns[index],
+                    lifted,
+                    list.len(),
+                )?;
                 (at_of(stack)? + start, list.iter().collect())
             }
             ([], [Operand::Reg(value)]) if lifted.writes.contains(stack) => {
@@ -2049,7 +2059,8 @@ impl<'a> Body<'a> {
     /// Whether instruction `index` runs only on a condition, as A32 code
     /// can.
     fn is_conditional(&self, index: usize) -> bool {
-        crate::a32_condition(&self.insns[index], None).is_some()
+        let insn = &self.insns[index];
+        crate::arch::rules_of(insn).condition(insn, None).is_some()
     }
 
     /// The name of the place on the stack `at` bytes from the stack pointer

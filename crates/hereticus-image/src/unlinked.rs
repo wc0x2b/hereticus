@@ -11,11 +11,10 @@
 
 use std::collections::BTreeMap;
 
-use object::elf::RelocationType;
-use object::{
-    Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, SectionKind,
-    SymbolSection,
-};
+use hereticus_arch::Arch;
+use hereticus_arch::relocation::DataReference;
+pub use hereticus_arch::relocation::{Part, Width};
+use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolSection};
 
 use crate::Links;
 use crate::links::{ByteOrder, is_renamed_local};
@@ -71,66 +70,13 @@ pub struct Reference {
     pub part: Part,
 }
 
-/// How many bytes a word that holds an address takes. A relocation gives
-/// it, as `R_AARCH64_ABS32` names a word of 4 bytes in code of 64 bits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Width {
-    /// 32 bits.
-    Four,
-    /// 64 bits.
-    Eight,
-}
-
-impl Width {
-    /// The number of bytes of the word.
-    pub fn bytes(self) -> usize {
-        match self {
-            Self::Four => 4,
-            Self::Eight => 8,
-        }
-    }
-
-    /// Whether a word of this width holds `address` whole.
-    fn holds(self, address: u64) -> bool {
-        match self {
-            Self::Four => u32::try_from(address).is_ok(),
-            Self::Eight => true,
-        }
-    }
-}
-
-/// What an instruction or a word holds of the address its relocation names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Part {
-    /// The word holds the address, as a word of a literal pool does.
-    Word(Width),
-    /// The instruction forms the upper part of the address, as `adrp` and
-    /// `addis` do, and another completes it.
-    High,
-    /// The instruction completes the address, or reads or writes the place
-    /// there, as the `add` and `ldr` of AArch64 do after `adrp`.
-    Low,
-    /// The instruction forms the upper half of an address whose lower half
-    /// another adds as its immediate, as a MIPS `lui` does: the relocations
-    /// keep their addend in those immediates. So a view shows the whole
-    /// address at the `lui`, and no immediate at the instruction that adds
-    /// the lower half, with whatever the code adds between.
-    UpperOfPair,
-    /// The instruction adds the lower half of an [`Part::UpperOfPair`], as
-    /// `addiu` and `lw` do.
-    LowerOfPair,
-    /// The instruction holds the distance to the address from its own end,
-    /// as the x86-64 `lea rdi, [rip + x]` does. The target is the address
-    /// less the distance from the relocation to the end of the instruction.
-    FromEnd,
-}
-
 impl Unlinked {
     /// The sections of `file`, an unlinked object whose code sections lie
     /// at the addresses `base_of` gives, as a view places them. `None` where
     /// no relocation in its code points at data.
     pub(crate) fn of(
         file: &object::File<'_>,
+        arch: &dyn Arch,
         base_of: impl Fn(&object::Section<'_, '_>) -> Option<u64>,
     ) -> Option<Self> {
         let order = if file.is_little_endian() { ByteOrder::Little } else { ByteOrder::Big };
@@ -223,26 +169,9 @@ impl Unlinked {
                 let offset = usize::try_from(offset).ok()?;
                 Some(order.read(bytes.get(offset..offset + 4)?))
             };
-            let pairs = match file.architecture() {
-                object::Architecture::Mips => mips_pairs(&relocations, word),
-                _ => BTreeMap::new(),
-            };
-            for (offset, relocation) in &relocations {
-                let RelocationTarget::Symbol(index) = relocation.target() else { continue };
-                let RelocationFlags::Elf { r_type } = relocation.flags() else { continue };
-                let Some(kind) = kind_of(file.architecture(), r_type) else { continue };
-                let Some(symbol) = address_of(index) else { continue };
-                let (addend, part) = match (relocation.has_implicit_addend(), kind) {
-                    (false, _) => (relocation.addend(), kind.part()),
-                    (true, Kind::MipsHigh | Kind::MipsLow) => match pairs.get(offset) {
-                        Some(pair) => (pair.addend, pair.part(kind)),
-                        None => continue,
-                    },
-                    (true, Kind::GpRelative) => {
-                        (i64::from(word(*offset).unwrap_or(0) as u16 as i16), kind.part())
-                    }
-                    (true, _) => (i64::from(word(*offset).unwrap_or(0) as u32 as i32), kind.part()),
-                };
+            for reference in arch.data_references(&relocations, &word) {
+                let DataReference { offset, symbol, addend, part } = reference;
+                let Some(symbol) = address_of(symbol) else { continue };
                 let target = symbol.wrapping_add_signed(addend);
                 if let Part::Word(width) = part
                     && !width.holds(target)
@@ -325,204 +254,6 @@ fn holding(names: &BTreeMap<u64, (u64, String)>, address: u64) -> Option<(&str, 
     (address < *end).then(|| (name.as_str(), address - start))
 }
 
-/// What a relocation of code of the architecture `architecture` names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    /// A whole address in a word.
-    Word(Width),
-    /// The upper half of an address, as `R_MIPS_HI16` gives it.
-    MipsHigh,
-    /// The lower half, as `R_MIPS_LO16` gives it.
-    MipsLow,
-    /// The upper part of an address, with the addend in the relocation.
-    High,
-    /// The lower part, or a whole address in an instruction.
-    Low,
-    /// A distance from the instruction, as `R_X86_64_PC32` gives it.
-    FromEnd,
-    /// A place in the small data that MIPS code reaches from `gp`, with the
-    /// addend in the immediate, as `R_MIPS_GPREL16` gives it.
-    GpRelative,
-}
-
-impl Kind {
-    fn part(self) -> Part {
-        match self {
-            Self::Word(width) => Part::Word(width),
-            Self::High => Part::High,
-            Self::Low | Self::GpRelative => Part::Low,
-            Self::MipsHigh => Part::UpperOfPair,
-            Self::MipsLow => Part::LowerOfPair,
-            Self::FromEnd => Part::FromEnd,
-        }
-    }
-}
-
-/// What the relocation of type `r_type` of `architecture` names, where it
-/// names the address of data that code forms or reads.
-fn kind_of(architecture: object::Architecture, r_type: RelocationType) -> Option<Kind> {
-    use object::Architecture;
-    use object::elf::*;
-    Some(match architecture {
-        Architecture::Mips => match r_type {
-            R_MIPS_32 => Kind::Word(Width::Four),
-            R_MIPS_HI16 => Kind::MipsHigh,
-            R_MIPS_LO16 => Kind::MipsLow,
-            R_MIPS_GPREL16 => Kind::GpRelative,
-            _ => return None,
-        },
-        Architecture::Arm => match r_type {
-            R_ARM_ABS32 => Kind::Word(Width::Four),
-            _ => return None,
-        },
-        Architecture::Aarch64 => match r_type {
-            R_AARCH64_ABS64 => Kind::Word(Width::Eight),
-            R_AARCH64_ABS32 => Kind::Word(Width::Four),
-            R_AARCH64_ADR_PREL_PG_HI21 | R_AARCH64_ADR_PREL_PG_HI21_NC => Kind::High,
-            R_AARCH64_ADD_ABS_LO12_NC
-            | R_AARCH64_LDST8_ABS_LO12_NC
-            | R_AARCH64_LDST16_ABS_LO12_NC
-            | R_AARCH64_LDST32_ABS_LO12_NC
-            | R_AARCH64_LDST64_ABS_LO12_NC
-            | R_AARCH64_LDST128_ABS_LO12_NC => Kind::Low,
-            _ => return None,
-        },
-        Architecture::X86_64 => match r_type {
-            R_X86_64_64 => Kind::Word(Width::Eight),
-            R_X86_64_32 | R_X86_64_32S => Kind::Low,
-            R_X86_64_PC32 => Kind::FromEnd,
-            _ => return None,
-        },
-        Architecture::I386 => match r_type {
-            R_386_32 => Kind::Low,
-            _ => return None,
-        },
-        Architecture::PowerPc => match r_type {
-            R_PPC_ADDR32 => Kind::Word(Width::Four),
-            R_PPC_ADDR16_HA | R_PPC_ADDR16_HI => Kind::High,
-            R_PPC_ADDR16_LO => Kind::Low,
-            _ => return None,
-        },
-        Architecture::PowerPc64 => match r_type {
-            R_PPC64_ADDR64 => Kind::Word(Width::Eight),
-            R_PPC64_ADDR16_HA | R_PPC64_ADDR16_HI => Kind::High,
-            R_PPC64_ADDR16_LO | R_PPC64_ADDR16_LO_DS => Kind::Low,
-            _ => return None,
-        },
-        _ => return None,
-    })
-}
-
-/// A pair of `R_MIPS_HI16` and `R_MIPS_LO16` relocations, as [`mips_pair`]
-/// reads it.
-struct MipsPair {
-    /// The addend the pair holds in the immediates of its two instructions.
-    addend: i64,
-    /// Whether the instruction of the relocation adds the lower half, as
-    /// `addiu` does, where a load or a store, as `lw`, reads or writes at
-    /// the address. For a `lui`, whether each instruction that adds a lower
-    /// half to it does.
-    adds: bool,
-}
-
-impl MipsPair {
-    /// What the instruction of `kind`, one of the pair, holds of the
-    /// address. An `addiu` shows the whole address, as on any architecture,
-    /// and the `lui` of only such adds a page. A load or a store, which can
-    /// add an index between, shows no offset, and its `lui` the whole
-    /// address.
-    fn part(&self, kind: Kind) -> Part {
-        match (kind, self.adds) {
-            (Kind::MipsHigh, true) => Part::High,
-            (Kind::MipsHigh, false) => Part::UpperOfPair,
-            (_, true) => Part::Low,
-            (_, false) => Part::LowerOfPair,
-        }
-    }
-}
-
-/// The pair of `R_MIPS_HI16` and `R_MIPS_LO16` relocations that each of
-/// them in `relocations`, of one code section, is part of, by its offset.
-/// `word` reads the instruction at an offset.
-///
-/// An `R_MIPS_LO16` pairs with the last `lui` before it, in the code, of
-/// its symbol and into the register its instruction adds to or reads at.
-/// The relocation table need not list them in pairs: in a module of
-/// OpenWrt, a `lui` comes after the lower halves it pairs with.
-fn mips_pairs(
-    relocations: &[(u64, object::Relocation)],
-    word: impl Fn(u64) -> Option<u64>,
-) -> BTreeMap<u64, MipsPair> {
-    /// The opcodes of `addiu` and `addi`, in the top six bits of a word.
-    const ADDS: [u64; 2] = [0x09, 0x08];
-    let of_type = |relocation: &object::Relocation, r_type: RelocationType| {
-        relocation.flags() == RelocationFlags::Elf { r_type }
-    };
-    // Each half, in the order of the code: its offset, its symbol, the
-    // register it writes or reads, and its word.
-    let mut halves: Vec<(u64, RelocationTarget, u64, u64, bool)> = relocations
-        .iter()
-        .filter_map(|(offset, relocation)| {
-            let high = of_type(relocation, object::elf::R_MIPS_HI16);
-            if !high && !of_type(relocation, object::elf::R_MIPS_LO16) {
-                return None;
-            }
-            let word = word(*offset)?;
-            // A `lui` writes `rt`; an `addiu` and a load read `rs`.
-            let register = if high { word >> 16 & 0x1f } else { word >> 21 & 0x1f };
-            Some((*offset, relocation.target(), register, word, high))
-        })
-        .collect();
-    halves.sort_by_key(|half| half.0);
-    // The `lui` of each lower half.
-    let mut high_of: BTreeMap<u64, u64> = BTreeMap::new();
-    for (at, &(offset, target, register, _, high)) in halves.iter().enumerate() {
-        if high {
-            continue;
-        }
-        let lui = halves[..at].iter().rev().find(|&&(_, other, written, _, is_high)| {
-            is_high && other == target && written == register
-        });
-        if let Some(&(lui, ..)) = lui {
-            high_of.insert(offset, lui);
-        }
-    }
-    let word_at: BTreeMap<u64, u64> = halves.iter().map(|half| (half.0, half.3)).collect();
-    let adds = |offset: u64| word_at.get(&offset).is_some_and(|word| ADDS.contains(&(word >> 26)));
-    // The halves add in 32 bits: `lui 0xffff` is the upper half of -0x10000.
-    let addend = |high: Option<u64>, low: Option<u64>| {
-        let upper = high
-            .and_then(|high| word_at.get(&high))
-            .map_or(0, |&word| (word as u32 & 0xffff) << 16);
-        let lower = low
-            .and_then(|low| word_at.get(&low))
-            .map_or(0, |&word| word as u16 as i16 as i32 as u32);
-        i64::from(upper.wrapping_add(lower) as i32)
-    };
-    let mut pairs = BTreeMap::new();
-    for &(offset, _, _, _, high) in &halves {
-        let pair = match high {
-            true => {
-                let lows: Vec<u64> = high_of
-                    .iter()
-                    .filter(|&(_, &lui)| lui == offset)
-                    .map(|(&low, _)| low)
-                    .collect();
-                MipsPair {
-                    addend: addend(Some(offset), lows.first().copied()),
-                    adds: !lows.is_empty() && lows.iter().all(|&low| adds(low)),
-                }
-            }
-            false => MipsPair {
-                addend: addend(high_of.get(&offset).copied(), Some(offset)),
-                adds: adds(offset),
-            },
-        };
-        pairs.insert(offset, pair);
-    }
-    pairs
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,31 +324,15 @@ mod tests {
         for (offset, r_type, addend) in
             [(0, R_AARCH64_ABS32, 4), (8, R_AARCH64_ABS64, 8), (16, R_AARCH64_ABS32, beyond)]
         {
-            let flags = RelocationFlags::Elf { r_type };
+            let flags = object::RelocationFlags::Elf { r_type };
             let relocation = Relocation { offset, symbol, addend, flags };
             written.add_relocation(text, relocation).expect("the relocation adds");
         }
         let bytes = written.write().expect("the object writes");
         let file = object::File::parse(bytes.as_slice()).expect("parses");
-        let unlinked = Unlinked::of(&file, |section| Some(section.address())).expect("words");
+        let arch = &hereticus_il::arch::aarch64::Aarch64;
+        let unlinked = Unlinked::of(&file, arch, |section| Some(section.address())).expect("words");
         let words: Vec<(u64, u64, Width)> = unlinked.words().collect();
         assert_eq!(words, [(0, PLACED_BASE + 4, Width::Four), (8, PLACED_BASE + 8, Width::Eight)],);
-    }
-
-    #[test]
-    fn each_relocation_of_data_has_a_kind() {
-        use object::Architecture;
-        use object::elf::*;
-        let kind = kind_of;
-        assert_eq!(kind(Architecture::Mips, R_MIPS_HI16), Some(Kind::MipsHigh));
-        assert_eq!(kind(Architecture::Mips, R_MIPS_GPREL16), Some(Kind::GpRelative));
-        assert_eq!(kind(Architecture::Mips, R_MIPS_26), None, "a call");
-        assert_eq!(kind(Architecture::Arm, R_ARM_ABS32), Some(Kind::Word(Width::Four)));
-        assert_eq!(kind(Architecture::Aarch64, R_AARCH64_ABS32), Some(Kind::Word(Width::Four)));
-        assert_eq!(kind(Architecture::Aarch64, R_AARCH64_ABS64), Some(Kind::Word(Width::Eight)));
-        assert_eq!(kind(Architecture::Aarch64, R_AARCH64_ADR_PREL_PG_HI21), Some(Kind::High));
-        assert_eq!(kind(Architecture::X86_64, R_X86_64_PC32), Some(Kind::FromEnd));
-        assert_eq!(kind(Architecture::X86_64, R_X86_64_PLT32), None, "a call");
-        assert_eq!(kind(Architecture::PowerPc, R_PPC_ADDR16_HA), Some(Kind::High));
     }
 }

@@ -6,11 +6,15 @@
 //! or of offsets from `gp`. A branch has a delay slot, so the word after a
 //! return still belongs to the function.
 
-use super::{AbsoluteCall, CallTarget, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery};
+use super::{
+    AbsoluteCall, CallTarget, Decoder, Insn, InsnKind, JumpTable, LazyStub, Memory, Recovery,
+};
+use crate::dynamic::Dynamic;
 use hereticus_il as il;
 use hereticus_il::arch::mips::*;
 use hereticus_memory::AddressSpace;
 use rabbitizer::opcodes::Opcode;
+use std::collections::BTreeMap;
 
 /// The operands of `insn`, lifted: see [`lifted`].
 pub fn operands_of(insn: &Insn) -> il::Operands {
@@ -95,7 +99,41 @@ impl TableRules for Mips32 {
     }
 }
 
+/// The symbol each global slot of the global offset table that `dynamic`
+/// names holds: the slots after the first `DT_MIPS_LOCAL_GOTNO` hold the
+/// dynamic symbols from `DT_MIPS_GOTSYM` to `DT_MIPS_SYMTABNO`, one each,
+/// in order.
+pub(super) fn global_slot_names(dynamic: &Dynamic<'_>) -> BTreeMap<u64, String> {
+    const DT_PLTGOT: u64 = 3;
+    const DT_MIPS_LOCAL_GOTNO: u64 = 0x7000_000a;
+    const DT_MIPS_SYMTABNO: u64 = 0x7000_0011;
+    const DT_MIPS_GOTSYM: u64 = 0x7000_0013;
+    let (Some(got), Some(local), Some(first), Some(count)) = (
+        dynamic.value(DT_PLTGOT),
+        dynamic.value(DT_MIPS_LOCAL_GOTNO),
+        dynamic.value(DT_MIPS_GOTSYM),
+        dynamic.value(DT_MIPS_SYMTABNO),
+    ) else {
+        return BTreeMap::new();
+    };
+    let slot_width = dynamic.field_width();
+    (first..count.min(dynamic.symbol_count()))
+        .filter_map(|index| {
+            let name = dynamic.symbol_name(index)?;
+            Some((got + (local + index - first) * slot_width, name.to_string()))
+        })
+        .collect()
+}
+
 impl Recovery for Mips32 {
+    fn global_slot_names(&self, dynamic: &Dynamic<'_>) -> BTreeMap<u64, String> {
+        global_slot_names(dynamic)
+    }
+
+    fn lazy_stubs(&self, base: u64, code: &[u8]) -> Vec<LazyStub> {
+        super::mips_stubs::lazy_stubs(base, code, self.data_order())
+    }
+
     /// `jr t9`: the ABI calls through `t9`, and a `switch` jumps through
     /// another register.
     fn is_tail_call(&self, insn: &Insn) -> bool {

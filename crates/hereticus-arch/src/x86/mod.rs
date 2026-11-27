@@ -2,8 +2,13 @@
 //! frame and which constants are addresses. The rules that find functions
 //! are in [`hereticus_recovery::arch::x86`].
 
-use super::{Abi, Arch, CallingConvention, Insn, Memory, NamedReg, StackArguments};
+use super::relocation::{DataReference, Part, RelocationType, Width, references_of};
+use super::{
+    Abi, Arch, CallingConvention, FramePointer, Insn, Memory, NamedReg, RegisterClass,
+    StackArguments, UnsizedSymbol,
+};
 use hereticus_il::Reg;
+use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::x86::{Mode, X86, il_register, instruction};
 use hereticus_memory::{AddressSpace, ConstantKind};
 use hereticus_recovery::arch::x86::{
@@ -14,7 +19,121 @@ use iced_x86::{Mnemonic, OpKind};
 /// The frame pointer, `rbp` or `ebp`, by its encoding number.
 const FRAME: Reg = Reg::General(5);
 
+/// The class of an x86 register: `rax` holds 64 bits, `eax` 32, `ax` 16
+/// and `al` 8, and so on for each.
+fn register_class(name: &str) -> RegisterClass<'_> {
+    const BITS_64: [&str; 8] = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp"];
+    const BITS_32: [&str; 8] = ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"];
+    const BITS_16: [&str; 8] = ["ax", "bx", "cx", "dx", "si", "di", "bp", "sp"];
+    const BITS_8: [&str; 12] =
+        ["al", "bl", "cl", "dl", "ah", "bh", "ch", "dh", "sil", "dil", "bpl", "spl"];
+    // `r8` to `r15`, with `d`, `w` or `b` for a part of 32, 16 or 8 bits.
+    let numbered = name.strip_prefix('r').and_then(|rest| {
+        let digits = rest.trim_end_matches(['d', 'w', 'b']);
+        let number: u8 = digits.parse().ok()?;
+        (8..=15).contains(&number).then_some(&rest[digits.len()..])
+    });
+    match (name, numbered) {
+        (_, Some("")) => RegisterClass::General(64),
+        (_, Some("d")) => RegisterClass::General(32),
+        (_, Some("w")) => RegisterClass::General(16),
+        (_, Some("b")) => RegisterClass::General(8),
+        _ if BITS_64.contains(&name) => RegisterClass::General(64),
+        _ if BITS_32.contains(&name) => RegisterClass::General(32),
+        _ if BITS_16.contains(&name) => RegisterClass::General(16),
+        _ if BITS_8.contains(&name) => RegisterClass::General(8),
+        _ if name.starts_with("xmm") => RegisterClass::Vector('x'),
+        _ if name.starts_with("ymm") => RegisterClass::Vector('y'),
+        _ if name.starts_with("zmm") => RegisterClass::Vector('z'),
+        _ => RegisterClass::Named(name),
+    }
+}
+
+/// What a relocation of x86-64 code names of the address of data.
+fn part_of_64(r_type: RelocationType) -> Option<Part> {
+    use object::elf::*;
+    Some(match r_type {
+        R_X86_64_64 => Part::Word(Width::Eight),
+        R_X86_64_32 | R_X86_64_32S => Part::Low,
+        R_X86_64_PC32 => Part::FromEnd,
+        _ => return None,
+    })
+}
+
+/// What a relocation of 32-bit x86 code names of the address of data.
+fn part_of_32(r_type: RelocationType) -> Option<Part> {
+    (r_type == object::elf::R_386_32).then_some(Part::Low)
+}
+
+/// The name of a C function of 32-bit Windows, as its symbol `name` gives
+/// it with the decoration of its calling convention.
+///
+/// MSVC and clang put `_` before a `__cdecl` or `__stdcall` name and `@`
+/// before a `__fastcall` one, and the size of the arguments after a
+/// `__stdcall` or `__fastcall` one, as `_send@16`. The export and import
+/// directories name the function without them. A C++ name starts with `?`
+/// and keeps its decoration.
+pub(super) fn undecorated_c_name(name: &str) -> &str {
+    let Some(bare) = name.strip_prefix('_').or_else(|| name.strip_prefix('@')) else {
+        return name;
+    };
+    match bare.rsplit_once('@') {
+        Some((base, size))
+            if !base.is_empty() && !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => bare,
+    }
+}
+
 impl Arch for X86 {
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        match self.pointer_width() {
+            8 => references_of(relocations, word, part_of_64),
+            _ => references_of(relocations, word, part_of_32),
+        }
+    }
+
+    /// GNU `ld` writes the address of a `RELATIVE` relocation of x86-64
+    /// into the file too, but zero for an `R_X86_64_64`, which fills the
+    /// vtable of each class that a shared library exports.
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        use object::elf::{R_386_32, R_386_RELATIVE, R_X86_64_64, R_X86_64_RELATIVE};
+        match self.pointer_width() {
+            8 => Some([R_X86_64_64, R_X86_64_RELATIVE]),
+            _ => Some([R_386_32, R_386_RELATIVE]),
+        }
+    }
+
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        register_class(name)
+    }
+
+    /// GCC writes `__x86.get_pc_thunk.bx` and the other thunks of 32-bit
+    /// PIC with no size once they are linked, and they are functions all
+    /// the same.
+    fn unsized_symbol(&self) -> UnsizedSymbol {
+        UnsizedSymbol::NamesFunction
+    }
+
+    fn undecorated_name<'a>(&self, name: &'a str) -> &'a str {
+        match self.pointer_width() {
+            4 => undecorated_c_name(name),
+            _ => name,
+        }
+    }
+
+    /// Code built with `-O2` keeps a value of its own in `rbp`, and code
+    /// that keeps a frame pointer there keeps its slots below it.
+    fn frame_pointer(&self) -> FramePointer {
+        FramePointer::FrameOrValue
+    }
+
     fn is_frame_register(&self, reg: Reg) -> bool {
         matches!(reg, Reg::Stack | FRAME)
     }
@@ -135,9 +254,21 @@ impl Arch for X86 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hereticus_il::arch::Decoder as _;
     use hereticus_recovery::arch::decode_all;
     use rstest::rstest;
+
+    #[test]
+    fn a_32_bit_windows_c_name_loses_its_decoration() {
+        assert_eq!(undecorated_c_name("_handle"), "handle");
+        assert_eq!(undecorated_c_name("_send@16"), "send");
+        assert_eq!(undecorated_c_name("@fast@8"), "fast");
+        assert_eq!(undecorated_c_name("__imp_log"), "_imp_log", "one `_` only");
+        assert_eq!(undecorated_c_name("?f@@YAHH@Z"), "?f@@YAHH@Z", "C++");
+        assert_eq!(undecorated_c_name("plain"), "plain");
+        assert_eq!(undecorated_c_name("_a@b"), "a@b", "no size after the `@`");
+        assert_eq!(undecorated_c_name("_@4"), "@4", "no name before the size");
+        assert_eq!(undecorated_c_name("_"), "");
+    }
 
     fn one(bytes: &[u8]) -> Insn {
         X86::BITS64.decode(bytes, 0, 0x1000).expect("the bytes must decode")

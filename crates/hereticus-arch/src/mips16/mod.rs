@@ -4,8 +4,10 @@
 
 use super::mips::register_name;
 use super::{
-    Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, Memory, Recovery as _,
+    Abi, Arch, CallingConvention, CodeSet, Decoder, GlobalPointerSetup, Insn, Memory,
+    Recovery as _, RegisterClass,
 };
+use crate::relocation::{DataReference, RelocationType};
 use hereticus_il as il;
 use hereticus_il::arch::mips16::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
@@ -18,6 +20,30 @@ use hereticus_recovery::arch::mips16::{
 const ADDU: u32 = 0x21;
 
 impl Arch for Mips16 {
+    fn symbol_encoding(&self, address: u64, other: u8) -> CodeSet {
+        super::mips::symbol_encoding(address, other)
+    }
+
+    fn holds_compact_code(&self, e_flags: u32) -> bool {
+        super::mips::holds_compact_code(e_flags)
+    }
+
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        super::mips::data_references(relocations, word)
+    }
+
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        Some(super::mips::ADDRESS_RELOCATIONS)
+    }
+
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        super::mips::register_class(name)
+    }
+
     fn is_frame_register(&self, reg: il::Reg) -> bool {
         self.base.is_frame_register(reg)
     }

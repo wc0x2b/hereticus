@@ -30,8 +30,11 @@ mod powerpc;
 mod thumb;
 mod x86;
 
+pub mod relocation;
+
 use hereticus_il::arch::*;
 use hereticus_recovery::arch::{Memory, Recovery};
+use hereticus_recovery::dynamic::Dynamic;
 
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
 
@@ -143,6 +146,149 @@ pub trait Arch: Recovery {
     fn calling_convention(&self, _abi: Abi) -> Option<CallingConvention> {
         None
     }
+
+    /// The class of the register `name`: what its name says of the value
+    /// it holds. Defaults to [`RegisterClass::Named`], for an architecture
+    /// whose names the matching does not read.
+    fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
+        RegisterClass::Named(name)
+    }
+
+    /// What the frame register holds. Defaults to
+    /// [`FramePointer::FrameOnly`].
+    fn frame_pointer(&self) -> FramePointer {
+        FramePointer::FrameOnly
+    }
+
+    /// What each relocation of `relocations`, of a code section of an
+    /// unlinked object, names of the address of data, where it names one.
+    /// `word` reads the word of 32 bits at an offset of the section.
+    /// Defaults to none, for an architecture whose relocations this does not
+    /// read.
+    fn data_references(
+        &self,
+        _relocations: &[(u64, object::Relocation)],
+        _word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<relocation::DataReference> {
+        Vec::new()
+    }
+
+    /// The types of the absolute and the relative relocation of an ELF file,
+    /// the two that store an address in a word, or `None` where this crate
+    /// reads neither.
+    ///
+    /// Each architecture numbers its relocations from 1, so a number alone
+    /// says nothing: 1 is `R_X86_64_64` but `R_ARM_PC24`.
+    fn address_relocations(&self) -> Option<[relocation::RelocationType; 2]> {
+        None
+    }
+
+    /// The address that the call stubs of a binary reach their slots from,
+    /// as a PIC stub of 32-bit x86 does from `ebx`. `dynamic` is the dynamic
+    /// segment of the binary, `regions` its code, and `got` the start of its
+    /// `.got`, where the binary names one. Defaults to the global offset
+    /// table that `dynamic` names.
+    fn global_table(
+        &self,
+        dynamic: Option<&Dynamic<'_>>,
+        _regions: &[(u64, &[u8])],
+        _got: Option<u64>,
+    ) -> Option<u64> {
+        dynamic?.global_offset_table()
+    }
+
+    /// The encoding of the function that a symbol at `address` names, with
+    /// `other` in the `st_other` field of an ELF symbol. Defaults to
+    /// [`CodeSet::Full`].
+    fn symbol_encoding(&self, _address: u64, _other: u8) -> CodeSet {
+        CodeSet::Full
+    }
+
+    /// Report whether `e_flags`, of the header of an ELF file, say that the
+    /// file holds code of the compact set. Defaults to `false`.
+    fn holds_compact_code(&self, _e_flags: u32) -> bool {
+        false
+    }
+
+    /// What a symbol of code with no size names in a linked file. Defaults
+    /// to [`UnsizedSymbol::MarksNothing`].
+    fn unsized_symbol(&self) -> UnsizedSymbol {
+        UnsizedSymbol::MarksNothing
+    }
+
+    /// The name of a C function as the export directory of a PE file names
+    /// it, where its symbol `name` adds the decoration of its calling
+    /// convention. Defaults to `name`.
+    fn undecorated_name<'a>(&self, name: &'a str) -> &'a str {
+        name
+    }
+
+    /// The section and the address of the code of the function that
+    /// `symbol` of `file` names, where the symbol names a descriptor of the
+    /// function and not its code. Defaults to `None`.
+    fn descriptor_entry(
+        &self,
+        _file: &object::File<'_>,
+        _symbol: &object::Symbol<'_, '_>,
+    ) -> Option<(object::SectionIndex, u64)> {
+        None
+    }
+}
+
+/// What the name of a register says of the value it holds.
+///
+/// Two names of one class are a free choice of the compiler. Two of other
+/// classes hold values of other widths: the fix of CVE-2021-30883 in the
+/// iPhone kernel turns `mul w10, w10, w8` into `mul x10, x10, x8`, so a
+/// product of 32 bits that overflowed is one of 64 bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegisterClass<'a> {
+    /// A general register of this many bits.
+    General(u8),
+    /// A floating point or vector register, by the letter of its kind, as
+    /// `d` for a double of AArch64.
+    Vector(char),
+    /// A name of no class this knows, which matches only itself.
+    Named(&'a str),
+}
+
+/// Whether `name` is one of the letters of `prefixes` and a number, as `x19`
+/// is for the prefixes `"xw"`.
+fn is_numbered(name: &str, prefixes: &str) -> bool {
+    let mut characters = name.chars();
+    characters.next().is_some_and(|first| prefixes.contains(first))
+        && name.len() > 1
+        && characters.all(|character| character.is_ascii_digit())
+}
+
+/// How the instructions of a function are encoded, where an architecture
+/// has a compact set beside its full one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeSet {
+    /// A32, or MIPS32.
+    Full,
+    /// Thumb-2, or MIPS16e.
+    Compact,
+}
+
+/// What a symbol of code with no size names in a linked file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnsizedSymbol {
+    /// No function.
+    MarksNothing,
+    /// A function, which runs on to the next symbol of code.
+    NamesFunction,
+}
+
+/// What the frame register of an architecture holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FramePointer {
+    /// Only the frame, so each place it addresses is a slot.
+    FrameOnly,
+    /// The frame where the code keeps one, and a value of its own where it
+    /// does not, as `rbp` of x86 code built with `-O2`. Only a place below
+    /// it is a slot of the frame.
+    FrameOrValue,
 }
 
 /// The family of ABIs that a binary keeps, which its format tells: an x86-64
@@ -317,5 +463,196 @@ mod tests {
             Aarch64.calling_convention(Abi::Unix),
             "ARM64 of Windows keeps the AAPCS64"
         );
+    }
+
+    #[test]
+    fn a_register_name_tells_its_width_on_each_architecture() {
+        use RegisterClass::{General, Named, Vector};
+        let a64 = |name| Aarch64.register_class(name);
+        assert_eq!(a64("x19"), General(64));
+        assert_eq!(a64("w19"), General(32));
+        assert_eq!(a64("xzr"), a64("x0"));
+        assert_eq!(a64("wzr"), a64("w0"));
+        assert_eq!(a64("d8"), Vector('d'));
+        assert_ne!(a64("d8"), a64("s8"));
+        let x64 = |name| X86::BITS64.register_class(name);
+        assert_eq!(x64("rax"), x64("r12"));
+        assert_eq!(x64("eax"), x64("r9d"));
+        assert_ne!(x64("eax"), x64("rax"));
+        assert_eq!(x64("al"), x64("r15b"));
+        assert_eq!(x64("ax"), General(16));
+        assert_eq!(x64("r16"), Named("r16"));
+        assert_eq!(X86::BITS32.register_class("esi"), General(32));
+        assert_eq!(Arm32.register_class("r4"), Thumb2.register_class("lr"));
+        assert_eq!(Arm32.register_class("d16"), Vector('d'));
+        assert_eq!(Mips32::LITTLE.register_class("s0"), Mips32::BIG.register_class("t9"));
+        assert_eq!(Mips32::BIG.register_class("fp"), General(32));
+        assert_eq!(Mips16::BIG.register_class("f12"), Vector('f'));
+        assert_eq!(Mips32::BIG.register_class("hi"), Named("hi"));
+        assert_eq!(
+            PowerPc::BIG.register_class("r3"),
+            Named("r3"),
+            "names the matching does not read"
+        );
+    }
+
+    #[test]
+    fn only_the_frame_register_of_x86_can_hold_a_value() {
+        for (name, arch) in ARCHES {
+            let expected = match name {
+                "x86-64" | "x86" => FramePointer::FrameOrValue,
+                _ => FramePointer::FrameOnly,
+            };
+            assert_eq!(arch.frame_pointer(), expected, "{name}");
+        }
+    }
+
+    /// The part that `arch` reads of one relocation of `r_type`, at the
+    /// start of the code of an object of `architecture` that holds `code`,
+    /// and its addend. The relocation holds 4 where the file keeps addends
+    /// in relocations, and none where it keeps them in the code.
+    fn one_reference(
+        arch: &dyn Arch,
+        architecture: object::Architecture,
+        r_type: relocation::RelocationType,
+        code: &[u8],
+    ) -> Option<(i64, relocation::Part)> {
+        use object::write::{Object as Written, Relocation, StandardSection};
+        use object::{Object as _, ObjectSection as _};
+        let endian = match arch.data_order() {
+            ByteOrder::Little => object::Endianness::Little,
+            ByteOrder::Big => object::Endianness::Big,
+        };
+        let mut written = Written::new(object::BinaryFormat::Elf, architecture, endian);
+        let text = written.section_id(StandardSection::Text);
+        written.append_section_data(text, code, 4);
+        let data = written.section_id(StandardSection::ReadOnlyData);
+        written.append_section_data(data, &[0; 16], 4);
+        let symbol = written.section_symbol(data);
+        let flags = object::RelocationFlags::Elf { r_type };
+        let addend = match architecture {
+            object::Architecture::Arm | object::Architecture::I386 | object::Architecture::Mips => {
+                0
+            }
+            _ => 4,
+        };
+        let relocation = Relocation { offset: 0, symbol, addend, flags };
+        written.add_relocation(text, relocation).expect("the relocation adds");
+        let bytes = written.write().expect("the object writes");
+        let file = object::File::parse(bytes.as_slice()).expect("parses");
+        let section = file.section_by_name(".text").expect("a text");
+        let relocations: Vec<_> = section.relocations().collect();
+        let word = |offset: u64| {
+            let at = usize::try_from(offset).ok()?;
+            let word: [u8; 4] = code.get(at..at + 4)?.try_into().ok()?;
+            Some(u64::from(match arch.data_order() {
+                ByteOrder::Little => u32::from_le_bytes(word),
+                ByteOrder::Big => u32::from_be_bytes(word),
+            }))
+        };
+        let references = arch.data_references(&relocations, &word);
+        assert!(references.len() <= 1, "{references:?}");
+        references.first().map(|reference| (reference.addend, reference.part))
+    }
+
+    #[test]
+    fn each_architecture_reads_its_relocations_of_data() {
+        use object::Architecture as Of;
+        use object::elf::*;
+        use relocation::{Part, Width};
+        let zero = [0; 8];
+        // A RELA relocation keeps its addend, 4.
+        let read = |arch: &dyn Arch, of, r_type| one_reference(arch, of, r_type, &zero);
+        let a64 = |r_type| read(&Aarch64, Of::Aarch64, r_type);
+        assert_eq!(a64(R_AARCH64_ABS64), Some((4, Part::Word(Width::Eight))));
+        assert_eq!(a64(R_AARCH64_ABS32), Some((4, Part::Word(Width::Four))));
+        assert_eq!(a64(R_AARCH64_ADR_PREL_PG_HI21), Some((4, Part::High)));
+        assert_eq!(a64(R_AARCH64_LDST64_ABS_LO12_NC), Some((4, Part::Low)));
+        assert_eq!(a64(R_AARCH64_CALL26), None, "a call");
+        let x64 = |r_type| read(&X86::BITS64, Of::X86_64, r_type);
+        assert_eq!(x64(R_X86_64_64), Some((4, Part::Word(Width::Eight))));
+        assert_eq!(x64(R_X86_64_32S), Some((4, Part::Low)));
+        assert_eq!(x64(R_X86_64_PC32), Some((4, Part::FromEnd)));
+        assert_eq!(x64(R_X86_64_PLT32), None, "a call");
+        let ppc = |r_type| read(&PowerPc::BIG, Of::PowerPc, r_type);
+        assert_eq!(ppc(R_PPC_ADDR32), Some((4, Part::Word(Width::Four))));
+        assert_eq!(ppc(R_PPC_ADDR16_HA), Some((4, Part::High)));
+        assert_eq!(ppc(R_PPC_ADDR16_LO), Some((4, Part::Low)));
+        let ppc64 = |r_type| read(&PowerPc::BIG64, Of::PowerPc64, r_type);
+        assert_eq!(ppc64(R_PPC64_ADDR64), Some((4, Part::Word(Width::Eight))));
+        assert_eq!(ppc64(R_PPC64_ADDR16_LO_DS), Some((4, Part::Low)));
+        // A REL relocation keeps its addend in the word: 8 here.
+        let eight = |arch: &dyn Arch, of, r_type| {
+            let code = match arch.data_order() {
+                ByteOrder::Little => [8, 0, 0, 0, 0, 0, 0, 0],
+                ByteOrder::Big => [0, 0, 0, 8, 0, 0, 0, 0],
+            };
+            one_reference(arch, of, r_type, &code)
+        };
+        let word = Some((8, Part::Word(Width::Four)));
+        assert_eq!(eight(&Arm32, Of::Arm, R_ARM_ABS32), word);
+        assert_eq!(eight(&Thumb2, Of::Arm, R_ARM_ABS32), word);
+        assert_eq!(eight(&X86::BITS32, Of::I386, R_386_32), Some((8, Part::Low)));
+        assert_eq!(eight(&Mips32::BIG, Of::Mips, R_MIPS_32), word);
+        assert_eq!(eight(&Mips16::LITTLE, Of::Mips, R_MIPS_32), word);
+        assert_eq!(eight(&Mips32::BIG, Of::Mips, R_MIPS_26), None, "a call");
+        // A `lui` with no lower half to pair with: its word holds the upper
+        // half, 1 << 16.
+        let lui = [0x3c, 0x04, 0x00, 0x01, 0, 0, 0, 0];
+        let upper = one_reference(&Mips32::BIG, Of::Mips, R_MIPS_HI16, &lui);
+        assert_eq!(upper, Some((0x1_0000, Part::UpperOfPair)));
+    }
+
+    #[test]
+    fn each_architecture_names_its_address_relocations() {
+        use object::elf::*;
+        for (name, arch) in ARCHES {
+            let [absolute, relative] = arch.address_relocations().expect(name);
+            let expected = match name {
+                "A64" => [R_AARCH64_ABS64, R_AARCH64_RELATIVE],
+                "A32" | "T32" => [R_ARM_ABS32, R_ARM_RELATIVE],
+                "MIPS" | "MIPSel" | "MIPS16e" | "MIPS16el" => [R_MIPS_32, R_MIPS_REL32],
+                "x86-64" => [R_X86_64_64, R_X86_64_RELATIVE],
+                "x86" => [R_386_32, R_386_RELATIVE],
+                "PowerPC" | "PowerPCle" => [R_PPC_ADDR32, R_PPC_RELATIVE],
+                _ => [R_PPC64_ADDR64, R_PPC64_RELATIVE],
+            };
+            assert_eq!([absolute, relative], expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_symbol_marks_the_compact_set_as_its_architecture_does() {
+        for (name, arch) in ARCHES {
+            let (odd, marked) = match name {
+                "A32" | "T32" => (CodeSet::Compact, CodeSet::Full),
+                "MIPS" | "MIPSel" | "MIPS16e" | "MIPS16el" => (CodeSet::Compact, CodeSet::Compact),
+                _ => (CodeSet::Full, CodeSet::Full),
+            };
+            assert_eq!(arch.symbol_encoding(0x1001, 0), odd, "{name}");
+            assert_eq!(arch.symbol_encoding(0x1000, 0xf0), marked, "{name}");
+            assert_eq!(arch.symbol_encoding(0x1000, 0), CodeSet::Full, "{name}");
+            let flagged = matches!(marked, CodeSet::Compact);
+            assert_eq!(arch.holds_compact_code(0x0400_0000), flagged, "{name}");
+            assert!(!arch.holds_compact_code(0), "{name}");
+        }
+    }
+
+    #[test]
+    fn only_x86_names_a_function_with_a_symbol_of_no_size() {
+        for (name, arch) in ARCHES {
+            let expected = match name {
+                "x86-64" | "x86" => UnsizedSymbol::NamesFunction,
+                _ => UnsizedSymbol::MarksNothing,
+            };
+            assert_eq!(arch.unsized_symbol(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn only_32_bit_x86_decorates_a_c_name() {
+        assert_eq!(X86::BITS32.undecorated_name("_send@16"), "send");
+        assert_eq!(X86::BITS64.undecorated_name("_send@16"), "_send@16");
+        assert_eq!(Aarch64.undecorated_name("_send@16"), "_send@16");
     }
 }
