@@ -44,6 +44,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ebx = ebx + ebx` and now reads as `ebx = ebx + 1`. A `mul` or `imul`
   of one operand, which multiplies `eax` into `edx:eax`, shows as the
   instruction, where it read as the operand times itself.
+- `cmn r1, #1` compares with -1, so the branch after it reads as
+  `if (r1 == -1)`, where it read as `if (r1 == 1)`: the IL took the sign
+  of the subtract it reads `cmn` as from the constant that the code
+  names. This held on ARM, T32 and AArch64.
+- `mls`, `msub` and `mneg` subtract the product, as `w8 = w9 - w10 * w8`,
+  where they read as an add.
+- The AArch64 `csinc`, `csinv` and `csneg`, and their aliases `cinc`,
+  `cinv` and `cneg`, read with the change they make, as
+  `w8 = ne ? w8 + 1 : w8` for `cinc w8, w8, ne`, where they read as a
+  plain select.
+- A conditional A32 `tst` or `teq` reads as the `and` or `xor` it tests,
+  where it read as a compare. `brk` reads as the instruction, where it
+  read as a jump to its number.
 - The IL of the PowerPC `subf`, `subfc`, `subfe` and `subfic` subtracts
   the first source from the second, as they do: `subf r6, r6, r5` read
   as `r6 = r6 - r5` and now reads as `r6 = r5 - r6`. `addis`, `lis`,

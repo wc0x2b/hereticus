@@ -12,8 +12,8 @@ x21 = x2
 x0 = load.64 [x0 + 0x78]
 if (x0 == 0) goto $+0x14
   w1 = load.32 [x19 + 0x74]
-  flags = compare(w1, 4)
-  if (w1 != 4) goto $+0xb8
+  flags = compare(w1, -4)
+  if (w1 != -4) goto $+0xb8
 store.64 [x19 + 0x78] = xzr
 flags = compare(w20, 0)
 flags = ne ? compare(w20, -5) : nzcv(4)

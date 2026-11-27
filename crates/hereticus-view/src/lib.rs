@@ -1076,8 +1076,16 @@ fn aarch64_opcode(insn: &Insn) -> Option<A64Opcode> {
     aarch64::decoded(insn).map(|decoded| decoded.opcode)
 }
 
-/// A constant as code reads it: small ones in decimal, a negative one with
-/// its sign.
+/// Whether the multiply-add `insn` subtracts the product, as `mls` and
+/// `msub` do.
+fn subtracts_product(insn: &Insn) -> bool {
+    arm32::core_opcode(insn) == Some(ArmOpcode::MLS)
+        || matches!(
+            aarch64_opcode(insn),
+            Some(A64Opcode::MSUB | A64Opcode::UMSUBL | A64Opcode::SMSUBL)
+        )
+}
+
 /// The size of `value` where it is a negative number as [`constant_text`]
 /// names one, or one of 32 bits held in 64: `-0x20000` is `0x20000`.
 fn negative_magnitude(value: u64) -> Option<u64> {
@@ -1088,6 +1096,18 @@ fn negative_magnitude(value: u64) -> Option<u64> {
     (0xffff_0000..=0xffff_ffff).contains(&value).then(|| 0x1_0000_0000 - value)
 }
 
+/// The negative of the operand `text`, as `-1`, `1` for `-1`, and
+/// `-(r1 lsl 2)`.
+fn negated(text: &str) -> String {
+    match text.strip_prefix('-') {
+        Some(positive) => positive.to_string(),
+        None if text.contains(' ') => format!("-({text})"),
+        None => format!("-{text}"),
+    }
+}
+
+/// A constant as code reads it: small ones in decimal, a negative one with
+/// its sign.
 fn constant_text(value: u64) -> String {
     hereticus_il::constant_name(value).to_string()
 }
@@ -1362,6 +1382,9 @@ fn statement(
             }
         }
         Op::Call => return Some(format!("call {}", target.or(tokens.last().copied())?)),
+        // `brk` traps, and ends the code as a jump does, but goes nowhere it
+        // names.
+        Op::Jump if aarch64_opcode(insn) == Some(A64Opcode::BRK) => return None,
         Op::Jump => return Some(format!("goto {}", target.or(tokens.last().copied())?)),
         _ => {}
     }
@@ -1585,11 +1608,15 @@ fn statement(
             [dest, left, right] => format!("{dest} = {left} - {right} - borrow"),
             _ => return None,
         },
-        // `mul` is a multiply-add of zero on AArch64.
+        // `mul` is a multiply-add of zero on AArch64, and `mneg` a
+        // multiply-subtract of it.
         Op::Multiply | Op::MultiplyAdd
             if operands.len() == 4 && canonical.operands.get(3).is_some_and(is_zero) =>
         {
-            format!("{} = {} * {}", operands[0], operands[1], operands[2])
+            match subtracts_product(insn) {
+                true => format!("{} = -({} * {})", operands[0], operands[1], operands[2]),
+                false => format!("{} = {} * {}", operands[0], operands[1], operands[2]),
+            }
         }
         Op::Multiply => binary("*")?,
         Op::FloatAdd => binary("+")?,
@@ -1621,12 +1648,47 @@ fn statement(
                 if !canonical.operands.get(1).is_some_and(is_zero)
                     || !canonical.operands.get(2).is_some_and(is_zero) =>
             {
-                format!("{dest} = {cond} ? {chosen} : {other}")
+                let other_is_zero = canonical.operands.get(2).is_some_and(is_zero);
+                let printed = hereticus_il::arch::printed_name(insn);
+                match (aarch64_opcode(insn), printed.as_str()) {
+                    // `cinc x0, x1, ne` is `csinc x0, x1, x1, eq`: it prints
+                    // the condition of the change.
+                    (Some(A64Opcode::CSINC), "cinc") => {
+                        format!("{dest} = {cond} ? {chosen} + 1 : {chosen}")
+                    }
+                    (Some(A64Opcode::CSINV), "cinv") => {
+                        format!("{dest} = {cond} ? ~{chosen} : {chosen}")
+                    }
+                    (Some(A64Opcode::CSNEG), "cneg") => {
+                        format!("{dest} = {cond} ? -{chosen} : {chosen}")
+                    }
+                    // Else `csinc` adds 1 to what it picks where the
+                    // condition fails, `csinv` inverts it and `csneg`
+                    // negates it.
+                    (Some(A64Opcode::CSINC), _) if other_is_zero => {
+                        format!("{dest} = {cond} ? {chosen} : 1")
+                    }
+                    (Some(A64Opcode::CSINC), _) => {
+                        format!("{dest} = {cond} ? {chosen} : {other} + 1")
+                    }
+                    (Some(A64Opcode::CSINV), _) if other_is_zero => {
+                        format!("{dest} = {cond} ? {chosen} : -1")
+                    }
+                    (Some(A64Opcode::CSINV), _) => format!("{dest} = {cond} ? {chosen} : ~{other}"),
+                    (Some(A64Opcode::CSNEG), _) if other_is_zero => {
+                        format!("{dest} = {cond} ? {chosen} : 0")
+                    }
+                    (Some(A64Opcode::CSNEG), _) => format!("{dest} = {cond} ? {chosen} : -{other}"),
+                    _ => format!("{dest} = {cond} ? {chosen} : {other}"),
+                }
             }
             _ => return None,
         },
         Op::Rotate => binary("ror")?,
         Op::MultiplyAdd => match operands.as_slice() {
+            [dest, left, right, add] if subtracts_product(insn) => {
+                format!("{dest} = {add} - {left} * {right}")
+            }
             [dest, left, right, add] => format!("{dest} = {left} * {right} + {add}"),
             _ => return None,
         },
@@ -1671,17 +1733,26 @@ fn statement(
                 };
                 // `cmp` writes the zero register, which comes first.
                 let [.., left, right] = operands.as_slice() else { return None };
+                // `cmn r1, #1` adds 1, and so compares with -1. The lifter
+                // reads it as a subtract of -1, where the code names 1.
+                let adds = arm32::core_opcode(insn) == Some(ArmOpcode::CMN)
+                    || aarch64_opcode(insn) == Some(A64Opcode::ADDS);
+                let right = match (comparison, adds) {
+                    (Comparison::Subtract { .. }, true) => negated(right),
+                    _ => right.clone(),
+                };
                 let text = match comparison {
                     Comparison::And { .. } => format!("flags = {left} & {right}"),
-                    Comparison::Subtract { .. }
-                    | Comparison::Unsigned { .. }
-                    | Comparison::Add { .. } => {
+                    Comparison::Subtract { .. } | Comparison::Unsigned { .. } => {
                         format!("flags = compare({left}, {right})")
+                    }
+                    Comparison::Add { .. } => {
+                        format!("flags = compare({left}, {})", negated(&right))
                     }
                 };
                 *last_compare = Some(Compared {
                     left: left.clone(),
-                    right: right.clone(),
+                    right,
                     kind,
                     reads: canonical.reads.difference(RegSet::from_iter([Reg::Flags])),
                     loads: canonical.memory.is_some(),
@@ -1698,9 +1769,11 @@ fn statement(
             None => {
                 *last_compare = None;
                 let [left, right] = operands.as_slice() else { return None };
-                match arm32::core_opcode(insn) == Some(ArmOpcode::CMN) {
-                    true => format!("flags = compare({left}, -{right})"),
-                    false => format!("flags = compare({left}, {right})"),
+                match arm32::core_opcode(insn) {
+                    Some(ArmOpcode::CMN) => format!("flags = compare({left}, {})", negated(right)),
+                    Some(ArmOpcode::TST) => format!("flags = {left} & {right}"),
+                    Some(ArmOpcode::TEQ) => format!("flags = {left} ^ {right}"),
+                    _ => format!("flags = compare({left}, {right})"),
                 }
             }
             _ => return None,
@@ -1877,10 +1950,7 @@ mod tests {
         // settings of `x0` and `w3` before it.
         assert_eq!(
             high(&[0xa8c2_7bfd, 0x9a80_9020, 0x531c_6c23, 0xd63f_0020]),
-            [
-                "x29, x30 = load.64 arg_0",
-                "arg2(ls ? arg2 : arg1, arg2, arg3, arg2 << 0x4)",
-            ]
+            ["x29, x30 = load.64 arg_0", "arg2(ls ? arg2 : arg1, arg2, arg3, arg2 << 0x4)",]
         );
     }
 
@@ -1972,6 +2042,30 @@ mod tests {
             il_lines(&Arm32, &code, &insns),
             ["if (eq) r0 = clz(r0)", "umull r0, r1, r2, r3"]
         );
+    }
+
+    /// A multiply-subtract subtracts the product, and a conditional select
+    /// that changes what it picks names the change.
+    #[test]
+    fn a_multiply_subtract_and_the_conditional_selects_read_what_they_do() {
+        let shown = lines(&[
+            0x1b08_a548, // msub w8, w10, w8, w9
+            0x1a88_0508, // cinc w8, w8, ne
+            0x1a9f_1662, // csinc w2, w19, wzr, ne
+        ]);
+        assert_eq!(shown, ["w8 = w9 - w10 * w8", "w8 = ne ? w8 + 1 : w8", "w2 = ne ? w19 : 1"]);
+    }
+
+    /// `cmn` compares with the negative of its operand.
+    #[test]
+    fn a_compare_of_a_negative_reads_with_its_sign() {
+        let shown = lines(&[
+            0x3100_043f, // cmn w1, #1
+            0x5400_0040, // b.eq $+0x8
+        ]);
+        assert_eq!(shown, ["flags = compare(w1, -1)", "if (w1 == -1) goto $+0x8"]);
+        // brk #1
+        assert_eq!(lines(&[0xd420_0020]), ["brk #0x1"]);
     }
 
     /// A mask reads in plain hex, where a number of 32 bits with its top bit
