@@ -52,10 +52,10 @@ if ((eax & eax) == 0) goto $+0x72
   esi = eax
   call strlen
   pop ecx
-  ecx = &[ebx + 0xffff8021]
+  ecx = &[ebx - 0x7fdf]
   pop edx
   eax = &[esi + eax + 0x3]
-  edx = &[ebx + 0xffff8024]
+  edx = &[ebx - 0x7fdc]
   push dword ptr [esp + 0x30]
   push ecx
   push edi

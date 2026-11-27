@@ -455,7 +455,7 @@ pub(crate) fn alias_names(inst: &Instruction, names: &mut il::Names) {
         Opcode::ANDS | Opcode::ADDS | Opcode::SUBS if is_zero(0) => {
             set(0, CompactString::default());
         }
-        Opcode::SUBS | Opcode::SUB | Opcode::SBC | Opcode::SBCS if is_zero(1) => {
+        Opcode::SUBS | Opcode::SUB if is_zero(1) => {
             set(1, CompactString::default());
         }
         Opcode::ADD if is_add_move(operands) => set(2, CompactString::default()),
@@ -716,10 +716,13 @@ pub(crate) fn plain_op(opcode: Opcode) -> Op {
     match opcode {
         Opcode::MOVZ | Opcode::MOVN | Opcode::MOVK | Opcode::FMOV => Op::Move,
         Opcode::ADR | Opcode::ADRP => Op::Address,
-        Opcode::ADD | Opcode::ADDS | Opcode::ADC | Opcode::ADCS => Op::Add,
-        Opcode::SUB | Opcode::SUBS | Opcode::SBC | Opcode::SBCS => Op::Subtract,
+        Opcode::ADD | Opcode::ADDS => Op::Add,
+        Opcode::SUB | Opcode::SUBS => Op::Subtract,
+        Opcode::ADC | Opcode::ADCS => Op::AddCarry,
+        Opcode::SBC | Opcode::SBCS => Op::SubtractBorrow,
         Opcode::NEG => Op::Negate,
-        Opcode::MUL | Opcode::UMULH | Opcode::SMULH | Opcode::UMULL | Opcode::SMULL => Op::Multiply,
+        Opcode::MUL | Opcode::UMULL | Opcode::SMULL => Op::Multiply,
+        Opcode::UMULH | Opcode::SMULH => Op::MultiplyPart,
         Opcode::MADD
         | Opcode::MSUB
         | Opcode::UMADDL
@@ -861,7 +864,7 @@ pub(crate) fn alias_of(inst: &Instruction) -> Alias {
         Opcode::SUBS | Opcode::ADDS | Opcode::ANDS if zero(0) => Alias::Compare,
         Opcode::ORR if is_orr_move(operands) => Alias::Move,
         Opcode::ADD if is_add_move(operands) => Alias::Move,
-        Opcode::SUB | Opcode::SUBS | Opcode::SBC | Opcode::SBCS if zero(1) => Alias::Negate,
+        Opcode::SUB | Opcode::SUBS if zero(1) => Alias::Negate,
         Opcode::ORN if zero(1) => Alias::Not,
         Opcode::MADD
         | Opcode::MSUB
@@ -1879,7 +1882,7 @@ mod tests {
             (0x9100_03e0, Op::Move),                 // mov x0, sp (add)
             (0x4b01_03e0, Op::Negate),               // neg w0, w1 (sub)
             (0xeb01_03e0, Op::Negate),               // negs x0, x1 (subs)
-            (0xda01_03e0, Op::Negate),               // ngc x0, x1 (sbc)
+            (0xda01_03e0, Op::SubtractBorrow),       // ngc x0, x1 (sbc)
             (0x2a21_03e0, Op::Not),                  // mvn w0, w1 (orn)
             (0x9b02_7c20, Op::Multiply),             // mul x0, x1, x2 (madd)
             (0x9b22_fc20, Op::Multiply),             // smnegl x0, w1, w2 (smsubl)

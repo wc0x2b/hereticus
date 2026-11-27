@@ -44,6 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ebx = ebx + ebx` and now reads as `ebx = ebx + 1`. A `mul` or `imul`
   of one operand, which multiplies `eax` into `edx:eax`, shows as the
   instruction, where it read as the operand times itself.
+- The IL names the carry that an add or a subtract reads, as
+  `rax = rax + rbx + carry` for `adc` and `esi = esi - esi - borrow` for
+  `sbb`, on x86, ARM, AArch64 and PowerPC. `sbb esi, esi` read as
+  `esi = 0`, and `adc ecx, 0` as `ecx = ecx`.
+- A multiply that keeps the high word of its product or multiplies
+  halves, as `umulh`, `mulhw`, `smmul` and `smulbb`, reads as a function,
+  `x8 = umulh(x8, x9)`, where it read as a plain multiply. One that writes
+  two registers, as `umull r0, r1, r2, r3`, reads as the instruction.
+- A rotate left, as x86 `rol` and PowerPC `rotlwi`, and a rotate through
+  the carry, as `rcl` and `rrx`, read as functions, where they read as a
+  rotate right.
+- `bt rdx, rcx` reads as `flags = bt(rdx, rcx)`: it writes only the
+  flags, where it read as `rdx = bt(rcx)`.
+- A displacement of a 32-bit x86 address keeps its sign: `[ebx - 0x8]`
+  read as `[ebx + 0xfffffff8]`.
+- A conditional A32 instruction that reads as a function drops its
+  condition from the name: `if (eq) r0 = clz(r0)`, where it read as
+  `clzeq(r0)`.
 - The IL of the PowerPC `clrlwi`, `clrrwi`, `clrldi` and `clrrdi`
   keeps the mask of the bits they leave: `clrldi r3, r3, 32` read as
   `r3 = r3 & 0x20` and now reads as `r3 = r3 & 0xffffffff`. A mask of 32

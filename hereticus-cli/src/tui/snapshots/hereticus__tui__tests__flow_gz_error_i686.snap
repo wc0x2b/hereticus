@@ -52,10 +52,10 @@ expression: text
 ││    6ac7     esi = eax
 ││    6ac9     call strlen
 ││    6ace     pop ecx
-││    6acf     ecx = &[ebx + 0xffff8021]
+││    6acf     ecx = &[ebx - 0x7fdf]
 ││    6ad5     pop edx
 ││    6ad6     eax = &[esi + eax + 0x3]
-││    6ada     edx = &[ebx + 0xffff8024]
+││    6ada     edx = &[ebx - 0x7fdc]
 ││    6ae0     push dword ptr [esp + 0x30]
 ││    6ae4     push ecx
 ││    6ae5     push edi

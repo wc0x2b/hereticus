@@ -615,6 +615,16 @@ pub enum Op {
     /// Anything the lifter does not name.
     #[default]
     Other,
+    // The variants below come after `Other` so that the number of each one
+    // above, which the features of the matching mix in, stays the same.
+    /// `left + right + carry`, as `adc` and `adde` do.
+    AddCarry,
+    /// `left - right - borrow`, as `sbb` and `sbc` do. The borrow is the
+    /// carry flag on x86 and its inverse on ARM and PowerPC.
+    SubtractBorrow,
+    /// A multiply that keeps a part of the product, or multiplies parts of
+    /// its operands, as `umulh`, `mulhw` and `smulbb` do.
+    MultiplyPart,
 }
 
 impl Op {
@@ -668,6 +678,9 @@ impl Op {
             Self::Vector => "vector",
             Self::System => "system",
             Self::Other => "other",
+            Self::AddCarry => "add-carry",
+            Self::SubtractBorrow => "subtract-borrow",
+            Self::MultiplyPart => "multiply-part",
         }
     }
 }

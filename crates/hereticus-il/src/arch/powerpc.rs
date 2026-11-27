@@ -671,7 +671,7 @@ fn alias_op(alias: AliasOp) -> Option<il::Op> {
         NOP => Op::System,
         SLWI | SLDI => Op::ShiftLeft,
         SRWI | SRDI => Op::ShiftRight,
-        ROTLWI | ROTLW => Op::Rotate,
+        ROTLWI | ROTLW => Op::BitField,
         CLRLWI | CLRRWI | CLRLDI | CLRRDI => Op::And,
         EXTLWI | INSLWI => Op::BitField,
         _ => return None,
@@ -683,10 +683,17 @@ fn plain_op(opcode: Opcode) -> il::Op {
     use Opcode::*;
     use il::Op;
     match opcode {
-        ADD | ADDC | ADDE | ADDI | ADDIC | ADDIS | ADDZE | ADDME => Op::Add,
-        SUBF | SUBFC | SUBFE | SUBFIC | SUBFZE | SUBFME => Op::Subtract,
+        ADD | ADDC | ADDI | ADDIC | ADDIS => Op::Add,
+        SUBF | SUBFC | SUBFIC => Op::Subtract,
+        ADDE | ADDZE => Op::AddCarry,
+        SUBFE => Op::SubtractBorrow,
+        // `addme`, `subfze` and `subfme` add a carry and a -1 or negate,
+        // which no operation of the IL names: they read as the code prints
+        // them.
+        ADDME | SUBFZE | SUBFME => Op::Other,
         NEG => Op::Negate,
-        MULLW | MULLI | MULHW | MULHWU | MULLD | MULHD | MULHDU | MUL => Op::Multiply,
+        MULLW | MULLI | MULLD | MUL => Op::Multiply,
+        MULHW | MULHWU | MULHD | MULHDU => Op::MultiplyPart,
         DIVW | DIVWU | DIVD | DIVDU | DIV | DIVS => Op::Divide,
         AND | ANDI | ANDIS => Op::And,
         ANDC => Op::AndNot,
@@ -696,7 +703,8 @@ fn plain_op(opcode: Opcode) -> il::Op {
         SLW | SLD => Op::ShiftLeft,
         SRW | SRD => Op::ShiftRight,
         SRAW | SRAWI | SRAD | SRADI => Op::ShiftRightArithmetic,
-        RLWNM | RLDCL | RLDCR => Op::Rotate,
+        // A rotate left, with a mask: the IL rotates right only.
+        RLWNM | RLDCL | RLDCR => Op::BitField,
         RLWINM | RLWIMI | RLDIC | RLDICL | RLDICR | RLDIMI | RLMI => Op::BitField,
         EXTSB | EXTSH | EXTSW => Op::Extend,
         CNTLZW | CNTLZD => Op::Bits,

@@ -1,6 +1,5 @@
 ---
 source: hereticus/tests/openwrt.rs
-assertion_line: 641
 expression: report
 ---
 0x80208000 -> 0x80208000 Yes score=0.806 edits=Edits { added: 19, removed: 1, edited: 12 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 9, other: 23, opaque: 0, constants: 6, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=Similar
@@ -44,7 +43,7 @@ expression: report
 0x80209200 -> 0x8020921c Yes score=0.918 edits=Edits { added: 100, removed: 101, edited: 26 } kinds=EditKinds { branches: 9, calls: 3, jumps: 7, memory: 78, other: 130, opaque: 0, constants: 3, callees: 0, texts: 0, calls_added: 2, calls_removed: 2, branches_added: 5, branches_removed: 4 } confidence=Similar
 0x80209b04 -> 0x80209b08 Yes score=0.956 edits=Edits { added: 97, removed: 109, edited: 18 } kinds=EditKinds { branches: 12, calls: 0, jumps: 10, memory: 96, other: 106, opaque: 0, constants: 2, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 6, branches_removed: 8 } confidence=Similar
 0x8020a364 -> 0x80209154 Yes score=0.719 edits=Edits { added: 14, removed: 12, edited: 3 } kinds=EditKinds { branches: 5, calls: 0, jumps: 1, memory: 11, other: 12, opaque: 0, constants: 2, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 3, branches_removed: 3 } confidence=Similar
-0x8020a424 -> 0x8020a3bc Yes score=0.674 edits=Edits { added: 313, removed: 253, edited: 101 } kinds=EditKinds { branches: 68, calls: 7, jumps: 23, memory: 284, other: 285, opaque: 0, constants: 13, callees: 0, texts: 0, calls_added: 4, calls_removed: 4, branches_added: 34, branches_removed: 37 } confidence=Similar
+0x8020a424 -> 0x8020a3bc Yes score=0.670 edits=Edits { added: 308, removed: 248, edited: 107 } kinds=EditKinds { branches: 65, calls: 7, jumps: 21, memory: 284, other: 286, opaque: 0, constants: 13, callees: 0, texts: 0, calls_added: 4, calls_removed: 4, branches_added: 33, branches_removed: 36 } confidence=Similar
 0x8020b33c -> 0x8020b1f8 Yes score=0.966 edits=Edits { added: 8, removed: 9, edited: 3 } kinds=EditKinds { branches: 0, calls: 2, jumps: 0, memory: 4, other: 14, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 1, calls_removed: 1, branches_added: 0, branches_removed: 0 } confidence=Similar
 0x8020b4dc -> 0x8020b39c No score=1.000 edits=Edits { added: 0, removed: 0, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 0, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=IdenticalCode
 0x8020b4fc -> 0x8020b3bc Reordered score=1.000 edits=Edits { added: 1, removed: 1, edited: 0 } kinds=EditKinds { branches: 0, calls: 0, jumps: 0, memory: 0, other: 2, opaque: 0, constants: 0, callees: 0, texts: 0, calls_added: 0, calls_removed: 0, branches_added: 0, branches_removed: 0 } confidence=Similar

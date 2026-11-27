@@ -1392,17 +1392,34 @@ fn statement(
             | Op::FloatSquareRoot
             | Op::FloatMinMax
             | Op::FloatMultiplyAdd
+            | Op::MultiplyPart
     ) && arm32::core_opcode(insn) != Some(ArmOpcode::MOVT);
+    // A result of two registers, as `umull r0, r1, r2, r3` gives, reads as
+    // the instruction: a function gives one.
+    let one_result = lifted.writes.difference(RegSet::from_iter([Reg::Flags])).len() <= 1;
     if functional
+        && one_result
         && !lifted.writes.is_empty()
         && let Some((dest, sources)) = tokens.split_first()
         && !sources.is_empty()
     {
-        // Without the size: `vsqrt` of `vsqrt.f64`.
-        let printed_name = hereticus_il::arch::printed_name(insn);
+        // Without the size: `vsqrt` of `vsqrt.f64`. The condition of an A32
+        // instruction shows before it, so `clzeq` reads as `clz`.
+        let printed_name = match arm32::core_opcode(insn) {
+            Some(opcode) if a32_condition(insn, None).is_some() => {
+                format!("{opcode:?}").to_ascii_lowercase()
+            }
+            _ => hereticus_il::arch::printed_name(insn).to_string(),
+        };
         let name = printed_name.split('.').next().unwrap_or(&printed_name);
-        let sources: Vec<String> =
-            sources.iter().map(|source| source.trim_start_matches('#').to_string()).collect();
+        let strip = |source: &&str| source.trim_start_matches('#').to_string();
+        // An operation that writes only the flags, as `bt rdx, rcx`, reads
+        // each operand it names.
+        if lifted.writes.iter().all(|reg| reg == Reg::Flags) {
+            let operands: Vec<String> = tokens.iter().map(strip).collect();
+            return Some(format!("flags = {name}({})", operands.join(", ")));
+        }
+        let sources: Vec<String> = sources.iter().map(strip).collect();
         return Some(format!("{dest} = {name}({})", sources.join(", ")));
     }
     let paired = operand_texts(&lifted.operands, &lift_names)?;
@@ -1508,6 +1525,15 @@ fn statement(
             _ => binary("+")?,
         },
         Op::Subtract => binary("-")?,
+        Op::AddCarry => match operands.as_slice() {
+            [dest, left, right] => format!("{dest} = {left} + {right} + carry"),
+            [dest, source] => format!("{dest} = {source} + carry"),
+            _ => return None,
+        },
+        Op::SubtractBorrow => match operands.as_slice() {
+            [dest, left, right] => format!("{dest} = {left} - {right} - borrow"),
+            _ => return None,
+        },
         // `mul` is a multiply-add of zero on AArch64.
         Op::Multiply | Op::MultiplyAdd
             if operands.len() == 4 && canonical.operands.get(3).is_some_and(is_zero) =>
@@ -1867,6 +1893,34 @@ mod tests {
             .map(|line| line.text)
             .collect();
         assert_eq!(high, ["capable(arg1)", "at = 0", "__raw_copy_to_user(a0, a1, a2)"]);
+    }
+
+    /// An add and a subtract name the carry they read, a test of one bit
+    /// writes the flags alone, a conditional function drops the condition
+    /// from its name, and a multiply into two registers reads as itself.
+    #[test]
+    fn a_carry_a_bit_test_and_a_wide_multiply_read_plainly() {
+        use hereticus_il::arch::arm32::Arm32;
+        use hereticus_il::arch::x86::X86;
+        let code = [
+            0x48, 0x11, 0xd8, // adc rax, rbx
+            0x19, 0xf6, // sbb esi, esi
+            0x48, 0x0f, 0xa3, 0xca, // bt rdx, rcx
+        ];
+        let (insns, _) = decode_all(&X86::BITS64, &code, 0x1000);
+        assert_eq!(
+            il_lines(&X86::BITS64, &code, &insns),
+            ["rax = rax + rbx + carry", "esi = esi - esi - borrow", "flags = bt(rdx, rcx)"]
+        );
+        let code: Vec<u8> = [0x016f_0f10_u32, 0xe081_0392] // clzeq r0, r0; umull r0, r1, r2, r3
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let (insns, _) = decode_all(&Arm32, &code, 0x1000);
+        assert_eq!(
+            il_lines(&Arm32, &code, &insns),
+            ["if (eq) r0 = clz(r0)", "umull r0, r1, r2, r3"]
+        );
     }
 
     /// A mask reads in plain hex, where a number of 32 bits with its top bit
