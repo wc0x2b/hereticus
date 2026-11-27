@@ -901,6 +901,10 @@ struct Body<'a> {
     /// slot of the global offset table, as `x26 = load.64 [@strcmp]`, the
     /// index of the function in [`Body::callees`].
     callee_loads: Vec<Option<usize>>,
+    /// The registers that code from each instruction on can read before
+    /// it writes them, where each call reads every argument register,
+    /// worked out where a count of arguments first needs it.
+    rough_live: std::cell::OnceCell<Vec<RegSet>>,
 }
 
 impl<'a> Body<'a> {
@@ -994,6 +998,7 @@ impl<'a> Body<'a> {
             registers,
             callees,
             callee_loads,
+            rough_live: std::cell::OnceCell::new(),
             links: RegSet::EMPTY,
             loaded_places: HashSet::new(),
         };
@@ -1708,6 +1713,17 @@ impl<'a> Body<'a> {
     /// How many arguments the call of `site` shows: up to the last one that
     /// the code before it sets and nothing but a test or a copy reads. A
     /// call right before the site sets the result register.
+    /// Whether a path that leaves `path` at one of its branches, before the
+    /// call at `call`, can read `reg` before it writes it.
+    fn read_off_the_path(&self, path: &[usize], call: usize, reg: Reg) -> bool {
+        let live = self.rough_live.get_or_init(|| self.live_in(&[]));
+        let on_path = |at: usize| at == call || path.contains(&at);
+        path.iter().any(|&at| {
+            self.next[at].len() > 1
+                && self.next[at].iter().any(|&away| !on_path(away) && live[away].contains(reg))
+        })
+    }
+
     fn argument_count(&self, site: &CallSite) -> usize {
         let targets = self.targets(site.index);
         let lifted = |index: usize| &self.lifts[index].as_ref().expect("a site holds lifts").lifted;
@@ -1725,6 +1741,19 @@ impl<'a> Body<'a> {
                     None if after_call && reg == self.convention.result.reg => 0,
                     None => return false,
                 };
+            // A value that a branch tests and a path away from the call
+            // still reads is kept for that path, as `r5` is where it holds
+            // the case of a switch. A value tested and then passed, as
+            // `x0` where code tests for a null pointer, is dead there.
+            let tested = site.order[from..].iter().any(|&later| {
+                let later = lifted(later);
+                later.reads.contains(reg)
+                    && later.memory.is_none()
+                    && later.writes.difference(RegSet::from_iter([Reg::Flags])).is_empty()
+            });
+            if tested && self.read_off_the_path(&site.order[from..], site.index, reg) {
+                return false;
+            }
             site.order[from..].iter().all(|&later| {
                 let later = lifted(later);
                 let is_test = later.memory.is_none()
@@ -3026,6 +3055,25 @@ mod tests {
             .map(|line| line.text)
             .collect();
         assert_eq!(shown, ["a1 = &var_1c", "return"]);
+    }
+
+    /// A value that a branch tests and the other path of the branch reads
+    /// is kept for that path, not passed to the call.
+    #[test]
+    fn a_tested_value_another_path_reads_is_no_argument() {
+        let shown = aarch64(&[
+            0x2a00_03e5, // mov w5, w0
+            0x7100_04bf, // cmp w5, #1
+            0x5400_00a1, // b.ne $+0x14
+            0x2a01_03e0, // mov w0, w1
+            0x5280_0021, // mov w1, #1
+            0x9400_0040, // bl $+0x100
+            0xd65f_03c0, // ret
+            0x7100_0cbf, // cmp w5, #3
+            0x2a05_03e0, // mov w0, w5
+            0xd65f_03c0, // ret
+        ]);
+        assert!(shown.iter().any(|line| line.ends_with("$+0x100(arg2, 1)")), "{shown:?}");
     }
 
     /// A relation is 1 or 0, so a branch on whether it is zero tests the
