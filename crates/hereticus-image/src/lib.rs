@@ -9,6 +9,7 @@
 pub mod links;
 mod macho;
 pub mod obj;
+pub mod unlinked;
 
 use macho::{apply_chained_fixups, indirect_names};
 

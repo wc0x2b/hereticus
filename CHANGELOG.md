@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the TUI and the button of the HTML report go to it too. The matching
   does not read it.
 
+- In an object that is not linked, as a kernel module, the IL and the
+  high IL name the data that a relocation points at, where they read the
+  zero that the code holds. `fortify_panic(&"memset")` read as
+  `a0 = 0` before `fortify_panic(a0)`, and `table[i & 63]` reads as
+  `load.32 [table + ((arg1 & 0x3f) << 2)]`. A message of the Linux
+  kernel shows with its level, as `&"\x013ptm: ..."`. This holds for
+  MIPS, ARM, T32, AArch64, x86 and PowerPC, not for 64-bit PowerPC,
+  whose code reaches data through the TOC.
+- A call of an x86 object names its callee, where it read as `$+0x5`:
+  the relocation that names it sits past the opcode of the call.
+
 ### Changed
 
 - A load that widens its value with the sign reads as `sload`, as

@@ -89,6 +89,28 @@ for source in "$src"/*.c; do
         "$source" -o "$build/mipsbe-nopic-O2/$name.o"
 done
 
+# Code as a kernel module holds it: not position independent, so each
+# address of data is a relocation at the instruction that forms it, and on
+# ARM at a word of a literal pool, as `-mno-movt` gives it, which is what
+# the kernel builds modules with. In a tree of its own, so the other trees
+# keep their sources.
+mkdir -p "$build/kmod"
+for spec in aarch64:aarch64-linux-gnu x86_64:x86_64-linux-gnu i686:i686-linux-gnu \
+    arm:armv7a-linux-gnueabihf thumb:armv7a-linux-gnueabihf powerpc:powerpc-linux-gnu \
+    mips:mips-linux-gnu; do
+    name="${spec%%:*}"
+    triple="${spec#*:}"
+    flags=(-O2 -fno-pic -ffreestanding -fno-asynchronous-unwind-tables -c)
+    case "$name" in
+        x86_64) flags+=(-mcmodel=kernel) ;;
+        arm) flags+=(-marm -mno-movt) ;;
+        thumb) flags+=(-mthumb -mno-movt) ;;
+        mips) flags+=(-mno-abicalls) ;;
+    esac
+    clang --target="$triple" "${flags[@]}" "$src/kmod/references.c" \
+        -o "$build/kmod/$name.o"
+done
+
 # PowerPC: 32-bit big endian, as routers and automotive controllers run
 # it, 32-bit little endian, and 64-bit in both orders, ELFv1 big endian and
 # ELFv2 little endian.

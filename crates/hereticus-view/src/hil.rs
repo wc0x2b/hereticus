@@ -169,7 +169,8 @@ pub fn hil_statements_in(
     };
     let folds = folds(arch, insns);
     let printed = instruction_lines(arch, code, insns, context);
-    let mut body = Body::new(arch, convention, insns, &printed);
+    let lifts = crate::lifts_in(arch, code, insns, context);
+    let mut body = Body::new(arch, convention, insns, &printed, lifts);
     let returns_nothing = context
         .and_then(|context| context.calls)
         .is_some_and(|calls| calls.unread_results.contains(&insns[0].address));
@@ -606,6 +607,17 @@ fn is_branch_likely(insn: &Insn) -> bool {
     LIKELY.contains(&hereticus_il::arch::printed_name(insn).as_str())
 }
 
+/// Whether `line` names the register `name` as a word of its own, as
+/// `v0 = v0 + 4` does, where `v0 = &"usage"` and `0xa2` do not name `a2`.
+fn names_register(line: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    line.match_indices(name).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at + name.len()..].chars().next();
+        !before.is_some_and(is_word) && !after.is_some_and(is_word)
+    })
+}
+
 /// Whether the statement `text` leaves each register as it was, as
 /// `esi = &[esi]`, which x86 code pads with.
 fn does_nothing(text: &str) -> bool {
@@ -645,7 +657,57 @@ fn simplified(text: &str) -> String {
         }
         text = next;
     }
-    subtract_negatives(&text)
+    places_of_addresses(&subtract_negatives(&text))
+}
+
+/// `text` with each place at an address it names as a place, outside
+/// strings: `[&table + 0x44]`, the place at the address of `table` and
+/// 0x44, is `[table + 0x44]`, as the IL writes a place, and so is
+/// `[(&table + 0x44)]`.
+fn places_of_addresses(text: &str) -> String {
+    let text = &unwrapped_places(text);
+    let mut out = String::with_capacity(text.len());
+    let (mut quoted, mut escaped) = (false, false);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        out.push(c);
+        if !quoted && c == '[' && chars.peek() == Some(&'&') {
+            chars.next();
+        }
+        if c == '"' && !escaped {
+            quoted = !quoted;
+        }
+        escaped = quoted && c == '\\' && !escaped;
+    }
+    out
+}
+
+/// `text` with the parentheses around the whole of a place that starts
+/// with an address taken off, as `[(&table + 0x44)]` is `[&table + 0x44]`.
+fn unwrapped_places(text: &str) -> String {
+    let mut text = text.to_string();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("[(&") {
+        let open = from + found + 1;
+        let mut depth = 0;
+        let close = text[open..].char_indices().find_map(|(at, c)| {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(open + at)
+        });
+        match close {
+            Some(close) if text[close + 1..].starts_with(']') => {
+                text.replace_range(close..close + 1, "");
+                text.replace_range(open..open + 1, "");
+            }
+            _ => {}
+        }
+        from = open;
+    }
+    text
 }
 
 /// `text` with each add of a negative constant outside strings as a
@@ -935,11 +997,14 @@ struct Body<'a> {
 
 impl<'a> Body<'a> {
     /// The body of `insns`, which the IL shows as `printed`.
+    /// The body of `insns`, which `printed` shows and `lifts` lifts, one of
+    /// each for each instruction.
     fn new(
         arch: &'a dyn Arch,
         convention: CallingConvention,
         insns: &'a [Insn],
         printed: &[String],
+        lifts: Vec<Option<Named>>,
     ) -> Self {
         let mut callees: Vec<String> = Vec::new();
         let callee_loads = printed
@@ -953,7 +1018,6 @@ impl<'a> Body<'a> {
                 Some(index)
             })
             .collect();
-        let lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
         let mut next = successors(insns, |insn| arch.delay_slots(insn));
         // A word of data among the code never runs, though a jump through a
         // register can seem to reach it: it leads nowhere.
@@ -1642,29 +1706,75 @@ impl<'a> Body<'a> {
 
     /// The instructions that put a page in a register for the next one to
     /// add its offset to, as `x0 = &page` before `x0 = &"usage"`. The next
-    /// one names the whole address.
+    /// one names the whole address. In an object of MIPS, the `addiu` that
+    /// adds the offset can sit past a branch, so each path from the page
+    /// counts: on each, the first instruction that reads the register sets
+    /// it alone, and names the whole address.
     fn page_feeders(&self, lines: &[String]) -> Vec<usize> {
         let mut feeders = Vec::new();
         for (index, line) in lines.iter().enumerate() {
             let Some(name) = line.strip_suffix(" = &page") else { continue };
             let Some(&reg) = self.registers.get(name) else { continue };
-            let mut at = index;
-            while self.next[at] == [at + 1] && self.entries[at + 1] == 1 {
-                at += 1;
-                let Some(named) = &self.lifts[at] else { break };
-                let lifted = &named.lifted;
-                if lifted.reads.contains(reg) {
-                    if lifted.writes == RegSet::from_iter([reg]) && lines[at] != *line {
-                        feeders.push(index);
-                    }
-                    break;
-                }
-                if lifted.writes.contains(reg) {
-                    break;
-                }
+            if self.reads_complete_the_page(index, reg, line, lines) {
+                feeders.push(index);
             }
         }
         feeders
+    }
+
+    /// Whether, on each path from the page that instruction `index` puts in
+    /// `reg`, the first instruction that reads `reg` sets `reg` alone, and
+    /// shows a line of its own, other than `page`, and one such instruction
+    /// is there. A call ends a path: no call keeps such a register.
+    fn reads_complete_the_page(
+        &self,
+        index: usize,
+        reg: Reg,
+        page: &str,
+        lines: &[String],
+    ) -> bool {
+        let name = page.strip_suffix(" = &page").unwrap_or(page);
+        let mut completed = false;
+        let mut seen = HashSet::new();
+        // Each instruction to look at, and whether its path ends after it,
+        // as one in the delay slot of a call does.
+        let mut work: Vec<(usize, bool)> = self.next[index].iter().map(|&at| (at, false)).collect();
+        while let Some((at, last)) = work.pop() {
+            if !seen.insert(at) || at == index {
+                continue;
+            }
+            // The delay slot of a call runs before the callee.
+            if self.is_call(at) {
+                if self.has_slots(at) && at + 1 < self.insns.len() {
+                    work.push((at + 1, true));
+                }
+                continue;
+            }
+            let Some(named) = &self.lifts[at] else { return false };
+            let lifted = &named.lifted;
+            if lifted.reads.contains(reg) {
+                // It names the whole address, as `a2 = &"text"` of
+                // `addiu a2, v0, %lo(text)` and `store.32 [counter] = w1`,
+                // and no other use of the register.
+                let line = &lines[at];
+                let value = match line.split_once(" = ") {
+                    Some((dest, value)) if !dest.contains('[') => value,
+                    _ => line.as_str(),
+                };
+                if line == page || names_register(value, name) {
+                    return false;
+                }
+                completed = true;
+                if !lifted.writes.contains(reg) && !last {
+                    work.extend(self.next[at].iter().map(|&next| (next, false)));
+                }
+                continue;
+            }
+            if !lifted.writes.contains(reg) && !last {
+                work.extend(self.next[at].iter().map(|&next| (next, false)));
+            }
+        }
+        completed
     }
 
     /// The call at `index`, where the IL names it as `call <callee>`, with
@@ -2349,7 +2459,10 @@ pub fn call_facts(binary: &hereticus_image::Binary) -> hereticus_image::CallFact
             let is_call = matches!(insns[index].kind, InsnKind::Call { .. });
             let name = binary
                 .links
-                .site_name(insns[index].address)
+                .site_name_in(
+                    insns[index].address,
+                    insns[index].address + insns[index].bytes_len as u64,
+                )
                 .map(str::to_string)
                 .or_else(|| naming.callee_of(arch, target?));
             if let Some(name) = name.filter(|_| is_call && convention.stack_arguments.is_none()) {
@@ -2590,7 +2703,8 @@ fn arity_of_code(
         return None;
     }
     let printed = instruction_lines(arch, code, &insns, None);
-    let mut body = Body::new(arch, convention, &insns, &printed);
+    let lifts = insns.iter().map(hereticus_il::arch::lift_named).collect();
+    let mut body = Body::new(arch, convention, &insns, &printed, lifts);
     body.unknown = Unknown::ReadsNothing;
     // A register that only a return reads is no argument, as the result
     // register of a function that gives nothing back is not.
@@ -3522,6 +3636,16 @@ mod tests {
             "if ((arg3 u< 0x7ffffff1) == 0) goto $+0x8"
         );
         assert_eq!(simplified("a3 = arg4 + (-0x10000 + 0x760f)"), "a3 = arg4 - 0x89f1");
+        assert_eq!(simplified("v0 = load.32 [&other + 0x44]"), "v0 = load.32 [other + 0x44]");
+        assert!(names_register("v0 = v0 + 4", "v0"));
+        assert!(!names_register("x = 0xa2", "a2"));
+        assert_eq!(simplified("v0 = load.32 [(&.bss + 0x20)]"), "v0 = load.32 [.bss + 0x20]");
+        assert_eq!(
+            simplified("v0 = load.32 [(&table + ((arg1 & 0x3f) << 2))]"),
+            "v0 = load.32 [table + ((arg1 & 0x3f) << 2)]"
+        );
+        assert_eq!(simplified("v0 = load.32 [(&a) + (&b)]"), "v0 = load.32 [(&a) + (&b)]");
+        assert_eq!(simplified("x0 = &\"[&x\""), "x0 = &\"[&x\"");
         assert_eq!(simplified("x0 = &\"a + -1\" + -2"), "x0 = &\"a + -1\" - 2");
         assert_eq!(simplified("v0 = load.32 [0 + 0x20]"), "v0 = load.32 [0x20]");
         assert_eq!(
@@ -3851,7 +3975,8 @@ mod tests {
         let printed = instruction_lines(&X86::BITS32, &code, &insns, None);
         let convention =
             X86::BITS32.calling_convention(hereticus_arch::Abi::Unix).expect("x86 has an ABI");
-        let body = Body::new(&X86::BITS32, convention, &insns, &printed);
+        let lifts = insns.iter().map(hereticus_il::arch::lift_named).collect();
+        let body = Body::new(&X86::BITS32, convention, &insns, &printed, lifts);
         // After the add, the place holds no copy of what `eax` held.
         assert_ne!(body.holding[3].get(&Place::Slot(-8)), body.holding[1].reg(Reg::General(0)));
     }

@@ -271,16 +271,9 @@ fn instruction_lines(
             .collect(),
         None => vec![false; insns.len()],
     };
-    let formed = match context {
-        Some(context) => {
-            let regions = context.links.regions();
-            let memory = hereticus_recovery::arch::Memory::new(&regions);
-            arch.formed_addresses(code, insns, context.space, &memory)
-        }
-        None => vec![None; insns.len()],
-    };
+    let Relocated { formed, high_parts, .. } = Relocated::of(arch, code, insns, context);
     // Each instruction lifted once, with its names, for every reader below.
-    let lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
+    let lifts = lifts_in(arch, code, insns, context);
     let pages = page_loads(insns, &lifts, &formed);
     let mut last_compare: Option<Compared> = None;
     let carry = CarryFlag::of(arch.triple());
@@ -304,7 +297,9 @@ fn instruction_lines(
         .iter()
         .enumerate()
         .map(|(index, insn)| {
-            let relocated = context.and_then(|context| context.links.site_name(insn.address));
+            let relocated = context.and_then(|context| {
+                context.links.site_name_in(insn.address, insn.address + insn.bytes_len as u64)
+            });
             Write::of(insn, &shown_names(lifts[index].as_ref()), &pointed[index], relocated)
         })
         .collect();
@@ -336,7 +331,9 @@ fn instruction_lines(
             };
             // In an unlinked object a call holds no target yet: the
             // relocation at it names the callee.
-            let relocated = context.and_then(|context| context.links.site_name(insn.address));
+            let relocated = context.and_then(|context| {
+                context.links.site_name_in(insn.address, insn.address + insn.bytes_len as u64)
+            });
             match (relocated, insn.kind) {
                 (Some(name), hereticus_il::arch::InsnKind::Call { .. }) => {
                     return conditional(format!("call {name}"), None);
@@ -367,6 +364,11 @@ fn instruction_lines(
                 && let Some(dest) = shown.first()
             {
                 return format!("{dest} = &page");
+            }
+            if high_parts.contains(&index)
+                && let Some(dest) = shown.first()
+            {
+                return conditional(format!("{dest} = &page"), None);
             }
             if is_mips && let Some(text) = mips_statement(insn, &shown, &mut float_conditions) {
                 return text;
@@ -437,6 +439,244 @@ fn page_loads(insns: &[Insn], lifts: &[Option<Named>], formed: &[Option<u64>]) -
             (loads && formed[at].is_some()).then_some(at)
         })
         .collect()
+}
+
+/// What the relocations of an unlinked object say of the instructions of
+/// one function, as the view reads them.
+struct Relocated {
+    /// The address each instruction forms, as the architecture reads it,
+    /// with the address each relocation names at the instruction that
+    /// completes it.
+    formed: Vec<Option<u64>>,
+    /// The instructions that form the upper part of an address a
+    /// relocation names, as `lui` and `adrp`.
+    high_parts: HashSet<usize>,
+    /// The instructions that add the lower half of an address whose upper
+    /// half shows it whole, as a MIPS `lw` after `lui`.
+    lower_parts: HashSet<usize>,
+    /// The x86 instructions whose operand holds the address a relocation
+    /// names in one field, as `[4*rdi + table]`, and that address.
+    named_fields: Vec<(usize, u64)>,
+}
+
+impl Relocated {
+    fn of(arch: &dyn Arch, code: &[u8], insns: &[Insn], context: Option<Context<'_>>) -> Self {
+        let mut relocated = Self {
+            formed: vec![None; insns.len()],
+            high_parts: HashSet::new(),
+            lower_parts: HashSet::new(),
+            named_fields: Vec::new(),
+        };
+        let Some(context) = context else { return relocated };
+        let unlinked = context.links.unlinked();
+        let start = insns.first().map_or(0, |insn| insn.address);
+        let code: std::borrow::Cow<'_, [u8]> = match unlinked {
+            Some(unlinked) => std::borrow::Cow::Owned(with_words(arch, code, start, unlinked)),
+            None => std::borrow::Cow::Borrowed(code),
+        };
+        let mut regions = context.links.regions();
+        if unlinked.is_some() {
+            regions.insert(0, (start, &code));
+        }
+        let memory = hereticus_recovery::arch::Memory::new(&regions);
+        relocated.formed = arch.formed_addresses(&code, insns, context.space, &memory);
+        if let Some(unlinked) = unlinked {
+            relocated_addresses(arch, insns, unlinked, &mut relocated);
+        }
+        relocated
+    }
+}
+
+/// Each of `insns` lifted, with its names, where the relocations of an
+/// unlinked object, as `context` holds them, name what its fields hold.
+pub(crate) fn lifts_in(
+    arch: &dyn Arch,
+    code: &[u8],
+    insns: &[Insn],
+    context: Option<Context<'_>>,
+) -> Vec<Option<Named>> {
+    let mut lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
+    let Some(context) = context.filter(|context| context.links.unlinked().is_some()) else {
+        return lifts;
+    };
+    let relocated = Relocated::of(arch, code, insns, Some(context));
+    for &index in &relocated.lower_parts {
+        if let Some(named) = lifts[index].as_mut() {
+            without_immediate(named);
+        }
+    }
+    for &(index, target) in &relocated.named_fields {
+        if let Some(named) = lifts[index].as_mut() {
+            with_named_field(named, &Pointed::of(target, context));
+        }
+    }
+    lifts
+}
+
+/// `code`, which starts at `start`, with each word that a relocation of an
+/// unlinked object fills holding the address it names, as a word of a
+/// literal pool does once linked. No instruction changes.
+fn with_words(
+    arch: &dyn Arch,
+    code: &[u8],
+    start: u64,
+    unlinked: &hereticus_image::unlinked::Unlinked,
+) -> Vec<u8> {
+    let mut code = code.to_vec();
+    let width = arch.pointer_width();
+    for (site, target) in unlinked.words() {
+        let Some(at) = site.checked_sub(start).and_then(|at| usize::try_from(at).ok()) else {
+            continue;
+        };
+        let Some(word) = code.get_mut(at..at + width) else { continue };
+        let bytes = target.to_le_bytes();
+        match arch.data_order() {
+            hereticus_il::arch::ByteOrder::Little => word.copy_from_slice(&bytes[..width]),
+            hereticus_il::arch::ByteOrder::Big => {
+                word.iter_mut().zip(bytes[..width].iter().rev()).for_each(|(to, &byte)| *to = byte);
+            }
+        }
+    }
+    code
+}
+
+/// `named`, with the field of its operand that a relocation fills named as
+/// what it points at: a memory operand that adds registers, as
+/// `[table + 4*rdi]`, or else a constant, as `&"text"`.
+fn with_named_field(named: &mut Named, pointed: &Pointed) {
+    let pairs = named.lifted.operands.iter_mut().zip(named.names.iter_mut());
+    let mut constant = None;
+    for (operand, name) in pairs {
+        match operand {
+            Operand::Memory { base, index, .. } if base.is_some() || index.is_some() => {
+                let place = pointed.as_place();
+                let symbol = place.trim_start_matches('[').trim_end_matches(']');
+                // The displacement is part of the address the relocation
+                // names, as the addend of a 32-bit x86 one is.
+                let inner = name.trim_start_matches('[').trim_end_matches(']');
+                let is_number = |term: &str| {
+                    let term = term.trim_start_matches('-');
+                    term.starts_with("0x") || term.chars().all(|c| c.is_ascii_digit())
+                };
+                let registers: Vec<&str> =
+                    inner.split(" + ").filter(|&term| !is_number(term)).collect();
+                *name = format!("[{symbol} + {}]", registers.join(" + ")).into();
+                return;
+            }
+            Operand::Const(_) if constant.is_none() => constant = Some((operand, name)),
+            _ => {}
+        }
+    }
+    // The constant keeps its value, and shows by its name, which starts
+    // with `&` as no number does.
+    if let Some((_, name)) = constant {
+        *name = pointed.as_value().into();
+    }
+}
+
+/// `named`, with its constant and the offset of its memory operand as 0:
+/// the instruction before it that a relocation names shows the whole
+/// address, so what this adds is part of that.
+fn without_immediate(named: &mut Named) {
+    for (operand, name) in named.lifted.operands.iter_mut().zip(named.names.iter_mut()) {
+        match operand {
+            Operand::Const(value) => {
+                *value = 0;
+                *name = "0".into();
+            }
+            Operand::Memory { base, offset, .. } if offset.is_some() => {
+                *offset = None;
+                let base_name = name.trim_start_matches('[').split([' ', ']']).next();
+                if let (Some(_), Some(base_name)) = (base, base_name) {
+                    *name = format!("[{base_name}]").into();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `relocated`, with the address that each relocation of `unlinked` names
+/// at the instruction that completes it, as an AArch64 `add` does after
+/// `adrp`, and each instruction that forms only the upper part, as `adrp`
+/// does, the lower half of a MIPS pair, or an x86 field, in its set.
+fn relocated_addresses(
+    arch: &dyn Arch,
+    insns: &[Insn],
+    unlinked: &hereticus_image::unlinked::Unlinked,
+    relocated: &mut Relocated,
+) {
+    let Relocated { formed, high_parts, lower_parts, named_fields } = relocated;
+    // A load of a word of a literal pool, as `ldr r3, [pc, #0x14]`, gives
+    // the address that a relocation of the word names.
+    let thumb = arch.triple().starts_with("thumb");
+    for (index, insn) in insns.iter().enumerate() {
+        let Some(named) = hereticus_il::arch::lift_named(insn) else { continue };
+        let pool = named.lifted.operands.iter().find_map(|operand| match *operand {
+            Operand::Memory {
+                base: Some(Reg::ProgramCounter),
+                offset,
+                index: None,
+                update: hereticus_il::Update::None,
+            } if named.lifted.op == Op::Load => {
+                // The program counter reads 8 bytes past an A32
+                // instruction, and 4 past a T32 one, to a word.
+                let pc = match thumb {
+                    true => (insn.address + 4) & !3,
+                    false => insn.address + 8,
+                };
+                Some(pc.wrapping_add_signed(offset.unwrap_or(0)))
+            }
+            _ => None,
+        });
+        if let Some(pool) = pool
+            && let Some((site, reference)) = unlinked.reference_in(pool, pool + 1)
+            && site == pool
+            && reference.part == hereticus_image::unlinked::Part::Word
+        {
+            formed[index] = Some(reference.target);
+        }
+    }
+    use hereticus_image::unlinked::Part;
+    for (index, insn) in insns.iter().enumerate() {
+        // A call names its callee by the relocation at it.
+        if matches!(insn.kind, hereticus_il::arch::InsnKind::Call { .. }) {
+            continue;
+        }
+        let end = insn.address + insn.bytes_len as u64;
+        let Some((site, reference)) = unlinked.reference_in(insn.address, end) else { continue };
+        // An x86 instruction holds the address in one field of an operand
+        // that can add registers, as `[4*rdi + table]`, or as a constant
+        // it pushes: that field takes the name.
+        let in_field = reference.part == Part::Low
+            && hereticus_il::arch::x86::instruction(insn).is_some()
+            && hereticus_il::arch::lift_named(insn).is_some_and(|named| {
+                named.lifted.operands.iter().any(|operand| match operand {
+                    Operand::Memory { base, index, .. } => base.is_some() || index.is_some(),
+                    Operand::Const(_) => true,
+                    _ => false,
+                })
+            });
+        if in_field {
+            named_fields.push((index, reference.target));
+            formed[index] = None;
+            continue;
+        }
+        match reference.part {
+            Part::High => {
+                high_parts.insert(index);
+                formed[index] = None;
+            }
+            Part::Low => formed[index] = Some(reference.target),
+            Part::UpperOfPair => formed[index] = Some(reference.target),
+            Part::LowerOfPair => {
+                lower_parts.insert(index);
+                formed[index] = None;
+            }
+            Part::FromEnd => formed[index] = Some(reference.target.wrapping_add(end - site)),
+            Part::Word => {}
+        }
+    }
 }
 
 /// The test of the last float compare into each of the eight condition
@@ -752,6 +992,9 @@ enum Pointed {
     InText { text: String, offset: u64 },
     /// A slot of the global offset table, by the symbol it holds.
     Slot(String),
+    /// A symbol or a data section of an unlinked object, by its name, and
+    /// how far into it the address is, as `table + 0x44`.
+    Symbol { name: String, offset: u64 },
     /// Anything else, by its address.
     Address(u64),
 }
@@ -760,16 +1003,30 @@ impl Pointed {
     fn of(address: u64, context: Context<'_>) -> Self {
         /// More of a text than a line shows.
         const LONGEST: usize = 40;
-        if let Some((text, offset)) = context
-            .links
-            .text_holding(address)
-            .filter(|(text, offset)| context.links.is_sure_text(address - offset, text))
+        let unlinked = context.links.unlinked();
+        let text: Option<(std::borrow::Cow<'_, str>, u64)> =
+            match unlinked.and_then(|unlinked| unlinked.text_holding(address)) {
+                Some((text, offset)) => Some((text.into(), offset)),
+                None => context
+                    .links
+                    .text_holding(address)
+                    .filter(|(text, offset)| context.links.is_sure_text(address - offset, text))
+                    .map(|(text, offset)| (text.into(), offset)),
+            };
+        if text.is_none()
+            && let Some((name, offset)) =
+                unlinked.and_then(|unlinked| unlinked.name_holding(address))
         {
+            return Self::Symbol { name: name.to_string(), offset };
+        }
+        if let Some((text, offset)) = text {
             let mut shown: String = text.chars().take(LONGEST).collect();
             if text.len() > LONGEST {
                 shown.push_str("...");
             }
-            let text = shown.escape_debug().to_string();
+            // The level of a message of the Linux kernel reads as C writes
+            // it, as `\x01` and `3`.
+            let text = shown.escape_debug().to_string().replace("\\u{1}", "\\x01");
             return match offset {
                 0 => Self::Text(text),
                 offset => Self::InText { text, offset },
@@ -787,6 +1044,8 @@ impl Pointed {
             Self::Text(text) => format!("&\"{text}\""),
             Self::InText { text, offset } => format!("&\"{text}\"[{offset}]"),
             Self::Slot(name) => format!("&@{name}"),
+            Self::Symbol { name, offset: 0 } => format!("&{name}"),
+            Self::Symbol { name, offset } => format!("&{name} + {}", constant_text(*offset)),
             Self::Address(address) => format!("@{address:#x}"),
         }
     }
@@ -797,6 +1056,8 @@ impl Pointed {
             Self::Text(text) => format!("[\"{text}\"]"),
             Self::InText { text, offset } => format!("[\"{text}\"[{offset}]]"),
             Self::Slot(name) => format!("[@{name}]"),
+            Self::Symbol { name, offset: 0 } => format!("[{name}]"),
+            Self::Symbol { name, offset } => format!("[{name} + {}]", constant_text(*offset)),
             Self::Address(address) => format!("[@{address:#x}]"),
         }
     }
@@ -1542,6 +1803,8 @@ fn statement(
             .iter()
             .zip(paired)
             .map(|(operand, text)| match operand {
+                // A relocation names what the constant points at.
+                Operand::Const(_) if text.starts_with('&') => text,
                 Operand::Const(value) => constant(*value),
                 _ => text,
             })
@@ -1560,6 +1823,21 @@ fn statement(
         };
         canonical.operands.iter().map(text).collect::<Option<_>>()?
     };
+    // An operation on a place the code names, as `add esi, [rip + x]`,
+    // reads the place there: it forms no address of its own.
+    let reads_place = canonical.memory.is_some()
+        && !matches!(canonical.op, Op::Load | Op::Store | Op::Atomic | Op::Address);
+    let (operands, address) = match (&address, reads_place) {
+        (Some(pointed), true) => {
+            let place = pointed.as_place();
+            let named = operands
+                .into_iter()
+                .map(|operand| if operand.starts_with('[') { place.clone() } else { operand })
+                .collect::<Vec<_>>();
+            (named, None)
+        }
+        _ => (operands, address),
+    };
 
     let binary = |operator: &str| match operands.as_slice() {
         [dest, left, right] => Some(format!("{dest} = {left} {operator} {right}")),
@@ -1571,6 +1849,15 @@ fn statement(
         // A move can hold a zero it does not use, as `mov x0, x1` is
         // `orr x0, xzr, x1` and `mov x29, sp` adds 0.
         Op::Move => match operands.as_slice() {
+            // An add of 0 that completes an address, as the `addiu` of a MIPS
+            // object after `lui`, and a move of a constant that is one.
+            [dest, ..]
+                if let Some(pointed) = &address
+                    && (lifted.op == Op::Add
+                        || matches!(canonical.operands.last(), Some(Operand::Const(_)))) =>
+            {
+                format!("{dest} = {}", pointed.as_value())
+            }
             [dest, source] | [dest, source, _]
                 if canonical.operands.get(2).is_some_and(is_zero) =>
             {

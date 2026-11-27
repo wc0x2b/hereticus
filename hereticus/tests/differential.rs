@@ -54,6 +54,10 @@ fn printed(insn: &hereticus::il::arch::Insn) -> (String, String) {
 }
 
 fn canonical_mnemonic(mnemonic: &str) -> String {
+    // A T32 width, as the `.w` of `b.w`, picks an encoding of the same
+    // instruction: `llvm-objdump` prints it, and `yaxpeax` does not.
+    let mnemonic =
+        mnemonic.strip_suffix(".w").or_else(|| mnemonic.strip_suffix(".n")).unwrap_or(mnemonic);
     // Fold spellings before stripping, because `movs` ends in `vs`, which is
     // also the overflow-set condition. Fold again after, because a condition
     // can wrap an alias, as in `movwlt`.
@@ -382,9 +386,15 @@ fn decoder_agrees_with_objdump() {
 #[test]
 fn canonical_mnemonic_folds_known_spellings() {
     // Aliases both tools accept for the same encoding.
-    for (ours, theirs) in
-        [("cmps", "cmp"), ("movw", "mov"), ("movs", "lsrs"), ("adr", "add"), ("rrx", "mov")]
-    {
+    for (ours, theirs) in [
+        ("cmps", "cmp"),
+        ("movw", "mov"),
+        ("movs", "lsrs"),
+        ("adr", "add"),
+        ("rrx", "mov"),
+        ("b", "b.w"),
+        ("ldr", "ldr.n"),
+    ] {
         assert_eq!(
             canonical_mnemonic(ours),
             canonical_mnemonic(theirs),

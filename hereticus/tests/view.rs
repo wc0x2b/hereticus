@@ -357,3 +357,62 @@ fn a_jump_to_a_branch_comes_in_at_its_delay_slot() {
     assert_eq!(line_of("goto"), slot + 1, "{lines:?}");
     assert_eq!(places[test].jump, Some(places[slot].address));
 }
+
+/// The high IL of an object that is not linked yet, by the name of each
+/// fixture in `fixtures/build` and function, as a test reads it.
+fn unlinked_high_il(file: &str, name: &str) -> Vec<String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build").join(file);
+    let data = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("{}: {err}, run `just fixtures` first", path.display()));
+    let binary = Binary::parse(&data).expect("a fixture parses");
+    let index = binary.functions.iter().position(|f| f.name == name).expect(name);
+    instruction_diff_in(View::Hil, None, &binary, index, &binary, index)
+        .into_iter()
+        .map(|line| match line {
+            DiffLine::Same(text) => text.trim().to_string(),
+            other => panic!("{file}: {name} differs from itself: {other:?}"),
+        })
+        .collect()
+}
+
+/// In an object of MIPS that is not linked, `lui` and the instruction
+/// after it that adds the lower half hold zero, and the relocations at
+/// them name the symbol: the high IL names it, with what the code adds.
+#[test]
+fn a_relocation_of_an_unlinked_object_names_its_symbol() {
+    assert_eq!(
+        unlinked_high_il("mips-nopic-O2/globals.o", "both_globals"),
+        ["v0 = (load.32 [other + 0x44]) + (load.32 [table])", "return"]
+    );
+    assert_eq!(
+        unlinked_high_il("mips-nopic-O2/globals.o", "read_table"),
+        ["v0 = load.32 [table + ((arg1 & 0x3f) << 2)]", "return"]
+    );
+}
+
+/// Code as a kernel module holds it reaches data through relocations: at
+/// the instructions that form an address, or at a word of a literal pool on
+/// ARM. On each architecture the high IL names the array another object
+/// defines with the index the code adds, the data of its own, and the text
+/// it passes.
+#[rstest]
+#[case::aarch64("aarch64", "uxtw 2")]
+#[case::x86_64("x86_64", "4*rdi")]
+#[case::i686("i686", "4*eax")]
+#[case::arm("arm", "lsl 2")]
+#[case::thumb("thumb", "lsl 2")]
+#[case::powerpc("powerpc", "rlwinm(arg1")]
+#[case::mips("mips", "<< 2")]
+fn a_module_names_the_data_it_reaches(#[case] arch: &str, #[case] index: &str) {
+    let file = format!("kmod/{arch}.o");
+    let read_table = unlinked_high_il(&file, "read_table").join("\n");
+    assert!(read_table.contains("load.32 [table + "), "{arch}: {read_table}");
+    assert!(read_table.contains(index), "{arch}: {read_table}");
+    let slot = unlinked_high_il(&file, "slot").join("\n");
+    assert!(slot.contains("seen + ") && slot.contains(index), "{arch}: {slot}");
+    let note = unlinked_high_il(&file, "note").join("\n");
+    assert!(note.contains("&\"counter changed\""), "{arch}: {note}");
+    assert!(note.contains("counter]") || note.contains("&counter"), "{arch}: {note}");
+    // An x86 call holds its relocation past its opcode.
+    assert!(note.contains("report"), "{arch}: {note}");
+}
