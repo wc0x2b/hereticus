@@ -7,7 +7,7 @@ sp = sp - 0x38
 store.32 [sp + 0x24] = s0
 s0 = a0
 store.32 [sp + 0x18] = gp
-store.32 [sp + 0x2C] = s2
+store.32 [sp + 0x2c] = s2
 s2 = a1
 store.32 [sp + 0x28] = s1
 store.32 [sp + 0x34] = ra
@@ -65,7 +65,7 @@ call snprintf
 store.32 [sp + 0x10] = v0
 ra = load.32 [sp + 0x34]
 s3 = load.32 [sp + 0x30]
-s2 = load.32 [sp + 0x2C]
+s2 = load.32 [sp + 0x2c]
 s1 = load.32 [sp + 0x28]
 s0 = load.32 [sp + 0x24]
 return
@@ -78,7 +78,7 @@ v0 = -0x4
 if (s2 != v0) goto $-0xd0
 ra = load.32 [sp + 0x34]
 s3 = load.32 [sp + 0x30]
-s2 = load.32 [sp + 0x2C]
+s2 = load.32 [sp + 0x2c]
 s1 = load.32 [sp + 0x28]
 s0 = load.32 [sp + 0x24]
 return

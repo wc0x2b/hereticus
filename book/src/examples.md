@@ -120,7 +120,7 @@ $ hereticus --view hil --diff luaZ_fill before.so after.so
 luaZ_fill
         s0 = arg1
 ┌───< + if ((load.32 [arg1 + 0x14]) != 0) goto $+0x50
-│         ret = (load.32 [arg1 + 0x8])(load.32 [arg1 + 0x10], load.32 [arg1 + 0xC], &var_10)
+│         ret = (load.32 [arg1 + 0x8])(load.32 [arg1 + 0x10], load.32 [arg1 + 0xc], &var_10)
 │         v1 = var_10
 │┌──<     if (ret == 0) goto $+0x30
 ││┌─<       if (v1 == 0) goto $+0x28

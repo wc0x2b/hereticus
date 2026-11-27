@@ -625,6 +625,17 @@ fn op_of(inst: &Instruction, alias: OpcodeAlias, test: BranchTest) -> il::Op {
     if let Some((kind, _)) = access_of(opcode) {
         return match (opcode, kind) {
             (Opcode::LWARX | Opcode::LDARX | Opcode::STWCX | Opcode::STDCX, _) => Op::Atomic,
+            // A byte-reversed access swaps the bytes it moves, which a load
+            // or store of the IL does not say.
+            (
+                Opcode::LHBRX
+                | Opcode::LWBRX
+                | Opcode::LDBRX
+                | Opcode::STHBRX
+                | Opcode::STWBRX
+                | Opcode::STDBRX,
+                _,
+            ) => Op::Other,
             (_, il::AccessKind::Load) => Op::Load,
             _ => Op::Store,
         };
@@ -1445,6 +1456,12 @@ mod tests {
     #[case::andis(0x74a5_fffe, 0xfffe_0000)] // andis. r5, r5, 0xfffe
     fn an_upper_half_holds_its_constant_shifted(#[case] word: u32, #[case] value: u64) {
         assert_eq!(lift_one(word).operands.last(), Some(&il::Operand::Const(value)));
+    }
+
+    /// A byte-reversed access reads as the code prints it.
+    #[test]
+    fn a_byte_reversed_access_reads_as_printed() {
+        assert_eq!(lift_one(0x7fe0_252c).op, Op::Other); // stwbrx r31, 0, r4
     }
 
     /// A move of fields of the condition register names them by a mask.

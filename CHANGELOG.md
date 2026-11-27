@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ebx = ebx + ebx` and now reads as `ebx = ebx + 1`. A `mul` or `imul`
   of one operand, which multiplies `eax` into `edx:eax`, shows as the
   instruction, where it read as the operand times itself.
+- The MIPS `mtc1 a3, $f0` reads as `fv0 = a3`, where it read as
+  `a3 = fv0`. `lwl`, `lwr`, `swl` and `swr`, which move a part of a word,
+  and the PowerPC byte-reversed loads and stores, as `lwbrx`, read as the
+  instruction, where they read as a plain load or store. A MIPS memory
+  operand names its offset as on the other architectures, as
+  `[sp - 0x10]`, where it read as `[sp + -0x10]`.
 - `cmn r1, #1` compares with -1, so the branch after it reads as
   `if (r1 == -1)`, where it read as `if (r1 == 1)`: the IL took the sign
   of the subtract it reads `cmn` as from the constant that the code

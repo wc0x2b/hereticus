@@ -86,7 +86,7 @@ expression: text
 │││   4d06     if (a1 != 0) goto $-0x94
 │││   4d08     s0, s1, ra = load.32 [sp + 0x34]; sp = sp + 0x40
 │││   4d0a     return
-│││   4d0c   v0 = load.32 [s0 + -0x7FD4]
+│││   4d0c   v0 = load.32 [s0 - 0x7fd4]
 │││   4d10   store.32 [sp + 0x44] = a1
 │││   4d12   store.32 [sp + 0x40] = a3
 │││   4d14   call v0
