@@ -1142,7 +1142,18 @@ pub fn lift(inst: &Instruction, word: u32) -> il::Lifted {
         }
     }
 
-    let memory = access_of(opcode).map(|(kind, width)| il::MemoryAccess { kind, width });
+    // An algebraic load, as `lha` and `lwa`, widens with the sign.
+    let extension = match opcode {
+        Opcode::LHA
+        | Opcode::LHAU
+        | Opcode::LHAX
+        | Opcode::LHAUX
+        | Opcode::LWA
+        | Opcode::LWAX
+        | Opcode::LWAUX => il::Extension::Sign,
+        _ => il::Extension::Zero,
+    };
+    let memory = access_of(opcode).map(|(kind, width)| il::MemoryAccess { kind, width, extension });
     let mut operands: il::Operands =
         shown.iter().map(|&operand| il_operand(operand, update)).collect();
     if let (Some(mask), Some(last)) = (clear_mask(&spelling), operands.last_mut()) {
@@ -1319,7 +1330,11 @@ mod tests {
         assert_eq!(store.op, Op::Store);
         assert_eq!(
             store.memory,
-            Some(il::MemoryAccess { kind: AccessKind::Store, width: Some(Width::Bits32) })
+            Some(il::MemoryAccess {
+                kind: AccessKind::Store,
+                width: Some(Width::Bits32),
+                extension: crate::Extension::Zero
+            })
         );
         assert_eq!(store.reads, regs(&[Reg::Stack]));
         assert_eq!(store.writes, regs(&[Reg::Stack]));
@@ -1349,7 +1364,11 @@ mod tests {
         assert_eq!(load.op, Op::Load);
         assert_eq!(
             load.memory,
-            Some(il::MemoryAccess { kind: AccessKind::Load, width: Some(width) })
+            Some(il::MemoryAccess {
+                kind: AccessKind::Load,
+                width: Some(width),
+                extension: crate::Extension::Zero
+            })
         );
         assert_eq!(load.writes, regs(&[loaded]));
     }

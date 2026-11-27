@@ -480,8 +480,15 @@ pub fn lift(inst: &Instruction) -> il::Lifted {
         (false, true) => Some(il::AccessKind::Store),
         (false, false) => None,
     };
-    let memory =
-        kind.map(|kind| il::MemoryAccess { kind, width: access_width(opcode.access_type()) });
+    let extension = match opcode {
+        Opcode::core_lb | Opcode::core_lh => il::Extension::Sign,
+        _ => il::Extension::Zero,
+    };
+    let memory = kind.map(|kind| il::MemoryAccess {
+        kind,
+        width: access_width(opcode.access_type()),
+        extension,
+    });
 
     let op = op_of(inst, kind);
     let mut operands: il::Operands = inst.valued_operands_iter().map(il_operand).collect();
@@ -921,7 +928,11 @@ mod tests {
         assert_eq!((load.reads, load.writes), (regs(&[29]), regs(&[8])));
         assert_eq!(
             load.memory,
-            Some(il::MemoryAccess { kind: il::AccessKind::Load, width: Some(il::Width::Bits32) })
+            Some(il::MemoryAccess {
+                kind: il::AccessKind::Load,
+                width: Some(il::Width::Bits32),
+                extension: crate::Extension::Zero
+            })
         );
         let store = lift_one(words::SB_T1_A0);
         assert_eq!((store.reads, store.writes), (regs(&[4, 9]), il::RegSet::EMPTY));

@@ -1742,7 +1742,12 @@ fn statement(
             let values = values.iter().map(|value| value.as_str()).collect::<Vec<_>>().join(", ");
             match access.kind {
                 AccessKind::Load => {
-                    format!("{values} = load{} {place}{after}", width_text(&canonical))
+                    // `sload` widens the value with its sign, as `ldrsb` does.
+                    let load = match access.extension {
+                        hereticus_il::Extension::Sign => "sload",
+                        hereticus_il::Extension::Zero => "load",
+                    };
+                    format!("{values} = {load}{} {place}{after}", width_text(&canonical))
                 }
                 AccessKind::Store => {
                     format!("store{} {place} = {values}{after}", width_text(&canonical))
@@ -2100,6 +2105,17 @@ mod tests {
         assert_eq!(without_condition("uxtahcc"), "uxtah");
         assert_eq!(without_condition("smlawbmi"), "smlawb");
         assert_eq!(without_condition("eq"), "eq");
+    }
+
+    /// A load that widens with the sign says so.
+    #[test]
+    fn a_signed_load_reads_as_one() {
+        let shown = lines(&[
+            0x3980_0020, // ldrsb x0, [x1]
+            0x3940_0020, // ldrb w0, [x1]
+            0xb980_0020, // ldrsw x0, [x1]
+        ]);
+        assert_eq!(shown, ["x0 = sload.8 [x1]", "w0 = load.8 [x1]", "x0 = sload.32 [x1]"]);
     }
 
     /// `cmn` compares with the negative of its operand.

@@ -1396,7 +1396,27 @@ pub(crate) fn memory_access(
         // A prefetch reads no value.
         Role::ReadOnly | Role::Compute => return None,
     };
-    Some(MemoryAccess { kind, width: access_width(opcode, role, operands) })
+    let signed = matches!(
+        opcode,
+        Opcode::LDRSB
+            | Opcode::LDRSH
+            | Opcode::LDRSW
+            | Opcode::LDTRSB
+            | Opcode::LDTRSH
+            | Opcode::LDTRSW
+            | Opcode::LDURSB
+            | Opcode::LDURSH
+            | Opcode::LDURSW
+            | Opcode::LDAPURSB
+            | Opcode::LDAPURSH
+            | Opcode::LDAPURSW
+            | Opcode::LDPSW
+    );
+    Some(MemoryAccess {
+        kind,
+        width: access_width(opcode, role, operands),
+        extension: if signed { crate::Extension::Sign } else { crate::Extension::Zero },
+    })
 }
 
 /// The width of each value an access moves: the one the instruction names,
@@ -1742,7 +1762,11 @@ mod tests {
         assert_eq!((load.reads, load.writes), (regs(&[x(2)]), regs(&[x(1)])));
         assert_eq!(
             load.memory,
-            Some(MemoryAccess { kind: AccessKind::Load, width: Some(Width::Bits64) })
+            Some(MemoryAccess {
+                kind: AccessKind::Load,
+                width: Some(Width::Bits64),
+                extension: crate::Extension::Zero
+            })
         );
 
         let pair = lift_one(words::LDP_X29_X30_SP_POST);
@@ -1754,7 +1778,11 @@ mod tests {
         assert!(store.writes.is_empty());
         assert_eq!(
             store.memory,
-            Some(MemoryAccess { kind: AccessKind::Store, width: Some(Width::Bits32) })
+            Some(MemoryAccess {
+                kind: AccessKind::Store,
+                width: Some(Width::Bits32),
+                extension: crate::Extension::Zero
+            })
         );
 
         let exclusive = lift_one(words::STXR_W1_X2_X3);

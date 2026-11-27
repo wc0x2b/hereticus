@@ -503,7 +503,11 @@ impl WideStore {
         };
         let mut lifted = Lifted {
             op: Op::Store,
-            memory: Some(MemoryAccess { kind: AccessKind::Store, width: Some(self.width) }),
+            memory: Some(MemoryAccess {
+                kind: AccessKind::Store,
+                width: Some(self.width),
+                extension: crate::Extension::Zero,
+            }),
             ..Lifted::default()
         };
         lifted.reads.insert(reg(self.value));

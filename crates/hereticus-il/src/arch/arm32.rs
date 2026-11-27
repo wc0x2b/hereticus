@@ -1361,7 +1361,11 @@ pub(crate) fn memory_access(opcode: Opcode, operands: &[Operand]) -> Option<il::
         Opcode::LDM(..) | Opcode::STM(..) | Opcode::PUSH | Opcode::POP => None,
         _ => Some(il::Width::Bits32),
     };
-    Some(il::MemoryAccess { kind, width })
+    let extension = match opcode {
+        Opcode::LDRSB | Opcode::LDRSBT | Opcode::LDRSH | Opcode::LDRSHT => il::Extension::Sign,
+        _ => il::Extension::Zero,
+    };
+    Some(il::MemoryAccess { kind, width, extension })
 }
 
 /// What an operand gives as a value. The program counter, and a register
@@ -2187,7 +2191,11 @@ impl IntegerWord {
                     write(&mut lifted, rn);
                 }
                 let kind = if load { il::AccessKind::Load } else { il::AccessKind::Store };
-                lifted.memory = Some(il::MemoryAccess { kind, width: Some(width) });
+                let extension = match access {
+                    HalfwordAccess::Ldrsb | HalfwordAccess::Ldrsh => il::Extension::Sign,
+                    _ => il::Extension::Zero,
+                };
+                lifted.memory = Some(il::MemoryAccess { kind, width: Some(width), extension });
             }
             Self::Reverse { rd, rm, .. } => {
                 lifted.op = Op::Bits;
@@ -2825,7 +2833,11 @@ impl VfpWord {
                 lifted.operands = [il::Operand::RegisterList(list), memory].into_iter().collect();
                 let kind = if load { il::AccessKind::Load } else { il::AccessKind::Store };
                 let width = if double { il::Width::Bits64 } else { il::Width::Bits32 };
-                lifted.memory = Some(il::MemoryAccess { kind, width: Some(width) });
+                lifted.memory = Some(il::MemoryAccess {
+                    kind,
+                    width: Some(width),
+                    extension: crate::Extension::Zero,
+                });
                 let moved = if load { &mut lifted.writes } else { &mut lifted.reads };
                 (first..first + count).for_each(|number| moved.insert(vector(number)));
                 if write_back {
@@ -3105,7 +3117,11 @@ pub fn lift_fallback(word: u32, encoding: Encoding) -> Option<il::Lifted> {
         op,
         reads,
         writes,
-        memory: Some(il::MemoryAccess { kind, width: Some(width) }),
+        memory: Some(il::MemoryAccess {
+            kind,
+            width: Some(width),
+            extension: crate::Extension::Zero,
+        }),
         test: None,
         operands: [values, memory].into_iter().collect(),
     })

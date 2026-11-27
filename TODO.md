@@ -156,6 +156,17 @@ larger part of the work.
 `--view il` still shows NEON work as the code prints it: the lift names
 it `Vector` only.
 
+## Name the data that an object file relocates
+
+In an unlinked object, as a kernel module, the IL names the callee of a
+call from its relocation, but not the data that other relocations point
+at. A MIPS `lui a0, %hi(sym)` and `addiu a0, a0, %lo(sym)` read as
+`a0 = 0`, so `fortify_panic(&string)` in `ltq_ptm_vr9.ko` shows as
+`fortify_panic(a0)` after `a0 = 0`. The pairs of ARM (`movw`/`movt`),
+AArch64 (`adrp`/`add`) and x86 (a 32-bit displacement) do the same.
+Decide whether to read them on the branch of the high IL or on one of
+their own.
+
 ## Pair better across a kernel upgrade
 
 `tests/truth_kernels.rs` checks the pairs of the OpenWrt kernels against

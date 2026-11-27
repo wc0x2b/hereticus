@@ -239,6 +239,18 @@ pub struct MemoryAccess {
     pub kind: AccessKind,
     /// The width of each value moved, where the instruction says it.
     pub width: Option<Width>,
+    /// How a load fills the bits of its register above the value.
+    pub extension: Extension,
+}
+
+/// How a load widens a value narrower than its register.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Extension {
+    /// With zeros, as `ldrb` and `lbu` do, or not at all.
+    #[default]
+    Zero,
+    /// With copies of its top bit, as `ldrsb`, `lb` and `movsx` do.
+    Sign,
 }
 
 /// A condition on a comparison of two values, `left` against `right`.
@@ -1529,7 +1541,11 @@ mod tests {
             op: Op::Load,
             reads: [Reg::General(base)].into_iter().collect(),
             writes: [Reg::General(base + 2)].into_iter().collect(),
-            memory: Some(MemoryAccess { kind: AccessKind::Load, width: Some(Width::Bits32) }),
+            memory: Some(MemoryAccess {
+                kind: AccessKind::Load,
+                width: Some(Width::Bits32),
+                extension: crate::Extension::Zero,
+            }),
             operands: [r(base + 2), Operand::memory(Some(Reg::General(base)), Some(8))]
                 .into_iter()
                 .collect(),

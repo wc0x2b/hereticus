@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A load that widens its value with the sign reads as `sload`, as
+  `x0 = sload.8 [x1]` for `ldrsb x0, [x1]`, where it read as a plain
+  `load.8`. This holds for x86 `movsx`, ARM and AArch64 `ldrs*`, MIPS
+  `lb` and `lh`, and the PowerPC `lha` and `lwa`.
 - A test of the top bit of a register, as AArch64 `tbz w0, #31`, reads
   as a test of its sign in the IL: `if (w0 >= 0)`, where it read as
   `if ((w0 & 0x80000000) == 0)`.

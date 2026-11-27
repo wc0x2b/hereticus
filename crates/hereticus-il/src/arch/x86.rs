@@ -694,7 +694,11 @@ fn memory_access(
         (false, false) => return None,
     };
     let width = used.first().and_then(|used| width_of(used.memory_size().size()));
-    Some(MemoryAccess { kind, width })
+    let extension = match inst.mnemonic() {
+        Mnemonic::Movsx | Mnemonic::Movsxd => crate::Extension::Sign,
+        _ => crate::Extension::Zero,
+    };
+    Some(MemoryAccess { kind, width, extension })
 }
 
 /// The name of each operand of [`lift`], as a reader reads it.

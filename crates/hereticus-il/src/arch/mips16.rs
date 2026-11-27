@@ -689,6 +689,7 @@ impl Decoder for Mips16 {
                     lifted.memory = Some(il::MemoryAccess {
                         kind: il::AccessKind::Load,
                         width: Some(il::Width::Bits32),
+                        extension: il::Extension::Zero,
                     });
                     il::Operand::memory(Some(il::Reg::ProgramCounter), None)
                 } else {
