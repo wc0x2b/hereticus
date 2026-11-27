@@ -7,10 +7,14 @@ on:
     paths:
       - 'book/**'
       - 'real-life-reports/**'
+      - 'crates/hereticus-highlight/**'
+      - 'crates/mdbook-hereticus/**'
   pull_request:
     paths:
       - 'book/**'
       - 'real-life-reports/**'
+      - 'crates/hereticus-highlight/**'
+      - 'crates/mdbook-hereticus/**'
 
 permissions:
   contents: read

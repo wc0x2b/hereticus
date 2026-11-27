@@ -52,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The HTML report colors a jump back, as `$-0x40`, as a number. It
+  colored the `$` as the name of a function and the rest as a number.
 - The IL of AArch64 `movn` holds the inverse of its constant, as the
   instruction does: `mov w0, #-1`, which is `movn w0, #0`, read as
   `w0 = 0` and now reads as `w0 = -0x1`.

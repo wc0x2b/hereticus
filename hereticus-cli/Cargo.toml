@@ -33,6 +33,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 # The allocator of musl, the default target, serves threads one at a time.
 mimalloc = { version = "0.1.52", default-features = false }
 maud = "0.27"
+hereticus-highlight = { path = "../crates/hereticus-highlight", version = "0.8.0" }
 
 [target.'cfg(unix)'.dependencies]
 # Ends the tool quietly when a reader closes the pipe, as `head` does.

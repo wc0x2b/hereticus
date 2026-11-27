@@ -1085,6 +1085,7 @@ dependencies = [
  "console",
  "gimli",
  "hereticus",
+ "hereticus-highlight",
  "hereticus-project",
  "indicatif",
  "insta",
@@ -1098,6 +1099,13 @@ dependencies = [
  "sha2",
  "tabled",
  "unicode-width",
+]
+
+[[package]]
+name = "hereticus-highlight"
+version = "0.8.0"
+dependencies = [
+ "bolero",
 ]
 
 [[package]]
@@ -1472,6 +1480,15 @@ dependencies = [
  "proc-macro2-diagnostics",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "mdbook-hereticus"
+version = "0.8.0"
+dependencies = [
+ "bolero",
+ "hereticus-highlight",
+ "serde_json",
 ]
 
 [[package]]
