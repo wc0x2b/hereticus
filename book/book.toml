@@ -8,3 +8,8 @@ src = "src"
 git-repository-url = "https://github.com/wc0x2b/hereticus"
 edit-url-template = "https://github.com/wc0x2b/hereticus/edit/master/book/{path}"
 additional-css = ["theme/custom.css"]
+
+# Shows each `--diff` output of a page in color: crates/mdbook-hereticus.
+[preprocessor.hereticus]
+command = "cargo run --quiet --release --package mdbook-hereticus --"
+after = ["links"]

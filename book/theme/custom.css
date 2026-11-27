@@ -12,3 +12,69 @@
     border: 1px solid var(--table-border-color);
     border-radius: 4px;
 }
+
+/* A `--diff` output that crates/mdbook-hereticus turned to HTML, in the
+   colors of the HTML report: light for the light themes of mdbook, dark
+   for the others. */
+.hereticus-diff {
+    --hd-text: #24292f;
+    --hd-muted: #8a9199;
+    --hd-guide: #dcdfe4;
+    --hd-added: #1a7f37;
+    --hd-removed: #cf222e;
+    --hd-edited: #9a6700;
+    --hd-added-bg: #e6ffec;
+    --hd-removed-bg: #ffebe9;
+    --hd-edited-bg: #fff8c5;
+    --hd-keyword: #bc4c00;
+    --hd-function: #0969da;
+    --hd-number: #8250df;
+    --hd-string: #0a7f6f;
+    padding: 0.6em 0;
+    background: var(--quote-bg);
+    color: var(--hd-text);
+    overflow-x: auto;
+    line-height: 1.45;
+}
+
+html.coal .hereticus-diff,
+html.navy .hereticus-diff,
+html.ayu .hereticus-diff {
+    --hd-text: #bfbdb6;
+    --hd-muted: #6c7380;
+    --hd-guide: #2d3544;
+    --hd-added: #aad94c;
+    --hd-removed: #ff3333;
+    --hd-edited: #e6b450;
+    --hd-added-bg: rgba(170, 217, 76, 0.10);
+    --hd-removed-bg: rgba(255, 51, 51, 0.12);
+    --hd-edited-bg: rgba(230, 180, 80, 0.10);
+    --hd-keyword: #ff8f40;
+    --hd-function: #59c2ff;
+    --hd-number: #d2a6ff;
+    --hd-string: #95e6cb;
+}
+
+/* Each line spans the block, so the color of a changed line goes to the
+   right edge. */
+.hereticus-diff .line {
+    display: block;
+    min-width: max-content;
+    padding: 0 1em;
+    white-space: pre;
+}
+.hereticus-diff .line.added { background: var(--hd-added-bg); }
+.hereticus-diff .line.removed { background: var(--hd-removed-bg); }
+.hereticus-diff .line.edited { background: var(--hd-edited-bg); }
+.hereticus-diff .line.added .sign { color: var(--hd-added); }
+.hereticus-diff .line.removed .sign { color: var(--hd-removed); }
+.hereticus-diff .line.edited .sign { color: var(--hd-edited); }
+.hereticus-diff .sign, .hereticus-diff .prompt { user-select: none; }
+.hereticus-diff .line.other { font-weight: 600; }
+.hereticus-diff .line.elision { color: var(--hd-muted); font-style: italic; }
+.hereticus-diff .flow, .hereticus-diff .prompt { color: var(--hd-muted); }
+.hereticus-diff .indent { box-shadow: inset 1px 0 0 var(--hd-guide); }
+.hereticus-diff .kw { color: var(--hd-keyword); }
+.hereticus-diff .fn { color: var(--hd-function); }
+.hereticus-diff .num { color: var(--hd-number); }
+.hereticus-diff .str { color: var(--hd-string); }

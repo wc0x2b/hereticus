@@ -1,0 +1,22 @@
+[package]
+name = "mdbook-hereticus"
+description = "Preprocessor of the hereticus book: shows each diff of a page in color"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "mdbook-hereticus"
+path = "src/main.rs"
+bench = false
+
+[dependencies]
+hereticus-highlight = { path = "../hereticus-highlight", version = "0.8.0" }
+serde_json = "1"
+
+[dev-dependencies]
+bolero = { version = "0.13", features = ["arbitrary"] }

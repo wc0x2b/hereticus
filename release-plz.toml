@@ -31,6 +31,7 @@ changelog_include = [
     "hereticus",
     "hereticus-arch",
     "hereticus-callees",
+    "hereticus-highlight",
     "hereticus-il",
     "hereticus-image",
     "hereticus-match",

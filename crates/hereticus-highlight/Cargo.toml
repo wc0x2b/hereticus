@@ -1,0 +1,19 @@
+[package]
+name = "hereticus-highlight"
+description = "Split a line of a hereticus diff into tokens to color"
+readme = "../../README.md"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[lib]
+bench = false
+
+[dev-dependencies]
+bolero = { version = "0.13", features = ["arbitrary"] }

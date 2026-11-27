@@ -11,6 +11,7 @@ use hereticus::matching::{
     line_places, motions,
 };
 use hereticus::obj::Binary;
+use hereticus_highlight::{Syntax, TokenKind, tokens};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use super::marks::Side as MarkSide;
@@ -407,134 +408,12 @@ fn tint_class(tint: Tint) -> &'static str {
     }
 }
 
-/// What a token of a line is, for its color.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TokenKind {
-    /// A word the IL gives meaning to, as `if` and `goto`, or the
-    /// mnemonic of an instruction.
-    Keyword,
-    /// A function called or jumped to by name.
-    Function,
-    Number,
-    /// A string the code points at, as `&"text"`.
-    Text,
-    /// A register, or anything else.
-    Plain,
-    /// Spaces and signs between the words.
-    Punctuation,
-}
-
-impl TokenKind {
-    fn class(self) -> Option<&'static str> {
-        match self {
-            Self::Keyword => Some("kw"),
-            Self::Function => Some("fn"),
-            Self::Number => Some("num"),
-            Self::Text => Some("str"),
-            Self::Plain | Self::Punctuation => None,
-        }
-    }
-}
-
-/// The words of the IL that read as keywords. A load or a store also
-/// carries its width, as `load.32`.
-const IL_KEYWORDS: [&str; 7] = ["if", "goto", "call", "return", "load", "store", "compare"];
-
-/// Split one line of a diff into tokens, each with its kind.
-fn tokens(text: &str, view: View) -> Vec<(TokenKind, &str)> {
-    let mut found = Vec::new();
-    let mut rest = text;
-    let mut after_call = false;
-    while let Some(first) = rest.chars().next() {
-        let length = match first {
-            '"' => quoted_length(rest),
-            // `$+0x24` is one place: the `+` belongs to it.
-            '$' => {
-                1 + rest[1..].find(|c: char| !is_word_char(c) && c != '+').unwrap_or(rest.len() - 1)
-            }
-            '@' => 1 + rest[1..].find(|c: char| !is_word_char(c)).unwrap_or(rest.len() - 1),
-            _ if is_word_start(first) => {
-                rest.find(|c: char| !is_word_char(c)).unwrap_or(rest.len())
-            }
-            _ => rest.find(|c: char| is_word_start(c) || c == '"').unwrap_or(rest.len()),
-        };
-        let (token, tail) = rest.split_at(length.max(first.len_utf8()));
-        let mut kind = kind_of(token, found.is_empty(), after_call, view);
-        if view == View::Hil
-            && kind == TokenKind::Plain
-            && calls(&text[..text.len() - rest.len()], tail)
-        {
-            kind = TokenKind::Function;
-        }
-        if kind != TokenKind::Punctuation {
-            after_call = names_a_target(token, view);
-        }
-        found.push((kind, token));
-        rest = tail;
-    }
-    found
-}
-
-/// Whether a word of a high IL line between `before` and `after` names
-/// the callee of the call the line makes, as `strcmp` of
-/// `ret = strcmp(arg1, &"a")`. An operation such as `compare(` follows a
-/// ` = ` of another register, or comes later in the line.
-fn calls(before: &str, after: &str) -> bool {
-    after.starts_with('(') && matches!(before, "" | "ret = ")
-}
-
-/// The length of the string at the start of `text`, to its closing quote
-/// or to the end of the line. A quote after a backslash does not close it.
-fn quoted_length(text: &str) -> usize {
-    let mut escaped = false;
-    for (at, c) in text.char_indices().skip(1) {
-        match c {
-            '"' if !escaped => return at + 1,
-            '\\' => escaped = !escaped,
-            _ => escaped = false,
-        }
-    }
-    text.len()
-}
-
-fn is_word_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '.'
-}
-
-/// The first character of a word: `@` starts an address of the IL.
-fn is_word_start(c: char) -> bool {
-    is_word_char(c) || c == '@' || c == '$'
-}
-
-/// Report whether the word after `token` names a function to go to.
-fn names_a_target(token: &str, view: View) -> bool {
+/// The language the tokens of a line of `view` are read in.
+fn syntax_of(view: View) -> Syntax {
     match view {
-        View::Il | View::Hil => matches!(token, "call" | "goto"),
-        View::Assembly => matches!(token, "call" | "jmp" | "bl" | "b" | "jal" | "j" | "blx"),
-    }
-}
-
-fn kind_of(token: &str, first: bool, after_call: bool, view: View) -> TokenKind {
-    let starts = token.chars().next().unwrap_or(' ');
-    if starts == '"' {
-        return TokenKind::Text;
-    }
-    if !is_word_start(starts) {
-        return TokenKind::Punctuation;
-    }
-    let digits = token.trim_start_matches(['$', '@', '+']);
-    if digits.starts_with(|c: char| c.is_ascii_digit()) {
-        return TokenKind::Number;
-    }
-    let word = token.split('.').next().unwrap_or(token);
-    let keyword = match view {
-        View::Il | View::Hil => IL_KEYWORDS.contains(&word),
-        View::Assembly => first,
-    };
-    match () {
-        () if keyword => TokenKind::Keyword,
-        () if after_call => TokenKind::Function,
-        () => TokenKind::Plain,
+        View::Assembly => Syntax::Assembly,
+        View::Il => Syntax::Il,
+        View::Hil => Syntax::Hil,
     }
 }
 
@@ -542,9 +421,9 @@ fn kind_of(token: &str, first: bool, after_call: bool, view: View) -> TokenKind 
 /// line it was rewritten from or to, the tokens that differ are marked,
 /// from the first that differs to the last.
 fn highlighted(text: &str, across: Option<&str>, view: View) -> Markup {
-    let own = tokens(text, view);
+    let own = tokens(text, syntax_of(view));
     let changed = match across {
-        Some(other) => differing(&own, &tokens(other, view)),
+        Some(other) => differing(&own, &tokens(other, syntax_of(view))),
         None => 0..0,
     };
     html! {
@@ -587,114 +466,24 @@ fn differing(own: &[(TokenKind, &str)], other: &[(TokenKind, &str)]) -> core::op
 mod tests {
     use super::*;
 
-    fn kinds(text: &str, view: View) -> Vec<(TokenKind, String)> {
-        tokens(text, view)
-            .into_iter()
-            .filter(|(kind, _)| *kind != TokenKind::Punctuation)
-            .map(|(kind, token)| (kind, token.to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn the_tokens_of_a_line_make_the_line() {
-        for line in
-            ["if (v0 != 0) goto $+0x24", "a1 = &\"No \\\"pending\n\"", "", "ü → x", "\"open"]
-        {
-            let joined: String =
-                tokens(line, View::Il).into_iter().map(|(_, token)| token).collect();
-            assert_eq!(joined, line);
-        }
-    }
-
-    #[test]
-    fn an_il_branch_has_its_keywords_and_numbers() {
-        use TokenKind::*;
-        assert_eq!(
-            kinds("if (v0 != 0) goto $+0x24", View::Il),
-            [
-                (Keyword, "if".into()),
-                (Plain, "v0".into()),
-                (Number, "0".into()),
-                (Keyword, "goto".into()),
-                (Number, "$+0x24".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_called_name_is_a_function_and_a_width_stays_with_its_keyword() {
-        use TokenKind::*;
-        assert_eq!(
-            kinds("call sub_4072ac", View::Il),
-            [(Keyword, "call".into()), (Function, "sub_4072ac".into())]
-        );
-        assert_eq!(
-            kinds("v0 = load.32 [s8 + 0x1C]", View::Il),
-            [
-                (Plain, "v0".into()),
-                (Keyword, "load.32".into()),
-                (Plain, "s8".into()),
-                (Number, "0x1C".into())
-            ]
-        );
-    }
-
-    #[test]
-    fn a_high_il_call_names_its_callee() {
-        use TokenKind::*;
-        let call = kinds("ret = strcmp(arg1, &\"a\")", View::Hil);
-        assert_eq!(call[0], (Plain, "ret".into()));
-        assert_eq!(call[1], (Function, "strcmp".into()));
-        assert_eq!(call[2], (Plain, "arg1".into()));
-        assert_eq!(kinds("free(x0)", View::Hil)[0], (Function, "free".into()));
-        assert_eq!(kinds("flags = compare(arg1, 0)", View::Hil)[1], (Keyword, "compare".into()));
-        assert_eq!(kinds("x1 = sxtw(w1)", View::Hil)[1], (Plain, "sxtw".into()));
-        assert_eq!(kinds("strcmp(x0)", View::Il)[0], (Plain, "strcmp".into()), "no call in the IL");
-    }
-
-    #[test]
-    fn an_il_address_is_one_number() {
-        assert_eq!(kinds("v0 = @0x410000", View::Il)[1], (TokenKind::Number, "@0x410000".into()));
-    }
-
-    #[test]
-    fn a_string_is_one_token() {
-        assert_eq!(kinds("a1 = &\"a b\"", View::Il)[1], (TokenKind::Text, "\"a b\"".into()));
-        assert_eq!(
-            kinds(r#"&"say \"hi\"" x"#, View::Il)[0],
-            (TokenKind::Text, r#""say \"hi\"""#.into())
-        );
-        assert_eq!(kinds("&\"open", View::Il), [(TokenKind::Text, "\"open".into())]);
-    }
-
-    #[test]
-    fn the_mnemonic_is_the_keyword_of_an_instruction() {
-        use TokenKind::*;
-        assert_eq!(
-            kinds("bl strncmp", View::Assembly),
-            [(Keyword, "bl".into()), (Function, "strncmp".into())]
-        );
-        assert_eq!(kinds("mov x0, x1", View::Assembly)[1], (Plain, "x0".into()));
-    }
-
     #[test]
     fn only_the_tokens_that_differ_are_marked() {
-        let own = tokens("v0 = load.32 [s8 + 0x1C]", View::Il);
-        let other = tokens("v0 = load.32 [s8 + 0x20]", View::Il);
+        let own = tokens("v0 = load.32 [s8 + 0x1C]", Syntax::Il);
+        let other = tokens("v0 = load.32 [s8 + 0x20]", Syntax::Il);
         let range = differing(&own, &other);
         assert_eq!(own[range].iter().map(|(_, token)| *token).collect::<String>(), "0x1C");
     }
 
     #[test]
     fn a_line_that_differs_in_length_marks_what_is_between_the_same_ends() {
-        let own = tokens("call strcmp", View::Il);
-        let other = tokens("call strncmp", View::Il);
+        let own = tokens("call strcmp", Syntax::Il);
+        let other = tokens("call strncmp", Syntax::Il);
         assert_eq!(own[differing(&own, &other)], [(TokenKind::Function, "strcmp")]);
-        let short = tokens("return", View::Il);
-        let long = tokens("return", View::Il);
+        let short = tokens("return", Syntax::Il);
+        let long = tokens("return", Syntax::Il);
         assert!(differing(&short, &long).is_empty());
-        let grown = tokens("a b c", View::Il);
-        let base = tokens("a c", View::Il);
+        let grown = tokens("a b c", Syntax::Il);
+        let base = tokens("a c", Syntax::Il);
         assert_eq!(
             grown[differing(&grown, &base)].iter().map(|(_, t)| *t).collect::<String>(),
             "b "

@@ -133,6 +133,12 @@ mdbook serve book
 
 `just book` builds the book and checks each link and `#anchor` in it.
 
+The book runs the preprocessor `crates/mdbook-hereticus`, which `cargo`
+builds the first time. It shows each output of `--diff` as HTML, in the
+colors of the HTML report. It removes each line of a jump whose start or
+end is out of sight, and it draws a guide for each level of indent. The
+Markdown keeps the text that the tool prints.
+
 The screenshots of the book and the demo of the README are images, so no
 test can read them. `just book-media` records them again from
 `book/tapes/`, and writes the hash of the screens they show to
