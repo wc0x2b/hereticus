@@ -861,7 +861,7 @@ impl Binary {
             functions,
             found_by: FoundBy::Scanning,
             addresses: AddressSpace::none(),
-            links: Links::of_module(file, &bases),
+            links: Links::of_module(file, arch, &bases),
             other_set: BTreeSet::new(),
             abi: abi_of(file.format()),
             calls: std::sync::OnceLock::new(),

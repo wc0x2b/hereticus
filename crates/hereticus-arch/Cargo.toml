@@ -21,10 +21,12 @@ hereticus-memory = { path = "../hereticus-memory", version = "0.8.0" }
 hereticus-recovery = { path = "../hereticus-recovery", version = "0.8.0" }
 compact_str = "0.9"
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "intel", "instr_info"] }
+object = "0.40"
 rabbitizer = { version = "2.0.0-alpha.9", default-features = false, features = ["std", "MIPS_II"] }
 yaxpeax-arch = "0.3"
 yaxpeax-arm = "0.4"
 
 [dev-dependencies]
 bolero = { version = "0.13", features = ["arbitrary"] }
+object = { version = "0.40", features = ["write"] }
 rstest = "0.27"

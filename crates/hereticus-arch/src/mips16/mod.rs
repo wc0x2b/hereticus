@@ -7,6 +7,7 @@ use super::{
     Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, Memory, Recovery as _,
     RegisterClass,
 };
+use crate::relocation::{DataReference, RelocationType};
 use hereticus_il as il;
 use hereticus_il::arch::mips16::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
@@ -19,6 +20,18 @@ use hereticus_recovery::arch::mips16::{
 const ADDU: u32 = 0x21;
 
 impl Arch for Mips16 {
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        super::mips::data_references(relocations, word)
+    }
+
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        Some(super::mips::ADDRESS_RELOCATIONS)
+    }
+
     fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
         super::mips::register_class(name)
     }

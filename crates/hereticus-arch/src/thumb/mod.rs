@@ -2,6 +2,8 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::thumb`].
 
+use super::arm32::{ADDRESS_RELOCATIONS, PART_OF};
+use super::relocation::{DataReference, RelocationType, references_of};
 use super::{Abi, Arch, CallingConvention, Insn, Memory, RegisterClass};
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::Arm32;
@@ -11,6 +13,17 @@ use hereticus_recovery::arch::arm32::{PcModel, track_pool_words};
 use hereticus_recovery::arch::thumb::{a32_of, split_at_switch};
 
 impl Arch for Thumb2 {
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        references_of(relocations, word, PART_OF)
+    }
+
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        Some(ADDRESS_RELOCATIONS)
+    }
     fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
         super::arm32::register_class(name)
     }

@@ -6,6 +6,7 @@ use super::{
     Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory, NamedReg,
     Recovery, RegisterClass, is_numbered,
 };
+use crate::relocation::{DataReference, RelocationType};
 use hereticus_il as il;
 use hereticus_il::arch::mips::*;
 use hereticus_memory::{AddressSpace, ConstantKind, Contents};
@@ -15,6 +16,8 @@ use hereticus_recovery::arch::mips::{
 };
 use rabbitizer::opcodes::Opcode;
 use std::collections::BTreeMap;
+
+mod relocation;
 
 /// The name the ABI gives a general register, as `gp` for 28.
 pub(super) fn register_name(register: il::Reg) -> Option<&'static str> {
@@ -50,7 +53,33 @@ pub(crate) const O32: CallingConvention = CallingConvention {
     link: Some(il::Reg::General(31)),
 };
 
+/// The absolute and the relative relocation of a word, of MIPS32 and
+/// MIPS16e code.
+pub(super) const ADDRESS_RELOCATIONS: [RelocationType; 2] =
+    [object::elf::R_MIPS_32, object::elf::R_MIPS_REL32];
+
+/// What each relocation of a code section of MIPS32 or MIPS16e names of the
+/// address of data: see [`Arch::data_references`].
+pub(super) fn data_references(
+    relocations: &[(u64, object::Relocation)],
+    word: &dyn Fn(u64) -> Option<u64>,
+) -> Vec<DataReference> {
+    relocation::data_references(relocations, word)
+}
+
 impl Arch for Mips32 {
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        data_references(relocations, word)
+    }
+
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        Some(ADDRESS_RELOCATIONS)
+    }
+
     fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
         register_class(name)
     }

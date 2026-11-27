@@ -2,11 +2,13 @@
 //! frame and which constants are addresses. The rules that find functions
 //! are in [`hereticus_recovery::arch::x86`].
 
+use super::relocation::{DataReference, Part, RelocationType, Width, references_of};
 use super::{
     Abi, Arch, CallingConvention, FramePointer, Insn, Memory, NamedReg, RegisterClass,
     StackArguments,
 };
 use hereticus_il::Reg;
+use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::x86::{Mode, X86, il_register, instruction};
 use hereticus_memory::{AddressSpace, ConstantKind};
 use hereticus_recovery::arch::x86::{
@@ -47,7 +49,45 @@ fn register_class(name: &str) -> RegisterClass<'_> {
     }
 }
 
+/// What a relocation of x86-64 code names of the address of data.
+fn part_of_64(r_type: RelocationType) -> Option<Part> {
+    use object::elf::*;
+    Some(match r_type {
+        R_X86_64_64 => Part::Word(Width::Eight),
+        R_X86_64_32 | R_X86_64_32S => Part::Low,
+        R_X86_64_PC32 => Part::FromEnd,
+        _ => return None,
+    })
+}
+
+/// What a relocation of 32-bit x86 code names of the address of data.
+fn part_of_32(r_type: RelocationType) -> Option<Part> {
+    (r_type == object::elf::R_386_32).then_some(Part::Low)
+}
+
 impl Arch for X86 {
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        match self.pointer_width() {
+            8 => references_of(relocations, word, part_of_64),
+            _ => references_of(relocations, word, part_of_32),
+        }
+    }
+
+    /// GNU `ld` writes the address of a `RELATIVE` relocation of x86-64
+    /// into the file too, but zero for an `R_X86_64_64`, which fills the
+    /// vtable of each class that a shared library exports.
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        use object::elf::{R_386_32, R_386_RELATIVE, R_X86_64_64, R_X86_64_RELATIVE};
+        match self.pointer_width() {
+            8 => Some([R_X86_64_64, R_X86_64_RELATIVE]),
+            _ => Some([R_386_32, R_386_RELATIVE]),
+        }
+    }
+
     fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
         register_class(name)
     }
@@ -178,7 +218,6 @@ impl Arch for X86 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hereticus_il::arch::Decoder as _;
     use hereticus_recovery::arch::decode_all;
     use rstest::rstest;
 

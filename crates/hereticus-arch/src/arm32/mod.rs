@@ -2,6 +2,7 @@
 //! frame and which constants are addresses. The rules that find
 //! functions are in [`hereticus_recovery::arch::arm32`].
 
+use super::relocation::{DataReference, Part, RelocationType, Width, references_of};
 use super::{
     Abi, Arch, CallingConvention, Insn, InsnKind, Memory, NamedReg, RegisterClass, is_numbered,
 };
@@ -30,6 +31,16 @@ pub(crate) const AAPCS: CallingConvention = CallingConvention {
     link: Some(il::Reg::General(14)),
 };
 
+/// The absolute and the relative relocation of a word, of A32 and T32 code.
+pub(super) const ADDRESS_RELOCATIONS: [RelocationType; 2] =
+    [object::elf::R_ARM_ABS32, object::elf::R_ARM_RELATIVE];
+
+/// What a relocation of A32 or T32 code names of the address of data.
+pub(super) const PART_OF: fn(RelocationType) -> Option<Part> = |r_type| match r_type {
+    object::elf::R_ARM_ABS32 => Some(Part::Word(Width::Four)),
+    _ => None,
+};
+
 /// The class of the register `name` of A32 and T32 code.
 pub(super) fn register_class(name: &str) -> RegisterClass<'_> {
     match name {
@@ -41,6 +52,17 @@ pub(super) fn register_class(name: &str) -> RegisterClass<'_> {
 }
 
 impl Arch for Arm32 {
+    fn data_references(
+        &self,
+        relocations: &[(u64, object::Relocation)],
+        word: &dyn Fn(u64) -> Option<u64>,
+    ) -> Vec<DataReference> {
+        references_of(relocations, word, PART_OF)
+    }
+
+    fn address_relocations(&self) -> Option<[RelocationType; 2]> {
+        Some(ADDRESS_RELOCATIONS)
+    }
     fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
         register_class(name)
     }
