@@ -196,6 +196,43 @@ pub trait Arch: Recovery {
     ) -> Option<u64> {
         dynamic?.global_offset_table()
     }
+
+    /// The encoding of the function that a symbol at `address` names, with
+    /// `other` in the `st_other` field of an ELF symbol. Defaults to
+    /// [`CodeSet::Full`].
+    fn symbol_encoding(&self, _address: u64, _other: u8) -> CodeSet {
+        CodeSet::Full
+    }
+
+    /// Report whether `e_flags`, of the header of an ELF file, say that the
+    /// file holds code of the compact set. Defaults to `false`.
+    fn holds_compact_code(&self, _e_flags: u32) -> bool {
+        false
+    }
+
+    /// What a symbol of code with no size names in a linked file. Defaults
+    /// to [`UnsizedSymbol::MarksNothing`].
+    fn unsized_symbol(&self) -> UnsizedSymbol {
+        UnsizedSymbol::MarksNothing
+    }
+
+    /// The name of a C function as the export directory of a PE file names
+    /// it, where its symbol `name` adds the decoration of its calling
+    /// convention. Defaults to `name`.
+    fn undecorated_name<'a>(&self, name: &'a str) -> &'a str {
+        name
+    }
+
+    /// The section and the address of the code of the function that
+    /// `symbol` of `file` names, where the symbol names a descriptor of the
+    /// function and not its code. Defaults to `None`.
+    fn descriptor_entry(
+        &self,
+        _file: &object::File<'_>,
+        _symbol: &object::Symbol<'_, '_>,
+    ) -> Option<(object::SectionIndex, u64)> {
+        None
+    }
 }
 
 /// What the name of a register says of the value it holds.
@@ -222,6 +259,25 @@ fn is_numbered(name: &str, prefixes: &str) -> bool {
     characters.next().is_some_and(|first| prefixes.contains(first))
         && name.len() > 1
         && characters.all(|character| character.is_ascii_digit())
+}
+
+/// How the instructions of a function are encoded, where an architecture
+/// has a compact set beside its full one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeSet {
+    /// A32, or MIPS32.
+    Full,
+    /// Thumb-2, or MIPS16e.
+    Compact,
+}
+
+/// What a symbol of code with no size names in a linked file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnsizedSymbol {
+    /// No function.
+    MarksNothing,
+    /// A function, which runs on to the next symbol of code.
+    NamesFunction,
 }
 
 /// What the frame register of an architecture holds.
@@ -563,5 +619,40 @@ mod tests {
             };
             assert_eq!([absolute, relative], expected, "{name}");
         }
+    }
+
+    #[test]
+    fn a_symbol_marks_the_compact_set_as_its_architecture_does() {
+        for (name, arch) in ARCHES {
+            let (odd, marked) = match name {
+                "A32" | "T32" => (CodeSet::Compact, CodeSet::Full),
+                "MIPS" | "MIPSel" | "MIPS16e" | "MIPS16el" => (CodeSet::Compact, CodeSet::Compact),
+                _ => (CodeSet::Full, CodeSet::Full),
+            };
+            assert_eq!(arch.symbol_encoding(0x1001, 0), odd, "{name}");
+            assert_eq!(arch.symbol_encoding(0x1000, 0xf0), marked, "{name}");
+            assert_eq!(arch.symbol_encoding(0x1000, 0), CodeSet::Full, "{name}");
+            let flagged = matches!(marked, CodeSet::Compact);
+            assert_eq!(arch.holds_compact_code(0x0400_0000), flagged, "{name}");
+            assert!(!arch.holds_compact_code(0), "{name}");
+        }
+    }
+
+    #[test]
+    fn only_x86_names_a_function_with_a_symbol_of_no_size() {
+        for (name, arch) in ARCHES {
+            let expected = match name {
+                "x86-64" | "x86" => UnsizedSymbol::NamesFunction,
+                _ => UnsizedSymbol::MarksNothing,
+            };
+            assert_eq!(arch.unsized_symbol(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn only_32_bit_x86_decorates_a_c_name() {
+        assert_eq!(X86::BITS32.undecorated_name("_send@16"), "send");
+        assert_eq!(X86::BITS64.undecorated_name("_send@16"), "_send@16");
+        assert_eq!(Aarch64.undecorated_name("_send@16"), "_send@16");
     }
 }

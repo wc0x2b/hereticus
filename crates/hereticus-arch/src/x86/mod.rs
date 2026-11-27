@@ -5,7 +5,7 @@
 use super::relocation::{DataReference, Part, RelocationType, Width, references_of};
 use super::{
     Abi, Arch, CallingConvention, FramePointer, Insn, Memory, NamedReg, RegisterClass,
-    StackArguments,
+    StackArguments, UnsizedSymbol,
 };
 use hereticus_il::Reg;
 use hereticus_il::arch::Decoder as _;
@@ -65,6 +65,28 @@ fn part_of_32(r_type: RelocationType) -> Option<Part> {
     (r_type == object::elf::R_386_32).then_some(Part::Low)
 }
 
+/// The name of a C function of 32-bit Windows, as its symbol `name` gives
+/// it with the decoration of its calling convention.
+///
+/// MSVC and clang put `_` before a `__cdecl` or `__stdcall` name and `@`
+/// before a `__fastcall` one, and the size of the arguments after a
+/// `__stdcall` or `__fastcall` one, as `_send@16`. The export and import
+/// directories name the function without them. A C++ name starts with `?`
+/// and keeps its decoration.
+pub(super) fn undecorated_c_name(name: &str) -> &str {
+    let Some(bare) = name.strip_prefix('_').or_else(|| name.strip_prefix('@')) else {
+        return name;
+    };
+    match bare.rsplit_once('@') {
+        Some((base, size))
+            if !base.is_empty() && !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => bare,
+    }
+}
+
 impl Arch for X86 {
     fn data_references(
         &self,
@@ -90,6 +112,20 @@ impl Arch for X86 {
 
     fn register_class<'a>(&self, name: &'a str) -> RegisterClass<'a> {
         register_class(name)
+    }
+
+    /// GCC writes `__x86.get_pc_thunk.bx` and the other thunks of 32-bit
+    /// PIC with no size once they are linked, and they are functions all
+    /// the same.
+    fn unsized_symbol(&self) -> UnsizedSymbol {
+        UnsizedSymbol::NamesFunction
+    }
+
+    fn undecorated_name<'a>(&self, name: &'a str) -> &'a str {
+        match self.pointer_width() {
+            4 => undecorated_c_name(name),
+            _ => name,
+        }
     }
 
     /// Code built with `-O2` keeps a value of its own in `rbp`, and code
@@ -220,6 +256,19 @@ mod tests {
     use super::*;
     use hereticus_recovery::arch::decode_all;
     use rstest::rstest;
+
+    #[test]
+    fn a_32_bit_windows_c_name_loses_its_decoration() {
+        assert_eq!(undecorated_c_name("_handle"), "handle");
+        assert_eq!(undecorated_c_name("_send@16"), "send");
+        assert_eq!(undecorated_c_name("@fast@8"), "fast");
+        assert_eq!(undecorated_c_name("__imp_log"), "_imp_log", "one `_` only");
+        assert_eq!(undecorated_c_name("?f@@YAHH@Z"), "?f@@YAHH@Z", "C++");
+        assert_eq!(undecorated_c_name("plain"), "plain");
+        assert_eq!(undecorated_c_name("_a@b"), "a@b", "no size after the `@`");
+        assert_eq!(undecorated_c_name("_@4"), "@4", "no name before the size");
+        assert_eq!(undecorated_c_name("_"), "");
+    }
 
     fn one(bytes: &[u8]) -> Insn {
         X86::BITS64.decode(bytes, 0, 0x1000).expect("the bytes must decode")

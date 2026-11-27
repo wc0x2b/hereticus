@@ -13,6 +13,7 @@ use hereticus_memory::{AddressSpace, ConstantKind};
 use hereticus_recovery::arch::Recovery as _;
 use hereticus_recovery::arch::powerpc::{toc_from_global_entry, track};
 use hereticus_recovery::dynamic::Dynamic;
+use object::{Object as _, ObjectKind, ObjectSection as _, ObjectSymbol as _};
 
 /// The TOC of 64-bit code, which its call stubs reach their slots from:
 /// where the first ELFv2 global entry in `regions` of little-endian code
@@ -38,6 +39,46 @@ fn descriptor_toc(dynamic: &Dynamic<'_>) -> Option<u64> {
         .exports()
         .iter()
         .find_map(|export| dynamic.field(export.address + 8).filter(|&toc| toc != 0))
+}
+
+/// The section and the address of the code that an ELFv1 symbol `symbol`
+/// names, where it names a descriptor.
+///
+/// 64-bit big-endian PowerPC names a function by its descriptor in `.opd`:
+/// three doublewords that hold the address of its code, its TOC and its
+/// environment. The symbol gives the size of the code. A linked file holds
+/// the address in the first doubleword, and an object leaves it to a
+/// relocation.
+fn descriptor_entry_of(
+    file: &object::File<'_>,
+    symbol: &object::Symbol<'_, '_>,
+) -> Option<(object::SectionIndex, u64)> {
+    let opd = file.section_by_index(symbol.section_index()?).ok()?;
+    if opd.name().ok()? != ".opd" {
+        return None;
+    }
+    let offset = symbol.address().checked_sub(opd.address())?;
+    if file.kind() == ObjectKind::Relocatable {
+        let (_, relocation) = opd.relocations().find(|(at, _)| *at == offset)?;
+        let (section, start) = match relocation.target() {
+            object::RelocationTarget::Section(index) => {
+                (index, file.section_by_index(index).ok()?.address())
+            }
+            object::RelocationTarget::Symbol(index) => {
+                let target = file.symbol_by_index(index).ok()?;
+                (target.section_index()?, target.address())
+            }
+            _ => return None,
+        };
+        return Some((section, start.wrapping_add_signed(relocation.addend())));
+    }
+    let at = usize::try_from(offset).ok()?;
+    let entry = u64::from_be_bytes(opd.data().ok()?.get(at..at + 8)?.try_into().ok()?);
+    let section = file.sections().find(|section| {
+        section.kind() == object::SectionKind::Text
+            && (section.address()..section.address() + section.size()).contains(&entry)
+    })?;
+    Some((section.index(), entry))
 }
 
 /// What a relocation of 32-bit PowerPC code names of the address of data.
@@ -79,6 +120,17 @@ impl Arch for PowerPc {
         match self.pointer_width() {
             8 => Some([R_PPC64_ADDR64, R_PPC64_RELATIVE]),
             _ => Some([R_PPC_ADDR32, R_PPC_RELATIVE]),
+        }
+    }
+
+    fn descriptor_entry(
+        &self,
+        file: &object::File<'_>,
+        symbol: &object::Symbol<'_, '_>,
+    ) -> Option<(object::SectionIndex, u64)> {
+        match (self.pointer_width(), self.data_order()) {
+            (8, ByteOrder::Big) => descriptor_entry_of(file, symbol),
+            _ => None,
         }
     }
 

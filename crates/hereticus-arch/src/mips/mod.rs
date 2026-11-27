@@ -3,8 +3,8 @@
 //! functions are in [`hereticus_recovery::arch::mips`].
 
 use super::{
-    Abi, Arch, CallingConvention, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory, NamedReg,
-    Recovery, RegisterClass, is_numbered,
+    Abi, Arch, CallingConvention, CodeSet, Decoder, GlobalPointerSetup, Insn, InsnKind, Memory,
+    NamedReg, Recovery, RegisterClass, is_numbered,
 };
 use crate::relocation::{DataReference, RelocationType};
 use hereticus_il as il;
@@ -53,6 +53,26 @@ pub(crate) const O32: CallingConvention = CallingConvention {
     link: Some(il::Reg::General(31)),
 };
 
+/// The encoding of the function that a symbol at `address`, with `other`
+/// in its `st_other` field, names. A linked file sets bit 0 of the address
+/// of a MIPS16e function, and an unlinked object marks the symbol in
+/// `st_other` instead.
+pub(super) fn symbol_encoding(address: u64, other: u8) -> CodeSet {
+    /// The `st_other` value of a symbol that names a MIPS16e function.
+    const STO_MIPS16: u8 = 0xf0;
+    match address & 1 == 1 || other & STO_MIPS16 == STO_MIPS16 {
+        true => CodeSet::Compact,
+        false => CodeSet::Full,
+    }
+}
+
+/// Whether `e_flags` of a MIPS file say that it holds MIPS16e code.
+pub(super) fn holds_compact_code(e_flags: u32) -> bool {
+    /// The flag of the header of a file that holds MIPS16e code.
+    const EF_MIPS_ARCH_ASE_M16: u32 = 0x0400_0000;
+    e_flags & EF_MIPS_ARCH_ASE_M16 != 0
+}
+
 /// The absolute and the relative relocation of a word, of MIPS32 and
 /// MIPS16e code.
 pub(super) const ADDRESS_RELOCATIONS: [RelocationType; 2] =
@@ -68,6 +88,14 @@ pub(super) fn data_references(
 }
 
 impl Arch for Mips32 {
+    fn symbol_encoding(&self, address: u64, other: u8) -> CodeSet {
+        symbol_encoding(address, other)
+    }
+
+    fn holds_compact_code(&self, e_flags: u32) -> bool {
+        holds_compact_code(e_flags)
+    }
+
     fn data_references(
         &self,
         relocations: &[(u64, object::Relocation)],

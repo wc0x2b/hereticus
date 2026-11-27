@@ -4,7 +4,8 @@
 
 use super::relocation::{DataReference, Part, RelocationType, Width, references_of};
 use super::{
-    Abi, Arch, CallingConvention, Insn, InsnKind, Memory, NamedReg, RegisterClass, is_numbered,
+    Abi, Arch, CallingConvention, CodeSet, Insn, InsnKind, Memory, NamedReg, RegisterClass,
+    is_numbered,
 };
 use hereticus_il as il;
 use hereticus_il::arch::Decoder as _;
@@ -41,6 +42,14 @@ pub(super) const PART_OF: fn(RelocationType) -> Option<Part> = |r_type| match r_
     _ => None,
 };
 
+/// The encoding of the function at `address`: Thumb-2 where bit 0 is set.
+pub(super) fn thumb_bit(address: u64) -> CodeSet {
+    match address & 1 {
+        1 => CodeSet::Compact,
+        _ => CodeSet::Full,
+    }
+}
+
 /// The class of the register `name` of A32 and T32 code.
 pub(super) fn register_class(name: &str) -> RegisterClass<'_> {
     match name {
@@ -52,6 +61,11 @@ pub(super) fn register_class(name: &str) -> RegisterClass<'_> {
 }
 
 impl Arch for Arm32 {
+    /// A linked file sets bit 0 of the address of a Thumb-2 function.
+    fn symbol_encoding(&self, address: u64, _other: u8) -> CodeSet {
+        thumb_bit(address)
+    }
+
     fn data_references(
         &self,
         relocations: &[(u64, object::Relocation)],

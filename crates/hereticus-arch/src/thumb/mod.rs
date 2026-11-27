@@ -4,7 +4,7 @@
 
 use super::arm32::{ADDRESS_RELOCATIONS, PART_OF};
 use super::relocation::{DataReference, RelocationType, references_of};
-use super::{Abi, Arch, CallingConvention, Insn, Memory, RegisterClass};
+use super::{Abi, Arch, CallingConvention, CodeSet, Insn, Memory, RegisterClass};
 use hereticus_il::arch::Decoder as _;
 use hereticus_il::arch::arm32::Arm32;
 use hereticus_il::arch::thumb::*;
@@ -13,6 +13,10 @@ use hereticus_recovery::arch::arm32::{PcModel, track_pool_words};
 use hereticus_recovery::arch::thumb::{a32_of, split_at_switch};
 
 impl Arch for Thumb2 {
+    fn symbol_encoding(&self, address: u64, _other: u8) -> CodeSet {
+        super::arm32::thumb_bit(address)
+    }
+
     fn data_references(
         &self,
         relocations: &[(u64, object::Relocation)],
