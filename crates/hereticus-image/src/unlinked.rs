@@ -22,7 +22,10 @@ use crate::links::{ByteOrder, is_renamed_local};
 use crate::obj::stable_name;
 
 /// Where the first data section goes: above the code of any module, which
-/// starts at zero, and within 32 bits, so a word of a 32-bit pool holds it.
+/// starts at zero. A word of a 32-bit pool must hold each placed address,
+/// and the data and the undefined symbols after it stay within 32 bits for
+/// any real module: for `amdgpu.ko`, they end at 0x760a_1ed4. A word that
+/// cannot hold its address names nothing.
 const PLACED_BASE: u64 = 0x7000_0000;
 
 /// The byte that starts the level of a message of the Linux kernel.
@@ -68,11 +71,39 @@ pub struct Reference {
     pub part: Part,
 }
 
+/// How many bytes a word that holds an address takes. A relocation gives
+/// it, as `R_AARCH64_ABS32` names a word of 4 bytes in code of 64 bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Width {
+    /// 32 bits.
+    Four,
+    /// 64 bits.
+    Eight,
+}
+
+impl Width {
+    /// The number of bytes of the word.
+    pub fn bytes(self) -> usize {
+        match self {
+            Self::Four => 4,
+            Self::Eight => 8,
+        }
+    }
+
+    /// Whether a word of this width holds `address` whole.
+    fn holds(self, address: u64) -> bool {
+        match self {
+            Self::Four => u32::try_from(address).is_ok(),
+            Self::Eight => true,
+        }
+    }
+}
+
 /// What an instruction or a word holds of the address its relocation names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Part {
     /// The word holds the address, as a word of a literal pool does.
-    Word,
+    Word(Width),
     /// The instruction forms the upper part of the address, as `adrp` and
     /// `addis` do, and another completes it.
     High,
@@ -212,7 +243,13 @@ impl Unlinked {
                     }
                     (true, _) => (i64::from(word(*offset).unwrap_or(0) as u32 as i32), kind.part()),
                 };
-                let reference = Reference { target: symbol.wrapping_add_signed(addend), part };
+                let target = symbol.wrapping_add_signed(addend);
+                if let Part::Word(width) = part
+                    && !width.holds(target)
+                {
+                    continue;
+                }
+                let reference = Reference { target, part };
                 references
                     .entry(base + offset)
                     .and_modify(|known| {
@@ -241,12 +278,12 @@ impl Unlinked {
     }
 
     /// Each relocation whose word holds an address, as a literal pool
-    /// word does, by its address.
-    pub fn words(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
-        self.references
-            .iter()
-            .filter(|(_, reference)| reference.part == Part::Word)
-            .map(|(&site, reference)| (site, reference.target))
+    /// word does, by its address: the address and the width of the word.
+    pub fn words(&self) -> impl Iterator<Item = (u64, u64, Width)> + '_ {
+        self.references.iter().filter_map(|(&site, reference)| match reference.part {
+            Part::Word(width) => Some((site, reference.target, width)),
+            _ => None,
+        })
     }
 
     /// The text that holds `address`, in a placed section of read-only
@@ -292,7 +329,7 @@ fn holding(names: &BTreeMap<u64, (u64, String)>, address: u64) -> Option<(&str, 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     /// A whole address in a word.
-    Word,
+    Word(Width),
     /// The upper half of an address, as `R_MIPS_HI16` gives it.
     MipsHigh,
     /// The lower half, as `R_MIPS_LO16` gives it.
@@ -311,7 +348,7 @@ enum Kind {
 impl Kind {
     fn part(self) -> Part {
         match self {
-            Self::Word => Part::Word,
+            Self::Word(width) => Part::Word(width),
             Self::High => Part::High,
             Self::Low | Self::GpRelative => Part::Low,
             Self::MipsHigh => Part::UpperOfPair,
@@ -328,18 +365,19 @@ fn kind_of(architecture: object::Architecture, r_type: RelocationType) -> Option
     use object::elf::*;
     Some(match architecture {
         Architecture::Mips => match r_type {
-            R_MIPS_32 => Kind::Word,
+            R_MIPS_32 => Kind::Word(Width::Four),
             R_MIPS_HI16 => Kind::MipsHigh,
             R_MIPS_LO16 => Kind::MipsLow,
             R_MIPS_GPREL16 => Kind::GpRelative,
             _ => return None,
         },
         Architecture::Arm => match r_type {
-            R_ARM_ABS32 => Kind::Word,
+            R_ARM_ABS32 => Kind::Word(Width::Four),
             _ => return None,
         },
         Architecture::Aarch64 => match r_type {
-            R_AARCH64_ABS64 | R_AARCH64_ABS32 => Kind::Word,
+            R_AARCH64_ABS64 => Kind::Word(Width::Eight),
+            R_AARCH64_ABS32 => Kind::Word(Width::Four),
             R_AARCH64_ADR_PREL_PG_HI21 | R_AARCH64_ADR_PREL_PG_HI21_NC => Kind::High,
             R_AARCH64_ADD_ABS_LO12_NC
             | R_AARCH64_LDST8_ABS_LO12_NC
@@ -350,7 +388,7 @@ fn kind_of(architecture: object::Architecture, r_type: RelocationType) -> Option
             _ => return None,
         },
         Architecture::X86_64 => match r_type {
-            R_X86_64_64 => Kind::Word,
+            R_X86_64_64 => Kind::Word(Width::Eight),
             R_X86_64_32 | R_X86_64_32S => Kind::Low,
             R_X86_64_PC32 => Kind::FromEnd,
             _ => return None,
@@ -360,13 +398,13 @@ fn kind_of(architecture: object::Architecture, r_type: RelocationType) -> Option
             _ => return None,
         },
         Architecture::PowerPc => match r_type {
-            R_PPC_ADDR32 => Kind::Word,
+            R_PPC_ADDR32 => Kind::Word(Width::Four),
             R_PPC_ADDR16_HA | R_PPC_ADDR16_HI => Kind::High,
             R_PPC_ADDR16_LO => Kind::Low,
             _ => return None,
         },
         Architecture::PowerPc64 => match r_type {
-            R_PPC64_ADDR64 => Kind::Word,
+            R_PPC64_ADDR64 => Kind::Word(Width::Eight),
             R_PPC64_ADDR16_HA | R_PPC64_ADDR16_HI => Kind::High,
             R_PPC64_ADDR16_LO | R_PPC64_ADDR16_LO_DS => Kind::Low,
             _ => return None,
@@ -527,6 +565,46 @@ mod tests {
     }
 
     #[test]
+    fn a_word_holds_an_address_only_where_it_fits() {
+        assert!(Width::Four.holds(u64::from(u32::MAX)));
+        assert!(!Width::Four.holds(u64::from(u32::MAX) + 1));
+        assert!(Width::Eight.holds(u64::MAX));
+        assert_eq!((Width::Four.bytes(), Width::Eight.bytes()), (4, 8));
+    }
+
+    /// The words of AArch64 code that relocations fill keep the width the
+    /// relocation gives, and a word of 4 bytes that cannot hold its address
+    /// names nothing.
+    #[test]
+    fn each_word_has_the_width_of_its_relocation() {
+        use object::elf::{R_AARCH64_ABS32, R_AARCH64_ABS64};
+        use object::write::{Object as Written, Relocation, StandardSection};
+        let mut written = Written::new(
+            object::BinaryFormat::Elf,
+            object::Architecture::Aarch64,
+            object::Endianness::Little,
+        );
+        let text = written.section_id(StandardSection::Text);
+        written.append_section_data(text, &[0; 24], 8);
+        let rodata = written.section_id(StandardSection::ReadOnlyData);
+        written.append_section_data(rodata, &[0; 16], 8);
+        let symbol = written.section_symbol(rodata);
+        let beyond = i64::from(u32::MAX);
+        for (offset, r_type, addend) in
+            [(0, R_AARCH64_ABS32, 4), (8, R_AARCH64_ABS64, 8), (16, R_AARCH64_ABS32, beyond)]
+        {
+            let flags = RelocationFlags::Elf { r_type };
+            let relocation = Relocation { offset, symbol, addend, flags };
+            written.add_relocation(text, relocation).expect("the relocation adds");
+        }
+        let bytes = written.write().expect("the object writes");
+        let file = object::File::parse(bytes.as_slice()).expect("parses");
+        let unlinked = Unlinked::of(&file, |section| Some(section.address())).expect("words");
+        let words: Vec<(u64, u64, Width)> = unlinked.words().collect();
+        assert_eq!(words, [(0, PLACED_BASE + 4, Width::Four), (8, PLACED_BASE + 8, Width::Eight)],);
+    }
+
+    #[test]
     fn each_relocation_of_data_has_a_kind() {
         use object::Architecture;
         use object::elf::*;
@@ -534,7 +612,9 @@ mod tests {
         assert_eq!(kind(Architecture::Mips, R_MIPS_HI16), Some(Kind::MipsHigh));
         assert_eq!(kind(Architecture::Mips, R_MIPS_GPREL16), Some(Kind::GpRelative));
         assert_eq!(kind(Architecture::Mips, R_MIPS_26), None, "a call");
-        assert_eq!(kind(Architecture::Arm, R_ARM_ABS32), Some(Kind::Word));
+        assert_eq!(kind(Architecture::Arm, R_ARM_ABS32), Some(Kind::Word(Width::Four)));
+        assert_eq!(kind(Architecture::Aarch64, R_AARCH64_ABS32), Some(Kind::Word(Width::Four)));
+        assert_eq!(kind(Architecture::Aarch64, R_AARCH64_ABS64), Some(Kind::Word(Width::Eight)));
         assert_eq!(kind(Architecture::Aarch64, R_AARCH64_ADR_PREL_PG_HI21), Some(Kind::High));
         assert_eq!(kind(Architecture::X86_64, R_X86_64_PC32), Some(Kind::FromEnd));
         assert_eq!(kind(Architecture::X86_64, R_X86_64_PLT32), None, "a call");
