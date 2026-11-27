@@ -15,7 +15,9 @@ pub mod x86;
 
 use hereticus_il::arch::*;
 use hereticus_memory::AddressSpace;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::dynamic::Dynamic;
 
 /// The rules that find functions in the code of one instruction set:
 /// padding, prologues, tail calls, literal pools, jump tables and the
@@ -274,6 +276,13 @@ pub trait Recovery: Decoder {
     /// architecture that returns through a register.
     fn pops_return_address(&self, _insn: &Insn) -> bool {
         false
+    }
+
+    /// The symbol that each slot of the global offset table holds, where
+    /// the rules of the architecture name it with no relocation, as the
+    /// global slots of MIPS do. Defaults to none.
+    fn global_slot_names(&self, _dynamic: &Dynamic<'_>) -> BTreeMap<u64, String> {
+        BTreeMap::new()
     }
 
     /// The architecture the PLT stubs of a binary are in, where it is not

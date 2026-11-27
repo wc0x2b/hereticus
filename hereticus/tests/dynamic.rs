@@ -56,7 +56,8 @@ fn the_slots_are_named_for_dynamic_symbols(
     let names: BTreeSet<String> =
         file.dynamic_symbols().map(|symbol| symbol.name().unwrap().to_string()).collect();
 
-    let slots = Dynamic::of(&file).expect("a dynamic segment").slot_names();
+    let isa = Binary::parse(&data).expect("a fixture library reads").isa;
+    let slots = Dynamic::of(&file).expect("a dynamic segment").slot_names(isa.arch());
     assert!(!slots.is_empty(), "{arch}");
     for (slot, name) in &slots {
         assert!(names.contains(name), "{arch}: slot {slot:#x} names {name}");
@@ -110,7 +111,7 @@ fn a_damaged_dynamic_segment_reads_without_a_panic() {
         let Ok(file) = object::File::parse(data.as_slice()) else { return };
         if let Some(dynamic) = Dynamic::of(&file) {
             let _ = dynamic.exports();
-            let _ = dynamic.slot_names();
+            let _ = dynamic.slot_names(&hereticus::il::arch::mips::Mips32::LITTLE);
         }
     });
 }

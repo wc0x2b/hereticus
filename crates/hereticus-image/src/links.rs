@@ -64,7 +64,8 @@ impl Links {
         let pointer_width = isa.arch().pointer_width();
         let dynamic =
             hereticus_recovery::dynamic::Dynamic::find_in_raw(base, data, pointer_width, order);
-        let slots = dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default();
+        let slots =
+            dynamic.as_ref().map(|dynamic| dynamic.slot_names(isa.arch())).unwrap_or_default();
         let table = isa.arch().global_table(dynamic.as_ref(), &[(base, data)], None);
         Self { memory: vec![(base, data.to_vec())], slots, table, ..Self::default() }
     }
@@ -80,7 +81,8 @@ impl Links {
 
         let mut memory = loaded_memory(file);
 
-        let mut slots = slot_names(file);
+        let arch = Isa::of_file(file).map(Isa::arch);
+        let mut slots = arch.map(|arch| slot_names(file, arch)).unwrap_or_default();
         let mut stubs = BTreeMap::new();
         if let object::File::MachO64(macho) = file {
             crate::apply_chained_fixups(macho, &mut memory);
@@ -96,7 +98,6 @@ impl Links {
             .map(|section| section.address())
             .filter(|&address| address != 0)
             .collect();
-        let arch = Isa::of_file(file).map(Isa::arch);
         let relocated =
             arch.map(|arch| relocated_addresses(file, arch, &memory)).unwrap_or_default();
         let dynamic = hereticus_recovery::dynamic::Dynamic::of(file);

@@ -7,11 +7,13 @@
 
 use super::mips::{GP, SP_REG, T9, first_register, operands_of};
 use super::{CallTarget, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery};
+use crate::dynamic::Dynamic;
 use hereticus_il as il;
 use hereticus_il::arch::mips::{Decoded as MipsDecoded, Mips32, access, constant, decoded, is};
 use hereticus_il::arch::mips16::*;
 use hereticus_memory::AddressSpace;
 use rabbitizer::opcodes::Opcode;
+use std::collections::BTreeMap;
 
 pub fn mips16_op(insn: &Insn) -> Option<Op> {
     match decoded(insn)? {
@@ -21,6 +23,10 @@ pub fn mips16_op(insn: &Insn) -> Option<Op> {
 }
 
 impl Recovery for Mips16 {
+    fn global_slot_names(&self, dynamic: &Dynamic<'_>) -> BTreeMap<u64, String> {
+        super::mips::global_slot_names(dynamic)
+    }
+
     fn jump_tables(
         &self,
         memory: &Memory<'_>,

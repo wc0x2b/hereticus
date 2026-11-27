@@ -8,8 +8,10 @@
 
 use std::collections::BTreeMap;
 
+use crate::arch::Recovery;
+
 use object::read::elf::{Dyn, ElfFile, FileHeader, ProgramHeader};
-use object::{Endianness, Object, ObjectSection, ObjectSegment, ObjectSymbol, ObjectSymbolTable};
+use object::{Endianness, Object, ObjectSegment, ObjectSymbol, ObjectSymbolTable};
 
 /// The tags of the dynamic segment read here.
 const DT_NULL: u64 = 0;
@@ -26,9 +28,7 @@ const DT_RELSZ: u64 = 18;
 const DT_PLTREL: u64 = 20;
 const DT_JMPREL: u64 = 23;
 const DT_GNU_HASH: u64 = 0x6fff_fef5;
-const DT_MIPS_LOCAL_GOTNO: u64 = 0x7000_000a;
 const DT_MIPS_SYMTABNO: u64 = 0x7000_0011;
-const DT_MIPS_GOTSYM: u64 = 0x7000_0013;
 
 /// The type of a symbol that names a function.
 const STT_FUNC: u8 = 2;
@@ -138,12 +138,28 @@ impl<'data> Dynamic<'data> {
     }
 
     /// The symbol each slot of the global offset table is written with: by a
-    /// relocation that names a symbol, and on MIPS by the order of the
-    /// global slots.
-    pub fn slot_names(&self) -> BTreeMap<u64, String> {
+    /// relocation that names a symbol, and by the rules of `arch`, as the
+    /// order of the global slots of MIPS.
+    pub fn slot_names(&self, arch: &dyn Recovery) -> BTreeMap<u64, String> {
         let mut names = self.relocated_slot_names();
-        names.extend(self.mips_global_slot_names());
+        names.extend(arch.global_slot_names(self));
         names
+    }
+
+    /// The number of dynamic symbols that the bytes the file loads from the
+    /// start of the symbol table could hold, as a bound on an index that a
+    /// tag gives.
+    pub fn symbol_count(&self) -> u64 {
+        self.symbols_held()
+    }
+
+    /// The width in bytes of a field of the file, as a slot of the global
+    /// offset table.
+    pub fn field_width(&self) -> u64 {
+        match self.width {
+            Width::Bits32 => 4,
+            Width::Bits64 => 8,
+        }
     }
 
     /// The name of dynamic symbol number `index`.
@@ -224,27 +240,6 @@ impl<'data> Dynamic<'data> {
             .collect()
     }
 
-    /// The slots after the first `DT_MIPS_LOCAL_GOTNO` hold the dynamic
-    /// symbols from `DT_MIPS_GOTSYM` on, one each, in order.
-    fn mips_global_slot_names(&self) -> BTreeMap<u64, String> {
-        let (Some(got), Some(local), Some(first), Some(count)) = (
-            self.value(DT_PLTGOT),
-            self.value(DT_MIPS_LOCAL_GOTNO),
-            self.value(DT_MIPS_GOTSYM),
-            self.value(DT_MIPS_SYMTABNO),
-        ) else {
-            return BTreeMap::new();
-        };
-        let slot_width = self.field_width();
-        (first..count.min(self.symbols_held()))
-            .filter_map(|index| {
-                let name = self.name(self.symbol(index)?.name)?;
-                let slot = got + (local + index - first) * slot_width;
-                (!name.is_empty()).then(|| (slot, name.to_string()))
-            })
-            .collect()
-    }
-
     /// Each relocation of the table at `start`, of `size` bytes: the slot it
     /// writes, and the index of its symbol.
     fn relocations(&self, start: u64, size: u64, explicit: bool) -> Vec<(u64, u64)> {
@@ -318,13 +313,6 @@ impl<'data> Dynamic<'data> {
         core::str::from_utf8(&bytes[..end]).ok()
     }
 
-    fn field_width(&self) -> u64 {
-        match self.width {
-            Width::Bits32 => 4,
-            Width::Bits64 => 8,
-        }
-    }
-
     /// The unsigned number of `length` bytes at `address`.
     fn word(&self, address: u64, length: u64) -> Option<u64> {
         let bytes = self.bytes(address, length)?;
@@ -395,18 +383,18 @@ where
 }
 
 /// The symbol each slot of the global offset table holds, where a
-/// relocation or the order of the MIPS global slots names it, and each slot
-/// of the import address table of a PE file.
-pub fn slot_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
+/// relocation or the rules of `arch` name it, and each slot of the import
+/// address table of a PE file.
+pub fn slot_names(file: &object::File<'_>, arch: &dyn Recovery) -> BTreeMap<u64, String> {
     let mut slots = jump_slot_names(file);
-    slots.extend(mips_global_slot_names(file));
     slots.extend(crate::pe::import_slot_names(file));
-    // A file with no section headers names its slots only through the
-    // dynamic segment.
-    if file.sections().next().is_none()
-        && let Some(dynamic) = Dynamic::of(file)
-    {
-        slots.extend(dynamic.slot_names());
+    if let Some(dynamic) = Dynamic::of(file) {
+        // A file with no section headers names its slots only through the
+        // dynamic segment.
+        match file.sections().next() {
+            None => slots.extend(dynamic.slot_names(arch)),
+            Some(_) => slots.extend(arch.global_slot_names(&dynamic)),
+        }
     }
     slots
 }
@@ -423,56 +411,6 @@ fn jump_slot_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
                 (!name.is_empty()).then(|| (slot, name.to_string()))
             }
             _ => None,
-        })
-        .collect()
-}
-
-/// The symbol each global slot of a MIPS global offset table holds.
-///
-/// The slots after the first `DT_MIPS_LOCAL_GOTNO` hold the dynamic symbols
-/// from `DT_MIPS_GOTSYM` on, one each, in order.
-fn mips_global_slot_names(file: &object::File<'_>) -> BTreeMap<u64, String> {
-    const DT_PLTGOT: u32 = 3;
-    const DT_MIPS_LOCAL_GOTNO: u32 = 0x7000_000a;
-    const DT_MIPS_GOTSYM: u32 = 0x7000_0013;
-    /// A MIPS32 slot holds one 32-bit address.
-    const SLOT_WIDTH: u64 = 4;
-
-    if file.architecture() != object::Architecture::Mips {
-        return BTreeMap::new();
-    }
-    let (Some(dynamic), Some(symbols)) =
-        (file.section_by_name(".dynamic"), file.dynamic_symbol_table())
-    else {
-        return BTreeMap::new();
-    };
-    let Ok(data) = dynamic.data() else { return BTreeMap::new() };
-
-    let word = |bytes: &[u8]| {
-        let bytes = [bytes[0], bytes[1], bytes[2], bytes[3]];
-        if file.is_little_endian() { u32::from_le_bytes(bytes) } else { u32::from_be_bytes(bytes) }
-    };
-    let tag = |wanted: u32| {
-        data.as_chunks::<8>()
-            .0
-            .iter()
-            .map(|entry| (word(&entry[..4]), word(&entry[4..])))
-            .find(|&(tag, _)| tag == wanted)
-            .map(|(_, value)| u64::from(value))
-    };
-    let (Some(got), Some(local), Some(first_symbol)) =
-        (tag(DT_PLTGOT), tag(DT_MIPS_LOCAL_GOTNO), tag(DT_MIPS_GOTSYM))
-    else {
-        return BTreeMap::new();
-    };
-
-    symbols
-        .symbols()
-        .filter(|symbol| symbol.index().0 as u64 >= first_symbol)
-        .filter_map(|symbol| {
-            let name = symbol.name().ok().filter(|name| !name.is_empty())?;
-            let slot = got + (local + symbol.index().0 as u64 - first_symbol) * SLOT_WIDTH;
-            Some((slot, name.to_string()))
         })
         .collect()
 }

@@ -218,7 +218,7 @@ pub fn recover_functions(data: &[u8], arch: &dyn Recovery) -> Vec<Recovered> {
     let linked = Linked {
         exported: exported_functions(&file, arch),
         pointers: relocated_pointers(&file, arch, &memory),
-        slot_names: crate::dynamic::slot_names(&file),
+        slot_names: crate::dynamic::slot_names(&file, arch),
     };
     let mut found =
         recover_in_memory(&code_sections, &index, &linked, Regions::CodeOnly, arch, &memory);

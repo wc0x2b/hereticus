@@ -950,7 +950,10 @@ impl Binary {
                 .map(|export| scan::symbol_range(isa.arch(), export.address, export.size))
                 .collect(),
             pointers: Vec::new(),
-            slot_names: dynamic.as_ref().map(|dynamic| dynamic.slot_names()).unwrap_or_default(),
+            slot_names: dynamic
+                .as_ref()
+                .map(|dynamic| dynamic.slot_names(isa.arch()))
+                .unwrap_or_default(),
         };
         let functions: Vec<Function> = scan::recover_in_memory(
             &code,
