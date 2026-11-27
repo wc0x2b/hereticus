@@ -28,3 +28,4 @@ yaxpeax-arm = "0.4"
 
 [dev-dependencies]
 bolero = { version = "0.13", features = ["arbitrary"] }
+object = { version = "0.40", features = ["write"] }

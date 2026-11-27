@@ -1216,6 +1216,7 @@ dependencies = [
  "hereticus-image",
  "hereticus-memory",
  "hereticus-recovery",
+ "object",
  "rabbitizer",
  "yaxpeax-arm",
 ]

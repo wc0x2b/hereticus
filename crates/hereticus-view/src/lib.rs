@@ -523,11 +523,11 @@ fn with_words(
     unlinked: &hereticus_image::unlinked::Unlinked,
 ) -> Vec<u8> {
     let mut code = code.to_vec();
-    let width = arch.pointer_width();
-    for (site, target) in unlinked.words() {
+    for (site, target, width) in unlinked.words() {
         let Some(at) = site.checked_sub(start).and_then(|at| usize::try_from(at).ok()) else {
             continue;
         };
+        let width = width.bytes();
         let Some(word) = code.get_mut(at..at + width) else { continue };
         let bytes = target.to_le_bytes();
         match arch.data_order() {
@@ -632,7 +632,7 @@ fn relocated_addresses(
         if let Some(pool) = pool
             && let Some((site, reference)) = unlinked.reference_in(pool, pool + 1)
             && site == pool
-            && reference.part == hereticus_image::unlinked::Part::Word
+            && matches!(reference.part, hereticus_image::unlinked::Part::Word(_))
         {
             formed[index] = Some(reference.target);
         }
@@ -674,7 +674,7 @@ fn relocated_addresses(
                 formed[index] = None;
             }
             Part::FromEnd => formed[index] = Some(reference.target.wrapping_add(end - site)),
-            Part::Word => {}
+            Part::Word(_) => {}
         }
     }
 }
@@ -2186,6 +2186,40 @@ mod tests {
     fn high(words: &[u32]) -> Vec<String> {
         let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
         high_in(&Aarch64, &code, None)
+    }
+
+    /// A word of 4 bytes in AArch64 code, as `R_AARCH64_ABS32` fills, gets
+    /// its address in those 4 bytes, and the instruction after it keeps its
+    /// own.
+    #[test]
+    fn a_word_of_4_bytes_keeps_the_code_after_it() {
+        use object::write::{Object as Written, Relocation, StandardSection};
+        const NOP: u32 = 0xd503_201f;
+        let mut written = Written::new(
+            object::BinaryFormat::Elf,
+            object::Architecture::Aarch64,
+            object::Endianness::Little,
+        );
+        let text = written.section_id(StandardSection::Text);
+        let code: Vec<u8> = [0, NOP].iter().flat_map(|word: &u32| word.to_le_bytes()).collect();
+        written.append_section_data(text, &code, 8);
+        let rodata = written.section_id(StandardSection::ReadOnlyData);
+        written.append_section_data(rodata, &[0; 16], 8);
+        let symbol = written.section_symbol(rodata);
+        let flags = object::RelocationFlags::Elf { r_type: object::elf::R_AARCH64_ABS32 };
+        let relocation = Relocation { offset: 0, symbol, addend: 4, flags };
+        written.add_relocation(text, relocation).expect("the relocation adds");
+        let bytes = written.write().expect("the object writes");
+        let file = object::File::parse(bytes.as_slice()).expect("parses");
+        let links = hereticus_image::Links::of_object(&file);
+        let unlinked = links.unlinked().expect("a word");
+        let [(0, target, _)] = unlinked.words().collect::<Vec<_>>()[..] else {
+            panic!("one word at 0");
+        };
+        let filled = with_words(&Aarch64, &code, 0, unlinked);
+        let target = u32::try_from(target).expect("in 32 bits");
+        assert_eq!(filled[..4], target.to_le_bytes());
+        assert_eq!(filled[4..], NOP.to_le_bytes());
     }
 
     #[test]
