@@ -8,6 +8,7 @@ use object::{
 };
 
 use crate::obj::{Isa, stable_name};
+use crate::unlinked::Unlinked;
 use hereticus_arch::Arch;
 use hereticus_il::arch::InsnKind;
 use hereticus_recovery::dynamic::slot_names;
@@ -35,6 +36,9 @@ pub struct Links {
     relocated: BTreeMap<u64, u64>,
     /// How a stub is named for the symbol it jumps to.
     stub_names: StubNames,
+    /// Where a view places the sections of an unlinked object, and what its
+    /// relocations point at there.
+    unlinked: Option<Box<Unlinked>>,
 }
 
 /// How a stub that jumps through a named slot is named.
@@ -75,7 +79,8 @@ impl Links {
     /// Read what an object file says about its calls.
     pub fn of_object(file: &object::File<'_>) -> Self {
         if file.kind() == ObjectKind::Relocatable {
-            return Self { sites: call_site_names(file), ..Self::default() };
+            let unlinked = Unlinked::of(file, |section| Some(section.address())).map(Box::new);
+            return Self { sites: call_site_names(file), unlinked, ..Self::default() };
         }
 
         let mut memory = loaded_memory(file);
@@ -124,6 +129,7 @@ impl Links {
             read_only_starts,
             relocated,
             stub_names,
+            unlinked: None,
         }
     }
 
@@ -136,7 +142,8 @@ impl Links {
             .sections()
             .filter_map(|section| Some((base_of(&section)?, section.data().ok()?.to_vec())))
             .collect();
-        Self { memory, sites: call_site_names_at(file, base_of), ..Self::default() }
+        let unlinked = Unlinked::of(file, base_of).map(Box::new);
+        Self { memory, sites: call_site_names_at(file, base_of), unlinked, ..Self::default() }
     }
 
     /// The symbol whose stub is at `address`: a Mach-O stub, or a PLT stub
@@ -218,7 +225,20 @@ impl Links {
             read_only_starts: BTreeSet::new(),
             relocated: BTreeMap::new(),
             stub_names: StubNames::Plt,
+            unlinked: None,
         }
+    }
+
+    /// These links, with each of `starts` as the start of a section of
+    /// read-only data.
+    pub(crate) fn with_read_only_starts(self, starts: Vec<u64>) -> Self {
+        Self { read_only_starts: starts.into_iter().collect(), ..self }
+    }
+
+    /// Where a view places the sections of an unlinked object, and what the
+    /// relocations of its code point at there.
+    pub fn unlinked(&self) -> Option<&Unlinked> {
+        self.unlinked.as_deref()
     }
 
     /// The loaded bytes, each section at its address, as [`Memory`] reads

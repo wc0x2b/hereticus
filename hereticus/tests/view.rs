@@ -357,3 +357,35 @@ fn a_jump_to_a_branch_comes_in_at_its_delay_slot() {
     assert_eq!(line_of("goto"), slot + 1, "{lines:?}");
     assert_eq!(places[test].jump, Some(places[slot].address));
 }
+
+/// The high IL of an object that is not linked yet, by the name of each
+/// fixture in `fixtures/build` and function, as a test reads it.
+fn unlinked_high_il(file: &str, name: &str) -> Vec<String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/build").join(file);
+    let data = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("{}: {err}, run `just fixtures` first", path.display()));
+    let binary = Binary::parse(&data).expect("a fixture parses");
+    let index = binary.functions.iter().position(|f| f.name == name).expect(name);
+    instruction_diff_in(View::Hil, None, &binary, index, &binary, index)
+        .into_iter()
+        .map(|line| match line {
+            DiffLine::Same(text) => text.trim().to_string(),
+            other => panic!("{file}: {name} differs from itself: {other:?}"),
+        })
+        .collect()
+}
+
+/// In an object of MIPS that is not linked, `lui` and the instruction
+/// after it that adds the lower half hold zero, and the relocations at
+/// them name the symbol: the high IL names it, with what the code adds.
+#[test]
+fn a_relocation_of_an_unlinked_object_names_its_symbol() {
+    assert_eq!(
+        unlinked_high_il("mips-nopic-O2/globals.o", "both_globals"),
+        ["v0 = (load.32 [other + 0x44]) + (load.32 [table])", "return"]
+    );
+    assert_eq!(
+        unlinked_high_il("mips-nopic-O2/globals.o", "read_table"),
+        ["v0 = load.32 [table + ((arg1 & 0x3f) << 2)]", "return"]
+    );
+}
