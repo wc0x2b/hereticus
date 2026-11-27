@@ -639,6 +639,10 @@ impl Decoder for Mips16 {
         self.base.pointer_width()
     }
 
+    fn data_order(&self) -> super::ByteOrder {
+        self.base.data_order()
+    }
+
     fn read_pointer(&self, bytes: &[u8]) -> u64 {
         self.base.read_pointer(bytes)
     }
@@ -763,6 +767,12 @@ mod tests {
         let code: Vec<u8> = values.iter().flat_map(|value| value.to_be_bytes()).collect();
         let insn = Mips16::BIG.decode(&code, 0, address).expect("decodes");
         insn.to_string().trim_end().to_string()
+    }
+
+    #[test]
+    fn the_data_is_in_the_byte_order_of_the_code() {
+        assert_eq!(Mips16::BIG.data_order(), crate::arch::ByteOrder::Big);
+        assert_eq!(Mips16::LITTLE.data_order(), crate::arch::ByteOrder::Little);
     }
 
     /// Words from GCC 14 at `-mips16`, as `objdump` reads them.
