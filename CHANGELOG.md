@@ -94,6 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A conditional A32 instruction that reads as a function drops its
   condition from the name: `if (eq) r0 = clz(r0)`, where it read as
   `clzeq(r0)`.
+- An insert or an accumulate that reads as a function names the
+  destination it reads, as `w8 = bfi(w8, w21, 0xe, 0x12)` and
+  `d17 = vmla(d17, d16, d18)`, where they read as `bfi(w21, ...)`. The
+  T16 `adcs r6, r7` reads as `r6 = r6 + r7 + carry`.
 - The IL of the PowerPC `clrlwi`, `clrrwi`, `clrldi` and `clrrdi`
   keeps the mask of the bits they leave: `clrldi r3, r3, 32` read as
   `r3 = r3 & 0x20` and now reads as `r3 = r3 & 0xffffffff`. A mask of 32

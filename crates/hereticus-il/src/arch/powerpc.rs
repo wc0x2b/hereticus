@@ -696,12 +696,12 @@ fn plain_op(opcode: Opcode) -> il::Op {
     match opcode {
         ADD | ADDC | ADDI | ADDIC | ADDIS => Op::Add,
         SUBF | SUBFC | SUBFIC => Op::Subtract,
-        ADDE | ADDZE => Op::AddCarry,
+        ADDE => Op::AddCarry,
         SUBFE => Op::SubtractBorrow,
-        // `addme`, `subfze` and `subfme` add a carry and a -1 or negate,
-        // which no operation of the IL names: they read as the code prints
-        // them.
-        ADDME | SUBFZE | SUBFME => Op::Other,
+        // `addze` adds the carry alone, and `addme`, `subfze` and `subfme`
+        // add it and a -1 or negate, with one source, which no form of the
+        // IL names: they read as the code prints them.
+        ADDZE | ADDME | SUBFZE | SUBFME => Op::Other,
         NEG => Op::Negate,
         MULLW | MULLI | MULLD | MUL => Op::Multiply,
         MULHW | MULHWU | MULHD | MULHDU => Op::MultiplyPart,

@@ -1076,6 +1076,19 @@ fn aarch64_opcode(insn: &Insn) -> Option<A64Opcode> {
     aarch64::decoded(insn).map(|decoded| decoded.opcode)
 }
 
+/// The name of an A32 instruction without the condition it ends with, as
+/// `clz` of `clzeq` and `uxtah` of `uxtahcc`.
+fn without_condition(name: &str) -> &str {
+    const CONDITIONS: [&str; 16] = [
+        "eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt",
+        "le",
+    ];
+    match name.len().checked_sub(2).map(|at| name.split_at(at)) {
+        Some((base, condition)) if !base.is_empty() && CONDITIONS.contains(&condition) => base,
+        _ => name,
+    }
+}
+
 /// Whether the multiply-add `insn` subtracts the product, as `mls` and
 /// `msub` do.
 fn subtracts_product(insn: &Insn) -> bool {
@@ -1440,11 +1453,10 @@ fn statement(
     {
         // Without the size: `vsqrt` of `vsqrt.f64`. The condition of an A32
         // instruction shows before it, so `clzeq` reads as `clz`.
-        let printed_name = match arm32::core_opcode(insn) {
-            Some(opcode) if a32_condition(insn, None).is_some() => {
-                format!("{opcode:?}").to_ascii_lowercase()
-            }
-            _ => hereticus_il::arch::printed_name(insn).to_string(),
+        let printed_name = hereticus_il::arch::printed_name(insn).to_string();
+        let printed_name = match a32_condition(insn, None) {
+            Some(_) => without_condition(&printed_name).to_string(),
+            None => printed_name,
         };
         let name = printed_name.split('.').next().unwrap_or(&printed_name);
         let strip = |source: &&str| source.trim_start_matches('#').to_string();
@@ -1454,7 +1466,19 @@ fn statement(
             let operands: Vec<String> = tokens.iter().map(strip).collect();
             return Some(format!("flags = {name}({})", operands.join(", ")));
         }
-        let sources: Vec<String> = sources.iter().map(strip).collect();
+        let mut sources: Vec<String> = sources.iter().map(strip).collect();
+        // An insert or an accumulate, as `bfi w8, w21, #14, #18` and
+        // `vmla.f64 d17, d16, d18`, reads its destination too. `fcvt d0, s0`
+        // reads its source, which the IL names as the same register.
+        let reads_dest = match lifted.operands.split_first() {
+            Some((Operand::Reg(reg), rest)) => {
+                lifted.reads.contains(*reg) && !rest.contains(&Operand::Reg(*reg))
+            }
+            _ => false,
+        };
+        if reads_dest {
+            sources.insert(0, dest.to_string());
+        }
         return Some(format!("{dest} = {name}({})", sources.join(", ")));
     }
     let paired = operand_texts(&lifted.operands, &lift_names)?;
@@ -1599,13 +1623,16 @@ fn statement(
             _ => binary("+")?,
         },
         Op::Subtract => binary("-")?,
+        // A form of two operands, as the T16 `adcs r6, r7`, adds to its
+        // destination.
         Op::AddCarry => match operands.as_slice() {
             [dest, left, right] => format!("{dest} = {left} + {right} + carry"),
-            [dest, source] => format!("{dest} = {source} + carry"),
+            [dest, right] => format!("{dest} = {dest} + {right} + carry"),
             _ => return None,
         },
         Op::SubtractBorrow => match operands.as_slice() {
             [dest, left, right] => format!("{dest} = {left} - {right} - borrow"),
+            [dest, right] => format!("{dest} = {dest} - {right} - borrow"),
             _ => return None,
         },
         // `mul` is a multiply-add of zero on AArch64, and `mneg` a
@@ -2042,6 +2069,11 @@ mod tests {
             il_lines(&Arm32, &code, &insns),
             ["if (eq) r0 = clz(r0)", "umull r0, r1, r2, r3"]
         );
+        // The T16 `adcs r6, r7` adds to its destination.
+        use hereticus_il::arch::thumb::Thumb2;
+        let code = 0x417e_u16.to_le_bytes();
+        let (insns, _) = decode_all(&Thumb2, &code, 0x1000);
+        assert_eq!(il_lines(&Thumb2, &code, &insns), ["r6 = r6 + r7 + carry"]);
     }
 
     /// A multiply-subtract subtracts the product, and a conditional select
@@ -2054,6 +2086,20 @@ mod tests {
             0x1a9f_1662, // csinc w2, w19, wzr, ne
         ]);
         assert_eq!(shown, ["w8 = w9 - w10 * w8", "w8 = ne ? w8 + 1 : w8", "w2 = ne ? w19 : 1"]);
+    }
+
+    /// An insert reads its destination, and names it first; a conversion
+    /// reads only its source, which the IL holds in the same register.
+    #[test]
+    fn a_function_of_its_destination_names_it() {
+        let shown = lines(&[
+            0x3312_46a8, // bfi w8, w21, #14, #18
+            0x1e22_c000, // fcvt d0, s0
+        ]);
+        assert_eq!(shown, ["w8 = bfi(w8, w21, 0xe, 0x12)", "d0 = fcvt(s0)"]);
+        assert_eq!(without_condition("uxtahcc"), "uxtah");
+        assert_eq!(without_condition("smlawbmi"), "smlawb");
+        assert_eq!(without_condition("eq"), "eq");
     }
 
     /// `cmn` compares with the negative of its operand.
