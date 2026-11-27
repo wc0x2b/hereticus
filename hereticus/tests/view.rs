@@ -335,3 +335,25 @@ fn a_call_takes_the_fewest_arguments_the_other_calls_set(#[case] file: &str, #[c
     let tail = table.iter().position(|line| line == "goto alpha").expect("a tail call of alpha");
     assert_eq!(table[tail - 1], format!("{first} = arg2"), "{file}");
 }
+
+/// The high IL shows a delay slot before its branch, so a jump to the
+/// branch comes in at the line of the slot: in `luaZ_fill` of MIPS, the
+/// test of `z->eoz` jumps to the `b` that sets `v0 = -1` in its slot.
+#[test]
+fn a_jump_to_a_branch_comes_in_at_its_delay_slot() {
+    let binary = library("lua", "after", "mips");
+    let index = binary.functions.iter().position(|f| f.name == "luaZ_fill").expect("luaZ_fill");
+    let lines: Vec<String> = instruction_diff_in(View::Hil, None, &binary, index, &binary, index)
+        .into_iter()
+        .map(|line| match line {
+            DiffLine::Same(text) => text.trim().to_string(),
+            other => panic!("luaZ_fill differs from itself: {other:?}"),
+        })
+        .collect();
+    let places = line_places(View::Hil, &binary, index);
+    let line_of = |text: &str| lines.iter().position(|line| line.starts_with(text)).expect(text);
+    let test = line_of("if ((load.32 [arg1 + 0x14]) != 0)");
+    let slot = line_of("v0 = -0x1");
+    assert_eq!(line_of("goto"), slot + 1, "{lines:?}");
+    assert_eq!(places[test].jump, Some(places[slot].address));
+}

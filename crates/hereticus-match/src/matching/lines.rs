@@ -102,10 +102,27 @@ pub fn line_places(view: View, binary: &Binary, index: usize) -> Vec<LinePlace> 
             .map(|statement| statement.address)
             .collect();
             let depths = hereticus_view::line_depths_at(arch, &insns, &addresses);
+            // The high IL shows a delay slot before its branch, so a jump to
+            // the branch comes in at the line of the slot, which runs first.
+            let slot_before = |target: u64| {
+                let line = addresses.iter().position(|&address| address == target)?;
+                let before = *addresses.get(line.checked_sub(1)?)?;
+                let at = insns.binary_search_by_key(&target, |insn| insn.address).ok()?;
+                let slots = arch.delay_slots(&insns[at]);
+                insns[at + 1..]
+                    .iter()
+                    .take(slots)
+                    .any(|slot| slot.address == before)
+                    .then_some(before)
+            };
             addresses
-                .into_iter()
+                .iter()
                 .zip(depths)
-                .map(|(address, depth)| place(address, depth))
+                .map(|(&address, depth)| {
+                    let mut place = place(address, depth);
+                    place.jump = place.jump.map(|target| slot_before(target).unwrap_or(target));
+                    place
+                })
                 .collect()
         }
     }

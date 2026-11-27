@@ -129,8 +129,8 @@ luaZ_fill
 │││           v0 = load.8 [ret]
 │││┌>   return
 │└┴┼> + store.32 [arg1 + 0x14] = 1
-│  │    v0 = -0x1
-└──┴<   goto $-0x18
+└──┼>   v0 = -0x1
+   └<   goto $-0x18
 ```
 <!-- end output -->
 
