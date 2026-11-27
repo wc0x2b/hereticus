@@ -1324,7 +1324,14 @@ fn statement(
 ) -> Option<String> {
     // A constant that is part of an address shows as one, as `@0x20000`.
     let constant = |value: u64| {
-        if moves { format!("@{value:#x}") } else { constant_text(value) }
+        // A mask reads in plain hex: `& 0xffffffff` keeps the low half of a
+        // 64-bit register, which `& -0x1` does not say.
+        let is_mask = named.lifted.op == Op::And && (0x8000_0000..=0xffff_ffff).contains(&value);
+        match (moves, is_mask) {
+            (true, _) => format!("@{value:#x}"),
+            (false, true) => format!("{value:#x}"),
+            (false, false) => constant_text(value),
+        }
     };
     let lifted = &named.lifted;
     // One name for each lifted operand; an operand the instruction shows no
@@ -1862,6 +1869,14 @@ mod tests {
         assert_eq!(high, ["capable(arg1)", "at = 0", "__raw_copy_to_user(a0, a1, a2)"]);
     }
 
+    /// A mask reads in plain hex, where a number of 32 bits with its top bit
+    /// set reads as a small negative number.
+    #[test]
+    fn a_mask_reads_in_plain_hex() {
+        let shown = lines(&[0x9240_7c00]); // and x0, x0, #0xffffffff
+        assert_eq!(shown[0], "x0 = x0 & 0xffffffff");
+    }
+
     /// A test of one bit reads with the mask of that bit, not its number,
     /// and a test of the top bit reads as a test of the sign.
     #[test]
@@ -1873,11 +1888,7 @@ mod tests {
         ]);
         assert_eq!(
             shown,
-            [
-                "if ((w0 & 8) == 0) goto $+0x10",
-                "if (w0 >= 0) goto $+0xc",
-                "if (x1 < 0) goto $+0x8"
-            ]
+            ["if ((w0 & 8) == 0) goto $+0x10", "if (w0 >= 0) goto $+0xc", "if (x1 < 0) goto $+0x8"]
         );
         assert_eq!(
             high(&[0x3618_0080, 0x36f8_0060, 0xb7f8_0041]),

@@ -904,7 +904,40 @@ fn operand_name(operand: Operand) -> CompactString {
 
 /// The name of each operand that [`lift`] gives `inst`, in its order.
 pub fn names(inst: &Instruction) -> il::Names {
-    lifted_operands(inst, &spelling_of(inst)).into_iter().map(operand_name).collect()
+    let spelling = spelling_of(inst);
+    let mut names: il::Names =
+        lifted_operands(inst, &spelling).into_iter().map(operand_name).collect();
+    if let (Some(mask), Some(last)) = (clear_mask(&spelling), names.last_mut()) {
+        // A mask reads in plain hex: 0xffffffff keeps the low half and is
+        // no -1.
+        *last = format_compact!("{mask:#x}");
+    }
+    names
+}
+
+/// The mask that a `clrlwi`, `clrrwi`, `clrldi` or `clrrdi` keeps, which
+/// names the count of bits it clears: `clrldi r3, r3, 32` keeps the low 32
+/// bits, `0xffffffff`.
+fn clear_mask(spelling: &Spelling) -> Option<u64> {
+    let OpcodeAlias::Alias(alias) = spelling.opcode else { return None };
+    let count = match spelling.operands.last()? {
+        Operand::Imm8(count) => u32::from(*count),
+        Operand::ImmU16(count) => u32::from(*count),
+        Operand::ImmU32(count) => *count,
+        _ => return None,
+    };
+    let (width, from_left) = match alias {
+        AliasOp::CLRLWI => (32, true),
+        AliasOp::CLRRWI => (32, false),
+        AliasOp::CLRLDI => (64, true),
+        AliasOp::CLRRDI => (64, false),
+        _ => return None,
+    };
+    let all = u64::MAX >> (64 - width);
+    match from_left {
+        true => all.checked_shr(count),
+        false => all.checked_shl(count).map(|mask| mask & all),
+    }
 }
 
 /// The registers `operand` holds a value in: a register, or none.
@@ -1057,7 +1090,11 @@ pub fn lift(inst: &Instruction, word: u32) -> il::Lifted {
     }
 
     let memory = access_of(opcode).map(|(kind, width)| il::MemoryAccess { kind, width });
-    let operands: il::Operands = shown.iter().map(|&operand| il_operand(operand, update)).collect();
+    let mut operands: il::Operands =
+        shown.iter().map(|&operand| il_operand(operand, update)).collect();
+    if let (Some(mask), Some(last)) = (clear_mask(&spelling), operands.last_mut()) {
+        *last = il::Operand::Const(mask);
+    }
     il::Lifted {
         op: op_of(inst, spelling.opcode, test),
         reads,
@@ -1334,6 +1371,16 @@ mod tests {
     #[case::vaddubm(0x1000_0000, Op::Vector)]
     fn an_operation_is_named_as_on_every_architecture(#[case] word: u32, #[case] op: Op) {
         assert_eq!(lift_one(word).op, op);
+    }
+
+    #[rstest]
+    #[case::clrlwi(0x5484_063e, 0xff)] // clrlwi r4, r4, 24
+    #[case::clrrwi(0x5484_0036, 0xffff_fff0)] // clrrwi r4, r4, 4
+    #[case::clrldi(0x7863_0020, 0xffff_ffff)] // clrldi r3, r3, 32
+    #[case::clrrdi(0x7863_06e4, 0xffff_ffff_ffff_fff0)] // clrrdi r3, r3, 4
+    fn a_clear_keeps_the_mask_of_the_bits_it_leaves(#[case] word: u32, #[case] mask: u64) {
+        let lifted = lift_one(word);
+        assert_eq!((lifted.op, lifted.operands.last()), (Op::And, Some(&il::Operand::Const(mask))));
     }
 
     #[test]
