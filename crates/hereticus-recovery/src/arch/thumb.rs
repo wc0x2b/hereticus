@@ -19,7 +19,7 @@
 
 use super::arm32::{
     PcModel, UNWIND_SECTION, call_targets_through_thunks, is_long_thunk, pool_loads,
-    track_pool_words,
+    pops_program_counter, track_pool_words,
 };
 use super::{
     DataAmongCode, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery, TableJumps, VectorTable,
@@ -228,6 +228,10 @@ impl Recovery for Thumb2 {
 
     fn is_tail_call(&self, insn: &Insn) -> bool {
         Arm32.is_tail_call(insn)
+    }
+
+    fn pops_return_address(&self, insn: &Insn) -> bool {
+        pops_program_counter(self, insn)
     }
 
     /// A zero halfword reads as `lsls r0, r0, 0`, which changes nothing but

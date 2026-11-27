@@ -48,6 +48,19 @@ pub(super) fn is_plain(insn: &Insn, opcode: Opcode) -> bool {
         == Some(Decoded::Core { opcode, condition: ConditionCode::AL, flags: Flags::Kept })
 }
 
+/// Whether `insn` is a `pop` whose registers hold `pc`, as `arch` lifts it.
+pub(super) fn pops_program_counter(arch: &dyn Decoder, insn: &Insn) -> bool {
+    core_opcode(insn) == Some(Opcode::POP)
+        && arch.lift(insn).is_some_and(|lifted| {
+            // `pop {pc}` alone lifts as the register, not a list.
+            lifted.operands.iter().any(|operand| match operand {
+                il::Operand::RegisterList(list) => list.contains(il::Reg::ProgramCounter),
+                il::Operand::Reg(reg) => *reg == il::Reg::ProgramCounter,
+                _ => false,
+            })
+        })
+}
+
 impl Recovery for Arm32 {
     /// The first instruction of a function runs always, as almost every
     /// A32 instruction does: its top four bits are `0xE`.
@@ -131,6 +144,10 @@ impl Recovery for Arm32 {
     /// or `ldr pc` instead.
     fn is_tail_call(&self, insn: &Insn) -> bool {
         is_plain(insn, Opcode::BX) && insn.kind == (InsnKind::Jump { target: None })
+    }
+
+    fn pops_return_address(&self, insn: &Insn) -> bool {
+        pops_program_counter(self, insn)
     }
 
     /// A variadic function reserves room for its register arguments before it
@@ -1159,6 +1176,22 @@ mod tests {
     /// Decode one instruction from raw bytes at address 0.
     fn decode_one(bytes: [u8; 4]) -> Insn {
         Arm32.decode(&bytes, 0, 0).expect("bytes must decode")
+    }
+
+    #[test]
+    fn a_pop_of_pc_pops_the_return_address() {
+        use hereticus_il::arch::thumb::Thumb2;
+        let a32 = |word: u32| decode_one(word.to_le_bytes());
+        // pop {r4, pc}, and pop {pc}, which lifts as the register alone.
+        assert!(Arm32.pops_return_address(&a32(0xe8bd_8010)));
+        assert!(Arm32.pops_return_address(&a32(0xe49d_f004)));
+        // bx lr, and pop {r4}.
+        assert!(!Arm32.pops_return_address(&a32(0xe12f_ff1e)));
+        assert!(!Arm32.pops_return_address(&a32(0xe8bd_0010)));
+        let t16 = |half: u16| Thumb2.decode(&half.to_le_bytes(), 0, 0).expect("decodes");
+        // pop {r4, pc}, and bx lr.
+        assert!(Thumb2.pops_return_address(&t16(0xbd10)));
+        assert!(!Thumb2.pops_return_address(&t16(0x4770)));
     }
 
     /// Encodings from `llvm-mc --triple=armv7a --show-encoding`.

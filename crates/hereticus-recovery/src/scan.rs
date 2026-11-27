@@ -1668,22 +1668,7 @@ fn pops_a_frame_it_did_not_make(arch: &dyn Recovery, insns: &[Insn], target: u64
             return false;
         }
         match insn.kind {
-            InsnKind::Return => {
-                return hereticus_il::arch::arm32::core_opcode(insn)
-                    == Some(yaxpeax_arm::armv7::Opcode::POP)
-                    && arch.lift(insn).is_some_and(|lifted| {
-                        // `pop {pc}` alone lifts as the register, not a list.
-                        lifted.operands.iter().any(|operand| match operand {
-                            hereticus_il::Operand::RegisterList(list) => {
-                                list.contains(hereticus_il::Reg::ProgramCounter)
-                            }
-                            hereticus_il::Operand::Reg(reg) => {
-                                *reg == hereticus_il::Reg::ProgramCounter
-                            }
-                            _ => false,
-                        })
-                    });
-            }
+            InsnKind::Return => return arch.pops_return_address(insn),
             InsnKind::Normal | InsnKind::Unknown => {}
             _ => return false,
         }

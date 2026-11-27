@@ -269,6 +269,13 @@ pub trait Recovery: Decoder {
         false
     }
 
+    /// Report whether `insn`, a return, pops the return address that the
+    /// prologue pushed, as `pop {r4, pc}` does. Defaults to `false`, for an
+    /// architecture that returns through a register.
+    fn pops_return_address(&self, _insn: &Insn) -> bool {
+        false
+    }
+
     /// The architecture the PLT stubs of a binary are in, where it is not
     /// this one.
     ///
