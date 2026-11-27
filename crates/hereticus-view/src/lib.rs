@@ -271,46 +271,9 @@ fn instruction_lines(
             .collect(),
         None => vec![false; insns.len()],
     };
-    // The instructions that form the upper part of an address a relocation
-    // of an unlinked object names, as `lui` and `adrp`.
-    let mut high_parts: HashSet<usize> = HashSet::new();
-    // The instructions that add the lower half of an address whose upper
-    // half shows it whole, as a MIPS `addiu` after `lui`.
-    let mut lower_parts: HashSet<usize> = HashSet::new();
-    let formed = match context {
-        Some(context) => {
-            let unlinked = context.links.unlinked();
-            let start = insns.first().map_or(0, |insn| insn.address);
-            let code: std::borrow::Cow<'_, [u8]> = match unlinked {
-                Some(unlinked) => std::borrow::Cow::Owned(with_words(arch, code, start, unlinked)),
-                None => std::borrow::Cow::Borrowed(code),
-            };
-            let mut regions = context.links.regions();
-            if unlinked.is_some() {
-                regions.insert(0, (start, &code));
-            }
-            let memory = hereticus_recovery::arch::Memory::new(&regions);
-            let mut formed = arch.formed_addresses(&code, insns, context.space, &memory);
-            if let Some(unlinked) = unlinked {
-                relocated_addresses(
-                    insns,
-                    unlinked,
-                    &mut formed,
-                    &mut high_parts,
-                    &mut lower_parts,
-                );
-            }
-            formed
-        }
-        None => vec![None; insns.len()],
-    };
+    let Relocated { formed, high_parts, .. } = Relocated::of(arch, code, insns, context);
     // Each instruction lifted once, with its names, for every reader below.
-    let mut lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
-    for &index in &lower_parts {
-        if let Some(named) = lifts[index].as_mut() {
-            without_immediate(named);
-        }
-    }
+    let lifts = lifts_in(arch, code, insns, context);
     let pages = page_loads(insns, &lifts, &formed);
     let mut last_compare: Option<Compared> = None;
     let carry = CarryFlag::of(arch.triple());
@@ -334,7 +297,9 @@ fn instruction_lines(
         .iter()
         .enumerate()
         .map(|(index, insn)| {
-            let relocated = context.and_then(|context| context.links.site_name(insn.address));
+            let relocated = context.and_then(|context| {
+                context.links.site_name_in(insn.address, insn.address + insn.bytes_len as u64)
+            });
             Write::of(insn, &shown_names(lifts[index].as_ref()), &pointed[index], relocated)
         })
         .collect();
@@ -366,7 +331,9 @@ fn instruction_lines(
             };
             // In an unlinked object a call holds no target yet: the
             // relocation at it names the callee.
-            let relocated = context.and_then(|context| context.links.site_name(insn.address));
+            let relocated = context.and_then(|context| {
+                context.links.site_name_in(insn.address, insn.address + insn.bytes_len as u64)
+            });
             match (relocated, insn.kind) {
                 (Some(name), hereticus_il::arch::InsnKind::Call { .. }) => {
                     return conditional(format!("call {name}"), None);
@@ -474,6 +441,78 @@ fn page_loads(insns: &[Insn], lifts: &[Option<Named>], formed: &[Option<u64>]) -
         .collect()
 }
 
+/// What the relocations of an unlinked object say of the instructions of
+/// one function, as the view reads them.
+struct Relocated {
+    /// The address each instruction forms, as the architecture reads it,
+    /// with the address each relocation names at the instruction that
+    /// completes it.
+    formed: Vec<Option<u64>>,
+    /// The instructions that form the upper part of an address a
+    /// relocation names, as `lui` and `adrp`.
+    high_parts: HashSet<usize>,
+    /// The instructions that add the lower half of an address whose upper
+    /// half shows it whole, as a MIPS `lw` after `lui`.
+    lower_parts: HashSet<usize>,
+    /// The x86 instructions whose operand holds the address a relocation
+    /// names in one field, as `[4*rdi + table]`, and that address.
+    named_fields: Vec<(usize, u64)>,
+}
+
+impl Relocated {
+    fn of(arch: &dyn Arch, code: &[u8], insns: &[Insn], context: Option<Context<'_>>) -> Self {
+        let mut relocated = Self {
+            formed: vec![None; insns.len()],
+            high_parts: HashSet::new(),
+            lower_parts: HashSet::new(),
+            named_fields: Vec::new(),
+        };
+        let Some(context) = context else { return relocated };
+        let unlinked = context.links.unlinked();
+        let start = insns.first().map_or(0, |insn| insn.address);
+        let code: std::borrow::Cow<'_, [u8]> = match unlinked {
+            Some(unlinked) => std::borrow::Cow::Owned(with_words(arch, code, start, unlinked)),
+            None => std::borrow::Cow::Borrowed(code),
+        };
+        let mut regions = context.links.regions();
+        if unlinked.is_some() {
+            regions.insert(0, (start, &code));
+        }
+        let memory = hereticus_recovery::arch::Memory::new(&regions);
+        relocated.formed = arch.formed_addresses(&code, insns, context.space, &memory);
+        if let Some(unlinked) = unlinked {
+            relocated_addresses(arch, insns, unlinked, &mut relocated);
+        }
+        relocated
+    }
+}
+
+/// Each of `insns` lifted, with its names, where the relocations of an
+/// unlinked object, as `context` holds them, name what its fields hold.
+pub(crate) fn lifts_in(
+    arch: &dyn Arch,
+    code: &[u8],
+    insns: &[Insn],
+    context: Option<Context<'_>>,
+) -> Vec<Option<Named>> {
+    let mut lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
+    let Some(context) = context.filter(|context| context.links.unlinked().is_some()) else {
+        return lifts;
+    };
+    let relocated = Relocated::of(arch, code, insns, Some(context));
+    for &index in &relocated.lower_parts {
+        if let Some(named) = lifts[index].as_mut() {
+            without_immediate(named);
+        }
+    }
+    for &(index, target) in &relocated.named_fields {
+        if let Some(named) = lifts[index].as_mut() {
+            with_named_field(named, &Pointed::of(target, context));
+        }
+    }
+    lifts
+}
+
 /// `code`, which starts at `start`, with each word that a relocation of an
 /// unlinked object fills holding the address it names, as a word of a
 /// literal pool does once linked. No instruction changes.
@@ -501,6 +540,40 @@ fn with_words(
     code
 }
 
+/// `named`, with the field of its operand that a relocation fills named as
+/// what it points at: a memory operand that adds registers, as
+/// `[table + 4*rdi]`, or else a constant, as `&"text"`.
+fn with_named_field(named: &mut Named, pointed: &Pointed) {
+    let pairs = named.lifted.operands.iter_mut().zip(named.names.iter_mut());
+    let mut constant = None;
+    for (operand, name) in pairs {
+        match operand {
+            Operand::Memory { base, index, .. } if base.is_some() || index.is_some() => {
+                let place = pointed.as_place();
+                let symbol = place.trim_start_matches('[').trim_end_matches(']');
+                // The displacement is part of the address the relocation
+                // names, as the addend of a 32-bit x86 one is.
+                let inner = name.trim_start_matches('[').trim_end_matches(']');
+                let is_number = |term: &str| {
+                    let term = term.trim_start_matches('-');
+                    term.starts_with("0x") || term.chars().all(|c| c.is_ascii_digit())
+                };
+                let registers: Vec<&str> =
+                    inner.split(" + ").filter(|&term| !is_number(term)).collect();
+                *name = format!("[{symbol} + {}]", registers.join(" + ")).into();
+                return;
+            }
+            Operand::Const(_) if constant.is_none() => constant = Some((operand, name)),
+            _ => {}
+        }
+    }
+    // The constant keeps its value, and shows by its name, which starts
+    // with `&` as no number does.
+    if let Some((_, name)) = constant {
+        *name = pointed.as_value().into();
+    }
+}
+
 /// `named`, with its constant and the offset of its memory operand as 0:
 /// the instruction before it that a relocation names shows the whole
 /// address, so what this adds is part of that.
@@ -523,17 +596,47 @@ fn without_immediate(named: &mut Named) {
     }
 }
 
-/// `formed`, the address each of `insns` forms, with the address that a
-/// relocation of an unlinked object names at the instruction that completes
-/// it, as `addiu` and `lw` do. Each instruction that forms only the upper
-/// part, as `lui` and `adrp` do, goes into `high_parts`.
+/// `relocated`, with the address that each relocation of `unlinked` names
+/// at the instruction that completes it, as an AArch64 `add` does after
+/// `adrp`, and each instruction that forms only the upper part, as `adrp`
+/// does, the lower half of a MIPS pair, or an x86 field, in its set.
 fn relocated_addresses(
+    arch: &dyn Arch,
     insns: &[Insn],
     unlinked: &hereticus_image::unlinked::Unlinked,
-    formed: &mut [Option<u64>],
-    high_parts: &mut HashSet<usize>,
-    lower_parts: &mut HashSet<usize>,
+    relocated: &mut Relocated,
 ) {
+    let Relocated { formed, high_parts, lower_parts, named_fields } = relocated;
+    // A load of a word of a literal pool, as `ldr r3, [pc, #0x14]`, gives
+    // the address that a relocation of the word names.
+    let thumb = arch.triple().starts_with("thumb");
+    for (index, insn) in insns.iter().enumerate() {
+        let Some(named) = hereticus_il::arch::lift_named(insn) else { continue };
+        let pool = named.lifted.operands.iter().find_map(|operand| match *operand {
+            Operand::Memory {
+                base: Some(Reg::ProgramCounter),
+                offset,
+                index: None,
+                update: hereticus_il::Update::None,
+            } if named.lifted.op == Op::Load => {
+                // The program counter reads 8 bytes past an A32
+                // instruction, and 4 past a T32 one, to a word.
+                let pc = match thumb {
+                    true => (insn.address + 4) & !3,
+                    false => insn.address + 8,
+                };
+                Some(pc.wrapping_add_signed(offset.unwrap_or(0)))
+            }
+            _ => None,
+        });
+        if let Some(pool) = pool
+            && let Some((site, reference)) = unlinked.reference_in(pool, pool + 1)
+            && site == pool
+            && reference.part == hereticus_image::unlinked::Part::Word
+        {
+            formed[index] = Some(reference.target);
+        }
+    }
     use hereticus_image::unlinked::Part;
     for (index, insn) in insns.iter().enumerate() {
         // A call names its callee by the relocation at it.
@@ -542,6 +645,23 @@ fn relocated_addresses(
         }
         let end = insn.address + insn.bytes_len as u64;
         let Some((site, reference)) = unlinked.reference_in(insn.address, end) else { continue };
+        // An x86 instruction holds the address in one field of an operand
+        // that can add registers, as `[4*rdi + table]`, or as a constant
+        // it pushes: that field takes the name.
+        let in_field = reference.part == Part::Low
+            && hereticus_il::arch::x86::instruction(insn).is_some()
+            && hereticus_il::arch::lift_named(insn).is_some_and(|named| {
+                named.lifted.operands.iter().any(|operand| match operand {
+                    Operand::Memory { base, index, .. } => base.is_some() || index.is_some(),
+                    Operand::Const(_) => true,
+                    _ => false,
+                })
+            });
+        if in_field {
+            named_fields.push((index, reference.target));
+            formed[index] = None;
+            continue;
+        }
         match reference.part {
             Part::High => {
                 high_parts.insert(index);
@@ -1683,6 +1803,8 @@ fn statement(
             .iter()
             .zip(paired)
             .map(|(operand, text)| match operand {
+                // A relocation names what the constant points at.
+                Operand::Const(_) if text.starts_with('&') => text,
                 Operand::Const(value) => constant(*value),
                 _ => text,
             })
@@ -1700,6 +1822,21 @@ fn statement(
             })
         };
         canonical.operands.iter().map(text).collect::<Option<_>>()?
+    };
+    // An operation on a place the code names, as `add esi, [rip + x]`,
+    // reads the place there: it forms no address of its own.
+    let reads_place = canonical.memory.is_some()
+        && !matches!(canonical.op, Op::Load | Op::Store | Op::Atomic | Op::Address);
+    let (operands, address) = match (&address, reads_place) {
+        (Some(pointed), true) => {
+            let place = pointed.as_place();
+            let named = operands
+                .into_iter()
+                .map(|operand| if operand.starts_with('[') { place.clone() } else { operand })
+                .collect::<Vec<_>>();
+            (named, None)
+        }
+        _ => (operands, address),
     };
 
     let binary = |operator: &str| match operands.as_slice() {

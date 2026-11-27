@@ -257,6 +257,18 @@ branch keeps its condition, either way round, because a compiler can
 branch on the opposite condition and swap the code after it. `--view il`
 shows the IL; see [The Diff of One Function](./examples.md#the-diff-of-one-function).
 
+In an object that is not linked, as a kernel module, the code holds
+zero where it forms the address of data, and a relocation at the
+instruction names the symbol. The view places each data section and each
+undefined symbol at an address of its own, as a linker would, and names
+what each relocation points at: a text, as `&"memset"`, a symbol, as
+`[table + 4*rdi]`, or a place in a section, as `[.bss + 0x20]`, where
+the module renamed its own symbols to numbers. This holds for MIPS
+`lui` and `addiu`, the words of an ARM literal pool, AArch64 `adrp`
+and `add`, x86 displacements and constants, and PowerPC `addis` and
+`addi`. The places are made up and change with each build, so the
+matching reads none of it.
+
 The IL also gives the **data-flow features** of a function. Each value is
 hashed with the operation that makes it and with the values that the
 operation reads, for two rounds. This is the main idea of Ghidra BSim,

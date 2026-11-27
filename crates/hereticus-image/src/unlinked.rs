@@ -28,10 +28,16 @@ const PLACED_BASE: u64 = 0x7000_0000;
 /// The byte that starts the level of a message of the Linux kernel.
 const KERN_SOH: u8 = 0x01;
 
-/// Whether `name` is a label the compiler makes for a constant, as `$LC7`
-/// and `.LC0`: it numbers them anew in each build.
+/// Whether `name` is a label the compiler or assembler makes, which names
+/// nothing a reader knows: a constant, as `$LC7` and `.LC0`, which it
+/// numbers anew in each build, or a mapping symbol of ARM, as `$d` and
+/// `$x`, which marks where code or data starts.
 fn is_compiler_label(name: &str) -> bool {
-    name.starts_with("$L") || name.starts_with(".L")
+    let mapping = name.strip_prefix('$').is_some_and(|rest| {
+        let kind = rest.split('.').next().unwrap_or(rest);
+        matches!(kind, "a" | "d" | "t" | "x")
+    });
+    mapping || name.starts_with("$L") || name.starts_with(".L")
 }
 
 /// The room each undefined symbol takes, so an offset into it, as
@@ -201,6 +207,9 @@ impl Unlinked {
                         Some(pair) => (pair.addend, pair.part(kind)),
                         None => continue,
                     },
+                    (true, Kind::GpRelative) => {
+                        (i64::from(word(*offset).unwrap_or(0) as u16 as i16), kind.part())
+                    }
                     (true, _) => (i64::from(word(*offset).unwrap_or(0) as u32 as i32), kind.part()),
                 };
                 let reference = Reference { target: symbol.wrapping_add_signed(addend), part };
@@ -294,6 +303,9 @@ enum Kind {
     Low,
     /// A distance from the instruction, as `R_X86_64_PC32` gives it.
     FromEnd,
+    /// A place in the small data that MIPS code reaches from `gp`, with the
+    /// addend in the immediate, as `R_MIPS_GPREL16` gives it.
+    GpRelative,
 }
 
 impl Kind {
@@ -301,7 +313,7 @@ impl Kind {
         match self {
             Self::Word => Part::Word,
             Self::High => Part::High,
-            Self::Low => Part::Low,
+            Self::Low | Self::GpRelative => Part::Low,
             Self::MipsHigh => Part::UpperOfPair,
             Self::MipsLow => Part::LowerOfPair,
             Self::FromEnd => Part::FromEnd,
@@ -319,6 +331,7 @@ fn kind_of(architecture: object::Architecture, r_type: RelocationType) -> Option
             R_MIPS_32 => Kind::Word,
             R_MIPS_HI16 => Kind::MipsHigh,
             R_MIPS_LO16 => Kind::MipsLow,
+            R_MIPS_GPREL16 => Kind::GpRelative,
             _ => return None,
         },
         Architecture::Arm => match r_type {
@@ -470,4 +483,61 @@ fn mips_pairs(
         pairs.insert(offset, pair);
     }
     pairs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The placed data of one section of read-only data at `PLACED_BASE`,
+    /// with no relocations.
+    fn placed(bytes: &[u8]) -> Unlinked {
+        let data = Links::of_parts(vec![(PLACED_BASE, bytes.to_vec())], BTreeMap::new())
+            .with_read_only_starts(vec![PLACED_BASE]);
+        let symbols = BTreeMap::from([(PLACED_BASE + 0x40, (PLACED_BASE + 0x48, "seen".into()))]);
+        let sections = BTreeMap::from([(PLACED_BASE, (PLACED_BASE + 0x100, ".rodata".into()))]);
+        Unlinked { data, symbols, sections, references: BTreeMap::new() }
+    }
+
+    #[test]
+    fn a_kernel_message_reads_as_a_text_with_its_level() {
+        let unlinked = placed(b"\x013usage: ptm\0plain text\0");
+        let (text, offset) = unlinked.text_holding(PLACED_BASE).expect("a message");
+        assert_eq!((text.as_str(), offset), ("\u{1}3usage: ptm", 0));
+        let (text, offset) = unlinked.text_holding(PLACED_BASE + 13).expect("a text");
+        assert_eq!((text.as_str(), offset), ("plain text", 0));
+    }
+
+    #[test]
+    fn an_address_reads_as_the_symbol_or_the_section_that_holds_it() {
+        let unlinked = placed(&[0; 0x100]);
+        assert_eq!(unlinked.name_holding(PLACED_BASE + 0x44), Some(("seen", 4)));
+        assert_eq!(unlinked.name_holding(PLACED_BASE + 0x48), Some((".rodata", 0x48)));
+        assert_eq!(unlinked.name_holding(PLACED_BASE + 0x100), None);
+    }
+
+    #[test]
+    fn a_label_of_the_compiler_names_nothing() {
+        for label in ["$LC7", ".LC0", ".L.str", "$d", "$x", "$a.1", "$t"] {
+            assert!(is_compiler_label(label), "{label}");
+        }
+        for name in ["counter", "$data", "table", "_7"] {
+            assert!(!is_compiler_label(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn each_relocation_of_data_has_a_kind() {
+        use object::Architecture;
+        use object::elf::*;
+        let kind = kind_of;
+        assert_eq!(kind(Architecture::Mips, R_MIPS_HI16), Some(Kind::MipsHigh));
+        assert_eq!(kind(Architecture::Mips, R_MIPS_GPREL16), Some(Kind::GpRelative));
+        assert_eq!(kind(Architecture::Mips, R_MIPS_26), None, "a call");
+        assert_eq!(kind(Architecture::Arm, R_ARM_ABS32), Some(Kind::Word));
+        assert_eq!(kind(Architecture::Aarch64, R_AARCH64_ADR_PREL_PG_HI21), Some(Kind::High));
+        assert_eq!(kind(Architecture::X86_64, R_X86_64_PC32), Some(Kind::FromEnd));
+        assert_eq!(kind(Architecture::X86_64, R_X86_64_PLT32), None, "a call");
+        assert_eq!(kind(Architecture::PowerPc, R_PPC_ADDR16_HA), Some(Kind::High));
+    }
 }

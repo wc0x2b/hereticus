@@ -389,3 +389,30 @@ fn a_relocation_of_an_unlinked_object_names_its_symbol() {
         ["v0 = load.32 [table + ((arg1 & 0x3f) << 2)]", "return"]
     );
 }
+
+/// Code as a kernel module holds it reaches data through relocations: at
+/// the instructions that form an address, or at a word of a literal pool on
+/// ARM. On each architecture the high IL names the array another object
+/// defines with the index the code adds, the data of its own, and the text
+/// it passes.
+#[rstest]
+#[case::aarch64("aarch64", "uxtw 2")]
+#[case::x86_64("x86_64", "4*rdi")]
+#[case::i686("i686", "4*eax")]
+#[case::arm("arm", "lsl 2")]
+#[case::thumb("thumb", "lsl 2")]
+#[case::powerpc("powerpc", "rlwinm(arg1")]
+#[case::mips("mips", "<< 2")]
+fn a_module_names_the_data_it_reaches(#[case] arch: &str, #[case] index: &str) {
+    let file = format!("kmod/{arch}.o");
+    let read_table = unlinked_high_il(&file, "read_table").join("\n");
+    assert!(read_table.contains("load.32 [table + "), "{arch}: {read_table}");
+    assert!(read_table.contains(index), "{arch}: {read_table}");
+    let slot = unlinked_high_il(&file, "slot").join("\n");
+    assert!(slot.contains("seen + ") && slot.contains(index), "{arch}: {slot}");
+    let note = unlinked_high_il(&file, "note").join("\n");
+    assert!(note.contains("&\"counter changed\""), "{arch}: {note}");
+    assert!(note.contains("counter]") || note.contains("&counter"), "{arch}: {note}");
+    // An x86 call holds its relocation past its opcode.
+    assert!(note.contains("report"), "{arch}: {note}");
+}

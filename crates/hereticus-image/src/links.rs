@@ -173,6 +173,13 @@ impl Links {
         self.sites.get(&address).map(String::as_str)
     }
 
+    /// The symbol a relocation in the instruction at `start..end` names.
+    /// An x86 call holds its relocation past its opcode, as at `start + 1`
+    /// for `call rel32`.
+    pub fn site_name_in(&self, start: u64, end: u64) -> Option<&str> {
+        self.sites.range(start..end.max(start + 1)).next().map(|(_, name)| name.as_str())
+    }
+
     /// The symbol a relocation writes into the slot at `address`.
     pub fn slot_name(&self, address: u64) -> Option<&str> {
         self.slots.get(&address).map(String::as_str)

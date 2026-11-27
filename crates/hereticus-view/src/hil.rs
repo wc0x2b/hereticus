@@ -169,7 +169,8 @@ pub fn hil_statements_in(
     };
     let folds = folds(arch, insns);
     let printed = instruction_lines(arch, code, insns, context);
-    let mut body = Body::new(arch, convention, insns, &printed);
+    let lifts = crate::lifts_in(arch, code, insns, context);
+    let mut body = Body::new(arch, convention, insns, &printed, lifts);
     let returns_nothing = context
         .and_then(|context| context.calls)
         .is_some_and(|calls| calls.unread_results.contains(&insns[0].address));
@@ -996,11 +997,14 @@ struct Body<'a> {
 
 impl<'a> Body<'a> {
     /// The body of `insns`, which the IL shows as `printed`.
+    /// The body of `insns`, which `printed` shows and `lifts` lifts, one of
+    /// each for each instruction.
     fn new(
         arch: &'a dyn Arch,
         convention: CallingConvention,
         insns: &'a [Insn],
         printed: &[String],
+        lifts: Vec<Option<Named>>,
     ) -> Self {
         let mut callees: Vec<String> = Vec::new();
         let callee_loads = printed
@@ -1014,7 +1018,6 @@ impl<'a> Body<'a> {
                 Some(index)
             })
             .collect();
-        let lifts: Vec<Option<Named>> = insns.iter().map(hereticus_il::arch::lift_named).collect();
         let mut next = successors(insns, |insn| arch.delay_slots(insn));
         // A word of data among the code never runs, though a jump through a
         // register can seem to reach it: it leads nowhere.
@@ -1751,12 +1754,14 @@ impl<'a> Body<'a> {
             let lifted = &named.lifted;
             if lifted.reads.contains(reg) {
                 // It names the whole address, as `a2 = &"text"` of
-                // `addiu a2, v0, %lo(text)`, and reads nothing else.
-                let one_value =
-                    lifted.writes.len() == 1 && lifted.reads == RegSet::from_iter([reg]);
-                let value =
-                    lines[at].split_once(" = ").map_or(lines[at].as_str(), |(_, value)| value);
-                if !one_value || lines[at] == page || names_register(value, name) {
+                // `addiu a2, v0, %lo(text)` and `store.32 [counter] = w1`,
+                // and no other use of the register.
+                let line = &lines[at];
+                let value = match line.split_once(" = ") {
+                    Some((dest, value)) if !dest.contains('[') => value,
+                    _ => line.as_str(),
+                };
+                if line == page || names_register(value, name) {
                     return false;
                 }
                 completed = true;
@@ -2454,7 +2459,10 @@ pub fn call_facts(binary: &hereticus_image::Binary) -> hereticus_image::CallFact
             let is_call = matches!(insns[index].kind, InsnKind::Call { .. });
             let name = binary
                 .links
-                .site_name(insns[index].address)
+                .site_name_in(
+                    insns[index].address,
+                    insns[index].address + insns[index].bytes_len as u64,
+                )
                 .map(str::to_string)
                 .or_else(|| naming.callee_of(arch, target?));
             if let Some(name) = name.filter(|_| is_call && convention.stack_arguments.is_none()) {
@@ -2695,7 +2703,8 @@ fn arity_of_code(
         return None;
     }
     let printed = instruction_lines(arch, code, &insns, None);
-    let mut body = Body::new(arch, convention, &insns, &printed);
+    let lifts = insns.iter().map(hereticus_il::arch::lift_named).collect();
+    let mut body = Body::new(arch, convention, &insns, &printed, lifts);
     body.unknown = Unknown::ReadsNothing;
     // A register that only a return reads is no argument, as the result
     // register of a function that gives nothing back is not.
@@ -3966,7 +3975,8 @@ mod tests {
         let printed = instruction_lines(&X86::BITS32, &code, &insns, None);
         let convention =
             X86::BITS32.calling_convention(hereticus_arch::Abi::Unix).expect("x86 has an ABI");
-        let body = Body::new(&X86::BITS32, convention, &insns, &printed);
+        let lifts = insns.iter().map(hereticus_il::arch::lift_named).collect();
+        let body = Body::new(&X86::BITS32, convention, &insns, &printed, lifts);
         // After the add, the place holds no copy of what `eax` held.
         assert_ne!(body.holding[3].get(&Place::Slot(-8)), body.holding[1].reg(Reg::General(0)));
     }

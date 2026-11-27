@@ -87,7 +87,8 @@ pub fn call_sites_in(
             (index, target.or_else(slot))
         })
         .map(|(index, target)| {
-            let callee = match links.site_name(insns[index].address) {
+            let end = insns[index].address + insns[index].bytes_len as u64;
+            let callee = match links.site_name_in(insns[index].address, end) {
                 Some(name) => Callee::Named(name.to_string()),
                 None => {
                     target.map_or(Callee::Unknown, |target| resolve(arch, links, functions, target))
