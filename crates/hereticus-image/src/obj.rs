@@ -135,6 +135,33 @@ impl Isa {
         }
     }
 
+    /// The instruction set of a function in `set`, in a binary read as this
+    /// one.
+    pub(crate) fn in_set(self, set: CodeSet) -> Self {
+        match (self, set) {
+            (Self::Arm32 | Self::Thumb2, CodeSet::Compact) => Self::Thumb2,
+            (Self::Arm32 | Self::Thumb2, CodeSet::Full) => Self::Arm32,
+            (Self::Mips32 | Self::Mips16, CodeSet::Compact) => Self::Mips16,
+            (Self::Mips32 | Self::Mips16, CodeSet::Full) => Self::Mips32,
+            (Self::Mips32Be | Self::Mips16Be, CodeSet::Compact) => Self::Mips16Be,
+            (Self::Mips32Be | Self::Mips16Be, CodeSet::Full) => Self::Mips32Be,
+            (Self::Arm32Be8 | Self::Thumb2Be8, CodeSet::Compact) => Self::Thumb2Be8,
+            (Self::Arm32Be8 | Self::Thumb2Be8, CodeSet::Full) => Self::Arm32Be8,
+            (Self::Arm32Be32 | Self::Thumb2Be32, CodeSet::Compact) => Self::Thumb2Be32,
+            (Self::Arm32Be32 | Self::Thumb2Be32, CodeSet::Full) => Self::Arm32Be32,
+            (
+                Self::Aarch64
+                | Self::X86_64
+                | Self::X86
+                | Self::PowerPc
+                | Self::PowerPcLe
+                | Self::PowerPc64
+                | Self::PowerPc64Le,
+                _,
+            ) => self,
+        }
+    }
+
     /// The other instruction set of a core that runs two, as ARM runs A32 and
     /// Thumb-2, or `None`.
     pub fn other_set(self) -> Option<Self> {
@@ -612,7 +639,7 @@ impl Binary {
         let file = object::File::parse(data)?;
         let isa = Isa::from_object(file.architecture(), file.is_little_endian(), file.flags())?;
         let isa = match isa.other_set() {
-            Some(_) => set_of_symbol(isa, most_functions_encoded(&file, isa.arch())),
+            Some(_) => isa.in_set(most_functions_encoded(&file, isa.arch())),
             None => isa,
         };
 
@@ -651,7 +678,7 @@ impl Binary {
                 continue;
             }
 
-            let own = set_of_symbol(isa, encoding_of(isa.arch(), &symbol));
+            let own = isa.in_set(encoding_of(isa.arch(), &symbol));
             let entry = isa.arch().descriptor_entry(&file, &symbol);
             let address = match entry {
                 Some((_, entry)) => entry,
@@ -714,7 +741,7 @@ impl Binary {
             {
                 // ARM marks a Thumb function by setting bit 0 of its address.
                 let address = scan::symbol_address(isa.arch(), symbol.address());
-                if set_of_symbol(isa, encoding_of(isa.arch(), &symbol)) != isa {
+                if isa.in_set(encoding_of(isa.arch(), &symbol)) != isa {
                     other_set.insert(address);
                 }
                 let name_of = exported.entry(address).or_insert(name);
@@ -970,7 +997,7 @@ impl Binary {
         for export in &exports {
             let encoding = isa.arch().symbol_encoding(export.address, export.other);
             let address = scan::symbol_address(isa.arch(), export.address);
-            if set_of_symbol(isa, encoding) != isa {
+            if isa.in_set(encoding) != isa {
                 other_set.insert(address);
             }
             let name_of = exported.entry(address).or_insert(export.name);
@@ -997,7 +1024,7 @@ impl Binary {
                 .map(|name| format!("{name}@plt"))
                 .unwrap_or_default();
             // A stub is MIPS32, so in MIPS16e code it is in the other set.
-            if set_of_symbol(isa, CodeSet::Full) != isa {
+            if isa.in_set(CodeSet::Full) != isa {
                 other_set.insert(stub.range.start);
             }
             functions.push(Function { name, address: stub.range.start, code: bytes.to_vec() });
@@ -1224,33 +1251,6 @@ fn encoding_of(arch: &dyn Arch, symbol: &object::Symbol<'_, '_>) -> CodeSet {
         _ => 0,
     };
     arch.symbol_encoding(symbol.address(), other)
-}
-
-/// The instruction set of a function in `encoding`, in a binary read as
-/// `isa`.
-fn set_of_symbol(isa: Isa, encoding: CodeSet) -> Isa {
-    match (isa, encoding) {
-        (Isa::Arm32 | Isa::Thumb2, CodeSet::Compact) => Isa::Thumb2,
-        (Isa::Arm32 | Isa::Thumb2, CodeSet::Full) => Isa::Arm32,
-        (Isa::Mips32 | Isa::Mips16, CodeSet::Compact) => Isa::Mips16,
-        (Isa::Mips32 | Isa::Mips16, CodeSet::Full) => Isa::Mips32,
-        (Isa::Mips32Be | Isa::Mips16Be, CodeSet::Compact) => Isa::Mips16Be,
-        (Isa::Mips32Be | Isa::Mips16Be, CodeSet::Full) => Isa::Mips32Be,
-        (Isa::Arm32Be8 | Isa::Thumb2Be8, CodeSet::Compact) => Isa::Thumb2Be8,
-        (Isa::Arm32Be8 | Isa::Thumb2Be8, CodeSet::Full) => Isa::Arm32Be8,
-        (Isa::Arm32Be32 | Isa::Thumb2Be32, CodeSet::Compact) => Isa::Thumb2Be32,
-        (Isa::Arm32Be32 | Isa::Thumb2Be32, CodeSet::Full) => Isa::Arm32Be32,
-        (
-            Isa::Aarch64
-            | Isa::X86_64
-            | Isa::X86
-            | Isa::PowerPc
-            | Isa::PowerPcLe
-            | Isa::PowerPc64
-            | Isa::PowerPc64Le,
-            _,
-        ) => isa,
-    }
 }
 
 /// The encoding of most functions of a file, as their symbols say.
@@ -1921,7 +1921,7 @@ mod tests {
             Isa::from_object(object::Architecture::Arm, true, arm_flags(0)),
             Ok(Isa::Arm32)
         ));
-        assert_eq!(set_of_symbol(Isa::Arm32Be8, CodeSet::Compact), Isa::Thumb2Be8);
+        assert_eq!(Isa::Arm32Be8.in_set(CodeSet::Compact), Isa::Thumb2Be8);
         assert_eq!(Isa::Thumb2Be8.byte_order(), ByteOrder::Big);
         assert_eq!(Isa::Thumb2.byte_order(), ByteOrder::Little);
         let word = [0x00, 0x01, 0x02, 0x03];
@@ -1943,8 +1943,8 @@ mod tests {
             Isa::from_object(object::Architecture::Arm, false, object::FileFlags::None),
             Ok(Isa::Arm32Be8)
         ));
-        assert_eq!(set_of_symbol(Isa::Arm32Be32, CodeSet::Compact), Isa::Thumb2Be32);
-        assert_eq!(set_of_symbol(Isa::Thumb2Be32, CodeSet::Full), Isa::Arm32Be32);
+        assert_eq!(Isa::Arm32Be32.in_set(CodeSet::Compact), Isa::Thumb2Be32);
+        assert_eq!(Isa::Thumb2Be32.in_set(CodeSet::Full), Isa::Arm32Be32);
         assert_eq!(Isa::Thumb2Be32.byte_order(), ByteOrder::Big);
         let word = [0x00, 0x01, 0x02, 0x03];
         assert_eq!(Isa::Arm32Be32.arch().read_pointer(&word), 0x0001_0203);
@@ -1964,15 +1964,15 @@ mod tests {
     fn a_symbol_keeps_to_the_sets_of_its_binary() {
         for isa in EVERY_ISA {
             for encoding in [CodeSet::Full, CodeSet::Compact] {
-                let own = set_of_symbol(isa, encoding);
+                let own = isa.in_set(encoding);
                 assert!(own == isa || isa.other_set() == Some(own), "{isa:?} {encoding:?}");
-                assert_eq!(set_of_symbol(own, encoding), own, "{isa:?} {encoding:?}");
+                assert_eq!(own.in_set(encoding), own, "{isa:?} {encoding:?}");
             }
         }
-        assert_eq!(set_of_symbol(Isa::Mips32, CodeSet::Compact), Isa::Mips16);
-        assert_eq!(set_of_symbol(Isa::Mips16Be, CodeSet::Full), Isa::Mips32Be);
-        assert_eq!(set_of_symbol(Isa::Arm32, CodeSet::Compact), Isa::Thumb2);
-        assert_eq!(set_of_symbol(Isa::Aarch64, CodeSet::Compact), Isa::Aarch64);
+        assert_eq!(Isa::Mips32.in_set(CodeSet::Compact), Isa::Mips16);
+        assert_eq!(Isa::Mips16Be.in_set(CodeSet::Full), Isa::Mips32Be);
+        assert_eq!(Isa::Arm32.in_set(CodeSet::Compact), Isa::Thumb2);
+        assert_eq!(Isa::Aarch64.in_set(CodeSet::Compact), Isa::Aarch64);
     }
 
     /// The `st_other` value of an ELF symbol that names a MIPS16e function.
