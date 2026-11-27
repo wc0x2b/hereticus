@@ -19,7 +19,6 @@ use hereticus_il::arch::x86::X86;
 use hereticus_memory::AddressSpace;
 pub use hereticus_memory::Function;
 use hereticus_recovery::dynamic::Dynamic;
-use hereticus_recovery::mips_stubs;
 use hereticus_recovery::scan;
 use hereticus_recovery::unwind;
 
@@ -917,7 +916,8 @@ impl Binary {
         }
         // The lazy binding stubs of MIPS are read apart, as MIPS32 whatever
         // the code around them is, and named for the import each resolves.
-        let stubs = lazy_stubs(isa, &code);
+        let stubs: Vec<_> =
+            code.iter().flat_map(|&(base, data)| arch.lazy_stubs(base, data)).collect();
         let code = without(&code, stubs.iter().map(|stub| stub.range.clone()));
 
         // The index of ARM lies after the code, so the whole segment is
@@ -998,7 +998,7 @@ impl Binary {
         for stub in &stubs {
             let Some(bytes) = loaded.iter().find_map(|&(base, data)| {
                 let start = usize::try_from(stub.range.start.checked_sub(base)?).ok()?;
-                data.get(start..start + mips_stubs::STUB_LENGTH as usize)
+                data.get(start..start + usize::try_from(stub.range.end - stub.range.start).ok()?)
             }) else {
                 continue;
             };
@@ -1475,29 +1475,6 @@ fn plt_stubs_after(
             Some(Function { name: links.stub_name(arch, &function)?, ..function })
         })
         .collect()
-}
-
-/// The lazy binding stubs of MIPS in `code`: see [`mips_stubs`]. None
-/// for another architecture.
-fn lazy_stubs(isa: Isa, code: &[(u64, &[u8])]) -> Vec<mips_stubs::LazyStub> {
-    let order = match isa {
-        Isa::Mips32 | Isa::Mips16 => mips_stubs::ByteOrder::Little,
-        Isa::Mips32Be | Isa::Mips16Be => mips_stubs::ByteOrder::Big,
-        Isa::Arm32
-        | Isa::Thumb2
-        | Isa::Arm32Be8
-        | Isa::Thumb2Be8
-        | Isa::Arm32Be32
-        | Isa::Thumb2Be32
-        | Isa::Aarch64
-        | Isa::X86_64
-        | Isa::X86
-        | Isa::PowerPc
-        | Isa::PowerPcLe
-        | Isa::PowerPc64
-        | Isa::PowerPc64Le => return Vec::new(),
-    };
-    code.iter().flat_map(|&(base, data)| mips_stubs::lazy_stubs(base, data, order)).collect()
 }
 
 /// The parts of `regions` outside every one of `cuts`, which are sorted.

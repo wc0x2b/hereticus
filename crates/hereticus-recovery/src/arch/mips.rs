@@ -6,7 +6,9 @@
 //! or of offsets from `gp`. A branch has a delay slot, so the word after a
 //! return still belongs to the function.
 
-use super::{AbsoluteCall, CallTarget, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery};
+use super::{
+    AbsoluteCall, CallTarget, Decoder, Insn, InsnKind, JumpTable, LazyStub, Memory, Recovery,
+};
 use crate::dynamic::Dynamic;
 use hereticus_il as il;
 use hereticus_il::arch::mips::*;
@@ -126,6 +128,10 @@ pub(super) fn global_slot_names(dynamic: &Dynamic<'_>) -> BTreeMap<u64, String> 
 impl Recovery for Mips32 {
     fn global_slot_names(&self, dynamic: &Dynamic<'_>) -> BTreeMap<u64, String> {
         global_slot_names(dynamic)
+    }
+
+    fn lazy_stubs(&self, base: u64, code: &[u8]) -> Vec<LazyStub> {
+        super::mips_stubs::lazy_stubs(base, code, self.data_order())
     }
 
     /// `jr t9`: the ABI calls through `t9`, and a `switch` jumps through

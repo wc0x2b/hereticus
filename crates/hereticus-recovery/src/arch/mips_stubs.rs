@@ -15,7 +15,8 @@
 //! as MIPS16e they decode as nothing a compiler emits, and run together;
 //! read by their order, an import added moves every stub after it.
 
-use core::ops::Range;
+use super::LazyStub;
+use hereticus_il::arch::ByteOrder;
 
 /// The words of a stub, but for the last.
 const LOAD_RESOLVER: u32 = 0x8f99_8010;
@@ -26,24 +27,10 @@ const CALL_RESOLVER: u32 = 0x0320_f809;
 /// with the index in the low half.
 const LOAD_INDEX: [u32; 2] = [0x2418_0000, 0x3418_0000];
 /// The bytes of a stub.
-pub const STUB_LENGTH: u64 = 16;
-
-/// A lazy binding stub: where it lies, and the dynamic symbol it resolves.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LazyStub {
-    pub range: Range<u64>,
-    pub symbol: u64,
-}
-
-/// The order of the bytes of a word.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ByteOrder {
-    Little,
-    Big,
-}
+const STUB_LENGTH: u64 = 16;
 
 /// Every lazy binding stub in `code`, at `base`, in address order.
-pub fn lazy_stubs(base: u64, code: &[u8], order: ByteOrder) -> Vec<LazyStub> {
+pub(super) fn lazy_stubs(base: u64, code: &[u8], order: ByteOrder) -> Vec<LazyStub> {
     let word = |offset: usize| -> Option<u32> {
         let bytes: [u8; 4] = code.get(offset..offset + 4)?.try_into().ok()?;
         Some(match order {

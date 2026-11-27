@@ -9,6 +9,7 @@ pub mod aarch64;
 pub mod arm32;
 pub mod mips;
 pub mod mips16;
+mod mips_stubs;
 pub mod powerpc;
 pub mod thumb;
 pub mod x86;
@@ -285,6 +286,13 @@ pub trait Recovery: Decoder {
         BTreeMap::new()
     }
 
+    /// Each stub in `code`, at `base`, that binds an import when the code
+    /// first calls it, where the architecture writes such stubs with no
+    /// section that names them, as MIPS does. Defaults to none.
+    fn lazy_stubs(&self, _base: u64, _code: &[u8]) -> Vec<LazyStub> {
+        Vec::new()
+    }
+
     /// The architecture the PLT stubs of a binary are in, where it is not
     /// this one.
     ///
@@ -387,6 +395,14 @@ pub struct VectorTable {
     pub words: core::ops::Range<u64>,
     /// The start of each handler the table names.
     pub handlers: Vec<u64>,
+}
+
+/// A stub that binds an import when the code first calls it: where it
+/// lies, and the dynamic symbol it binds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LazyStub {
+    pub range: core::ops::Range<u64>,
+    pub symbol: u64,
 }
 
 /// Where a linker writes the stubs that call another library.

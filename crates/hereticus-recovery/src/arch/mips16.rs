@@ -6,7 +6,7 @@
 //! does on ARM, and `jalx` switches between the two sets.
 
 use super::mips::{GP, SP_REG, T9, first_register, operands_of};
-use super::{CallTarget, Decoder, Insn, InsnKind, JumpTable, Memory, Recovery};
+use super::{CallTarget, Decoder, Insn, InsnKind, JumpTable, LazyStub, Memory, Recovery};
 use crate::dynamic::Dynamic;
 use hereticus_il as il;
 use hereticus_il::arch::mips::{Decoded as MipsDecoded, Mips32, access, constant, decoded, is};
@@ -25,6 +25,11 @@ pub fn mips16_op(insn: &Insn) -> Option<Op> {
 impl Recovery for Mips16 {
     fn global_slot_names(&self, dynamic: &Dynamic<'_>) -> BTreeMap<u64, String> {
         super::mips::global_slot_names(dynamic)
+    }
+
+    /// The stubs are MIPS32, even in MIPS16e code.
+    fn lazy_stubs(&self, base: u64, code: &[u8]) -> Vec<LazyStub> {
+        super::mips_stubs::lazy_stubs(base, code, self.data_order())
     }
 
     fn jump_tables(
