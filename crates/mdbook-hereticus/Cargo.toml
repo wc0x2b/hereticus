@@ -15,7 +15,7 @@ path = "src/main.rs"
 bench = false
 
 [dependencies]
-hereticus-highlight = { path = "../hereticus-highlight", version = "0.8.0" }
+hereticus-highlight = { path = "../hereticus-highlight", version = "0.9.0" }
 serde_json = "1"
 
 [dev-dependencies]
