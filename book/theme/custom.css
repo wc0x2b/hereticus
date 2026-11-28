@@ -30,6 +30,11 @@
     --hd-function: #0969da;
     --hd-number: #8250df;
     --hd-string: #0a7f6f;
+    /* The font of the code blocks of mdbook, which draws the box glyphs of
+       the gutter as wide as a letter. The default monospace font of a
+       browser can draw them wider, which moves each line that has one. */
+    font-family: var(--mono-font);
+    font-size: var(--code-font-size);
     padding: 0.6em 0;
     background: var(--quote-bg);
     color: var(--hd-text);
